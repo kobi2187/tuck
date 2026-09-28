@@ -746,6 +746,15 @@ Counter send add {n: i}          # send
 Counter.total                    # read public state
 ```
 
+**A send into a full mailbox WAITS, unless the actor says otherwise**
+(`[on_full: wait | drop | assert]`, ruled 2026-09-28, #7). Every send used to
+drop silently. `wait` holds the sender until the actor has made room; `drop`
+loses the message; `assert` stops the program, naming the actor. A send that
+fits costs the same under all three. The one send that cannot wait is an
+actor's send to ITSELF — it is the one that would make room — so under `wait`
+it stops the program with a message saying so. Any other word is `TK-AC06`,
+and an attribute other than `queue` and `on_full` is `TK-AC07`.
+
 A handler may not declare a value return type: a message is fire-and-forget
 (spec §9.1) and there is no reply channel yet — correlation tokens are
 designed, not implemented. `-> void` is fine (it claims nothing). A caller

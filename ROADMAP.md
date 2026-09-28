@@ -64,10 +64,11 @@ finished** (no longer deferred).
 6. ~~R8 fill form~~ **DONE 2026-09-28**: `[v; N]` (exkFill; TK-TY36/37),
    a zero fill the host's zeroed storage; spec §9.1's `txBuf` and example 16
    take it.
-7. R6 (#7) — MEASURED 2026-09-28: the fast-path check costs nothing
-   (benches/SCORES.md, "R6"), so the ruling says block. Waiting on the owner:
-   what a send that would wait forever does (self-send, a cycle of full
-   mailboxes).
+7. R6 (#7) — RULED 2026-09-28: the program picks, per actor, what the send
+   that finds the mailbox full does — `[on_full: drop | wait | assert]`,
+   `wait` when unwritten (the check measured free, benches/SCORES.md "R6").
+   A self-send cannot wait, so under `wait` it asserts. Build it on all three
+   backends and all three actor modes.
 8. R11 — cross-module parity. SCANNED 2026-09-28: 24 constructs declared in
    one module and used from another, on all three backends, each against a
    one-module control. Eleven cross (types, generic fns and records, sums,
@@ -110,7 +111,8 @@ finished** (no longer deferred).
 
 **Deferred — completely missing, not scheduled:** #10 · #11 · #12 ·
 #16 · #17 · #32 · #33 · #57 · #62 (const evaluator) · #65–#71 · #74 · #91 ·
-DNS · a growable `str` on Odin/D (#80's stage 4, #93).
+DNS · a growable `str` on Odin/D (#80's stage 4, #93) · message priority
+(below).
 
 ---
 
@@ -373,6 +375,18 @@ clean — TK-ME02, a warning so `examples/13-arena-mem.tuck` still compiles) · 
 #10 correlation tokens · #16 numeric sigils · #17 · #32 · #33 · #57 ·
 #66/#68/#69/#70 · #71 · #74 · DNS. (**#18 generic actors** is done and
 closed: one singleton per instantiation, expanded before typecheck.)
+
+**Message priority** (owner, 2026-09-28). An actor taking an urgent message
+ahead of the ones already waiting — a `reset` or `cancel` stuck behind a
+backlog of `send`s. It belongs on the HANDLER, not the actor
+(`on reset() [urgent]:`), because `[priority: high]` on an actor reads as
+"this actor before other actors", which the OS schedules in thread mode. Two
+levels, normal and urgent: numbered levels invite priority inversion. What it
+costs: a second mailbox per actor that has an urgent handler (with its own
+`on_full`), one more check per drain pass, and R7's promise narrows to "one
+sender's messages are handled in order WITHIN a level" — that is the point of
+it. Until then an actor takes `queue` and `on_full` only (TK-AC07), and
+example 15's `priority: high`, read by nothing, is gone.
 
 ---
 

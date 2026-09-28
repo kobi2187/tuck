@@ -164,7 +164,7 @@ drain_tuckˑactorˑSignals :: proc() -> bool {
 }
 
 sendSense_tuckˑactorˑSignals :: proc(self: ^tuckˑactorˑSignals, demand: tuckˑtypeˑDemand, preempt: bool) {
-	_ = rt.enqueue(&self.mailbox, tuckˑactorˑSignalsMsg{tuckTag = .msgSense, demand = demand, preempt = preempt})
+	rt.sendWaiting(&self.mailbox, tuckˑactorˑSignalsMsg{tuckTag = .msgSense, demand = demand, preempt = preempt}, tuckˑactorˑSignalsSlot, "Signals")
 	rt.tuckNotifySend(tuckˑactorˑSignalsSlot)
 }
 

@@ -41,7 +41,7 @@ proc tuckˑfnˑsumReady*(): bool =
 proc tuckˑfnˑmain*(): int =
   for tuckˑvˑi in (1 .. 10):
     if true:
-      discard enqueue(tuckˑactorˑCounterSingleton.mailbox, tuckˑactorˑCounterMsg(tuckTag: msgAdd, n: tuckˑvˑi))
+      sendWaiting(tuckˑactorˑCounterSingleton.mailbox, tuckˑactorˑCounterMsg(tuckTag: msgAdd, n: tuckˑvˑi), tuckˑactorˑCounterSlot, "Counter")
       tuckNotifySend(tuckˑactorˑCounterSlot)
   tuckWaitOn(tuckˑactorˑCounterSlot, tuckˑfnˑsumReady)
   return tuckˑactorˑCounterSingleton.total

@@ -800,6 +800,29 @@ tuckNotifySend :: proc(handle: rawptr) {
 	sync.unlock(&slot.lock)
 }
 
+// One step of a send waiting for room in `actor`'s full mailbox — its
+// `on_full: wait`, the default (R6). Reached only once a send has found the
+// mailbox full. The Nim twin (tuck_async.tuckAwaitRoom) carries the reasoning:
+// wake the receiver, give up the CPU the way the caller can, and stop rather
+// than hang when an actor waits on its OWN mailbox.
+tuckAwaitRoom :: proc(handle: rawptr, actor: string) {
+	if handle == nil {
+		tuckMailboxFull(actor, "the actor was never started, so nothing drains it")
+	}
+	slot := (^ActorSlot)(handle)
+	if gMySlot == slot {
+		tuckMailboxFull(actor, "it sent to itself, and the actor that would make room is the one waiting. Declare `on_full: drop` or a larger `queue`")
+	}
+	tuckNotifySend(handle)
+	if inCoroutine() {
+		coroYield()   // re-queues the caller before it suspends
+	} else if hasPending() {
+		runNext()
+	} else {
+		intrinsics.cpu_relax()
+	}
+}
+
 // Run THIS thread's coroutines until `pred` holds. Named to match
 // std/scheduler.tuck's `runTasksUntil` extern, which the module forwarder
 // emits as `rt.runTasksUntil`.

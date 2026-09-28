@@ -48,9 +48,9 @@ proc tuckˑfnˑready*(): bool =
 proc tuckˑfnˑmain*(): int =
   for tuckˑvˑi in (1 .. 10):
     if true:
-      discard enqueue(tuckˑactorˑAccumulatorSingleton.mailbox, tuckˑactorˑAccumulatorMsg(tuckTag: msgAdd, n: tuckˑvˑi))
+      sendWaiting(tuckˑactorˑAccumulatorSingleton.mailbox, tuckˑactorˑAccumulatorMsg(tuckTag: msgAdd, n: tuckˑvˑi), tuckˑactorˑAccumulatorSlot, "Accumulator")
       tuckNotifySend(tuckˑactorˑAccumulatorSlot)
-  discard enqueue(tuckˑactorˑAccumulatorSingleton.mailbox, tuckˑactorˑAccumulatorMsg(tuckTag: msgFinish))
+  sendWaiting(tuckˑactorˑAccumulatorSingleton.mailbox, tuckˑactorˑAccumulatorMsg(tuckTag: msgFinish), tuckˑactorˑAccumulatorSlot, "Accumulator")
   tuckNotifySend(tuckˑactorˑAccumulatorSlot)
   tuckWaitOn(tuckˑactorˑAccumulatorSlot, tuckˑfnˑready)
   return tuckˑactorˑAccumulatorSingleton.total

@@ -574,10 +574,19 @@ proc genDSendHelper*(ctx: var DCodegenCtx, d: Decl,
           copies.add("    " & p.name & "." & f & " = " & p.name & "." & f &
                      ".dup;\n")
   let sep = if params.len > 0: ", " else: ""
+  # The enqueue is the actor's `on_full` (R6): wait for room (the default),
+  # stop the program, or drop — the bare enqueue every send used to be.
+  let msg = d.name & "Msg(" & ctorArgs & ")"
+  let actor = "\"" & actorLabel(d, d.name) & "\""
+  let enqueue =
+    case actorOnFull(d)
+    of ofDrop: "cast(void) rt.enqueue(self.mailbox, " & msg & ")"
+    of ofWait: "rt.sendWaiting(self.mailbox, " & msg & ", " &
+               actorSlotName(d.name) & ", " & actor & ")"
+    of ofAssert: "rt.sendAsserting(self.mailbox, " & msg & ", " & actor & ")"
   "void send" & h.name.capitalize() & "_" & d.name & "(ref " & d.name &
     " self" & sep & params.join(", ") & ") {\n" & copies &
-    "    cast(void) rt.enqueue(self.mailbox, " & d.name & "Msg(" &
-    ctorArgs & "));\n    rt.tuckNotifySend(" & actorSlotName(d.name) &
+    "    " & enqueue & ";\n    rt.tuckNotifySend(" & actorSlotName(d.name) &
     ");\n}\n\n"
 
 proc genDActorState*(ctx: var DCodegenCtx, d: Decl,

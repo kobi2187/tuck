@@ -170,6 +170,8 @@ type
     dcAcHandlerCalled = "TK-AC03"       ## an `on` handler called like a fn; it is sent
     dcAcMemberOutside = "TK-AC04"       ## an actor's member `fn` called from outside the actor
     dcAcSendToMember = "TK-AC05"        ## a `send` naming an actor's member `fn`, not a handler
+    dcAcOnFull = "TK-AC06"              ## an actor's [on_full: X] is not drop, wait or assert
+    dcAcUnknownAttr = "TK-AC07"         ## an actor attribute other than queue and on_full
     dcMeSizeCount = "TK-ME01"           ## a pool/arena size or count is not positive
     dcMeArenaInert = "TK-ME02"          ## an `arena` parses, and does nothing yet
     dcIvUnknownField = "TK-IV01"        ## an invariant names a field the type lacks
@@ -794,6 +796,20 @@ proc ruleExplanation(d: DiagCode): string =
     "A `fn` in an actor is a member its own code calls, not a message it " &
     "receives. Fix: send to a handler that calls the member, or declare the " &
     "member as `on name(...)` if it is meant to be a message."
+  of dcAcOnFull:
+    "`[on_full: ...]` says what a send does when it finds the actor's " &
+    "mailbox full, and takes one of three words: `wait` (the default) holds " &
+    "the sender until the actor makes room; `drop` loses the message; " &
+    "`assert` stops the program, naming the actor. A send an actor makes to " &
+    "itself cannot wait — it is the one that would make room — so under " &
+    "`wait` that send stops the program instead. Fix: write one of the three."
+  of dcAcUnknownAttr:
+    "An actor takes two attributes: `queue` (its mailbox capacity) and " &
+    "`on_full` (what a send does when the mailbox is full). Any other name " &
+    "is read by nothing, so a misspelled `on_full` would silently mean the " &
+    "default. (`priority` is not one: message priority, if it comes, belongs " &
+    "on a handler rather than the actor — ROADMAP, deferred.) Fix: check the " &
+    "spelling, or remove the attribute."
   of dcAcQueueSize:
     "An actor's `[queue: N]` is the exact capacity of its mailbox ring, so N " &
     "must be a positive whole number. Zero or negative is not a smaller " &

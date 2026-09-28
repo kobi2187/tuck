@@ -35,6 +35,7 @@ import interfaces
 import invariants
 import known_bugs
 import loop_var_type
+import mailbox_full
 import mangle
 import member_names
 import memory
@@ -94,6 +95,7 @@ let registry: seq[Entry] = @[
   ("invariants",          SuiteProc(invariants.run),          false),
   ("known_bugs",          SuiteProc(known_bugs.run),          false),
   ("loop_var_type",       SuiteProc(loop_var_type.run),       false),
+  ("mailbox_full",        SuiteProc(mailbox_full.run),        false),
   ("mangle",              SuiteProc(mangle.run),              true),
   ("member_names",        SuiteProc(member_names.run),        true),
   ("memory",              SuiteProc(memory.run),              false),

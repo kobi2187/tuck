@@ -2055,7 +2055,7 @@ have to yield, poll or drive anything for an actor to make progress — the
 thread is already running, blocked on its mailbox, and a `send` wakes it.
 
 This is why an actor and a task differ in more than lifetime. A task is a JOB:
-a coroutine on `main`'"'"'s thread, where `[io]` is a cooperative yield and the
+a coroutine on `main`'s thread, where `[io]` is a cooperative yield and the
 scheduler hands control to the next task. An actor is a SERVICE: a thread,
 where `[io]` suspends that actor alone and nothing else notices.
 
@@ -2079,6 +2079,31 @@ unbounded allocation. `queue: N` means N messages may be waiting to be picked
 up; the runtime double-buffers, so an actor may hold up to another N it has
 already taken (the handover is an index flip, never a copy).
 
+**What a send does when it finds the mailbox full is the program's choice**
+(ruled 2026-09-28, #7), declared per actor as `[on_full: ...]`:
+
+| `on_full` | the send that finds the mailbox full |
+|---|---|
+| `wait` (the default) | waits for room: the sender yields until the actor has drained |
+| `drop` | loses the message |
+| `assert` | stops the program, naming the actor (exit 1) |
+
+```tuck
+actor Journal [queue: 1024, on_full: drop]:   # losing a log line is fine
+  lines: int = 0
+  on log({text: str}):
+    lines += 1
+```
+
+A send that fits costs the same under all three: the policy is consulted
+only once a send has found the mailbox full. An actor cannot wait on its own
+mailbox — it is the one that would make room — so under `wait` a send to
+itself that finds the mailbox full stops the program instead. A cycle of
+actors whose full mailboxes each wait on the next can hang; that is what
+`wait` means, and why `drop` and `assert` exist. Any other word is TK-AC06.
+An actor takes these two attributes, `queue` and `on_full`, and no others
+(TK-AC07).
+
 **No order is promised between two senders** (ruled 2026-09-28, #84). When
 two senders each send to one actor, which message it handles first is
 whatever the runtime finds fastest, and it can differ by `--actors:` mode and
@@ -2089,8 +2114,8 @@ barrier was the alternative, and it would cost every message.
 
 #### Observing an actor: a snapshot, or the exact moment
 
-An actor'"'"'s public fields are readable from outside (`Progress.done`). That is a
-deliberate departure from Erlang, Akka and Pony, where a process'"'"'s state cannot
+An actor's public fields are readable from outside (`Progress.done`). That is a
+deliberate departure from Erlang, Akka and Pony, where a process's state cannot
 be named from outside at all and every observation is a request/reply round
 trip. Tuck allows the read because it is what a display or a progress bar
 actually wants, and a round trip for `done` would be heavier than the thing
@@ -2130,7 +2155,7 @@ transition that happened while an earlier message was being handled.
 
 Three properties follow, and they are the ones a caller needs:
 
-- **No race.** The predicate reads the actor'"'"'s state on the actor'"'"'s thread. No
+- **No race.** The predicate reads the actor's state on the actor's thread. No
   external read, so nothing to synchronise.
 - **Ordered against your own sends.** The registration rides the same mailbox,
   and a mailbox is FIFO per sender — a promise (ruled 2026-09-28), unlike the
@@ -2140,11 +2165,11 @@ Three properties follow, and they are the ones a caller needs:
 
 The predicate must be effect-free, and that is checked rather than trusted: it
 runs inside the actor after each message, so a predicate that did I/O or sent
-messages would turn every message into unbounded work. (Ada'"'"'s protected-object
+messages would turn every message into unbounded work. (Ada's protected-object
 entry barriers are the same construct and impose the same rule, but can only
 make violating it a bounded error; Tuck has the effect system to reject it.)
 
-It must also read exactly ONE actor'"'"'s fields — the actor it is registered with.
+It must also read exactly ONE actor's fields — the actor it is registered with.
 A predicate over two actors is the racy case wearing a safe-looking spelling:
 no single actor can evaluate it soundly.
 
@@ -2271,26 +2296,26 @@ than until THIS task does. Issue #55.
 ### 9.4 The Scheduler
 
 There is not ONE scheduler. There is one per thread, and a thread per actor
-plus `main`'"'"'s.
+plus `main`'s.
 
 **Within a thread, scheduling is cooperative.** Coroutines on that thread are
 items in its ready queue, each gets one `resume` per tick — a switch onto that
-coroutine'"'"'s own stack (see the runtime note opening this Part) — and runs to
+coroutine's own stack (see the runtime note opening this Part) — and runs to
 its next `[io]` yield point, then re-enqueues or parks. Each thread has its own
 epoll/kqueue reactor driving readiness for its own parked waits. No preemption
 INSIDE a thread, so a handler or a task body runs to a yield point without
 interruption, and the state it owns needs no lock against itself.
 
-**Between threads, the OS schedules.** An actor'"'"'s thread runs whether or not
+**Between threads, the OS schedules.** An actor's thread runs whether or not
 `main` yields — that is the whole point of a service — so actors genuinely run
 in parallel with `main` and with each other, and there are kernel context
 switches between them.
 
 Where they meet:
 
-- `main`'"'"'s thread runs `main` and every task. A task is a coroutine, so `[io]`
+- `main`'s thread runs `main` and every task. A task is a coroutine, so `[io]`
   in a task yields to the next task.
-- Each actor'"'"'s thread runs that actor alone. `[io]` in a handler suspends that
+- Each actor's thread runs that actor alone. `[io]` in a handler suspends that
   actor and nothing else — no other actor is delayed, and `main` never notices.
 - The only shared mutable thing is the **mailbox**, which carries a lock for
   exactly that reason (it has since before actors were threads: "sends come

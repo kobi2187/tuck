@@ -160,7 +160,7 @@ bool drain_tuckˑactorˑSignals() {
 }
 
 void sendSense_tuckˑactorˑSignals(ref tuckˑactorˑSignals self, tuckˑtypeˑDemand demand, bool preempt) {
-    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑSignalsMsg(tuckTag: tuckˑactorˑSignalsMsgKind.msgSense, demand: demand, preempt: preempt));
+    rt.sendWaiting(self.mailbox, tuckˑactorˑSignalsMsg(tuckTag: tuckˑactorˑSignalsMsgKind.msgSense, demand: demand, preempt: preempt), tuckˑactorˑSignalsSlot, "Signals");
     rt.tuckNotifySend(tuckˑactorˑSignalsSlot);
 }
 

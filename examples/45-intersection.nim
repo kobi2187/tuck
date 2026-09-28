@@ -203,7 +203,7 @@ proc tuckˑfnˑsettled*(): bool =
 
 proc tuckˑfnˑreport*(d: Detector): void =
   var tuckˑvˑdemand = tuckˑfnˑpoll(d)
-  discard enqueue(tuckˑactorˑSignalsSingleton.mailbox, tuckˑactorˑSignalsMsg(tuckTag: msgSense, demand: tuckˑvˑdemand, preempt: false))
+  sendWaiting(tuckˑactorˑSignalsSingleton.mailbox, tuckˑactorˑSignalsMsg(tuckTag: msgSense, demand: tuckˑvˑdemand, preempt: false), tuckˑactorˑSignalsSlot, "Signals")
   tuckNotifySend(tuckˑactorˑSignalsSlot)
   return
 
@@ -211,7 +211,7 @@ proc tuckˑfnˑdrive*(): void =
   var tuckˑvˑloops = tuckˑobjectˑLoopDetector(lane: 1)
   var tuckˑvˑcamera = tuckˑobjectˑCameraDetector(confidence: 91'u8)
   tuckˑfnˑreport(Detector(tag: Detector_is_tuckˑobjectˑCameraDetector, tuckˑobjectˑCameraDetectorVal: tuckˑvˑcamera))
-  discard enqueue(tuckˑactorˑSignalsSingleton.mailbox, tuckˑactorˑSignalsMsg(tuckTag: msgSense, demand: tuckˑtypeˑDemand.quiet, preempt: false))
+  sendWaiting(tuckˑactorˑSignalsSingleton.mailbox, tuckˑactorˑSignalsMsg(tuckTag: msgSense, demand: tuckˑtypeˑDemand.quiet, preempt: false), tuckˑactorˑSignalsSlot, "Signals")
   tuckNotifySend(tuckˑactorˑSignalsSlot)
   tuckˑfnˑreport(Detector(tag: Detector_is_tuckˑobjectˑLoopDetector, tuckˑobjectˑLoopDetectorVal: tuckˑvˑloops))
   return

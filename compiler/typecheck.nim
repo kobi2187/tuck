@@ -5206,6 +5206,22 @@ proc checkActorQueue(m: Module, d: Decl) =
            "zero or negative one cannot hold a message (it builds, then " &
            "fails on the first send)", attr.span)
 
+proc checkActorAttrs(d: Decl) =
+  ## An actor takes `queue` and `on_full`, and `on_full` one of three words
+  ## (R6, ruled 2026-09-28: the program picks what the send that finds the
+  ## mailbox full does). Any other name was read by nothing, so a misspelled
+  ## `on_full` silently meant the default (TK-AC07, ruled 2026-09-28).
+  for attr in d.attrs:
+    case attr.name
+    of "queue": discard    # checkActorQueue
+    of "on_full":
+      if attr.value notin ["drop", "wait", "assert"]:
+        fail(dcAcOnFull, "actor '" & d.name & "': on_full must be drop, " &
+             "wait or assert, got '" & attr.value & "'", attr.span)
+    else:
+      fail(dcAcUnknownAttr, "actor '" & d.name & "' has no attribute '" &
+           attr.name & "' — an actor takes queue and on_full", attr.span)
+
 proc failIfGenericActor(m: Module, d: Decl) =
   ## A generic actor that reaches the checker is one NOBODY INSTANTIATED.
   ##
@@ -5284,6 +5300,7 @@ proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   ## through on gradual typing, same shape as `result` in checkHandler below.
   failIfGenericActor(tc.module, d)
   checkActorQueue(tc.module, d)
+  checkActorAttrs(d)
   tc.checkFieldInits(d)
   tc.pushScope()
   for f in d.actorFields: tc.bindName(f.name, f.typ, true)

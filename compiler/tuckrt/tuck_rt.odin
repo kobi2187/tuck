@@ -819,12 +819,34 @@ enqueue :: proc(mb: ^Mailbox($T, $Cap), msg: T) -> bool {
 	c := mb.cur
 	if mb.fill[c] >= Cap {
 		mbUnlock(&mb.lock)
-		return false // full: sendX drops (spec §9.1)
+		return false // full: the actor's on_full decides (R6)
 	}
 	mb.buf[c][mb.fill[c]] = msg
 	mb.fill[c] += 1
 	mbUnlock(&mb.lock)
 	return true
+}
+
+// The send that found `actor`'s mailbox full cannot go on (R6): the actor
+// declares `on_full: assert`, or it waits and never could. Exit 1, as a
+// registry misuse does, on every backend.
+tuckMailboxFull :: proc(actor: string, why: string) {
+	fmt.eprintln("TUCK ACTOR [", actor, "]: mailbox full — ", why, sep = "")
+	os.exit(1)
+}
+
+// A send to an actor declaring `on_full: wait`, the default (R6): when the
+// mailbox is full, wait for room. `msg` is built once, by the caller.
+sendWaiting :: proc(mb: ^Mailbox($T, $Cap), msg: T, handle: rawptr, actor: string) {
+	for !enqueue(mb, msg) do tuckAwaitRoom(handle, actor)
+}
+
+// A send to an actor declaring `on_full: assert` (R6): a full mailbox stops
+// the program.
+sendAsserting :: proc(mb: ^Mailbox($T, $Cap), msg: T, actor: string) {
+	if !enqueue(mb, msg) {
+		tuckMailboxFull(actor, fmt.tprintf("the actor declares `on_full: assert` (queue: %d)", Cap))
+	}
 }
 
 // Take everything waiting. The swap happens once, under the lock; the caller
@@ -847,8 +869,8 @@ takeBatch :: proc(mb: ^Mailbox($T, $Cap)) -> (batch: []T, n: int) {
 	return mb.buf[c][:], n
 }
 
-// Sender's opt-in backpressure check. sendX drops silently on a full mailbox
-// (fast, non-blocking, spec §9.1) — the sender may check first if it cares.
+// Is there room for one more message? A full mailbox is handled by the
+// actor's `on_full` (R6: sendWaiting, sendAsserting, or a dropped enqueue).
 hasRoom :: proc(mb: ^Mailbox($T, $Cap)) -> bool {
 	mbLock(&mb.lock)
 	r := mb.fill[mb.cur] < Cap

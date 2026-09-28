@@ -419,14 +419,13 @@ struct Mailbox(T, size_t Cap)
     }
 }
 
-/// Returns false when the mailbox is FULL — the message is dropped.
+/// Returns false when the mailbox is FULL, and the message is not taken.
 ///
-/// That is the existing de-facto behaviour of the Nim runtime, matched here
-/// deliberately rather than improved on: the spec states no full-mailbox
-/// policy (FRICTIONS.md #9), so choosing one is a language decision, not a
-/// backend's. Verified consequence, recorded in the actor playground: a
-/// waitUntil whose predicate needs the dropped messages spins forever, on
-/// the Nim backend too.
+/// What happens then is the actor's `on_full` (R6, ruled 2026-09-28), decided
+/// by the send helper the compiler emits: `sendWaiting` waits for room (the
+/// default), `sendAsserting` stops the program, and `drop` discards this
+/// result — which is what every send did before the ruling, when a waitUntil
+/// needing a dropped message spun forever.
 bool enqueue(T, size_t Cap)(ref Mailbox!(T, Cap) mb, T msg)
 {
     mb.lock.lock();
@@ -440,6 +439,23 @@ bool enqueue(T, size_t Cap)(ref Mailbox!(T, Cap) mb, T msg)
     mb.fill[c]++;
     mb.lock.unlock();
     return true;
+}
+
+/// A send to an actor declaring `on_full: wait`, the default (R6): when the
+/// mailbox is full, wait for room. `msg` is built once, by the caller.
+void sendWaiting(T, size_t Cap)(ref Mailbox!(T, Cap) mb, T msg, void* handle,
+                                string actor)
+{
+    while (!enqueue(mb, msg)) tuckAwaitRoom(handle, actor);
+}
+
+/// A send to an actor declaring `on_full: assert` (R6): a full mailbox stops
+/// the program.
+void sendAsserting(T, size_t Cap)(ref Mailbox!(T, Cap) mb, T msg, string actor)
+{
+    if (!enqueue(mb, msg))
+        tuckMailboxFull(actor, "the actor declares `on_full: assert` (queue: " ~
+                        Cap.to!string ~ ")");
 }
 
 bool hasRoom(T, size_t Cap)(ref Mailbox!(T, Cap) mb)

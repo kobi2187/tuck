@@ -193,6 +193,20 @@ path on every send.
 > 1.044 inside a spread of 81–172 ms. So the ruling says block. Asked back:
 > blocking can wait forever — an actor sending to its own full mailbox, or
 > two actors whose full mailboxes wait on each other. Dropping never does.
+>
+> **RULED 2026-09-28: the program decides — drop, wait or assert — on the
+> send that finds the mailbox full** (the capacity + 1th message). Written
+> per actor as `actor Acc [queue: 8, on_full: wait]`. Unwritten, `wait`,
+> which is what the first ruling chose once blocking measured free. A send
+> an actor makes to ITSELF cannot wait (it is the one that would drain), so
+> under `wait` it asserts, with a message saying why; a cycle of full
+> mailboxes under `wait` is the program's choice and can hang.
+>
+> **RULED 2026-09-28, alongside:** an actor takes `queue` and `on_full` and
+> nothing else (TK-AC07) — a misspelled `on_full` must not silently mean
+> `wait`. Example 15's `priority: high` was read by nothing and goes. The
+> intent behind it, several queues in one actor so urgent messages go first,
+> is deferred as a per-handler `[urgent]` (ROADMAP, Deferred).
 
 ### R7 — #84: no ordering between two senders into one mailbox
 Thread mode happens to supply an ordering that batch mode doesn't. Per-sender

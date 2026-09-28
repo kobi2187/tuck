@@ -1135,8 +1135,21 @@ proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
   # had to take a global lock and signal every actor in the program to reach
   # the one that owned this mailbox — O(actors) per send, on a line shared by
   # every sender. The slot global is right here at the send site.
-  "discard enqueue(" & singleton & ".mailbox, " & msgType & "(" & ctorArgs &
-    "))\n" & ind & "tuckNotifySend(" & actorSlotName(e.sendActor) & ")"
+  #
+  # The enqueue is the actor's `on_full` (R6): the message is built once and
+  # handed to the wrapper, which waits, stops or — `drop` — is the bare
+  # enqueue every send used to be.
+  let mb = singleton & ".mailbox"
+  let msg = msgType & "(" & ctorArgs & ")"
+  let target = actorDeclNamed(ctx.module, ctx.realModules, e.sendActor)
+  let actor = actorLabel(target, e.sendActor)
+  let enqueue =
+    case actorOnFull(target)
+    of ofDrop: "discard enqueue(" & mb & ", " & msg & ")"
+    of ofWait: "sendWaiting(" & mb & ", " & msg & ", " &
+               actorSlotName(e.sendActor) & ", " & escape(actor) & ")"
+    of ofAssert: "sendAsserting(" & mb & ", " & msg & ", " & escape(actor) & ")"
+  enqueue & "\n" & ind & "tuckNotifySend(" & actorSlotName(e.sendActor) & ")"
 
 proc selectTimeoutMs(ctx: var CodegenCtx, arm: SelectArm): string =
   ## The `timeout` arm's deadline as a plain int of milliseconds.

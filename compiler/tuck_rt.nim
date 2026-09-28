@@ -884,15 +884,16 @@ when TuckActorsBatch:
 
 
 proc enqueue*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: T): bool =
-  ## Sends `msg` to the mailbox; false when it is full and the message is
-  ## dropped (spec §9.1). In batch mode the message is staged and handed
-  ## over when the batch fills or its deadline passes.
+  ## Sends `msg` to the mailbox; false when it is full and the message was
+  ## not taken — the actor's `on_full` decides what then (R6: sendWaiting,
+  ## sendAsserting, or `drop`'s bare enqueue). In batch mode the message is
+  ## staged and handed over when the batch fills or its deadline passes.
   when TuckActorsBatch:
     let st = stagingFor(mb)
     if st.cur == nil:
       st.cur = takeFree(mb)
       if st.cur == nil:
-        return false          # the pool is out: drop, as a full ring did
+        return false          # the pool is out: full, as a full ring is
       st.opened = getMonoTime()
     let b = st.cur
     b.msgs[b.n] = msg
@@ -913,11 +914,25 @@ proc enqueue*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: T): bool =
     let c = mb.cur
     if mb.fill[c] >= Cap:
       release(mb.lock)
-      return false            # full: sendX drops (spec §9.1)
+      return false            # full: the actor's on_full decides (R6)
     mb.buf[c][mb.fill[c]] = msg
     inc mb.fill[c]
     release(mb.lock)
     return true
+
+proc sendWaiting*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: T,
+                                       handle: pointer, actor: string) {.inline.} =
+  ## A send to an actor declaring `on_full: wait`, the default (R6): when the
+  ## mailbox is full, wait for room. `msg` is built once, by the caller.
+  while not enqueue(mb, msg): tuckAwaitRoom(handle, actor)
+
+proc sendAsserting*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: T,
+                                         actor: string) {.inline.} =
+  ## A send to an actor declaring `on_full: assert` (R6): a full mailbox stops
+  ## the program.
+  if not enqueue(mb, msg):
+    tuckMailboxFull(actor, "the actor declares `on_full: assert` (queue: " &
+                    $Cap & ")")
 
 iterator messages*[T; Cap: static int](mb: var Mailbox[T, Cap]): var T =
   ## Take everything waiting and yield it IN PLACE. The swap happens once, up

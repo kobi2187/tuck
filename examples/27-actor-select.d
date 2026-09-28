@@ -53,12 +53,12 @@ bool drain_tuckˑactorˑAccumulator() {
 }
 
 void sendAdd_tuckˑactorˑAccumulator(ref tuckˑactorˑAccumulator self, long n) {
-    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑAccumulatorMsg(tuckTag: tuckˑactorˑAccumulatorMsgKind.msgAdd, n: n));
+    rt.sendWaiting(self.mailbox, tuckˑactorˑAccumulatorMsg(tuckTag: tuckˑactorˑAccumulatorMsgKind.msgAdd, n: n), tuckˑactorˑAccumulatorSlot, "Accumulator");
     rt.tuckNotifySend(tuckˑactorˑAccumulatorSlot);
 }
 
 void sendFinish_tuckˑactorˑAccumulator(ref tuckˑactorˑAccumulator self) {
-    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑAccumulatorMsg(tuckTag: tuckˑactorˑAccumulatorMsgKind.msgFinish));
+    rt.sendWaiting(self.mailbox, tuckˑactorˑAccumulatorMsg(tuckTag: tuckˑactorˑAccumulatorMsgKind.msgFinish), tuckˑactorˑAccumulatorSlot, "Accumulator");
     rt.tuckNotifySend(tuckˑactorˑAccumulatorSlot);
 }
 

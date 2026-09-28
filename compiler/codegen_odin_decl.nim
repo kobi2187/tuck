@@ -711,9 +711,20 @@ proc genDrain*(d: Decl, hasShutdown: bool, ind: string): string =
     ind & "\t}\n" &
     ind & "\treturn didWork\n" & ind & "}\n"
 
+proc odinEnqueue(d: Decl, msg: string): string =
+  ## A send helper's enqueue of `msg` under the actor's `on_full` (R6): wait
+  ## for room (the default), stop the program, or drop — the bare enqueue
+  ## every send used to be.
+  let actor = "\"" & actorLabel(d, d.name) & "\""
+  case actorOnFull(d)
+  of ofDrop: "_ = rt.enqueue(&self.mailbox, " & msg & ")"
+  of ofWait: "rt.sendWaiting(&self.mailbox, " & msg & ", " &
+             actorSlotName(d.name) & ", " & actor & ")"
+  of ofAssert: "rt.sendAsserting(&self.mailbox, " & msg & ", " & actor & ")"
+
 proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
                    ind: string): string =
-  ## Enqueue an envelope; a full ring drops (spec §9.1).
+  ## Enqueue an envelope under the actor's `on_full` (R6, `odinEnqueue`).
   ##
   ## A CONTAINER PAYLOAD IS COPIED IN. `[dynamic]T` assignment copies the
   ## header, so `Msg{xs = xs}` handed the actor the sender's own buffer: the
@@ -744,8 +755,7 @@ proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
   let sep = if params.len > 0: ", " else: ""
   "\n" & ind & "send" & h.name.capitalize() & "_" & d.name & " :: proc(self: ^" &
     d.name & sep & params.join(", ") & ") {\n" & copies &
-    ind & "\t_ = rt.enqueue(&self.mailbox, " & d.name & "Msg{" & ctorArgs &
-    "})\n" &
+    ind & "\t" & odinEnqueue(d, d.name & "Msg{" & ctorArgs & "}") & "\n" &
     # The send NOTIFIES. It never did: the actor parks on a condvar when its
     # mailbox comes up empty, so a send to a parked Odin actor was a lost
     # wakeup — the message sat in the ring and nothing arrived to drain it
@@ -757,8 +767,8 @@ proc genShutdownSender*(d: Decl, ind: string): string =
   ## `sendShutdown_<Actor>`: enqueues the shutdown message and wakes the
   ## actor's scheduler slot, like any other send helper.
   "\n" & ind & "sendShutdown_" & d.name & " :: proc(self: ^" & d.name &
-    ") {\n" & ind & "\t_ = rt.enqueue(&self.mailbox, " & d.name &
-    "Msg{" & TagField & " = .msgShutdown})\n" &
+    ") {\n" & ind & "\t" &
+    odinEnqueue(d, d.name & "Msg{" & TagField & " = .msgShutdown}") & "\n" &
     ind & "\trt.tuckNotifySend(" & actorSlotName(d.name) & ")\n" & ind & "}\n"
 
 proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =

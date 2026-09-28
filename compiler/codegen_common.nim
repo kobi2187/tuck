@@ -179,6 +179,40 @@ proc actorQueueSize*(m: Module, d: Decl): string =
     let n = constIntOf(m, attr.value)
     return if n.isSome: $n.get else: attr.value
 
+type
+  OnFull* = enum
+    ## What the send that finds an actor's mailbox full does (R6, ruled
+    ## 2026-09-28): the program picks, per actor, `[on_full: ...]`.
+    ofWait = "wait"       ## wait for room — the default
+    ofDrop = "drop"       ## lose the message, as every send once did
+    ofAssert = "assert"   ## stop the program, naming the actor
+
+proc actorOnFull*(d: Decl): OnFull =
+  ## The actor's `[on_full: ...]`, or `wait` when it names none. The checker
+  ## has refused any other word (TK-AC06), so the fallback is reached only
+  ## for an unchecked tree.
+  result = ofWait
+  if d == nil: return
+  for attr in d.attrs:
+    if attr.name != "on_full": continue
+    for p in OnFull:
+      if $p == attr.value: return p
+
+proc actorLabel*(d: Decl, fallback: string): string =
+  ## The actor's name as its author wrote it, for a runtime message.
+  if d == nil: fallback else: writtenName(d)
+
+proc actorDeclNamed*(m: Module, real: Table[string, Module], name: string): Decl =
+  ## The actor a send names, declared in this module or one it imports.
+  for d in m.decls:
+    if d != nil and d.kind == dkActor and (d.name == name or writtenName(d) == name):
+      return d
+  for other in real.values:
+    if other == m: continue
+    for d in other.decls:
+      if d != nil and d.kind == dkActor and (d.name == name or writtenName(d) == name):
+        return d
+
 proc isDistinctAlias*(body: Type): bool =
   ## Does this alias declare a type the compiler must keep SEPARATE from its
   ## base? `distinct` says so outright; an overflow mode implies it, because
