@@ -9,6 +9,22 @@ Everything listed under "Landed" is on `claude/actor-throughput-profiling-sbfhq8
 (PR #94). The full suite passes, and the emitted examples change only where a
 commit says so.
 
+## Status, 2026-09-28 (reassessed at `1d94eae`)
+
+| Ruling | State |
+|---|---|
+| R1, R2, R4 (made total), R5, R9, R13, parameters immutable, type test | ruled and built |
+| R8 | ruled and built (TK-TY35, `lowering_optional`); asked: how an `Array[N, T]` field starts |
+| R7 | ruled and documented (spec §9.1); asked: does one sender's FIFO stay a promise |
+| R6 | ruled; the cost of blocking is measured first |
+| R10 | ruled; asked: scope (actor arms or task arms too) and a bare `return`; blocked by A24 |
+| R11 | ruled (b), widened to every construct; the scan has not started |
+| R3 | codegen shown; ruling awaited |
+| R12 | unused code removed; arena warning, `bench_phases`, diagnostic codes awaited |
+
+The ordered work that follows from these is ROADMAP.md's "The queue,
+re-validated 2026-09-28".
+
 ---
 
 ## Landed

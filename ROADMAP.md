@@ -21,6 +21,64 @@ to be the thing most of the queue depends on:
 
 ---
 
+## The queue, re-validated 2026-09-28
+
+Checked against the compiler at `1d94eae`, not carried over from below. M1,
+M2 (its exit), M3 and M4 except 4.3 are done; the spine's remainder is M2.1
+and M4.3. Open bugs pinned `bugOpen`: A14, A16, A18, A24 — the four
+MISSING-FEATURES §A counts.
+
+**Waiting on the owner** (asked 2026-09-28; only R10 blocks work below):
+- R3 — a one-line `if` with statement branches (codegen shown).
+- R10 — actor arms only, or a task's too (§9.3 keeps a block so an arm can
+  `return`); and whether a bare `return` stays an arm.
+- R7 — whether one sender's FIFO order stays a promise (`waitUntil` relies on it).
+- R8 — how an `Array[N, T]` actor field starts: a fill form, a zero exemption, or `T?`.
+- R12 — the arena warning; `benches/bench_phases`; diagnostic codes per rule or per category.
+
+**1. Memory and the SSA spine** (the higher priority)
+1. `benches/transpile/dispatch.tuck` crashes the compiler: "the SSA mirror is
+   malformed … misses 1 final use analysis_liveness proves". Nothing tests it.
+   Pin it, find the cause, fix it.
+2. M2.1 — `exclusivelyOwned`'s origin half onto the mirror.
+
+**2. Finish partial features, and the rulings already made**
+3. A24 — an actor member `fn` is emitted by no backend. Blocks R10.
+4. R10 — an `on select` arm is one call to a fn that carries the bracket.
+5. R6 (#7) — measure what blocking a full mailbox's sender costs; block if
+   free, else drop and have the sender check the result.
+6. R11 — cross-module parity: every construct used from another module, on
+   all three backends. It must cover A18 (an imported actor is never started
+   on Odin/D), A14 (a group whose providers are in two modules), #73, a mixin
+   from another module, and `fn join[T: Interface]` called from another module.
+7. M4.3 — actor dispatch lowered (`genActorDispatch` / `genDispatch` /
+   `genDDispatch` still build it); needs the message envelope in Tuck first.
+8. A16 / #55 — a fired `timeout` bounds latency.
+9. #15 — typed select sources, the task form; unblocks example 16 (meets R10).
+10. #30 — D reads and writes a register through a plain `*ptr`, not
+    `volatileLoad`/`volatileStore` (checked on example 11).
+11. #64 — wire `[no_alloc]` and `[irq_safe]`.
+12. #22 / #23 — `callParamsFor` gaps; quadratic emit.
+13. S3.3 — D runtime networking: `42-net-echo` cannot link `listen`/`accept`. L.
+14. S3.5 — runtime speed parity; the causes are unmeasured.
+
+**3. Records and hygiene** (small; alongside the above)
+15. Stale docs, each checked wrong on 2026-09-28: spec Appendix A calls
+    generic-record construction a "checker error" (`{value: 5} Box` returns 5
+    on all three); MISSING-FEATURES §D says the registry emits invalid Nim and
+    example 20 builds on no backend (it builds on all three); LANGUAGE-OVERVIEW
+    §0 row 4 says D passes a record parameter as `ref` (all three pass it by
+    value), and §18 lists three bugs that are not the four open.
+16. `invariants`' "a violation reads the same on every backend" failed 2 of 5
+    full runs on 2026-09-27 — find the cause.
+17. The seven mechanical refactors listed under the rulings report's Observations.
+
+**Deferred — completely missing, not scheduled:** arena · #10 · #11 · #12 ·
+#16 · #17 · #32 · #33 · #57 · #62 (const evaluator) · #65–#71 · #74 · #91 ·
+DNS · a growable `str` on Odin/D (#80's stage 4, #93).
+
+---
+
 ## The shape of the remaining work
 
 The first version of this queue listed work by priority tier. Doing it showed
@@ -285,8 +343,8 @@ closed: one singleton per instantiation, expanded before typecheck.)
 
 ## How to work on this without wasting the day
 
-- **The full suite is slow (~6 min). Do not run it per change.**
-  `./quick-test.sh` (~13s) for the inner loop, `./tests/run <suite>` for what
+- **The full suite is slow (~3.5 min on 2026-09-28). Do not run it per change.**
+  `./quick-test.sh` (~5s) for the inner loop, `./tests/run <suite>` for what
   a change touches (`ssa`, `known_bugs`, `value_semantics` for memory work),
   and the full run before a PR goes up.
 - **Test first, the normal way.** Write the assertion, see it fail for the
@@ -362,10 +420,9 @@ document is behind the tree — fix these when passing, and do not plan from the
   or use the harness's own `hostPeakRss`.
 - **The toolchains are not on PATH by default** in a fresh shell:
   `export PATH=/opt/nim/bin:/opt/dmd112/dmd2/linux/bin64:/opt/odin-cur:$PATH`.
-- **A reserved word as a field name misreports.** `pending: Seq[int]` in an
-  `actor` or `object` body says "Expected the end of the line here, found
-  `Seq`" — blaming the TYPE. The `type` parser correctly names the reserved
-  word. This is why #52 read as a parser bug for its whole life. Recorded on #4.
+- ~~**A reserved word as a field name misreports.**~~ FIXED 2026-09-28
+  (`9fbc90b`): `pending: Seq[int]` in an `actor` or `object` body blamed the
+  type `Seq`; it now names `pending` (TK-PA08).
 - **`benches/apps/world_server.tuck` no longer reproduces #84.** The app now
   boots its shards through the Gateway, so `start` and `edit` share a sender.
   Restore the two-sender shape to see the bug; the one-line `sed` is on #84.
