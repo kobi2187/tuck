@@ -22,11 +22,38 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (3)
+## A. Open bugs (16)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
+
+**A25–A37 — constructs that do not cross a module boundary (R11 scan,
+2026-09-28).** Ruled: importing anything should work as well as the same
+module. Each construct was built declared in `lib` and used from the
+importer on Nim, Odin and D, against a one-module control that passes; these
+failed. Tests: `cross_module`, each named "R11: …".
+- **A25** an imported `object` cannot be constructed (`{n: 7} Counter` is
+  "not a declared callable") — so no member of one can be called either.
+- **A26** a call through an imported interface value resolves to one
+  satisfier's member ("expects Rc but got Shape").
+- **A27** an object in the importer cannot `satisfies` an imported interface.
+- **A28** a type test (`| Sq q ->`) on an imported interface's value.
+- **A29** `+ Mixin` from another module: `Self` is not bound (R11's origin).
+- **A30** `match r.err` on an imported fallible fn: the arms print as
+  defaults ("multiple default clauses" / `else`), the error enum unfound.
+- **A31** an imported invariant type crashes the compiler ("id … is held by
+  two nodes").
+- **A32** an imported actor's fields and handlers are invisible to the
+  importer ("no field 'total' on type Acc", #73). Distinct from A18, which is
+  an imported actor never STARTED on Odin/D.
+- **A33** an imported const as an Array size or fill count is emitted
+  unqualified, on all three.
+- **A34** (Odin, D) a group bound whose provider is in another module — the
+  bounded fn's module cannot name it. A14's sibling.
+- **A35** (Odin, D) an imported saturating type's constructor is unqualified.
+- **A36** (Odin, D) an imported pool.
+- **A37** (Odin, D) an imported registry's `raise` is unqualified.
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism

@@ -68,10 +68,12 @@ finished** (no longer deferred).
    (benches/SCORES.md, "R6"), so the ruling says block. Waiting on the owner:
    what a send that would wait forever does (self-send, a cycle of full
    mailboxes).
-8. R11 — cross-module parity: every construct used from another module, on
-   all three backends. It must cover A18 (an imported actor is never started
-   on Odin/D), A14 (a group whose providers are in two modules), #73, a mixin
-   from another module, and `fn join[T: Interface]` called from another module.
+8. R11 — cross-module parity. SCANNED 2026-09-28: 24 constructs declared in
+   one module and used from another, on all three backends, each against a
+   one-module control. Eleven cross (types, generic fns and records, sums,
+   decision tables, `?T`, tasks, transitions, fnsigs, record composition,
+   and the rest of `cross_module`); A25–A37 do not, each pinned `bugOpen`
+   (MISSING-FEATURES §A). Fix those, then A18 and A14.
 9. Arena (spec §7.3) — finish it: a design proposal to the owner (what
    `alloc` returns, how "cannot outlive the arena" is checked), then build.
 10. M4.3 — actor dispatch lowered (`genActorDispatch` / `genDispatch` /
