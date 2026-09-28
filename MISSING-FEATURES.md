@@ -255,6 +255,15 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **`benches/transpile/dispatch.tuck` crashed every `tuck c`** in
+  assertSsaWellFormed ("the mirror misses 1 final use"). A variant
+  construction bound inside an `if` (`let c = Shape.Circle {r: i}`) was
+  enough. The liveness oracle the graph is checked against skipped a
+  `.name {args}`'s argument, missed the read of `i`, and proved the earlier
+  `if i == 0` read final; the graph was right. Unseen since 2026-09-22
+  because the ssa suite's corpus left out `benches/transpile`. `ssa`,
+  "a variant construction's argument is a read, on every backend".
+
 - **A `T?` actor field read as present before anything wrote it, and a
   plain `T` could not be stored into one.** The result carrier's zero status
   is Ok, so `last: int?` started present holding 0, on all three backends;

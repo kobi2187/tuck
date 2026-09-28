@@ -148,6 +148,17 @@ proc livenessDiff(reference: HashSet[NodeId], fn: ssa_ir.SsaFn,
   result.onlyMirror = (mine - theirs).len
   result.onlyPass = (theirs - mine).len
 
+proc diffSites(reference: HashSet[NodeId], fn: ssa_ir.SsaFn,
+               mine: HashSet[NodeId]): seq[string] =
+  ## Where the two disagree, as `place@line:col` — a count says that they
+  ## differ, a site says where to look.
+  for v in fn.values:
+    for u in v.uses:
+      let inPass = u.at in reference
+      if inPass != (u.at in mine):
+        result.add (if inPass: "onlyPass " else: "onlyMirror ") & $v.place &
+                   "@" & $u.line & ":" & $u.col
+
 proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
   ## After psTypecheck, under `--verify-stages`: the SSA graph
   ## (compiler/ssa_build.nim) must be structurally sound for every body in
@@ -205,7 +216,8 @@ proc assertSsaWellFormed*(res: Resolution, mods: seq[Module]) =
         if getEnv("TUCK_DEBUG_SSA") == "diff" and
            (d.onlyMirror > 0 or d.onlyPass > 0):
           echo "SSADIFF ", fn.name, " agree=", d.agree,
-               " onlyMirror=", d.onlyMirror, " onlyPass=", d.onlyPass
+               " onlyMirror=", d.onlyMirror, " onlyPass=", d.onlyPass,
+               " ", diffSites(reference, fn, g.final).join(" ")
   if bad.len > 0:
     raise newException(ValueError,
       "pipeline: the SSA mirror is malformed in " & $bad.len &

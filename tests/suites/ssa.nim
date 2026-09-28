@@ -35,9 +35,12 @@ import ../harness
 
 proc corpusFiles(): seq[string] =
   ## Every Tuck source the mirror is exercised on: the examples, the bench
-  ## apps, the Savina ports and the stdlib.
+  ## apps, the Savina ports, the transpile kernels and the stdlib.
+  ## (`benches/transpile` was missing, and dispatch.tuck crashed this very
+  ## assertion unseen from 2026-09-22 to 2026-09-28.)
   for pat in ["examples/*.tuck", "benches/apps/*.tuck",
-              "benches/savina/*.tuck", "std/*.tuck"]:
+              "benches/savina/*.tuck", "benches/transpile/*.tuck",
+              "std/*.tuck"]:
     for f in walkFiles(pat): result.add f
 
 # 16-actor-tasks-unified-syntax does not typecheck AT ALL — it calls an
@@ -302,6 +305,36 @@ fn main() -> int:
   # 7 + 0. A twin that took the field destructively would free it, and the
   # read after the wait would answer with whatever was left.
   t.hostRuns("...so the actor's own buffer survives", 7)
+
+  # A variant construction reads its argument. `Shape.Circle {r: i}` is a
+  # `.name {args}` the checker does not make a call, and the liveness oracle
+  # read it as a path and skipped the argument: it missed `i` there, proved
+  # the earlier `if i == 0` read final, and every build of this shape died in
+  # assertSsaWellFormed (benches/transpile/dispatch.tuck). The graph was
+  # right; the oracle it is checked against was not.
+  t.src """
+type Shape:
+  | Circle({r: int})
+  | Rect({w: int, h: int})
+
+fn area({s: Shape}) -> int:
+  match s:
+    Circle: return s.r
+    Rect: return s.w * s.h
+
+fn one({i: int}) -> int:
+  if i == 0:
+    let c = Shape.Circle {r: i + 5}
+    return {s: c} area
+  let r = Shape.Rect {w: i, h: 3}
+  return {s: r} area
+
+fn main() -> int:
+  let a = {i: 0} one
+  let b = {i: 4} one
+  return a + b
+"""
+  t.hostRuns "a variant construction's argument is a read, on every backend", 17
 
   t.finish()
 

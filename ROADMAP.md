@@ -41,9 +41,11 @@ finished** (no longer deferred).
 - Arena — what `alloc` returns (a proposal comes first; see item 9).
 
 **1. Memory and the SSA spine** (the higher priority)
-1. `benches/transpile/dispatch.tuck` crashes the compiler: "the SSA mirror is
-   malformed … misses 1 final use analysis_liveness proves". Nothing tests it.
-   Pin it, find the cause, fix it.
+1. ~~`benches/transpile/dispatch.tuck` crashes the compiler~~ **DONE
+   2026-09-28.** The ORACLE was wrong, not the graph: `analysis_liveness`
+   read `Shape.Circle {r: i}` as a path and skipped its argument, so it
+   proved an earlier read of `i` final. `benches/transpile` joins the ssa
+   suite's corpus; `TUCK_DEBUG_SSA=diff` now names the sites.
 2. M2.1 — `exclusivelyOwned`'s origin half onto the mirror.
 
 **2. Finish partial features, and the rulings already made**
