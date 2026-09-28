@@ -663,8 +663,8 @@ type Temperature:
 They **survive release builds** (ruling 2026-08-25). A violation prints
 `Invariant violated on <type>: <cond>` and exits 1 on all three backends, and
 the one opt-out is the `tuckNoInvariants` define, which each backend guards its
-checks with (`tests/suites/invariants.nim`). Only Nim's `--nim:` passthrough
-reaches that define from `tuck build` today (#43).
+checks with (`tests/suites/invariants.nim`). `tuck build --no-invariants` sets
+it on every backend (`cli_smoke`).
 
 ---
 

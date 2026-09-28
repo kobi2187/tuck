@@ -874,9 +874,9 @@ is independent of `release` (ruling, 2026-08-25; this replaced an earlier
 `when not defined(release)` that gave no way to keep them). Every backend
 guards its checks with that define (Nim `when not defined`, D `version`, Odin
 `#config`), and a violation reports `Invariant violated on <type>: <cond>` and
-exits 1 on all three. Only the Nim backend's define is reachable from
-`tuck build` today (`--nim:"-d:tuckNoInvariants"`); how the other two are
-reached is open (#43).
+exits 1 on all three. `tuck build --no-invariants` sets that define on
+whichever backend it builds (ruled 2026-09-28): one flag per behaviour, not a
+passthrough per backend.
 
 Block form only — `invariant:` inside the type body, one predicate per line:
 

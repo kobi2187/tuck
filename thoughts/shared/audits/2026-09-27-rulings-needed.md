@@ -177,6 +177,13 @@ Cost: both `benches/apps` programs (`st: BookState`, `sl: Slice`) become
 **Recommend (b).** It keeps one flag per behaviour, consistent with the rule
 that runtime behaviour does not depend on the backend.
 
+> **RULED 2026-09-28: (b).** The related flag already existed as a define,
+> `tuckNoInvariants`, which every backend's emitted checks test; only Nim
+> could reach it (`--nim:"-d:tuckNoInvariants"`). `--no-invariants` now sets
+> it on each backend (Nim `-d:`, Odin `-define:…=true`, D `-version=`).
+> Not to be confused with `--no-verify-stages`, which skips the compiler's
+> own pipeline checks.
+
 ### R10 — `on select` arms have no effect bracket
 The effect checker skips actor-level `on select` arms deliberately, so an
 `[io]` call in an arm goes unchecked.
@@ -291,7 +298,7 @@ Worked through with an audio player (`AudioSource` satisfied by `Mp3`,
   suspicion is the harness's `timeout 10` under full-suite load; the failure
   detail wasn't captured.
 - **GitHub issues.** #20 is linked to PR #94 and closes when it merges. #73
-  still has its Odin/D half open (MISSING-FEATURES A18), and #43 has R9 open.
+  still has its Odin/D half open (MISSING-FEATURES A18), and #43 is done (R9, 2026-09-28).
   No manual closing is needed.
 - **The lexer's `delete(0)`** is not quadratic in practice. The queue only
   ever holds one scan step's tokens, so the audit overstated it.

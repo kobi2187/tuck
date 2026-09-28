@@ -18,8 +18,8 @@
 ## THE OPT-OUT: the 2026-08-25 ruling made invariants survive `--release`
 ## behind a `tuckNoInvariants` define, which every backend now emits a guard
 ## for (Nim `when not defined`, D `version`, Odin `#config`) and which is
-## asserted at the end. How `tuck build` sets it is still open (#43): today
-## only Nim's `--nim:` passthrough reaches it.
+## asserted at the end. `tuck build --no-invariants` sets it on each backend
+## (R9, ruled 2026-09-28); `cli_smoke` builds and runs that on all three.
 
 import std/[os, strutils]
 import ../harness
