@@ -187,6 +187,12 @@ path on every send.
 
 > **RULED 2026-09-28:** block the sender if that adds no overhead; otherwise
 > drop, and the sender checks the result of its send.
+>
+> **Measured 2026-09-28** (benches/SCORES.md, "R6"): checking a send's result
+> costs nothing measurable on the fast path — single mode 1.003, thread mode
+> 1.044 inside a spread of 81–172 ms. So the ruling says block. Asked back:
+> blocking can wait forever — an actor sending to its own full mailbox, or
+> two actors whose full mailboxes wait on each other. Dropping never does.
 
 ### R7 — #84: no ordering between two senders into one mailbox
 Thread mode happens to supply an ordering that batch mode doesn't. Per-sender

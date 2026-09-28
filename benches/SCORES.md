@@ -758,3 +758,33 @@ own assignment and never reached the twin routing, and `generic_box` was
 quadratic on NIM because its `sink` predicate had not learned that a generic
 application owns whatever its declared body owns. Both are fixed above; the
 row that remains is the honest one.
+
+## R6: what checking a send's result costs — 2026-09-28
+
+The ruling (R6, #7): block a sender at a full mailbox if that adds no
+overhead, otherwise keep dropping and let the sender check the result. The
+overhead in question is on the FAST path — a send into a mailbox with room.
+Today every send site is `discard enqueue(mb, msg)`; a blocking send is
+`if not enqueue(mb, msg): <wait>`, the bool `enqueue` already computes plus a
+branch into a cold, non-inlined wait path.
+
+Measured on those two lines alone: one emitted Nim program, 1,000,000 sends
+from `main` into an actor whose mailbox holds 1,100,000 (so it never fills and
+the branch is never taken), `--release`, the variant built from the same
+emitted file with only the send line changed. Interleaved runs, 4 cores.
+
+| mode | runs | `discard` median | branch median | ratio | IQR, discard / branch |
+|---|---|---|---|---|---|
+| `--actors:single` | 15 | 36.3 ms | 36.5 ms | 1.003 | — |
+| `--actors:thread` | 41 | 122.5 ms | 127.9 ms | 1.044 | 81–172 / 94–146 ms |
+
+Single mode: no difference. Thread mode: the two distributions overlap
+entirely (the branch variant's fastest run, 36 ms, beats the baseline's, 50
+ms); the spread is the OS scheduling the actor thread, not the branch. The
+fast-path check costs nothing measurable.
+
+When the mailbox DOES fill, the two are not comparable: dropping finishes
+sooner because it does less work. The cost of blocking is semantic — a
+sender that waits on a mailbox nothing will drain waits forever (an actor
+sending to itself; two actors whose full mailboxes wait on each other) —
+and is a design question, not a measurement.

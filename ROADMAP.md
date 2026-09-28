@@ -64,8 +64,10 @@ finished** (no longer deferred).
 6. ~~R8 fill form~~ **DONE 2026-09-28**: `[v; N]` (exkFill; TK-TY36/37),
    a zero fill the host's zeroed storage; spec §9.1's `txBuf` and example 16
    take it.
-7. R6 (#7) — measure what blocking a full mailbox's sender costs; block if
-   free, else drop and have the sender check the result.
+7. R6 (#7) — MEASURED 2026-09-28: the fast-path check costs nothing
+   (benches/SCORES.md, "R6"), so the ruling says block. Waiting on the owner:
+   what a send that would wait forever does (self-send, a cycle of full
+   mailboxes).
 8. R11 — cross-module parity: every construct used from another module, on
    all three backends. It must cover A18 (an imported actor is never started
    on Odin/D), A14 (a group whose providers are in two modules), #73, a mixin
