@@ -376,7 +376,10 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
     return actorMember & "(" & (@["self"] & ctx.genCallArgs(e)).join(", ") & ")"
   var calleeStr = ctx.genOdinExpr(e.callee)
   let member = memberCallee(ctx.res, ctx.module, e)
-  if member != "": calleeStr = member
+  if member != "":
+    # An imported object's member lives in its own package (R11, A25).
+    let origin = memberCalleeModule(ctx.res, ctx.module, e)
+    calleeStr = (if origin != "": origin.replace("-", "_") & "." else: "") & member
   let combinator = ctx.asCombinatorCall(e, calleeStr)
   if combinator != "": return combinator
   var args = ctx.genCallArgs(e)

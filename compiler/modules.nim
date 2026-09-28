@@ -367,13 +367,40 @@ proc resolveImport*(importerPath, module: string): string =
 # importer's own decl list, tagged with ImportedTypeMarker so later stages can
 # still tell them apart (codegen skips them: the target's own import already
 # brings them in).
+proc importedCopy(d: Decl, imp: string): Decl =
+  ## The importer's copy of an imported type or object, stamped with its
+  ## origin. An OBJECT's copy is its SHAPE — fields, `satisfies` lines, and
+  ## each member fn as a body-less signature under a fresh id — so the
+  ## importer can construct one and call its members (R11, A25) without
+  ## re-checking bodies that belong to the other module. `imported*` in
+  ## ast_query reads the stamp back.
+  let sp = Span(line: d.span.line, col: d.span.col,
+                file: ImportedTypeMarker & ":" & imp)
+  if d.kind == dkType:
+    return Decl(kind: dkType, name: d.name, generics: d.generics,
+                typeBody: d.typeBody, typeMembers: d.typeMembers, span: sp)
+  var members: seq[Decl]
+  for m in d.objMembers:
+    if m == nil or m.kind != dkFn: continue
+    let sig = Decl(kind: dkFn, name: m.name, fnParams: m.fnParams,
+                   fnReturnType: m.fnReturnType, fnEffects: m.fnEffects,
+                   fnGenerics: m.fnGenerics, fnGenericBounds: m.fnGenericBounds,
+                   fnErrorTypes: m.fnErrorTypes, span: sp)
+    sig.id = newNodeId()
+    members.add sig
+  Decl(kind: dkObject, name: d.name, objFields: d.objFields,
+       satisfies: d.satisfies, satisfiesRenames: d.satisfiesRenames,
+       objMembers: members, span: sp)
+
 proc injectImportedTypes*(prog: var seq[LoadedModule]) =
-  ## Make each module's imported types visible unqualified in the importer.
+  ## Make each module's imported types — and objects — visible unqualified in
+  ## the importer.
   var typesByName = initTable[string, seq[Decl]]()
   for lm in prog:
     var own: seq[Decl]
     for d in lm.m.decls:
-      if d != nil and d.kind == dkType and not d.span.file.startsWith(ImportedTypeMarker):
+      if d != nil and d.kind in {dkType, dkObject} and
+         not d.span.file.startsWith(ImportedTypeMarker):
         own.add(d)
     typesByName[lm.name] = own
   # A module's `public:` list, if it has one, decides which of its types an
@@ -386,10 +413,7 @@ proc injectImportedTypes*(prog: var seq[LoadedModule]) =
       let (restricted, allowed) = exportsByName.getOrDefault(imp, (false, initHashSet[string]()))
       for td in typesByName.getOrDefault(imp):
         if restricted and td.name notin allowed: continue
-        let marked = Decl(kind: dkType, name: td.name, generics: td.generics,
-                          typeBody: td.typeBody, typeMembers: td.typeMembers,
-                          span: Span(line: td.span.line, col: td.span.col,
-                                     file: ImportedTypeMarker & ":" & imp))
+        let marked = importedCopy(td, imp)
         # An id like every parsed declaration: a type reference resolves TO
         # this decl, and an edge needs an id to point at. Without one,
         # `resolveTypeTo` could record nothing for any imported type (#21).

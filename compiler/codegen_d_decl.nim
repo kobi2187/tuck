@@ -973,7 +973,7 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   if d == nil: return ""
   # Imported type decls are injected for checking only; the origin module
   # emits them (mirrors codegen.nim:1756 / codegen_odin.nim:2234).
-  if d.kind == dkType and d.span.file.startsWith(ImportedTypeMarker):
+  if d.kind in {dkType, dkObject} and d.span.file.startsWith(ImportedTypeMarker):
     return ""
   case d.kind
   of dkType: ctx.genDTypeDecl(d)

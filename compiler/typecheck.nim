@@ -5808,6 +5808,20 @@ proc closeOverCalls(writers: var HashSet[NodeId], members: seq[Decl],
           changed = true
           break
 
+proc copyWriters(writers: var HashSet[NodeId],
+                 mods: seq[tuple[name, path: string, m: Module]],
+                 objs: Table[string, Decl]) =
+  ## An importer's copy of an object (modules.importedCopy) holds each member
+  ## as a body-less signature under a fresh id; it changes `self` exactly
+  ## when the original member does (R11, A25).
+  for (name, path, m) in mods:
+    for d in m.decls:
+      if d == nil or d.kind != dkObject or not isImportedCopy(d) or
+         d.name notin objs: continue
+      for sig in d.objMembers:
+        let orig = findObjectMember(objs[d.name], sig.name)
+        if orig != nil and orig.id in writers: writers.incl sig.id
+
 proc computeSelfWriters(mods: seq[tuple[name, path: string, m: Module]]): HashSet[NodeId] =
   ## Every object member that changes `self`: a direct write, or a call of
   ## such a member on `self` or on a field of it.
@@ -5817,6 +5831,7 @@ proc computeSelfWriters(mods: seq[tuple[name, path: string, m: Module]]): HashSe
     if writesSelfDirectly(semLayer, mem): result.incl mem.id
     callees[mem.id] = selfCallees(semLayer, objs, mem)
   closeOverCalls(result, members, callees)
+  copyWriters(result, mods, objs)
 
 proc callWritesSelf(call: MemberCall, writers: HashSet[NodeId],
                     mods: seq[tuple[name, path: string, m: Module]],

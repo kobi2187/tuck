@@ -605,7 +605,32 @@ fn main() -> int:
     return self.n
 """)
   t.quietly: t.hostRuns("R11: an imported object is constructed and its member called", 7)
-  t.bugOpen "R11: an imported object is constructed and its member called"
+  t.bugFixed "R11: an imported object is constructed and its member called"
+  # FIXED 2026-09-28: modules.injectImportedTypes injected only `type`s. An
+  # object is now copied into the importer as its SHAPE — fields, `satisfies`
+  # lines, members as body-less signatures under fresh ids — codegen skips
+  # the copy, and Odin and D qualify its type and member procs with the
+  # defining module. A member that changes `self` must still take it by
+  # reference on the importer's side: the copy's signatures take the
+  # original members' writer status (typecheck.copyWriters).
+  t.src """
+import lib
+
+fn main() -> int:
+  var c = {n: 7} Counter
+  c.bump
+  var b = {n: 1} Counter
+  b ..grown
+  return c.n + b.n
+"""
+  t.addFile("lib.tuck", """object Counter:
+  n: int
+  fn bump({self: Counter}):
+    self.n = self.n + 1
+  fn grown({self: Counter}) -> Counter:
+    return self with {n: self.n + 1}
+""")
+  t.hostRuns "R11: an imported object's changing member, called and chained, on every backend", 10
 
   t.src """
 import lib

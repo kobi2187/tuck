@@ -22,19 +22,17 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (16)
+## A. Open bugs (15)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
 
-**A25–A37 — constructs that do not cross a module boundary (R11 scan,
+**A26–A37 — constructs that do not cross a module boundary (R11 scan,
 2026-09-28).** Ruled: importing anything should work as well as the same
 module. Each construct was built declared in `lib` and used from the
 importer on Nim, Odin and D, against a one-module control that passes; these
 failed. Tests: `cross_module`, each named "R11: …".
-- **A25** an imported `object` cannot be constructed (`{n: 7} Counter` is
-  "not a declared callable") — so no member of one can be called either.
 - **A26** a call through an imported interface value resolves to one
   satisfier's member ("expects Rc but got Shape").
 - **A27** an object in the importer cannot `satisfies` an imported interface.
@@ -274,6 +272,13 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **A25 — an imported `object` could not be constructed**, so none of its
+  members could be called: `injectImportedTypes` copied only `type`s into an
+  importer. An object's copy is now its shape (fields, `satisfies`, members
+  as body-less signatures); Odin and D qualify its type and member procs,
+  and a changing member keeps its by-reference `self` on the importer's
+  side. Fixed 2026-09-28. `cross_module`, "R11: …".
 
 - **A24 — an actor member `fn` was emitted by no backend.** `fn` and `on`
   both parsed to a dkFn, and every backend made each one a MESSAGE (a

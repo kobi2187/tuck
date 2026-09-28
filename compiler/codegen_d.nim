@@ -170,8 +170,8 @@ proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
   # instantiation: `Pair!(string, long)(...)`. The arguments come from the
   # type the checker stamped on this very call — D cannot infer them from a
   # named-argument literal.
-  var name = e.callee.name
-  if ctx.declaredGenericD(name):
+  var name = ctx.importedTypeQualifierD(e.callee.name)
+  if ctx.declaredGenericD(e.callee.name):
     let t = ctx.res.typeFor(e)
     if t != nil and t.kind == tkApp:
       let inst = ctx.dDeclType(t)
@@ -366,6 +366,14 @@ proc genDActorWaitOn(ctx: var DCodegenCtx, e: Expr): string =
   "rt.tuckWaitOn(" & actorSlotName(e.args[0].refName) & ", " &
     ctx.genDExpr(e.args[1]) & ")"
 
+proc dMemberCallee(ctx: DCodegenCtx, e: Expr): string =
+  ## `memberCallee`, qualified with its module when the receiver's object is
+  ## imported (R11, A25); "" when `e` is not a member call.
+  let member = memberCallee(ctx.res, ctx.module, e)
+  if member == "": return ""
+  let origin = memberCalleeModule(ctx.res, ctx.module, e)
+  (if origin != "": dAlias(origin) & "." else: "") & member
+
 proc genDActorCall(ctx: var DCodegenCtx, e: Expr): string =
   ## The two actor-shaped calls, or "": `Actor.waitOn`, and a call to the
   ## actor's own member fn (A24), where `self` is already the `ref` the
@@ -398,7 +406,7 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
     let args = ctx.genDCallArgs(e)
     return "rt.tuckSpawn({ cast(void) " & calleeStr &
            "(" & args.join(", ") & "); })"
-  let member = memberCallee(ctx.res, ctx.module, e)
+  let member = ctx.dMemberCallee(e)
   if member != "": calleeStr = member
   let combinator = ctx.asCombinatorCallD(e, calleeStr)
   if combinator != "": return combinator
@@ -780,7 +788,7 @@ proc ctorDeclType(ctx: var DCodegenCtx, val: Expr): string =
   if ctx.declaredGenericD(val.callee.name):
     let inst = ctx.dDeclType(ctx.res.typeFor(val))
     if inst != "": return inst
-  val.callee.name
+  ctx.importedTypeQualifierD(val.callee.name)
 
 proc declTypeForValue(ctx: var DCodegenCtx, target, val: Expr): string =
   ## The declared D type for `let x = <val>`, naming a foreign record shape

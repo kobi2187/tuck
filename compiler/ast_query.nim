@@ -661,6 +661,15 @@ proc memberCallee*(res: Resolution, m: Module, e: Expr): string =
     return ""
   memberCalleeOf(m, memberOwner(m, memberRecvType(res, e)), e.callee.name)
 
+proc moduleDeclaringType*(module: Module, name: string): string
+
+proc memberCalleeModule*(res: Resolution, m: Module, e: Expr): string =
+  ## The module declaring the object a member call's receiver is, when that
+  ## is another module (an imported object, R11), else "" — what Odin and D
+  ## qualify the member proc with.
+  if memberCallee(res, m, e) == "": return ""
+  moduleDeclaringType(m, memberOwner(m, memberRecvType(res, e)))
+
 proc callWritesSelf*(res: Resolution, m: Module, e: Expr): bool =
   ## Is `e` a call of an object member that changes its `self`? Its receiver
   ## is then passed by reference (Odin `&x`); a reading member's by value.
@@ -1013,10 +1022,15 @@ proc moduleDeclaringType*(module: Module, name: string): string =
   ## three, and why the stdlib design's "modules rely on each other" had never
   ## been exercised.
   for d in module.decls:
-    if d == nil or d.kind != dkType or d.name != name: continue
+    if d == nil or d.kind notin {dkType, dkObject} or d.name != name: continue
     if not d.span.file.startsWith(ImportedTypeMarker & ":"): return ""
     return d.span.file[ImportedTypeMarker.len + 1 .. ^1]
   ""
+
+proc isImportedCopy*(d: Decl): bool =
+  ## Is `d` an importer's copy of another module's type or object
+  ## (modules.injectImportedTypes)? Its origin checks and emits it.
+  d != nil and d.span.file.startsWith(ImportedTypeMarker & ":")
 
 type ActorMsgHandler* = object
   ## An actor's receive branch, gathered from BOTH `on <name>` blocks AND `on
