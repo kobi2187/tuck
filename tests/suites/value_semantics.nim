@@ -985,4 +985,45 @@ fn main() -> int:
 """
   t.hostRuns "a changing member through a `var` interface value sticks, on every backend", 12
 
+  # One object as a changing member's `self` (by reference) and as a
+  # by-value argument: the argument is the object as it was at the call.
+  # Nim and Odin passed it as a hidden pointer to the object being changed
+  # (A23); it is now copied into a `let` before the statement
+  # (lowering_alias) — through a `..` step as well, and deeply for a Seq.
+  t.src """
+object Big:
+  a: int
+  b: int
+  c: int
+  d: int
+  e: int
+  fn absorb({self: Big, other: Big}) -> Big:
+    self.a = self.a + 100
+    self.b = other.a
+    return self
+
+fn main() -> int:
+  var k = Big{a: 1, b: 2, c: 3, d: 4, e: 5}
+  k ..absorb {other: k}
+  return k.b
+"""
+  t.hostRuns "a `..` step's argument is the receiver as it was, on every backend", 1
+
+  t.src """
+import seq
+
+object Bag:
+  xs: Seq[int]
+  fn grow({self: Bag, other: Bag}) -> int:
+    self.xs = {items: self.xs, value: 9} push
+    self.xs[0] = 50
+    return other.xs.len * 10 + other.xs[0]
+
+fn main() -> int:
+  var k = Bag{xs: [1, 2]}
+  let r = k.grow {other: k}
+  return r + k.xs.len
+"""
+  t.hostRuns "...and a Seq inside it is copied too, on every backend", 24
+
   t.finish()

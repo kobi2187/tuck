@@ -36,6 +36,7 @@ import lowering_recursive   # recursive sum edges get a Seq handle
 import lowering_decisions   # a decision table becomes a match or an if chain
 import lowering_chains      # a `..` chain becomes statements
 import lowering_iface       # a call through an interface becomes a dispatch
+import lowering_alias       # an argument aliasing a by-reference receiver is copied
 import lowering_match_binds # a binding match arm becomes a catch-all
 import call_args           # which payload field feeds which param
 import options
@@ -395,6 +396,11 @@ proc lowerModule*(res: Resolution, m: Module, real: Table[string, Module]) =
   # After lowerExpr, as the chain-fed-call hoisting it absorbed always ran:
   # a step's call is the checker's, already in the shape the emitters print.
   lowerChains(res, m)
+  # An argument that reads the variable a changing member is called on is
+  # copied into a `let` before the statement (lowering_alias, A23): after
+  # the line above, which turned `..` steps into calls; before interface
+  # calls, whose dispatch copies the payload itself.
+  lowerAliasedArgs(res, m)
   # Every call through an interface value becomes a dispatch over the
   # objects that satisfy it (lowering_iface). Last: an interface call may sit
   # in a chain step's payload, and a chain's steps are copied above.

@@ -238,7 +238,9 @@ data. A field above it is a parse error (`TK-PA06`).
 values, not references). `c.bump`, where `bump` writes `self`, is refused on
 a parameter (`TK-TY15`) and a `let` (`TK-TY13`), the same as `c ..bump`; copy
 first (`var mine = c`). A member that only reads may be called on anything
-and takes `self` by value (`tests/suites/value_semantics.nim`).
+and takes `self` by value (`tests/suites/value_semantics.nim`). In
+`k.absorb {other: k}`, `other` is `k` as it was at the call; the compiler
+copies it before the statement.
 
 Objects carry fields, `+ Composed` entries, `satisfies` lines, member fns, and
 `self`. A member reads and writes its object's fields bare (`return name`,

@@ -2497,7 +2497,9 @@ fn main() -> int:
   # as `k` was at the call — 1 — but Nim and Odin pass a large by-value
   # argument as a hidden pointer to the same `k`, so `other.a` reads the
   # change made through `self`: 101. D copies and answers 1. Found
-  # 2026-09-28 checking where the backends use references.
+  # 2026-09-28 checking where the backends use references; fixed the same
+  # day: such an argument is copied into a `let` before the statement
+  # (lowering_alias).
   t.src """
 object Big:
   a: int
@@ -2514,6 +2516,6 @@ fn main() -> int:
   return k.absorb {other: k}
 """
   t.quietly: t.hostRuns("an argument is the object as it was at the call", 1)
-  t.bugOpen "one object as a changing member's self and its argument keeps value semantics"
+  t.bugFixed "one object as a changing member's self and its argument keeps value semantics"
 
   t.finish()

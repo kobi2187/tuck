@@ -1148,6 +1148,13 @@ it is refused because the change would be lost. A member that only reads
 takes `self` by value in every backend. Through an interface value held in
 a `var`, a changing member's change sticks.
 
+An argument is the value as it was at the call, even when it is the object
+the member changes: in `k.absorb {other: k}`, `other` is `k` before
+`absorb` ran, not a view of the `k` being changed. The compiler copies such
+an argument into a `let` before the statement. If another call in the same
+statement also changes `k` (`k.bump + k.absorb {other: k}`), the statement
+is refused: split it.
+
 ### 5.2 Interfaces
 
 A contract: the set of functions a type promises to provide. The body is the

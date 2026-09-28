@@ -22,21 +22,11 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (4)
+## A. Open bugs (3)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
-
-**A23 — one object as a changing member's `self` and as its argument
-breaks value semantics on Nim and Odin.** `k.absorb {other: k}`, where
-`absorb` changes `self` and then reads `other`: `self` is passed by
-reference (so the change lands in `k`), and Nim and Odin pass the large
-by-value `other` as a hidden pointer to the same `k` — `other.a` reads the
-change (101, not 1). D copies and is correct. The fix proposed is to copy
-such an argument before the call when its root is the receiver's. Test:
-`known_bugs`, "one object as a changing member's self and its argument
-keeps value semantics". Found 2026-09-28.
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism
@@ -256,6 +246,15 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **A23 — one object as a changing member's `self` and as its argument
+  keeps value semantics.** `k.absorb {other: k}` (or `k ..absorb {other:
+  k}`): `self` is passed by reference, and Nim and Odin passed the large
+  by-value `other` as a hidden pointer to the same `k`, so it read the
+  change (101 instead of 1). Such an argument is now copied into a `let`
+  before the statement (`lowering_alias`, 2026-09-28); a statement that
+  also changes that variable earlier is refused rather than guessed at.
+  `known_bugs`, `value_semantics`.
 
 - **Three member-call gaps, found 2026-09-28 working through "a member that
   changes its object on a parameter".** (1) A member with no `->` called as
