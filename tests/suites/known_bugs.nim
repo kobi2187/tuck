@@ -1975,6 +1975,87 @@ fn main() -> int:
 """
   t.hostRuns "a `T?` actor field starts absent, an initialised one present, on every backend", 51
 
+  # The Array fill form `[v; N]` (R8, ruled 2026-09-28): an Array field had
+  # no practical initialiser, since a literal lists all N elements. A zero
+  # fill is the host's zeroed storage (`default(array…)`, `[N]T{}`); a named
+  # const count, a negative value and an enum element all fill. 0 non-zero
+  # bytes, 7*8 - 3*4 = 44, 3 greens.
+  t.src """
+const Cap = 8
+
+type Color:
+  | Red
+  | Green
+  | Blue
+
+fn zeros() -> int:
+  let z: Array[256, u8] = [0; 256]
+  var nz = 0
+  for i in 0 ..< 256:
+    if z[i] != 0:
+      nz = nz + 1
+  return nz
+
+fn sevens() -> int:
+  let s: Array[Cap, int] = [7; Cap]
+  let neg = [-3; 4]
+  var total = 0
+  for i in 0 ..< Cap:
+    total = total + s[i]
+  for i in 0 ..< 4:
+    total = total + neg[i]
+  return total
+
+fn greens() -> int:
+  let cs: Array[3, Color] = [Green; 3]
+  var g = 0
+  for i in 0 ..< 3:
+    if cs[i] == Green:
+      g = g + 1
+  return g
+
+fn main() -> int:
+  return {} zeros * 100 + {} sevens + {} greens * 50
+"""
+  t.hostRuns "an Array fill `[v; N]` builds and reads back, on every backend", 194
+  t.emits "...a zero fill is the zeroed storage, not a loop (Nim)",
+          r"default\(array\[256, uint8\]\)"
+  t.emitsOdin "...and on Odin", r"\[256\]u8\{\}"
+
+  # What an actor field needed it for.
+  t.src """
+import scheduler
+
+actor Uart [queue: 8]:
+  txBuf: Array[64, u8] = [0; 64]
+  sent: int = 0
+
+  on put({at: int}):
+    txBuf[at] = 9
+    sent = sent + 1
+
+fn done() -> bool:
+  return Uart.sent > 0
+
+fn main() -> int:
+  Uart send put {at: 5}
+  Uart.waitUntil {pred: :done}
+  let b = Uart.txBuf
+  if b[5] == 9 and b[4] == 0:
+    return 1
+  return 0
+"""
+  t.hostRuns "an actor's Array field starts from a fill, on every backend", 1
+
+  for (what, body, code) in [
+      ("a count that is a local, not a const", "let n = 4\n  let a = [0; n]", "TK-TY36"),
+      ("a count that is not the Array's size", "let a: Array[8, int] = [0; 4]", "TK-TY36"),
+      ("a value that is a call", "let a = [{} f; 4]", "TK-TY37"),
+      ("an element that is not a scalar", "let a = [\"x\"; 4]", "TK-TY37")]:
+    t.src "fn f() -> int:\n  return 1\n\nfn main() -> int:\n  " & body &
+          "\n  return 0\n"
+    t.badCheck "an Array fill is refused: " & what, code
+
   # An `on select` arm's body was never type-checked nor mangled: `checkDecl`
   # and `mangleMember` ended in `else: discard`, and dkSelect fell into it.
   # One-line arms (`total += n`) got through on gradual typing; anything

@@ -199,6 +199,9 @@ iterator childSlots*(e: Expr): var Expr =
       for f in e.fields.mitems: yield f.value
     of exkList:
       for it in e.items.mitems: yield it
+    of exkFill:
+      yield e.fillValue
+      yield e.fillCount
     of exkBracket:
       yield e.brReceiver
       for a in e.brArgs.mitems: yield a

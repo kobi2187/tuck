@@ -449,7 +449,7 @@ proc implicitTailValue*(body: Expr): Expr =
   of exkReturn, exkRaise, exkIf, exkFor, exkWhile, exkBreak, exkContinue,
      exkAssign, exkBlock, exkSelect, exkSend, exkDiscard, exkTripleDot:
     nil
-  of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkCall,
+  of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill, exkCall,
      exkChain, exkBinary, exkUnary, exkBracket, exkBracketAssign, exkImport,
      exkCombinator, exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef,
      exkMixinRef, exkDefer, exkFinish, exkAcquire, exkOrdinal, exkValidate,

@@ -277,7 +277,7 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
   # locals set, in no particular order. Everything with a scoping rule of its
   # own — exkFor, exkAssign, exkMatch — is spelled out below instead, because
   # for those it matters WHICH children are visited and in what order.
-  of exkField, exkStruct, exkList, exkBracket, exkBracketAssign, exkCall,
+  of exkField, exkStruct, exkList, exkFill, exkBracket, exkBracketAssign, exkCall,
      exkCombinator, exkChain, exkBinary, exkUnary, exkBlock, exkIf, exkWhile,
      exkReturn, exkRaise, exkDiscard, exkDefer, exkFinish, exkAcquire,
      exkOrdinal, exkValidate, exkIfaceCall, exkIfaceIs, exkIfacePayload,

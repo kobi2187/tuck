@@ -54,6 +54,7 @@ type
     tkColon,      # :
     tkColonColon, # ::
     tkComma,      # ,
+    tkSemicolon,  # ;  only in an Array fill, `[0; 256]` (R8)
     tkArrow,      # ->
     tkFatArrow,   # =>
     tkPipe,       # |
@@ -552,6 +553,7 @@ proc scanOneChar(L: var Lexer, ch: char) =
   of '.': L.emitOneChar(tkDot, ".")
   of ':': L.emitOneChar(tkColon, ":")
   of ',': L.emitOneChar(tkComma, ",")
+  of ';': L.emitOneChar(tkSemicolon, ";")
   of '|': L.emitOneChar(tkPipe, "|")
   of '?': L.emitOneChar(tkQuestion, "?")
   of '!': L.emitOneChar(tkBang, "!")

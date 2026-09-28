@@ -235,6 +235,27 @@ proc parseQualifiedRef(p: var Parser, sp: Span): Expr =
     return Expr(span: sp, kind: exkQualified, modulePath: @[], qualName: name)
   nil
 
+proc parseListLiteral(p: var Parser, sp: Span): Expr =
+  ## `[a, b, c]`, or the Array fill `[v; N]` (R8): a `;` after the FIRST item,
+  ## and only there — the one place the character means anything.
+  discard p.advance()
+  var items: seq[Expr]
+  while true:
+    p.skipSeparators()
+    if p.current().kind == tkRBracket or p.current().kind == tkEOF: break
+    items.add(p.parseExpr())
+    if items.len == 1 and p.current().kind == tkSemicolon:
+      discard p.advance()
+      let count = p.parseExpr()
+      discard p.expect(tkRBracket)
+      return Expr(span: sp, kind: exkFill, fillValue: items[0],
+                  fillCount: count)
+    p.skipSeparators()
+    if p.current().kind == tkComma:
+      discard p.advance()
+  discard p.expect(tkRBracket)
+  Expr(span: sp, kind: exkList, items: items)
+
 proc parsePrimaryExpr(p: var Parser): Expr =
   ## One primary expression: `err X`, a `:fn` reference, unary `-`/`not`, a
   ## literal, a name, a paren group or tuple, a list, a struct literal or a
@@ -291,17 +312,7 @@ proc parsePrimaryExpr(p: var Parser): Expr =
       discard p.expect(tkRBrace)
       return Expr(span: sp, kind: exkStruct, fields: @[("value", val)])
   of tkLBracket:
-    discard p.advance()
-    var items: seq[Expr]
-    while true:
-      p.skipSeparators()
-      if p.current().kind == tkRBracket or p.current().kind == tkEOF: break
-      items.add(p.parseExpr())
-      p.skipSeparators()
-      if p.current().kind == tkComma:
-        discard p.advance()
-    discard p.expect(tkRBracket)
-    return Expr(span: sp, kind: exkList, items: items)
+    return p.parseListLiteral(sp)
   of tkLParen:
     discard p.advance()
     let inner = p.parseExpr()

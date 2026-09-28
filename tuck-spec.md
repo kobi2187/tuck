@@ -2061,7 +2061,7 @@ where `[io]` suspends that actor alone and nothing else notices.
 
 ```tuck
 actor UartDriver [queue: 8]:
-  txBuf: Array[256, u8]
+  txBuf: Array[256, u8] = [0; 256]    # the fill form: 256 zero bytes
 
   on send({data: Seq[u8]}) -> void:
     txBuf.copyFrom {data}

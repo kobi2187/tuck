@@ -888,6 +888,14 @@ proc genCallResolved(ctx: var OdinCodegenCtx, e: Expr): string =
   ## codegen, so an unresolved bracket emits nothing.
   if ctx.res.hasCall(e): ctx.genOdinExpr(ctx.res.call(e)) else: ""
 
+proc genFill(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `[v; N]` (R8): `[N]T{}` is the zeroed storage; any other value is a
+  ## range literal, `[N]T{0..<N = v}`.
+  let n = ctx.genOdinExpr(e.fillCount)
+  let arr = "[" & n & "]" & ctx.odinType(fillElemType(ctx.res, e))
+  if isZeroFill(e): arr & "{}"
+  else: arr & "{0..<" & n & " = " & ctx.genOdinExpr(e.fillValue) & "}"
+
 proc genList(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `[dynamic]T{a, b}` — the element type SPELLED OUT, not inferred.
   ##
@@ -1443,6 +1451,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkCombinator: ctx.genOdinCombinator(e)
   of exkStruct: ctx.genStructLit(e)
   of exkList: ctx.genList(e)
+  of exkFill: ctx.genFill(e)
   of exkBracket, exkBracketAssign: ctx.genCallResolved(e)
   of exkFor: ctx.genFor(e, ind)
   of exkWhile: ctx.genWhile(e, ind)

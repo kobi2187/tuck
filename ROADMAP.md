@@ -61,7 +61,8 @@ finished** (no longer deferred).
 5. ~~R3~~ **DONE 2026-09-28**: statement branches make a one-line `if` the
    statement form (`ast_query.isValueIf`), and so does a void one
    (`lowering.blockVoidIf`); both built on no backend before.
-6. R8 — the Array fill form `[v; N]`; spec §9.1's `txBuf` and example 16
+6. ~~R8 fill form~~ **DONE 2026-09-28**: `[v; N]` (exkFill; TK-TY36/37),
+   a zero fill the host's zeroed storage; spec §9.1's `txBuf` and example 16
    take it.
 7. R6 (#7) — measure what blocking a full mailbox's sender costs; block if
    free, else drop and have the sender check the result.

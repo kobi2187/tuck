@@ -297,7 +297,7 @@ proc defKindOf(e: Expr): DefKind =
   ## calls, projections and aliases are told apart; anything else is opaque.
   if e == nil: return dkOpaque
   case e.kind
-  of exkLit, exkList: dkLiteral
+  of exkLit, exkList, exkFill: dkLiteral
   of exkStruct: dkConstruct
   of exkCall, exkChain: dkCall
   of exkField, exkBracket: dkProject

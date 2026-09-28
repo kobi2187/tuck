@@ -238,6 +238,11 @@ proc terr*[T](code: uint16): TuckResult[T] {.inline.} =
   ## A failed result carrying the error `code`.
   TuckResult[T](status: tsErr, err: code)
 
+proc tuckFill*[N: static int, T](v: T): array[N, T] =
+  ## `[v; N]` (R8): N copies of a scalar. A zero fill never reaches here — it
+  ## is `default(array[N, T])`, the zeroed storage.
+  for i in 0 ..< N: result[i] = v
+
 proc tnone*[T](): TuckResult[T] {.inline.} =
   ## An absent result (`?T` with no value).
   TuckResult[T](status: tsAbsent)

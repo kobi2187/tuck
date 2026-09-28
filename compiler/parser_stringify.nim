@@ -92,6 +92,7 @@ proc toString*(e: Expr): string =
   of exkBracketAssign:
     return e.brTarget.toString() & " = " & e.brValue.toString()
   of exkList: return listToString(e.items, "[", "]")
+  of exkFill: return "[" & e.fillValue.toString() & "; " & e.fillCount.toString() & "]"
   of exkCall:
     if e.args.len == 0: return e.callee.toString()
     return e.callee.toString() & listToString(e.args, "(", ")")

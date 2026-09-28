@@ -1129,6 +1129,13 @@ proc genDFor(ctx: var DCodegenCtx, e: Expr): string =
   ctx.indD & "foreach (" & dForVars(e) & "; " & iterStr & ") {\n" &
     ctx.genDNested(e.body) & ctx.indD & "}"
 
+proc genDFill(ctx: var DCodegenCtx, e: Expr): string =
+  ## `[v; N]` (R8): `rt.tuckFill`, whose `T[N] r = v` is D's block
+  ## initialisation — for a zero, the zeroed storage.
+  let t = ctx.dType(fillElemType(ctx.res, e))
+  "rt.tuckFill!(" & t & ", " & ctx.genDExpr(e.fillCount) & ")(cast(" & t &
+    ")(" & ctx.genDExpr(e.fillValue) & "))"
+
 proc genDList(ctx: var DCodegenCtx, e: Expr): string =
   ## A list literal as a D array literal.
   var parts: seq[string]
@@ -1337,6 +1344,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkQualified: ctx.genDQualified(e)
   of exkStruct: ctx.genDStructLit(e)
   of exkList: ctx.genDList(e)
+  of exkFill: ctx.genDFill(e)
   of exkBracket, exkBracketAssign:
     # Indexing resolved to an at()/setAt() call by the checker; a type
     # application never reaches codegen (mirrors both other backends).

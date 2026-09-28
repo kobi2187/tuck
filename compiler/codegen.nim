@@ -597,6 +597,14 @@ proc genStruct(ctx: var CodegenCtx, e: Expr): string =
   for f in e.fields: parts.add(f.name & ": " & ctx.genExpr(f.value))
   "(" & parts.join(", ") & ")"
 
+proc genFill(ctx: var CodegenCtx, e: Expr): string =
+  ## `[v; N]` (R8): a zero fill is `default(array[N, T])`, the zeroed
+  ## storage; any other value goes through `tuckFill`.
+  let n = ctx.genExpr(e.fillCount)
+  let t = genType(fillElemType(ctx.res, e))
+  if isZeroFill(e): "default(array[" & n & ", " & t & "])"
+  else: "tuckFill[" & n & ", " & t & "](" & t & "(" & ctx.genExpr(e.fillValue) & "))"
+
 proc genList(ctx: var CodegenCtx, e: Expr): string =
   ## `@[a, b]` for a `Seq[T]` (Nim's dynamic seq), bare `[a, b]` for an
   ## `Array[N, T]` (Nim's fixed `array[N, T]`, which Nim itself infers as a
@@ -850,6 +858,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkCombinator: ctx.genCombinator(e)
   of exkStruct: ctx.genStruct(e)
   of exkList: ctx.genList(e)
+  of exkFill: ctx.genFill(e)
   of exkBracket, exkBracketAssign: ctx.genCallResolved(e)
   of exkFor: ctx.genFor(e, ind)
   of exkWhile: ctx.genWhile(e, ind)

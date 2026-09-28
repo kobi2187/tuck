@@ -369,6 +369,8 @@ type
     exkQualified
     exkStruct
     exkList
+    exkFill         # `[v; N]` — an Array of N copies of a scalar v (R8,
+                    # ruled 2026-09-28); its own node, not a list of N items
     exkBracket
     exkBracketAssign
     exkCall
@@ -511,6 +513,9 @@ type
       fields*: seq[FieldInit]
     of exkList:
       items*: seq[Expr]
+    of exkFill:
+      fillValue*: Expr   # `[v; N]`'s v — a literal or a name, read once
+      fillCount*: Expr   # N — a literal or a const, as an Array size is
     of exkBracket:
       # `recv[a, b, ...]`. The receiver decides the meaning, not the argument
       # count: a declared type is a type application, a value is an index.

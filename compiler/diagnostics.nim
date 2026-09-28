@@ -129,6 +129,11 @@ type
     dcTyIfaceArm = "TK-TY34"            ## an arm of a `match` on an interface
                                         ## value that is not `| Obj name ->`,
                                         ## `_` or a catch-all binding
+    dcTyFillCount = "TK-TY36"           ## `[v; N]` whose N is not a known
+                                        ## whole number, or does not match
+                                        ## the destination Array's size
+    dcTyFillValue = "TK-TY37"           ## `[v; N]` whose v is not a literal
+                                        ## or a name, or not a scalar
     dcTyActorFieldNoInit = "TK-TY35"    ## an actor field with no initialiser
                                         ## that is not `T?`
 
@@ -444,6 +449,20 @@ proc parseExplanation(d: DiagCode): string =
     "type with `-> T`, or return nothing. An actor handler never replies " &
     "(spec 9.1), so there the value has to go somewhere else — a field, or a " &
     "`send`."
+  of dcTyFillCount:
+    "`[v; N]` is an Array of N copies of v — `txBuf: Array[256, u8] = [0; " &
+    "256]` (ruled 2026-09-28). N is a size, written the way an Array's size " &
+    "is: a whole-number literal or a `const` naming one, at least 1. Into a " &
+    "declared `Array[M, T]`, N must be M. Fix: write the count as a literal " &
+    "or a const, and make it match the Array it fills."
+  of dcTyFillValue:
+    "`[v; N]` copies ONE value into N slots, so two things must hold. The " &
+    "value is read once, on every backend, so it is a literal or a name " &
+    "(`[0; 256]`, `[blank; 16]`): bind anything else with `let` first. And " &
+    "the element is a scalar — a number, a bool, a char or an enum — so " &
+    "the copies share nothing: a `Seq` or `str` element would put one " &
+    "buffer in every slot. Fix: a scalar value, named or literal; for other " &
+    "elements write the list, or build it with a loop."
   of dcTyActorFieldNoInit:
     "An actor is one instance the language creates for you, before any " &
     "message arrives, so each field starts with its initialiser — " &

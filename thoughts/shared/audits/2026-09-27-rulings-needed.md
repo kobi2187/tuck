@@ -15,7 +15,7 @@ commit says so.
 |---|---|
 | R1, R2, R4 (made total), R5, R9, R13, parameters immutable, type test | ruled and built |
 | R7 | ruled and documented (spec §9.1); one sender's FIFO stays a promise (ruled 2026-09-28) |
-| R8 | ruled and built (TK-TY35, `lowering_optional`); an Array field takes the fill form `[v; N]` — to build |
+| R8 | ruled and built (TK-TY35, `lowering_optional`); the fill form `[v; N]` built too (exkFill, TK-TY36/37) |
 | R3 | ruled (a), support it — built |
 | R12 | unused code removed; diagnostic codes per rule — to build; arena: finish implementing — to design, then build; `bench_phases` still open |
 | R6 | ruled; the cost of blocking is measured first |

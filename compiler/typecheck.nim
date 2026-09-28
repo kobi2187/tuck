@@ -3803,6 +3803,72 @@ proc synthList(tc: var TypeChecker, e: Expr): Type =
   Type(span: e.span, kind: tkApp,
        base: tc.namedType(baseName, e.span), args: args)
 
+proc fillCountOf(tc: TypeChecker, e: Expr): tuple[text: string, n: int] =
+  ## `[v; N]`'s N, as the size text an Array type carries and its value. A
+  ## literal or a const, as `Array[N, T]` itself takes (TK-TY36).
+  let c = e.fillCount
+  let text = if c != nil and c.kind == exkLit: c.litValue
+             elif c != nil and c.kind == exkVar: c.name
+             else: ""
+  let n = if text == "": none(int) else: constIntOf(tc.module, text)
+  if n.isNone or n.get < 1:
+    fail(dcTyFillCount, "the count of `[v; N]` must be a whole number the " &
+         "compiler knows, at least 1: a literal or a `const` naming one",
+         (if c != nil: c.span else: e.span))
+  (text, n.get)
+
+proc isFillScalar(tc: TypeChecker, t: Type): bool =
+  ## A number, a bool, a char or a fieldless enum: copied N times, it shares
+  ## nothing.
+  let r = tc.resolve(t)
+  if r == nil: return false
+  if r.kind == tkSum: return not sumHasPayload(r)    # an enum
+  r.kind == tkNamed and (isNumeric(r) or r.name in ["bool", "char"])
+
+proc failIfFillValueNotSimple(e: Expr) =
+  ## TK-TY37: `[v; N]`'s v is read once for N slots on every backend, so it
+  ## is a literal (a negative one included) or a name.
+  let v = e.fillValue
+  let simple = v != nil and (v.kind in {exkLit, exkVar, exkField} or
+               (v.kind == exkUnary and v.unaryOp == uoNeg and
+                v.operand != nil and v.operand.kind == exkLit))
+  if not simple:
+    fail(dcTyFillValue, "the value of `[v; N]` fills N slots and is read " &
+         "once, so it is a literal or a name. Fix: bind it with `let` first",
+         (if v != nil: v.span else: e.span))
+
+proc fillIntoWanted(tc: var TypeChecker, e: Expr, text: string, n: int,
+                    elemT: Type): Type =
+  ## Into a declared `Array[M, T]`: N must be M (TK-TY36), and the element
+  ## takes T. Anywhere else the element stays as the value synthesized.
+  result = elemT
+  let want = tc.asContainerWanted()
+  if want == nil or want.base.name != "Array" or want.args.len != 2: return
+  let size = want.args[0]
+  let m = if size != nil and size.kind == tkNamed: constIntOf(tc.module, size.name)
+          else: none(int)
+  if m.isSome and m.get != n:
+    fail(dcTyFillCount, "`[v; " & text & "]` has " & $n & " element(s) " &
+         "but Array[" & size.name & ", _] needs exactly " & $m.get, e.span)
+  if isFlexible(elemT) or tc.compatible(elemT, want.args[1]):
+    result = want.args[1]
+
+proc synthFill(tc: var TypeChecker, e: Expr): Type =
+  ## `[v; N]` — an Array of N copies of v (R8, ruled 2026-09-28). The value is
+  ## a literal or a name, read once on every backend; the element a scalar,
+  ## so the N copies share nothing (TK-TY37). Into a declared `Array[M, T]`
+  ## it takes T and must have N = M (TK-TY36).
+  let (text, n) = tc.fillCountOf(e)
+  failIfFillValueNotSimple(e)
+  let v = e.fillValue
+  let elemT = tc.fillIntoWanted(e, text, n, tc.synthesize(v))
+  if not tc.isFillScalar(elemT):
+    fail(dcTyFillValue, "`[v; N]` copies one value into every slot, so its " &
+         "element is a number, a bool, a char or an enum — not " &
+         typeName(elemT), v.span)
+  Type(span: e.span, kind: tkApp, base: tc.namedType("Array", e.span),
+       args: @[Type(span: e.span, kind: tkNamed, name: text), elemT])
+
 proc synthUnary(tc: var TypeChecker, e: Expr): Type =
   ## `not` yields bool; every other unary keeps its operand's type.
   let t = tc.synthesize(e.operand)
@@ -4540,6 +4606,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkField: tc.synthFieldAccess(e)
   of exkStruct: tc.synthStruct(e)
   of exkList: tc.synthList(e)
+  of exkFill: tc.synthFill(e)
   of exkBracket: tc.synthBracket(e)
   of exkBracketAssign: tc.synthBracketAssign(e)
   of exkCall: tc.synthCall(e)

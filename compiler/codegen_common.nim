@@ -616,3 +616,15 @@ proc actorSelfParam*(actorType: string, m: Decl): Param =
   ## — each backend's spelling of what its message dispatch takes.
   Param(name: "self", typ: Type(span: m.span, kind: tkNamed, name: actorType),
         span: m.span)
+
+proc isZeroFill*(e: Expr): bool =
+  ## `[0; N]`, `[0.0; N]`, `[false; N]` — a fill each host can give as its
+  ## zero-initialised storage rather than a loop (R8, the owner's note).
+  let v = e.fillValue
+  v != nil and v.kind == exkLit and v.litValue.len > 0 and
+    (v.litValue == "false" or v.litValue.allCharsInSet({'0', '.', '_'}))
+
+proc fillElemType*(res: Resolution, e: Expr): Type =
+  ## `[v; N]`'s element type, as the checker settled it (synthFill).
+  let t = res.typeFor(e)
+  if t != nil and t.kind == tkApp and t.args.len == 2: t.args[1] else: nil

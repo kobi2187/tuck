@@ -76,6 +76,7 @@ proc constCheck*(tc: TypeChecker, m: Module, cname: string, e: Expr, sp: Span) =
     for f in e.fields: constCheck(tc, m, cname, f.value, sp)
   of exkList:
     for it in e.items: constCheck(tc, m, cname, it, sp)
+  of exkFill: constCheck(tc, m, cname, e.fillValue, sp)
   of exkUnary: constCheck(tc, m, cname, e.operand, sp)
   of exkBinary:
     constCheck(tc, m, cname, e.left, sp)

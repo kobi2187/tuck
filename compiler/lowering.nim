@@ -270,7 +270,7 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
     return
   # Every other kind walks its children generically. Listed rather than
   # `else: discard` so adding an ExprKind forces a decision here.
-  of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkCall,
+  of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill, exkCall,
      exkChain, exkBinary, exkUnary, exkBlock, exkIf, exkMatch, exkFor,
      exkWhile, exkBreak, exkContinue, exkAssign, exkReturn, exkRaise,
      exkDiscard, exkTripleDot, exkImport, exkSend, exkSelect, exkCombinator,

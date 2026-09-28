@@ -74,6 +74,14 @@ TuckResult!T terr(T)(ushort code)
     return r;
 }
 
+/// `[v; N]` (R8): N copies of a scalar. `T[N] r = v` is D's block
+/// initialisation — for a zero, the zeroed storage, not a loop.
+T[N] tuckFill(T, size_t N)(T v)
+{
+    T[N] r = v;
+    return r;
+}
+
 TuckResult!T tnone(T)()
 {
     TuckResult!T r;

@@ -322,7 +322,7 @@ proc provOf(c: var Ctx, e: Expr): Prov =
   ## Where did this expression's value come from?
   if e == nil: return unknownProv()
   case e.kind
-  of exkList:
+  of exkList, exkFill:
     # A fresh literal owns its storage outright — the one exemption the copy
     # pass has always had, now with an identity attached.
     ensureId(e)

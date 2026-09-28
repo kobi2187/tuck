@@ -1301,6 +1301,12 @@ Bracket sugar desugars to `seq::at` / `seq::setAt`. **Bounds are a
 precondition, not a result** — out of range aborts with `out of bounds for seq
 of length 3`, reported at the caller's line.
 
+**An Array of N copies is `[v; N]`** (ruled 2026-09-28): `txBuf: Array[256, u8]
+= [0; 256]`. N is a literal or a `const`, as an Array's size is, and must match
+the destination's (`TK-TY36`); v is a literal or a name, and a scalar — a
+number, bool, char or enum — so the copies share nothing (`TK-TY37`). A zero
+fill is the host's zeroed storage, not a loop. `;` means nothing anywhere else.
+
 ---
 
 ## 17. What does NOT exist

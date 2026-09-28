@@ -179,7 +179,7 @@ proc walk(m: var Metrics, e: Expr) =
   # from its scope, so counting it would charge the same branch twice. Their
   # operands and bodies still walk — the statements inside fork like any
   # others.
-  of exkUnary, exkBlock, exkCall, exkCombinator, exkStruct, exkList,
+  of exkUnary, exkBlock, exkCall, exkCombinator, exkStruct, exkList, exkFill,
      exkBracket, exkBracketAssign, exkAssign, exkField, exkReturn, exkRaise,
      exkDiscard, exkTripleDot, exkSend, exkAcquire, exkFinish, exkDefer,
      exkOrdinal, exkValidate, exkIfaceCall, exkIfaceIs, exkIfacePayload,
