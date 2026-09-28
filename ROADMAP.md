@@ -46,7 +46,11 @@ finished** (no longer deferred).
    read `Shape.Circle {r: i}` as a path and skipped its argument, so it
    proved an earlier read of `i` final. `benches/transpile` joins the ssa
    suite's corpus; `TUCK_DEBUG_SSA=diff` now names the sites.
-2. M2.1 — `exclusivelyOwned`'s origin half onto the mirror.
+2. ~~M2.1~~ **moved below tier 2, 2026-09-28.** `exclusivelyOwned` only
+   decides whether a value may SKIP a defensive copy, and a shape the
+   provenance walk does not model answers "copy". Moving its origin half
+   onto the mirror consolidates an analysis and may drop redundant copies;
+   no leak and no wrong answer depends on it. Now after item 17.
 
 **2. Finish partial features, and the rulings already made**
 3. A24 — an actor member `fn` is emitted by no backend. Blocks R10.
@@ -73,6 +77,9 @@ finished** (no longer deferred).
 15. #22 / #23 — `callParamsFor` gaps; quadratic emit.
 16. S3.3 — D runtime networking: `42-net-echo` cannot link `listen`/`accept`. L.
 17. S3.5 — runtime speed parity; the causes are unmeasured.
+17b. M2.1 — `exclusivelyOwned`'s origin half onto the mirror (moved here from
+    item 2; see there). A differential over the corpus first: which copies
+    the mirror would skip that provenance keeps.
 
 **3. Records and hygiene** (small; alongside the above)
 18. Stale docs, each checked wrong on 2026-09-28: spec Appendix A calls
