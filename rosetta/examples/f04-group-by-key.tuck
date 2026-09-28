@@ -1,5 +1,5 @@
 # Group records by a key field
-import io
+import console
 import seq
 
 type Order:

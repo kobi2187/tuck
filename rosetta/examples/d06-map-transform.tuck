@@ -1,5 +1,5 @@
 # Map/transform a list (double each element)
-import io
+import console
 import seq
 
 fn double({n: int}) -> int:

@@ -1,5 +1,5 @@
 # bake: partial application over a two-argument fn
-import io
+import console
 
 fn add({a: int, b: int}) -> int:
   return a + b

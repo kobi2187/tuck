@@ -1,5 +1,5 @@
 # Classify a number as even or odd
-import io
+import console
 
 fn main() -> void [io]:
   let n = 17

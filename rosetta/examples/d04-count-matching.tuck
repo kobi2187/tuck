@@ -1,5 +1,5 @@
 # Count elements matching a predicate (even numbers)
-import io
+import console
 import seq
 
 fn isEven({n: int}) -> bool:

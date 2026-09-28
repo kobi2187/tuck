@@ -1,5 +1,5 @@
 # generic type args, ?T optional, !T result in signatures
-import io
+import console
 
 pending:
   fn firstOf[T]({items: Seq[T]}) -> ?T

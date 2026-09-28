@@ -1,6 +1,6 @@
 # rs06 — distinct newtype, invariant block, unit-type-ish usage.
 # Stresses: `distinct X = int`, invariant:, constructing via postfix TypeName.
-import io
+import console
 
 distinct Meters = int
 

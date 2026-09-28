@@ -1,5 +1,5 @@
 # Dictionary/map: build a lookup table, get and insert by key
-import io
+import console
 
 pending:
   fn empty({}) -> Map[str, int]

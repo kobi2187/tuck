@@ -1,5 +1,5 @@
 # Write a file, read it back, and print the current time
-import io
+import console
 import fs
 import time
 

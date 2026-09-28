@@ -1,5 +1,5 @@
 # Filter a list, keeping elements matching a predicate
-import io
+import console
 import seq
 
 fn isEven({n: int}) -> bool:

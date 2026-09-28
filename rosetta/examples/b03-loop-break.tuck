@@ -1,5 +1,5 @@
 # Loop with an early break once a target is found
-import io
+import console
 
 fn main() -> void [io]:
   var found = 0

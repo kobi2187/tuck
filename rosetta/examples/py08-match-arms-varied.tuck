@@ -1,5 +1,5 @@
 # match with several arm shapes: payload sum type, enum-like, bool, wildcard
-import io
+import console
 
 type Shape:
   | Circle({r: int})

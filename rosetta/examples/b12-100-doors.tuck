@@ -1,5 +1,5 @@
 # 100 doors puzzle: toggle each door's state, print open doors
-import io
+import console
 import seq
 
 fn main() -> void [io]:

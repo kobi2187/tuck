@@ -1,5 +1,5 @@
 # Match on a bool value
-import io
+import console
 
 fn main() -> void [io]:
   let isOpen = true

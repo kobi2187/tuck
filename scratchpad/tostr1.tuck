@@ -1,7 +1,7 @@
-import io
+import console
 import str
 fn main() -> int:
   let n = 42
   let s = n.toStr
-  {text: s} io::printLine
+  {text: s} console::printLine
   return 0

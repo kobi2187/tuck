@@ -1,5 +1,5 @@
 # int.TryParse-style: parse without throwing, convert between types
-import io
+import console
 
 pending:
   fn tryParseInt({text: str}) -> ?int

@@ -1,5 +1,5 @@
 # fnsig: a named fn signature used as a callback parameter type
-import io
+import console
 
 fnsig Adder = {a: int, b: int} -> int
 

@@ -1,5 +1,5 @@
 # TryGetValue-style pattern: look up a key without a throw on miss
-import io
+import console
 
 pending:
   fn empty({}) -> Map[str, int]

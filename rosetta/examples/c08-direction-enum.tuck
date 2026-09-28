@@ -1,5 +1,5 @@
 # Direction sum type with a decision table for movement deltas
-import io
+import console
 
 type Direction:
   | North({})

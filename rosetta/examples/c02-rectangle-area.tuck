@@ -1,5 +1,5 @@
 # Rectangle struct: compute area and perimeter
-import io
+import console
 
 type Rectangle:
   width: int

@@ -1,5 +1,5 @@
 # Hello, world
-import io
+import console
 
 fn main() -> void [io]:
   {text: "Hello, world!"} printLine

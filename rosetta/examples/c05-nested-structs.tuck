@@ -1,5 +1,5 @@
 # Nested structs: an Address inside a Person
-import io
+import console
 
 type Address:
   city: str

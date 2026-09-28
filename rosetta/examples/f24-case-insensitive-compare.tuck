@@ -1,5 +1,5 @@
 # Compare two strings case-insensitively
-import io
+import console
 
 pending:
   fn upper({text: str}) -> str

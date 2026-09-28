@@ -1,5 +1,5 @@
 # Convert Celsius to Fahrenheit
-import io
+import console
 
 fn main() -> void [io]:
   let celsius = 100

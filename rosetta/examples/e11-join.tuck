@@ -1,5 +1,5 @@
 # Join a list of strings with a separator
-import io
+import console
 
 pending:
   fn join({items: Seq[str], sep: str}) -> str

@@ -1,5 +1,5 @@
 # Nested if/else (no elif) approximating Elixir's cond, 3 levels deep
-import io
+import console
 
 fn classify({n: int}) -> str:
   if n < 0:

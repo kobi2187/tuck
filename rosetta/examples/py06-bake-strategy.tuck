@@ -1,5 +1,5 @@
 # bake partial application + fnsig callback type, chosen by :name fn ref
-import io
+import console
 
 fnsig Op = {a: int, b: int} -> int
 

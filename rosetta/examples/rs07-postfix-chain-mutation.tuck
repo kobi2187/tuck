@@ -1,6 +1,6 @@
 # rs07 — long postfix chains, chained indexing, indexed write mutation.
 # Stresses: multi-hop postfix, xs[i] read/write, .len chained.
-import io
+import console
 import seq
 
 fn main() -> void [io]:

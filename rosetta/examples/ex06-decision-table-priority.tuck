@@ -1,5 +1,5 @@
 # decision table: 3-column tabular logic, Elixir-cond-like but data-driven
-import io
+import console
 
 type Priority:
   | High({})

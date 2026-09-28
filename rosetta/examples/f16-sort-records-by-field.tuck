@@ -1,5 +1,5 @@
 # Sort records by a single field, ascending
-import io
+import console
 import seq
 
 type Product:

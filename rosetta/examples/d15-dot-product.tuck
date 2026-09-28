@@ -1,5 +1,5 @@
 # Dot product of two equal-length vectors
-import io
+import console
 import seq
 
 fn main() -> void [io]:

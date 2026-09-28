@@ -1,6 +1,6 @@
 # rs13 — proposed std/str fns via pending:, plus result-returning parseInt.
 # Stresses: multiple pending: decls, str payloads, chained postfix on str.
-import io
+import console
 
 pending:
   fn split({text: str, sep: str}) -> Seq[str]

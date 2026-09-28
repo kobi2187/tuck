@@ -1,5 +1,5 @@
 # Reverse a string
-import io
+import console
 
 pending:
   fn reverse({text: str}) -> str

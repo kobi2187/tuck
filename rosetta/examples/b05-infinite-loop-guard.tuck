@@ -1,5 +1,5 @@
 # Infinite loop with a guard condition that breaks it
-import io
+import console
 
 fn main() -> void [io]:
   var n = 1

@@ -1,5 +1,5 @@
 # Optional value handling with ?T, unwrapped with a default
-import io
+import console
 
 pending:
   fn findUser({id: int}) -> ?str

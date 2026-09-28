@@ -1,5 +1,5 @@
 # list parity: filter/map/count with :name fn refs, generics in signatures
-import io
+import console
 import seq
 
 pending:

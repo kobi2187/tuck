@@ -1,5 +1,5 @@
 # Integer power via a pow function
-import io
+import console
 
 pending:
   fn pow({base: int, exp: int}) -> int

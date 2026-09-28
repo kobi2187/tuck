@@ -1,5 +1,5 @@
 # random module design: [io] effect markers on nondeterministic fns
-import io
+import console
 
 pending:
   fn randomInt({low: int, high: int}) -> int [io]

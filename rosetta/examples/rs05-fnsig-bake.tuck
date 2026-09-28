@@ -1,6 +1,6 @@
 # rs05 — fnsig callback type, bake partial application, :name fn refs.
 # Stresses: fnsig decl, bake, :name literal, passing fn-typed param.
-import io
+import console
 
 fnsig Combiner = {a: int, b: int} -> int
 

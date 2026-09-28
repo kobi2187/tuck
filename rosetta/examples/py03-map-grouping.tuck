@@ -1,5 +1,5 @@
 # map parity: Map[K,V] generic type args, get/set/has, nested struct literals
-import io
+import console
 
 type Bucket:
   key: str

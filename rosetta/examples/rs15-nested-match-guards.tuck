@@ -1,6 +1,6 @@
 # rs15 — deeper nested match on sum type inside another match, catch-all `_`.
 # Stresses: nested match-in-match, `_` catch-all, sum type with 3 variants.
-import io
+import console
 
 type Op:
   | Add

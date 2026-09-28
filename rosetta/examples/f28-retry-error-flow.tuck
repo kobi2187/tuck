@@ -1,5 +1,5 @@
 # A simple retry loop around a fallible operation
-import io
+import console
 
 type FetchError:
   | Timeout

@@ -1,5 +1,5 @@
 # bake partial application + :name fn refs passed through two layers
-import io
+import console
 
 fn withinRange({low: int, high: int, value: int}) -> bool:
   return value >= low and value <= high

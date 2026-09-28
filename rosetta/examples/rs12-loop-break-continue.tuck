@@ -1,6 +1,6 @@
 # rs12 — loop:/break/continue, while-style for, nested if/else (no elif).
 # Stresses: infinite loop with break, continue, nested if chain replacing elif.
-import io
+import console
 
 fn classify({n: int}) -> str:
   if n < 0:

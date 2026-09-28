@@ -1,6 +1,6 @@
 # rs14 — generic fn with fnsig-typed callback param (map-shaped), pending impl.
 # Stresses: fn generic + fnsig param combined, :name ref passed as arg.
-import io
+import console
 
 fnsig IntPredicate = {value: int} -> bool
 

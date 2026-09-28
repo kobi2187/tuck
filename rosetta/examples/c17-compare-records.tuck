@@ -1,5 +1,5 @@
 # Compare two Point records for equality via the built-in `==`
-import io
+import console
 
 type Point:
   x: int

@@ -1,5 +1,5 @@
 # Flatten a small nested (2D) list into a flat buffer
-import io
+import console
 import seq
 
 fn main() -> void [io]:

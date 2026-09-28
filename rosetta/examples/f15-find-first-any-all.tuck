@@ -1,5 +1,5 @@
 # Find first match, any/all predicates over a list
-import io
+import console
 import seq
 
 pending:
