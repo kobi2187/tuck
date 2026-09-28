@@ -36,6 +36,8 @@ import ast, tables, sets
 import resolution
 
 proc seqOf(t: Type): Type =
+  ## `Seq[t]` as a type node, spanned where `t` was written — the handle a
+  ## recursive edge becomes.
   Type(span: t.span, kind: tkApp, args: @[t],
        base: Type(span: t.span, kind: tkNamed, name: "Seq"))
 
@@ -120,6 +122,8 @@ proc payloadOf(e: Expr): Expr =
   nil
 
 proc variantOf(e: Expr): tuple[owner, variant: string] =
+  ## The `(Owner, Variant)` a construction names — `Expr.Add {…}` either way
+  ## round — or `("", "")` when `e` is not a `Type.Variant` construction.
   let f = if e.kind == exkCall: e.callee else: e
   if f == nil or f.kind != exkField or f.receiver == nil or
      f.receiver.kind != exkVar: return ("", "")
@@ -127,6 +131,9 @@ proc variantOf(e: Expr): tuple[owner, variant: string] =
 
 proc rewriteExpr(res: Resolution, e: Expr,
                  edges: Table[string, Table[string, string]]) =
+  ## Rewrites `e` and everything under it, children first: each recursive
+  ## edge value in a construction is wrapped into its handle, and each read of
+  ## an edge field is unwrapped (`tuckAt(x.left, 0)`).
   if e == nil: return
   for c in e.children: rewriteExpr(res, c, edges)
 

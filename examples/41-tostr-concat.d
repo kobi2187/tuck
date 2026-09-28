@@ -5,23 +5,23 @@ import sys = mod_sys;
 import str = mod_str;
 import console = mod_console;
 
-struct tuck_type_Jar {
+struct tuckˑtypeˑJar {
     long count;
     string label;
 }
 
-void tuck_fn_main() {
-    long tuck_n = 99L;
-    string tuck_s = (str.toStr(tuck_n) ~ " bottles");
-    console.printLine(tuck_s);
-    string tuck_t = (str.toStr(tuck_n) ~ " more");
-    console.printLine(tuck_t);
-    tuck_type_Jar tuck_j = tuck_type_Jar(count: 7L, label: "jam");
-    long tuck_c = tuck_j.count;
-    string tuck_u = ((tuck_j.label ~ ": ") ~ str.toStr(tuck_c));
-    console.printLine(tuck_u);
-    if ((tuck_s == "99 bottles")) {
-        if ((tuck_u == "jam: 7")) {
+void tuckˑfnˑmain() {
+    long tuckˑvˑn = 99L;
+    string tuckˑvˑs = (str.toStr(tuckˑvˑn) ~ " bottles");
+    console.printLine(tuckˑvˑs);
+    string tuckˑvˑt = (str.toStr(tuckˑvˑn) ~ " more");
+    console.printLine(tuckˑvˑt);
+    tuckˑtypeˑJar tuckˑvˑj = tuckˑtypeˑJar(count: 7L, label: "jam");
+    long tuckˑvˑc = tuckˑvˑj.count;
+    string tuckˑvˑu = ((tuckˑvˑj.label ~ ": ") ~ str.toStr(tuckˑvˑc));
+    console.printLine(tuckˑvˑu);
+    if ((tuckˑvˑs == "99 bottles")) {
+        if ((tuckˑvˑu == "jam: 7")) {
             sys.exit(0L);
         }
     }
@@ -30,5 +30,5 @@ void tuck_fn_main() {
 
 void main(string[] args) {
     rt.tuckSetArgs(args);
-    tuck_fn_main();
+    tuckˑfnˑmain();
 }

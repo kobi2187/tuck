@@ -54,6 +54,10 @@ export genType        # re-exported: this file's public face is the backend
 # sketch-pending qualified name maps to its mangled stub (genPendingStub).
 
 proc genQualified(ctx: CodegenCtx, e: Expr): string =
+  ## `module::fn`: a real imported module rides Nim's own namespacing, and a
+  ## sketch-pending qualified name maps to its mangled stub (`mod_fn`).
+  ## A bare `:name` fn reference is cast to the module's C callback signature
+  ## when it has one, so it can be handed to C.
   let modName = if e.modulePath.len > 0: e.modulePath[0] else: ""
   if modName == "":
     # `:name` — a bare fn reference. Feeding one to a C function pointer needs
@@ -67,6 +71,7 @@ proc genQualified(ctx: CodegenCtx, e: Expr): string =
   else: modName & "_" & e.qualName
 
 proc genExpr*(ctx: var CodegenCtx, e: Expr): string
+proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string
 
 # The bigger genExpr arms live as their own procs so the dispatch `case` reads
 # as a routing table; each takes the ctx + node and recomputes its own indent.
@@ -75,19 +80,18 @@ proc genExprMatch(ctx: var CodegenCtx, e: Expr): string
 proc genExprSend(ctx: var CodegenCtx, e: Expr): string
 proc genExprSelect(ctx: var CodegenCtx, e: Expr): string
 
-# Type-directed explosion: a record-typed VAR as the whole payload
-# (`p advance`) explodes to the fn's params by field name, in param order —
-# same subset matching the checker verified. Fields come from the checker's
-# ty stamp on the arg node.
-# The four record combinators — bake / with / alias / merge — share one
-# emitter. What each PRODUCES is decided in record_shape.nim, in terms no
-# target knows about; all that is left here is how Nim spells a constructor
-# call and a field access. This was four procs, and their Odin and D twins
-# were eight more.
-#
-# Nim's structural shape is an anonymous tuple, so ckStructural ignores the
-# declared field list the other two backends use to name a struct.
 proc renderShape(ctx: var CodegenCtx, s: RecordShape, tag: string): string =
+  ## The four record combinators — bake / with / alias / merge — share one
+  ## emitter. What each PRODUCES is decided in record_shape.nim, in terms no
+  ## target knows about; all that is left here is how Nim spells a constructor
+  ## call and a field access. This was four procs, and their Odin and D twins
+  ## were eight more.
+  ##
+  ## Nim's structural shape is an anonymous tuple, so ckStructural ignores the
+  ## declared field list the other two backends use to name a struct.
+  ##
+  ## A non-var receiver is bound to a temp first (`tag` names it), so it is
+  ## evaluated once however many fields read it.
   if s.ctor == ckPassThrough: return ctx.genExpr(s.passThrough)
   # A receiver read once per field must not be EVALUATED once per field, so a
   # non-var receiver binds to a temp first. The temps come before the parts,
@@ -103,6 +107,7 @@ proc renderShape(ctx: var CodegenCtx, s: RecordShape, tag: string): string =
       text = tmp
     bound.add (r, text)
   proc textOf(rs: seq[(Expr, string)], want: Expr): string =
+    ## The emitted text bound for receiver `want`, or "".
     for (r, text) in rs:
       if r == want: return text
     ""
@@ -133,11 +138,15 @@ proc genCombinator(ctx: var CodegenCtx, e: Expr): string =
 proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
   ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
   ## call is not a record variable standing for its payload.
-  let fields = recordArgFields(ctx.res, ctx.module, e, calleeStr)
-  if fields.len == 0: return ""
+  ##
+  ## Type-directed explosion: a record-typed VAR as the whole payload
+  ## (`p advance`) explodes to the fn's params by field name, in param order —
+  ## same subset matching the checker verified.
+  let fields = recordArgFields(ctx.res, ctx.module, ctx.realModules, e)
+  if fields.isNone: return ""
   let recv = ctx.genExpr(e.args[0])
   var parts: seq[string]
-  for f in fields: parts.add(recv & "." & f)
+  for f in fields.get: parts.add(recv & "." & f)
   calleeStr & "(" & parts.join(", ") & ")"
 
 
@@ -147,6 +156,9 @@ proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
 # and the caller falls through to plain emission.
 proc sumVariantCtor(ctx: var CodegenCtx, typeName, variantName: string,
                     payload: Expr): string =
+  ## `{payload} Type.Variant` for a payload-carrying sum: the case object with
+  ## its `kind` set and the variant's payload tuple in DECLARED field order. ""
+  ## for a payload-free sum, whose `Type.Variant` is already valid Nim.
   let found = payloadSumVariant(ctx.module, typeName, variantName)
   if found.isNone: return ""
   let v = found.get
@@ -163,6 +175,8 @@ proc sumVariantCtor(ctx: var CodegenCtx, typeName, variantName: string,
     sumPayloadField(variantName) & ": (" & parts.join(", ") & "))"
 
 proc bangInfo*(t: Type): tuple[wrapped: bool, inner: string, innerT: Type] =
+  ## For a `!T`/`?T`/`!?T` type: that it wraps, the payload's Nim type
+  ## (`tuple[]` for void) and the payload's Tuck type. Not wrapped otherwise.
   if t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
      t.base.name in ["!", "?", "!?"] and t.args.len == 1:
     let inner = genType(t.args[0])
@@ -190,6 +204,8 @@ proc genericCtorName(ctx: var CodegenCtx, e: Expr, base: string): string =
   base & "[" & gparts.join(", ") & "]"
 
 proc isRecordConstruction(ctx: var CodegenCtx, e: Expr): bool =
+  ## Is `e` `{fields} Name` for a record or object `Name` — a construction, not
+  ## a call?
   e.args.len == 1 and e.args[0].kind == exkStruct and
     e.callee != nil and e.callee.kind == exkVar and
     ctx.index.isRecordType(e.callee.name)
@@ -213,16 +229,13 @@ proc asSumVariantCall(ctx: var CodegenCtx, e: Expr): string =
                 else: nil
   ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
 
-proc genPayloadArgs(ctx: var CodegenCtx, e: Expr,
-                    calleeStr: string): seq[string] =
-  ## codegen_common.payloadArgs, printed. A missing one is `nil`.
-  for a in payloadArgs(ctx.res, ctx.module, ctx.realModules, e, calleeStr):
-    result.add(if a != nil: ctx.genExpr(a) else: "nil")
-
-proc genCallArgs(ctx: var CodegenCtx, e: Expr, calleeStr: string): seq[string] =
-  if e.args.len == 1 and e.args[0].kind == exkStruct:
-    return ctx.genPayloadArgs(e, calleeStr)
-  for a in e.args: result.add(ctx.genExpr(a))
+proc genCallArgs(ctx: var CodegenCtx, e: Expr): seq[string] =
+  ## A call's arguments: a payload's as call_args.payloadArgs orders them,
+  ## printed; anything else as written.
+  let args = if e.isPayloadCall:
+               payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+             else: e.args
+  for a in args: result.add(ctx.genExpr(a))
 
 proc genSaturatingCtor(satBase, calleeStr, arg: string): string =
   ## spec 4.1: constructing a [saturating] type clamps instead of wrapping.
@@ -307,6 +320,9 @@ proc genActorWaitOn(ctx: var CodegenCtx, e: Expr): string =
     ctx.genExpr(e.args[1]) & ")"
 
 proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
+  ## Every exkCall, whatever produced it: `waitOn`, record construction, a sum
+  ## variant, a member or combinator call, else a plain call with its
+  ## arguments in parameter order and any explicit type arguments.
   let waitOn = ctx.genActorWaitOn(e)
   if waitOn != "": return waitOn
   if ctx.isRecordConstruction(e): return ctx.genRecordCtor(e)
@@ -320,7 +336,7 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   if member != "": calleeStr = member
   let combinator = ctx.explodeRecordArg(e, calleeStr)
   if combinator != "": return combinator
-  let args = ctx.genCallArgs(e, calleeStr)
+  let args = ctx.genCallArgs(e)
   ctx.genCallWithArgs(ctx.withTypeArgs(calleeStr, e), args)
 
 # exkReturn emission: auto-wrapped tok()/terr() results, typed struct
@@ -363,6 +379,9 @@ proc genWrappedReturn(ctx: var CodegenCtx, v: Expr): string =
   "return tok(" & ctx.genExpr(v) & ")"
 
 proc genReturn(ctx: var CodegenCtx, e: Expr): string =
+  ## A `return`: auto-wrapped into the result carrier in a fallible fn (a bare
+  ## return is `tnone`/`tokVoid`), validated for an invariant-carrying type,
+  ## or plain.
   if e.returnVal == nil:
     if ctx.retWrapped and ctx.retAbsentCapable:
       # `tnone[T]()` for a plain T (a bare generic param or an ordinary named
@@ -404,10 +423,17 @@ proc genIndented(ctx: var CodegenCtx, e: Expr): string =
   ## identifier: tuck_lead". Restoring the set afterwards makes the emitted
   ## scoping match Tuck's. (The same shape as the checker's name-keyed
   ## shadow bug; this is its codegen twin.)
+  ##
+  ## A body that is not a block — `if c: n = n + 1`, `for c: step` — is ONE
+  ## statement, and is laid out exactly as a block holding it would be. It
+  ## used to go through genExpr bare and land at column 0, which Nim
+  ## rejects; Odin's and D's emitters already indented it.
   let saved = ctx.indent
   let savedVars = ctx.definedVars
   ctx.indent += 1
-  result = ctx.genExpr(e)
+  result = if e != nil and e.kind != exkBlock:
+             ctx.genStmt(e, "  ".repeat(saved))
+           else: ctx.genExpr(e)
   ctx.indent = saved
   ctx.definedVars = savedVars
 
@@ -436,6 +462,8 @@ const NimLitSuffix = {
   ## churn every golden for nothing.
 
 proc genLit(ctx: CodegenCtx, e: Expr): string =
+  ## A literal in Nim syntax. A number carries the width the checker settled
+  ## on (`'u8`...), and a decimal integer past `int64` is a `'u64` literal.
   case e.litKind
   of lkStr: "\"" & escapeStringLit(e.litValue) & "\""
   of lkInt:
@@ -474,8 +502,14 @@ proc genVar(ctx: var CodegenCtx, e: Expr): string =
   ## variable.
   if ctx.res.hasCall(e): ctx.genExpr(ctx.res.call(e))
   elif isInputRef(e, ctx.currentParams): ctx.genInputPayload()
-  elif e.name in ctx.fieldVars: "self." & e.name
+  elif ctx.res.isOwnerField(e): "self." & e.name
   else: nimRtCallee(e.name)
+
+proc genPoolOp(ctx: var CodegenCtx, e: Expr): string =
+  ## A pool operation: `codegen_common.poolOpProc`, the pool, its args.
+  var args = @[e.poolRef.refName]
+  for a in e.poolOperands: args.add ctx.genExpr(a)
+  poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
 
 proc genIfaceCall(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## A call through an interface value, lowered (lowering_iface): a `case` on
@@ -516,7 +550,10 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
   if isInputField(e, ctx.currentParams): return e.fieldName
   doAssert ctx.res.ifaceCallOf(e).member == "",
     "codegen: an interface call reached the emitter unlowered (lowering_iface)"
-  if ctx.res.hasCall(e): return ctx.genConstruction(ctx.res.call(e))
+  if ctx.res.hasCall(e):
+    let stamped = ctx.res.call(e)
+    if stamped.kind != exkCall: return ctx.genExpr(stamped)   # a pool op
+    return ctx.genConstruction(stamped)
   let ctor = ctx.genTypeVariantCtor(e)
   if ctor != "": return ctor
   if e.receiver != nil and e.receiver.kind == exkActorRef:
@@ -538,6 +575,7 @@ proc genCallExpr(ctx: var CodegenCtx, e: Expr): string =
   else: base
 
 proc genStruct(ctx: var CodegenCtx, e: Expr): string =
+  ## A payload/record literal as a Nim named tuple: `(a: 1, b: x)`.
   var parts: seq[string]
   for f in e.fields: parts.add(f.name & ": " & ctx.genExpr(f.value))
   "(" & parts.join(", ") & ")"
@@ -574,11 +612,13 @@ proc loopVarNames(iter: Pattern): string =
   names.join(", ")
 
 proc genFor(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## A `for` loop; the loop pattern's names become Nim's loop variables.
   let iterStr = loopVarNames(e.iter)
   let iterable = ctx.genExpr(e.iterable)
   ind & "for " & iterStr & " in " & iterable & ":\n" & ctx.genIndented(e.body)
 
 proc genWhile(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## A `while` loop; a condition-less `loop` is `while true`.
   let condStr = if e.whileCond == nil: "true" else: ctx.genExpr(e.whileCond)
   ind & "while " & condStr & ":\n" & ctx.genIndented(e.whileBody)
 
@@ -605,16 +645,20 @@ proc nimBinOp(op: BinOp): string =
   of boRangeExcl: "..<"
 
 proc genBinary(ctx: var CodegenCtx, e: Expr): string =
+  ## A binary expression, parenthesised; `str + str` goes through `tuckConcat`.
   if isStringConcat(e):
     return "tuckConcat(" & ctx.genExpr(e.left) & ", " & ctx.genExpr(e.right) & ")"
   "(" & ctx.genExpr(e.left) & " " & nimBinOp(e.binOp) & " " &
     ctx.genExpr(e.right) & ")"
 
 proc genUnary(ctx: var CodegenCtx, e: Expr): string =
+  ## A unary expression: `-` and `not`. A composition entry is a declaration
+  ## member, sifted out before emission, so reaching here is a compiler bug.
   let opStr = case e.unaryOp
               of uoNeg: "-"
               of uoNot: "not "
-              else: ""
+              of uoComposition: raiseAssert "codegen: a `+ Type` composition " &
+                "member reached the expression emitter"
   opStr & ctx.genExpr(e.operand)
 
 proc genDroppedResult(ctx: var CodegenCtx, s: Expr, stmtCode: string): string =
@@ -622,9 +666,9 @@ proc genDroppedResult(ctx: var CodegenCtx, s: Expr, stmtCode: string): string =
   let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
   let onErr = if ctx.errPolicy == "exit":
-                "(tuck_unhandled(" & tn & ".err, \"" & site & "\"); quit(1))"
+                "(" & UnhandledHandlerName & "(" & tn & ".err, \"" & site & "\"); quit(1))"
               else:
-                "tuck_unhandled(" & tn & ".err, \"" & site & "\")"
+                UnhandledHandlerName & "(" & tn & ".err, \"" & site & "\")"
   "(let " & tn & " = " & stmtCode & "; (if not " & tn & ".ok: " & onErr & "))"
 
 proc ownsItsLayout(res: Resolution, s: Expr): bool =
@@ -669,10 +713,10 @@ proc genBoundErrorRouted(ctx: var CodegenCtx, s: Expr, stmtCode,
              else: ""
   if name == "": return stmtCode
   let onErr = if ctx.errPolicy == "exit":
-                "(tuck_unhandled(" & name & ".err, \"" & site &
+                "(" & UnhandledHandlerName & "(" & name & ".err, \"" & site &
                   "\"); quit(1))"
               else:
-                "tuck_unhandled(" & name & ".err, \"" & site & "\")"
+                UnhandledHandlerName & "(" & name & ".err, \"" & site & "\")"
   stmtCode & "\n" & ind & "  if " & name & ".status == tsErr: " & onErr
 
 proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =
@@ -746,6 +790,8 @@ proc genValueIf(ctx: var CodegenCtx, e: Expr, condStr: string): string =
     ctx.genUnindented(e.elseBranch) & ")"
 
 proc genIf(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## An `if`: an if-expression in value position, otherwise a statement with
+  ## indented branches.
   let condStr = ctx.genExpr(e.cond)
   if isValueIf(e): return ctx.genValueIf(e, condStr)
   let thenStr = ctx.genIndented(e.thenBranch)
@@ -764,6 +810,9 @@ proc genRaise(ctx: var CodegenCtx, e: Expr): string =
   "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv) & "))"
 
 proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
+  ## The Nim backend's expression dispatch. An interface wrap is emitted
+  ## around the node first (`wrapping` stops it re-wrapping itself); every
+  ## ExprKind has an arm, so a new kind fails to compile here.
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
   let w = ctx.res.wrapOf(e)
@@ -823,6 +872,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkOrdinal: "ord(" & ctx.genExpr(e.ordinalOf) & ")"   # enum and bool alike
   of exkValidate: "validate(" & ctx.genExpr(e.validated) & ")"
   of exkIfaceCall: ctx.genIfaceCall(e, ind)
+  of exkPoolOp: ctx.genPoolOp(e)
 
 proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
   ## Emitting an assignment TARGET. A bracket index must address the element
@@ -852,12 +902,7 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
     return ""
   let tname = e.assignVal.callee.name
   let ret = ctx.taskRetType(tname)
-  var argParts: seq[string]
-  if e.assignVal.args.len == 1 and e.assignVal.args[0].kind == exkStruct:
-    let expected = lookupFnParams(ctx.module, tname)
-    for pn in expected:
-      for f in e.assignVal.args[0].fields:
-        if f.name == pn: argParts.add(ctx.genExpr(f.value)); break
+  let argParts = ctx.genCallArgs(e.assignVal)
   let rawCall = tname & "(" & argParts.join(", ") & ")"
   let slot = "tuckSlot" & $ctx.tmpCounter
   ctx.tmpCounter.inc
@@ -866,7 +911,7 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
               " {.closure, gcsafe.} = ({.cast(gcsafe).}: " & rawCall &
               ")); awaitResult(" & slot & "))"
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
-     e.target.name notin ctx.fieldVars:
+     not ctx.res.isOwnerField(e.target):
     ctx.definedVars.incl(e.target.name)
     return "var " & e.target.name & " = " & spawn
   ctx.genExpr(e.target) & " = " & spawn
@@ -878,8 +923,7 @@ proc genSelfConcatAssignment(ctx: var CodegenCtx, e: Expr): string =
   ## an O(n^2) one.
   let appended = selfConcatValue(ctx.res, e)
   if appended == nil: return ""
-  let tgt = if e.target != nil and e.target.kind == exkVar and
-               e.target.name in ctx.fieldVars: "self." & e.target.name
+  let tgt = if ctx.res.isOwnerField(e.target): "self." & e.target.name
             else: e.target.name
   tgt & ".add(" & ctx.genExpr(appended) & ")"
 
@@ -895,15 +939,14 @@ proc genSelfAppendAssignment(ctx: var CodegenCtx, e: Expr): string =
   ## the same hole. EV-9.
   let appended = selfAppendValue(ctx.res, e)
   if appended == nil: return ""
-  let tgt = if e.target != nil and e.target.kind == exkVar and
-               e.target.name in ctx.fieldVars: "self." & e.target.name
+  let tgt = if ctx.res.isOwnerField(e.target): "self." & e.target.name
             else: e.target.name
   tgt & ".add(" & ctx.genExpr(appended) & ")"
 
 proc genVarDeclaration(ctx: var CodegenCtx, e: Expr, targetStr, valStr: string): string =
   ## Variable declaration with optional stated type.
   let name = e.target.name
-  if name notin ctx.definedVars and name notin ctx.fieldVars:
+  if name notin ctx.definedVars and not ctx.res.isOwnerField(e.target):
     ctx.definedVars.incl(name)
     let declared = if e.declType != nil: ": " & genType(e.declType) else: ""
     return "var " & name & declared & " = " & valStr
@@ -939,6 +982,9 @@ proc genFieldWrite(ctx: var CodegenCtx, e: Expr,
                ctx.genExpr(e.target.receiver) & ")")
 
 proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
+  ## An assignment or binding, trying the special forms first: a task result
+  ## slot, `xs = xs + [v]` as an append, `s = s + t` as an in-place concat, a
+  ## declaration; else a plain field or variable write.
   let taskResult = ctx.genTaskAssignment(e)
   if taskResult != "": return taskResult
   let appendResult = ctx.genSelfAppendAssignment(e)
@@ -1013,6 +1059,9 @@ proc processMatchArm(ctx: var CodegenCtx, arm: MatchArm, patStr: var string,
   result
 
 proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
+  ## A `match` as a Nim case expression; a payload sum switches on `.kind`.
+  ## An error match with no `_` gets an `else: discard`, since error codes
+  ## are an open set.
   if e.subject == nil: return "discard"
   let ind = "  ".repeat(ctx.indent)
   var subjectStr = ctx.genExpr(e.subject)
@@ -1030,6 +1079,8 @@ proc genExprMatch(ctx: var CodegenCtx, e: Expr): string =
 
 
 proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
+  ## `Actor send handler {payload}`: enqueue the message on the actor's
+  ## mailbox, then notify that actor's scheduler slot.
   # `ActorType send handler {payload}` — enqueue a Msg to the actor's
   # singleton mailbox, then wake the scheduler. The message envelope mirrors
   # genActor: kind = msg<Handler>, fields from the payload struct.
@@ -1061,6 +1112,8 @@ proc selectTimeoutMs(ctx: var CodegenCtx, arm: SelectArm): string =
   else: "int(" & ms & ")"
 
 proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
+  ## A task's `on select`: a read and/or timeout arm lowered onto the
+  ## runtime's await primitives. The checker refuses every other arm shape.
   # task `on select` (spec §9.3), first cut: exactly a `read <fd>` arm and a
   # `timeout <ms>` arm race via tuckAwaitReadOrTimeout — true = fd readable
   # (run the read body), false = deadline (run the timeout body).
@@ -1069,17 +1122,18 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
   # `discard`. The checker now REFUSES any arm this cannot lower
   # (failIfUnlowerableArm), so the fallback below is unreachable for a
   # checked program and stays only as a belt for direct codegen callers.
-  # An arm body is a BLOCK or a single expression, so it is emitted the way a
-  # match arm's is: a block indents itself, an expression gets the branch
-  # indent prefixed. Emitting a block with the expression rule produced
-  # "invalid indentation" the moment arms gained blocks.
-  ## `nest` says whether the body sits inside a branch. The two-arm form
-  ## lowers to `if:`/`else:` and its bodies are one level in; the one-arm form
-  ## lowers to straight-line code — the await, then the body — and its body
-  ## stays at the SAME level. Nesting a sequential body produced Nim's
-  ## "invalid indentation".
   proc armBody(ctx: var CodegenCtx, body: Expr, ind: string,
                nest = true): string =
+    ## An arm body is a BLOCK or a single expression, so it is emitted the way a
+    ## match arm's is: a block indents itself, an expression gets the branch
+    ## indent prefixed. Emitting a block with the expression rule produced
+    ## "invalid indentation" the moment arms gained blocks.
+    ##
+    ## `nest` says whether the body sits inside a branch. The two-arm form
+    ## lowers to `if:`/`else:` and its bodies are one level in; the one-arm form
+    ## lowers to straight-line code — the await, then the body — and its body
+    ## stays at the SAME level. Nesting a sequential body produced Nim's
+    ## "invalid indentation".
     if body != nil and body.kind == exkBlock:
       let saved = ctx.indent
       if nest: ctx.indent += 1
@@ -1126,16 +1180,3 @@ proc genExprSelect(ctx: var CodegenCtx, e: Expr): string =
 # Declaration codegen (genDecl and everything it dispatches to — fn/object/
 # actor/registry/register/mixin/err-handler) now lives in
 # codegen_decl.nim, imported above.
-
-# Implicit return: the value flowing at the end of a fn body is its result.
-# Rewrite the tail statement into an explicit return so the existing return
-# emission (auto-wrap, typed literals) handles it. Control-flow tails keep
-# explicit returns for now (checker enforces branch agreement).
-
-
-# Object member fn (or a mixin fn materialized by `+ mixin`): the object
-# rides as a mutable `self` first parameter; the contract placeholder type
-# `Self` resolves to the object. Emits via a shallow copy — the shared AST
-# stays untouched for the other backend.
-
-# --- dkType sum-type branch helpers ---

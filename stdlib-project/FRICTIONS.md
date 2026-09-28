@@ -179,6 +179,13 @@ mentions that the word is reserved or why.
 
 ## 5b. `error` is reserved and cannot be a function name
 
+> **REVERSED 2026-09-27 (ruling R4).** Attribute words are reserved words:
+> refused as a fn, parameter, local, member or handler name with TK-PA08; a
+> FIELD may still use one. `fn error(...)` in a `pending:` block, allowed by
+> the resolution below, could be declared but never called — `{msg: m} error`
+> cannot parse the attribute word as a callee. `std.log` needs another verb
+> (e.g. `logError`).
+
 > **RESOLVED 2026-08-29 (fixed, not a message).** This one was a real gap.
 > `error` is an ATTRIBUTE word (`tkAttr`), reserved only inside brackets, and
 > `expectMemberName` has always accepted those — but `parseSigName` used a bare
@@ -186,7 +193,7 @@ mentions that the word is reserved or why.
 > every other name-only position, and `fn error(...)` in a `pending:` block
 > parses. `std.log` can have its natural verb.
 
-```tuck
+```tuck-rejected
 pending:
   fn error({sink: LogSink, msg: str}) -> void [io]
 ```

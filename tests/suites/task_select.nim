@@ -14,6 +14,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the task `on select` assertions: read and timeout arms, the
+  ## one-arm awaits, and what a task's await costs.
   # The winning arm's VALUE comes back, not its index. Timeout wins here: a
   # 5ms deadline against a 3s source.
   t.src """

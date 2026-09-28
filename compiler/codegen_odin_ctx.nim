@@ -13,14 +13,15 @@ export decl_index
 
 type
   OdinCodegenCtx* = object
+    ## Everything the Odin emitter carries while printing one package: the
+    ## semantic layer and ownership decisions it prints, the current fn's return
+    ## shape, hoisted struct/enum names, and the imports the package header needs.
     res*: Resolution
       ## The semantic layer this emission reads. Handed over by the pipeline
       ## rather than reached for: which is what makes the stage ordering —
       ## typecheck fills it, everything after reads it — visible instead of a
       ## comment on checkOrDie.
     definedVars*: HashSet[string]
-    fieldVars*: HashSet[string]
-    fieldPrefix*: string   # "this." in methods, "self." in static validate procs
     indent*: int
     module*: Module
     hoisted*: seq[string]  # named decls hoisted out of field positions
@@ -158,6 +159,8 @@ proc odinNamedFallback*(ctx: OdinCodegenCtx, t: Type): string =
   else: ctx.importedTypeQualifier(t.name)
 
 proc odinTupleType*(ctx: var OdinCodegenCtx, t: Type): string =
+  ## A tuple as Odin: a one-element tuple is just its element, anything wider
+  ## a parenthesised multi-value list.
   if t.elems.len == 1: return ctx.odinType(t.elems[0])
   var parts: seq[string]
   for e in t.elems: parts.add(ctx.odinType(e))
@@ -245,6 +248,10 @@ proc odinSumTypeName(ctx: var OdinCodegenCtx, t: Type): string =
   return "any"
 
 proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
+  ## The Odin spelling of a Tuck type: builtins map directly, records and sums
+  ## become hoisted named structs/unions, and a generic fnsig application is
+  ## its substituted signature. The kinds lowering should have removed
+  ## fall back to `rawptr`.
   if t == nil: return "void"
   case t.kind
   of tkNamed:
@@ -268,10 +275,18 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
     recStructName(ctx, t.fields)
   of tkSum:
     odinSumTypeName(ctx, t)
-  else:
+  # A union or rename should have been flattened by lowering before reaching a
+  # backend, and tkEffect is a checker-side annotation with no runtime shape;
+  # `rawptr` is the it-got-here-anyway answer for all three, as `pointer` is
+  # in the Nim backend. Listed rather than left to `else` so a new TypeKind
+  # must decide explicitly.
+  of tkUnion, tkRename, tkEffect:
     "rawptr"
 
 proc fieldType*(ctx: var OdinCodegenCtx, parent: string, f: FieldDef): string =
+  ## The Odin type of a field of `parent`. A payload-free inline sum is
+  ## hoisted as its own `<Parent><Field>Kind` enum, since Odin has no anonymous
+  ## enum in field position.
   if f.typ != nil and f.typ.kind == tkSum:
     var allNoFields = true
     for v in f.typ.variants:
@@ -291,6 +306,9 @@ proc fieldType*(ctx: var OdinCodegenCtx, parent: string, f: FieldDef): string =
 # backend-neutral questions about the AST, so they live in ast_query.
 
 proc genQualified*(ctx: OdinCodegenCtx, e: Expr): string =
+  ## A qualified name (`mod::name`, or a bare name the module does not declare)
+  ## as an Odin package reference. Odin never merges package scopes, so the
+  ## owning package is resolved here: local first, then the imports.
   let modName = if e.modulePath.len > 0: e.modulePath[0] else: ""
   if modName == "":
     # Unqualified name. Nim gets this free — the emitted file `import`s the
@@ -317,10 +335,8 @@ proc newOdinCtx*(m: Module, realModules: Table[string, Module],
                 moduleName: string, res: Resolution,
                 modPrefix = ""): OdinCodegenCtx =
   ## indent 0: Odin declarations are top-level in a package, with no enclosing
-  ## class the way Beef/C# needed one.
-  result = OdinCodegenCtx(definedVars: initHashSet[string](),
-                          fieldVars: initHashSet[string](),
-                          fieldPrefix: "self.", indent: 0, module: m,
+  ## class around them.
+  result = OdinCodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m,
                           realModules: realModules, moduleName: moduleName,
                           modPrefix: modPrefix, res: res)
   for d in m.decls:

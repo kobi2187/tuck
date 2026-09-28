@@ -21,6 +21,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the assertions that a handler may not declare a return type
+  ## (TK-AC02) and that `result` is an ordinary undeclared name in one.
   # A handler declaring a return type is the construct that cannot be honoured.
   t.src """
 actor Counter:

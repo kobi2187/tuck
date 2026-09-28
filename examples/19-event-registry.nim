@@ -1,36 +1,36 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-proc tuck_fn_triggerEvent*(): void
-proc tuck_fn_AppEvents_SensorFailure*(port: uint8, reason: sink string): void
-proc tuck_fn_AppEvents_LowMemory*(remaining: uint32): void
+proc tuckˑfnˑtriggerEvent*(): void
+proc tuckˑfnˑAppEvents_SensorFailure*(port: uint8, reason: sink string): void
+proc tuckˑfnˑAppEvents_LowMemory*(remaining: uint32): void
 
-type tuck_AppEventsKind* = enum SensorFailure, LowMemory
-type tuck_AppEvents* = ref object
-  tuckTag*: tuck_AppEventsKind
+type tuckˑregistryˑAppEventsKind* = enum SensorFailure, LowMemory
+type tuckˑregistryˑAppEvents* = ref object
+  tuckTag*: tuckˑregistryˑAppEventsKind
   port*: uint8
   reason*: string
   remaining*: uint32
 
-var latesttuck_AppEvents*: tuck_AppEvents
+var latesttuckˑregistryˑAppEvents*: tuckˑregistryˑAppEvents
 
-proc raise_tuck_AppEvents_SensorFailure*(port: uint8, reason: string) =
-  latesttuck_AppEvents = tuck_AppEvents(tuckTag: SensorFailure, port: port, reason: reason)
-  tuck_fn_AppEvents_SensorFailure(port, reason)
+proc raise_tuckˑregistryˑAppEvents_SensorFailure*(port: uint8, reason: string) =
+  latesttuckˑregistryˑAppEvents = tuckˑregistryˑAppEvents(tuckTag: SensorFailure, port: port, reason: reason)
+  tuckˑfnˑAppEvents_SensorFailure(port, reason)
 
-proc raise_tuck_AppEvents_LowMemory*(remaining: uint32) =
-  latesttuck_AppEvents = tuck_AppEvents(tuckTag: LowMemory, remaining: remaining)
-  tuck_fn_AppEvents_LowMemory(remaining)
+proc raise_tuckˑregistryˑAppEvents_LowMemory*(remaining: uint32) =
+  latesttuckˑregistryˑAppEvents = tuckˑregistryˑAppEvents(tuckTag: LowMemory, remaining: remaining)
+  tuckˑfnˑAppEvents_LowMemory(remaining)
 
 
-proc tuck_fn_triggerEvent*(): void =
-  raise_tuck_AppEvents_SensorFailure(1, "timeout")
+proc tuckˑfnˑtriggerEvent*(): void =
+  raise_tuckˑregistryˑAppEvents_SensorFailure(1, "timeout")
 
-proc tuck_fn_AppEvents_SensorFailure*(port: uint8, reason: sink string): void =
-  var tuck_x = port
-  var tuck_y = reason
+proc tuckˑfnˑAppEvents_SensorFailure*(port: uint8, reason: sink string): void =
+  var tuckˑvˑx = port
+  var tuckˑvˑy = reason
 
-proc tuck_fn_AppEvents_LowMemory*(remaining: uint32): void =
-  var tuck_left = remaining
+proc tuckˑfnˑAppEvents_LowMemory*(remaining: uint32): void =
+  var tuckˑvˑleft = remaining
 
 static: assert((1 == 1))

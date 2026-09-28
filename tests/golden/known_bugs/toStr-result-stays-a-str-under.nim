@@ -1,10 +1,10 @@
 {.experimental: "codeReordering".}
 import str
 
-proc tuck_fn_main*(): int
+proc tuckˑfnˑmain*(): int
 
-proc tuck_fn_main*(): int =
-  var tuck_n = 3
-  var tuck_s = tuckConcat(tuck_rt.toStr(tuck_n), " bottles")
+proc tuckˑfnˑmain*(): int =
+  var tuckˑvˑn = 3
+  var tuckˑvˑs = tuckConcat(tuck_rt.toStr(tuckˑvˑn), " bottles")
   return 0
 

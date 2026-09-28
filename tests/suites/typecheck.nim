@@ -11,6 +11,7 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the bidirectional type checker's positive and negative cases.
 
   t.src """
 fn f({a: int}) -> int:
@@ -105,7 +106,7 @@ type Session [sealed]:
   t.okCheck "valid sealed transition graph"
 
   t.src """
-decision route({priority: int, encrypted: bool}) -> int:
+decision route({urgency: int, encrypted: bool}) -> int:
   | high  _     -> 1
   | high  true  -> 2
   | _     _     -> 3
@@ -113,14 +114,14 @@ decision route({priority: int, encrypted: bool}) -> int:
   t.badCheck "decision row unreachable", "unreachable"
 
   t.src """
-decision route({priority: int, encrypted: bool}) -> int:
+decision route({urgency: int, encrypted: bool}) -> int:
   | high  true  -> 1
   | low   false -> 2
 """
   t.badCheck "decision missing catch-all", "catch\\-all"
 
   t.src """
-decision route({priority: int, encrypted: bool}) -> int:
+decision route({urgency: int, encrypted: bool}) -> int:
   | high  true  -> 1
   | high  false -> 2
   | _     _     -> 3
@@ -132,7 +133,7 @@ type Priority:
   | High
   | Low
 
-decision route({priority: Priority, encrypted: bool}) -> int:
+decision route({urgency: Priority, encrypted: bool}) -> int:
   | High  true  -> 1
   | High  false -> 2
   | Low   _     -> 3
@@ -144,7 +145,7 @@ type Priority:
   | High
   | Low
 
-decision route({priority: Priority, encrypted: bool}) -> int:
+decision route({urgency: Priority, encrypted: bool}) -> int:
   | High  true  -> 1
   | Low   _     -> 3
 """
@@ -155,7 +156,7 @@ type Priority:
   | High
   | Low
 
-decision route({priority: Priority, encrypted: bool}) -> int:
+decision route({urgency: Priority, encrypted: bool}) -> int:
   | Hgih  true  -> 1
   | _     _     -> 2
 """
@@ -166,7 +167,7 @@ type Priority:
   | High
   | Low
 
-decision route({priority: Priority, encrypted: bool}) -> int:
+decision route({urgency: Priority, encrypted: bool}) -> int:
   | High  _     -> 1
   | Low   _     -> 2
   | High  true  -> 3
@@ -848,7 +849,7 @@ fn main() -> int:
   # fix above, and the emitted call passed the receiver by value, which
   # Odin itself rejects ("Cannot assign value 'd' ... to '^tuck_type_Deck'").
   t.emitsOdin "Odin passes the receiver by address to match self: ^T",
-              r"tuck_type_Deck_crank\(&tuck_d, 1\)"
+              r"tuckˑobjectˑDeckˑcrank\(&tuckˑvˑd, 1\)"
 
   t.src """
 type Server:
@@ -977,7 +978,7 @@ fn playTrack({id: int, name: str}) -> void:
 
 fn main() -> void:
   let ext = {trackId: 42, title: "x"}
-  let normalized = ext alias(trackId: id, title: name)
+  let normalized = ext alias(trackId -> id, title -> name)
   normalized playTrack
   return
 """
@@ -989,7 +990,7 @@ fn playTrack({id: int, name: str}) -> void:
 
 fn main() -> void:
   let ext = {trackId: 42, title: "x"}
-  let normalized = ext alias(trackId: id)
+  let normalized = ext alias(trackId -> id)
   normalized playTrack
   return
 """
@@ -998,7 +999,7 @@ fn main() -> void:
   t.src """
 fn main() -> void:
   let ext = {trackId: 42}
-  let normalized = ext alias(wrong: id)
+  let normalized = ext alias(wrong -> id)
   return
 """
   t.badCheck "alias source field must exist on the receiver", "does\\ not\\ exist"
@@ -1922,6 +1923,37 @@ fn main() -> int:
 """
   t.okCheck "'or' on bools is fine"
 
+  # `xor` was ruled a boolean operator beside `and`/`or` (spec 3.3, §7.2) and
+  # every backend emitted boXor, but the lexer had no keyword for it: `a xor
+  # b` parsed `xor` as a bare name. Found 2026-09-27.
+  t.src """
+fn main() -> int:
+  let a = 5 xor 3
+  return 0
+"""
+  t.badCheck "'xor' rejects non-bool operands", "expects\\ bool"
+
+  t.src """
+fn flip({a: bool, b: bool}) -> bool:
+  return a xor b
+
+fn main() -> int:
+  var n = 0
+  if {a: true, b: false} flip:
+    n = n + 1
+  if {a: false, b: true} flip:
+    n = n + 2
+  if {a: true, b: true} flip:
+    n = n + 4
+  if {a: false, b: false} flip:
+    n = n + 8
+  if 1 < 2 xor 3 < 2:
+    n = n + 16
+  return n
+"""
+  t.okCheck "'xor' on bools is fine, below the comparisons"
+  t.hostRuns "...and is exclusive-or on every backend", 19
+
   t.src """
 fn find({n: int}) -> ?{value: int} [io]:
   return {value: n}
@@ -1933,7 +1965,22 @@ fn main() -> int [io]:
     return 1
   return 0
 """
-  t.okCheck "?T reads as presence in a boolean guard"
+  # Ruled 2026-09-27: a `T?` is not a boolean. This read as "is present"
+  # until then; presence is now tested with `.ok`.
+  t.badCheck "a T? operand of `and` is refused", "unhandled"
+
+  t.src """
+fn find({n: int}) -> ?{value: int} [io]:
+  return {value: n}
+
+fn main() -> int [io]:
+  let a = {n: 1} find
+  let b = {n: 2} find
+  if a.ok and b.ok:
+    return 1
+  return 0
+"""
+  t.okCheck "...presence is tested with `.ok`: `if a.ok and b.ok:`"
 
   t.src """
 type Door:
@@ -2057,9 +2104,9 @@ fnsig Mapper[T, U] = {value: T} -> U
 type Box = {mapFn: Mapper[int, str]}
 """
   t.emits "generic fnsig emits a real Nim generic proc-type alias",
-          r"tuck_type_Mapper\*\[T, U\] = proc\(value: T\): U \{\.closure\.\}"
+          r"tuckˑfnsigˑMapper\*\[T, U\] = proc\(value: T\): U \{\.closure\.\}"
   t.emits "generic fnsig field instantiates concrete type args",
-          r"tuck_type_Mapper\[int, string\]"
+          r"tuckˑfnsigˑMapper\[int, string\]"
 
   t.src """
 fnsig Mapper[T, U] = {value: T} -> U
@@ -2203,7 +2250,7 @@ fn playTrack({id: int, name: str, length: int}) -> void:
 
 fn main() -> void:
   let ext = {trackId: 42, title: "Slow Jam", durationMs: 215000}
-  let norm = ext alias(trackId: id, title: name, durationMs: length)
+  let norm = ext alias(trackId -> id, title -> name, durationMs -> length)
   norm playTrack
   return
 """
@@ -2669,7 +2716,7 @@ fn main() -> int:
   return 0
 """
   t.okCheck "an actor's queue takes a derived const"
-  t.emits "...and codegen emits the NUMBER, not the name", "Mailbox\\[[a-zA-Z_]*,\\ 8\\]"
+  t.emits "...and codegen emits the NUMBER, not the name", "Mailbox\\[[^,]*,\\ 8\\]"
 
   t.src """
 actor Sink [queue: Nope]:
@@ -2700,7 +2747,7 @@ fn main() -> int:
   return 0
 """
   t.okCheck "a pool's count takes a derived const"
-  t.emits "...and the pool is emitted with the NUMBER", "ObjectPool\\[[a-zA-Z_]*,\\ 6\\]"
+  t.emits "...and the pool is emitted with the NUMBER", "ObjectPool\\[[^,]*,\\ 6\\]"
 
   t.src """
 type Cell:

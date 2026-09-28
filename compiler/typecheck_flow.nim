@@ -25,6 +25,7 @@
 import ast, tables, sets, strutils
 import typecheck_util
 import typecheck_state
+from ast_query import implicitTailValue
 
 
 
@@ -55,15 +56,24 @@ proc transType*(tc: TypeChecker, t: Type): string =
 ## variant rather than making these two lie about their domain.
 
 proc allVariants*(tc: TypeChecker, typeName: string): seq[string] =
+  ## Every variant of the sum `typeName`, in declaration order — the answer
+  ## when nothing narrows a value. Requires `typeName` to be declared (see the
+  ## PRECONDITION note above).
   for v in tc.typeDecls[typeName].variants: result.add(v.name)
 
 proc hasEdge(tc: TypeChecker, typeName, frm, to: string): bool =
+  ## Does the transitions table of `typeName` allow `frm -> to`? Same
+  ## precondition as `allVariants`.
   for tr in tc.typeDecls[typeName].transitions:
     if tr.`from` == frm and tr.to == to: return true
   false
 
 proc checkTransSet*(tc: var TypeChecker, typeName: string,
                    cur, next: seq[string], sp: Span) =
+  ## Checks an assignment moving a value from the variant set `cur` to `next`:
+  ## every target must be reachable from EVERY current variant, since the
+  ## checker cannot tell which one the value holds. Re-assigning the same
+  ## variant (a payload refresh) is always legal.
   # legal iff every target is reachable from EVERY member of the current set
   for to in next:
     for frm in cur:
@@ -79,16 +89,20 @@ proc checkTransSet*(tc: var TypeChecker, typeName: string,
 # else is the full set (all variants possible).
 proc fnReturnVariants*(tc: TypeChecker, fnName, typeName: string): seq[string]
 
-## Extracts variants from a bare Type.Variant field access
 proc variantsFromField(tc: TypeChecker, typeName: string, e: Expr): seq[string] =
+  ## Extracts variants from a bare Type.Variant field access.
+  ## A bare `Type.Variant` (a payload-free construction) is exactly that one
+  ## variant; empty for anything else.
   # bare Type.Variant (incl. [unsafe])
   if e.receiver != nil and e.receiver.kind == exkVar and
      e.receiver.name == typeName:
     return @[e.fieldName]
   @[]
 
-## Extracts variants from a call expression
 proc variantsFromCall(tc: TypeChecker, typeName: string, e: Expr): seq[string] =
+  ## Extracts variants from a call expression.
+  ## `{payload} Type.Variant` is that variant; a call to a fn of this module
+  ## is the union of its traceable returns. Empty when neither applies.
   # {payload} Type.Variant
   if e.callee != nil and e.callee.kind == exkField and
      e.callee.receiver != nil and e.callee.receiver.kind == exkVar and
@@ -100,6 +114,9 @@ proc variantsFromCall(tc: TypeChecker, typeName: string, e: Expr): seq[string] =
   @[]
 
 proc exprVariants*(tc: TypeChecker, typeName: string, e: Expr): seq[string] =
+  ## The variants a value of sum `typeName` can hold after evaluating `e`:
+  ## narrowed for constructions, traced fn calls and tracked vars, else every
+  ## variant (the conservative answer).
   if e == nil: return tc.allVariants(typeName)
   case e.kind
   of exkField:
@@ -176,6 +193,7 @@ proc collectFieldReads(param: string, e: Expr, acc: var HashSet[string]) =
   for c in e.children: collectFieldReads(param, c, acc)
 
 proc namesVar(e: Expr, name: string): bool =
+  ## Is `e` a bare read of the variable `name`?
   e != nil and e.kind == exkVar and e.name == name
 
 proc assignedField(target: Expr, name: string, acc: var HashSet[string]) =
@@ -260,22 +278,40 @@ proc uninitFieldsRead*(tc: TypeChecker, fnName, param: string,
   for h in holes:
     if h in reads: result.add(h)
 
-## Checks implicit tail return of a function body and adds its variants if it's exact
+proc addTailValue(tc: TypeChecker, typeName: string, v: Expr,
+                  acc: var seq[string], exact: var bool) =
+  ## One value the body can fall off the end with. Exactly one variant is
+  ## counted; anything else makes the fn's answer inexact.
+  let vs = tc.exprVariants(typeName, v)
+  if vs.len == 1:
+    for x in vs:
+      if x notin acc: acc.add(x)
+  else:
+    exact = false
+
 proc checkImplicitTailReturn(tc: TypeChecker, typeName: string, fnBody: Expr,
                              acc: var seq[string], exact: var bool) =
-  # the implicit tail return is a plain trailing expression
-  if fnBody.kind == exkBlock and fnBody.stmts.len > 0:
-    let last = fnBody.stmts[^1]
-    if last.kind notin {exkReturn, exkIf, exkMatch, exkFor, exkWhile,
-                        exkBreak, exkContinue, exkBlock, exkAssign}:
-      let vs = tc.exprVariants(typeName, last)
-      if vs.len == 1:
-        for v in vs:
-          if v notin acc: acc.add(v)
-      else:
-        exact = false
+  ## The variants a body's implicit tail value adds — the same tail lowering
+  ## turns into a `return` (ast_query.implicitTailValue). A tail `match`
+  ## yields each arm's value; an arm whose body is a block is not traced and
+  ## makes the answer inexact. Ignoring the tail match altogether, as this
+  ## once did, made the traced set too NARROW — the unsafe direction for a
+  ## transition check.
+  let tail = implicitTailValue(fnBody)
+  if tail == nil: return
+  if tail.kind != exkMatch:
+    tc.addTailValue(typeName, tail, acc, exact)
+    return
+  for arm in tail.arms:
+    if arm.body == nil or arm.body.kind == exkBlock:
+      exact = false
+      return
+    tc.addTailValue(typeName, arm.body, acc, exact)
 
 proc fnReturnVariants*(tc: TypeChecker, fnName, typeName: string): seq[string] =
+  ## The variants fn `fnName` can return as sum `typeName`: the union of its
+  ## return sites when every one is a traceable construction, else all of
+  ## them. Only fns declared in this module are traced.
   for d in tc.module.decls:
     if d != nil and d.kind == dkFn and d.name == fnName and
        d.fnReturnType != nil and d.fnReturnType.kind == tkNamed and
@@ -290,6 +326,8 @@ proc fnReturnVariants*(tc: TypeChecker, fnName, typeName: string): seq[string] =
 
 
 proc mergeVariants*(a, b: Table[string, seq[string]]): Table[string, seq[string]] =
+  ## Unions two var -> variant-set tables, per var. Used where control flow
+  ## joins, so each var may hold anything either path gave it.
   result = a
   for k, v in b:
     if result.hasKey(k):

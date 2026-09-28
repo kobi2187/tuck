@@ -25,7 +25,7 @@ import smokelib
 # --- individual cases ------------------------------------------------------
 
 proc caseInv(w: Work) =
-  # invariants: validate() auto-inserted at construction and return sites
+  ## invariants: validate() auto-inserted at construction and return sites
   let d = caseDir("inv")
   const body = """
 type Temperature:
@@ -84,7 +84,7 @@ fn main() -> void:
   removeDir(d)
 
 proc caseTdl(w: Work) =
-  # type-directed lowering: record var as whole payload explodes to params
+  ## type-directed lowering: record var as whole payload explodes to params
   let d = caseDir("tdl")
   buildOk(d.write("p.tuck", """
 type Player = {position: int, step: int}
@@ -97,19 +97,19 @@ fn main() -> void:
   let n = p advance
   return
 """), d / "out")
-  mustContain(d / "out" / "p.nim", "advance(tuck_p.position, tuck_p.step)")
+  mustContain(d / "out" / "p.nim", "advance(tuckˑvˑp.position, tuckˑvˑp.step)")
   mustExit(d / "out" / "p", 0)
   removeDir(d)
 
 proc caseChaintail(w: Work) =
-  # `..` chain as the fn's tail: mutate a local copy, which is the chain's
-  # implicit result.
-  #
-  # Was `self ..n {41}` straight on the parameter. That stopped compiling when
-  # parameters became immutable values (spec §7.1) — a mutator copies first
-  # and returns the copy, so the caller's record is never written through.
-  # What this case is actually for (a chain in tail position IS the return
-  # value) is unchanged.
+  ## `..` chain as the fn's tail: mutate a local copy, which is the chain's
+  ## implicit result.
+  ##
+  ## Was `self ..n {41}` straight on the parameter. That stopped compiling when
+  ## parameters became immutable values (spec §7.1) — a mutator copies first
+  ## and returns the copy, so the caller's record is never written through.
+  ## What this case is actually for (a chain in tail position IS the return
+  ## value) is unchanged.
   let d = caseDir("chaintail")
   buildOk(d.write("t.tuck", """
 import sys
@@ -130,7 +130,7 @@ fn main() -> void [io]:
   removeDir(d)
 
 proc caseErrmatch(w: Work) =
-  # match over r.err: arms compile to hashed code constants, branch correctly
+  ## match over r.err: arms compile to hashed code constants, branch correctly
   let d = caseDir("errmatch")
   buildOk(d.write("t.tuck", """
 import sys
@@ -156,7 +156,7 @@ fn main() -> void [io]:
   removeDir(d)
 
 proc caseTour123(w: Work) =
-  # toStr + string concat + list literals + for loops (tour gaps 1-3)
+  ## toStr + string concat + list literals + for loops (tour gaps 1-3)
   let d = caseDir("tour123")
   buildOk(d.write("t.tuck", """
 import console
@@ -187,7 +187,7 @@ fn main() -> void [io]:
   removeDir(d)
 
 proc caseErrname(w: Work) =
-  # unhandled report names the error via the reverse table (debug builds)
+  ## unhandled report names the error via the reverse table (debug builds)
   let d = caseDir("errname")
   buildOk(d.write("t.tuck", """
 errors [policy: continue]:
@@ -212,7 +212,7 @@ fn main() -> void [io]:
   removeDir(d)
 
 proc caseLib(w: Work) =
-  # top-level statements are declarations-only violations; library builds
+  ## top-level statements are declarations-only violations; library builds
   let d = caseDir("lib")
   let bad = d.write("bad.tuck", "fn f({a: int}) -> int:\n  return a\n\nlet x = {a: 1} f\n")
   let (brc, bout) = check(bad)
@@ -231,7 +231,7 @@ proc caseLib(w: Work) =
   # aborted this script long before reaching it.)
 
 proc caseCtrlflow(w: Work) =
-  # control flow: loop/break, for-cond, continue, ranges, indexed for, fn inline
+  ## control flow: loop/break, for-cond, continue, ranges, indexed for, fn inline
   let d = caseDir("ctrlflow")
   buildOk(d.write("cf.tuck", """
 fn inline bump({x: int}) -> int:
@@ -261,14 +261,14 @@ fn main() -> int:
   removeDir(d)
 
 proc caseValuetype(w: Work) =
-  # records are VALUE types (spec §7.1): == compares fields, not identity, a
-  # copy is independent of its source, and PASSING one to a fn does not let
-  # that fn write back through it.
-  #
-  # `shift` used to be `p ..x {99}` — mutating the parameter directly, which
-  # the emitter turned into a `var` (by-reference) param, so the caller's
-  # record changed. The case asserting value semantics was itself violating
-  # them. It now copies, and the caller checks its own value survived.
+  ## records are VALUE types (spec §7.1): == compares fields, not identity, a
+  ## copy is independent of its source, and PASSING one to a fn does not let
+  ## that fn write back through it.
+  ##
+  ## `shift` used to be `p ..x {99}` — mutating the parameter directly, which
+  ## the emitter turned into a `var` (by-reference) param, so the caller's
+  ## record changed. The case asserting value semantics was itself violating
+  ## them. It now copies, and the caller checks its own value survived.
   let d = caseDir("valuetype")
   buildOk(d.write("t.tuck", """
 type Point = {x: int, y: int}
@@ -299,8 +299,8 @@ fn main() -> int:
   removeDir(d)
 
 proc caseNullary(w: Work) =
-  # spec 2.3: a bare name IS a call — a zero-arg fn referenced bare must be
-  # invoked, not taken as a proc reference (`:name` is the fn-ref form)
+  ## spec 2.3: a bare name IS a call — a zero-arg fn referenced bare must be
+  ## invoked, not taken as a proc reference (`:name` is the fn-ref form)
   let d = caseDir("nullary")
   buildOk(d.write("t.tuck", """
 fn getFive() -> int:
@@ -318,8 +318,8 @@ fn main() -> int:
   removeDir(d)
 
 proc caseMatchret(w: Work) =
-  # a trailing `match subject:` IS the fn's result — its value arms carry no
-  # returns of their own, so the implicit-return rewrite must wrap the match
+  ## a trailing `match subject:` IS the fn's result — its value arms carry no
+  ## returns of their own, so the implicit-return rewrite must wrap the match
   let d = caseDir("matchret")
   buildOk(d.write("t.tuck", """
 type Light:
@@ -340,8 +340,8 @@ fn main() -> int:
   removeDir(d)
 
 proc caseSeqat(w: Work) =
-  # std/seq: indexed read/write as named fns (`at`/`setAt`), not `[]` sugar.
-  # Bounds are a precondition — out of range aborts at the call site.
+  ## std/seq: indexed read/write as named fns (`at`/`setAt`), not `[]` sugar.
+  ## Bounds are a precondition — out of range aborts at the call site.
   let d = caseDir("seqat")
   buildOk(d.write("t.tuck", """
 import seq
@@ -367,9 +367,9 @@ fn main() -> int:
   removeDir(d)
 
 proc caseIndex(w: Work) =
-  # bracket sugar: xs[i] reads, xs[i] = v writes, xs[i] += v compounds.
-  # All desugar to the seq::at / seq::setAt calls above — same bounds
-  # precondition, no new codegen path.
+  ## bracket sugar: xs[i] reads, xs[i] = v writes, xs[i] += v compounds.
+  ## All desugar to the seq::at / seq::setAt calls above — same bounds
+  ## precondition, no new codegen path.
   let d = caseDir("index")
   buildOk(d.write("t.tuck", """
 import seq
@@ -419,7 +419,7 @@ fn main() -> int:
   removeDir(d)
 
 proc casePool(w: Work) =
-  # spec 7.2 pools: declaration diagnostics, and a real acquire/release cycle.
+  ## spec 7.2 pools: declaration diagnostics, and a real acquire/release cycle.
   let d = caseDir("pool")
 
   # a pool needs a count — without one it has no static footprint
@@ -478,10 +478,10 @@ proc example(w: Work) =
   removeDir(d)
 
 proc caseEffects(w: Work) =
-  # Effects cross the module boundary, from source AND from the cached index.
-  # Both paths must reject identically: a pure fn calling an imported [io] fn is
-  # an error whether the callee was just parsed or restored from .tuck-cache.
-  # Run twice on purpose — the second run is the one that reads the index.
+  ## Effects cross the module boundary, from source AND from the cached index.
+  ## Both paths must reject identically: a pure fn calling an imported [io] fn is
+  ## an error whether the callee was just parsed or restored from .tuck-cache.
+  ## Run twice on purpose — the second run is the one that reads the index.
   let d = caseDir("effects")
   discard d.write("lib.tuck", "fn noisy(value: int) -> int [io]:\n  return value + 1\n")
   let bad = d.write("bad.tuck", """
@@ -515,14 +515,14 @@ fn main() -> void [io]:
   removeDir(d)
 
 proc caseBytype(w: Work) =
-  # Payload fields matched to params BY TYPE, with a struct LITERAL receiver.
-  # The checker matches by name first, then by type for whatever is left
-  # (typecheck.nim checkCallArgs pass 2), so `alpha` legitimately feeds `first`.
-  # Lowering has to use that mapping rather than re-deriving it by name — when it
-  # re-derived, nothing matched and every argument became the literal `none`,
-  # which the type checker had already waved through. A variable receiver took a
-  # different path and was always correct, which is why this went unnoticed:
-  # the exit code below is 42 only if all three arguments arrive in order.
+  ## Payload fields matched to params BY TYPE, with a struct LITERAL receiver.
+  ## The checker matches by name first, then by type for whatever is left
+  ## (typecheck.nim checkCallArgs pass 2), so `alpha` legitimately feeds `first`.
+  ## Lowering has to use that mapping rather than re-deriving it by name — when it
+  ## re-derived, nothing matched and every argument became the literal `none`,
+  ## which the type checker had already waved through. A variable receiver took a
+  ## different path and was always correct, which is why this went unnoticed:
+  ## the exit code below is 42 only if all three arguments arrive in order.
   let d = caseDir("bytype")
   buildOk(d.write("t.tuck", """
 import sys
@@ -536,13 +536,15 @@ fn main() -> void [io]:
   let r = {alpha: 42, beta: "x", gamma: true} pick
   r sys::exit
 """), d / "out")
-  mustContain(d / "out" / "t.nim", "tuck_fn_pick(42, \"x\", true)")
+  mustContain(d / "out" / "t.nim", "tuckˑfnˑpick(42, \"x\", true)")
   mustExit(d / "out" / "t", 42)
   removeDir(d)
 
 # --- the suite -------------------------------------------------------------
 
 proc run*(t: var T) =
+  ## Registers the CLI smoke cases: every command run in sequence against
+  ## shared temp files, checking exit codes and fail-fast behaviour.
   if t.phase != pReport: return
 
   # This suite is ~100 SEQUENTIAL `tuck build` + run steps driven through `sh`,

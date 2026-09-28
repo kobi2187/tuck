@@ -1,9 +1,11 @@
 ## The SSA value mirror — Stage A of thoughts/ssa-mirror-design.md.
 ##
-## THE MIRROR IS PROOF-ONLY TODAY. Nothing consults it: no emitter reads a
-## stamp from it and no analysis asks it a question. It exists so that the
-## ownership work can move off syntax-directed emitters, and it earns each
-## step of that by being checked before anything depends on it.
+## The mirror started proof-only and has since become load-bearing: the move
+## decision (analysis_provenance.moveFactsSsa), the escape test
+## (ownership_escape) and the buffer check (buffer_check) all read it. It
+## exists so that the ownership work can move off syntax-directed emitters,
+## and it earned each of those steps by being checked before anything
+## depended on it — which is why the checks here still matter.
 ##
 ## WHAT IS ASSERTED HERE, and why it is shaped like this.
 ##
@@ -32,6 +34,8 @@ import std/[os, strutils]
 import ../harness
 
 proc corpusFiles(): seq[string] =
+  ## Every Tuck source the mirror is exercised on: the examples, the bench
+  ## apps, the Savina ports and the stdlib.
   for pat in ["examples/*.tuck", "benches/apps/*.tuck",
               "benches/savina/*.tuck", "std/*.tuck"]:
     for f in walkFiles(pat): result.add f
@@ -43,6 +47,8 @@ proc corpusFiles(): seq[string] =
 const notChecked = ["16-actor-tasks-unified-syntax.tuck"]
 
 proc run*(t: var T) =
+  ## Registers the SSA mirror assertions: graphs for the shapes the builder must
+  ## get right, and structural errors caught.
   var idx: seq[tuple[name: string, i: int]]
   for f in corpusFiles():
     let name = f.extractFilename
@@ -170,7 +176,7 @@ fn main() -> int:
   let noplace = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck",
                             "--verify-stages", "--root:" & t.root])
   t.emits "...and it lowers to the setter, not a place",
-          r"tuck_R_W_set\(true\)"
+          r"tuckˑregisterˑR_W_set\(true\)"
 
   if t.phase == pReport:
     let (rc, outp) = t.resultOf(noplace)
@@ -234,7 +240,7 @@ fn main() -> int:
 """
   t.okCheck "a parameter iterated once checks"
   t.emits "...and its only read is final, so Nim gets sink",
-          r"proc tuck_fn_total\*\(xs: sink seq\[int\]\)"
+          r"proc tuckˑfnˑtotal\*\(xs: sink seq\[int\]\)"
   t.runs "...and it still computes what it did", 6
   t.hostRuns("...on every backend", 6)
 
@@ -292,7 +298,7 @@ fn main() -> int:
 """
   t.okCheck "an actor field handed to a threading fn checks"
   t.emitsOdin "...and reaches the copying wrapper, not the twin",
-              r"tuck_fn_grow\(self\.st\)"
+              r"tuckˑfnˑgrow\(self\.st\)"
   # 7 + 0. A twin that took the field destructively would free it, and the
   # read after the wait would answer with whatever was left.
   t.hostRuns("...so the actor's own buffer survives", 7)

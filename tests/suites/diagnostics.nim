@@ -9,6 +9,8 @@ import std/[os, strutils, re, algorithm]
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the diagnostic-registry assertions: every code resolves, `tuck
+  ## explain` answers for it, and it reaches the message the user sees.
   # --- the code reaches the user -------------------------------------------
 
   t.src """
@@ -75,6 +77,48 @@ fn main() -> int:
   return b
 """
   t.badCheck "an infix 'mod' carries TK-PA11 and names '%'", "TK-PA11"
+
+  # TK-PA16 — `and`, `or` and `xor` do not rank against each other (ruled
+  # 2026-09-27), so mixing two of them needs parentheses. Before the ruling
+  # they shared one level and grouped to the right: `a and b or c` meant
+  # `a and (b or c)`, the opposite of C, Python and Nim for a = false.
+  for mixed in ["a and b or c", "a or b and c", "a xor b and c",
+                "a and b xor c", "a == b and c or a"]:
+    t.src "fn f({a: bool, b: bool, c: bool}) -> bool:\n  return " & mixed & "\n"
+    t.badCheck "`" & mixed & "` is refused with TK-PA16", "TK-PA16"
+  for grouped in ["(a and b) or c", "a and (b or c)", "(a or b) and (b or c)",
+                  "a and b and c", "a or b or c", "a xor b xor c",
+                  "a == b and c"]:
+    t.src "fn f({a: bool, b: bool, c: bool}) -> bool:\n  return " & grouped & "\n"
+    t.okCheck "`" & grouped & "` is accepted"
+  t.src """
+fn f({a: bool, b: bool, c: bool}) -> bool:
+  return (a and b) or c
+
+fn main() -> int:
+  if {a: false, b: true, c: true} f:
+    return 1
+  return 0
+"""
+  t.hostRuns "`(a and b) or c` is true for false/true/true on every backend", 1
+
+  # TK-PA17 — one rename spelling, `old -> new` (ruled 2026-09-27). The colon
+  # form `alias(old: new)` read like a record literal and is refused with
+  # the fix.
+  t.src """
+fn main() -> int:
+  let ext = {trackId: 42, title: "x"}
+  let n = ext alias(trackId: id)
+  return n.id
+"""
+  t.badCheck "`alias(old: new)` is refused with TK-PA17", "TK-PA17"
+  t.src """
+fn main() -> int:
+  let ext = {trackId: 42, title: "x"}
+  let n = ext alias(trackId -> id)
+  return n.id
+"""
+  t.hostRuns "`alias(old -> new)` renames the field on every backend", 42
 
   # TK-PA12 — a parameter named after a BACKEND's keyword. Every other user
   # name gets a `tuck_` prefix; a parameter keeps what the author wrote, so
@@ -252,14 +296,15 @@ fn main() -> int:
   t.src "type Z = {when: str}\n"
   let rwWhenIdx = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck"])
 
-  # An ATTRIBUTE word is NOT a keyword: it is reserved only inside brackets, so
-  # a name-only position takes it. `fn error(...)` is the log level's verb.
-  # (FRICTIONS #5b — this used to be a parse error in a `pending:` block.)
+  # An ATTRIBUTE word is a reserved word (ruled 2026-09-27, R4): refused as a
+  # fn name, in a `pending:` block too. FRICTIONS #5b had made this legal for
+  # a log verb, but no call to such a fn could be written — `{msg: m} error`
+  # cannot parse the word as a callee. A FIELD may still use one.
   t.src """
 pending:
   fn error({msg: str}) -> void
 """
-  t.okCheck "an attribute word is a legal fn name in a pending block"
+  t.badCheck "an attribute word is refused as a fn name in a pending block", "TK-PA08"
 
   # --- explain answers for every code --------------------------------------
   #

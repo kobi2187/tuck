@@ -1,11 +1,11 @@
 {.experimental: "codeReordering".}
 
-proc tuck_fn_main*(): int
+proc tuckˑfnˑmain*(): int
 
-proc tuck_fn_main*(): int =
-  var tuck_s = 0
-  for tuck_i in (0 ..< 4):
+proc tuckˑfnˑmain*(): int =
+  var tuckˑvˑs = 0
+  for tuckˑvˑi in (0 ..< 4):
     if true:
-      tuck_s = (tuck_s + tuck_i)
-  return tuck_s
+      tuckˑvˑs = (tuckˑvˑs + tuckˑvˑi)
+  return tuckˑvˑs
 

@@ -174,6 +174,7 @@ proc failIfDuplicateMember*(what, owner: string, names: seq[(string, Span)]) =
     seen[name] = span
 
 proc fieldNames*(fields: seq[FieldDef]): seq[(string, Span)] =
+  ## Field names with their spans, the shape `failIfDuplicateMember` takes.
   for f in fields: result.add((f.name, f.span))
 
 proc failIfComposedCollision*(owner: string, fields: seq[FieldDef], sp: Span) =
@@ -196,6 +197,8 @@ proc failIfComposedCollision*(owner: string, fields: seq[FieldDef], sp: Span) =
     seen[f.name] = f.span
 
 proc paramNames*(params: seq[Param]): seq[(string, Span)] =
+  ## Parameter names with their spans, the shape `failIfDuplicateMember`
+  ## takes.
   for p in params: result.add((p.name, p.span))
 
 proc failIfDuplicateTypeMembers*(m: Module, d: Decl) =
@@ -274,7 +277,7 @@ proc reportUnhandled*(tc: TypeChecker, m: Module): seq[string] =
   ## hand the sites to codegen, which routes them to the handler.
   if tc.errPolicy == "strict" and tc.unhandledSites.len > 0:
     fail("Type Error: " & $tc.unhandledSites.len & " unhandled error result(s)" &
-         " — bind, pass on, or propagate with '?' (policy: strict):\n  " &
+         " — bind and check `.ok`, pass it on, or return it (policy: strict):\n  " &
          tc.unhandledSites.join("\n  "), m.span)
   if tc.errPolicy in ["continue", "exit"]: tc.unhandledSites else: @[]
 

@@ -70,6 +70,12 @@ type
                                           ## `{payload} fn` call (parse-time;
                                           ## the `.field` sibling case needs
                                           ## name resolution — see TK-TY23)
+    dcPaOnOutsideActor = "TK-PA15"      ## `on msg(...)` / `on select:` at a
+                                          ## module's top level, outside an actor
+    dcPaMixedBoolOps = "TK-PA16"        ## `and`/`or`/`xor` mixed without
+                                          ## parentheses
+    dcPaRenameArrow = "TK-PA17"         ## a rename written `old: new`
+                                          ## instead of `old -> new`
 
     # --- TY: type ---------------------------------------------------------
     dcTyMismatch = "TK-TY01"            ## a value does not fit where it flows
@@ -113,11 +119,20 @@ type
                                         ## fit the field's type
     dcTyFieldInitNotActor = "TK-TY30"   ## an initialiser on a `type` or
                                         ## `object` field, which has no use
+    dcTyPoolAddrInvariant = "TK-TY31"   ## `Pool.addr` on a pool whose element
+                                        ## type carries an invariant
+    dcTyReturnWithoutType = "TK-TY32"   ## `return <value>` in a body that
+                                        ## declares no return type
+    dcTySameTypeThroughIface = "TK-TY33" ## a member needing an argument of
+                                        ## the receiver's own object type,
+                                        ## called through an interface value
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
     dcCoUnknownIface = "TK-CO02"        ## `satisfies` names no interface
     dcCoNotAnObject = "TK-CO03"         ## `satisfies` subject is not an object
+    dcCoUnknownRename = "TK-CO04"       ## a `{old -> new}` rename names no
+                                        ## member of what it renames
     dcDeGap = "TK-DE01"                 ## a decision table has an uncovered case
     dcDeOverlap = "TK-DE02"             ## two rows match the same input
     dcDeBadValue = "TK-DE03"            ## a cell is not a value of its column
@@ -143,6 +158,7 @@ type
     dcAcQueueSize = "TK-AC01"           ## an actor's [queue: N] is not a positive count
     dcAcHandlerReturn = "TK-AC02"       ## a handler declares a return type; actors cannot reply yet
     dcMeSizeCount = "TK-ME01"           ## a pool/arena size or count is not positive
+    dcMeArenaInert = "TK-ME02"          ## an `arena` parses, and does nothing yet
     dcIvUnknownField = "TK-IV01"        ## an invariant names a field the type lacks
     dcIvNotBool = "TK-IV02"             ## an invariant predicate is not a bool
     dcRgUnknownEvent = "TK-RG01"        ## raise/handle names no declared event
@@ -197,15 +213,22 @@ proc categoryName*(d: DiagCode): string =
   of "SE": "Sealed"
   of "CX": "Complexity"
   of "RS": "Resource"
-  else: "Semantic"
+  of "AC": "Actor"
+  of "ME": "Memory"
+  of "IV": "Invariant"
+  of "RG": "Registry"
+  of "RE": "Register"
+  else: "Semantic"   # SM, and a category added without a word here
 
-const WarningCodes* = {dcTyMemberShadowsFn}
+const WarningCodes* = {dcTyMemberShadowsFn, dcMeArenaInert}
   ## Codes that REPORT without stopping the build. Kept beside the registry
   ## rather than inferred from the category letters, because severity is a
   ## property of the individual diagnostic and not of its category — TY holds
   ## both. `tuck explain` reads this so it cannot label a warning "Error".
 
 proc severityOf*(d: DiagCode): string =
+  ## "Warning" for a code in `WarningCodes`, else "Error" — the word
+  ## `tuck explain` and `withSeverity` print.
   if d in WarningCodes: "Warning" else: "Error"
 
 proc withSeverity*(d: DiagCode, severity, msg: string): string =
@@ -218,9 +241,13 @@ proc withSeverity*(d: DiagCode, severity, msg: string): string =
   else: categoryName(d) & " " & severity & " [" & $d & "]: " & msg
 
 proc withCode*(d: DiagCode, msg: string): string =
+  ## An error message tagged with its code: `withSeverity` at "Error". The
+  ## common case; warnings call `withSeverity` directly.
   withSeverity(d, "Error", msg)
 
 type PendingWarning* = tuple[msg: string, line, col: int]
+  ## A warning waiting to be printed: its text and source position. Collected
+  ## in `warnings` rather than raised, so checking continues past it.
 
 var warnings*: seq[PendingWarning]
   ## Diagnostics that do NOT stop the build.
@@ -298,10 +325,13 @@ proc parseExplanation(d: DiagCode): string =
     "This word belongs to the language, so it cannot also be a name. " &
     "Reservation is total — a keyword is reserved everywhere, which is what " &
     "keeps `pending:` and `when TARGET == \"...\"` decidable no matter what " &
-    "the surrounding code declares. Fix: choose another name. (Attribute " &
-    "names like `error` and `priority` are NOT restricted here: they are " &
-    "reserved only inside brackets, so they stay usable as fields, " &
-    "parameters and function names.)"
+    "the surrounding code declares. Attribute names (`error`, `priority`, " &
+    "`stack`, `io`, …) are reserved words too: they cannot name a parameter, " &
+    "a local, a fn, a member or a handler, because a name like that is read " &
+    "bare, and inside brackets an attribute word reads as an attribute — " &
+    "`xs[stack]` would lose its index. The one exception is a FIELD, which " &
+    "is only ever read through `.` (`job.priority`) or written as a record " &
+    "key (`{priority: 1}`). Ruled 2026-09-27. Fix: choose another name."
   of dcPaEmptyBlock:
     "A `:` opened a block with nothing inside it — no statement, and no " &
     "`discard`. An empty body reads as an accident (a stray blank line, a " &
@@ -399,6 +429,31 @@ proc parseExplanation(d: DiagCode): string =
     "that names its fields, so an initialiser there would never be read. It " &
     "is refused rather than dropped: it used to be parsed and thrown away, " &
     "silently, on every kind of field."
+  of dcTyReturnWithoutType:
+    "`return` carries a value, but the fn (or task, or actor handler) declares " &
+    "no return type, so nothing receives it — Nim, Odin and D each reject the " &
+    "emitted code in their own words, or drop the value. Fix: declare the " &
+    "type with `-> T`, or return nothing. An actor handler never replies " &
+    "(spec 9.1), so there the value has to go somewhere else — a field, or a " &
+    "`send`."
+  of dcTySameTypeThroughIface:
+    "`fn splice[A: Self, B: Self]({self: A, other: A, next: B})` says `other` " &
+    "is the SAME object type as the receiver, whichever that is; `next` may " &
+    "be any satisfier. Through an interface value the receiver's type is " &
+    "known only at run time, so nothing can check that `other` matches it — " &
+    "and Tuck does not check it at run time (ruled 2026-09-27). Call it on a " &
+    "concrete object (`flac.splice {other: flac2, ...}`), or inside a " &
+    "generic fn bounded by the interface (`fn join[T: AudioSource]`), where " &
+    "the type is fixed at compile time."
+  of dcTyPoolAddrInvariant:
+    "`Pool.addr {h}` hands a cell's bytes to an extern to fill — a DMA " &
+    "controller, an ISR. Memory filled that way was never built by a " &
+    "construction, so nothing checked it against the element type's " &
+    "invariant, and the next `read` would hand the program a value that may " &
+    "break it. A pool whose element carries an invariant therefore has no " &
+    "`addr`. Fix: fill a plain buffer pool (`Array[N, u8]`) through `addr`, " &
+    "and build the checked value from it with a construction, which " &
+    "validates."
   of dcTyCtorFieldType:
     "A field given in a construction does not fit the type the declaration " &
     "gives it. This was unchecked: the value rode to codegen and only the " &
@@ -411,6 +466,34 @@ proc parseExplanation(d: DiagCode): string =
     "and emits wrong code, which is why this is rejected outright. Fix: " &
     "`a % b` for modulo, `a /i b` for truncating integer division, `a /f b` " &
     "for float division."
+  of dcPaOnOutsideActor:
+    "`on` opens a HANDLER, and a handler belongs to whatever delivers to it. " &
+    "`on name({payload}):` handles a message sent to an actor, and " &
+    "`on select:` waits on an actor's or a task's sources, so both belong " &
+    "inside that `actor` (or, for `on select:`, a `task`) body. At a " &
+    "module's top level nothing delivers to them: `on put({v: int}):` used " &
+    "to be accepted as an ordinary fn named `put`, which nothing ever " &
+    "called. The one handler that does live at the top level is a " &
+    "registry event's, and it names the registry: " &
+    "`on Registry.Event({payload}):`."
+  of dcPaMixedBoolOps:
+    "`and`, `or` and `xor` have no precedence over one another in Tuck, so " &
+    "an expression that mixes two of them must say how it groups. " &
+    "`a and b or c` is refused; write `(a and b) or c` or `a and (b or c)`. " &
+    "(Ruled 2026-09-27. Before the ruling the three shared one level and " &
+    "grouped to the right, so `a and b or c` meant `a and (b or c)` — false " &
+    "for a = false, b = true, c = true, where C, Python and Nim give true.) " &
+    "One operator repeated needs no parentheses: `a and b and c`, " &
+    "`a or b or c`."
+  of dcPaRenameArrow:
+    "Tuck has one way to write a rename: `old -> new`. It is the same in " &
+    "every place a name can be renamed — a value's fields " &
+    "(`ext alias(trackId -> id)`), a composed type's fields " &
+    "(`A + B {x -> bx}`), an interface's members at `satisfies` and a " &
+    "mixin's fns at `+`. A colon inside braces or parentheses means " &
+    "\"field: value\" everywhere else (`{id: 42}`), so `alias(trackId: id)` " &
+    "read like a record and meant something else; it was retired " &
+    "2026-09-27. Fix: write `->` between the old name and the new one."
   of dcPaNoWhile:
     "Tuck has no `while` keyword — `while` is an ordinary, unreserved " &
     "identifier, so `while cond:` parses `while` as a bare name and then " &
@@ -562,8 +645,8 @@ proc valueFitExplanation(d: DiagCode): string =
   of dcTyUnhandledResult:
     "A function that can fail returned `!T`, and the result was thrown away " &
     "— so a failure would pass unnoticed. Fix: bind it with `let` and check " &
-    "`.ok`, hand it to something that handles it, or add `?` to pass the " &
-    "failure up to your own caller."
+    "`.ok`, hand it to something that handles it, or return it as it is to " &
+    "pass the failure up to your own caller."
   of dcTyArgMismatch:
     "An argument does not fit the parameter it fills. Fix: the message names " &
     "both types — convert the value, or change the parameter."
@@ -591,6 +674,12 @@ proc ruleExplanation(d: DiagCode): string =
     "contract with no members to check is not a contract. To give a " &
     "primitive interface-like behaviour, wrap it in an object with the " &
     "primitive as a field, or pass a `fnsig` slot instead of a contract."
+  of dcCoUnknownRename:
+    "`satisfies I {old -> new}` implements I's member `old` under the name " &
+    "`new`; `+ Name {old -> new}` brings in Name's fn or field `old` as " &
+    "`new`. The name on the left of `->` must be a member of I (or of Name). " &
+    "A rename of a name that does not exist would silently do nothing, so " &
+    "it is refused."
   of dcDeGap: "A decision table leaves a combination of inputs unmatched."
   of dcDeOverlap: "Two rows of a decision table match the same input."
   of dcDeBadValue: "A cell holds something that is not a value of its column."
@@ -608,7 +697,7 @@ proc ruleExplanation(d: DiagCode): string =
     "A sealed type is constructed only through its declared transitions."
   of dcCxComplexity:
     "A fn has more independent paths through it than the size budget allows " &
-    "(one per if, loop, `and`/`or`, match guard and `?`, plus one). Reported " &
+    "(one per if, loop and `and`/`or`, plus one). Reported " &
     "worst-first on a normal build; fails a `--release` build. Split it, or " &
     "raise the limit with `--max-complexity:N` (`:0` disables). A `match` or " &
     "`on select` costs nothing for the construct itself — dispatching over " &
@@ -626,6 +715,12 @@ proc ruleExplanation(d: DiagCode): string =
     "(spec 7.2, 7.3). So the number must be positive: zero or negative is " &
     "not a smaller reservation, it is one that cannot hold anything. Fix: " &
     "give a real count or size."
+  of dcMeArenaInert:
+    "`arena` is not implemented yet (spec 7.3, ROADMAP \"Deferred\"). The " &
+    "declaration parses and its size is checked, but its body is discarded: " &
+    "nothing inside it is checked, and no backend emits the arena. A warning " &
+    "rather than an error so specimen code keeps compiling — but a program " &
+    "that relies on the arena does not get one."
   of dcAcHandlerReturn:
     "A handler declared a return type, but an actor message is " &
     "fire-and-forget (spec 9.1) and there is no reply channel: correlation " &

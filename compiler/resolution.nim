@@ -6,7 +6,7 @@
 # tree for its target without carrying (or losing) semantic residue: ids
 # survive the copy, so these lookups still resolve.
 
-import tables, sets, strutils
+import tables, sets, strutils, options
 import ast
 import ssa_ir
 import name_prefix
@@ -66,6 +66,12 @@ type
     # these instead of re-deriving the mapping, which misses by-type matches.
     argFields*: Table[NodeId, seq[string]]
     callParams*: Table[NodeId, seq[string]]
+    ifaceInstances*: Table[NodeId, seq[Type]]
+                    ## A call to a fn with a type param bounded by an
+                    ## INTERFACE (`fn join[T: AudioSource]`): what each of the
+                    ## callee's type params is at this call, in declaration
+                    ## order, nil where unbound. iface_generics clones the
+                    ## callee once per object type from it.
     callTypeArgs*: Table[NodeId, seq[Type]]
                     ## The concrete types a generic call resolved its callee's
                     ## type params to, in the callee's declaration order. Only
@@ -107,8 +113,18 @@ type
       ## is not a twin does not own what it was passed and cannot give it
       ## away to be freed. `analysis_provenance` knows which values a body
       ## allocated; this set is where it writes that down.
+    ownerFields*: HashSet[NodeId]
+      ## Bare names that are the OWNER's field — an object member's, an actor
+      ## handler's, an invariant's — and not a param or local shadowing one.
+      ## Only the checker's scopes can tell those apart, so it records the
+      ## answer and every backend prints `self.<name>` for exactly these.
+      ## Deciding it in each backend by "is the name one of the fields" read
+      ## a handler's param `total` as the field `total`.
 
-proc poolHandleName*(pool: string): string = pool & "Handle"
+proc poolHandleName*(pool: string): string =
+  ## The handle type a `pool` declaration introduces: `<Pool>Handle`. Named in
+  ## one place so the checker and every backend spell it alike.
+  pool & "Handle"
 
 proc isPoolHandleType*(m: Module, name: string): bool =
   ## Is this the handle type of some pool declared in this module?
@@ -126,7 +142,7 @@ proc isPoolHandleType*(m: Module, name: string): bool =
     # handle type is not, because the checker synthesised it and mangling
     # walks the AST, which never held it. Compare both spellings rather than
     # teaching mangle about a type that does not exist in the tree.
-    if d.name == pool or d.name == prefixed(pool, nkValue): return true
+    if d.name == pool or d.name == prefixed(pool, nkPool): return true
   return false
 
 proc resourceHandleName*(kind: string): string =
@@ -252,6 +268,8 @@ proc freshStep*(r: Resolution, s: ChainStep): ChainStep =
   if s.id.isSet: r.copyMeaning(s.id, result.id)
 
 proc setCall*(r: Resolution, e: Expr, call: Expr) =
+  ## Records `call` as what node `e` resolved to (a field read that is really
+  ## a member call, a payload call's resolved form). Gives `e` an id if needed.
   if e == nil: return
   ensureId(e)
   r.calls[e.id] = call
@@ -262,6 +280,7 @@ proc call*(r: Resolution, e: Expr): Expr =
   if r.calls.hasKey(e.id): r.calls[e.id] else: nil
 
 proc hasCall*(r: Resolution, e: Expr): bool =
+  ## Did the checker resolve `e` to a call? Cheaper than `call(e) != nil`.
   e != nil and e.id.isSet and r.calls.hasKey(e.id)
 
 proc markAsync*(r: Resolution, e: Expr) =
@@ -272,6 +291,8 @@ proc markAsync*(r: Resolution, e: Expr) =
   r.asyncCalls.incl(e.id)
 
 proc isAsync*(r: Resolution, e: Expr): bool =
+  ## Is `e` a call site of an `[io]` callee — one the task transform must
+  ## suspend at?
   e != nil and e.id.isSet and e.id in r.asyncCalls
 
 proc markWrap*(r: Resolution, e: Expr, objName, iface: string) =
@@ -285,6 +306,8 @@ proc markWrap*(r: Resolution, e: Expr, objName, iface: string) =
   r.ifacePairs.incl((objName: objName, iface: iface))
 
 proc wrapOf*(r: Resolution, e: Expr): tuple[objName, iface: string] =
+  ## The interface wrap recorded on `e` — which object enters which interface
+  ## slot here — or two empty strings when `e` is not wrapped.
   if e == nil or not e.id.isSet: return (objName: "", iface: "")
   r.wraps.getOrDefault(e.id, (objName: "", iface: ""))
 
@@ -297,8 +320,31 @@ proc markIfaceCall*(r: Resolution, e: Expr, iface, member: string) =
   r.ifaceCalls[e.id] = (iface: iface, member: member)
 
 proc ifaceCallOf*(r: Resolution, e: Expr): tuple[iface, member: string] =
+  ## The interface call recorded on `e` — the interface and the member called
+  ## through it — or two empty strings when `e` is an ordinary access.
   if e == nil or not e.id.isSet: return (iface: "", member: "")
   r.ifaceCalls.getOrDefault(e.id, (iface: "", member: ""))
+
+proc newResolution*(): Resolution =
+  ## An empty semantic layer with every table initialised. Use
+  ## `resetResolution` to clear the program-wide `semLayer`; this is for
+  ## a layer of one's own.
+  Resolution(calls: initTable[NodeId, Expr](),
+             types: initTable[NodeId, Type](),
+             shortcuts: initTable[NodeId, string](),
+             asyncCalls: initHashSet[NodeId](),
+             decls: initTable[NodeId, Decl](),
+             declOf: initTable[NodeId, NodeId](),
+             argFields: initTable[NodeId, seq[string]](),
+             callParams: initTable[NodeId, seq[string]](),
+             callTypeArgs: initTable[NodeId, seq[Type]](),
+             wraps: initTable[NodeId, tuple[objName, iface: string]](),
+             ifacePairs: initHashSet[tuple[objName, iface: string]](),
+             ifaceCalls: initTable[NodeId, tuple[iface, member: string]](),
+             lastUses: initHashSet[NodeId](),
+             ssaGraphs: initTable[(NodeId, SsaStage), CachedSsa](),
+             movedArgs: initHashSet[NodeId](),
+             ownerFields: initHashSet[NodeId]())
 
 # The program-wide semantic layer. The compiler processes one program per
 # run, so a single instance is the honest model; passing it through every
@@ -326,23 +372,6 @@ proc ifaceCallOf*(r: Resolution, e: Expr): tuple[iface, member: string] =
 #
 # Cleared at the start of each check so repeated in-process runs (the test
 # suites) never see a previous program's entries.
-proc newResolution*(): Resolution =
-  Resolution(calls: initTable[NodeId, Expr](),
-             types: initTable[NodeId, Type](),
-             shortcuts: initTable[NodeId, string](),
-             asyncCalls: initHashSet[NodeId](),
-             decls: initTable[NodeId, Decl](),
-             declOf: initTable[NodeId, NodeId](),
-             argFields: initTable[NodeId, seq[string]](),
-             callParams: initTable[NodeId, seq[string]](),
-             callTypeArgs: initTable[NodeId, seq[Type]](),
-             wraps: initTable[NodeId, tuple[objName, iface: string]](),
-             ifacePairs: initHashSet[tuple[objName, iface: string]](),
-             ifaceCalls: initTable[NodeId, tuple[iface, member: string]](),
-             lastUses: initHashSet[NodeId](),
-             ssaGraphs: initTable[(NodeId, SsaStage), CachedSsa](),
-             movedArgs: initHashSet[NodeId]())
-
 var semLayer* = newResolution()
 
 proc resetResolution*() =
@@ -374,15 +403,20 @@ proc resetResolution*() =
   semLayer.ambiguousConsts = ambiguousConsts
 
 proc setStepCall*(r: Resolution, s: ChainStep, call: Expr) =
+  ## Records the call a chain step resolved to, keyed by the step's own id.
+  ## A step without an id cannot carry one and is skipped.
   if s.id.isSet: r.calls[s.id] = call
 
 proc stepCall*(r: Resolution, s: ChainStep): Expr =
+  ## The call a chain step resolved to, or nil. Shared by every backend, so a
+  ## pass must copy it (`freshCopy`) before putting it into a tree.
   if not s.id.isSet: return nil
   if r.calls.hasKey(s.id): r.calls[s.id] else: nil
 
 # --- types and shortcut sites ----------------------------------------------
 
 proc setType*(r: Resolution, e: Expr, t: Type) =
+  ## Records `t` as the checked type of `e`, giving `e` an id if it has none.
   if e == nil: return
   ensureId(e)
   r.types[e.id] = t
@@ -477,6 +511,14 @@ proc setCallParams*(r: Resolution, e: Expr, params: seq[string]) =
   ensureId(e)
   r.callParams[e.id] = params
 
+proc knownCallParams*(r: Resolution, e: Expr): Option[seq[string]] =
+  ## The callee's params as the checker recorded them, or none when it
+  ## recorded nothing. NOT `callParamsFor`'s empty list, which cannot tell a
+  ## callee that takes no params from one the checker never resolved.
+  if e == nil or not e.id.isSet or e.id notin r.callParams:
+    return none(seq[string])
+  some(r.callParams[e.id])
+
 proc callParamsFor*(r: Resolution, e: Expr): seq[string] =
   ## Empty when the callee was never resolved, or is not one whose payload
   ## may be exploded (a member fn, a task) — callers leave the call alone.
@@ -497,6 +539,8 @@ proc callTypeArgsFor*(r: Resolution, e: Expr): seq[Type] =
   r.callTypeArgs.getOrDefault(e.id, @[])
 
 proc setShortcut*(r: Resolution, e: Expr, site: string) =
+  ## Marks statement `e` as one whose dropped `!T` the errors policy routes to
+  ## the global handler, naming the call `site` for the report.
   if e == nil: return
   ensureId(e)
   r.shortcuts[e.id] = site
@@ -523,6 +567,16 @@ proc isMovedArg*(r: Resolution, e: Expr): bool =
   ## analysis did not reach — which copies, exactly as it always did.
   e != nil and e.id in r.movedArgs
 
+proc markOwnerField*(r: Resolution, e: Expr) =
+  ## Records that the bare name `e` is the owner's field (read as
+  ## `self.<name>`), not a param or local shadowing it.
+  ensureId(e)
+  r.ownerFields.incl(e.id)
+
+proc isOwnerField*(r: Resolution, e: Expr): bool =
+  ## Is this bare name the enclosing owner's field (see `ownerFields`)?
+  e != nil and e.kind == exkVar and e.id in r.ownerFields
+
 proc markLastUseId*(r: Resolution, id: NodeId) =
   ## The same, for a caller holding the node's id rather than the node.
   r.lastUses.incl(id)
@@ -534,8 +588,10 @@ proc isLastUse*(r: Resolution, e: Expr): bool =
   e != nil and e.id in r.lastUses
 
 proc memberProcName*(objName, memberName: string): string =
-  ## An object member emits QUALIFIED: `B.noise` -> `tuck_B_noise`, where
-  ## objName is already mangled.
+  ## An object member emits QUALIFIED: `B.noise` -> `tuckˑobjectˑBˑnoise`,
+  ## where objName is already mangled; name_prefix.joinedName says why the
+  ## join is not `_`. The declaration and every call to it take this name
+  ## from here (ast_query.memberCalleeOf), so the two cannot drift.
   ##
   ## One rule for all three backends, which is what keeps the member and the
   ## free fn of the same name from ever competing. Odin and D needed it
@@ -544,7 +600,7 @@ proc memberProcName*(objName, memberName: string): string =
   ## bare name then collided with a top-level `noise` at MANGLING time and
   ## silently called the wrong one (issue #50). Nim now qualifies too: the
   ## collision cannot arise rather than being resolved by a precedence rule.
-  objName & "_" & memberName
+  joinedName(objName, memberName)
 
 proc escapeStringLit*(v: string): string =
   ## A Tuck string literal, spelled for a target language.

@@ -142,7 +142,7 @@ type Priority:
   | high
   | low
 
-decision route({priority: Priority, encrypted: bool}) -> int:
+decision route({urgency: Priority, encrypted: bool}) -> int:
   | high  true  -> 1
   | high  false -> 2
   | low   _     -> 3
@@ -230,7 +230,7 @@ fn play({episode: Episode, prefs: PlayerPrefs}) -> str:
   ctx describe                       # subset matching picks what it needs
 
 fn adapt({track: External}) -> void:
-  let normalized = track alias(trackId: id, title: name)
+  let normalized = track alias(trackId -> id, title -> name)
   normalized playTrack
   return
 ```

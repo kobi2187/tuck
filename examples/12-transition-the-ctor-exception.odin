@@ -1,61 +1,61 @@
 #+feature dynamic-literals
 package main
 
-tuck_type_Config :: struct {
+tuckˑtypeˑConfig :: struct {
 	url: string,
 }
 
-tuck_type_Feed :: struct {
+tuckˑtypeˑFeed :: struct {
 	title: string,
 }
 
-tuck_type_Socket :: struct {
+tuckˑtypeˑSocket :: struct {
 	fd: int,
 }
 
-tuck_type_PlayerState_Unloaded :: struct {
-	config: tuck_type_Config,
+tuckˑtypeˑPlayerState_Unloaded :: struct {
+	config: tuckˑtypeˑConfig,
 }
-tuck_type_PlayerState_Loading :: struct {
-	config: tuck_type_Config,
+tuckˑtypeˑPlayerState_Loading :: struct {
+	config: tuckˑtypeˑConfig,
 	progress: int,
 }
-tuck_type_PlayerState_Ready :: struct {
-	config: tuck_type_Config,
-	feed: tuck_type_Feed,
+tuckˑtypeˑPlayerState_Ready :: struct {
+	config: tuckˑtypeˑConfig,
+	feed: tuckˑtypeˑFeed,
 }
-tuck_type_PlayerState :: union {tuck_type_PlayerState_Unloaded, tuck_type_PlayerState_Loading, tuck_type_PlayerState_Ready}
-tuck_type_PlayerStateKind :: enum { Unloaded, Loading, Ready }
-tag_tuck_type_PlayerState :: proc(v: tuck_type_PlayerState) -> tuck_type_PlayerStateKind {
+tuckˑtypeˑPlayerState :: union {tuckˑtypeˑPlayerState_Unloaded, tuckˑtypeˑPlayerState_Loading, tuckˑtypeˑPlayerState_Ready}
+tuckˑtypeˑPlayerStateKind :: enum { Unloaded, Loading, Ready }
+tag_tuckˑtypeˑPlayerState :: proc(v: tuckˑtypeˑPlayerState) -> tuckˑtypeˑPlayerStateKind {
 	switch _ in v {
-	case tuck_type_PlayerState_Unloaded: return .Unloaded
-	case tuck_type_PlayerState_Loading: return .Loading
-	case tuck_type_PlayerState_Ready: return .Ready
+	case tuckˑtypeˑPlayerState_Unloaded: return .Unloaded
+	case tuckˑtypeˑPlayerState_Loading: return .Loading
+	case tuckˑtypeˑPlayerState_Ready: return .Ready
 	}
 	return .Unloaded
 }
 
-tuck_type_PlayerState_eq :: proc(a, b: tuck_type_PlayerState) -> bool {
-  if av, aok := a.(tuck_type_PlayerState_Unloaded); aok {
+tuckˑtypeˑPlayerState_eq :: proc(a, b: tuckˑtypeˑPlayerState) -> bool {
+  if av, aok := a.(tuckˑtypeˑPlayerState_Unloaded); aok {
     _ = av
-    bv, bok := b.(tuck_type_PlayerState_Unloaded)
+    bv, bok := b.(tuckˑtypeˑPlayerState_Unloaded)
     _ = bv
     if !bok { return false }
     if av.config != bv.config { return false }
     return true
   }
-  if av, aok := a.(tuck_type_PlayerState_Loading); aok {
+  if av, aok := a.(tuckˑtypeˑPlayerState_Loading); aok {
     _ = av
-    bv, bok := b.(tuck_type_PlayerState_Loading)
+    bv, bok := b.(tuckˑtypeˑPlayerState_Loading)
     _ = bv
     if !bok { return false }
     if av.config != bv.config { return false }
     if av.progress != bv.progress { return false }
     return true
   }
-  if av, aok := a.(tuck_type_PlayerState_Ready); aok {
+  if av, aok := a.(tuckˑtypeˑPlayerState_Ready); aok {
     _ = av
-    bv, bok := b.(tuck_type_PlayerState_Ready)
+    bv, bok := b.(tuckˑtypeˑPlayerState_Ready)
     _ = bv
     if !bok { return false }
     if av.config != bv.config { return false }
@@ -64,7 +64,7 @@ tuck_type_PlayerState_eq :: proc(a, b: tuck_type_PlayerState) -> bool {
   }
   return false
 }
-canTransition_tuck_type_PlayerState :: proc(frm: tuck_type_PlayerStateKind, to: tuck_type_PlayerStateKind) -> bool {
+canTransition_tuckˑtypeˑPlayerState :: proc(frm: tuckˑtypeˑPlayerStateKind, to: tuckˑtypeˑPlayerStateKind) -> bool {
 	switch frm {
 	case .Unloaded: return to == .Loading
 	case .Loading: return to == .Ready || to == .Unloaded
@@ -72,65 +72,65 @@ canTransition_tuck_type_PlayerState :: proc(frm: tuck_type_PlayerStateKind, to: 
 	}
 	return false
 }
-transitionTo_tuck_type_PlayerState :: proc(self: ^tuck_type_PlayerState, target: tuck_type_PlayerState) {
-	assert(canTransition_tuck_type_PlayerState(tag_tuck_type_PlayerState(self^), tag_tuck_type_PlayerState(target)), "Invalid transition")
+transitionTo_tuckˑtypeˑPlayerState :: proc(self: ^tuckˑtypeˑPlayerState, target: tuckˑtypeˑPlayerState) {
+	assert(canTransition_tuckˑtypeˑPlayerState(tag_tuckˑtypeˑPlayerState(self^), tag_tuckˑtypeˑPlayerState(target)), "Invalid transition")
 	self^ = target
 }
 
-tuck_type_MqttSession_Disconnected :: struct {}
-tuck_type_MqttSession_Connecting :: struct {
+tuckˑtypeˑMqttSession_Disconnected :: struct {}
+tuckˑtypeˑMqttSession_Connecting :: struct {
 	host: string,
 	port: u16,
 }
-tuck_type_MqttSession_Connected :: struct {
-	socket: tuck_type_Socket,
+tuckˑtypeˑMqttSession_Connected :: struct {
+	socket: tuckˑtypeˑSocket,
 	keepalive: u16,
 }
-tuck_type_MqttSession_Subscribing :: struct {
-	socket: tuck_type_Socket,
+tuckˑtypeˑMqttSession_Subscribing :: struct {
+	socket: tuckˑtypeˑSocket,
 	topic: string,
 }
-tuck_type_MqttSession :: union {tuck_type_MqttSession_Disconnected, tuck_type_MqttSession_Connecting, tuck_type_MqttSession_Connected, tuck_type_MqttSession_Subscribing}
-tuck_type_MqttSessionKind :: enum { Disconnected, Connecting, Connected, Subscribing }
-tag_tuck_type_MqttSession :: proc(v: tuck_type_MqttSession) -> tuck_type_MqttSessionKind {
+tuckˑtypeˑMqttSession :: union {tuckˑtypeˑMqttSession_Disconnected, tuckˑtypeˑMqttSession_Connecting, tuckˑtypeˑMqttSession_Connected, tuckˑtypeˑMqttSession_Subscribing}
+tuckˑtypeˑMqttSessionKind :: enum { Disconnected, Connecting, Connected, Subscribing }
+tag_tuckˑtypeˑMqttSession :: proc(v: tuckˑtypeˑMqttSession) -> tuckˑtypeˑMqttSessionKind {
 	switch _ in v {
-	case tuck_type_MqttSession_Disconnected: return .Disconnected
-	case tuck_type_MqttSession_Connecting: return .Connecting
-	case tuck_type_MqttSession_Connected: return .Connected
-	case tuck_type_MqttSession_Subscribing: return .Subscribing
+	case tuckˑtypeˑMqttSession_Disconnected: return .Disconnected
+	case tuckˑtypeˑMqttSession_Connecting: return .Connecting
+	case tuckˑtypeˑMqttSession_Connected: return .Connected
+	case tuckˑtypeˑMqttSession_Subscribing: return .Subscribing
 	}
 	return .Disconnected
 }
 
-tuck_type_MqttSession_eq :: proc(a, b: tuck_type_MqttSession) -> bool {
-  if av, aok := a.(tuck_type_MqttSession_Disconnected); aok {
+tuckˑtypeˑMqttSession_eq :: proc(a, b: tuckˑtypeˑMqttSession) -> bool {
+  if av, aok := a.(tuckˑtypeˑMqttSession_Disconnected); aok {
     _ = av
-    bv, bok := b.(tuck_type_MqttSession_Disconnected)
+    bv, bok := b.(tuckˑtypeˑMqttSession_Disconnected)
     _ = bv
     if !bok { return false }
     return true
   }
-  if av, aok := a.(tuck_type_MqttSession_Connecting); aok {
+  if av, aok := a.(tuckˑtypeˑMqttSession_Connecting); aok {
     _ = av
-    bv, bok := b.(tuck_type_MqttSession_Connecting)
+    bv, bok := b.(tuckˑtypeˑMqttSession_Connecting)
     _ = bv
     if !bok { return false }
     if av.host != bv.host { return false }
     if av.port != bv.port { return false }
     return true
   }
-  if av, aok := a.(tuck_type_MqttSession_Connected); aok {
+  if av, aok := a.(tuckˑtypeˑMqttSession_Connected); aok {
     _ = av
-    bv, bok := b.(tuck_type_MqttSession_Connected)
+    bv, bok := b.(tuckˑtypeˑMqttSession_Connected)
     _ = bv
     if !bok { return false }
     if av.socket != bv.socket { return false }
     if av.keepalive != bv.keepalive { return false }
     return true
   }
-  if av, aok := a.(tuck_type_MqttSession_Subscribing); aok {
+  if av, aok := a.(tuckˑtypeˑMqttSession_Subscribing); aok {
     _ = av
-    bv, bok := b.(tuck_type_MqttSession_Subscribing)
+    bv, bok := b.(tuckˑtypeˑMqttSession_Subscribing)
     _ = bv
     if !bok { return false }
     if av.socket != bv.socket { return false }
@@ -139,7 +139,7 @@ tuck_type_MqttSession_eq :: proc(a, b: tuck_type_MqttSession) -> bool {
   }
   return false
 }
-canTransition_tuck_type_MqttSession :: proc(frm: tuck_type_MqttSessionKind, to: tuck_type_MqttSessionKind) -> bool {
+canTransition_tuckˑtypeˑMqttSession :: proc(frm: tuckˑtypeˑMqttSessionKind, to: tuckˑtypeˑMqttSessionKind) -> bool {
 	switch frm {
 	case .Disconnected: return to == .Connecting
 	case .Connecting: return to == .Connected || to == .Disconnected
@@ -148,21 +148,21 @@ canTransition_tuck_type_MqttSession :: proc(frm: tuck_type_MqttSessionKind, to: 
 	}
 	return false
 }
-transitionTo_tuck_type_MqttSession :: proc(self: ^tuck_type_MqttSession, target: tuck_type_MqttSession) {
-	assert(canTransition_tuck_type_MqttSession(tag_tuck_type_MqttSession(self^), tag_tuck_type_MqttSession(target)), "Invalid transition")
+transitionTo_tuckˑtypeˑMqttSession :: proc(self: ^tuckˑtypeˑMqttSession, target: tuckˑtypeˑMqttSession) {
+	assert(canTransition_tuckˑtypeˑMqttSession(tag_tuckˑtypeˑMqttSession(self^), tag_tuckˑtypeˑMqttSession(target)), "Invalid transition")
 	self^ = target
 }
 
-tuck_fn_main :: proc () {
-  tuck_config := tuck_type_Config{url = "https://example.com"}
-  tuck_feed := tuck_type_Feed{title = "Deep Dive"}
-  tuck_p: tuck_type_PlayerState = tuck_type_PlayerState_Ready{config = tuck_config, feed = tuck_feed}
-  tuck_fresh: tuck_type_MqttSession = tuck_type_MqttSession_Disconnected{}
-  tuck_socket := tuck_type_Socket{fd = 3}
-  tuck_session: tuck_type_MqttSession = tuck_type_MqttSession_Connected{socket = tuck_socket, keepalive = u16(60)}
+tuckˑfnˑmain :: proc () {
+  tuckˑvˑconfig := tuckˑtypeˑConfig{url = "https://example.com"}
+  tuckˑvˑfeed := tuckˑtypeˑFeed{title = "Deep Dive"}
+  tuckˑvˑp: tuckˑtypeˑPlayerState = tuckˑtypeˑPlayerState_Ready{config = tuckˑvˑconfig, feed = tuckˑvˑfeed}
+  tuckˑvˑfresh: tuckˑtypeˑMqttSession = tuckˑtypeˑMqttSession_Disconnected{}
+  tuckˑvˑsocket := tuckˑtypeˑSocket{fd = 3}
+  tuckˑvˑsession: tuckˑtypeˑMqttSession = tuckˑtypeˑMqttSession_Connected{socket = tuckˑvˑsocket, keepalive = u16(60)}
   return
 }
 
 main :: proc() {
-	tuck_fn_main()
+	tuckˑfnˑmain()
 }

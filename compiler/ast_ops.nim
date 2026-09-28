@@ -7,7 +7,7 @@
 # assignIds/clearIds, effectName, enumDomain, writtenName — operates ON
 # those types from outside, so it moves freely. Re-exported by ast.nim so
 # existing `import ast` call sites see no difference.
-import options, strutils
+import options, strutils, tables
 import ast
 
 func effectName*(e: EffectMarker): string =
@@ -65,7 +65,10 @@ proc writtenName*(d: Decl): string =
 # --- NodeId: identity for the semantic layer -------------------------------
 # `==`/hash/`$` stay in ast.nim, next to NodeId's own declaration.
 
-proc isSet*(a: NodeId): bool = uint32(a) != 0'u32
+proc isSet*(a: NodeId): bool =
+  ## Has this node been given an id? Zero is the "never assigned" sentinel,
+  ## so a freshly built or `clearIds`-ed node reads false.
+  uint32(a) != 0'u32
 
 iterator children*(t: Type): Type =
   ## Every type one level down. The Type half of `children(Expr)`, and it
@@ -254,6 +257,17 @@ iterator childSlots*(e: Expr): var Expr =
     of exkIfaceCall:
       yield e.dispatchRecv
       for arm in e.dispatchArms.mitems: yield arm.call
+    of exkPoolOp:
+      yield e.poolRef
+      yield e.poolHandle
+      yield e.poolValue
+
+proc poolOperands*(e: Expr): seq[Expr] =
+  ## A pool op's operands in call order — the handle, then the value — for
+  ## whatever prints one. The pool itself comes first in every call and is
+  ## not among them.
+  for o in [e.poolHandle, e.poolValue]:
+    if o != nil: result.add o
 
 iterator children*(e: Expr): Expr =
   ## Every sub-expression, one level down — the read-only view of
@@ -551,6 +565,8 @@ proc clearIds*(d: Decl) =
   for m in d.childDecls: clearIds(m)
 
 proc clearIds*(m: var Module) =
+  ## Clears the ids of every declaration in the module, so a later
+  ## `assignIds` numbers the whole tree afresh.
   for d in m.decls: clearIds(d)
 
 proc newNodeId*(): NodeId =
@@ -558,3 +574,73 @@ proc newNodeId*(): NodeId =
   ## the invariant that every node can key into the semantic layer.
   globalNodeCounter.inc
   NodeId(globalNodeCounter)
+
+# --- type substitution -------------------------------------------------------
+
+proc substType*(t: Type, subs: Table[string, Type]): Type
+
+proc substAll(ts: seq[Type], subs: Table[string, Type]): seq[Type] =
+  ## `substType` over every type in `ts`.
+  for t in ts: result.add(substType(t, subs))
+
+proc substFields(fs: seq[FieldDef], subs: Table[string, Type]): seq[FieldDef] =
+  ## Copies each field with `subs` applied to its type; the name, attributes
+  ## and span are kept.
+  for f in fs:
+    result.add(FieldDef(name: f.name, typ: substType(f.typ, subs),
+                        attrs: f.attrs, span: f.span))
+
+proc substVariants(vs: seq[VariantDef],
+                   subs: Table[string, Type]): seq[VariantDef] =
+  ## A sum's payloads are FieldDefs hanging off each variant.
+  for v in vs:
+    var nv = v
+    nv.fields = substFields(v.fields, subs)
+    result.add(nv)
+
+proc substType*(t: Type, subs: Table[string, Type]): Type =
+  ## `t` with every type parameter in `subs` replaced. Returns a NEW type
+  ## rather than mutating: a parameter may stand for a compound
+  ## (`Box[Seq[int]]`), and a `tkNamed` node cannot become a `tkApp` in place —
+  ## Nim object variants do not change kind.
+  ##
+  ## The three seq-mapping helpers above exist so each arm below is a single
+  ## constructor call: an arm that also loops is not a lookup-table entry, and
+  ## nine of them turned this into the tree's worst proc for its size.
+  ##
+  ## The one substitution walker: the checker's call-site binding, generic
+  ## fnsig instances and generic actor expansion all use it. (There were
+  ## three, and the checker's walked only names, applications, fn types and
+  ## records — a type parameter inside a tuple, sum, union, effect or rename
+  ## stayed unsubstituted, and record fields lost their attributes.)
+  if t == nil: return nil
+  if subs.len == 0: return t
+  case t.kind
+  of tkNamed:
+    if t.name in subs: subs[t.name] else: t
+  of tkTuple:
+    Type(span: t.span, kind: tkTuple, attrs: t.attrs,
+         elems: substAll(t.elems, subs))
+  of tkApp:
+    Type(span: t.span, kind: tkApp, attrs: t.attrs,
+         base: substType(t.base, subs), args: substAll(t.args, subs))
+  of tkFunc:
+    Type(span: t.span, kind: tkFunc, attrs: t.attrs,
+         params: substAll(t.params, subs), result: substType(t.result, subs),
+         paramNames: t.paramNames)
+  of tkRecord:
+    Type(span: t.span, kind: tkRecord, attrs: t.attrs,
+         fields: substFields(t.fields, subs))
+  of tkSum:
+    Type(span: t.span, kind: tkSum, attrs: t.attrs,
+         variants: substVariants(t.variants, subs),
+         transitions: t.transitions, recursive: t.recursive)
+  of tkUnion:
+    Type(span: t.span, kind: tkUnion, attrs: t.attrs,
+         members: substAll(t.members, subs))
+  of tkEffect:
+    Type(span: t.span, kind: tkEffect, attrs: t.attrs,
+         inner: substType(t.inner, subs), effects: t.effects)
+  of tkRename:
+    Type(span: t.span, kind: tkRename, attrs: t.attrs,
+         underlying: substType(t.underlying, subs), renames: t.renames)

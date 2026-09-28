@@ -5,12 +5,13 @@
 # This recursion is real cohesion, so it lives in one module. Depends only on
 # parser_base (Parser state + token accessors) — it calls neither parseType nor
 # parseDecl, which is what lets it sit at the bottom of the parser DAG.
-import tables
+import tables, sets
 import ast
 import ast_ops
 import ../lexer
 import parser_base
 import diagnostics
+from parser_stringify import opStr
 
 # internal mutual recursion within the expression grammar
 proc parseExpr*(p: var Parser): Expr
@@ -19,8 +20,9 @@ proc parsePattern*(p: var Parser): Pattern
 proc parseBlock*(p: var Parser): Expr
 proc parseStatementExpr(p: var Parser): Expr
 
-## Parses a record pattern: `{field: pat, ...}`
 proc parseRecordPattern(p: var Parser, sp: Span): Pattern =
+  ## Parses a record pattern: `{field: pat, ...}`
+  ## A bare field name is shorthand for binding the field to that name.
   discard p.advance()
   var fields: seq[(string, Pattern)]
   while p.current().kind != tkRBrace and p.current().kind != tkEOF:
@@ -37,8 +39,10 @@ proc parseRecordPattern(p: var Parser, sp: Span): Pattern =
   discard p.expect(tkRBrace)
   return Pattern(span: sp, kind: pkRecord, fields: fields)
 
-## Parses an identifier pattern with optional dot-separated path
 proc parseIdentPattern(p: var Parser, sp: Span): Pattern =
+  ## Parses an identifier pattern with optional dot-separated path
+  ## `Enum.Tag`, `Error.code` and a literal tail like `timeout.5s` all read as
+  ## one dotted name, left for the checker to resolve.
   var name = p.advance().value
   while p.current().kind == tkDot:
     name.add(".")
@@ -55,6 +59,8 @@ proc parseIdentPattern(p: var Parser, sp: Span): Pattern =
   return Pattern(span: sp, kind: pkVar, name: name)
 
 proc parsePattern*(p: var Parser): Pattern =
+  ## One match pattern: `_`, a (dotted) name, a literal, a record pattern, or
+  ## a parenthesised tuple of patterns.
   let sp = p.getSpan()
   let curr = p.current()
 
@@ -81,6 +87,8 @@ proc parsePattern*(p: var Parser): Pattern =
     p.reportError("Unexpected pattern syntax: " & $curr.kind)
 
 proc isStructLiteral(p: Parser): bool =
+  ## Does the `{` under the cursor open a struct literal (`{}`, `{a: …}`,
+  ## `{a, b}`) rather than a brace block? Decided by the two tokens after it.
   let first = p.peek(1)
   let second = p.peek(2)
   if first.kind == tkRBrace:
@@ -161,8 +169,9 @@ proc failIfChainAfterPayloadCall(p: Parser, called: Expr) =
                 called.span.line, called.span.col,
                 dcPaChainAfterPayloadCall)
 
-# {a: 1, b} — struct literal; a bare name is shorthand for name: name
 proc parseStructLiteral(p: var Parser, sp: Span): Expr =
+  ## {a: 1, b} — struct literal; a bare name is shorthand for name: name
+  ## Fields may be separated by commas or line breaks.
   discard p.advance()
   var fields: seq[FieldInit]
   while true:
@@ -183,8 +192,9 @@ proc parseStructLiteral(p: var Parser, sp: Span): Expr =
   discard p.expect(tkRBrace)
   return Expr(span: sp, kind: exkStruct, fields: fields)
 
-# { stmt; stmt } — inline block expression
 proc parseBraceBlock(p: var Parser, sp: Span): Expr =
+  ## { stmt; stmt } — inline block expression
+  ## Statements are separated by line breaks.
   discard p.advance()
   var stmts: seq[Expr]
   while p.current().kind != tkRBrace and p.current().kind != tkEOF:
@@ -194,8 +204,10 @@ proc parseBraceBlock(p: var Parser, sp: Span): Expr =
   discard p.expect(tkRBrace)
   return Expr(span: sp, kind: exkBlock, stmts: stmts)
 
-## Parses `err X` — raise an error value into the fn's result
 proc parseErrKeyword(p: var Parser, sp: Span): Expr =
+  ## Parses `err X` — raise an error value into the fn's result
+  ## nil when the current tokens are not that shape, so the caller tries the
+  ## next form.
   if p.current().kind == tkIdent and p.current().value == "err" and
      p.peek().kind in {tkIdent, tkIntLit}:
     discard p.advance()
@@ -203,8 +215,9 @@ proc parseErrKeyword(p: var Parser, sp: Span): Expr =
     return Expr(span: sp, kind: exkRaise, raiseVal: val)
   nil
 
-## Parses `:name` or `:mod::fn` — module-qualified or bare reference
 proc parseQualifiedRef(p: var Parser, sp: Span): Expr =
+  ## Parses `:name` or `:mod::fn` — module-qualified or bare reference
+  ## nil when the current tokens are not that shape.
   if p.current().kind == tkColon and p.peek().kind == tkIdent:
     discard p.advance()
     let name = p.expect(tkIdent).value
@@ -223,6 +236,9 @@ proc parseQualifiedRef(p: var Parser, sp: Span): Expr =
   nil
 
 proc parsePrimaryExpr(p: var Parser): Expr =
+  ## One primary expression: `err X`, a `:fn` reference, unary `-`/`not`, a
+  ## literal, a name, a paren group or tuple, a list, a struct literal or a
+  ## brace block. Postfix steps are the chain parser's job.
   let sp = p.getSpan()
   let curr = p.current()
   # Try error keyword: `err X`
@@ -290,13 +306,14 @@ proc parsePrimaryExpr(p: var Parser): Expr =
     discard p.advance()
     let inner = p.parseExpr()
     discard p.expect(tkRParen)
+    p.grouped.incl(cast[pointer](inner))
     return inner
   else:
     p.reportError("Expected an expression here, found " & describe(curr))
 
-# Type.Variant [unsafe] — deserialization escape hatch for sealed construction
-# (spec 4.4). Consumes the marker and reports whether it was present.
 proc tryUnsafeMarker(p: var Parser): bool =
+  ## Type.Variant [unsafe] — deserialization escape hatch for sealed construction
+  ## (spec 4.4). Consumes the marker and reports whether it was present.
   # `unsafe` is a reserved bare marker (tkAttr), so the kind check is the
   # value check — no identifier could reach here spelled `unsafe`.
   if p.current().kind == tkLBracket and p.peek(1).kind == tkAttr and
@@ -307,17 +324,27 @@ proc tryUnsafeMarker(p: var Parser): bool =
     return true
   false
 
-# expr alias(field: expr, ...) — record restructuring step (spec 2.5)
 proc parseAliasStep(p: var Parser, expr: Expr): Expr =
+  ## `expr alias(old -> new, ...)` — rename a flowing record's fields (spec
+  ## 2.4c). The arrow is Tuck's one rename spelling (TK-PA17); the colon form
+  ## `alias(old: new)` it replaced is refused with the fix. Parsed into the
+  ## same `alias` combinator node as before, over a struct whose field NAME
+  ## is the old name and whose value is the new name — so nothing after the
+  ## parser changed.
   let spAlias = p.getSpan()
   discard p.advance()
   discard p.expect(tkLParen)
   var fields: seq[FieldInit]
   while p.current().kind != tkRParen and p.current().kind != tkEOF:
     let name = p.expectMemberName("Expected field name in alias").value
-    discard p.expect(tkColon)
-    let valExpr = p.parseExpr()
-    fields.add((name, valExpr))
+    if p.current().kind == tkColon:
+      p.reportError("`alias` renames with `->`: write `" & name & " -> " &
+                    (if p.peek().kind in {tkIdent, tkAttr}: p.peek().value
+                     else: "newName") & "`", dc = dcPaRenameArrow)
+    discard p.expect(tkArrow, "Expected `->` after '" & name & "' in alias")
+    let targetSp = p.getSpan()
+    let target = p.expectMemberName("Expected the new field name in alias").value
+    fields.add((name, Expr(span: targetSp, kind: exkVar, name: target)))
     if p.current().kind == tkComma:
       discard p.advance()
   discard p.expect(tkRParen)
@@ -325,9 +352,10 @@ proc parseAliasStep(p: var Parser, expr: Expr): Expr =
   return Expr(span: spAlias, kind: exkCombinator, comb: ckAlias,
               combRecv: expr, combArg: structExpr)
 
-# {payload} fnName / {payload} mod::fn / {payload} Type.Variant [unsafe] —
-# the postfix call, Tuck's one call shape
 proc parsePostfixCall(p: var Parser, expr: Expr, sp: Span): Expr =
+  ## {payload} fnName / {payload} mod::fn / {payload} Type.Variant [unsafe] —
+  ## the postfix call, Tuck's one call shape
+  ## The payload is the receiver `expr`; the callee is the name after it.
   if p.peek().kind == tkColonColon:
     let moduleName = p.advance().value
     discard p.expect(tkColonColon)
@@ -356,11 +384,11 @@ proc parsePostfixCall(p: var Parser, expr: Expr, sp: Span): Expr =
       calleeExpr.ctorUnsafe = true
   return Expr(span: sp, kind: exkCall, callee: calleeExpr, args: @[expr])
 
-# `xs[i]` binds to the expression before it; `xs [1, 2]` is a separate list
-# literal in argument position. Tightness is the ONLY thing the parser
-# decides here — whether the bracket then means indexing or type application
-# depends on the receiver, which only the checker knows.
 proc bracketIsTight(p: Parser): bool =
+  ## `xs[i]` binds to the expression before it; `xs [1, 2]` is a separate list
+  ## literal in argument position. Tightness is the ONLY thing the parser
+  ## decides here — whether the bracket then means indexing or type application
+  ## depends on the receiver, which only the checker knows.
   if p.cursor == 0: return false
   let prev = p.tokens[p.cursor - 1]
   let br = p.current()
@@ -464,9 +492,12 @@ proc chainCombinator(p: var Parser, expr: Expr, sp: Span,
   Expr(span: sp, kind: exkCombinator, comb: ck, combRecv: expr, combArg: arg)
 
 proc chainBake(p: var Parser, expr: Expr, sp: Span): Expr =
+  ## `recv bake {slot: v}` — fix a record slot, as a combinator node.
   p.chainCombinator(expr, sp, ckBake)
 
 proc chainBuiltinCall(p: var Parser, expr: Expr, sp: Span): Expr =
+  ## `name(args)` for one of the paren builtins: a call with its arguments
+  ## listed positionally.
   discard p.advance()
   Expr(span: sp, kind: exkCall, callee: expr,
        args: p.parseCommaList(tkRParen))
@@ -481,7 +512,7 @@ proc chainSend(p: var Parser, expr: Expr, sp: Span): Expr =
   ## broke the send recognition outright and the line parsed as
   ## `put(send(Box[int]), {v: 1})`, three nested calls that meant nothing.
   discard p.advance()                    # eat `send`
-  let handler = p.expectMemberName("Expected handler name after 'send'").value
+  let handler = p.expectBindingName("Expected handler name after 'send'").value
   var payload: Expr = nil
   if p.current().kind == tkLBrace: payload = p.parsePrimaryExpr()
   var actorName = ""
@@ -495,6 +526,8 @@ proc chainSend(p: var Parser, expr: Expr, sp: Span): Expr =
        sendActorArgs: actorArgs, sendHandler: handler, sendPayload: payload)
 
 proc isSendStep(p: Parser, expr: Expr): bool =
+  ## Is the next step `send handler` on an actor name (or a generic actor's
+  ## instantiation `Box[int]`)?
   if not (p.current().kind == tkIdent and p.current().value == "send" and
           p.peek().kind == tkIdent):
     return false
@@ -516,14 +549,18 @@ proc isWithStep(p: Parser): bool =
     p.peek().kind == tkLBrace
 
 proc isAliasStep(p: Parser): bool =
+  ## Is the next step `alias(...)`?
   p.current().kind == tkIdent and p.current().value == "alias" and
     p.peek().kind == tkLParen
 
 proc isBuiltinCall(p: Parser, expr: Expr): bool =
+  ## Is the next step a parenthesised call to one of the paren builtins?
   p.current().kind == tkLParen and expr.kind == exkVar and
     expr.name in ParenBuiltins
 
 proc isEffectAnnotation(p: Parser): bool =
+  ## Is the next token a one-word attribute bracket like `[unsafe]` — an
+  ## annotation on the expression, not an index?
   p.current().kind == tkLBracket and p.peek(1).kind == tkAttr and
     p.peek(2).kind == tkRBracket
 
@@ -596,19 +633,41 @@ proc parseChainExpr(p: var Parser): Expr =
   while not done:
     result = p.chainStep(result, p.getSpan(), done)
 
+const OpPrecedences = {
+  tkPlus: (1, boAdd), tkMinus: (1, boSub),
+  tkStar: (2, boMul), tkPercent: (2, boMod),
+  tkSlashInt: (2, boDivInt), tkSlashFloat: (2, boDivFloat),
+  tkEq: (0, boEq), tkNeq: (0, boNeq),
+  tkLt: (0, boLt), tkGt: (0, boGt), tkLte: (0, boLe), tkGte: (0, boGe),
+  tkAnd: (-1, boAnd), tkOr: (-1, boOr), tkXor: (-1, boXor),
+  tkRange: (-2, boRangeIncl), tkRangeLt: (-2, boRangeExcl),
+}.toTable()
+  ## Each binary operator token's precedence (higher binds tighter) and the
+  ## BinOp it builds. A const: it used to be rebuilt as a fresh Table on every
+  ## binary expression parsed.
+
+const BoolOps = {boAnd, boOr, boXor}
+  ## The boolean operators, which share one precedence level (TK-PA16).
+
+proc failIfMixedBoolOps(p: var Parser, op: BinOp, operand: Expr) =
+  ## `and`, `or` and `xor` do not rank against each other, so an operand of
+  ## one that is ANOTHER of them, written without parentheses, is refused.
+  ## The same operator repeated (`a and b and c`) groups either way and is
+  ## fine.
+  if operand == nil or operand.kind != exkBinary: return
+  if operand.binOp notin BoolOps or operand.binOp == op: return
+  if cast[pointer](operand) in p.grouped: return
+  p.reportError("`" & opStr(op) & "` and `" & opStr(operand.binOp) &
+                "` are mixed without parentheses — write which pairs first, " &
+                "e.g. `(a and b) or c` or `a and (b or c)`",
+                operand.span.line, operand.span.col, dc = dcPaMixedBoolOps)
+
 proc parseBinaryExpr(p: var Parser, minPrecedence = 0): Expr =
+  ## Precedence climbing over the binary operators: arithmetic binds tightest,
+  ## then comparisons, then `and`/`or`/`xor`, then ranges. Operands are chain
+  ## expressions.
   var left = p.parseChainExpr()
-  
-  let opPrecedences = {
-    tkPlus: (1, boAdd), tkMinus: (1, boSub),
-    tkStar: (2, boMul), tkPercent: (2, boMod),
-    tkSlashInt: (2, boDivInt), tkSlashFloat: (2, boDivFloat),
-    tkEq: (0, boEq), tkNeq: (0, boNeq),
-    tkLt: (0, boLt), tkGt: (0, boGt), tkLte: (0, boLe), tkGte: (0, boGe),
-    tkAnd: (-1, boAnd), tkOr: (-1, boOr),
-    tkRange: (-2, boRangeIncl), tkRangeLt: (-2, boRangeExcl),
-  }.toTable()
-  
+
   while true:
     let currKind = p.current().kind
     # A bare `/` is not an operator (R1). Caught here rather than left to
@@ -622,11 +681,14 @@ proc parseBinaryExpr(p: var Parser, minPrecedence = 0): Expr =
         "inferred." &
         (if currKind == tkSlashAssign: " Same for `/=`: use `/i=` or `/f=`."
          else: ""))
-    if currKind in opPrecedences:
-      let (prec, op) = opPrecedences[currKind]
+    if currKind in OpPrecedences:
+      let (prec, op) = OpPrecedences[currKind]
       if prec >= minPrecedence:
         discard p.advance()
-        let right = if currKind in {tkAnd, tkOr}: p.parseExpr() else: p.parseBinaryExpr(prec + 1)
+        let right = if currKind in {tkAnd, tkOr, tkXor}: p.parseExpr() else: p.parseBinaryExpr(prec + 1)
+        if op in BoolOps:
+          p.failIfMixedBoolOps(op, left)
+          p.failIfMixedBoolOps(op, right)
         left = Expr(span: left.span, kind: exkBinary, binOp: op, left: left, right: right)
       else:
         break
@@ -635,6 +697,8 @@ proc parseBinaryExpr(p: var Parser, minPrecedence = 0): Expr =
   return left
 
 proc parseSelectExpr(p: var Parser): Expr =
+  ## A task-body `on select:` as an exkSelect node: one `| source arg ->
+  ## {bind}: body` arm per line.
   # task-body `on select:` (spec §9.3) — direct exkSelect node. Each arm is
   # `| <source> <arg> -> {bind}: body`; source is `read <fd>` (wait readable)
   # or `timeout <ms>` (deadline). Replaces the old exkMatch-fake-subject hack.
@@ -695,7 +759,7 @@ proc parseBinding(p: var Parser, sp: Span, mutable: bool): Expr =
   # collided when a reserved one is used as a variable (`var pending = ...`
   # reported "Expected variable name" while pointing straight at a perfectly
   # good-looking name, which reads as a parser fault rather than a naming one).
-  let name = p.expectMemberName("Expected variable name").value
+  let name = p.expectBindingName("Expected variable name").value
   # `let name: T = value` — the type is OPTIONAL and inference is still the
   # normal case. It exists for the values that carry no type of their own: an
   # empty list (TK-TY20) and a nullary generic call have nothing to infer
@@ -722,6 +786,8 @@ proc parseElseBranch(p: var Parser): Expr =
   p.parseBlock()
 
 proc parseIfExpr(p: var Parser, sp: Span): Expr =
+  ## `if cond: block` with its `elif`/`else` chain. `elif` re-enters here, so
+  ## it lands in `elseBranch` as a nested `if`.
   discard p.advance()
   let cond = p.parseExpr()
   discard p.expect(tkColon)
@@ -760,6 +826,7 @@ proc parseMatchArm(p: var Parser): MatchArm =
   if p.current().kind == tkNewline: discard p.advance()
 
 proc parseMatchExpr(p: var Parser, sp: Span): Expr =
+  ## `match subject:` and its indented arms, one per line.
   discard p.advance()
   let subject = p.parseExpr()
   discard p.expect(tkColon)
@@ -786,6 +853,8 @@ proc parseLoopVars(p: var Parser): Pattern =
   Pattern(span: first.span, kind: pkTuple, elems: @[first, second])
 
 proc parseForExpr(p: var Parser, sp: Span): Expr =
+  ## `for x in xs:` / `for i, x in xs:` iterates; any other `for cond:` is a
+  ## while-style loop and becomes exkWhile.
   discard p.advance()
   if not p.isIterationForm():
     let cond = p.parseExpr()
@@ -883,6 +952,9 @@ proc contextualStmt(p: var Parser, sp: Span): Expr =
   nil
 
 proc parseExpr*(p: var Parser): Expr =
+  ## One statement or expression, dispatched on its first token: bindings,
+  ## control flow, `return`/`discard`/`...`, contextual statements, else a
+  ## binary expression (possibly an assignment).
   let sp = p.getSpan()
   let curr = p.current()
   if curr.kind == tkOn and p.peek().kind == tkSelect:

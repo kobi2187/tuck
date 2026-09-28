@@ -22,6 +22,9 @@ import tables, sets
 import ast, ast_query
 
 type DeclIndex* = object
+  ## Hash-set answers to the per-name questions every backend asks on its hot
+  ## path (is this a record, a task, invariant-carrying?), built once per module
+  ## instead of scanning the decl list each time.
   recordNames: HashSet[string]   ## records AND objects — both construct with
                                  ## named fields, so both answer isRecordType
   taskNames: HashSet[string]
@@ -46,6 +49,8 @@ proc indexExterns(idx: var DeclIndex, m: Module) =
       idx.externInvRets[mem.name] = mem.fnReturnType.name
 
 proc buildDeclIndex*(m: Module): DeclIndex =
+  ## Builds the index in one pass over `m`'s decls, then a second over its
+  ## externs (`indexExterns`), which needs the invariant set finished first.
   for d in m.decls:
     if d == nil: continue
     case d.kind
@@ -70,18 +75,27 @@ proc buildDeclIndex*(m: Module): DeclIndex =
 # looks up.
 
 proc isRecordType*(idx: DeclIndex, name: string): bool =
+  ## Does `name` construct with named fields — a record type or an object?
+  ## The O(1) twin of `ast_query.isRecordType`.
   name in idx.recordNames
 
 proc isTaskName*(idx: DeclIndex, name: string): bool =
+  ## Is `name` a declared task? Calls to a task emit as spawns, not calls.
   name in idx.taskNames
 
 proc hasInvariants*(idx: DeclIndex, name: string): bool =
+  ## Does the type `name` declare invariants, so a value of it must be
+  ## validated where it is built or returned?
   name in idx.invariantTypes
 
 proc saturatingType*(idx: DeclIndex, name: string): Type =
+  ## The saturating integer type a named type wraps, or nil when it is not
+  ## declared saturating.
   idx.saturating.getOrDefault(name, nil)
 
 proc externInvRet*(idx: DeclIndex, fnName: string): string =
+  ## The invariant-carrying type an extern fn returns, or "" — its result must
+  ## be validated at the call, since no Tuck body produced it.
   idx.externInvRets.getOrDefault(fnName, "")
 
 proc externEmitName*(idx: DeclIndex, fnName: string): string =

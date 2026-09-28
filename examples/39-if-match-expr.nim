@@ -2,42 +2,42 @@
 import ../compiler/tuck_rt
 import sys
 
-proc tuck_fn_main*(): void
+proc tuckˑfnˑmain*(): void
 
-type tuck_type_Color* = enum Red, Green, Blue
+type tuckˑtypeˑColor* = enum Red, Green, Blue
 
-proc tuck_fn_main*(): void =
-  var tuck_hot = true
-  var tuck_limit = (if tuck_hot: 90 else: 20)
-  var tuck_c = tuck_type_Color.Green
-  var tuck_code = (case tuck_c
+proc tuckˑfnˑmain*(): void =
+  var tuckˑvˑhot = true
+  var tuckˑvˑlimit = (if tuckˑvˑhot: 90 else: 20)
+  var tuckˑvˑc = tuckˑtypeˑColor.Green
+  var tuckˑvˑcode = (case tuckˑvˑc
   of Red:
     1
   of Green:
     2
   of Blue:
     3)
-  var tuck_name = (case tuck_c
+  var tuckˑvˑname = (case tuckˑvˑc
   of Red:
     10
   of Green:
     20
   of Blue:
     30)
-  var tuck_scaled = (case tuck_c
+  var tuckˑvˑscaled = (case tuckˑvˑc
   of Red:
-    (if tuck_hot: 100 else: 1)
+    (if tuckˑvˑhot: 100 else: 1)
   of Green:
-    (if tuck_hot: 200 else: 2)
+    (if tuckˑvˑhot: 200 else: 2)
   of Blue:
-    (if tuck_hot: 300 else: 3))
-  if (tuck_limit == 90):
+    (if tuckˑvˑhot: 300 else: 3))
+  if (tuckˑvˑlimit == 90):
     if true:
-      if (tuck_code == 2):
+      if (tuckˑvˑcode == 2):
         if true:
-          if (tuck_name == 20):
+          if (tuckˑvˑname == 20):
             if true:
-              if (tuck_scaled == 200):
+              if (tuckˑvˑscaled == 200):
                 if true:
                   tuck_rt.exit(0)
   tuck_rt.exit(1)

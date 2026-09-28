@@ -4,25 +4,25 @@ package main
 import sys "./mod_sys"
 foreign import point "cffi/point.o"
 
-tuck_type_BinOp :: proc "c" (a: i32, b: i32) -> i32
+tuckˑfnsigˑBinOp :: proc "c" (a: i32, b: i32) -> i32
 
 Op :: enum { OP_ADD = 10, OP_MUL = 20, OP_NEG = 30 }
 
 @(default_calling_convention="c")
 foreign point {
 	applyOp :: proc(op: Op, a: i32, b: i32) -> i32 ---
-	callBack :: proc(cb: tuck_type_BinOp, a: i32, b: i32) -> i32 ---
+	callBack :: proc(cb: tuckˑfnsigˑBinOp, a: i32, b: i32) -> i32 ---
 }
 
-tuck_fn_addTwo :: proc "c" (a: i32, b: i32) -> i32 {
+tuckˑfnˑaddTwo :: proc "c" (a: i32, b: i32) -> i32 {
   return (a + b)
 }
 
-tuck_fn_main :: proc () {
-  tuck_m := applyOp(Op.OP_MUL, i32(6), i32(7))
-  tuck_c := callBack(tuck_fn_addTwo, i32(40), i32(2))
-  if (tuck_m == 42) {
-      if (tuck_c == 1042) {
+tuckˑfnˑmain :: proc () {
+  tuckˑvˑm := applyOp(Op.OP_MUL, i32(6), i32(7))
+  tuckˑvˑc := callBack(tuckˑfnˑaddTwo, i32(40), i32(2))
+  if (tuckˑvˑm == 42) {
+      if (tuckˑvˑc == 1042) {
           sys.exit(0)
       }
   }
@@ -30,5 +30,5 @@ tuck_fn_main :: proc () {
 }
 
 main :: proc() {
-	tuck_fn_main()
+	tuckˑfnˑmain()
 }

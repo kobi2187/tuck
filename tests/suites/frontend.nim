@@ -14,6 +14,7 @@ import std/[os, algorithm, strutils]
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the lexer and parser smoke assertions over every example file.
   var files: seq[string]
   for f in walkFiles("examples/*.tuck"): files.add f
   sort(files)

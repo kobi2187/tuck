@@ -26,6 +26,7 @@ import resolution
 import ssa_ir, ssa_build, ssa_query
 
 proc bodyOf(d: Decl): Expr =
+  ## The body an SSA graph is built over: a task's body or a fn's.
   if d.kind == dkTask: d.taskBody else: d.fnBody
 
 proc shapeOf(e: Expr, fn: SsaFn): int =

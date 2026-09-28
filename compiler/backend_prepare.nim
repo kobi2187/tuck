@@ -35,6 +35,10 @@
 #      thread through one (`twin_calls`, ROADMAP M3.5). It reads the moved-
 #      argument stamps step 4 made and keys by the ids step 5 filled. The
 #      Odin and D emitters decided it while printing, each its own way.
+#   8. ASSERT EVERY CALL COMPLETE (`call_args`): each payload call has a
+#      value for every param its callee declares. The checker's own rule,
+#      asked again after the passes that build calls, which run after it.
+#      The emitters used to fill a hole three ways (`nil`, `{}`, a refusal).
 #
 # WHY NOT BEFORE THE CLONE (ROADMAP M3.1 as first written). Two of
 # ownership's inputs are made by lowering, so it cannot precede lowering —
@@ -61,6 +65,7 @@ import lowering_seqcopy
 import lowering_strtemps
 import analysis_ownership
 import twin_calls
+import call_args
 import pipeline
 import verbose
 
@@ -82,6 +87,8 @@ type
       ## callee up in. Excludes the entry module, which is nobody's import.
 
 proc name*(b: Backend): string =
+  ## The backend's name as `impl:` blocks spell it (`nim`, `odin`, `d`), which
+  ## is what `rebaseImplPaths` matches an extern's impl entries against.
   case b
   of bkNim: "nim"
   of bkOdin: "odin"
@@ -121,6 +128,9 @@ proc rebasedImplModule(module, srcDir, outDir: string): string =
     result = "./" & result
 
 proc rebaseImplPaths(lm: LoadedModule, backend, outDir: string) =
+  ## Rewrites every extern fn's `impl: <backend>` module path in `lm` from
+  ## source-relative to relative to `outDir`, so the emitted import still finds
+  ## the shim wherever the output lands. Only the current backend's entries move.
   let srcDir = parentDir(absolutePath(lm.path))
   for d in lm.m.decls:
     if d == nil or d.kind != dkExtern: continue
@@ -168,7 +178,7 @@ var preparedOnce = false
 
 proc prepare*(prog: seq[LoadedModule], backend: Backend,
               semLayer: Resolution, outDir: string): BackendTree =
-  ## Steps 1-7, for one backend. The checked program goes in; a private,
+  ## Steps 1-8, for one backend. The checked program goes in; a private,
   ## lowered, marked copy comes out.
   doAssert not preparedOnce,
     "backend_prepare: a second backend prepared in one process would read " &
@@ -203,6 +213,11 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     if backend.aliasesOnAssign:
       decideOwnership(semLayer, lm.m, ownedStrProcs(backend))
       markTwinCalls(semLayer, lm.m)                                # 7. twins
+    # 8. EVERY CALL IS COMPLETE. The checker rejects a payload missing a
+    # param, but it runs before lowering, and lowering builds and rewrites
+    # calls. Asserted here, after the last pass that can, so no emitter is
+    # ever handed a call with a hole to fill in its own way.
+    assertCallsComplete(semLayer, lm.m, result.real)
     vSub(lm.name, ts)
   vEnd(psLowering, t0)
 

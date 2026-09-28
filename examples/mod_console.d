@@ -6,7 +6,7 @@ struct TRec_console_line(T_line) {
     T_line line;
 }
 
-enum tuck_type_IoError { EndOfInput, IoFailed }
+enum tuckˑtypeˑIoError { EndOfInput, IoFailed }
 
 void print(string text) {
     rt.print(text);

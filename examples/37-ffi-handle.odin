@@ -13,16 +13,16 @@ foreign point {
 	counterFree :: proc(c: Counter) ---
 }
 
-tuck_fn_main :: proc () {
-  tuck_h := counterNew(i32(100))
-  tuck_t := counterBump(tuck_h, i32(5))
-  counterFree(tuck_h)
-  if (tuck_t == 105) {
+tuckˑfnˑmain :: proc () {
+  tuckˑvˑh := counterNew(i32(100))
+  tuckˑvˑt := counterBump(tuckˑvˑh, i32(5))
+  counterFree(tuckˑvˑh)
+  if (tuckˑvˑt == 105) {
       sys.exit(0)
   }
   sys.exit(1)
 }
 
 main :: proc() {
-	tuck_fn_main()
+	tuckˑfnˑmain()
 }

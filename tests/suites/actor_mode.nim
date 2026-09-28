@@ -43,6 +43,8 @@ proc assertRejects(t: var T, name: string, idx: int, wanted: string) =
     t.ok name
 
 proc assertAccepts(t: var T, name: string, idx: int) =
+  ## Asserts the raw command at `idx` exited 0 — the mode or knob was
+  ## accepted. Reports its output when it was refused instead.
   if t.phase == pCollect: return
   let (rc, outp) = t.resultOf(idx)
   if rc == 0: t.ok name
@@ -65,6 +67,8 @@ proc assertRunsAs(t: var T, name: string, buildIdx, runIdx, wantExit: int) =
                    ", the sum the actor accumulated): " & outp
 
 proc run*(t: var T) =
+  ## Registers the `--actors:MODE` CLI assertions: accepted modes and batch
+  ## knobs, the refused combinations, and each mode's build running.
   # --- the default and the one implemented mode -----------------------------
 
   let bare = t.checkWith(@[])

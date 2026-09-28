@@ -130,7 +130,7 @@ let tuckGrammar = peg("module", st: Stats):
   # lexer; it arrives as tkIdent, so this is two identifiers on a line and
   # can only be stated positionally, inside a member block. `fieldDecl` is
   # tried first, so `lane: int` is never mistaken for it.
-  satisfiesMember <- word * name * eol
+  satisfiesMember <- word * name * ?renames * eol
   # `invariant:` and friends: a named block inside a type or actor body.
   # `invariant` lexes as tkAttr, which `name` already covers.
   blockMember <- name * "tkColon " * +nl * blk
@@ -215,15 +215,20 @@ let tuckGrammar = peg("module", st: Stats):
                ("tkDotDot " * name * ?structLit) |
                ("tkColonColon " * name) |
                ("tkBake " * structLit) |
-               # `alias(old: new, ...)` — the one parenthesised argument list
-               # in a language with no paren calls. `alias` itself lexes as a
-               # plain identifier, so this is a continuation, not a keyword.
-               ("tkLParen " * fieldInit * *("tkComma " * fieldInit) *
+               # `alias(old -> new, ...)` — the one parenthesised argument
+               # list in a language with no paren calls. `alias` itself lexes
+               # as a plain identifier, so this is a continuation, not a
+               # keyword. `old -> new` is Tuck's one rename spelling (TK-PA17).
+               ("tkLParen " * rename * *("tkComma " * rename) *
                 "tkRParen ") |
                ("tkLBracket " * ?sep * expr * *(sep * expr) * ?sep *
                 "tkRBracket ") |
                structLit |
                name
+  rename    <- name * "tkArrow " * name
+  # `{old -> new, ...}` after a composed type (`A + B {x -> bx}`), a
+  # `+ Name` entry or a `satisfies I` line — the same list at every site.
+  renames   <- "tkLBrace " * rename * *("tkComma " * rename) * "tkRBrace "
   primary   <- fnRef | structLit | listLit | parenExpr | literal | name
   fnRef     <- "tkColon " * name * ?("tkColonColon " * name)
   # Inside a bracket group a NEWLINE separates exactly like a comma, and the
@@ -247,12 +252,12 @@ let tuckGrammar = peg("module", st: Stats):
   binOp     <- "tkPlus " | "tkMinus " | "tkStar " | "tkPercent " |
                "tkSlashInt " | "tkSlashFloat " | "tkEq " | "tkNeq " |
                "tkLt " | "tkGt " | "tkLte " | "tkGte " | "tkAnd " | "tkOr " |
-               "tkRange " | "tkRangeLt "
+               "tkXor " | "tkRange " | "tkRangeLt "
 
   # --- types --------------------------------------------------------------
   # `?T` / `!T` / `!?T` prefixes, `T?` / `T!` suffixes, `A[B, C]`
   # application, `A + B` composition, and the record form.
-  typeExpr  <- typePrefix * typeAtom * *typeSuffix * *typeCompose
+  typeExpr  <- typePrefix * typeAtom * *typeSuffix * *typeCompose * ?renames
   typePrefix<- *("tkQuestion " | "tkBang " | "tkBangQuestion ")
   typeAtom  <- typeRecord | typeInlineSum | (name * ?typeArgs)
   typeArgs  <- "tkLBracket " * typeExpr * *("tkComma " * typeExpr) * "tkRBracket "
@@ -377,6 +382,7 @@ let tuckGrammar = peg("module", st: Stats):
   module    <- *nl * *(decl * *("tkDedent " | nl)) * !1
 
 type Verdict* = enum
+  ## What the spec-side grammar says about one file.
   vOk          ## the grammar accepts this file
   vRejected    ## the grammar rejects it — parser and spec disagree
 

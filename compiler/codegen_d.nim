@@ -64,6 +64,9 @@ proc genDQualified(ctx: DCodegenCtx, e: Expr): string =
   modName & "_" & e.qualName
 
 proc genDLit(e: Expr): string =
+  ## A literal in D syntax. Integers get `L` (Tuck's `int` is D's `long`) or
+  ## `UL` past the signed range; strings are re-escaped for D; unit prints
+  ## nothing.
   case e.litKind
   of lkStr: "\"" & escapeStringLit(e.litValue) & "\""
   of lkInt:
@@ -72,9 +75,17 @@ proc genDLit(e: Expr): string =
     # so this was invisible; the first place D INFERS from a literal is a
     # generic call, where `twice(5)` instantiated `T = int` and then would not
     # assign to the `long[]` the declared return type says it is.
-    if '.' in e.litValue or 'e' in e.litValue: e.litValue
-    # `UL` past the signed range: `L` alone makes it a signed long and dmd
-    # reports "signed integer overflow" on FNV-1a's offset basis.
+    #
+    # A `0x` literal takes `L` whatever its size — D widens a hex literal
+    # that does not fit `long` to `ulong` by itself. (This used to test for
+    # an `e`, as though for a float exponent; an integer literal has none,
+    # so the test only ever caught hex digits, and `0xfe` went out bare —
+    # a 32-bit `int` wherever D infers.)
+    if e.litValue.startsWith("0x") or e.litValue.startsWith("0X"):
+      e.litValue & "L"
+    # A DECIMAL literal past the signed range needs `UL`: `L` alone makes it
+    # a signed long and dmd reports "signed integer overflow" on FNV-1a's
+    # offset basis. Equal-length digit strings compare as numbers.
     elif e.litValue.len > 19 or
          (e.litValue.len == 19 and e.litValue > "9223372036854775807"):
       e.litValue & "UL"
@@ -82,9 +93,9 @@ proc genDLit(e: Expr): string =
   of lkFloat, lkBool: e.litValue
   of lkUnit: ""
 
-const dWideTypes = ["long", "double", "string", "bool", "void"]
-  ## Types a narrowing cast must NOT be applied to. No "auto": the emitter
-  ## never produces one (see genDAssign).
+const dNarrowNames = ["i8", "i16", "i32", "u8", "u16", "u32", "u64", "f32"]
+  ## The Tuck numeric types narrower than (or unsigned against) D's `long`
+  ## and `double`, into which a record literal's value is cast explicitly.
 
 proc recCtorFromLiteralD(ctx: var DCodegenCtx, declFields: seq[FieldDef],
                          litFields: seq[FieldInit]): string =
@@ -99,9 +110,10 @@ proc recCtorFromLiteralD(ctx: var DCodegenCtx, declFields: seq[FieldDef],
       if f.name == fd.name:
         let fieldD = ctx.dType(fd.typ)
         let ex = ctx.genDExpr(f.value)
-        if fieldD notin dWideTypes and
-           (fieldD.startsWith("u") or fieldD.startsWith("i") or
-            fieldD in ["byte", "short", "float"]):
+        # Decided on the TUCK type, not by the first letter of the D spelling
+        # (which also caught `ubyte*`, the FFI `Buf`).
+        let t = fd.typ
+        if t != nil and t.kind == tkNamed and t.name in dNarrowNames:
           parts.add(fd.name & ": cast(" & fieldD & ")(" & ex & ")")
         else:
           parts.add(fd.name & ": " & ex)
@@ -128,32 +140,23 @@ proc genDStructLit(ctx: var DCodegenCtx, e: Expr): string =
     inferred.add(FieldDef(name: f.name, typ: ft, span: e.span))
   ctx.recCtorFromLiteralD(inferred, e.fields)
 
-proc genDPayloadArgs(ctx: var DCodegenCtx, e: Expr,
-                     calleeStr: string): seq[string] =
-  ## codegen_common.payloadArgs, printed. An argument the payload lacks
-  ## cannot be spelled positionally in D, so it is refused, not guessed.
-  for i, a in payloadArgs(ctx.res, ctx.module, ctx.realModules, e, calleeStr):
-    if a == nil:
-      let names = calleeParamNames(ctx.res, ctx.module, ctx.realModules, e,
-                                   calleeStr)
-      discard dUnsupported("call omitting parameter '" & names[i] & "'")
-    result.add ctx.genDExpr(a)
-
-proc genDCallArgs(ctx: var DCodegenCtx, e: Expr,
-                  calleeStr: string): seq[string] =
-  if e.args.len == 1 and e.args[0].kind == exkStruct:
-    return ctx.genDPayloadArgs(e, calleeStr)
-  for a in e.args: result.add(ctx.genDExpr(a))
+proc genDCallArgs(ctx: var DCodegenCtx, e: Expr): seq[string] =
+  ## A call's arguments: a payload's as call_args.payloadArgs orders them,
+  ## printed; anything else as written.
+  let args = if e.isPayloadCall:
+               payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+             else: e.args
+  for a in args: result.add(ctx.genDExpr(a))
 
 proc explodeRecordArgD(ctx: var DCodegenCtx, e: Expr,
                        calleeStr: string): string =
   ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
   ## call is not a record variable standing for its payload.
-  let fields = recordArgFields(ctx.res, ctx.module, e, calleeStr)
-  if fields.len == 0: return ""
+  let fields = recordArgFields(ctx.res, ctx.module, ctx.realModules, e)
+  if fields.isNone: return ""
   let recv = ctx.genDExpr(e.args[0])
   var parts: seq[string]
-  for f in fields: parts.add(recv & "." & f)
+  for f in fields.get: parts.add(recv & "." & f)
   calleeStr & "(" & parts.join(", ") & ")"
 
 proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
@@ -178,14 +181,14 @@ proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
     return "__validated_" & e.callee.name & "(" & ctor & ")"
   ctor
 
-# The four record combinators share one emitter; what each PRODUCES is
-# decided in record_shape.nim. D's part is only its own syntax: a struct
-# literal takes `name: value`, and a structural shape lands on a hoisted
-# struct rather than an anonymous tuple.
-#
-# ponytail: exkVar receivers only, matching the Odin backend — a non-var
-# receiver declines and the call proceeds as a plain one.
 proc renderShape(ctx: var DCodegenCtx, s: RecordShape): string =
+  ## The four record combinators share one emitter; what each PRODUCES is
+  ## decided in record_shape.nim. D's part is only its own syntax: a struct
+  ## literal takes `name: value`, and a structural shape lands on a hoisted
+  ## struct rather than an anonymous tuple.
+  ##
+  ## ponytail: exkVar receivers only, matching the Odin backend — a non-var
+  ## receiver declines and the call proceeds as a plain one.
   if s.ctor == ckPassThrough: return ""
   for r in s.receivers:
     if r.kind != exkVar or ctx.res.typeFor(r) == nil: return ""
@@ -242,6 +245,8 @@ proc asParenBuiltinD(ctx: var DCodegenCtx, e: Expr, calleeStr: string): string =
   ""
 
 proc genDCombinator(ctx: var DCodegenCtx, e: Expr): string =
+  ## A record combinator (`bake`/`with`/`alias`/`merge`), rendered from the
+  ## shape `record_shape` decides for it.
   ctx.renderShape(shapeOf(ctx.module, ctx.res, e))
 
 proc asCombinatorCallD(ctx: var DCodegenCtx, e: Expr,
@@ -297,13 +302,15 @@ proc dSumVariantCtor(ctx: var DCodegenCtx, typeName, variantName: string,
     typeName & "_" & variantName & "(" & parts.join(", ") & "))"
 
 proc asDSumVariantCall(ctx: var DCodegenCtx, e: Expr): string =
+  ## `{payload} Sum.Variant` as a D tagged-struct construction, or "" when the
+  ## call is not a variant construction.
   if e.callee == nil or e.callee.kind != exkField or
      e.callee.receiver == nil or e.callee.receiver.kind != exkVar: return ""
   let payload = if e.args.len == 1 and e.args[0].kind == exkStruct: e.args[0]
                 else: nil
   ctx.dSumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
 
-const RtByPointer = ["acquire", "release", "alloc", "reset", "enqueue",
+const RtByPointer = ["alloc", "reset", "enqueue",
                      "dequeue", "hasRoom", "initMailbox", "tuckArraySetAt"]
   ## Runtime intrinsics that MUTATE their receiver, so it goes in by
   ## reference. D takes `ref`, so the call site passes the value as-is —
@@ -338,7 +345,7 @@ proc asDPrimConversion(ctx: var DCodegenCtx, e: Expr,
   ## it. Odin needed no equivalent: its own primitive names ARE Tuck's.
   let prim = dPrimName(calleeStr)
   if prim == "" or prim == calleeStr: return ""
-  let arg = ctx.genDCallArgs(e, calleeStr).join(", ")
+  let arg = ctx.genDCallArgs(e).join(", ")
   # NARROWING needs a cast, not a type constructor: `ubyte(x)` where x is a
   # ulong is "cannot implicitly convert expression of type ulong to ubyte" —
   # D's `T(x)` only performs the conversions it would do implicitly. Tuck's
@@ -360,6 +367,9 @@ proc genDActorWaitOn(ctx: var DCodegenCtx, e: Expr): string =
     ctx.genDExpr(e.args[1]) & ")"
 
 proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
+  ## A call in D, trying the special shapes first: `waitOn`, a sum variant, a
+  ## primitive conversion, a task spawn, a member or combinator call. What is
+  ## left is a plain call with its arguments in parameter order.
   let waitOn = ctx.genDActorWaitOn(e)
   if waitOn != "": return waitOn
   let variant = ctx.asDSumVariantCall(e)
@@ -375,14 +385,14 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   # fire-and-forget (spec §9.2). A result-BOUND call is handled in
   # genDAssign, which needs the target to build the slot.
   if ctx.index.isTaskName(calleeStr):
-    let args = ctx.genDCallArgs(e, calleeStr)
+    let args = ctx.genDCallArgs(e)
     return "rt.tuckSpawn({ cast(void) " & calleeStr &
            "(" & args.join(", ") & "); })"
   let member = memberCallee(ctx.res, ctx.module, e)
   if member != "": calleeStr = member
   let combinator = ctx.asCombinatorCallD(e, calleeStr)
   if combinator != "": return combinator
-  let args = ctx.genDCallArgs(e, calleeStr)
+  let args = ctx.genDCallArgs(e)
   if calleeStr == "echo":
     # `echo` is the builtin debug print; writeln is D's identical construct.
     return "writeln(" & args.join(", ") & ")"
@@ -445,6 +455,9 @@ proc genDWrappedReturn(ctx: var DCodegenCtx, v: Expr): string =
   "return rt.tok(" & ctx.genDExpr(v) & ")"
 
 proc genDReturn(ctx: var DCodegenCtx, e: Expr): string =
+  ## A `return`. In a fallible fn the value is wrapped in the result carrier
+  ## (a bare return is `tnone`/`tokVoid`); a value of an invariant-carrying
+  ## type is validated on the way out unless it validated itself.
   if e.returnVal == nil:
     if ctx.retWrapped and ctx.retAbsentCapable:
       return "return rt.tnone!(" & ctx.retInnerD & ")()"
@@ -462,7 +475,9 @@ proc genDReturn(ctx: var DCodegenCtx, e: Expr): string =
     return "return __validated_" & rt.name & "(" & v & ")"
   "return " & v
 
-proc indD(ctx: DCodegenCtx): string = repeat(' ', ctx.indent * 4)
+proc indD(ctx: DCodegenCtx): string =
+  ## The current statement indent: four spaces per level.
+  repeat(' ', ctx.indent * 4)
 
 proc dBinOp(op: BinOp): string =
   ## D's `/` follows the operand type (integer operands truncate) — same
@@ -486,6 +501,8 @@ proc dBinOp(op: BinOp): string =
   of boRangeIncl, boRangeExcl: ""   # only meaningful inside foreach — genDFor
 
 proc genDBinary(ctx: var DCodegenCtx, e: Expr): string =
+  ## A binary expression, parenthesised. `str + str` is D's `~`; a range
+  ## outside a `for` header has no D value and is refused.
   if isStringConcat(e):
     return "(" & ctx.genDExpr(e.left) & " ~ " & ctx.genDExpr(e.right) & ")"
   if e.binOp in {boRangeIncl, boRangeExcl}:
@@ -494,15 +511,13 @@ proc genDBinary(ctx: var DCodegenCtx, e: Expr): string =
     ctx.genDExpr(e.right) & ")"
 
 proc genDUnary(ctx: var DCodegenCtx, e: Expr): string =
+  ## A unary expression: `-` and `!`. A composition entry is a declaration
+  ## member, sifted out before emission, so reaching here is a compiler bug.
   case e.unaryOp
   of uoNeg: "-" & ctx.genDExpr(e.operand)
   of uoNot: "!" & ctx.genDExpr(e.operand)
-  of uoComposition: dUnsupported("composition (+Type member)")
-  of uoPropagate:
-    # `expr?` — forward failure or absence unchanged. Reaches codegen only
-    # if the rewrite pass did not desugar it; refuse rather than drop the
-    # propagation silently.
-    dUnsupported("expr? in this position")
+  of uoComposition: raiseAssert "codegen_d: a `+ Type` composition " &
+    "member reached the expression emitter"
 
 proc satisfiersOfD*(ctx: DCodegenCtx, iface: string): seq[Decl] =
   ## Whole-program satisfier set — see codegen_common.satisfiersOf.
@@ -513,9 +528,18 @@ proc genDInterfaceWrap(ctx: var DCodegenCtx, e: Expr,
   ## A concrete object entering an interface slot is COPIED into the variant
   ## (spec 5.3) — verified: mutating the original afterwards leaves the
   ## wrapped value alone.
+  ## A variable, or a call — an interface dispatch arm whose member returns
+  ## its own object type where the call's type is the interface.
   let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
+  let inner = if e.kind == exkCall: ctx.genDCall(e) else: e.name
   ifaceName & "(" & ifaceName & "Tag." & ifaceName & "_is_" & objName &
-    ", " & objName & "Val: " & e.name & ")"
+    ", " & objName & "Val: " & inner & ")"
+
+proc genDPoolOp(ctx: var DCodegenCtx, e: Expr): string =
+  ## A pool operation: `codegen_common.poolOpProc`, the pool by `ref`.
+  var args = @[e.poolRef.refName]
+  for a in e.poolOperands: args.add ctx.genDExpr(a)
+  "rt." & poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
 
 proc genDIfaceCall(ctx: var DCodegenCtx, e: Expr): string =
   ## A call through an interface value, lowered (lowering_iface): switch on
@@ -665,7 +689,7 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
   ## payload, an enum tag, or a variable.
   if ctx.res.hasCall(e): return ctx.genDExpr(ctx.res.call(e))
   if isInputRef(e, ctx.currentParams): return ctx.genDInputPayload()
-  if e.name in ctx.fieldVars: return ctx.fieldPrefix & e.name
+  if ctx.res.isOwnerField(e): return "self." & e.name
   if e.name notin ctx.definedVars:
     let tag = ctx.qualifyEnumTag(e.name)
     if tag != "": return tag
@@ -769,8 +793,7 @@ proc movedAssignTarget(ctx: DCodegenCtx, t: Expr): string =
   ## add the `self.`, so an actor handler emitted `st = f(self.st, ...)` —
   ## qualified on the right, bare on the left. Rejected here and by Odin;
   ## Nim was correct only because its backend never takes this path. EV-9.
-  if t != nil and t.kind == exkVar and t.name in ctx.fieldVars:
-    ctx.fieldPrefix & t.name
+  if ctx.res.isOwnerField(t): "self." & t.name
   else: t.name
 
 proc genDLocalDecl(ctx: var DCodegenCtx, e: Expr, valStr: string): string
@@ -783,14 +806,14 @@ proc genDMovedCall(ctx: var DCodegenCtx, e: Expr): string =
   if threaded == nil: return ""
   let name = movedName(ctx.resolveDCallee(threaded))
   let call = name & "(" &
-             ctx.genDCallArgs(threaded, threaded.callee.name).join(", ") & ")"
+             ctx.genDCallArgs(threaded).join(", ") & ")"
   # A DECLARATION needs its type in D. `threadedCall` accepts decls now
   # — that is what lets `let f = sweep(b.ask, ...)` reach the twin at all —
   # and without this the emitted `tuck_f = ...` named something never
   # declared, which dmd answers with "undefined identifier".
   if e.isDecl and e.target.kind == exkVar and
      e.target.name notin ctx.definedVars and
-     e.target.name notin ctx.fieldVars:
+     not ctx.res.isOwnerField(e.target):
     ctx.definedVars.incl(e.target.name)
     return ctx.genDLocalDecl(e, call)
   ctx.movedAssignTarget(e.target) & " = " & call
@@ -808,7 +831,7 @@ proc genDBoundTaskCall(ctx: var DCodegenCtx, e: Expr): string =
      v.callee.kind != exkVar: return ""
   if not ctx.index.isTaskName(v.callee.name): return ""
   let ret = ctx.taskRetTypeD(v.callee.name)
-  let args = ctx.genDCallArgs(v, v.callee.name)
+  let args = ctx.genDCallArgs(v)
   let rawCall = v.callee.name & "(" & args.join(", ") & ")"
   let slot = ctx.freshName("tuckSlot")
   # Three statements, laid out here — the caller strips its own indent and
@@ -881,8 +904,8 @@ proc genDRebind(ctx: var DCodegenCtx, e: Expr): string =
   let valStr = ctx.dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
   # A FIELD is never a new local: inside an actor handler `total += n`
   # assigns the singleton's field, so it must not be declared here.
-  if e.target.kind == exkVar and e.target.name in ctx.fieldVars:
-    return ctx.fieldPrefix & e.target.name & " = " & valStr
+  if ctx.res.isOwnerField(e.target):
+    return "self." & e.target.name & " = " & valStr
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
     ctx.definedVars.incl(e.target.name)
     return ctx.genDLocalDecl(e, valStr)
@@ -940,7 +963,7 @@ proc genDDroppedResult(ctx: var DCodegenCtx, s: Expr,
   ## runs first: it is the hook for diagnostics, and the program stops after.
   let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
-  let handler = mangleName("unhandled")
+  let handler = UnhandledHandlerName
   var onErr = handler & "(" & tn & ".err, \"" & site & "\");"
   if ctx.errPolicy == "exit":
     onErr.add(" rt.exit(1);")
@@ -964,7 +987,7 @@ proc genDRoutedStmt(ctx: var DCodegenCtx, s: Expr, stmtCode: string): string =
     return ctx.genDDroppedResult(s, stmtCode)
   let site = ctx.res.shortcut(s)
   let name = s.target.name
-  let handler = mangleName("unhandled")
+  let handler = UnhandledHandlerName
   var onErr = handler & "(" & name & ".err, \"" & site & "\");"
   if ctx.errPolicy == "exit":
     onErr.add(" rt.exit(1);")
@@ -1002,6 +1025,7 @@ proc genDStmt*(ctx: var DCodegenCtx, s: Expr): string =
   ctx.indD & code & ";\n"
 
 proc genDBlock(ctx: var DCodegenCtx, e: Expr): string =
+  ## A block's statements, each on its own line at the current indent.
   for s in e.stmts:
     result.add(ctx.genDStmt(s))
 
@@ -1021,14 +1045,10 @@ proc genDNested(ctx: var DCodegenCtx, body: Expr): string =
   ctx.indent -= 1
   ctx.definedVars = savedVars
 
-proc isValueIfD(e: Expr): bool =
-  ## A value-position `if` (both branches are plain expressions and the
-  ## checker stamped a type) emits as D's ternary. Mirrors ast_query's
-  ## isValueIf used by the Odin backend.
-  isValueIf(e)
-
 proc genDIf(ctx: var DCodegenCtx, e: Expr): string =
-  if isValueIfD(e):
+  ## An `if`: a ternary in value position, otherwise a statement with its
+  ## `elif` chain folded into `} else if (...)`.
+  if isValueIf(e):
     return "(" & ctx.genDExpr(e.cond) & " ? " & ctx.genDExpr(e.thenBranch) &
            " : " & ctx.genDExpr(e.elseBranch) & ")"
   let ind = ctx.indD
@@ -1053,6 +1073,7 @@ proc genDDefer(ctx: var DCodegenCtx, e: Expr): string =
   ind & "scope(exit) {\n" & ctx.genDNested(e.deferBody) & ind & "}"
 
 proc genDWhile(ctx: var DCodegenCtx, e: Expr): string =
+  ## A `while` loop; a condition-less `loop` is `while (true)`.
   let cond = if e.whileCond == nil: "true" else: ctx.genDExpr(e.whileCond)
   ctx.indD & "while (" & cond & ") {\n" & ctx.genDNested(e.whileBody) &
     ctx.indD & "}"
@@ -1080,6 +1101,7 @@ proc genDFor(ctx: var DCodegenCtx, e: Expr): string =
     ctx.genDNested(e.body) & ctx.indD & "}"
 
 proc genDList(ctx: var DCodegenCtx, e: Expr): string =
+  ## A list literal as a D array literal.
   var parts: seq[string]
   for item in e.items: parts.add(ctx.genDExpr(item))
   "[" & parts.join(", ") & "]"
@@ -1110,6 +1132,16 @@ proc dMatchSubject(ctx: var DCodegenCtx, e: Expr): string =
     base & ".kind"
   else: base
 
+proc endsInExit(body: Expr): bool =
+  ## Does an arm body's last statement leave the fn — a `return`, or an error
+  ## raise (which D emits as a `return`)? A `break;` after one would be
+  ## unreachable. Read off the AST: this used to be decided by scanning the
+  ## emitted TEXT for a trailing `return`.
+  var last = body
+  while last != nil and last.kind == exkBlock and last.stmts.len > 0:
+    last = last.stmts[^1]
+  last != nil and last.kind in {exkReturn, exkRaise}
+
 proc genDMatchArm(ctx: var DCodegenCtx, arm: MatchArm, narrowKey = ""): string =
   ## `case LABEL:` plus its body, indented one level in. Every arm breaks:
   ## D switch cases fall through by default where Tuck's arms never do, so
@@ -1131,16 +1163,15 @@ proc genDMatchArm(ctx: var DCodegenCtx, arm: MatchArm, narrowKey = ""): string =
     narrowed = true
   let body = ctx.genDNested(arm.body)
   if narrowed: ctx.matchNarrowed.del(narrowKey)
-  let ends = body.strip()
-  let needsBreak = not (ends.endsWith("return;") or
-                        ends.contains("return ") and ends.endsWith(";") and
-                        ends.splitLines()[^1].strip().startsWith("return"))
+  let needsBreak = not endsInExit(arm.body)
   ctx.indent += 1
   let brk = if needsBreak: ctx.indD & "break;\n" else: ""
   ctx.indent -= 1
   head & body & brk
 
 proc hasWildArm(e: Expr): bool =
+  ## Does the match have a `_` arm? That arm becomes `default:`, which D's
+  ## `final switch` rejects, so such a match emits a plain `switch`.
   for arm in e.arms:
     if arm.pattern != nil and arm.pattern.kind == pkWild: return true
   false
@@ -1259,11 +1290,14 @@ proc genDSelect(ctx: var DCodegenCtx, e: Expr): string =
     readBody & ctx.indD & "} else {\n" & toBody & ctx.indD & "}\n"
 
 proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
+  ## The D backend's expression dispatch. Interface wraps and fn-refs (which
+  ## need `&`) are handled before the kind; every ExprKind has an arm, so a new
+  ## kind fails to compile here until D handles it.
   if e == nil: return ""
   # A concrete value entering an interface slot is copied into the variant
   # at THIS site — the checker marked it (spec 5.3).
   let w = ctx.res.wrapOf(e)
-  if w.objName != "" and e.kind == exkVar:
+  if w.objName != "" and e.kind in {exkVar, exkCall}:
     return ctx.genDInterfaceWrap(e, w)
   # A fn used as a VALUE needs `&` in D, whichever way it was written —
   # checked here, where exkVar and exkQualified both pass through.
@@ -1309,6 +1343,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkTripleDot: ""   # `...` outside a fn body: a no-op statement
   of exkImport: ""   # imports are assembled by dImports from realModules
   of exkIfaceCall: ctx.genDIfaceCall(e)
+  of exkPoolOp: ctx.genDPoolOp(e)
   of exkOrdinal:
     # A cast, for an enum and a bool alike: D converts both to their ordinal.
     "cast(long)(" & ctx.genDExpr(e.ordinalOf) & ")"
@@ -1342,6 +1377,8 @@ proc genDParams*(ctx: var DCodegenCtx, params: seq[Param],
   parts.join(", ")
 
 proc genDStmtOrBlock*(ctx: var DCodegenCtx, body: Expr): string =
+  ## A body that may be a block or one statement, emitted at the current
+  ## indent.
   if body == nil: return ""
   if body.kind == exkBlock: ctx.genDBlock(body)
   else: ctx.genDStmt(body)

@@ -49,24 +49,49 @@ fn admit({id: u32}) -> int:
 
 
 # A slot is borrowed, not owned. What `acquire` hands back is a HANDLE — it
-# names the cell and the tenancy, and has no readable fields — so release
-# goes through the pool, which is the owner.
+# names the cell and the tenancy, and has no readable fields — so everything
+# done to the cell goes through the pool, which is the owner: `read`, `write`,
+# `release`, and `addr` for hardware.
 #
 # The handle is what makes release correct: a VALUE cannot say which cell it
 # came from, and when release searched by equality every slot held the same
 # zero value, so every release freed slot 0. It also makes a double release
 # and a stale handle caught errors rather than silent corruption, and one
-# pool's handle is a type error in another pool's release.
+# pool's handle is a type error in another pool's ops.
+#
+# A cell starts ABSENT: `read` is a `?T` until something writes it, so the
+# zeroed memory underneath is never mistaken for a value.
+
+# The DMA controller is C. `addr` gives it the cell's bytes — the one pointer
+# Tuck code makes, and only an extern may take it (TK-TY08). Here libc's
+# memset stands in for the hardware filling the buffer.
+extern [c, header: "string.h"]:
+  fn memset({p: Buf, c: int, n: int})
+
 fn drainOnce() -> int:
   let b = RxBuffers.acquire
-  if b.ok:
-    # ... wait for the transfer ...
-    # (Reading or writing the cell the handle names is not yet expressible —
-    # MISSING-FEATURES A12. Today a pool answers "may I have one of the N?",
-    # which is the backpressure half of its job.)
-    RxBuffers.release {b.value}
+  if not b.ok:
+    return 0                     # all 4 channels busy: try again later
+  let dst = RxBuffers.addr {h: b.value}
+  {p: dst, c: 1, n: 512} memset  # the "transfer"
+  let rx = RxBuffers.read {h: b.value}
+  RxBuffers.release {h: b.value}
+  if not rx.ok:
+    return 0
+  let bytes = rx.value
+  if bytes[511] != 1:
+    return 0
+  # An ISR hands the main loop a record the same way: a slot, written, read.
+  let r = Readings.acquire
+  if not r.ok:
+    return 0
+  let reading = {channel: 2, value: 700} SensorReading
+  Readings.write {h: r.value, value: reading}
+  let back = Readings.read {h: r.value}
+  Readings.release {h: r.value}
+  if back.ok:
     return 1
-  return 0                       # all 4 channels busy: try again later
+  return 0
 
 
 # The count is a budget you can actually spend. Admitting more clients than

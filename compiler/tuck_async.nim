@@ -36,6 +36,7 @@ import ./tuck_coro
 
 type
   TuckFd* = int | SocketHandle
+    ## Anything the event loop can wait on: a raw fd or a socket handle.
 
 var gLoop {.threadvar.}: EventLoop
 
@@ -127,6 +128,8 @@ type
     ## The work itself. Runs on the blocking thread under the contract above.
 
   BlockingReq = object
+    ## One unit of blocking work handed to the blocking thread: what to run, its
+    ## argument, and the pipe to signal on completion. Caller-allocated.
     fn: BlockingFn
     arg: pointer
     doneFd: cint      ## write end of the caller's completion pipe
@@ -223,10 +226,13 @@ proc tuckStop*() =
 
 type
   TuckAsyncResult*[T] = ref object
+    ## A task's eventual return value: the spawned task writes `value` and sets
+    ## `done`; `awaitResult` waits for that.
     value*: T
     done*: bool
 
 proc newAsyncResult*[T](): TuckAsyncResult[T] =
+  ## An empty result slot, not yet done, for `spawnResult` to fill.
   TuckAsyncResult[T](done: false)
 
 proc spawnResult*[T](slot: TuckAsyncResult[T],
@@ -250,11 +256,15 @@ proc awaitResult*[T](slot: TuckAsyncResult[T]): T =
 # --- actor runtime (spec §9) ----------------------------------------------
 # An actor is a SINGLETON coroutine that loops: drain its mailbox, and when
 # there is nothing to do, yield so other actors/tasks run. A send wakes the
-# actor by rescheduling its coroutine. All cooperative on one thread — no
-# locks, no OS thread. `waitUntil` (main side) drives the scheduler until a
+# actor by rescheduling its coroutine. That is `--actors:single`: all
+# cooperative on one thread, no locks, no OS thread. The default `thread` mode
+# (and `batch`) give each actor an OS thread instead — see the mode table at
+# the top of this file. `waitUntil` (main side) drives the scheduler until a
 # predicate over public actor state holds.
 
 type DrainProc* = proc(): bool {.gcsafe.}   # drain my mailbox; did I work?
+  ## An actor's drain step, generated per actor: handle the messages waiting
+  ## in its mailbox and report whether there were any.
 
 const TuckActorsSingle* = defined(tuckActorsSingle)
   ## `--actors:single` (compiler/actor_mode.nim). Set by `tuck build` as
@@ -380,6 +390,9 @@ type
     satisfied: bool     ## guarded by the owning slot's lock
 
   ActorSlot = object
+    ## One actor's scheduling state: its drain proc, the lock/condition it
+    ## sleeps on (thread mode), its coroutine (single mode), and the predicates
+    ## clients are waiting on.
     drain: DrainProc
     lock: Lock
     cond: Cond
@@ -651,6 +664,8 @@ proc tuckStartActor*(drain: DrainProc): pointer {.discardable.} =
   cast[pointer](slot)
 
 proc wakeSlot(s: ptr ActorSlot) {.inline.} =
+  ## Marks the actor pending and signals its condition, so a parked actor
+  ## wakes and drains.
   acquire(s.lock)
   s.pending = true
   signal(s.cond)

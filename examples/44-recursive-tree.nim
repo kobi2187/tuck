@@ -1,55 +1,55 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-proc `==`*(a, b: tuck_type_Expr): bool {.noSideEffect.}
+proc `==`*(a, b: tuckˑtypeˑExpr): bool {.noSideEffect.}
 
-proc tuck_fn_eval*(e: sink tuck_type_Expr): int
-proc tuck_fn_depth*(e: sink tuck_type_Expr): int
-proc tuck_fn_main*(): int
+proc tuckˑfnˑeval*(e: sink tuckˑtypeˑExpr): int
+proc tuckˑfnˑdepth*(e: sink tuckˑtypeˑExpr): int
+proc tuckˑfnˑmain*(): int
 
-type tuck_type_ExprKind* = enum Num, Neg, Add
-type tuck_type_Expr* = object
-  case kind*: tuck_type_ExprKind
-  of Num: tuck_num*: tuple[value: int]
-  of Neg: tuck_neg*: tuple[operand: seq[tuck_type_Expr]]
-  of Add: tuck_add*: tuple[left: seq[tuck_type_Expr], right: seq[tuck_type_Expr]]
+type tuckˑtypeˑExprKind* = enum Num, Neg, Add
+type tuckˑtypeˑExpr* = object
+  case kind*: tuckˑtypeˑExprKind
+  of Num: tuckˑvariantˑnum*: tuple[value: int]
+  of Neg: tuckˑvariantˑneg*: tuple[operand: seq[tuckˑtypeˑExpr]]
+  of Add: tuckˑvariantˑadd*: tuple[left: seq[tuckˑtypeˑExpr], right: seq[tuckˑtypeˑExpr]]
 
-proc `==`*(a, b: tuck_type_Expr): bool {.noSideEffect.} =
+proc `==`*(a, b: tuckˑtypeˑExpr): bool {.noSideEffect.} =
   if a.kind != b.kind: return false
   case a.kind
-  of Num: a.tuck_num == b.tuck_num
-  of Neg: a.tuck_neg == b.tuck_neg
-  of Add: a.tuck_add == b.tuck_add
+  of Num: a.tuckˑvariantˑnum == b.tuckˑvariantˑnum
+  of Neg: a.tuckˑvariantˑneg == b.tuckˑvariantˑneg
+  of Add: a.tuckˑvariantˑadd == b.tuckˑvariantˑadd
 
-proc tuck_fn_eval*(e: sink tuck_type_Expr): int =
+proc tuckˑfnˑeval*(e: sink tuckˑtypeˑExpr): int =
   (case e.kind
   of Num:
-    return e.tuck_num.value
+    return e.tuckˑvariantˑnum.value
   of Neg:
-    return (0 - tuck_fn_eval(tuck_rt.tuckAt(e.tuck_neg.operand, 0)))
+    return (0 - tuckˑfnˑeval(tuck_rt.tuckAt(e.tuckˑvariantˑneg.operand, 0)))
   of Add:
-    return (tuck_fn_eval(tuck_rt.tuckAt(e.tuck_add.left, 0)) + tuck_fn_eval(tuck_rt.tuckAt(e.tuck_add.right, 0))))
+    return (tuckˑfnˑeval(tuck_rt.tuckAt(e.tuckˑvariantˑadd.left, 0)) + tuckˑfnˑeval(tuck_rt.tuckAt(e.tuckˑvariantˑadd.right, 0))))
 
-proc tuck_fn_depth*(e: sink tuck_type_Expr): int =
+proc tuckˑfnˑdepth*(e: sink tuckˑtypeˑExpr): int =
   (case e.kind
   of Num:
     return 1
   of Neg:
-    return (1 + tuck_fn_depth(tuck_rt.tuckAt(e.tuck_neg.operand, 0)))
+    return (1 + tuckˑfnˑdepth(tuck_rt.tuckAt(e.tuckˑvariantˑneg.operand, 0)))
   of Add:
     if true:
-      var tuck_l = tuck_fn_depth(tuck_rt.tuckAt(e.tuck_add.left, 0))
-      var tuck_r = tuck_fn_depth(tuck_rt.tuckAt(e.tuck_add.right, 0))
-      if (tuck_l > tuck_r):
+      var tuckˑvˑl = tuckˑfnˑdepth(tuck_rt.tuckAt(e.tuckˑvariantˑadd.left, 0))
+      var tuckˑvˑr = tuckˑfnˑdepth(tuck_rt.tuckAt(e.tuckˑvariantˑadd.right, 0))
+      if (tuckˑvˑl > tuckˑvˑr):
         if true:
-          return (1 + tuck_l)
-      return (1 + tuck_r))
+          return (1 + tuckˑvˑl)
+      return (1 + tuckˑvˑr))
 
-proc tuck_fn_main*(): int =
-  var tuck_three = tuck_type_Expr(kind: Num, tuck_num: (value: 3))
-  var tuck_four = tuck_type_Expr(kind: Num, tuck_num: (value: 4))
-  var tuck_sum = tuck_type_Expr(kind: Add, tuck_add: (left: @[tuck_three], right: @[tuck_four]))
-  var tuck_neg = tuck_type_Expr(kind: Neg, tuck_neg: (operand: @[tuck_sum]))
-  var tuck_whole = tuck_type_Expr(kind: Add, tuck_add: (left: @[tuck_sum], right: @[tuck_neg]))
-  return ((tuck_fn_eval(tuck_whole) + tuck_fn_depth(tuck_whole)) - 4)
+proc tuckˑfnˑmain*(): int =
+  var tuckˑvˑthree = tuckˑtypeˑExpr(kind: Num, tuckˑvariantˑnum: (value: 3))
+  var tuckˑvˑfour = tuckˑtypeˑExpr(kind: Num, tuckˑvariantˑnum: (value: 4))
+  var tuckˑvˑsum = tuckˑtypeˑExpr(kind: Add, tuckˑvariantˑadd: (left: @[tuckˑvˑthree], right: @[tuckˑvˑfour]))
+  var tuckˑvˑneg = tuckˑtypeˑExpr(kind: Neg, tuckˑvariantˑneg: (operand: @[tuckˑvˑsum]))
+  var tuckˑvˑwhole = tuckˑtypeˑExpr(kind: Add, tuckˑvariantˑadd: (left: @[tuckˑvˑsum], right: @[tuckˑvˑneg]))
+  return ((tuckˑfnˑeval(tuckˑvˑwhole) + tuckˑfnˑdepth(tuckˑvˑwhole)) - 4)
 

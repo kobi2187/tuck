@@ -2,13 +2,13 @@ module _40_saturating;
 
 import rt = tuck_rt;
 
-alias tuck_type_SafeRPM = ushort;
+alias tuckˑtypeˑSafeRPM = ushort;
 
-long tuck_fn_main() {
-    tuck_type_SafeRPM tuck_over = tuck_type_SafeRPM(rt.tuckSat!(ushort)(cast(ulong)(70000L)));
-    tuck_type_SafeRPM tuck_ok = tuck_type_SafeRPM(rt.tuckSat!(ushort)(cast(ulong)(1200L)));
-    if ((tuck_over == tuck_type_SafeRPM(rt.tuckSat!(ushort)(cast(ulong)(65535L))))) {
-        if ((tuck_ok == tuck_type_SafeRPM(rt.tuckSat!(ushort)(cast(ulong)(1200L))))) {
+long tuckˑfnˑmain() {
+    tuckˑtypeˑSafeRPM tuckˑvˑover = tuckˑtypeˑSafeRPM(rt.tuckSat!(ushort)(cast(ulong)(70000L)));
+    tuckˑtypeˑSafeRPM tuckˑvˑok = tuckˑtypeˑSafeRPM(rt.tuckSat!(ushort)(cast(ulong)(1200L)));
+    if ((tuckˑvˑover == tuckˑtypeˑSafeRPM(rt.tuckSat!(ushort)(cast(ulong)(65535L))))) {
+        if ((tuckˑvˑok == tuckˑtypeˑSafeRPM(rt.tuckSat!(ushort)(cast(ulong)(1200L))))) {
             return 0L;
         }
         return 2L;
@@ -18,6 +18,6 @@ long tuck_fn_main() {
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
-    auto mainRc = tuck_fn_main();
+    auto mainRc = tuckˑfnˑmain();
     return cast(int) mainRc;
 }

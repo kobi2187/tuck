@@ -31,8 +31,8 @@ proc afterErrorType*(sp: Span): Type =
 proc branchOutcomeType*(sp: Span): Type =
   ## `on select:` as a task's own tail expression: every arm returns
   ## explicitly, so nothing ever reads the construct's own synthesized
-  ## value — there is no real type to report, and unlike `the old missing-type sentinel`
-  ## this is not a gap the checker failed to work out.
+  ## value — there is no real type to report. It is a deliberate answer, not
+  ## a gap the checker failed to work out.
   Type(span: sp, kind: tkNamed, name: BranchOutcomeName)
 
 proc typeParamName*(t: Type): string =
@@ -43,6 +43,8 @@ proc typeParamName*(t: Type): string =
   t.name[NamedTypeParamPrefix.len .. ^2]
 
 proc isPending*(t: Type): bool =
+  ## Is `t` the `<pending>` sentinel — the type of a `pending` hole, which
+  ## accepts anything until it is filled in?
   t != nil and t.kind == tkNamed and t.name == PendingName
 
 proc isFlexible*(t: Type): bool =
@@ -59,10 +61,20 @@ const NumericNames* = ["int", "i8", "i16", "i32", "i64",
                        "f32", "f64", "float"].toHashSet
 
 proc isNumeric*(t: Type): bool =
+  ## Is `t` one of the builtin numeric types (any width, signed, unsigned or
+  ## float)?
   t != nil and t.kind == tkNamed and t.name in NumericNames
 
 proc fail*(msg: string, span: Span) =
-  let err = newException(SemanticError, msg & " at line " & $span.line & ":" & $span.col)
+  ## Raises a `SemanticError` at `span`. The uncoded form; `fail(dc, ...)`
+  ## tags the message with its diagnostic code.
+  ##
+  ## The position travels on the error, not in the message: the driver
+  ## prefixes `file:line:col:` to every diagnostic. This used to append
+  ## " at line L:C" as well, so every checker error named its position twice
+  ## (`m.tuck:8:11: ... at line 8:11`) while the effect checker's named it
+  ## once.
+  let err = newException(SemanticError, msg)
   err.line = span.line
   err.col = span.col
   raise err
@@ -73,8 +85,9 @@ proc fail*(dc: DiagCode, msg: string, span: Span) =
   ## by site rather than in one sweep — see diagnostics.nim.
   fail(withCode(dc, msg), span)
 
-# `!T` / `?T` / `!?T` parse as tkApp with a tkNamed base of "!", "?" or "!?".
 proc isWrapper*(t: Type): bool =
+  ## Is `t` a result wrapper — `!T`, `?T` or `!?T`? They parse as tkApp with
+  ## a tkNamed base of "!", "?" or "!?" and exactly one argument.
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
     t.base.name in ["!", "?", "!?"] and t.args.len == 1
 
@@ -88,16 +101,17 @@ proc isBangQuestion*(t: Type): bool =
     t.base.name == "!?" and t.args.len == 1
 
 proc unwrapEffect*(t: Type): Type =
+  ## `t` with every `!`/`?`/`!?` wrapper peeled off — the payload type.
   if isWrapper(t):
     return unwrapEffect(t.args[0])
   t
 
-# `<uninit>[T]` — a declared field the construction did not supply. Shares
-# tkApp's shape with the wrappers above but is deliberately NOT one of them:
-# `!`/`?` are written by the author in a signature, this is inferred by the
-# checker and never spelled in source. Adding it to isWrapper would make every
-# wrapper site tell the user to guard something they never declared.
 proc isUninit*(t: Type): bool =
+  ## `<uninit>[T]` — a declared field the construction did not supply. Shares
+  ## tkApp's shape with the wrappers above but is deliberately NOT one of them:
+  ## `!`/`?` are written by the author in a signature, this is inferred by the
+  ## checker and never spelled in source. Adding it to isWrapper would make every
+  ## wrapper site tell the user to guard something they never declared.
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
     t.base.name == UninitName and t.args.len == 1
 
@@ -133,7 +147,13 @@ proc markUninit*(t: Type, sp: Span): Type =
   else: Type(span: sp, kind: tkApp, args: @[t],
              base: Type(span: sp, kind: tkNamed, name: UninitName))
 
+proc typeNames(ts: seq[Type]): string
+
 proc typeName*(t: Type): string =
+  ## A type as a diagnostic spells it — in source syntax where there is one:
+  ## `(A, B)` for a tuple, `(A) -> R` for a fn type. A sum or union prints
+  ## only as its kind (its variants would bury the message), an effect-typed
+  ## value as `T [io]`, a rename as its underlying type.
   if t == nil: return "void"
   case t.kind
   of tkNamed: t.name
@@ -153,27 +173,17 @@ proc typeName*(t: Type): string =
       typeName(t.base) & "[" & parts.join(", ") & "]"
   of tkSum: "sum type"
   of tkUnion: "union type"
-  else: "<type>"
+  of tkTuple: "(" & typeNames(t.elems) & ")"
+  of tkFunc: "(" & typeNames(t.params) & ") -> " & typeName(t.result)
+  of tkEffect:
+    var effs: seq[string]
+    for e in t.effects: effs.add(effectName(e))
+    typeName(t.inner) & " [" & effs.join(", ") & "]"
+  of tkRename: typeName(t.underlying)
 
-proc substituteType*(t: Type, b: Table[string, Type]): Type =
-  if t == nil or b.len == 0: return t
-  case t.kind
-  of tkNamed:
-    if b.hasKey(t.name): return b[t.name]
-    t
-  of tkApp:
-    var args: seq[Type]
-    for a in t.args: args.add(substituteType(a, b))
-    Type(span: t.span, kind: tkApp, attrs: t.attrs,
-         base: substituteType(t.base, b), args: args)
-  of tkFunc:
-    var ps: seq[Type]
-    for p in t.params: ps.add(substituteType(p, b))
-    Type(span: t.span, kind: tkFunc, params: ps, paramNames: t.paramNames,
-         result: substituteType(t.result, b))
-  of tkRecord:
-    var fields: seq[FieldDef]
-    for f in t.fields:
-      fields.add(FieldDef(name: f.name, typ: substituteType(f.typ, b), span: f.span))
-    Type(span: t.span, kind: tkRecord, attrs: t.attrs, fields: fields)
-  else: t
+proc typeNames(ts: seq[Type]): string =
+  ## Several types, comma-separated, as typeName spells each.
+  var parts: seq[string]
+  for t in ts: parts.add(typeName(t))
+  parts.join(", ")
+

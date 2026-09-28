@@ -4,6 +4,7 @@
 # cursor) and the token-stream accessors every parsing bucket needs. The
 # expression, type, and declaration parsers each import this; it holds no
 # grammar of its own.
+import std/sets
 import ../lexer
 import ast
 import diagnostics
@@ -13,17 +14,27 @@ export diagnostics   # every reportError caller needs the codes
 
 type
   Parser* = object
+    ## The parser's whole state: the source (for error context lines), the
+    ## token stream the lexer produced, and the cursor into it.
     source*: string
     tokens*: seq[Token]
     cursor*: int
+    grouped*: HashSet[pointer]
+      ## Expressions written inside parentheses. `(e)` parses to `e` itself,
+      ## so this is the only record that the parentheses were there; the
+      ## `and`/`or`/`xor` mixing rule (TK-PA16) reads it.
 
 proc current*(p: Parser): Token =
+  ## The token under the cursor, or a synthetic EOF positioned at the last
+  ## real token once the stream is exhausted — so lookahead never indexes out.
   if p.cursor < p.tokens.len:
     p.tokens[p.cursor]
   else:
     Token(kind: tkEOF, value: "", line: if p.tokens.len > 0: p.tokens[^1].line else: 1, column: if p.tokens.len > 0: p.tokens[^1].column else: 1)
 
 proc peek*(p: Parser, offset = 1): Token =
+  ## The token `offset` ahead of the cursor, with the same EOF fallback as
+  ## `current`.
   let idx = p.cursor + offset
   if idx < p.tokens.len:
     p.tokens[idx]
@@ -31,24 +42,11 @@ proc peek*(p: Parser, offset = 1): Token =
     Token(kind: tkEOF, value: "", line: if p.tokens.len > 0: p.tokens[^1].line else: 1, column: if p.tokens.len > 0: p.tokens[^1].column else: 1)
 
 proc advance*(p: var Parser): Token =
+  ## Consumes and returns the current token. At EOF the cursor stays put and
+  ## the synthetic EOF is returned again.
   result = p.current()
   if p.cursor < p.tokens.len:
     p.cursor += 1
-
-proc getLineContext(source: string, targetLine: int): string =
-  var lineNum = 1
-  var currentLine = ""
-  for ch in source:
-    if ch == '\n':
-      if lineNum == targetLine:
-        return currentLine
-      currentLine = ""
-      lineNum += 1
-    else:
-      currentLine.add(ch)
-  if lineNum == targetLine:
-    return currentLine
-  return ""
 
 proc reportError*(p: Parser, msg: string, line = -1, col = -1,
                   dc = dcNone) =
@@ -67,6 +65,8 @@ proc reportError*(p: Parser, msg: string, line = -1, col = -1,
   raise err
 
 proc expect*(p: var Parser, kind: TokenKind, msg = ""): Token =
+  ## Consumes a token of `kind` and returns it, or reports a parse error that
+  ## says what was expected and what was found (or `msg`, when given).
   if p.current().kind != kind:
     let errMsg = if msg.len > 0: msg
                  else: "Expected " & describe(kind) & " here, found " &
@@ -108,6 +108,42 @@ proc expectMemberName*(p: var Parser, msg: string): Token =
                   "be used as a name here", dc = dcPaReservedWord)
   p.reportError(msg)
 
+proc expectBindingName*(p: var Parser, msg: string): Token =
+  ## A name the code will READ BARE — a parameter, a `let`/`var` local, a
+  ## fn, member or handler name. An attribute word (`priority`, `stack`,
+  ## `error`, …) is refused here with TK-PA08. Ruled 2026-09-27: a name
+  ## that is read bare can land inside brackets, where an attribute word
+  ## reads as an attribute — `xs[stack]` parsed as an annotation and the
+  ## index was dropped — so such a word can never safely be a bare name.
+  ##
+  ## A FIELD is the one name an attribute word may still be: it is read
+  ## only through `.` (`job.priority`) or written as a record-literal key
+  ## (`{priority: 1}`), never bare. Fields go through expectMemberName.
+  if p.current().kind == tkAttr:
+    p.reportError(msg & " — `" & p.current().value & "` is a reserved " &
+                  "word and cannot be used as a name here", dc = dcPaReservedWord)
+  p.expectMemberName(msg)
+
+proc parseRenameList*(p: var Parser, what: string): seq[(string, string)] =
+  ## `{old -> new, ...}` — Tuck's one rename spelling (ruled 2026-09-27),
+  ## shared by every site that renames: a composed type's fields
+  ## (`A + B {x -> bx}`), `satisfies I {noise -> machineNoise}` and
+  ## `+ Name {old -> new}` in an object body. `alias(old -> new)` is the same
+  ## pair in parentheses. A colon in place of the arrow is refused with the
+  ## fix (TK-PA17). Assumes the opening `{`.
+  discard p.expect(tkLBrace)
+  while p.current().kind notin {tkRBrace, tkEOF}:
+    let old = p.expectMemberName("Expected the name to rename in " & what).value
+    if p.current().kind == tkColon:
+      p.reportError("a rename is written `old -> new`: write `" & old &
+                    " -> " & (if p.peek().kind in {tkIdent, tkAttr}: p.peek().value
+                              else: "newName") & "`", dc = dcPaRenameArrow)
+    discard p.expect(tkArrow, "Expected `->` after '" & old & "' in " & what)
+    let renamed = p.expectMemberName("Expected the new name in " & what).value
+    result.add((old, renamed))
+    if p.current().kind == tkComma: discard p.advance()
+  discard p.expect(tkRBrace)
+
 proc expectTypeName*(p: var Parser, what: string): Token =
   ## A user-declared type name — type, object, interface, actor, distinct,
   ## fnsig, registry, pool, arena — must be Capitalized.
@@ -134,6 +170,8 @@ proc expectTypeName*(p: var Parser, what: string): Token =
   tok
 
 proc getSpan*(p: Parser): Span =
+  ## The source position of the current token. The file is filled in later by
+  ## the module loader, which knows the path.
   Span(line: p.current().line, col: p.current().column, file: "")
 
 proc skipSeparators*(p: var Parser) =

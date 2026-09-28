@@ -37,6 +37,8 @@ import lowering_decisions   # a decision table becomes a match or an if chain
 import lowering_chains      # a `..` chain becomes statements
 import lowering_iface       # a call through an interface becomes a dispatch
 import lowering_match_binds # a binding match arm becomes a catch-all
+import call_args           # which payload field feeds which param
+import options
 import tables
 
 proc getFieldsForType*(res: Resolution, m: Module, t: Type): seq[FieldDef]
@@ -207,49 +209,32 @@ proc flattenMemberCallPayload(res: Resolution, e: Expr, m: Module) =
 proc explodePayload(res: Resolution, e: Expr) =
   ## `{a: 1, b: 2} f` -> `f(1, 2)`. One arg per declared param, in order.
   ##
-  ## The checker recorded the callee's params when it resolved the call, and
-  ## only for top-level fns — so a non-empty value already means "safe to
-  ## explode". A member fn's payload explosion belongs to the backends, which
-  ## see the receiver, and a task is theirs to schedule.
+  ## The checker recorded the callee's params when it resolved the call —
+  ## for top-level fns and object members, never tasks (a task is the
+  ## backends' to schedule) — so a RECORDED list means "safe to explode".
   ##
   ## A QUALIFIED callee (`fs::readFile`) explodes here too — the checker's
   ## mapping decides either way, so the callee's spelling was never a reason
   ## to treat the two differently. It used to be excluded, which left every
   ## backend re-implementing this loop for the qualified case.
   ##
-  ## WHAT STILL REACHES THE BACKENDS, and why they keep a fallback: this
-  ## pass needs `callParamsFor`, and the checker leaves it EMPTY for pending
-  ## fns, distinct-type constructors (`5 Milliseconds`) and the combinators
-  ## (`alias`) — measured, not assumed. Those fall through to a decl-list
-  ## scan in the emitter. Filling them in at the checker is what would let
-  ## the backend copies go.
+  ## WHAT STILL REACHES THE BACKENDS as a payload: the checker records
+  ## nothing for pending fns, distinct-type constructors (`5 Milliseconds`)
+  ## and the combinators (`alias`) — measured, not assumed — and those are
+  ## ordered by `call_args.payloadArgs` when printed (#22).
+  ##
+  ## WHICH FIELD FEEDS WHICH PARAM is `call_args.argsFor`'s, the list every
+  ## backend prints: the checker's by-type mapping where it made one, else
+  ## the param's own name, and every param asserted present. This used to be
+  ## a copy of that loop that put a `none` literal where a field was missing.
+  ## A callee the checker recorded as taking NO params gets no arguments —
+  ## its recorded list was empty, which read as "not recorded" and left
+  ## `{a: 1, b: 2} g` for the backends to print as `g(1, 2)`.
   if e.callee == nil or e.callee.kind notin {exkVar, exkQualified}: return
-  let expectedParams = res.callParamsFor(e)
-  if expectedParams.len == 0: return
-  if e.args.len != 1 or e.args[0].kind != exkStruct: return
-
-  # The checker's mapping wins. It matches a payload field to a param by NAME
-  # first and then, for whatever is left, by TYPE when the match is
-  # unambiguous (typecheck.nim, checkCallArgs pass 2) — so a field may
-  # legitimately feed a param it shares no name with. Re-deriving the mapping
-  # by name here would miss exactly those, and the unmatched-param fallback
-  # below would then emit `none` in their place.
-  let originalStruct = e.args[0]
-  let resolved = res.argFieldsFor(e)
-  var newArgs: seq[Expr]
-  for i, paramName in expectedParams:
-    let fieldName = if i < resolved.len and resolved[i].len > 0: resolved[i]
-                    else: paramName
-    var found = false
-    for field in originalStruct.fields:
-      if field[0] == fieldName:
-        newArgs.add(field[1])
-        found = true
-        break
-    if not found:
-      newArgs.add(Expr(span: e.span, kind: exkLit, litKind: lkUnit,
-                       litValue: "none"))
-  e.args = newArgs
+  if not e.isPayloadCall: return
+  let known = res.knownCallParams(e)
+  if known.isNone: return
+  e.args = argsFor(res, e, known.get)
 
 proc lowerExpr(res: Resolution, e: Expr, m: Module) =
   ## Rewrite one expression and everything under it.
@@ -273,7 +258,8 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
      exkDiscard, exkTripleDot, exkImport, exkSend, exkSelect, exkCombinator,
      exkActorRef,
      exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef, exkDefer,
-     exkFinish, exkAcquire, exkOrdinal, exkValidate, exkIfaceCall:
+     exkFinish, exkAcquire, exkOrdinal, exkValidate, exkIfaceCall,
+     exkPoolOp:
     discard
 
   # flattenRegistryRaise runs BEFORE the recursive descent, not after: a
@@ -298,18 +284,18 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
 # flattened first so the call-rewriting phase can look up a type's fields and
 # get a plain record back, whatever the source declared.
 proc mergeComposed(m: Module, d: Decl, compName: string,
-                   kept: var seq[Decl]): bool =
-  ## Merge one `+ compName` into object `d`. False when nothing by that name
+                   renames: seq[(string, string)]): bool =
+  ## Merge one `+ compName {old -> new}` record into object `d`, each renamed
+  ## field under its new name (rewrite.composeMixins has already refused a
+  ## rename of a field the record lacks). False when no record by that name
   ## is declared, which leaves the entry in place as a sketch.
+  ## A `+ Mixin` never arrives here: rewrite.composeMixins materialised its
+  ## fns before the checker ran.
   for cd in m.decls:
     if cd == nil or cd.name != compName: continue
-    if cd.kind == dkMixin:
-      for mm in cd.mixinMembers:
-        if mm != nil and mm.kind == dkFn and mm.fnBody != nil: kept.add(mm)
-      return true
     if cd.kind == dkType and cd.typeBody != nil and
        cd.typeBody.kind == tkRecord:
-      for f in cd.typeBody.fields: d.objFields.add(f)
+      for f in renamedFields(cd.typeBody.fields, renames): d.objFields.add(f)
       return true
   false
 
@@ -318,8 +304,9 @@ proc composeObject(m: Module, d: Decl) =
   ##
   ## `+` is SET UNION (spec §4.5), and it means two different things
   ## depending on what it names:
-  ##   `+ AudioPlayer` — a record type: its FIELDS merge in flat.
-  ##   `+ BulkOperations` — a mixin: its FNS become members of this object.
+  ##   `+ AudioPlayer` — a record type: its FIELDS merge in flat, here.
+  ##   `+ BulkOperations` — a mixin: its FNS become members of this object,
+  ##   already done by rewrite.composeMixins so the checker sees them.
   ## Merge, not embed. Embedding a composed type as a nested field made the
   ## two forms mean different things, and the checker already treats a
   ## composed field as the object's own — `self.volume` typechecks, so the
@@ -337,7 +324,7 @@ proc composeObject(m: Module, d: Decl) =
     if not isCompositionEntry(member):
       kept.add(member)
       continue
-    if not mergeComposed(m, d, compositionTargetName(member), kept):
+    if not mergeComposed(m, d, compositionTargetName(member), member.renames):
       kept.add(member)   # named nothing declared — sketch, the backend says so
   d.objMembers = kept
 
@@ -350,24 +337,19 @@ proc normalizeSelf(d: Decl) =
   ## which is how a zero-parameter member came to emit a fn taking nothing
   ## and a body still mentioning `self`.
   ##
-  ## Only the two facts that are the same everywhere move here: `self`
-  ## EXISTS, and the placeholder type `Self` means this object. HOW self is
-  ## passed stays a backend question — Nim spells it `var T`, Odin `^T`,
-  ## D `ref T` — decided from the parameter's name at emit time.
+  ## Only the fact that is the same everywhere moves here: `self` EXISTS.
+  ## (That `Self` means this object is bound earlier, by rewrite.bindSelf,
+  ## so the checker sees it too.) HOW self is passed stays a backend
+  ## question — Nim spells it `var T`, Odin `^T`, D `ref T` — decided from
+  ## the parameter's name at emit time.
   ##
   ## Idempotent: a member that already declares `self` is left alone.
   let objType = Type(span: d.span, kind: tkNamed, name: d.name)
   for mem in d.objMembers:
     if mem == nil or mem.kind != dkFn: continue
     var hasSelf = false
-    for i in 0 ..< mem.fnParams.len:
-      if mem.fnParams[i].name == "self": hasSelf = true
-      let pt = mem.fnParams[i].typ
-      if pt != nil and pt.kind == tkNamed and pt.name == "Self":
-        mem.fnParams[i].typ = objType
-    if mem.fnReturnType != nil and mem.fnReturnType.kind == tkNamed and
-       mem.fnReturnType.name == "Self":
-      mem.fnReturnType = objType
+    for p in mem.fnParams:
+      if p.name == "self": hasSelf = true
     if not hasSelf:
       mem.fnParams = @[Param(name: "self", typ: objType, span: mem.span)] &
                      mem.fnParams

@@ -83,7 +83,10 @@ const
 29-task-timeout:2 30-async-read:1 45-intersection:3 46-h264-driver:41
 47-resource-registry:17 20-embedded-mp3-player:0"""
 
-proc projFor(base: string): string = outDir / base.replace("-", "_")
+proc projFor(base: string): string =
+  ## The scratch package dir an example is staged and built in: its base name
+  ## with `-` made `_`, since Odin package names cannot hold dashes.
+  outDir / base.replace("-", "_")
 
 proc stage(base: string) =
   ## Assemble a self-contained Odin package: the emitted main.odin, the Tuck
@@ -137,6 +140,8 @@ proc stagePrep(base: string): proc (dir: string) =
   proc (dir: string) = stage(base)
 
 proc run*(t: var T) =
+  ## Registers the Odin backend's end-to-end assertions: gated examples build
+  ## with `odin build`, and those with a known answer run and produce it.
   let odinExe = findOdin()
   if odinExe.len == 0:
     if t.phase != pReport: return

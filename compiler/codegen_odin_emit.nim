@@ -24,6 +24,9 @@ import ./codegen_odin_decl
 import ./codegen_odin
 
 proc emitBody*(ctx: var OdinCodegenCtx, m: Module): tuple[types, mains: string] =
+  ## Splits a module into its declarations and its top-level statements (the
+  ## entry point's body), emitting each. The first element is every decl, not
+  ## only types, despite its name.
   var body = ""
   var mainStmts: seq[string]
   for d in m.decls:
@@ -55,6 +58,9 @@ proc runtimeUsers*(m: Module, actorNames: var seq[string],
 
 proc emitOdinModule*(name: string, m: Module, res: Resolution,
                      realModules = initTable[string, Module]()): string =
+  ## An imported Tuck module as its own Odin package (`package tuck_<name>`,
+  ## in `mod_<name>/`): only the imports its body actually references, then the
+  ## hoisted types, then its declarations. No entry point.
   let pkg = name.replace("-", "_")
   var ctx = newOdinCtx(m, realModules, name, res, modPrefix = pkg & "_")
   let (body, _) = ctx.emitBody(m)
@@ -153,7 +159,7 @@ proc actorInitLines(ctx: OdinCodegenCtx): string =
 proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   ## Tuck's `fn main` is a plain proc; Odin's entry point calls it. Static
   ## asserts fold into the same entry (Odin has #assert for compile-time, but
-  ## these are runtime-checked in the Beef path too).
+  ## these are runtime-checked, as on the other backends).
   ##
   ## Runtime boot mirrors the Nim entry (tuck.nim): init the scheduler and
   ## reactor, start every actor's drain coroutine, run main, then drive the

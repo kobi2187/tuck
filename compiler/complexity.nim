@@ -111,6 +111,8 @@ var sizeIsError* = false
 
 type
   Metrics = object
+    ## Running totals while one fn body is walked: the branch count, and the
+    ## first and last source lines seen, which give the body's length.
     complexity: int   # branch points; the +1 base is added by the caller
     minLine: int      # 0 = nothing seen yet
     maxLine: int
@@ -144,106 +146,51 @@ proc walkMatch(m: var Metrics, e: Expr) =
     walkTabular(m, arm.body)
 
 proc walkSelect(m: var Metrics, e: Expr) =
+  ## An `on select` counts like a match: the arms are a table, so only what
+  ## their arguments and bodies contain adds complexity.
   for arm in e.selArms:
     walkTabular(m, arm.arg)
     walkTabular(m, arm.body)
 
 proc walk(m: var Metrics, e: Expr) =
+  ## Adds `e`'s branch points to `m` and widens its line extent. Forks are
+  ## `if`, loops, match guards (none parse yet) and short-circuit `and`/`or`;
+  ## everything else only recurses into its operands, via `ast.children`.
   if e == nil: return
   m.note(e.span)
   case e.kind
-  of exkIf:
+  of exkIf, exkWhile, exkFor:
     # `if` forks; a bare `else` does not (it is the path already counted).
     m.complexity += 1
-    walk(m, e.cond)
-    walk(m, e.thenBranch)
-    walk(m, e.elseBranch)
-  of exkWhile:
-    m.complexity += 1
-    walk(m, e.whileCond)
-    walk(m, e.whileBody)
-  of exkFor:
-    m.complexity += 1
-    walk(m, e.iterable)
-    walk(m, e.body)
-  of exkMatch: walkMatch(m, e)
-  of exkSelect: walkSelect(m, e)
   of exkBinary:
     # Short-circuit operators fork: `a and b` may or may not evaluate b.
-    # Arithmetic and comparison do not.
+    # Arithmetic, comparison and `xor` (which evaluates both) do not.
     if e.binOp in {boAnd, boOr}: m.complexity += 1
-    walk(m, e.left)
-    walk(m, e.right)
-  of exkUnary:
-    # `expr?` propagates an error upward — an implicit early return, so it is
-    # a fork in the flow exactly like an `if err: return err` would be.
-    if e.unaryOp == uoPropagate: m.complexity += 1
-    walk(m, e.operand)
-  of exkBlock:
-    for s in e.stmts: walk(m, s)
-  of exkCall:
-    walk(m, e.callee)
-    for a in e.args: walk(m, a)
-  of exkCombinator:
-    # A rewrite, not a branch: no fork to count, just the operands.
-    walk(m, e.combRecv)
-    walk(m, e.combArg)
+  of exkMatch:
+    walkMatch(m, e)
+    return
+  of exkSelect:
+    walkSelect(m, e)
+    return
   of exkChain:
-    walk(m, e.base)
-    for step in e.steps:
-      m.note(step.span)
-      walk(m, step.target)
-      walk(m, step.arg)
-  of exkStruct:
-    for f in e.fields: walk(m, f.value)
-  of exkList:
-    for item in e.items: walk(m, item)
-  of exkBracket:
-    walk(m, e.brReceiver)
-    for a in e.brArgs: walk(m, a)
-  of exkBracketAssign:
-    walk(m, e.brTarget)
-    walk(m, e.brValue)
-  of exkAssign:
-    walk(m, e.target)
-    walk(m, e.assignVal)
-  of exkField:
-    walk(m, e.receiver)
-    walk(m, e.dotArg)
-  of exkReturn:
-    walk(m, e.returnVal)
-  of exkRaise:
-    walk(m, e.raiseVal)
-  of exkDiscard:
-    walk(m, e.discardVal)
-  of exkTripleDot:
+    # A step's own line counts toward the extent; its operands walk below.
+    for step in e.steps: m.note(step.span)
+  # Not forks. Named rather than left to `else` so a new kind must decide.
+  # Among them: a combinator is a rewrite, not a branch; `acquire`'s
+  # absence-on-full is a VALUE the caller matches on, and that match is
+  # where the branch counts; a `finish` happens or the program has already
+  # left by a path this block also covers; a `defer` body runs at EVERY exit
+  # from its scope, so counting it would charge the same branch twice. Their
+  # operands and bodies still walk — the statements inside fork like any
+  # others.
+  of exkUnary, exkBlock, exkCall, exkCombinator, exkStruct, exkList,
+     exkBracket, exkBracketAssign, exkAssign, exkField, exkReturn, exkRaise,
+     exkDiscard, exkTripleDot, exkSend, exkAcquire, exkFinish, exkDefer,
+     exkOrdinal, exkValidate, exkIfaceCall, exkPoolOp, exkLit, exkVar,
+     exkQualified, exkBreak, exkContinue, exkImport, exkActorRef,
+     exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     discard
-  of exkSend:
-    walk(m, e.sendPayload)
-  of exkAcquire:
-    # Not a fork either: absence-on-full is a VALUE the caller matches on,
-    # and that match is where the branch gets counted.
-    walk(m, e.acquireRef)
-  of exkFinish:
-    # Not a fork: a release happens or the program has already left by another
-    # path that this same block also covers. The handle expression still walks.
-    walk(m, e.finishHandle)
-  of exkDefer:
-    # Not a fork. A defer block runs at EVERY exit from its scope, so it adds
-    # no path the exits themselves did not already contribute — counting it
-    # would charge the same branch twice. Its body still walks: the statements
-    # inside it fork like any others.
-    walk(m, e.deferBody)
-  of exkOrdinal:
-    walk(m, e.ordinalOf)
-  of exkValidate:
-    walk(m, e.validated)
-  of exkIfaceCall:
-    walk(m, e.dispatchRecv)
-    for arm in e.dispatchArms: walk(m, arm.call)
-  of exkLit, exkVar, exkQualified, exkBreak, exkContinue, exkImport,
-     exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
-    discard
+  for c in e.children: walk(m, c)
 
 proc measure(body: Expr): tuple[complexity, lines: int] =
   ## McCabe starts at 1: a body with no forks still has one path through it.
@@ -254,6 +201,9 @@ proc measure(body: Expr): tuple[complexity, lines: int] =
 
 proc checkFn(acc: var seq[Offender], name: string, body: Expr, span: Span,
              b: Budget) =
+  ## Measures one body against the budget and records it as an offender when
+  ## either its complexity or its line count is over. A zero limit disables
+  ## that half of the check.
   if body == nil: return  # `pending:` and extern sigs have no body to measure
   let (complexity, lines) = measure(body)
   let overC = b.maxComplexity > 0 and complexity > b.maxComplexity
@@ -263,6 +213,8 @@ proc checkFn(acc: var seq[Offender], name: string, body: Expr, span: Span,
                      overComplexity: overC, overLines: overL, span: span))
 
 proc verifyDecl(acc: var seq[Offender], d: Decl, b: Budget) =
+  ## Checks every fn and task body `d` owns — handlers, block members and
+  ## `when` branches included — against the budget. Every other kind is exempt.
   if d == nil: return
   case d.kind
   of dkFn:

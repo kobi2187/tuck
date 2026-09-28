@@ -23,6 +23,8 @@ type Config:
 """
 
 proc run*(t: var T) =
+  ## Registers the uninit-field assertions: a field a construction did not
+  ## supply is a hole that may not be read, returned or passed on.
   # --- rule 1: an unread hole is fine ------------------------------------
   t.src Cfg & """
 fn main() -> int:

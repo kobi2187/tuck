@@ -8,21 +8,21 @@ struct TRec_feed(T_feed) {
     T_feed feed;
 }
 
-struct tuck_type_Feed {
+struct tuckˑtypeˑFeed {
     long episodes;
 }
 
-TRec_feed!(tuck_type_Feed) tuck_fn_parse(T)(T payload) {
-    stderr.writeln("TUCK PENDING: tuck_fn_parse invoked (not implemented)");
+TRec_feed!(tuckˑtypeˑFeed) tuckˑfnˑparse(T)(T payload) {
+    stderr.writeln("TUCK PENDING: parse invoked (not implemented)");
     return typeof(return).init;
 }
 
 
-rt.TuckResult!(TRec_feed!(tuck_type_Feed)) tuck_fn_fetchFeed(string url) {
-    rt.TuckResult!(http.TRec_http_body!(string)) tuck_resp = http.tuck_fn_get(url);
-    if ((tuck_resp.status == rt.TuckStatus.Ok)) {
-        return rt.tok(tuck_fn_parse(tuck_resp.value.body));
+rt.TuckResult!(TRec_feed!(tuckˑtypeˑFeed)) tuckˑtaskˑfetchFeed(string url) {
+    rt.TuckResult!(http.TRec_http_body!(string)) tuckˑvˑresp = http.tuckˑfnˑget(url);
+    if ((tuckˑvˑresp.status == rt.TuckStatus.Ok)) {
+        return rt.tok(tuckˑfnˑparse(tuckˑvˑresp.value.body));
     }
-    return rt.terr!(TRec_feed!(tuck_type_Feed))(cast(ushort)(tuck_resp.err));
+    return rt.terr!(TRec_feed!(tuckˑtypeˑFeed))(cast(ushort)(tuckˑvˑresp.err));
 }
 

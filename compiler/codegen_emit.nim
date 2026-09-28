@@ -13,12 +13,16 @@ import codegen_ctx
 import ./codegen_decl
 
 proc genDeclsOfKind*(ctx: var CodegenCtx, m: Module, kinds: set[DeclKind]): string =
+  ## Emits every declaration of `m` whose kind is in `kinds`, in source order,
+  ## one blank-line-separated chunk each.
   for d in m.decls:
     if d == nil or d.kind notin kinds: continue
     let code = ctx.genDecl(d)
     if code != "": result.add(code & "\n")
 
 proc genDeclsExcept*(ctx: var CodegenCtx, m: Module, kinds: set[DeclKind]): string =
+  ## Emits every declaration of `m` whose kind is NOT in `kinds` — the
+  ## complement of `genDeclsOfKind`, used to print the rest after the types.
   for d in m.decls:
     if d == nil or d.kind in kinds: continue
     let code = ctx.genDecl(d)

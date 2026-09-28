@@ -4,29 +4,29 @@ import rt = tuck_rt;
 import scheduler = mod_scheduler;
 import net = mod_net;
 
-enum tuck_type_ResultMsgKind { msgPut }
+enum tuckˑactorˑResultMsgKind { msgPut }
 
-struct tuck_type_ResultMsg {
-    tuck_type_ResultMsgKind tuckTag;
+struct tuckˑactorˑResultMsg {
+    tuckˑactorˑResultMsgKind tuckTag;
     long c;
 }
 
-struct tuck_type_Result {
+struct tuckˑactorˑResult {
     long code;
     bool ready;
-    rt.Mailbox!(tuck_type_ResultMsg, 8) mailbox;
+    rt.Mailbox!(tuckˑactorˑResultMsg, 8) mailbox;
 }
 
-__gshared tuck_type_Result tuck_type_ResultSingleton;
+__gshared tuckˑactorˑResult tuckˑactorˑResultSingleton;
 
 shared static this() {
-    tuck_type_ResultSingleton.code = 0L;
-    tuck_type_ResultSingleton.ready = false;
+    tuckˑactorˑResultSingleton.code = 0L;
+    tuckˑactorˑResultSingleton.ready = false;
 }
 
-void handleMsg_tuck_type_Result(ref tuck_type_Result self, tuck_type_ResultMsg msg) {
+void handleMsg_tuckˑactorˑResult(ref tuckˑactorˑResult self, tuckˑactorˑResultMsg msg) {
     final switch (msg.tuckTag) {
-        case tuck_type_ResultMsgKind.msgPut:
+        case tuckˑactorˑResultMsgKind.msgPut:
             auto c = msg.c;
             self.code = c;
             self.ready = true;
@@ -34,66 +34,66 @@ void handleMsg_tuck_type_Result(ref tuck_type_Result self, tuck_type_ResultMsg m
     }
 }
 
-__gshared void* tuck_type_ResultSlot;
+__gshared void* tuckˑactorˑResultSlot;
 
-bool drain_tuck_type_Result() {
+bool drain_tuckˑactorˑResult() {
     bool did = false;
-    foreach (ref msg; tuck_type_ResultSingleton.mailbox) {
-        handleMsg_tuck_type_Result(tuck_type_ResultSingleton, msg);
+    foreach (ref msg; tuckˑactorˑResultSingleton.mailbox) {
+        handleMsg_tuckˑactorˑResult(tuckˑactorˑResultSingleton, msg);
         rt.tuckCheckWaiters();
         did = true;
     }
     return did;
 }
 
-void sendPut_tuck_type_Result(ref tuck_type_Result self, long c) {
-    cast(void) rt.enqueue(self.mailbox, tuck_type_ResultMsg(tuckTag: tuck_type_ResultMsgKind.msgPut, c: c));
-    rt.tuckNotifySend(tuck_type_ResultSlot);
+void sendPut_tuckˑactorˑResult(ref tuckˑactorˑResult self, long c) {
+    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑResultMsg(tuckTag: tuckˑactorˑResultMsgKind.msgPut, c: c));
+    rt.tuckNotifySend(tuckˑactorˑResultSlot);
 }
 
 
-void tuck_fn_serve(long lfd) {
-    rt.TuckResult!(net.TRec_net_fd!(long)) tuck_c = net.accept(lfd);
-    if ((tuck_c.status == rt.TuckStatus.Ok)) {
-        net.recv(tuck_c.value.fd, 256L);
-        net.send(tuck_c.value.fd, "pong");
-        net.close(tuck_c.value.fd);
+void tuckˑtaskˑserve(long lfd) {
+    rt.TuckResult!(net.TRec_net_fd!(long)) tuckˑvˑc = net.accept(lfd);
+    if ((tuckˑvˑc.status == rt.TuckStatus.Ok)) {
+        net.recv(tuckˑvˑc.value.fd, 256L);
+        net.send(tuckˑvˑc.value.fd, "pong");
+        net.close(tuckˑvˑc.value.fd);
     }
     return;
 }
 
-void tuck_fn_client(long port) {
-    rt.TuckResult!(net.TRec_net_fd!(long)) tuck_c = net.connect("127.0.0.1", port);
-    if ((tuck_c.status == rt.TuckStatus.Ok)) {
-        net.send(tuck_c.value.fd, "ping");
-        rt.TuckResult!(net.TRec_net_data!(string)) tuck_r = net.recv(tuck_c.value.fd, 256L);
-        net.close(tuck_c.value.fd);
-        if ((tuck_r.status == rt.TuckStatus.Ok)) {
-            if ((tuck_r.value.data == "pong")) {
-                sendPut_tuck_type_Result(tuck_type_ResultSingleton, 42L);
+void tuckˑtaskˑclient(long port) {
+    rt.TuckResult!(net.TRec_net_fd!(long)) tuckˑvˑc = net.connect("127.0.0.1", port);
+    if ((tuckˑvˑc.status == rt.TuckStatus.Ok)) {
+        net.send(tuckˑvˑc.value.fd, "ping");
+        rt.TuckResult!(net.TRec_net_data!(string)) tuckˑvˑr = net.recv(tuckˑvˑc.value.fd, 256L);
+        net.close(tuckˑvˑc.value.fd);
+        if ((tuckˑvˑr.status == rt.TuckStatus.Ok)) {
+            if ((tuckˑvˑr.value.data == "pong")) {
+                sendPut_tuckˑactorˑResult(tuckˑactorˑResultSingleton, 42L);
                 return;
             }
         }
-        sendPut_tuck_type_Result(tuck_type_ResultSingleton, 3L);
+        sendPut_tuckˑactorˑResult(tuckˑactorˑResultSingleton, 3L);
         return;
     }
-    sendPut_tuck_type_Result(tuck_type_ResultSingleton, 4L);
+    sendPut_tuckˑactorˑResult(tuckˑactorˑResultSingleton, 4L);
     return;
 }
 
-bool tuck_fn_done() {
-    return tuck_type_ResultSingleton.ready;
+bool tuckˑfnˑdone() {
+    return tuckˑactorˑResultSingleton.ready;
 }
 
-long tuck_fn_main() {
-    rt.TuckResult!(net.TRec_net_fd!(long)) tuck_l = net.listen(34593L);
-    if ((tuck_l.status == rt.TuckStatus.Ok)) {
-        rt.tuckSpawn({ cast(void) tuck_fn_serve(tuck_l.value.fd); });
-        rt.tuckSpawn({ cast(void) tuck_fn_client(34593L); });
-        rt.tuckWaitOn(tuck_type_ResultSlot, &tuck_fn_done);
-        net.close(tuck_l.value.fd);
+long tuckˑfnˑmain() {
+    rt.TuckResult!(net.TRec_net_fd!(long)) tuckˑvˑl = net.listen(34593L);
+    if ((tuckˑvˑl.status == rt.TuckStatus.Ok)) {
+        rt.tuckSpawn({ cast(void) tuckˑtaskˑserve(tuckˑvˑl.value.fd); });
+        rt.tuckSpawn({ cast(void) tuckˑtaskˑclient(34593L); });
+        rt.tuckWaitOn(tuckˑactorˑResultSlot, &tuckˑfnˑdone);
+        net.close(tuckˑvˑl.value.fd);
         scheduler.stop();
-        return tuck_type_ResultSingleton.code;
+        return tuckˑactorˑResultSingleton.code;
     }
     return 1L;
 }
@@ -101,8 +101,8 @@ long tuck_fn_main() {
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    tuck_type_ResultSlot = rt.tuckStartActor(&drain_tuck_type_Result);
-    auto mainRc = tuck_fn_main();
+    tuckˑactorˑResultSlot = rt.tuckStartActor(&drain_tuckˑactorˑResult);
+    auto mainRc = tuckˑfnˑmain();
     rt.tuckRun();
     rt.tuckDrainActors();
     return cast(int) mainRc;

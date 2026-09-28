@@ -4,25 +4,25 @@ import str
 import console
 import sys
 
-proc tuck_fn_main*(): void
+proc tuckˑfnˑmain*(): void
 
-type tuck_type_Jar* = object
+type tuckˑtypeˑJar* = object
   count*: int
   label*: string
 
-proc tuck_fn_main*(): void =
-  var tuck_n = 99
-  var tuck_s = tuckConcat(tuck_rt.toStr(tuck_n), " bottles")
-  tuck_rt.printLine(tuck_s)
-  var tuck_t = tuckConcat(tuck_rt.toStr(tuck_n), " more")
-  tuck_rt.printLine(tuck_t)
-  var tuck_j = tuck_type_Jar(count: 7, label: "jam")
-  var tuck_c = tuck_j.count
-  var tuck_u = tuckConcat(tuckConcat(tuck_j.label, ": "), tuck_rt.toStr(tuck_c))
-  tuck_rt.printLine(tuck_u)
-  if (tuck_s == "99 bottles"):
+proc tuckˑfnˑmain*(): void =
+  var tuckˑvˑn = 99
+  var tuckˑvˑs = tuckConcat(tuck_rt.toStr(tuckˑvˑn), " bottles")
+  tuck_rt.printLine(tuckˑvˑs)
+  var tuckˑvˑt = tuckConcat(tuck_rt.toStr(tuckˑvˑn), " more")
+  tuck_rt.printLine(tuckˑvˑt)
+  var tuckˑvˑj = tuckˑtypeˑJar(count: 7, label: "jam")
+  var tuckˑvˑc = tuckˑvˑj.count
+  var tuckˑvˑu = tuckConcat(tuckConcat(tuckˑvˑj.label, ": "), tuck_rt.toStr(tuckˑvˑc))
+  tuck_rt.printLine(tuckˑvˑu)
+  if (tuckˑvˑs == "99 bottles"):
     if true:
-      if (tuck_u == "jam: 7"):
+      if (tuckˑvˑu == "jam: 7"):
         if true:
           tuck_rt.exit(0)
   tuck_rt.exit(1)

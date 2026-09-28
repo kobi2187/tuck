@@ -107,6 +107,8 @@ proc slotEnv(slot: int): StringTableRef =
   result["TUCK_ODIN_EXTRA"] = OdinThreads   # `tuck build --odin` too
 
 proc outFile(slot: int): string =
+  ## The temp file slot `slot` of this runner process writes its child's
+  ## output to, unique per process and slot.
   getTempDir() / &"tuck-pool-{getCurrentProcessId()}-{slot}.out"
 
 proc launch(argv: seq[string], env: StringTableRef, outPath: string): Process =
@@ -151,16 +153,21 @@ proc runPool(items: var seq[WorkItem], argvOf: proc (i: int): seq[string],
       pending.dec
 
   template ready(i: int): bool =
+    ## Can item `i` start: not yet run, and its dependency (if any) finished
+    ## successfully?
     (not items[i].done) and
       (items[i].dep < 0 or
        (items[items[i].dep].done and items[items[i].dep].rc == 0))
 
   template blocked(i: int): bool =
+    ## Did item `i`'s dependency fail, so it can never run?
     items[i].dep >= 0 and items[items[i].dep].done and
       items[items[i].dep].rc != 0
 
   proc finish(items: var seq[WorkItem], idx, rc: int, output: string,
               pending: var int) =
+    ## Records item `idx`'s exit code and output, marks it done, and counts it
+    ## off the pending total.
     items[idx].rc = rc
     items[idx].output = output
     items[idx].done = true
@@ -300,6 +307,7 @@ proc runSuites(names: seq[string], jobs: int, bless: bool, root: string): int =
   failures
 
 proc secs(t0: MonoTime): string =
+  ## Seconds since `t0`, to one decimal, for the timing summary.
   &"{(getMonoTime() - t0).inMilliseconds.float / 1000.0:.1f}"
 
 proc tuckIsStale(): bool =

@@ -112,6 +112,8 @@ proc decideThreaded(res: Resolution, m: Module, e: Expr): Expr =
   if movedCallInto(res, m, call, e.target.name): call else: nil
 
 proc decide(res: Resolution, m: Module, n: Expr) =
+  ## Makes both decisions for one node and marks it visited, so an emitter
+  ## asking about a node the pass never reached is caught by `assertVisited`.
   if not n.id.isSet: return
   visited.incl n.id
   if decideTakesTwin(res, m, n): takesTwin.incl n.id
@@ -141,6 +143,9 @@ proc markTwinCalls*(res: Resolution, m: Module) =
   for e in m.bodies: markIn(res, m, e)
 
 proc assertVisited(e: Expr, what: string) =
+  ## Fails loudly when an emitter asks `what` about a node this pass never
+  ## visited — built after `prepare`, or unreachable by the walk — instead of
+  ## quietly answering "no twin".
   let callee = if e.kind == exkCall and e.callee != nil and
                   e.callee.kind == exkVar: " to '" & e.callee.name & "'"
                else: ""

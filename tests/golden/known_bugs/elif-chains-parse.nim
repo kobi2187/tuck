@@ -1,9 +1,9 @@
 {.experimental: "codeReordering".}
 
-proc tuck_fn_classify*(n: int): int
-proc tuck_fn_main*(): int
+proc tuckˑfnˑclassify*(n: int): int
+proc tuckˑfnˑmain*(): int
 
-proc tuck_fn_classify*(n: int): int =
+proc tuckˑfnˑclassify*(n: int): int =
   if (n < 0):
     if true:
       return 0
@@ -19,6 +19,6 @@ proc tuck_fn_classify*(n: int): int =
         if true:
           return 3
 
-proc tuck_fn_main*(): int =
-  return tuck_fn_classify(5)
+proc tuckˑfnˑmain*(): int =
+  return tuckˑfnˑclassify(5)
 

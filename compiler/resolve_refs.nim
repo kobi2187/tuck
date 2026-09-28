@@ -33,6 +33,8 @@ proc collectNames(prog: seq[LoadedModule]) =
   ## not a first-wins situation (unlike sum-type variants, which legitimately
   ## repeat across unrelated types).
   template collect(kind: DeclKind, table: untyped, what: string) =
+    ## Fills `semLayer.table` with every decl of `kind` in the program,
+    ## failing on a second declaration of the same name.
     for lm in prog:
       for d in lm.m.decls(kind):
         if semLayer.table.hasKey(d.name):

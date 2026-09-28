@@ -33,6 +33,9 @@ import os, tables
 
 type
   TokenKind* = enum
+    ## Every token the lexer produces: layout (newline, indent, dedent, EOF),
+    ## literals and names, punctuation and operators, keywords, and `tkAttr` for
+    ## the reserved attribute words.
     tkError,
     tkEOF,
     tkNewline,
@@ -78,7 +81,7 @@ type
     tkPending, tkOn, tkSelect, tkRegistry,
     tkDecision, tkPool, tkArena, tkRegister,
     tkWhen, tkDistinct, tkBake, tkImport,
-    tkAnd, tkOr, tkNot, tkTrue, tkFalse, tkNone,
+    tkAnd, tkOr, tkXor, tkNot, tkTrue, tkFalse, tkNone,
     tkStaticAssert,
     tkAttr,   # an ATTRIBUTE name — sealed, io, error, stack, … (see keywords)
 
@@ -87,17 +90,21 @@ type
     tkSlashIntAssign, tkSlashFloatAssign    # /i= /f=
 
   Token* = object
+    ## One token: its kind, its exact source text (empty for layout tokens), and
+    ## where it starts, 1-based.
     kind*: TokenKind
     value*: string
     line*: int
     column*: int
 
   Lexer* = object
+    ## The lexer's state: the source and a cursor into it (with line/column),
+    ## the indent stack, how many brackets are open, and tokens produced but not
+    ## yet handed to the parser.
     source*: string
     position*: int
     line*: int
     column*: int
-    linesLen*: seq[int] # legacy fallback
     indentStack*: seq[int]
     lastDrained*: TokenKind
       ## The kind most recently handed to the parser, so the newline rule can
@@ -145,7 +152,7 @@ const keywords = {
   "registry": tkRegistry, "decision": tkDecision,
   "pending": tkPending, "when": tkWhen,
   "distinct": tkDistinct, "bake": tkBake, "import": tkImport,
-  "and": tkAnd, "or": tkOr, "not": tkNot,
+  "and": tkAnd, "or": tkOr, "xor": tkXor, "not": tkNot,
   "true": tkTrue, "false": tkFalse, "none": tkNone,
   "static_assert": tkStaticAssert,
 
@@ -176,7 +183,10 @@ const keywords = {
   "error": tkAttr, "stack": tkAttr, "align": tkAttr, "priority": tkAttr
 }.toTable()
 
-proc getLineContext(source: string, targetLine: int): string =
+proc getLineContext*(source: string, targetLine: int): string =
+  ## The text of source line `targetLine` (1-based), without its newline — the
+  ## line an error message quotes under its caret. "" past the end. Shared
+  ## with the parser's reportError.
   var lineNum = 1
   var currentLine = ""
   for ch in source:
@@ -232,15 +242,20 @@ proc describe*(kind: TokenKind, value = ""): string =
     if value.len > 0: "`" & value & "`" else: "`" & ($kind)[2 .. ^1] & "`"
 
 proc describe*(t: Token): string =
+  ## How this token reads in a diagnostic — see the TokenKind overload.
   describe(t.kind, t.value)
 
 proc peek*(L: Lexer, offset = 0): char =
+  ## The character `offset` ahead of the cursor, or '\0' past the end — so
+  ## lookahead never needs a bounds check.
   if L.position + offset < L.source.len:
     L.source[L.position + offset]
   else:
     '\0'
 
 proc advance*(L: var Lexer) =
+  ## Consumes one character, keeping line and column in step. A no-op at the
+  ## end of the source.
   if L.position < L.source.len:
     if L.source[L.position] == '\n':
       L.line += 1
@@ -293,6 +308,9 @@ proc stepOut(L: var Lexer, spaces: int) =
                   L.line, L.column, "TK-LX04")
 
 proc handleIndent*(L: var Lexer) =
+  ## At the start of a line: measures its indentation and emits the indent or
+  ## dedent tokens the change calls for. Blank and comment-only lines are
+  ## layout-neutral and change nothing.
   if L.indentStack.len == 0:
     L.indentStack.add(0)
 
@@ -308,6 +326,7 @@ proc handleIndent*(L: var Lexer) =
     L.stepOut(spaces)
 
 proc handleEOF*(L: var Lexer) =
+  ## Closes every block still open with a dedent, then emits EOF.
   while L.indentStack.len > 1:
     discard L.indentStack.pop()
     L.pendingTokens.add(Token(kind: tkDedent, value: "", line: L.line, column: L.column))
@@ -339,6 +358,8 @@ proc escapeChar(L: var Lexer, c: char, line, col: int): char =
     '\0'
 
 proc lexString*(L: var Lexer) =
+  ## A string literal, with its escapes decoded into the token's value. An
+  ## unterminated literal is rejected at its opening quote.
   let startLine = L.line
   let startCol = L.column
   L.advance() # eat opening '"'
@@ -392,6 +413,8 @@ proc lexDigits(L: var Lexer, val: var string, digits: set[char],
       L.advance()
 
 proc lexNumber*(L: var Lexer) =
+  ## An integer (decimal or `0x` hex) or a float (`digits.digits`; there is no
+  ## exponent form). `_` separators are dropped from the value.
   let startLine = L.line
   let startCol = L.column
   var val = ""
@@ -415,6 +438,8 @@ proc lexNumber*(L: var Lexer) =
     L.pendingTokens.add(Token(kind: tkIntLit, value: val, line: startLine, column: startCol))
 
 proc lexIdent*(L: var Lexer) =
+  ## An identifier or keyword: the longest run of letters, digits and `_`,
+  ## looked up in the keyword table.
   let startLine = L.line
   let startCol = L.column
   # An identifier is a contiguous run of the source, so take it as one slice.
@@ -439,14 +464,18 @@ proc tryTwoChar*(L: var Lexer, match: string, kind: TokenKind): bool =
   return true
 
 proc emitOneChar*(L: var Lexer, kind: TokenKind, val: string) =
+  ## Emits a one-character token of `kind` at the cursor and consumes it.
   L.pendingTokens.add(Token(kind: kind, value: val, line: L.line, column: L.column))
   L.advance()
 
 proc skipComment*(L: var Lexer) =
+  ## Skips a `#` comment up to (not including) the end of the line.
   while L.peek() != '\n' and L.peek() != '\0':
     L.advance()
 
 proc skipSpaces*(L: var Lexer) =
+  ## Skips spaces between tokens. A tab is rejected (TK-LX01), as it is in
+  ## indentation.
   while L.peek() == ' ' or L.peek() == '\t':
     if L.peek() == '\t':
       L.reportError("Tabs are not allowed. Use spaces.", L.line, L.column,
@@ -567,7 +596,7 @@ proc scanOneChar(L: var Lexer, ch: char) =
 const ContinuesLine* = {
   tkPlus, tkMinus, tkStar, tkPercent, tkSlashInt, tkSlashFloat,
   tkEq, tkNeq, tkLt, tkGt, tkLte, tkGte,
-  tkAnd, tkOr,
+  tkAnd, tkOr, tkXor,
   tkComma, tkAssign}
 # Deliberately NOT in the set, each for a measured reason:
 #   tkColon — a trailing `:` OPENS A BLOCK. `fn main() -> int [io]:` ends one
@@ -631,6 +660,9 @@ proc scanNext*(L: var Lexer) =
     L.scanOneChar(ch)
 
 proc nextToken*(L: var Lexer): Token =
+  ## The next token for the parser. Scans until at least one token is pending
+  ## (a single scan step may produce several, e.g. dedents), then hands them
+  ## out in order.
   while L.pendingTokens.len == 0:
     let oldPos = L.position
     L.scanNext()
@@ -645,6 +677,8 @@ proc nextToken*(L: var Lexer): Token =
     result = Token(kind: tkEOF, value: "", line: L.line, column: L.column)
 
 proc main() =
+  ## Stand-alone token dump: `nim c -r lexer.nim file.tuck` prints every
+  ## token of the file. `tuck l` does the same through the driver.
   let cmdArgs = commandLineParams()
   if cmdArgs.len > 0:
     let source = readFile(cmdArgs[0])

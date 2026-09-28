@@ -12,6 +12,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the object-composition assertions: `object O: + A` flattens
+  ## A's fields as type composition does, and a collision is refused.
   # --- the case that was broken --------------------------------------------
 
   t.src """
@@ -28,9 +30,9 @@ fn main() -> int:
 """
   t.okCheck "a composed field is reachable by its own name"
   t.emits     "and the object carries it directly", "x\\*: int"
-  t.omits     "not as a nested record", "tuck_type_A\\*: tuck_type_A"
+  t.omits     "not as a nested record", "tuckˑtypeˑA\\*: tuckˑtypeˑA"
   t.emitsOdin "Odin: merged too", "x: int"
-  t.omitsOdin "Odin: not nested either", "tuck_type_A: tuck_type_A"
+  t.omitsOdin "Odin: not nested either", "tuckˑtypeˑA: tuckˑtypeˑA"
   t.frozen    "so the emitted code compiles"
   # Two records merge, and both their fields land.
   t.src """
@@ -121,7 +123,7 @@ fn main() -> int:
 """
   t.okCheck "a builder chain followed by a terminal call"
   t.frozen  "and lowers to sequenced statements, not a nested call"
-  t.omits   "the terminal call does not write back to the base", "self = tuck_fn_loadEp"
+  t.omits   "the terminal call does not write back to the base", "self = tuckˑfnˑloadEp"
 
   # A chain BOUND to a variable. `a` must be left alone — the chain threads a
   # temp and the binding reads it. This emitted `var b =     a = tuck_fn_setN(a, 5)`
@@ -140,8 +142,8 @@ fn main() -> int:
 """
   t.okCheck "a chain bound to a variable"
   t.frozen  "and compiles"
-  t.omits   "the bound chain leaves its base alone", "a = tuck_fn_setN"
-  t.emits   "each step reads the previous step's result", "tuckChain1 = tuck_fn_setN\\(tuckChain1"
+  t.omits   "the bound chain leaves its base alone", "a = tuckˑfnˑsetN"
+  t.emits   "each step reads the previous step's result", "tuckChain1 = tuckˑfnˑsetN\\(tuckChain1"
 
   # ...and the same program on EVERY backend, a field step included. Before
   # chains were lowered (lowering_chains) each backend printed its own, and
@@ -161,5 +163,61 @@ fn main() -> int:
   return base.a * 100 + base.b * 10 + t.a + t.b
 """
   t.hostRuns "a bound chain leaves its base alone, on every backend", 132
+
+  # `+ Name {old -> new}` brings a mixin's fn or a record's field in under a
+  # new name — the same `old -> new` spelling as `alias(...)` and
+  # `satisfies I {...}`. Here the object keeps its own `double`, takes the
+  # mixin's as `twice`, and the mixin's `quad` — which calls `self.double` —
+  # follows the rename to `twice`. `y` arrives as `height`.
+  t.src """
+mixin Helpers:
+  fn double({self: Self}) -> int:
+    return self.x + self.x
+  fn quad({self: Self}) -> int:
+    return self.double * 2
+
+type Pos:
+  x: int
+  y: int
+
+object P:
+  + Helpers {double -> twice}
+  + Pos {y -> height}
+  fn double({self: P}) -> int:
+    return 1000
+
+fn main() -> int:
+  let p = P{x: 4, height: 5}
+  return p.twice + p.quad + p.height + p.double - 1000
+"""
+  t.okCheck "`+ Mixin {double -> twice}` and `+ Record {y -> height}`"
+  t.hostRuns "the renamed fn and field, and the mixin's own call, on every backend", 29
+
+  t.src """
+mixin Helpers:
+  fn double({self: Self}) -> int:
+    return self.x + self.x
+
+object P:
+  + Helpers {tripel -> twice}
+  x: int
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "renaming a fn the mixin lacks is TK-CO04", "TK-CO04"
+
+  t.src """
+type Pos:
+  x: int
+  y: int
+
+object P:
+  + Pos {z -> height}
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "renaming a field the record lacks is TK-CO04", "TK-CO04"
 
   t.finish()

@@ -21,6 +21,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers every known bug as an assertion of the CORRECT behaviour, marked
+  ## `bugOpen` (expected to fail) or `bugFixed` (a regression guard).
   # 1. Integer division is `/i`, and it really is integer division.
   # Found 2026-07-22: `a /= 4` on an int lowered to Nim's `/`, which returns
   # float, so the emitted code did not compile. FIXED 2026-07-28 by ruling R1
@@ -144,19 +146,19 @@ fn main() -> int:
 """
   t.okCheck "a Capitalized, unreserved type argument is accepted"
 
-  # A reserved word is still a legal FIELD name — a field position can never
-  # hold an attribute, so the parser accepts it there and reads its value.
+  # A reserved word is still a legal FIELD name (ruled 2026-09-27, R4): a
+  # field is only ever read through `.` or written as a record key, never
+  # bare, so no bracket can mistake it for an attribute. Every name that IS
+  # read bare — parameter, local, fn, handler — refuses the word (TK-PA08).
+  # (This snippet used a decision COLUMN named `priority`; a column is a
+  # parameter, which the ruling refuses.)
   t.src """
-type Priority:
-  | high
-  | low
-
-decision route({priority: Priority, encrypted: bool}) -> int:
-  | high  true  -> 1
-  | _     _     -> 2
+type Job:
+  priority: int
 
 fn main() -> int:
-  return {priority: Priority.low, encrypted: false} route
+  let j = Job{priority: 3}
+  return j.priority
 """
   t.frozen "a reserved word is still a legal field name"
 
@@ -179,7 +181,7 @@ fn main() -> int:
   let sealed = 1
   return sealed
 """
-  t.badCheck "a reserved marker cannot be a variable name", "."
+  t.badCheck "a reserved marker cannot be a variable name", "TK-PA08"
 
   # 5b. The capitalization half of the same ruling. Enforced at DECLARATION, so
   # the error lands where the name is chosen. The corpus already followed this
@@ -350,7 +352,7 @@ fn main() -> int:
   Accumulator send add {n: 1}
   return 0
 """
-  t.quietly: t.emitsOdin "", "sendAdd_tuck_type_Accumulator :: proc"
+  t.quietly: t.emitsOdin "", "sendAdd_tuckˑactorˑAccumulator :: proc"
   t.bugFixed "an 'on select' actor emits its send procs on the Odin backend"
 
   # 13. A `-> void` task could not be fire-and-forget. The spawn wrapper always
@@ -454,7 +456,7 @@ fn main() -> int:
   t.bugFixed "an unrecognised 'on select' arm does not silently discard its body"
 
   # 16. FIXED. `alias(...)` never checked its RESULT for field-name
-  # collisions: `ext alias(trackId: title, category: title)` (two sources
+  # collisions: `ext alias(trackId -> title, category -> title)` (two sources
   # renamed to the SAME target) type-checked clean AND emitted a Nim tuple
   # with 'title' written twice, which `nim check` rejects outright ("field
   # initialized twice") — a diagnostic about generated code the user never
@@ -476,7 +478,7 @@ fn main() -> int:
   t.src """
 fn main() -> int:
   let ext = {trackId: 42, category: 7}
-  let normalized = ext alias(trackId: title, category: title)
+  let normalized = ext alias(trackId -> title, category -> title)
   return 0
 """
   t.quietly: t.badCheck "alias() rejects two renamed fields colliding on the same target name", "twice|collis|already|duplicate"
@@ -516,7 +518,7 @@ fn withDefaults({self: Big}) -> Big:
   s ..f0 {80}
   return s
 """)
-  t.quietly: t.omits "a qualified mutator in a chain does not emit a field-set on the function", "tuck_fn_withDefaults\\.f"
+  t.quietly: t.omits "a qualified mutator in a chain does not emit a field-set on the function", "tuckˑfnˑwithDefaults\\.f"
   t.bugFixed "a qualified mutator in a chain does not emit a field-set on the function"
   # FIXED 2026-09-12, exactly where the entry said it had to be — parse time.
   # `..mod::fn` was parsed as a `..` step whose target was the bare `mod`,
@@ -526,7 +528,7 @@ fn withDefaults({self: Big}) -> Big:
   # step's target, so chainMutation reads it there; chainQualified now
   # refuses a non-name left side instead of rebuilding from an empty module.
   t.emits "...it calls the qualified mutator and threads the receiver",
-          r"bigmod\.tuck_fn_withDefaults\(tuck_cfg\)"
+          r"bigmod\.tuckˑfnˑwithDefaults\(tuckˑvˑcfg\)"
 
   # 18. FIXED. Odin: an imported TYPE was emitted unqualified, so it did not
   # resolve. The emitter qualified an imported FN correctly
@@ -561,7 +563,7 @@ fn main() -> int:
   t.addFile("bigmod.tuck", """type Big:
   f0: int
 """)
-  t.quietly: t.emitsOdin "an imported type is qualified with its package on Odin", "bigmod\\.tuck_type_Big"
+  t.quietly: t.emitsOdin "an imported type is qualified with its package on Odin", "bigmod\\.tuckˑtypeˑBig"
   t.bugFixed "an imported type is qualified with its package on Odin"
 
   # 19. A fn could write through its own parameter to the CALLER's record.
@@ -627,7 +629,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.emits("a registry raise in a task body is lowered",
-                     r"raise_tuck_AppEvents_LowMemory\(42\)")
+                     r"raise_tuckˑregistryˑAppEvents_LowMemory\(42\)")
   t.bugFixed "a registry raise in a task body is lowered"
 
   # A PAYLOAD-FREE registry raise emitted swapped, nonsensical code.
@@ -653,7 +655,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.emits("a payload-free registry raise is lowered",
-                     r"raise_tuck_Sys_Started\(\)")
+                     r"raise_tuckˑregistryˑSys_Started\(\)")
   t.bugFixed "a payload-free registry raise is lowered"
 
   # FIELD ACCESS ON A PRIMITIVE IS CHECKED.
@@ -757,7 +759,7 @@ fn main() -> int:
   # of `nil` in all three backends (`sumVariantCtor`/`dSumVariantCtor` all
   # had the same bug at this call site).
   t.quietly: t.omits("bare variant construction is not built fieldless",
-                     "tuck_type_V\\(kind: B\\)\\)")
+                     "tuckˑtypeˑV\\(kind: B\\)\\)")
   t.bugFixed "bare variant construction is not built fieldless"
 
   # O. `xs[i]` is GRAMMAR, so it must work with no `import seq` — it used to
@@ -779,7 +781,7 @@ fn main() -> void [io]:
   t.quietly: t.outputs("bracket indexing needs no 'import seq'", "99\n")
   t.bugFixed "bracket indexing needs no 'import seq'"
   t.emits "...and lowers to the reserved intrinsic, not a qualified seq call",
-          r"tuckSetAt\(tuck_xs, 0, 99\)"
+          r"tuckSetAt\(tuckˑvˑxs, 0, 99\)"
   t.omits "...so no seq_at identifier is ever emitted", "seq_at"
 
   # P. `distinct X = f32/f64` could not build on the Nim backend at all:
@@ -802,8 +804,8 @@ fn main() -> void [io]:
 """
   t.quietly: t.outputs("a distinct over a float base builds", "ok\n")
   t.bugFixed "a distinct over a float base builds"
-  t.omits "...and borrows no integer div for it", r"`div`\*\(a, b: tuck_type_Miles\)"
-  t.emits "...while still borrowing the ops floats do have", r"`\+`\*\(a, b: tuck_type_Miles\)"
+  t.omits "...and borrows no integer div for it", r"`div`\*\(a, b: tuckˑtypeˑMiles\)"
+  t.emits "...while still borrowing the ops floats do have", r"`\+`\*\(a, b: tuckˑtypeˑMiles\)"
 
   # Q. An UNQUALIFIED call to a runtime-backed extern collided with Nim's
   # own auto-exported proc of the same name: `import fs` + `{path: ...}
@@ -907,7 +909,7 @@ fn main() -> void [io]:
 """
   t.quietly: t.outputs("an indexed element's field can be assigned", "true\n")
   t.bugFixed "an indexed element's field can be assigned"
-  t.emits "...addressing the element, not a tuckAt copy", r"tuck_tasks\[0\]\.done = true"
+  t.emits "...addressing the element, not a tuckAt copy", r"tuckˑvˑtasks\[0\]\.done = true"
 
   # U. A wildcard match arm emitted `of _:` on the Nim backend. `_` is Nim's
   # ignore-identifier and illegal as a branch label, so the catch-all failed
@@ -931,25 +933,31 @@ fn main() -> int:
   t.emits "...emitted as else, not `of _`", r"else:"
   t.omits "...so no `of _` branch label is emitted", r"of _:"
 
-  # 12. An attribute name is reserved only INSIDE brackets — that is what the
-  # TK-PA08 diagnostic itself says: "Attribute names like `error` and
-  # `priority` are NOT restricted here: they are reserved only inside
-  # brackets, so they stay usable as fields, parameters and function names."
-  # A field really is allowed. A function name and a parameter name are not,
-  # so two thirds of that sentence is false. Found 2026-09-12 writing
-  # `bake {key: :priority}` in core/cmp's API doc.
+  # 12. An attribute name as a fn or parameter name. TK-PA08's text used to
+  # promise these words were "reserved only inside brackets, so usable as
+  # fields, parameters and function names", and this entry stood open
+  # because the compiler disagreed. Trying it (2026-09-27) showed why the
+  # compiler was right: a name read bare can land in brackets, and
+  # `xs[stack]` then parsed as an attribute and dropped the index. RULED
+  # (R4, 2026-09-27): attribute words are reserved words — refused as a
+  # parameter, local, fn, member or handler name with TK-PA08; a FIELD may
+  # still use one. The text of TK-PA08 now says so.
   t.src """
-type T:
-  priority: int
-
 fn priority({x: int}) -> int:
   return x
 
 fn main() -> int:
-  return {x: 1} priority
+  return 0
 """
-  t.quietly: t.okCheck "an attribute name is free outside brackets"
-  t.bugOpen "an attribute name is free outside brackets"
+  t.badCheck "an attribute word is refused as a fn name", "TK-PA08"
+  t.src """
+fn f({stack: int}) -> int:
+  return stack
+
+fn main() -> int:
+  return {stack: 1} f
+"""
+  t.badCheck "...and as a parameter name", "TK-PA08"
 
   # 13. A fn that declares no return type still accepts `return x`, and the
   # emitted Nim is `proc tuck_fn_f*(x: int): void = return x`, which nim rejects
@@ -957,6 +965,7 @@ fn main() -> int:
   # codegen. Correct either way: whether omitting `->` should be rejected
   # outright or should mean void, returning a VALUE from such a fn is wrong.
   # Found 2026-09-12 checking TUTORIAL.md's "must declare a return type".
+  # FIXED 2026-09-27 (TK-TY32); what omitting `->` means is still #5's ruling.
   t.src """
 fn f({x: int}):
   return x
@@ -965,9 +974,33 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.badCheck "a value returned from a fn with no return type is rejected", "return"
-  t.bugOpen "a value returned from a fn with no return type is rejected"
+  t.bugFixed "a value returned from a fn with no return type is rejected"
+
+  # #5 RULED 2026-09-27: omitting `->` means `-> void`. The body is
+  # statements, a call to it is a statement, and its result — type `void`,
+  # the same type `-> void` gives (it answered `unit` before the ruling) —
+  # is not a value anything can use.
+  t.src """
+fn bump({n: int}):
+  let m = n + 1
+
+fn main() -> int:
+  {n: 1} bump
+  return 3
+"""
+  t.hostRuns "a fn with no `->` is a void fn, on every backend", 3
+  t.src """
+fn bump({n: int}):
+  let m = n + 1
+
+fn main() -> int:
+  let x = {n: 1} bump
+  return x
+"""
+  t.badCheck "...and its call answers `void`, exactly as `-> void` does", "got void"
 
   # 14. Register access permissions are enforced in one direction only.
+  # FIXED 2026-09-27 (#6): an assignment target is held to the write rule.
   # Reading a `[write]` field is TK-RE02, as tuck-spec 8.1 says; WRITING a
   # `[read]` field is accepted, and the emitted Nim is
   # `tuck_RCC_HSIRDY_get() = true` — nim answers "cannot be assigned to",
@@ -983,7 +1016,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.badCheck "writing a [read] register field is rejected", "read"
-  t.bugOpen "writing a [read] register field is rejected"
+  t.bugFixed "writing a [read] register field is rejected"
 
   # 15. Group conformance resolved the required provider BY NAME and took the
   # last registered, ignoring the receiver — so with two providers in play,
@@ -1231,16 +1264,15 @@ fn main() -> int:
   t.hostBuilds "...on every backend"
   t.bugFixed "releasing every slot makes every slot available again"
 
-  # 21. A pool slot cannot yet be READ or WRITTEN. `acquire` now answers with
-  # a handle that names the cell (which is what fixed release), but there is
-  # no spelling for "the cell this handle names" — so a pool still cannot be
-  # a DMA target, a frame buffer, or anything hardware or another task fills
-  # in place, which is what a pool is FOR. examples/25 says "hand b.value to
-  # the DMA controller"; b.value is the handle, and nothing takes it further.
+  # 21. A pool slot could not be READ or WRITTEN. `acquire` answers with a
+  # handle that names the cell (which is what fixed release), but there was
+  # no spelling for "the cell this handle names" — so a pool could not be a
+  # DMA target, a frame buffer, or anything hardware or another task fills
+  # in place, which is what a pool is FOR (issue #45).
   #
-  # The design question is open (issue #45): a read/write pair through the
-  # handle, and a sanctioned way to hand a cell's ADDRESS to an extern for
-  # the DMA case, which is the one place a raw pointer is legitimate.
+  # Ruled 2026-09-26: `read` / `write` through the handle, and `addr` for an
+  # extern to fill (tests/suites/pools.nim has the rest). A cell starts ABSENT
+  # (#42), so `read` is a `?T` and this guards it.
   t.src """
 type Cell:
   n: int
@@ -1251,12 +1283,15 @@ fn main() -> int:
   let a = Cells.acquire
   if not a.ok:
     return 90
-  Cells.write {h: a.value, value: {n: 42} Cell}
+  let cell = {n: 42} Cell
+  Cells.write {h: a.value, value: cell}
   let back = Cells.read {h: a.value}
-  return back.n
+  if not back.ok:
+    return 91
+  return back.value.n
 """
-  t.quietly: t.runs "a pool slot can be read and written through its handle", 42
-  t.bugOpen "a pool slot can be read and written through its handle"
+  t.quietly: t.hostRuns("a pool slot can be read and written through its handle", 42)
+  t.bugFixed "a pool slot can be read and written through its handle"
 
   # 22. An `errors` handler body was never mangled, so calling any fn from it
   # failed to build on all three backends (issue #48). The DECLARATION was
@@ -1619,6 +1654,35 @@ fn main() -> int:
 """
   t.hostPeakRss("the strings a concatenation reads and builds do not accumulate", 12288)
   t.bugFixed "the strings a concatenation reads and builds do not accumulate"
+
+  # ...nor does a `str` GROWN IN PLACE by reassignment: `s = s + "y"` in a
+  # loop. On Odin every old value leaked — 14 GB and OOM-killed at 200 000
+  # turns, while Nim and D append in place. Step 5 of the ownership pass
+  # (free the old value at each overwrite) was `Seq`-only, and a `str`
+  # assigned twice was never freed at all. The literal it starts from — and
+  # the one it is reset to — is static storage no `delete` may touch, so the
+  # pass has the emitter copy it: every value the local ever holds is then
+  # its own. Found auditing issue #9.
+  t.src """
+fn grow({n: int}) -> int:
+  var s = "x"
+  var total = 0
+  var i = 0
+  for i < n:
+    s = s + "y"
+    if s.len > 5000:
+      total = total + s.len
+      s = "x"
+    i = i + 1
+  return total + s.len
+
+fn main() -> int:
+  if {n: 40000} grow != 40009:
+    return 1
+  return 0
+"""
+  t.hostPeakRss("a str grown by reassignment does not accumulate", 12288)
+  t.bugFixed "a str grown by reassignment does not accumulate"
 
   # 19. EV-14 / issue #82: the dead intermediates of a THREADING CHAIN.
   #
@@ -2048,5 +2112,382 @@ fn main() -> int:
   return {l: Green} code + Red
 """
   t.hostRuns "...a variant still wins over a const of the same name", 11
+
+  # A payload may carry fields its callee does not declare: the callee takes
+  # its params and nothing else. For a callee that declares NONE the extra
+  # fields were passed anyway — `{a: 1, b: 2} g` printed `g(1, 2)` on all
+  # three backends, and a record variable `p g` printed `g(p)` — because
+  # "takes no params" and "params not resolved" were one empty list
+  # (`call_args.knownParams` keeps them apart now). Found checking the
+  # opposite direction: a payload LACKING a param, which the checker
+  # rejects and `backend_prepare` step 8 asserts after lowering.
+  t.src """
+type P:
+  a: int
+  b: int
+
+fn f({a: int}) -> int:
+  return a
+
+fn g() -> int:
+  return 7
+
+fn main() -> int:
+  let p = {a: 1, b: 2} P
+  return ({a: 1, b: 2, c: 3} f) + ({a: 1, b: 2} g) + (p f) + (p g)
+"""
+  t.quietly: t.hostRuns("extra payload fields reach no param", 16)
+  t.bugFixed "extra payload fields reach no param"
+
+  # A decision table grouped its combinations by what each row's body PRINTS
+  # as (`parser_stringify.toString`), which is lossy on purpose: every `match`
+  # prints as "match". Two rows with different match-valued bodies collapsed
+  # into one outcome, and the whole table answered with one row's value —
+  # `pick(true, _)` returned the false row's 30. Found 2026-09-27 writing
+  # lowering_decisions' docs.
+  t.src """
+decision pick({a: bool, b: bool}) -> int:
+  | true  _ -> match 1:
+    1: 10
+    _: 20
+  | false _ -> match 2:
+    2: 30
+    _: 40
+
+fn main() -> int:
+  return ({a: true, b: true} pick) + ({a: false, b: false} pick)
+"""
+  t.quietly: t.hostRuns("rows with different match bodies keep their own answers", 40)
+  t.bugFixed "a decision table keeps rows whose bodies print alike apart"
+
+  # #6, the other direction of "writing a [read] register field is rejected"
+  # above: a register field written with `=` was checked as a READ, so
+  # `CTRL.GO = true` on a [write] field was refused as reading it (TK-RE02)
+  # while a [read] field was writable. The target of an assignment is now
+  # held to the WRITE rule.
+  t.src """
+register CTRL at 0x40007400:
+  GO: bit 2 [write]
+
+fn main() -> int:
+  CTRL.GO = true
+  return 0
+"""
+  t.quietly: t.hostBuilds("a [write] register field is assignable")
+  t.bugFixed "a [write] register field is assignable with `=`, on all three"
+
+  # The effect checker skipped object members both ways. verifyDecl ended in
+  # `else: discard`, so a member's own body was never held to its bracket;
+  # and a member call was looked up by bare name, which finds no member, so
+  # an [io] member looked pure to its caller — and its call was never marked
+  # a suspend point. Found 2026-09-27 writing semantics.nim's docs.
+  t.src """
+fn touch({n: int}) -> int [io]:
+  return n
+
+object Box:
+  v: int
+  fn poke({self: Box}) -> int:
+    return {n: 1} touch
+"""
+  t.quietly: t.badCheck("a member is held to its own bracket", "TK-EF01")
+  t.bugFixed "an object member is held to its own effect bracket"
+  t.src """
+object Box:
+  v: int
+  fn poke({self: Box}) -> int [io]:
+    return 1
+
+fn pure({b: Box}) -> int:
+  return b.poke
+"""
+  t.quietly: t.badCheck("an [io] member's effect reaches its caller", "TK-EF01")
+  t.bugFixed "an [io] member's effect reaches the fn that calls it"
+  t.src """
+fn touch({n: int}) -> int [io]:
+  return n
+
+object Box:
+  v: int
+  fn poke({self: Box}) -> int [io]:
+    return {n: 1} touch
+
+fn caller({b: Box}) -> int [io]:
+  return b.poke
+"""
+  t.okCheck "...and a member that declares [io], called from [io], is fine"
+
+  # `Self` in an object member was never bound for the checker. Lowering
+  # read it as the object, but only after the checker had refused the call —
+  # `b.poke` on `fn poke({self: Self})` was "expects Self but got Box". The
+  # same held for every mixin member (LANGUAGE-OVERVIEW's own `double`
+  # example could be composed but never called): lowering merged mixin fns
+  # into objects AFTER checking. rewrite.nim now binds `Self` and composes
+  # mixins before the checker runs. Found 2026-09-27.
+  t.src """
+object Box:
+  v: int
+  fn poke({self: Self}) -> int:
+    return self.v
+
+fn main() -> int:
+  let b = Box{v: 7}
+  return b.poke
+"""
+  t.quietly: t.hostRuns("a `{self: Self}` member is callable", 7)
+  t.bugFixed "a `{self: Self}` object member is callable, on all three"
+  t.src """
+mixin Helpers:
+  fn double({self: Self}) -> int:
+    return self.x + self.x
+
+object P:
+  + Helpers
+  x: int
+
+object Q:
+  + Helpers
+  x: int
+  y: int
+
+fn main() -> int:
+  let p = P{x: 4}
+  let q = Q{x: 1, y: 9}
+  return p.double + q.double
+"""
+  t.quietly: t.hostRuns("a composed mixin member is callable", 10)
+  t.bugFixed "a mixin member is callable on each object composing it"
+  t.src """
+mixin Helpers:
+  fn double({self: Self}) -> int:
+    return self.x + self.x
+
+object P:
+  + Helpers
+  y: int
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "...and its body is checked against each composer's fields",
+             "no field 'x'"
+
+  # A body that is one statement on the header's line — `if c: n = n + 1`,
+  # `for c: step` — checked clean and emitted correctly for Odin and D, but
+  # Nim's genIndented sent it through genExpr bare, so it landed at column 0
+  # and nim refused the file ("invalid indentation"). Found 2026-09-27
+  # testing `xor`.
+  t.src """
+fn main() -> int:
+  var n = 0
+  for n < 10: n = n + 3
+  for i in 0..<3: n = n + i
+  if n > 0:
+    if n > 1: n = n + 100
+  return n
+"""
+  t.quietly: t.hostRuns("a one-line body runs", 115)
+  t.bugFixed "a single-statement body on the header's line builds, on all three"
+
+  # A `T?` operand of `and`/`or` was admitted by the checker as "is present"
+  # (spec §7.2 said so), but nothing lowered the read, so the wrapper went
+  # out bare and all three backends refused it (`TuckResult and
+  # TuckResult`). Found 2026-09-27 testing `xor`. RULED the same day: a `T?`
+  # is not a boolean — the checker refuses the operand, and presence is
+  # written `.ok`. Both halves are pinned: the bare form is refused, and the
+  # `.ok` form runs on all three.
+  t.src """
+fn find({n: int}) -> ?int:
+  if n > 0:
+    return n
+  return
+
+fn main() -> int:
+  let a = {n: 1} find
+  let c = {n: 2} find
+  if a and c:
+    return 1
+  return 0
+"""
+  t.quietly: t.badCheck("a T? operand of a boolean operator is refused", "unhandled")
+  t.bugFixed "a T? operand of a boolean operator is refused, not emitted bare"
+  t.src """
+fn find({n: int}) -> ?int:
+  if n > 0:
+    return n
+  return
+
+fn main() -> int:
+  let a = {n: 1} find
+  let b = {n: 0} find
+  let c = {n: 2} find
+  var r = 0
+  if a.ok and c.ok:
+    r = r + 2
+  if a.ok xor b.ok:
+    r = r + 1
+  return r
+"""
+  t.hostRuns "...and `.ok` presence tests combine with and/xor on every backend", 3
+
+  # The checker traces which variants a fn can return, so a transition out
+  # of its result is checked against the right set. Lowering and the tracer
+  # each kept their own list of what counts as a body's implicit tail value,
+  # and the tracer's ignored a tail `match` without marking the answer
+  # inexact — so `fresh` below read as returning only Closed, and
+  # `d = Door.Locked` (illegal from Open) checked clean. Both now read
+  # ast_query.implicitTailValue. Found 2026-09-27 from the doc-pass audit's
+  # "two value-tail predicates disagree".
+  t.src """
+type Door:
+  | Closed
+  | Open
+  | Locked
+
+  transitions:
+    Closed -> Open
+    Open   -> Closed
+    Closed -> Locked
+    Locked -> Closed
+
+fn fresh({n: int}) -> Door:
+  if n > 5:
+    return Door.Closed
+  match n:
+    | 1 -> Door.Open
+    | _ -> Door.Open
+
+fn main() -> void:
+  var d = {n: 1} fresh
+  d = Door.Locked
+  return
+"""
+  t.quietly: t.badCheck("a tail match's variants are traced", "Open\\ \\->\\ Locked")
+  t.bugFixed "a variant returned by a tail match is counted by the transition check"
+  t.src """
+type Door:
+  | Closed
+  | Open
+  | Locked
+
+  transitions:
+    Closed -> Open
+    Open   -> Closed
+    Closed -> Locked
+    Locked -> Closed
+
+fn fresh({n: int}) -> Door:
+  if n > 5:
+    return Door.Closed
+  match n:
+    | 1 -> Door.Closed
+    | _ -> Door.Closed
+
+fn main() -> void:
+  var d = {n: 1} fresh
+  d = Door.Locked
+  return
+"""
+  t.okCheck "...and a tail match yielding only Closed still narrows to it"
+
+  # A21. A contract member returning `Self`, called through an interface
+  # value, checked clean and built on no backend: the dispatch returned each
+  # arm's concrete object (`Sq`, `Ci`) where the call's type is the
+  # interface, and nothing wrapped it back into the tag. Ruled R13 = B
+  # (2026-09-27): `Self` in an interface is the interface; an implementation
+  # may return its own type (covariant) and each dispatch arm now wraps it.
+  # Found 2026-09-27 working through that question.
+  t.src """
+interface Shape:
+  fn size({self: Self}) -> int
+  fn grown({self: Self}) -> Self
+
+object Sq:
+  satisfies Shape
+  s: int
+  fn size({self: Sq}) -> int:
+    return self.s * self.s
+  fn grown({self: Sq}) -> Sq:
+    return Sq{s: self.s + 1}
+
+object Ci:
+  satisfies Shape
+  r: int
+  fn size({self: Ci}) -> int:
+    return self.r * 3
+  fn grown({self: Ci}) -> Ci:
+    return Ci{r: self.r + 1}
+
+fn bigger({a: Shape}) -> int:
+  let g = a.grown
+  return g.size
+
+fn main() -> int:
+  let a = Sq{s: 2}
+  return {a: a} bigger
+"""
+  t.quietly: t.hostRuns("a `-> Self` member through an interface returns the interface", 9)
+  t.bugFixed "a `-> Self` contract member called through an interface builds, on all three"
+
+  # A22. On Odin, an interface call whose payload held a VARIABLE did not
+  # build. Odin emits the dispatch as an inline `proc(v: Iface) {...}(recv)`
+  # literal, and an Odin proc literal cannot capture: an argument that is a
+  # local (`next`, `key`) was "Undeclared name" inside it. Every argument
+  # past the receiver is now a parameter of the closure, evaluated at the
+  # call. Found 2026-09-27 writing the audio-player example for R13.
+  t.src """
+interface AudioSource:
+  fn sampleRate({self: Self}) -> int
+  fn crossfade({self: Self, next: AudioSource, ms: int}) -> int
+
+object Mp3:
+  satisfies AudioSource
+  bitrate: int
+  fn sampleRate({self: Mp3}) -> int:
+    return 44100
+  fn crossfade({self: Mp3, next: AudioSource, ms: int}) -> int:
+    return (ms * 44) + (ms * (next.sampleRate /i 1000))
+
+object Flac:
+  satisfies AudioSource
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+  fn crossfade({self: Flac, next: AudioSource, ms: int}) -> int:
+    return (ms * 96) + (ms * (next.sampleRate /i 1000))
+
+fn transition({cur: AudioSource, next: AudioSource}) -> int:
+  return cur.crossfade {next: next, ms: 1}
+
+fn main() -> int:
+  let m = Mp3{bitrate: 320}
+  let f = Flac{bits: 24}
+  return {cur: m, next: f} transition
+"""
+  t.quietly: t.hostRuns("an interface call passing a variable runs on every backend", 140)
+  t.bugFixed "an interface call whose payload holds a variable builds on Odin"
+
+  # An object member called on a fn PARAMETER built only on D. Every backend
+  # passes a member's `self` mutably — Nim `var T`, Odin `^T`, D `ref T` —
+  # and a Nim parameter is immutable, an Odin one unaddressable: "type
+  # mismatch" and "Cannot take the pointer address of 'a'". Such a param is
+  # now shadowed by a mutable copy at the top of the body, the value a D
+  # parameter already is. Found and fixed 2026-09-27: every clone of an
+  # interface-bounded generic fn calls members on its parameters.
+  t.src """
+object Flac:
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+
+fn rate({a: Flac}) -> int:
+  return a.sampleRate
+
+fn main() -> int:
+  let x = Flac{bits: 24}
+  return ({a: x} rate) /i 1000
+"""
+  t.quietly: t.hostRuns("a member call on a parameter runs", 96)
+  t.bugFixed "a member called on a fn parameter builds, on all three"
 
   t.finish()

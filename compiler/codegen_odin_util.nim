@@ -21,7 +21,12 @@ proc odinLibSpec*(lib: string): string =
   ## library; a path rides through as-is. `.c` names vendored SOURCE, which
   ## Odin cannot compile — the Nim backend takes it via {.compile.}, so here it
   ## becomes the object file the project's build is expected to have produced.
-  if lib.endsWith(".c"): lib[0 ..< lib.len - 2] & ".o"
+  ##
+  ## No `lib:` at all — `extern [c, header: "string.h"]` — is the C standard
+  ## library, which every C program links anyway; foreignLibAlias names it
+  ## `libc`. It used to print `"system:"`, which Odin refuses outright.
+  if lib == "": "system:c"
+  elif lib.endsWith(".c"): lib[0 ..< lib.len - 2] & ".o"
   elif '/' in lib or lib.endsWith(".a") or lib.endsWith(".so") or lib.endsWith(".o"): lib
   else: "system:" & lib
 
@@ -31,13 +36,17 @@ proc odinLibSpec*(lib: string): string =
 # widened their scope and Nim reported the ambiguity.
 
 proc errCodeLit*(name: string): string =
+  ## An error variant's code as an Odin literal: its stable hash in hex, with
+  ## the variant's name in a trailing comment for whoever reads the output.
   "0x" & toHex(errIdCode(name)) & " /* " & name & " */"
 
 # genPatternStr is NOT here either — same story as repeat/capitalize:
 # ast_query already exports it.
 
-# The declared enum (or its Kind enum) that owns a variant tag, if any.
 proc enumTagOwner*(m: Module, tag: string): string =
+  ## The declared enum (or its Kind enum) that owns a variant tag, if any.
+  ## A payload sum's tags live on its `<Name>Kind` enum, so that is the owner.
+  ## Empty when no declared sum has the tag (an inline sum, say).
   for d in m.decls:
     if d != nil and d.kind == dkType and d.typeBody != nil and
        d.typeBody.kind == tkSum:

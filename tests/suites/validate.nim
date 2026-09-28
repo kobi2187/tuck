@@ -16,6 +16,8 @@ import os, strutils, algorithm
 const CorpusDirs = ["examples", "std", "stdlib-project/v2"]
 
 proc run*(t: var T) =
+  ## Registers the `tuck validate` assertions: the spec-side grammar accepts the
+  ## corpus the parser accepts.
   var files: seq[string]
   for d in CorpusDirs:
     let dir = t.root / d

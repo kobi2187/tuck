@@ -136,7 +136,9 @@ proc movedFnParam*(res: Resolution, m: Module, d: Decl): string =
   if not copyableContainer(res, m, p.typ): return ""
   p.name
 
-proc movedName*(fnName: string): string = fnName & "_moved"
+proc movedName*(fnName: string): string =
+  ## The MOVED twin's name for fn `fnName`: `<fn>_moved`.
+  fnName & "_moved"
 
 # --- does a value own storage? ------------------------------------------
 # Moved here from codegen_common so a PASS can ask it (twin_calls, M3.5)
@@ -145,16 +147,21 @@ proc movedName*(fnName: string): string = fnName & "_moved"
 proc ownsHeap*(m: Module, t: Type, depth = 0): bool
 
 proc anyOwnsHeap(m: Module, ts: seq[Type], depth: int): bool =
+  ## Does any of `ts` own heap storage?
   for t in ts:
     if ownsHeap(m, t, depth): return true
   false
 
 proc fieldsOwnHeap(m: Module, fields: seq[FieldDef], depth: int): bool =
+  ## Does any field of a record or variant own heap storage?
   var ts: seq[Type]
   for f in fields: ts.add(f.typ)
   anyOwnsHeap(m, ts, depth)
 
 proc namedOwnsHeap(m: Module, name: string, depth: int): bool =
+  ## Does the named type own heap storage? `str` does; a `type` declared in
+  ## `m` does if its body does. Anything else (a builtin scalar, an import) is
+  ## answered no.
   if name == "str": return true
   for d in m.decls:
     if d != nil and d.kind == dkType and d.name == name:
@@ -162,6 +169,7 @@ proc namedOwnsHeap(m: Module, name: string, depth: int): bool =
   false
 
 proc sumOwnsHeap(m: Module, t: Type, depth: int): bool =
+  ## Does any variant of the sum own heap storage in its payload?
   for v in t.variants:
     if fieldsOwnHeap(m, v.fields, depth): return true
   false

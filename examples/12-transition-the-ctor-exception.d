@@ -2,97 +2,97 @@ module _12_transition_the_ctor_exception;
 
 import rt = tuck_rt;
 
-struct tuck_type_Config {
+struct tuckˑtypeˑConfig {
     string url;
 }
 
-struct tuck_type_Feed {
+struct tuckˑtypeˑFeed {
     string title;
 }
 
-struct tuck_type_Socket {
+struct tuckˑtypeˑSocket {
     long fd;
 }
 
-enum tuck_type_PlayerStateKind { Unloaded, Loading, Ready }
+enum tuckˑtypeˑPlayerStateKind { Unloaded, Loading, Ready }
 
-struct tuck_type_PlayerState_Unloaded {
-    tuck_type_Config config;
+struct tuckˑtypeˑPlayerState_Unloaded {
+    tuckˑtypeˑConfig config;
 }
 
-struct tuck_type_PlayerState_Loading {
-    tuck_type_Config config;
+struct tuckˑtypeˑPlayerState_Loading {
+    tuckˑtypeˑConfig config;
     long progress;
 }
 
-struct tuck_type_PlayerState_Ready {
-    tuck_type_Config config;
-    tuck_type_Feed feed;
+struct tuckˑtypeˑPlayerState_Ready {
+    tuckˑtypeˑConfig config;
+    tuckˑtypeˑFeed feed;
 }
 
-struct tuck_type_PlayerState {
-    tuck_type_PlayerStateKind kind;
+struct tuckˑtypeˑPlayerState {
+    tuckˑtypeˑPlayerStateKind kind;
     union {
-        tuck_type_PlayerState_Unloaded tuck_unloaded;
-        tuck_type_PlayerState_Loading tuck_loading;
-        tuck_type_PlayerState_Ready tuck_ready;
+        tuckˑtypeˑPlayerState_Unloaded tuckˑvariantˑunloaded;
+        tuckˑtypeˑPlayerState_Loading tuckˑvariantˑloading;
+        tuckˑtypeˑPlayerState_Ready tuckˑvariantˑready;
     }
-    bool opEquals(const tuck_type_PlayerState o) const {
+    bool opEquals(const tuckˑtypeˑPlayerState o) const {
         if (kind != o.kind) return false;
         final switch (kind) {
-        case tuck_type_PlayerStateKind.Unloaded: return tuck_unloaded == o.tuck_unloaded;
-        case tuck_type_PlayerStateKind.Loading: return tuck_loading == o.tuck_loading;
-        case tuck_type_PlayerStateKind.Ready: return tuck_ready == o.tuck_ready;
+        case tuckˑtypeˑPlayerStateKind.Unloaded: return tuckˑvariantˑunloaded == o.tuckˑvariantˑunloaded;
+        case tuckˑtypeˑPlayerStateKind.Loading: return tuckˑvariantˑloading == o.tuckˑvariantˑloading;
+        case tuckˑtypeˑPlayerStateKind.Ready: return tuckˑvariantˑready == o.tuckˑvariantˑready;
         }
     }
 }
 
-enum tuck_type_MqttSessionKind { Disconnected, Connecting, Connected, Subscribing }
+enum tuckˑtypeˑMqttSessionKind { Disconnected, Connecting, Connected, Subscribing }
 
-struct tuck_type_MqttSession_Connecting {
+struct tuckˑtypeˑMqttSession_Connecting {
     string host;
     ushort port;
 }
 
-struct tuck_type_MqttSession_Connected {
-    tuck_type_Socket socket;
+struct tuckˑtypeˑMqttSession_Connected {
+    tuckˑtypeˑSocket socket;
     ushort keepalive;
 }
 
-struct tuck_type_MqttSession_Subscribing {
-    tuck_type_Socket socket;
+struct tuckˑtypeˑMqttSession_Subscribing {
+    tuckˑtypeˑSocket socket;
     string topic;
 }
 
-struct tuck_type_MqttSession {
-    tuck_type_MqttSessionKind kind;
+struct tuckˑtypeˑMqttSession {
+    tuckˑtypeˑMqttSessionKind kind;
     union {
-        tuck_type_MqttSession_Connecting tuck_connecting;
-        tuck_type_MqttSession_Connected tuck_connected;
-        tuck_type_MqttSession_Subscribing tuck_subscribing;
+        tuckˑtypeˑMqttSession_Connecting tuckˑvariantˑconnecting;
+        tuckˑtypeˑMqttSession_Connected tuckˑvariantˑconnected;
+        tuckˑtypeˑMqttSession_Subscribing tuckˑvariantˑsubscribing;
     }
-    bool opEquals(const tuck_type_MqttSession o) const {
+    bool opEquals(const tuckˑtypeˑMqttSession o) const {
         if (kind != o.kind) return false;
         final switch (kind) {
-        case tuck_type_MqttSessionKind.Disconnected: return true;
-        case tuck_type_MqttSessionKind.Connecting: return tuck_connecting == o.tuck_connecting;
-        case tuck_type_MqttSessionKind.Connected: return tuck_connected == o.tuck_connected;
-        case tuck_type_MqttSessionKind.Subscribing: return tuck_subscribing == o.tuck_subscribing;
+        case tuckˑtypeˑMqttSessionKind.Disconnected: return true;
+        case tuckˑtypeˑMqttSessionKind.Connecting: return tuckˑvariantˑconnecting == o.tuckˑvariantˑconnecting;
+        case tuckˑtypeˑMqttSessionKind.Connected: return tuckˑvariantˑconnected == o.tuckˑvariantˑconnected;
+        case tuckˑtypeˑMqttSessionKind.Subscribing: return tuckˑvariantˑsubscribing == o.tuckˑvariantˑsubscribing;
         }
     }
 }
 
-void tuck_fn_main() {
-    tuck_type_Config tuck_config = tuck_type_Config(url: "https://example.com");
-    tuck_type_Feed tuck_feed = tuck_type_Feed(title: "Deep Dive");
-    tuck_type_PlayerState tuck_p = tuck_type_PlayerState(kind: tuck_type_PlayerStateKind.Ready, tuck_ready: tuck_type_PlayerState_Ready(config: tuck_config, feed: tuck_feed));
-    tuck_type_MqttSession tuck_fresh = tuck_type_MqttSession(tuck_type_MqttSessionKind.Disconnected);
-    tuck_type_Socket tuck_socket = tuck_type_Socket(fd: 3L);
-    tuck_type_MqttSession tuck_session = tuck_type_MqttSession(kind: tuck_type_MqttSessionKind.Connected, tuck_connected: tuck_type_MqttSession_Connected(socket: tuck_socket, keepalive: 60L));
+void tuckˑfnˑmain() {
+    tuckˑtypeˑConfig tuckˑvˑconfig = tuckˑtypeˑConfig(url: "https://example.com");
+    tuckˑtypeˑFeed tuckˑvˑfeed = tuckˑtypeˑFeed(title: "Deep Dive");
+    tuckˑtypeˑPlayerState tuckˑvˑp = tuckˑtypeˑPlayerState(kind: tuckˑtypeˑPlayerStateKind.Ready, tuckˑvariantˑready: tuckˑtypeˑPlayerState_Ready(config: tuckˑvˑconfig, feed: tuckˑvˑfeed));
+    tuckˑtypeˑMqttSession tuckˑvˑfresh = tuckˑtypeˑMqttSession(tuckˑtypeˑMqttSessionKind.Disconnected);
+    tuckˑtypeˑSocket tuckˑvˑsocket = tuckˑtypeˑSocket(fd: 3L);
+    tuckˑtypeˑMqttSession tuckˑvˑsession = tuckˑtypeˑMqttSession(kind: tuckˑtypeˑMqttSessionKind.Connected, tuckˑvariantˑconnected: tuckˑtypeˑMqttSession_Connected(socket: tuckˑvˑsocket, keepalive: 60L));
     return;
 }
 
 void main(string[] args) {
     rt.tuckSetArgs(args);
-    tuck_fn_main();
+    tuckˑfnˑmain();
 }

@@ -9,9 +9,11 @@ import std/[times, os, strutils]
 import ../compiler/tuck_async
 
 proc main() =
+  ## `bench_async_scale [N] [K]`: spawns N coroutines that each yield K times,
+  ## and reports spawn and context-switch throughput.
   # NOTE ceiling: each coroutine owns a 256KB minicoro stack, so N live
   # coroutines reserve N*256KB. Spawn cost is dominated by that stack alloc
-  # (~90us each), NOT scheduler enqueue (a Deque, O(1)). 10k default keeps the
+  # (~90us each), NOT scheduler enqueue (a ring buffer, O(1)). 10k default keeps the
   # footprint sane (~2.5GB peak reserved); switch throughput is the headline.
   let n = if paramCount() >= 1: parseInt(paramStr(1)) else: 10_000
   let k = if paramCount() >= 2: parseInt(paramStr(2)) else: 100

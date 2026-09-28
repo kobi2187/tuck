@@ -2,5 +2,5 @@
 import ../compiler/tuck_rt
 export tuck_rt
 
-type tuck_type_FsError* = enum NotFound, AccessDenied, IoFailed
+type tuckˑtypeˑFsError* = enum NotFound, AccessDenied, IoFailed
 

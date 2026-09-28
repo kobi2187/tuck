@@ -367,7 +367,7 @@ naming convention, say). Contrast with `merge` (changes the field SET) and
 
 ```tuck
 let ext = {trackId: 42, title: "SlowJam", durationMs: 215000}
-let norm = ext alias(trackId: id, title: name, durationMs: length)
+let norm = ext alias(trackId -> id, title -> name, durationMs -> length)
 # norm: {id: 42, name: "SlowJam", length: 215000}
 norm describe   # subset/name matching now applies against the RENAMED fields
 ```
@@ -375,8 +375,12 @@ norm describe   # subset/name matching now applies against the RENAMED fields
 The call takes **parentheses**, not the `{}` struct-literal braces every
 other postfix call in this spec uses — a deliberate, sole exception, so a
 rename step is visually distinct from an ordinary call at a glance. Each
-`oldName: newName` pair says which of the receiver's fields to rename and
+`oldName -> newName` pair says which of the receiver's fields to rename and
 what to call it in the result; fields not mentioned pass through unchanged.
+The arrow is Tuck's one rename spelling — the same `old -> new` renames a
+composed type's fields (`A + B {x -> bx}`), an interface's members at
+`satisfies`, and a mixin's fns at `+` (ruled 2026-09-27). The colon form
+`alias(old: new)` is refused (TK-PA17).
 Renaming a field that does not exist on the receiver is a compile error. The
 result is a fresh, fully-typed struct (not a view over the original) — the
 usual subset-matching and missing-field checks (§2.5, §4.8) apply to it
@@ -384,11 +388,8 @@ exactly as they would to any other struct.
 
 Two fields ending up with the same name in the RESULT — whether one rename
 target collides with an untouched field, or two renames target the same new
-name — is intended to be a compile error, the same "no silent shadowing"
-rule `merge` enforces above. That check is not implemented yet: today
-`alias` does not validate the result for collisions, which can silently drop
-a field or (worse) produce emitted code that fails to compile downstream.
-Treat multi-field `alias` calls carefully until this is closed.
+name — is a compile error, the same "no silent shadowing" rule `merge`
+enforces above (`tests/suites/known_bugs.nim`, #16).
 
 ### 2.5 Subset Matching
 
@@ -496,7 +497,11 @@ fn add({a: int, b: int}) -> {result: int}:
 {a: 5, b: 10}.add     # postfix at call site
 ```
 
-Precedence (high to low): `* / %` → `+ -` → `>= <= != > < ==` → `and or`
+Precedence (high to low): `* / %` → `+ -` → `>= <= != > < ==` → `and or xor`
+
+`and`, `or` and `xor` share the lowest level and do not rank against each
+other: an expression that mixes two of them must parenthesise, as in
+`(a and b) or c` (`TK-PA16`). The same operator repeated needs no parentheses.
 
 ### 3.4 Higher-Order Functions via Struct Fields
 
@@ -812,6 +817,32 @@ type PodcastPlayer = PodcastPlayerLifecycle + PlaybackControls + CacheManager
 Field name conflicts are compile errors. Resolve at the composition site with
 rename syntax (see 2.5).
 
+The same `{old -> new}` list follows a `+ Name` line in an object body. For a
+record it brings the field `old` in as `new`; for a mixin it brings the fn
+`old` in as `new`, and inside the mixin's own copied fns `self.old` follows
+the rename — the mixin keeps calling its own member:
+
+```tuck
+mixin Helpers:
+  fn double({self: Self}) -> int:
+    return self.x + self.x
+  fn quad({self: Self}) -> int:
+    return self.double * 2        # reaches `twice` in P
+
+type Pos:
+  x: int
+  y: int
+
+object P:
+  + Helpers {double -> twice}     # P keeps its own `double`
+  + Pos {y -> height}
+  fn double({self: P}) -> int:
+    return 1000
+```
+
+Renaming a name the mixin or record does not have is TK-CO04 — a rename of
+nothing would otherwise do nothing, silently.
+
 ### 4.6 Type Attributes
 
 All compiler directives on types use `[]` brackets after the type name, consistent
@@ -840,11 +871,12 @@ deserialization. Zero compiler complexity.
 invariant usually means corrupt data rather than a slow loop, so the default is
 on everywhere and the opt-out is a dedicated define — `tuckNoInvariants`, which
 is independent of `release` (ruling, 2026-08-25; this replaced an earlier
-`when not defined(release)` that gave no way to keep them). Today that opt-out
-is honoured by the Nim backend and reachable with
-`tuck build --nim:"-d:tuckNoInvariants"`; the D backend emits the guard but
-`tuck build` has no flag that reaches it, and the Odin backend emits a bare
-`assert` with no guard at all.
+`when not defined(release)` that gave no way to keep them). Every backend
+guards its checks with that define (Nim `when not defined`, D `version`, Odin
+`#config`), and a violation reports `Invariant violated on <type>: <cond>` and
+exits 1 on all three. Only the Nim backend's define is reachable from
+`tuck build` today (`--nim:"-d:tuckNoInvariants"`); how the other two are
+reached is open (#43).
 
 Block form only — `invariant:` inside the type body, one predicate per line:
 
@@ -1098,8 +1130,8 @@ nesting.
 
 ```tuck
 interface Storable:
-  fn save({dest: Path}) -> !void [io]
-  fn load({src: Path}) -> !Self [io]
+  fn save({self: Self, dest: Path}) -> !void [io]
+  fn load({self: Self, src: Path}) -> !void [io]
 ```
 
 An object declares conformance with a `satisfies` line at the top of its body,
@@ -1112,9 +1144,9 @@ object Document:
   path: Path
   + Timestamped
 
-  fn save({dest: Path}) -> !void [io]:
+  fn save({self: Document, dest: Path}) -> !void [io]:
     ...
-  fn load({src: Path}) -> !Self [io]:
+  fn load({self: Document, src: Path}) -> !void [io]:
     ...
 ```
 
@@ -1126,8 +1158,24 @@ Conformance is checked at compile time. The rules:
 - **Effects may be a subset.** An implementation may do *less* than the contract
   permits — a pure `save` satisfies an `[io] save` — never more. This is the
   same direction as the caller/callee effect budget (Part 4).
-- **`Self` means the implementing type.** In a required signature `-> !Self`
-  reads as `-> !Document` for `Document`.
+- **`Self` means the interface, except in the receiver.** In `{self: Self}`
+  it is the object running; anywhere else it is the interface — any
+  satisfier — because a caller holding only an interface value may pass any
+  (ruled 2026-09-27). So `fn crossfade({self: Self, next: Self})` is
+  implemented as `{self: Mp3, next: AudioSource}`, and an MP3 crossfades
+  into a FLAC. A return of exactly `Self` may be implemented as the
+  interface or as the object's own type; called through an interface value,
+  the result is the interface either way.
+- **The same object type is written with type parameters bounded by
+  `Self`.** In `fn splice[A: Self, B: Self]({self: A, other: A, next: B})`,
+  `other` shares the receiver's letter, so it is the object's own type; `next`
+  is any satisfier. `Flac` implements it as
+  `{self: Flac, other: Flac, next: AudioSource}`. This is checked at compile
+  time only: called on a concrete object it is an ordinary call, but through
+  an interface value the receiver's type is known only at run time, so a
+  member with a parameter sharing the receiver's letter is refused there
+  (TK-TY33). A letter the receiver does not use is the interface, and such a
+  member is callable through an interface value.
 
 A missing or mismatched member is a compile error naming both signatures.
 
@@ -1144,6 +1192,33 @@ editing the library. The rules above are unchanged — the object must still
 implement every member, or it is a compile error. Re-stating a contract the
 object already declares in its body is a no-op, not an error: a calling module
 cannot know what the library already promised.
+
+**Implementing a member under another name.** Two interfaces may each require
+a member of the same name with different signatures; one object cannot hold
+two members of one name. `satisfies I {old -> new}` says the object
+implements `I`'s `old` as its own `new` — the same `old -> new` rename
+spelling as `alias(...)` (§2.4c) and composition (§4.5), ruled 2026-09-27:
+
+```tuck
+interface Animal:
+  fn noise({self: Self}) -> int
+interface Machine:
+  fn noise({self: Self}) -> str
+
+object Robodog:
+  satisfies Animal
+  satisfies Machine {noise -> hum}
+  bark: int
+  fn noise({self: Robodog}) -> int:
+    return self.bark
+  fn hum({self: Robodog}) -> str:
+    return "bzz"
+```
+
+A call through a `Machine` value reaches `hum`; through an `Animal`, `noise`.
+The top-level form takes the list after each interface it names
+(`satisfies Robodog: Machine {noise -> hum}`). Renaming a member the interface
+does not declare is TK-CO04.
 
 ### 5.3 Interface Dispatch
 
@@ -1288,6 +1363,26 @@ representation. An accepted generic instantiation monomorphizes exactly as
 an unconstrained one does; the bound only changes what the checker demands
 before emitting it, never what gets emitted.
 
+**An interface may bound a generic fn too** (ruled 2026-09-27). For
+objects, the compile-time "same type" guarantee a group gives plain types is
+written with the interface itself:
+
+```tuck
+fn join[T: AudioSource]({a: T, b: T}) -> int:
+  return a.splice {other: b, next: b}
+```
+
+`T` is ONE object type that satisfies `AudioSource`, fixed at each call:
+`{a: flac1, b: flac2} join` is legal, `{a: flac, b: mp3} join` is refused
+(T bound to both), and so is passing interface values, whose object type is
+known only at run time. The body is checked once against the contract; the
+receiver's letter of a `[A: Self]` member (§5.2) is T, so a same-type member
+refused through interface values is callable here. Each object type T is
+called with gets its own copy of the fn with T replaced, checked again as
+ordinary code — nothing is dispatched at run time. An interface bound
+stands alone on its parameter (not `[T: AudioSource + Hashable]`), and for
+now such a fn is callable only from the module that declares it.
+
 **Why not just extend `interface`/`satisfies` to `type`.** `satisfies`
 needs a bounded, enumerable member set to check against — an `object`'s own
 body gives it one; a plain `type` does not (its associated functions are
@@ -1373,7 +1468,7 @@ Multi-condition dispatch that the compiler verifies for completeness and
 non-ambiguity, then compiles to a bitmask lookup:
 
 ```tuck
-decision classifyPacket({priority: u2, size: u12, encrypted: bool}) -> Action:
+decision classifyPacket({urgency: u2, size: u12, encrypted: bool}) -> Action:
   | high  _     true  -> QueueSecure
   | high  _     false -> QueueFast
   | low   small _     -> QueueDefer
@@ -1393,7 +1488,7 @@ the compiler inlines and builds one combined bitmask table underneath:
 decision classifySize({bytes: u32}) -> SizeClass:
   | _ -> Small
 
-decision routePacket({priority: u2, encrypted: bool, bytes: u32}) -> Action:
+decision routePacket({urgency: u2, encrypted: bool, bytes: u32}) -> Action:
   | high  true  Small  -> FastSecure
   | _     _     _      -> routePacket.fallback
 ```
@@ -1500,24 +1595,47 @@ buffers are the embedded case; records are the §7.4 case (files, connections).
 pool UartBuffer  = Array[64, u8] [count: 8]   # 512 bytes, statically allocated
 pool Connections = Connection    [count: 16]  # records pool the same way
 
-let buf = UartBuffer.acquire     # ?Array[64, u8] — the pool may be exhausted
+let buf = UartBuffer.acquire     # ?UartBufferHandle — the pool may be exhausted
 if not buf.ok:
   return
-# ... use buf.value ...
-UartBuffer.release {buf.value}
+let dst = UartBuffer.addr {h: buf.value}      # the cell's bytes, for an extern
+{p: dst, n: 64} uartReceive                   # the hardware fills the cell
+let got = UartBuffer.read {h: buf.value}      # ?Array[64, u8]
+UartBuffer.release {h: buf.value}
 ```
+
+`acquire` yields a **handle**, not the cell: it names which cell and which
+tenancy, so `release` frees exactly that cell and a stale handle is a caught
+error rather than a write into someone else's slot. Each pool's handle type is
+its own (`UartBufferHandle`), so one pool's handle is a type error in
+another's operations. The cell is reached through the pool:
+
+- `Pool.read {h}` → `?T`. A cell **starts absent** and reads absent until
+  something writes it, so the zeroed storage beneath is never read as a value
+  of the element type — which could break that type's invariant (#42).
+- `Pool.write {h, value}` stores a value; the value is a construction,
+  validated where it is built, so every present cell satisfies the invariant.
+- `Pool.addr {h}` → `Buf`, the cell's bytes, for an **extern only** — the one
+  pointer Tuck code makes (DMA, an ISR). Anywhere else is TK-TY08; a pool
+  whose element carries an invariant has no `addr` (TK-TY31), since memory an
+  extern fills is never checked. The cell is present from then on.
+- `Pool.release {h}`.
+
+A handle whose tenancy has ended stops the program with `TUCK POOL:` and exit
+status 1, on every backend.
 
 The declaration reuses the `X = <type> [attrs]` shape: the element type is
 explicit, `count` fixes the number of slots. There is no `size` knob — the
 footprint follows from the element type, and restating it would only drift.
 
-`acquire` yields `?T`: exhaustion is absence, handled like any other optional.
-There is no `or return` unwrap — `and`/`or`/`xor` are strictly boolean (a `?T`
-in a boolean position reads as "is present", which is a test, not an unwrap).
+`acquire` yields `T?`: exhaustion is absence, handled like any other optional.
+There is no `or return` unwrap — `and`/`or`/`xor` are strictly boolean, and a
+`T?` is not a boolean: presence is tested with `.ok` (`if a.ok and b.ok:`).
+Ruled 2026-09-27; a `T?` operand used to read as "is present".
 
-`release` goes through the **pool**, not the value: `Pool.release {v}`. The
-element may be a primitive (`Array[64, u8]` carries no methods), so a
-`v.release` method form cannot work in general.
+Every operation goes through the **pool**, not the value: the element may be
+a primitive (`Array[64, u8]` carries no methods), so a `v.release` method form
+cannot work in general.
 
 `count` is **required**. A pool without one has no static footprint, which is
 the entire point of §7.2 — unlike §7.4's registry, whose `cap` is optional
@@ -1530,9 +1648,9 @@ declaration.
 denotes the *container*, not a value of the element type, so it cannot be a
 type attribute (`Buf.acquire` yielding a `Buf` would be circular).
 
-Internally: a bitmask + a static array. `acquire` is a bitmask scan. `release`
-is a bit clear. Total footprint is verified against available memory at
-compile time.
+Internally: a static array of cells, a tenancy counter and a state (free /
+absent / present) per cell. `acquire` is a scan for a free cell; the other
+operations are O(1) through the handle.
 
 ### 7.3 Arena Allocator
 

@@ -29,13 +29,11 @@ proc opStr*(op: BinOp): string =
   of boRangeExcl: "..<"
 
 proc opStr*(op: UnaryOp): string =
-  ## The prefix spelling. uoPropagate is postfix (`x?`) and has no prefix, so
-  ## it maps to the empty string and the printer special-cases it.
+  ## The prefix spelling of each unary operator.
   case op
   of uoNeg: "-"
   of uoNot: "not "
   of uoComposition: "+ "
-  of uoPropagate: ""
 
 proc toString*(e: Expr): string
 
@@ -53,11 +51,13 @@ proc listToString(items: seq[Expr], open, close: string): string =
   open & parts.join(", ") & close
 
 proc structToString(e: Expr): string =
+  ## A payload literal as `{name: value, ...}`.
   var parts: seq[string]
   for f in e.fields: parts.add(f.name & ": " & f.value.toString())
   "{" & parts.join(", ") & "}"
 
 proc qualifiedToString(e: Expr): string =
+  ## A qualified name as written: `mod::sub::name`.
   for p in e.modulePath: result.add(p & "::")
   result.add(e.qualName)
 
@@ -69,7 +69,17 @@ proc chainToString(e: Expr): string =
     result.add(" .." & step.target.toString())
     result.add(optToString(step.arg, " "))
 
+proc poolOpToString(e: Expr): string =
+  ## Checker-stamped: `Pool.op {operands}`, as it was written.
+  var args: seq[string]
+  for a in e.poolOperands: args.add a.toString()
+  result = e.poolRef.toString() & "." & ($e.poolOp)[2 .. ^1].toLowerAscii()
+  if args.len > 0: result.add " {" & args.join(", ") & "}"
+
 proc toString*(e: Expr): string =
+  ## A one-line, source-like rendering of `e` for messages and dumps. Lossy on
+  ## purpose: control flow prints only its keyword (`if`, `match`, `block`), so
+  ## two different bodies can render the same — never compare code by it.
   if e == nil: return ""
   case e.kind
   of exkLit: return e.litValue
@@ -98,8 +108,6 @@ proc toString*(e: Expr): string =
   of exkBinary:
     return e.left.toString() & " " & opStr(e.binOp) & " " & e.right.toString()
   of exkUnary:
-    if e.unaryOp == uoPropagate:
-      return e.operand.toString() & "?"   # postfix, unlike the other three
     return opStr(e.unaryOp) & e.operand.toString()
   of exkBlock:
     return "block"
@@ -136,6 +144,8 @@ proc toString*(e: Expr): string =
     return "ord(" & e.ordinalOf.toString() & ")"
   of exkValidate:
     return "validate(" & e.validated.toString() & ")"   # lowering-built too
+  of exkPoolOp:
+    return poolOpToString(e)
   of exkIfaceCall:
     # Lowering-built: one arm per satisfying object, shown by name.
     var sats: seq[string]

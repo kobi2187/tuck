@@ -161,6 +161,8 @@ const CommandAliases = {"l": "lex", "p": "parse", "ch": "check",
                          "v": "validate"}.toTable
 
 proc printCommandHelp(cmd: string, code = 0) =
+  ## `tuck help <cmd>`: prints one command's help (aliases accepted) and exits
+  ## with `code`, or names the known commands and exits 2 for an unknown one.
   let key = CommandAliases.getOrDefault(cmd, cmd)
   if CommandHelp.hasKey(key):
     echo CommandHelp[key]
@@ -171,6 +173,8 @@ proc printCommandHelp(cmd: string, code = 0) =
   quit(2)
 
 proc usage(code = 2) =
+  ## Prints the full CLI usage to stderr and exits with `code` (2 by default:
+  ## a usage error).
   stderr.writeLine """tuck — the Tuck compiler
 
 usage: tuck <command> <file.tuck> [options]
@@ -248,6 +252,8 @@ options:
   quit(code)
 
 proc die(msg: string) =
+  ## Prints `msg` to stderr and exits 1. The driver's one way to stop on a
+  ## user-facing error.
   stderr.writeLine msg
   quit(1)
 
@@ -279,15 +285,10 @@ proc dieSemanticError(path: string, err: ref SemanticError) {.noreturn.} =
   if ".tuck:" in err.msg: die(err.msg)
   else: die(path & ":" & $err.line & ":" & $err.col & ": " & err.msg)
 
-proc elapsedMs(t0: float): string =
-  formatFloat((epochTime() - t0) * 1000, ffDecimal, 1) & " ms"
-
-# `-v` — echo before and after every named pipeline stage (compiler/pipeline.nim),
-# timing each one. `-vv` additionally echoes each stage's per-module
-# sub-steps, each with its OWN timing. Off by default: this is diagnostic,
-# not something every check/compile/build should print.
-# Pick the quickest C backend available that can build the runtime.
 proc pickFastCC(): string =
+  ## Pick the quickest C backend available that can build the runtime.
+  ## Returns the extra `nim c` flags: clang when installed, and always
+  ## `--threads:on`.
   # THE SCHEDULER is single-threaded and cooperative, and stays that way: tasks
   # and actors are coroutines, one resume per tick, no preemption (spec §9.4).
   # But a BLOCKING extern (readLine, readFile) cannot be made to yield — a
@@ -303,9 +304,11 @@ proc pickFastCC(): string =
   if findExe("clang") != "": " --cc:clang --threads:on "
   else: " --threads:on "
 
-# Every backend reports the same two numbers after a successful build, so
-# `--nim` vs `--odin` is a fair comparison rather than a vibe.
 proc reportBuild(binPath: string, buildMs: float): string =
+  ## Every backend reports the same two numbers after a successful build, so
+  ## `--nim` vs `--odin` is a fair comparison rather than a vibe.
+  ## Formats as `(<ms> ms, <size>)`; the size is `?` when the binary cannot
+  ## be stat'ed.
   var sizeStr = "?"
   try:
     let bytes = getFileSize(binPath)
@@ -355,6 +358,8 @@ proc loadOrDie(path: string, needBodies: bool):
 
 proc addLoadedEffects(result: var Table[string, seq[EffectMarker]],
                       loaded: seq[LoadedModule]) =
+  ## Adds the declared effects of every fn in the modules loaded from source,
+  ## under both its bare and its `module::fn` name.
   for lm in loaded:
     for d in lm.m.decls:
       if d == nil or d.kind != dkFn: continue
@@ -363,6 +368,8 @@ proc addLoadedEffects(result: var Table[string, seq[EffectMarker]],
 
 proc addSigOnlyEffects(result: var Table[string, seq[EffectMarker]],
                        sigOnly: Table[string, IndexEntry]) =
+  ## Adds the effects of every fn in the modules known only from the cached
+  ## signature index, under both names, as `addLoadedEffects` does for source.
   for modName, entry in sigOnly:
     for si in entry.sigs:
       if "::" in si.name: continue
@@ -409,7 +416,7 @@ proc declaredResourceKinds(loaded: seq[LoadedModule]): seq[string] =
       for k in d.resKinds:
         if k.name notin result: result.add(k.name)
 
-proc typecheckOnly(path: string, loaded: seq[LoadedModule],
+proc typecheckOnly(path: string, loaded: var seq[LoadedModule],
                    sigOnly: Table[string, IndexEntry]): seq[string] =
   ## Just the typecheck half of the check pipeline. checkOrDie calls this
   ## once and continues with effects; `tuck dump --stage=typecheck` calls it
@@ -424,22 +431,33 @@ proc typecheckOnly(path: string, loaded: seq[LoadedModule],
   try:
     # Whole-program in one call (a call can name a decl in another module) —
     # no per-module hook to time individually.
-    result = typecheckProgram(mods, preSigs)
+    result = typecheckExpanding(mods, preSigs)
+    # Expansion of interface-bounded generics adds and drops declarations
+    # (iface_generics); `Module` is a value, so hand the lists back.
+    for i in 0 ..< loaded.len: loaded[i].m.decls = mods[i].m.decls
     vSubNote($mods.len & " module(s)")
   except SemanticError as err:
     dieSemanticError(path, err)
 
 proc verifyEffectsAssertions(loaded: seq[LoadedModule]) =
+  ## `--verify-stages` after the effect pass: every async-marked call site must
+  ## agree with its resolved callee's `[io]` marker.
   var loadedMods: seq[Module]
   for lm in loaded: loadedMods.add(lm.m)
   assertAsyncEffectsConsistent(loadedMods)
 
-proc checkOrDie(path: string, loaded: seq[LoadedModule],
+proc checkOrDie(path: string, loaded: var seq[LoadedModule],
                 sigOnly: Table[string, IndexEntry],
                 verifyStages = false): seq[string] =
   ## Typecheck, then verify effects. Order matters: typecheckProgram resets
   ## the semantic layer, so the effect pass must run AFTER it or its async
   ## call-site marks are wiped before codegen reads them.
+  ##
+  ## Typecheck may run more than once, and may change `loaded`: a call to
+  ## an interface-bounded generic fn is pointed at a clone per object type
+  ## and the program checked again (iface_generics). So nothing may read
+  ## the semantic layer, or cache a module's decl list, between
+  ## typecheckOnly's entry and its return.
   ##
   ## Downstream of this, ONE BACKEND PER PROCESS. The passes `prepare` runs
   ## (copy marks, ownership, twin calls) keep their decisions in tables keyed
@@ -500,6 +518,8 @@ proc sizeReport(path: string, loaded: seq[LoadedModule]) =
         "--max-fn-lines:N, or :0 to disable)")
 
 proc addLoadedPending(result: var seq[string], loaded: seq[LoadedModule]) =
+  ## Adds each `pending` entry of the modules loaded from source; entries from
+  ## imports are prefixed with their module name, the entry file's are not.
   for lm in loaded:
     for entry in pendingReport(lm.m):
       if lm.path != loaded[^1].path: result.add(lm.name & "::" & entry)
@@ -507,6 +527,8 @@ proc addLoadedPending(result: var seq[string], loaded: seq[LoadedModule]) =
 
 proc addSigOnlyPending(result: var seq[string],
                        sigOnly: Table[string, IndexEntry]) =
+  ## Adds each pending signature of the modules known only from the cached
+  ## index, as `module::sig`.
   for name, e in sigOnly:
     for si in e.sigs:
       if si.isPending: result.add(name & "::" & sigLine(si))
@@ -546,6 +568,9 @@ proc dumpTree(mods: seq[Module], fmt: string, withSem = false) =
 
 proc checkProgram(path: string, needBodies = false,
                   verifyStages = false): seq[LoadedModule] =
+  ## The whole front end for one entry file: load the import closure, inject
+  ## imported types, resolve declaration refs, typecheck and effect-check, and
+  ## (with `verifyStages`) assert the tree between stages. Dies on any error.
   var sigOnly: Table[string, IndexEntry]
   (result, sigOnly) = loadOrDie(path, needBodies)
   for lm in result.mitems: resolveWhenBlocks(lm.m, buildTarget)  # spec §8.3
@@ -1091,7 +1116,7 @@ when isMainModule:
         for d in lm.m.decls:
           if d == nil: continue
           if d.kind == dkActor and actorHasMessages(d):
-            actorNames.add(mangleName(d.name, nkType))
+            actorNames.add(mangleName(d.name, nkActor))
           if d.kind == dkTask: hasTasks = true
       for d in m.decls:
         # `m` was mangled above, so `fn main` is now tuck_main here.
@@ -1160,6 +1185,8 @@ when isMainModule:
         # and 132 on the other two. Handing it the low byte as an int8 makes
         # the status the same number everywhere.
         proc exitWith(rc: string): string =
+          ## The Nim statement that exits with `rc`'s low byte, so the status matches
+          ## Odin's and D's.
           "quit(cast[int8](" & rc & " and 0xFF))"
         let mainCall =
           if mainReturns and postMain: "let mainRc = " & tuckMain

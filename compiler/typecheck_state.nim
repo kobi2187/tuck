@@ -13,6 +13,9 @@ import typecheck_util
 type
   Binding* = tuple[typ: Type, isVar: bool, isParam: bool, narrowed: bool,
                    used: bool, errSeen: bool, span: Span, site: Expr]
+    ## One name in scope: its type, what may be done with it, whether it has
+    ## been read, and where it was introduced.
+    ##
     ## `isVar` is write permission; `isParam` says the name is a FUNCTION
     ## PARAMETER, which is a third thing rather than a flavour of the first.
     ##
@@ -31,12 +34,13 @@ type
     ## `self` in an object member and an actor's own fields stay `isVar: true`
     ## and `isParam: false` — they mutate state the callee OWNS, which is the
     ## stated exception (§5.1), not a caller's value.
-  # The in-memory twin of ast.nim's SigInfo: what the checker needs to know
-  # about a fn it is calling, whether that fn was read from source or restored
-  # from the cached index. Keep the two in step — a field here that SigInfo
-  # lacks cannot survive to disk, and the check quietly weakens for imports.
   FnSig* = tuple[params: seq[Param], ret: Type, generics: seq[string],
                  effects: seq[EffectMarker], resources: seq[string]]
+    ## The in-memory twin of ast.nim's SigInfo: what the checker needs to know
+    ## about a fn it is calling, whether that fn was read from source or restored
+    ## from the cached index. Keep the two in step — a field here that SigInfo
+    ## lacks cannot survive to disk, and the check quietly weakens for imports.
+    ##
     ## `resources` rides beside `effects` for the reason SigInfo's own comment
     ## gives: anything a CALLER must know to check a call correctly belongs in
     ## the signature, and a resource kind is exactly that (§7.4 — a fn calling
@@ -44,6 +48,9 @@ type
     ## would look non-acquiring across a module boundary, which is the bug
     ## effects themselves had before they were carried here.
   TypeChecker* = object
+    ## The checker's state for one module: the signature and type tables it
+    ## checks against, the scope stack, and the per-fn context (generics, return
+    ## type, narrowing) of the body being checked.
     module*: Module
     fnSigs*: Table[string, seq[FnSig]]
       ## Name -> every signature declared under it, not one. Two objects may
@@ -78,6 +85,11 @@ type
     implementedFns*: HashSet[string]
     errPolicy*: string            # strict (default) | continue | exit
     wrapperFieldRead*: bool
+    ownerFieldScope*: int
+      ## 1 + the index in `scopes` where the enclosing owner bound its fields
+      ## bare (an object's members, an actor's handlers, a type's invariants);
+      ## 0 outside one. A name found THERE, and not in a scope inside it, is
+      ## the owner's field (`resolvesToOwnerField`).
       ## Set while synthesizing the RECEIVER of `.ok`/`.value`, so a bare read
       ## of a binding can be told from one — see markErrSeen.
     unhandledSites*: seq[string]  # strict: error list; continue/exit: SHORTCUTS
@@ -218,6 +230,12 @@ proc addFnDecl*(tc: var TypeChecker, name: string, d: Decl) =
   if tc.fnDecls.hasKey(name): tc.fnDecls[name].add(d)
   else: tc.fnDecls[name] = @[d]
 
+proc externFnNames*(tc: TypeChecker): HashSet[string] =
+  ## Every extern fn the program declares, by the name the source uses.
+  for name, ds in tc.fnDecls:
+    for d in ds:
+      if d != nil and d.kind == dkFn and d.isExtern: result.incl name
+
 proc declOfFn*(tc: TypeChecker, name: string): Decl =
   ## The declaration for `name` when the caller has no way to choose — the
   ## last registered, matching what the flat table held. nil when unknown.
@@ -271,6 +289,8 @@ proc sigsOf*(tc: TypeChecker, name: string): seq[FnSig] =
   if tc.fnSigs.hasKey(name): tc.fnSigs[name] else: @[]
 
 proc pushScope*(tc: var TypeChecker) =
+  ## Opens a scope for a block: a fresh binding table plus its own list of
+  ## variants shadowed inside it.
   tc.scopes.add(initTable[string, Binding]())
   tc.shadowedVariants.add(@[])
 
@@ -394,14 +414,35 @@ proc clearUninit*(tc: var TypeChecker, name: string, field = "") =
       tc.scopes[i][name].typ = filled(tc.scopes[i][name].typ, field)
       return
 
+proc resolvesToOwnerField*(tc: TypeChecker, name: string): bool =
+  ## Does a bare `name` read the enclosing owner's field? Only if the
+  ## innermost scope holding it is the one the owner's fields were bound in:
+  ## a param or a `let` of the same name, bound inside that, wins.
+  if tc.ownerFieldScope == 0 or name == "self": return false
+  for i in countdown(tc.scopes.high, 0):
+    if tc.scopes[i].hasKey(name): return i == tc.ownerFieldScope - 1
+  false
+
+template withOwnerFields*(tc: var TypeChecker, body: untyped) =
+  ## Run `body` with the innermost scope as the one holding the owner's
+  ## fields, restoring the enclosing owner's (if any) afterwards.
+  let savedOwner = tc.ownerFieldScope
+  tc.ownerFieldScope = tc.scopes.len
+  body
+  tc.ownerFieldScope = savedOwner
+
 proc lookup*(tc: TypeChecker, name: string): tuple[found: bool, b: Binding] =
+  ## The innermost binding of `name`, searching scopes outward, and whether
+  ## one was found.
   for i in countdown(tc.scopes.high, 0):
     if tc.scopes[i].hasKey(name):
       return (true, tc.scopes[i][name])
   return (false, (Type(nil), false, false, false, false, false, Span(), nil))
 
-# Resolve a named type to its declared body (aliases, one level at a time).
 proc resolve*(tc: TypeChecker, t: Type, depth = 0): Type =
+  ## Resolve a named type to its declared body, following alias chains one
+  ## declaration per step. Gives up after 10 steps, so an alias cycle returns rather than recursing
+  ## forever.
   if t == nil or depth > 10: return t
   if t.kind == tkNamed and tc.typeDecls.hasKey(t.name):
     return tc.resolve(tc.typeDecls[t.name], depth + 1)
@@ -417,6 +458,9 @@ proc actorDeclOf(tc: TypeChecker, name: string): Decl =
   tc.module.findDecl(dkActor, name)
 
 proc fieldsOf*(tc: TypeChecker, t: Type): seq[FieldDef] =
+  ## The fields a value of `t` has: an object's or actor's composed fields, a
+  ## generic record's with its type arguments substituted, else whatever
+  ## `getFieldsForType` resolves (records, unions, renames).
   if t == nil: return @[]
   if t.kind == tkNamed and tc.objDecls.hasKey(t.name):
     return composedFields(tc.module, tc.objDecls[t.name])
@@ -431,6 +475,6 @@ proc fieldsOf*(tc: TypeChecker, t: Type): seq[FieldDef] =
     for i in 0 ..< gs.len: b[gs[i]] = t.args[i]
     let body = tc.typeDecls[t.base.name]
     for f in getFieldsForType(semLayer, tc.module, body):
-      result.add(FieldDef(name: f.name, typ: substituteType(f.typ, b), span: f.span))
+      result.add(FieldDef(name: f.name, typ: substType(f.typ, b), span: f.span))
     return
   getFieldsForType(semLayer, tc.module, t)

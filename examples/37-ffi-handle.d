@@ -13,11 +13,11 @@ extern (C) int counterBump(Counter c, int by);
 extern (C) void counterFree(Counter c);
 
 
-void tuck_fn_main() {
-    Counter tuck_h = counterNew(100L);
-    int tuck_t = counterBump(tuck_h, 5L);
-    counterFree(tuck_h);
-    if ((tuck_t == 105L)) {
+void tuckˑfnˑmain() {
+    Counter tuckˑvˑh = counterNew(100L);
+    int tuckˑvˑt = counterBump(tuckˑvˑh, 5L);
+    counterFree(tuckˑvˑh);
+    if ((tuckˑvˑt == 105L)) {
         sys.exit(0L);
     }
     sys.exit(1L);
@@ -25,5 +25,5 @@ void tuck_fn_main() {
 
 void main(string[] args) {
     rt.tuckSetArgs(args);
-    tuck_fn_main();
+    tuckˑfnˑmain();
 }

@@ -22,38 +22,11 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (8)
+## A. Open bugs (3)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
-
-**A1 — an attribute name is reserved everywhere, not just inside brackets.**
-`priority` names a field fine, but `fn priority(...)` is "Expected function or
-event name" and `{priority: int}` as a parameter is rejected too. The TK-PA08
-diagnostic states the intended rule in its own text — attribute names "are
-reserved only inside brackets, so they stay usable as fields, parameters and
-function names" — so the compiler contradicts its own explanation on two of
-those three. Test: `known_bugs`, "an attribute name is free outside brackets".
-Found 2026-09-12 writing `bake {key: :priority}` in `core/cmp`'s API doc; the
-doc now says `:rank` to work around it.
-
-**A2 — a fn with no declared return type accepts `return x`, and emits Nim
-that does not compile.** `fn f({x: int}):` followed by `return x` passes
-`tuck ch`, then `tuck c` writes `proc tuck_f*(x: int): void = return x` and
-`nim c` answers "no return type declared". Whether omitting `->` should be
-rejected outright or should mean `void` is a ruling; returning a value from
-such a fn is wrong under either. Test: `known_bugs`, "a value returned from a
-fn with no return type is rejected". Found 2026-09-12 checking TUTORIAL.md's
-claim that a return type is mandatory — it is not.
-
-**A3 — a `[read]` register field can be written.** tuck-spec 8.1 states both
-directions: reading a `[write]` field is an error, writing a `[read]` field is
-an error. Only the first is enforced (`TK-RE02`). Test: `known_bugs`, "writing
-a [read] register field is rejected". Found 2026-09-12 auditing the spec's
-error claims. (The emission this originally blamed turned out to be A5, a
-separate and larger bug — the getter is emitted for EVERY register
-assignment, `[write]` fields included.)
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism
@@ -83,23 +56,6 @@ read is outstanding", which is true of the result and not of the clock, and
 that is the whole point of a timeout. Test: `task_select`, "a fired timeout
 returns without waiting for the loser".
 
-**A8 — a pool hands out a slot without validating it.** `Slots.acquire` on a
-`pool Slots = Live [count: 2]` yields a zeroed slot, so with `invariant: n > 0`
-the program can read `s.value.n == 0` — a value of the type that violates its
-own invariant, which is the one thing an invariant exists to prevent. Whether
-the fix is "acquire validates" or "a pooled type must have a valid zero" is a
-ruling. Test: `invariants`, "a pool slot is validated before it is handed out".
-
-**A12 — a pool slot cannot be read or written.** `acquire` now answers with a
-handle that names the cell, which is what made `release` correct, but there is
-no spelling for "the cell this handle names". So a pool still cannot be a DMA
-target, a frame buffer, or anything hardware or another task fills in place —
-which is what pools are for. `examples/25` says "hand b.value to the DMA
-controller"; `b.value` is the handle and nothing takes it further. Wants a
-read/write pair through the handle, plus a sanctioned way to give a cell's
-ADDRESS to an extern — the one place a raw pointer is legitimate. Test:
-`known_bugs`, "a pool slot can be read and written through its handle".
-
 **A18 — on Odin and D, an actor declared in an IMPORTED module is never
 started.** Both entry builders collect actors from the entry module only
 (`runtimeUsers` for Odin, `dBootSequence` for D), so a program whose actors all
@@ -111,6 +67,34 @@ more than a wider scan — an imported actor's drain lives in another package, s
 the emitted call must be QUALIFIED. Test: `cross_module`, "an imported actor
 runs on every backend". Found 2026-09-17 writing the first import/cache tests;
 same scope error as #73.
+
+A1 (an attribute name — `priority`, `error`, `stack` — reserved everywhere,
+though TK-PA08's own text promised "only inside brackets") was RULED on
+2026-09-27 rather than fixed: the compiler was right. A name that is read
+bare can land in brackets, where an attribute word reads as an attribute
+(`xs[stack]` dropped its index when the words were let through). Attribute
+words are reserved words; a FIELD may still use one, since it is only read
+through `.`. TK-PA08's text now says so. Test: `known_bugs`, "an attribute
+word is refused as a fn name" and "...and as a parameter name".
+
+A2 (a fn with no declared return type accepted `return x`, and `tuck c`
+wrote `proc tuck_f*(x: int): void = return x`, which nim refuses) was fixed
+2026-09-27 without the ruling it was waiting on: returning a value from such a
+body is wrong whether omitting `->` comes to mean `void` or becomes an error,
+so it is TK-TY32 now. What omitting `->` means was RULED the same day
+(issue #5): exactly `-> void`; a call to such a fn now answers `void` rather
+than `unit`. Test: `known_bugs`, "a value returned from a fn with no return type is
+rejected" (now `bugFixed`).
+
+A3 (a `[read]` register field could be written — with `=`, while the `..`
+form was already refused) was fixed 2026-09-27. The assignment target went
+through the ordinary field-access path, which checks a READ, so the rule was
+backwards for `=` in both directions: `CTRL.RDY = true` on a `[read]` field
+checked clean, and `CTRL.GO = true` on a `[write]` field was refused as reading
+it (TK-RE02). An assignment target is now held to the write rule (TK-RE01).
+Test: `known_bugs`, "writing a [read] register field is rejected" (now
+`bugFixed`) and "a [write] register field is assignable with `=`, on all
+three". Issue #6.
 
 A19 (on Odin, a loop that copies accumulated every copy — 482 MB for 20 000
 copies of a 1024-element `Seq`, issue #77) was fixed 2026-09-25, in two
@@ -231,8 +215,10 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   implemented" there). There is no `dkArena` kind and no backend support:
   `parseArenaDecl` reads the body and discards it, returning a `type` of the
   arena's name with an empty record body. A file using an arena therefore
-  CHECKS CLEAN while allocating nothing and resetting nothing, and its block
-  is absent from the tree. `examples/13-arena-mem.tuck` is a syntax specimen
+  checked clean while allocating nothing and resetting nothing, and its block
+  is absent from the tree. Since 2026-09-27 it no longer checks clean: every
+  arena gets a TK-ME02 WARNING saying its body is discarded (a warning, so the
+  specimen below still compiles). `examples/13-arena-mem.tuck` is a syntax specimen
   (no `fn main`), so the corpus is not claiming otherwise — but nothing
   before this said so out loud. Found by `tuck validate`, which is what that
   tool is for.
@@ -260,6 +246,41 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **An object member called on a fn parameter builds on Nim and Odin.**
+  Every backend passes a member's `self` mutably (Nim `var T`, Odin `^T`,
+  D `ref T`); a Nim parameter is immutable and an Odin one unaddressable, so
+  `fn rate({a: Flac}) = a.sampleRate` built only on D. Such a parameter is
+  now shadowed by a mutable copy at the top of the body — the value a D
+  parameter already is (2026-09-27). `known_bugs` "a member called on a fn
+  parameter builds, on all three".
+
+- **A22 — on Odin, an interface call whose payload holds a variable
+  builds.** Odin's dispatch is an immediately-called proc literal, which
+  cannot capture; every argument past the receiver is now a parameter of
+  that literal, evaluated at the call (2026-09-27). `known_bugs` "an
+  interface call whose payload holds a variable builds on Odin";
+  `interfaces` "an MP3 crossfades into a FLAC through the interface".
+
+- **A21 — a `-> Self` contract member called through an interface builds.**
+  Ruled R13 = B, 2026-09-27: in an interface, `Self` is the interface; in
+  the receiver `self` it is the object running. Conformance reads a
+  non-receiver `Self` as the interface (`next: AudioSource`), and accepts a
+  `-> Self` implemented as the object's own type, which each dispatch arm
+  wraps back into the interface (Odin and D can now wrap a call, not only a
+  variable). A call through an interface value now checks its payload
+  against the contract; a wrong type or a missing field had checked clean.
+  `known_bugs` "a `-> Self` contract member called through an interface
+  builds, on all three"; `interfaces`.
+
+- **A8 / #42 and A12 / #45 — a pool cell can be read, written and filled, and
+  never read as zeroed memory.** Ruled 2026-09-26: `Cells.read {h}` /
+  `Cells.write {h, value}` through the handle, and `Cells.addr {h}` for an
+  extern only (TK-TY08 anywhere else). A cell starts ABSENT, so `read` is a
+  `?T`; a written value is a construction, validated where it is built; and
+  `addr` is refused for an invariant-carrying element (TK-TY31). Pool ops are
+  their own node (`exkPoolOp`), and a pool is no longer capped at 64 cells.
+  `tests/suites/pools.nim`, on all three backends; the two pins flipped.
 
 - **A6 / #40 — on Odin, an interface method may return more than `int`.**
   The dispatch closure was typed `-> int` whatever the method returned. Calls

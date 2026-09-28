@@ -13,6 +13,9 @@ import parser_stringify   # attr value → string (toString)
 proc parseType*(p: var Parser): Type   # internal recursion (paren/primary/self)
 
 proc parseTypeUseAttrs(p: var Parser): seq[TypeAttr] =
+  ## The inside of a type-use attribute bracket — `u16 [big_endian]`,
+  ## `-> T [io]`, `!T [error: A | B]` — up to and including the `]` (the caller
+  ## ate the `[`). `error:` yields one attr per listed enum.
   while p.current().kind != tkRBracket and p.current().kind != tkEOF:
     let attrSp = p.getSpan()
     let attrName = p.expectAttrName("Expected attribute name").value
@@ -37,8 +40,10 @@ proc parseTypeUseAttrs(p: var Parser): seq[TypeAttr] =
       discard p.advance()
   discard p.expect(tkRBracket)
 
-# (T, U) -> R fn types, (T) grouping, (A, B) tuples
 proc parseParenType(p: var Parser, sp: Span): Type =
+  ## (T, U) -> R fn types, (T) grouping, (A, B) tuples
+  ## A `-> R` after the parens makes a fn type; one element alone is just
+  ## grouping; several make a tuple.
   discard p.advance()
   var types: seq[Type]
   while p.current().kind != tkRParen and p.current().kind != tkEOF:
@@ -55,8 +60,9 @@ proc parseParenType(p: var Parser, sp: Span): Type =
   else:
     return Type(span: sp, kind: tkTuple, elems: types)
 
-# {A, B} inline enum or {a: T, b: U} inline record
 proc parseBraceType(p: var Parser, sp: Span): Type =
+  ## {A, B} inline enum or {a: T, b: U} inline record
+  ## Told apart by the token after the first name: `,`, `}` or `=` means enum.
   # `{A, B}` or `{A = 10, B = 20}` (explicit values, for C enums) vs a record
   let isEnum = p.peek(2).kind in {tkComma, tkRBrace, tkAssign}
   discard p.advance()
@@ -118,6 +124,8 @@ proc meantAsTypeArg(p: Parser, nameTok: Token): bool =
     nameTok.value.len > 0 and nameTok.value[0] in {'A'..'Z'}
 
 proc rejectReservedTypeArg(p: var Parser, nameTok: Token, attr: string) =
+  ## Reports `Box[error]`-style misuse: a reserved attribute word written
+  ## where a type argument was plainly meant.
   p.reportError("`" & nameTok.value & "[" & attr & "]` — '" & attr &
     "' is a reserved attribute name and cannot be a type argument. Rename " &
     "it to something Capitalized and unreserved, e.g. `" & nameTok.value &
@@ -159,6 +167,9 @@ proc parseNamedType(p: var Parser, sp: Span): Type =
   base
 
 proc parsePrimaryType(p: var Parser): Type =
+  ## One type without postfix operators: a `!`/`?`/`!?` wrapper, a paren or
+  ## brace type, `fn`, a literal (array sizes, attribute values), or a name
+  ## with its brackets.
   let sp = p.getSpan()
   let curr = p.current()
   if curr.kind in {tkBang, tkQuestion, tkBangQuestion}:
@@ -192,17 +203,17 @@ proc parsePrimaryType(p: var Parser): Type =
   else:
     p.reportError("Unexpected token in type expression: " & $curr.kind)
 
-# Maps an effect-marker identifier (`io`, `no_alloc`, ...) to its
-# EffectMarker, or returns false for anything else. The `[...]` effect
-# bracket has multiple callers (here, and parseSigBlock/parseTaskDecl/
-# parseFnDecl in parser_decl_kinds.nim) and each wraps this same
-# name->marker mapping in its own handling of `error:`/`emit:` sub-clauses
-# and its own reaction to an unrecognized name (silently ignore vs. report
-# an error) — those reactions differ enough between callers that forcing
-# them into one loop would need a mode flag, so only the mapping itself is
-# shared. Lives here, not in parser_decl_kinds.nim, because that module
-# already imports this one for parseType — the reverse import would cycle.
 proc effectMarkerFromName*(name: string, marker: var EffectMarker): bool =
+  ## Maps an effect-marker identifier (`io`, `no_alloc`, ...) to its
+  ## EffectMarker, or returns false for anything else. The `[...]` effect
+  ## bracket has multiple callers (here, and parseSigBlock/parseTaskDecl/
+  ## parseFnDecl in parser_decl_kinds.nim) and each wraps this same
+  ## name->marker mapping in its own handling of `error:`/`emit:` sub-clauses
+  ## and its own reaction to an unrecognized name (silently ignore vs. report
+  ## an error) — those reactions differ enough between callers that forcing
+  ## them into one loop would need a mode flag, so only the mapping itself is
+  ## shared. Lives here, not in parser_decl_kinds.nim, because that module
+  ## already imports this one for parseType — the reverse import would cycle.
   case name
   of "io": marker = emIo
   of "no_alloc": marker = emNoAlloc
@@ -243,6 +254,9 @@ proc harvestEffects*(t: Type, effects: var seq[EffectMarker],
       harvestEffects(arg, effects, errorTypes, emit, resources)
 
 proc parseType*(p: var Parser): Type =
+  ## A full type: a primary type followed by any postfix forms — `* N`
+  ## repetition, `{a -> b}` field renames, `+` unions, and postfix `?`/`!`
+  ## wrappers.
   let sp = p.getSpan()
   var res = p.parsePrimaryType()
   while true:
@@ -254,17 +268,9 @@ proc parseType*(p: var Parser): Type =
       let starBase = Type(span: sp, kind: tkNamed, name: "*")
       let countType = Type(span: countSp, kind: tkNamed, name: countVal)
       res = Type(span: sp, kind: tkApp, base: starBase, args: @[res, countType])
-    elif curr.kind == tkLBrace and p.peek(1).kind == tkIdent and p.peek(2).kind == tkArrow:
-      discard p.advance()
-      var renames: seq[(string, string)]
-      while p.current().kind != tkRBrace and p.current().kind != tkEOF:
-        let orig = p.expect(tkIdent, "Expected original field name").value
-        discard p.expect(tkArrow)
-        let target = p.expect(tkIdent, "Expected target field name").value
-        renames.add((orig, target))
-        if p.current().kind == tkComma:
-          discard p.advance()
-      discard p.expect(tkRBrace)
+    elif curr.kind == tkLBrace and p.peek(1).kind in {tkIdent, tkAttr} and
+         p.peek(2).kind == tkArrow:
+      let renames = p.parseRenameList("a type's field renames")
       res = Type(span: sp, kind: tkRename, underlying: res, renames: renames)
     elif curr.kind == tkPlus:
       discard p.advance()

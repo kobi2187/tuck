@@ -15,13 +15,15 @@ export decl_index
 
 type
   CodegenCtx* = object
+    ## Everything the Nim emitter carries while printing one module: the semantic
+    ## layer it reads, the current fn's return shape, the indent, and the imported
+    ## modules emitted as their own files.
     res*: Resolution
       ## The semantic layer this emission reads. Handed over by the pipeline
       ## rather than reached for: which is what makes the stage ordering —
       ## typecheck fills it, everything after reads it — visible instead of a
       ## comment on checkOrDie.
     definedVars*: HashSet[string]
-    fieldVars*: HashSet[string]
     indent*: int
     module*: Module
     hoisted*: seq[string]  # named decls hoisted out of field positions (inline enums)
@@ -129,6 +131,8 @@ proc fieldType*(ctx: var CodegenCtx, parent: string, f: FieldDef): string =
 
 proc newCodegenCtx*(m: Module, realModules: Table[string, Module],
                    moduleName: string, res: Resolution): CodegenCtx =
+  ## A fresh Nim emission context for module `m`. The module's `errors`
+  ## declaration, if any, sets the error policy every fn body is printed under.
   result = CodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m,
                       realModules: realModules, moduleName: moduleName,
                       res: res)

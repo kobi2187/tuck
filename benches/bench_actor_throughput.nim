@@ -27,13 +27,13 @@ import ../compiler/tuck_async
 import ../compiler/tuck_rt
 
 # --- the "actor": public state + mailbox + drain (as codegen would emit) ---
-#
-# THE MESSAGE IS AN ENVELOPE, not an int. codegen emits a struct — a tag plus
-# the union of every handler's parameters — so 32 bytes is the realistic
-# small case and an `int` mailbox is not one. This is load-bearing, not
-# decoration: measured on `int`, the ring and the swap mailbox rank EQUAL,
-# because at 8 bytes there is no copy worth avoiding. At 32 they do not.
 type Msg = object
+  ##
+  ## THE MESSAGE IS AN ENVELOPE, not an int. codegen emits a struct — a tag plus
+  ## the union of every handler's parameters — so 32 bytes is the realistic
+  ## small case and an `int` mailbox is not one. This is load-bearing, not
+  ## decoration: measured on `int`, the ring and the swap mailbox rank EQUAL,
+  ## because at 8 bytes there is no copy worth avoiding. At 32 they do not.
   tag: int
   body: array[3, int]
 
@@ -46,6 +46,8 @@ var sum: int64
 var handled: int
 
 proc drain(): bool {.gcsafe.} = ({.cast(gcsafe).}:
+  ## The actor's drain step: handle every waiting message, the same loop
+  ## genActorDrain emits, and report whether there were any.
   result = false
   for m in messages(mailbox):  # exactly the loop genActorDrain emits
     sum += m.tag
@@ -57,6 +59,8 @@ var perSender: int
 var actorSlot: pointer   # what codegen keeps as `<Actor>Slot`
 
 proc senderMain(id: int) {.thread.} = ({.cast(gcsafe).}:
+  ## One sender thread: enqueue its share of messages, retrying on a full
+  ## mailbox so every message is counted, and notify the actor after each.
   let m = Msg(tag: 1)
   for i in 1 .. perSender:
     # A real `send` DROPS on a full mailbox (spec §9.1). Retrying instead
@@ -66,6 +70,9 @@ proc senderMain(id: int) {.thread.} = ({.cast(gcsafe).}:
     tuckNotifySend(actorSlot))   # the send NAMES its actor, as codegen emits
 
 proc main() =
+  ## `bench_actor_throughput [N] [SENDERS]`: floods N messages from SENDERS
+  ## threads into one actor and reports messages per second once every one
+  ## has been handled.
   let n = if paramCount() >= 1: parseInt(paramStr(1)) else: 1_000_000
   let nSenders = if paramCount() >= 2: parseInt(paramStr(2)) else: 1
   doAssert nSenders >= 1 and nSenders <= senders.len

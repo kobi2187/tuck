@@ -3,21 +3,21 @@ package main
 
 import sys "./mod_sys"
 
-tuck_fn_double :: proc (value: int) -> int {
+tuckˑfnˑdouble :: proc (value: int) -> int {
   return (value * 2)
 }
 
-tuck_fn_addTen :: proc (value: int) -> int {
+tuckˑfnˑaddTen :: proc (value: int) -> int {
   return (value + 10)
 }
 
-tuck_fn_main :: proc () {
-  tuck_a := tuck_fn_double(5)
-  tuck_b := tuck_fn_addTen(tuck_fn_double(10))
-  tuck_total := (tuck_a + tuck_b)
-  sys.exit(tuck_total)
+tuckˑfnˑmain :: proc () {
+  tuckˑvˑa := tuckˑfnˑdouble(5)
+  tuckˑvˑb := tuckˑfnˑaddTen(tuckˑfnˑdouble(10))
+  tuckˑvˑtotal := (tuckˑvˑa + tuckˑvˑb)
+  sys.exit(tuckˑvˑtotal)
 }
 
 main :: proc() {
-	tuck_fn_main()
+	tuckˑfnˑmain()
 }

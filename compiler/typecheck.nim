@@ -165,6 +165,7 @@ import typecheck_decisions    # spec 6.1 decision-table analysis
 import typecheck_pointers     # pointers stay at the extern boundary
 import typecheck_recursion    # a type may not contain itself by value
 import typecheck_conformance  # spec 5.2 `satisfies` verification
+import iface_generics         # `fn f[T: Interface]`, one clone per object type
 import ./typecheck_compat
 import ./typecheck_collect
 import ./typecheck_registry
@@ -317,39 +318,26 @@ proc sigForReceiver(tc: TypeChecker, name: string, recvT: Type): FnSig =
     if tc.compatible(recvT, pt): return sig
   tc.sigOf(name)
 
+proc bindPayloadFields(tc: var TypeChecker, fnName: string,
+                       params: seq[Param], argStruct: Expr, sp: Span): seq[Expr]
+  ## Forward-declared: the claim passes it runs are defined further down.
+
 proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
                      recvT: Type, argStruct: Expr, sp: Span): Expr =
   ## `d.crank {step: 1}` — the receiver fills a slot, the payload fills the
-  ## rest by name. See failIfReceiverSlotMismatched for which slot and why.
-  ## The receiver also PICKS the overload, so two objects may each declare a
-  ## member of this name.
+  ## rest by the three passes every call uses (bindPayloadFields). See
+  ## failIfReceiverSlotMismatched for which slot and why. The receiver also
+  ## PICKS the overload, so two objects may each declare a member of this
+  ## name.
   let sig = tc.sigForReceiver(fnName, recvT)
   let receiverFillsFirstParam =
     tc.failIfReceiverSlotMismatched(fnName, sig, recvT, sp)
-  var argFields: seq[FieldInit]
-  if argStruct != nil:
-    if argStruct.kind != exkStruct:
-      fail("Type Error: arguments to '" & fnName &
-           "' must be a struct literal: {name: value, ...}", argStruct.span)
-    argFields = argStruct.fields
-  var args: seq[Expr] = @[receiver]
+  if argStruct != nil and argStruct.kind != exkStruct:
+    fail("Type Error: arguments to '" & fnName &
+         "' must be a struct literal: {name: value, ...}", argStruct.span)
   let startAt = if receiverFillsFirstParam: 1 else: 0
-  for i in startAt ..< sig.params.len:
-    let p = sig.params[i]
-    var found = false
-    for f in argFields:
-      if f.name == p.name:
-        let ft = tc.synthesize(f.value)
-        if not tc.compatible(ft, p.typ):
-          fail("Type Error: field '" & p.name & "' of call to '" & fnName &
-               "' expects " & typeName(p.typ) & " but got " & typeName(ft),
-               f.value.span)
-        args.add(f.value)
-        found = true
-        break
-    if not found:
-      fail("Type Error: call to '" & fnName & "' is missing required field '" &
-           p.name & ": " & typeName(p.typ) & "'", sp)
+  let args = @[receiver] &
+             tc.bindPayloadFields(fnName, sig.params[startAt .. ^1], argStruct, sp)
   result = Expr(span: sp, kind: exkCall,
                 callee: Expr(span: sp, kind: exkVar, name: fnName), args: args)
   setType(semLayer, result, sig.ret)
@@ -631,28 +619,138 @@ proc asVariantPayloadField(tc: var TypeChecker, e: Expr, recvT: Type): Type =
       return f.typ
   nil
 
-proc substituteSelf(pt: Type, selfT: Type): Type =
-  ## `Self` in a contract member's signature means the interface value
-  ## itself here — the callee only ever sees the contract, not the
-  ## concrete type behind it.
-  if pt != nil and pt.kind == tkNamed and pt.name == "Self": selfT else: pt
+proc ifaceBoundOf(tc: TypeChecker, typeParam: string): string =
+  ## The interface bounding type param `typeParam` of the fn being checked
+  ## (`fn join[T: AudioSource]`), or "". Takes the bare name `T` or the
+  ## `<typeparam:T>` a value of it is typed as inside the body.
+  let t = Type(kind: tkNamed, name: typeParam)
+  let name = if typeParamName(t) != "": typeParamName(t) else: typeParam
+  if not tc.currentBounds.hasKey(name): return ""
+  for b in tc.currentBounds[name]:
+    let n = groupNameOf(b)
+    if tc.ifaceDecls.hasKey(n): return n
+  ""
+
+proc substituteSelf(pt: Type, selfT: Type, letters: seq[string] = @[]): Type =
+  ## `Self` in a contract member's signature means the interface (R13, ruled
+  ## 2026-09-27) — at any depth, so `Seq[Self]` is a `Seq` of the interface.
+  ## So does each of `letters`, the member's type params bounded by `Self`:
+  ## through an interface value, each is some satisfier.
+  if pt == nil: return nil
+  case pt.kind
+  of tkNamed:
+    if pt.name == "Self" or pt.name in letters: selfT else: pt
+  of tkApp:
+    var args: seq[Type]
+    for a in pt.args: args.add(substituteSelf(a, selfT, letters))
+    Type(span: pt.span, kind: tkApp, base: substituteSelf(pt.base, selfT, letters),
+         args: args)
+  else: pt
+
+proc failIfSameTypeThroughIface(mem: Decl, iname: string, sp: Span) =
+  ## `fn splice[A: Self, B: Self]({self: A, other: A, ...})` needs `other` to
+  ## be the receiver's own object type. Through an interface value that type
+  ## is known only at run time, and there is no run-time check (ruled
+  ## 2026-09-27): the call is compile-time only.
+  let recv = receiverTypeParam(mem)
+  if recv == "": return
+  for p in mem.fnParams:
+    if p.name != "self" and typeMentionsName(p.typ, recv):
+      fail(dcTySameTypeThroughIface,
+           "'" & mem.name & "' needs '" & p.name & "' to be the " &
+           "same object type as `self` (both `" & recv & "`); through an " &
+           "interface value that type is known only at run time. Call it on " &
+           "a concrete object, or inside a generic fn bounded by " & iname &
+           " (`fn f[T: " & iname & "]`)", sp)
 
 proc bindIfaceCall(tc: var TypeChecker, e: Expr, recvT: Type, mem: Decl): Type =
-  ## One contract member matched `e.fieldName`: substitute `Self`, record
-  ## the call shape for lowering, and answer with the substituted return
-  ## type.
+  ## One contract member matched `e.fieldName`: read `Self` as the interface,
+  ## bind the payload to the params past the receiver by the passes every
+  ## call uses — so a wrong type or a missing field is refused, and a
+  ## concrete object reaching a `Self` slot is wrapped — then record the
+  ## call for lowering (receiver, then one arg per such param, in order)
+  ## and answer with the substituted return type.
   let selfT = tc.namedType(recvT.name, e.span)
+  failIfSameTypeThroughIface(mem, recvT.name, e.span)
   var params: seq[Param]
   for p in mem.fnParams:
-    params.add(Param(name: p.name, typ: substituteSelf(p.typ, selfT), span: p.span))
-  let ret = substituteSelf(mem.fnReturnType, selfT)
-  let extra = unwrapSingleField(e.dotArg)
-  let args = if extra != nil: @[e.receiver, extra] else: @[e.receiver]
-  setCall(semLayer, e, Expr(span: e.span, kind: exkCall, args: args,
+    if p.name == "self": continue
+    params.add(Param(name: p.name,
+                     typ: substituteSelf(p.typ, selfT, selfBoundParams(mem)),
+                     span: p.span))
+  if e.dotArg != nil and e.dotArg.kind != exkStruct:
+    fail("Type Error: arguments to '" & e.fieldName &
+         "' must be a struct literal: {name: value, ...}", e.dotArg.span)
+  let bound = tc.bindPayloadFields(mem.name, params, e.dotArg, e.span)
+  setCall(semLayer, e, Expr(span: e.span, kind: exkCall,
+                            args: @[e.receiver] & bound,
                             callee: Expr(span: e.span, kind: exkVar,
                                          name: e.fieldName)))
   semLayer.markIfaceCall(e, recvT.name, mem.name)
-  ret
+  substituteSelf(mem.fnReturnType, selfT, selfBoundParams(mem))
+
+proc contractMember(tc: TypeChecker, iname, name: string): Decl =
+  ## Interface `iname`'s required fn `name`, or nil.
+  for m in tc.ifaceDecls[iname].ifaceMembers:
+    if m != nil and m.kind == dkFn and m.name == name: return m
+
+proc boundSubst(mem: Decl, recvT, ifaceT: Type): Table[string, Type] =
+  ## A contract member's placeholders as a body bounded by the interface
+  ## reads them: the receiver's letter is the receiver's own T; `Self` and
+  ## every other `Self`-bound letter are the interface.
+  result["Self"] = ifaceT
+  let recvLetter = receiverTypeParam(mem)
+  for g in selfBoundParams(mem):
+    result[g] = if g == recvLetter: recvT else: ifaceT
+
+proc payloadParams(mem: Decl, subs: Table[string, Type]): seq[Param] =
+  ## The contract member's params past the receiver, substituted.
+  for p in mem.fnParams:
+    if p.name != "self":
+      result.add(Param(name: p.name, typ: substType(p.typ, subs), span: p.span))
+
+proc failIfNotReceiverType(params: seq[Param], bound: seq[Expr], recvT: Type,
+                           shown, member: string) =
+  ## A type param is lenient in `compatible` (it stands for any type), so a
+  ## param with the receiver's letter is held to exactly the receiver's T.
+  for i, p in params:
+    if p.typ == nil or p.typ.kind != tkNamed or p.typ.name != recvT.name:
+      continue
+    let at = semLayer.typeFor(bound[i])
+    if at != nil and not isFlexible(at) and
+       not (at.kind == tkNamed and at.name == recvT.name):
+      fail("Type Error: '" & p.name & "' of '" & member & "' must be the " &
+           "receiver's own type " & shown & ", but got " & typeName(at),
+           bound[i].span)
+
+proc asBoundIfaceCall(tc: var TypeChecker, e: Expr, recvT: Type): Type =
+  ## `a.splice {...}` where `a: T` and `fn join[T: AudioSource]`: the
+  ## contract's member, with the receiver's letter (and the receiver's
+  ## `Self`) read as T — one object type, fixed per call of `join` — and
+  ## every other `Self` as the interface. Only the body is checked here; the
+  ## generic fn itself is never emitted. Each instantiation is cloned with T
+  ## replaced and checked again as ordinary code (iface_generics).
+  if recvT == nil or recvT.kind != tkNamed: return nil
+  let iname = tc.ifaceBoundOf(recvT.name)
+  if iname == "": return nil
+  let shown = if typeParamName(recvT) != "": typeParamName(recvT)
+              else: recvT.name
+  let mem = tc.contractMember(iname, e.fieldName)
+  if mem == nil:
+    fail("Type Error: '" & shown & "' is bounded by interface " & iname &
+         ", which declares no '" & e.fieldName & "'", e.span)
+  let subs = boundSubst(mem, recvT, tc.namedType(iname, e.span))
+  let params = payloadParams(mem, subs)
+  if e.dotArg != nil and e.dotArg.kind != exkStruct:
+    fail("Type Error: arguments to '" & e.fieldName &
+         "' must be a struct literal: {name: value, ...}", e.dotArg.span)
+  let bound = tc.bindPayloadFields(mem.name, params, e.dotArg, e.span)
+  failIfNotReceiverType(params, bound, recvT, shown, mem.name)
+  setCall(semLayer, e, Expr(span: e.span, kind: exkCall,
+                            args: @[e.receiver] & bound,
+                            callee: Expr(span: e.span, kind: exkVar,
+                                         name: e.fieldName)))
+  substType(mem.fnReturnType, subs)
 
 proc asInterfaceCall(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## `a.noise` where `a` is an interface value — resolved against the CONTRACT,
@@ -692,6 +790,95 @@ proc asFnByName(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   setCall(semLayer, e, bc)
   tc.synthesize(bc)
 
+proc poolOpNamed(member: string): Option[PoolOpKind] =
+  ## The pool operation a member name spells (`acquire`, `release`, `read`,
+  ## `write`, `addr`), or none for any other member.
+  case member
+  of "acquire": some(poAcquire)
+  of "release": some(poRelease)
+  of "read": some(poRead)
+  of "write": some(poWrite)
+  of "addr": some(poAddr)
+  else: none(PoolOpKind)
+
+proc poolOpArg(tc: var TypeChecker, e: Expr, qualified: string,
+               p: Param): Expr =
+  ## The payload value that feeds param `p`, checked against its type. By
+  ## NAME — `{h: …, value: …}` — and a lone unnamed `{b.value}` still feeds
+  ## a one-param op, as it always has for `release`.
+  let pay = e.dotArg
+  var v: Expr = nil
+  if pay != nil and pay.kind == exkStruct:
+    for f in pay.fields:
+      if f.name == p.name: v = f.value
+    if v == nil and pay.fields.len == 1 and
+       tc.sigOf(qualified).params.len == 1:
+      v = pay.fields[0].value
+  if v == nil:
+    fail("Type Error: '" & qualified & "' needs `" & p.name & "`: `" &
+         qualified & " {" & p.name & ": …}`", e.span)
+  let got = tc.synthesize(v)
+  if got != nil and not tc.compatible(got, p.typ):
+    let why = if p.name == "h": " — a pool's handle belongs to that pool"
+              else: ""
+    fail("Type Error: '" & qualified & "' expects " & p.name & ": " &
+         typeName(p.typ) & " but got " & typeName(got) & why, v.span)
+  v
+
+proc failIfAddrOfCheckedCell(tc: TypeChecker, e: Expr, elem: Type) =
+  ## An extern fills the bytes `addr` hands out, and nothing checks them
+  ## against an invariant (TK-TY31).
+  if elem == nil or elem.kind != tkNamed or
+     elem.name notin tc.typeDeclsByName: return
+  for member in tc.typeDeclsByName[elem.name].typeMembers:
+    if member.kind == dkExpr:
+      fail(dcTyPoolAddrInvariant, "'" & elem.name & "' carries an " &
+           "invariant, so a pool of it has no `addr`: memory an extern fills " &
+           "is never checked against it", e.span)
+
+proc takesParam(sig: FnSig, name: string): bool =
+  ## Does the signature declare a parameter called `name`?
+  for p in sig.params:
+    if p.name == name: return true
+
+proc failIfPoolPayloadStray(e: Expr, qualified: string, sig: FnSig) =
+  ## A payload field no param of the op takes: anything handed to `acquire`,
+  ## or a name `write` / `read` / … does not have.
+  let pay = e.dotArg
+  if sig.params.len == 0 and pay != nil and
+     (pay.kind != exkStruct or pay.fields.len > 0):
+    fail("Type Error: '" & qualified & "' takes nothing", e.span)
+  if pay == nil or pay.kind != exkStruct or sig.params.len < 2: return
+  for f in pay.fields:
+    if not sig.takesParam(f.name):
+      fail("Type Error: '" & qualified & "' has no `" & f.name & "`",
+           f.value.span)
+
+proc operand(args: seq[Expr], i: int): Expr =
+  ## The `i`th argument, or nil when the call has fewer.
+  if i < args.len: args[i] else: nil
+
+proc asPoolOp(tc: var TypeChecker, e: Expr, op: PoolOpKind,
+              qualified: string): Type =
+  ## `Pool.op {...}` becomes an `exkPoolOp` in the semantic layer — its own
+  ## node, so no pass mistakes it for a call to a fn of the member's name and
+  ## no backend looks it up in a list. Its operands are the payload's own
+  ## nodes, so every walk of the tree still reaches them.
+  let sig = tc.sigOf(qualified)
+  failIfPoolPayloadStray(e, qualified, sig)
+  var args: seq[Expr]
+  for p in sig.params: args.add tc.poolOpArg(e, qualified, p)
+  if op == poAddr:
+    # the element type is the one `write` takes
+    let elem = tc.sigOf(e.receiver.refName & ".write").params[1].typ
+    tc.failIfAddrOfCheckedCell(e, elem)
+  let node = Expr(span: e.span, kind: exkPoolOp, poolOp: op,
+                  poolRef: e.receiver, poolHandle: args.operand(0),
+                  poolValue: args.operand(1))
+  setCall(semLayer, e, node)
+  semLayer.setType(node, sig.ret)
+  sig.ret
+
 proc asStaticMemberCall(tc: var TypeChecker, e: Expr): Type =
   ## `Pool.acquire` / `Pool.release {v}` (spec 7.2) — a STATIC member call on a
   ## singleton type, the way `StaticClass.method` reads elsewhere. The receiver
@@ -710,6 +897,9 @@ proc asStaticMemberCall(tc: var TypeChecker, e: Expr): Type =
     return nil
   let qualified = e.receiver.refName & "." & e.fieldName
   if not tc.fnSigs.hasKey(qualified): return nil
+  if e.receiver.kind == exkPoolRef:
+    let op = poolOpNamed(e.fieldName)
+    if op.isSome: return tc.asPoolOp(e, op.get, qualified)
   let extra = unwrapSingleField(e.dotArg)
   # The argument was never checked against the declared param: `Cells.release
   # {42}` passed, and so did releasing one pool's handle into another. The
@@ -746,8 +936,8 @@ proc genericFnSigSig(tc: TypeChecker, name: string, args: seq[Type],
   let base = tc.sigOf(name)
   var params: seq[Param]
   for p in base.params:
-    params.add(Param(name: p.name, typ: substituteType(p.typ, b), span: p.span))
-  (params, substituteType(base.ret, b), newSeq[string](), base.effects,
+    params.add(Param(name: p.name, typ: substType(p.typ, b), span: p.span))
+  (params, substType(base.ret, b), newSeq[string](), base.effects,
    base.resources)
 
 proc namesAFnSig*(tc: TypeChecker, slotT: Type): bool =
@@ -913,6 +1103,7 @@ proc typedFieldForm(tc: var TypeChecker, e: Expr, recvT: Type,
   if result == nil: result = tc.asVariantPayloadField(e, recvT)
   if result == nil: result = tc.asStaticMemberCall(e)
   if result == nil: result = tc.asInterfaceCall(e, recvT)
+  if result == nil: result = tc.asBoundIfaceCall(e, recvT)
   if result == nil: result = tc.asFnByName(e, recvT)
 
 const RegisterWidth = 32
@@ -1020,19 +1211,25 @@ proc registerFieldType(m: Module, regName, fieldName: string, span: Span): Type 
                   name: (if lo == hi: "bool" else: "u32"))
   nil
 
+proc failIfReadOnlyRegister(tc: TypeChecker, regName, fieldName: string,
+                            sp: Span) =
+  ## A WRITE to `regName.fieldName` — by a `..` step or by `=` — refused when
+  ## the field is declared `[read]` (TK-RE01).
+  let acc = registerFieldAccess(tc.module, regName, fieldName)
+  if acc.found and not acc.canWrite:
+    fail(dcReReadOnly,
+         "register field '" & regName & "." & fieldName &
+         "' is declared [read] — writing it is a compile error (spec " &
+         "§8.1). On hardware the write is ignored or has an undocumented " &
+         "side effect", sp)
+
 proc checkRegisterChainWrite(tc: var TypeChecker, e: Expr) =
   ## Check if a chain step tries to write a read-only register field.
   if e == nil or e.kind != exkChain or e.base == nil or e.base.kind != exkRegisterRef:
     return
   for step in e.steps:
     if step.op != coDotDot or step.target == nil: continue
-    let acc = registerFieldAccess(tc.module, e.base.refName, step.target.name)
-    if acc.found and not acc.canWrite:
-      fail(dcReReadOnly,
-           "register field '" & e.base.refName & "." & step.target.name &
-           "' is declared [read] — writing it is a compile error (spec " &
-           "§8.1). On hardware the write is ignored or has an undocumented " &
-           "side effect", step.span)
+    tc.failIfReadOnlyRegister(e.base.refName, step.target.name, step.span)
 
 proc checkRegisterFieldRead(tc: var TypeChecker, e: Expr) =
   ## Check if a field access tries to read a write-only register field.
@@ -1097,7 +1294,8 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   let rawT = tc.synthesize(e.receiver)
   if isWrapper(rawT):
     fail("Type Error: unhandled " & typeName(rawT) &
-         " — pass it to a handling function or propagate with '?' before accessing fields", e.span)
+         " — check `.ok` and read `.value`, or pass it to a handling function, " &
+         "before accessing fields", e.span)
   let recvT = tc.resolve(rawT)
   let fields = tc.fieldsOf(recvT)
   result = tc.typedFieldForm(e, recvT, fields)
@@ -1110,10 +1308,6 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
 # ranges, boolean ops. Mostly small: both operands must agree, and an
 # unhandled !T/?T may not reach an operator at all.
 
-proc isOptional(t: Type): bool =
-  t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
-    t.base.name == "?" and t.args.len == 1
-
 const IntegerTypeNames = ["int", "i8", "i16", "i32", "i64",
                           "u8", "u16", "u32", "u64"]
 const FloatTypeNames = ["float", "f32", "f64"]
@@ -1125,17 +1319,19 @@ type
     ## expression.
 
 proc operands(lt, rt: Type, e: Expr): array[2, Operand] =
+  ## Both sides of binary `e` with their types, so a check can loop over them
+  ## and report against the offending side.
   [(lt, e.left), (rt, e.right)]
 
 proc failIfUnhandled(lt, rt: Type, e: Expr) =
-  ## `and`/`or`/`xor` are strictly boolean — they never unwrap a result. A ?T
-  ## operand is the one exception: in a boolean position it reads as "is
-  ## present", which is a test, not an unwrap. A !T still has to be handled.
-  let boolCtx = e.binOp in {boAnd, boOr, boXor}
+  ## An operator never unwraps a result, and `and`/`or`/`xor` are strictly
+  ## boolean: a `T?` operand is refused like a `T!` one. Presence is tested
+  ## with `.ok` — `if a.ok and b.ok:` (ruled 2026-09-27; a `T?` operand used
+  ## to read as "is present").
   for (t, side) in operands(lt, rt, e):
-    if isWrapper(t) and not (boolCtx and isOptional(t)):
+    if isWrapper(t):
       fail("Type Error: unhandled " & typeName(t) &
-           " — pass it to a handling function or propagate with '?'", side.span)
+           " — check `.ok` first, or pass it to a handling function", side.span)
 
 proc failIfMismatched(tc: TypeChecker, lt, rt: Type, what: string, sp: Span) =
   ## Both sides of an arithmetic or comparison operator must agree.
@@ -1148,6 +1344,7 @@ proc widerOperand(lt, rt: Type): Type =
   if isFlexible(lt): rt else: lt
 
 proc synthArithmetic(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
+  ## `+ - * %`: both operands must agree; the result has their type.
   tc.failIfMismatched(lt, rt, "arithmetic", e.span)
   widerOperand(lt, rt)
 
@@ -1167,11 +1364,14 @@ proc failIfWrongDivKind(lt, rt: Type, e: Expr) =
            side.span)
 
 proc synthDivision(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
+  ## `/i` and `/f`: the operator must match the operand kind (integer or
+  ## float), the operands must agree, and the result has their type.
   failIfWrongDivKind(lt, rt, e)
   tc.failIfMismatched(lt, rt, "division", e.span)
   widerOperand(lt, rt)
 
 proc synthComparison(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
+  ## `== != < > <= >=`: both operands must agree; the result is `bool`.
   tc.failIfMismatched(lt, rt, "comparison", e.span)
   Type(span: e.span, kind: tkNamed, name: "bool")
 
@@ -1184,6 +1384,7 @@ proc synthRange(lt, rt: Type, e: Expr): Type =
   Type(span: e.span, kind: tkNamed, name: "range")
 
 proc boolOpName(op: BinOp): string =
+  ## How a boolean operator is spelled in a diagnostic.
   case op
   of boAnd: "and"
   of boOr: "or"
@@ -1193,13 +1394,15 @@ proc synthBoolOp(lt, rt: Type, e: Expr): Type =
   ## Strictly boolean. `or` is NOT an unwrap operator: a failed result is
   ## handled with .ok / match r.err, never by falling through to a default.
   for (t, side) in operands(lt, rt, e):
-    if isFlexible(t) or isOptional(t): continue  # ?T = "is present"
+    if isFlexible(t): continue
     if not (t != nil and t.kind == tkNamed and t.name == "bool"):
       fail("Type Error: '" & boolOpName(e.binOp) & "' expects bool, got " &
            typeName(t), side.span)
   Type(span: e.span, kind: tkNamed, name: "bool")
 
 proc synthBinary(tc: var TypeChecker, e: Expr): Type =
+  ## Types a binary expression: both operands first, an unhandled `!T`/`?T`
+  ## refused, then the operator family decides the result type.
   let lt = tc.synthesize(e.left)
   let rt = tc.synthesize(e.right)
   failIfUnhandled(lt, rt, e)
@@ -1218,8 +1421,8 @@ proc checkCondition(tc: var TypeChecker, cond: Expr, sp: Span) =
   ## common mistake and gets its own message.
   let condT = tc.synthesize(cond)
   if isWrapper(condT):
-    fail("Type Error: unhandled " & typeName(condT) & " in condition — pass " &
-         "it to a handling function or propagate with '?'", cond.span)
+    fail("Type Error: unhandled " & typeName(condT) & " in condition — test " &
+         "`.ok`, or pass it to a handling function", cond.span)
   if not isFlexible(condT) and
      not tc.compatible(condT, Type(span: sp, kind: tkNamed, name: "bool")):
     fail("Type Error: if condition must be bool, got " & typeName(condT),
@@ -1478,8 +1681,8 @@ proc failIfMutatingLet(tc: var TypeChecker, e: Expr) =
   if not found: return
   let whole = base.id == e.base.id     # `c ..n` vs `c.inner ..n`
   if b.isParam:
-    # One line: `fail` appends "at line L:C", so a multi-line fix sketch would
-    # read with the location dangling off the end of it.
+    # One line, like every other diagnostic: a multi-line fix sketch reads
+    # badly under the driver's `file:line:col:` prefix.
     fail(dcTyParamMutation,
          "cannot mutate " &
          (if whole: "parameter '" & base.name & "'"
@@ -1628,6 +1831,9 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
     tc.checkChainStep(step, e, result, recvT, fields)
 
 proc check(tc: var TypeChecker, e: Expr, expected: Type, what: string) =
+  ## Checking mode: synthesize `e` with `expected` pushed as context, then
+  ## require the result to be compatible with it. `what` names the position
+  ## in the error message.
   if e == nil or expected == nil: return
   var actual: Type
   tc.withExpected(expected):
@@ -1680,6 +1886,9 @@ proc bindNamedParam(tc: TypeChecker, paramName: string, actual: Type,
 proc inferBindings(tc: TypeChecker, declared, actual: Type,
                    generics: seq[string], bindings: var Table[string, Type],
                    fnName: string, sp: Span) =
+  ## Unifies a declared parameter type against the argument's actual type,
+  ## recording what each of `generics` must be in `bindings`. A param bound
+  ## twice to incompatible types is an error.
   if declared == nil or actual == nil: return
   # A value whose type is the ENCLOSING fn's type param binds the parameter
   # to that param by NAME: `fn mk[K, V]({k: K, v: V}) -> Pair[K, V]` builds
@@ -1752,6 +1961,9 @@ proc checkIfaceArg(tc: var TypeChecker, iname: string, argT: Type,
   # `fn outer({a: Animal}) = {a: a} inner` was rejected with "Animal is not an
   # object, so it cannot satisfy Animal", which is both wrong and confusing.
   if objName == iname: return
+  # A value of `T` in `fn join[T: iname]`: some satisfier, fixed per call.
+  # Each instantiation is checked again as a clone, and wraps there.
+  if objName != "" and tc.ifaceBoundOf(objName) == iname: return
   if objName != "" and tc.objDecls.hasKey(objName) and
      iname in tc.objDecls[objName].satisfies:
     semLayer.markWrap(argExpr, objName, iname)
@@ -1844,7 +2056,7 @@ proc substituteGroup(t: Type, selfT: Type, binds: Table[string, Type]): Type =
   ## Both in one place, because every reader of a requirement needs both and
   ## a half-substituted type is a silently wrong one.
   result = substituteSelf(t, selfT)
-  if binds.len > 0 and result != nil: result = substituteType(result, binds)
+  if binds.len > 0 and result != nil: result = substType(result, binds)
 
 proc groupMemberSigText(want: Decl, selfT: Type,
                         binds: Table[string, Type]): string =
@@ -1944,7 +2156,7 @@ proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
   for i in 0 ..< wantParams.len:
     let w = wantParams[i]
     let gp = got.params[i]
-    let gpTyp = substituteType(gp.typ, prov)
+    let gpTyp = substType(gp.typ, prov)
     if w.name != gp.name:
       fail("Conformance Error: '" & typeName(concreteT) & "'s '" &
            want.name & "' names parameter " & $(i + 1) & " '" & gp.name &
@@ -1956,7 +2168,7 @@ proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
            typeName(gpTyp) & ", group '" & groupName & "' requires " &
            typeName(substituteGroup(w.typ, concreteT, binds)), sp)
   let wantRet = substituteGroup(want.fnReturnType, concreteT, binds)
-  let gotRet = substituteType(got.ret, prov)
+  let gotRet = substType(got.ret, prov)
   if wantRet != nil and not tc.compatible(gotRet, wantRet):
     fail("Conformance Error: '" & typeName(concreteT) & "'s '" & want.name &
          "' returns " & typeName(gotRet) & ", group '" & groupName &
@@ -1999,10 +2211,10 @@ proc unifyRequirements(tc: TypeChecker, g: Decl, concreteT: Type,
     for i, w in want.fnParams:
       if i < got.params.len:
         tc.inferBindings(substituteSelf(w.typ, concreteT),
-                         substituteType(got.params[i].typ, prov),
+                         substType(got.params[i].typ, prov),
                          g.groupGenerics, solved, fnName, sp)
     tc.inferBindings(substituteSelf(want.fnReturnType, concreteT),
-                     substituteType(got.ret, prov),
+                     substType(got.ret, prov),
                      g.groupGenerics, solved, fnName, sp)
 
 proc solveGroupArgs(tc: TypeChecker, g: Decl, concreteT: Type,
@@ -2030,6 +2242,28 @@ proc solveGroupArgs(tc: TypeChecker, g: Decl, concreteT: Type,
       binds[gp] = solved[gp]
       outer[outerName] = solved[gp]
 
+proc checkIfaceBound(tc: TypeChecker, iname: string, concreteT: Type,
+                     paramName, fnName: string, sp: Span) =
+  ## `[T: AudioSource]` at a call: T must be one OBJECT that satisfies the
+  ## interface — fixed at compile time, which is what makes a same-type
+  ## member (`splice[A: Self]`) callable in the body. Inside another fn
+  ## bounded by the same interface, T may be that fn's own type param.
+  let n = if concreteT != nil and concreteT.kind == tkNamed: concreteT.name
+          else: ""
+  if tc.objDecls.hasKey(n) and iname in tc.objDecls[n].satisfies: return
+  if tc.ifaceBoundOf(n) == iname: return
+  let why =
+    if n == iname:
+      "an interface value's object type is known only at run time; pass a " &
+      "concrete object, or take the parameter as `" & iname & "` instead of `" &
+      paramName & "`"
+    elif tc.objDecls.hasKey(n):
+      "object '" & n & "' does not declare `satisfies " & iname & "`"
+    else:
+      typeName(concreteT) & " is not an object"
+  fail("Type Error: '" & fnName & "' needs its type parameter '" & paramName &
+       "' to be an object satisfying " & iname & ", but " & why, sp)
+
 proc checkOneGroupBound(tc: TypeChecker, bound: Type, concreteT: Type,
                         paramName, fnName: string,
                         bindings: var Table[string, Type],
@@ -2044,10 +2278,8 @@ proc checkOneGroupBound(tc: TypeChecker, bound: Type, concreteT: Type,
   let groupName = groupNameOf(bound)
   if not tc.groupDecls.hasKey(groupName):
     if tc.ifaceDecls.hasKey(groupName):
-      fail("Type Error: '" & groupName & "' is an interface, not a group " &
-           "(spec §5.5) — a generic bound needs a `group`, declared for " &
-           "exactly this; interfaces stay attached to objects with " &
-           "`satisfies`", sp)
+      tc.checkIfaceBound(groupName, concreteT, paramName, fnName, sp)
+      return
     fail("Type Error: '" & groupName & "' used as a bound on '" & paramName &
          "' is not a declared group", sp)
     return
@@ -2098,7 +2330,7 @@ proc checkGroupBoundsSatisfied(tc: TypeChecker, fnName: string, sig: FnSig,
       # OTHER type params — `[C: Indexable[E], E]`. Bind them the same way the
       # bounded param itself was bound, so the requirement is checked against
       # the element type the call actually supplied rather than the letter E.
-      tc.checkOneGroupBound(substituteType(bound, bindings), concreteT,
+      tc.checkOneGroupBound(substType(bound, bindings), concreteT,
                             reportedName, fnName, bindings, sig.generics, sp)
 
 proc recordCallTypeArgs(tc: TypeChecker, sig: FnSig,
@@ -2139,6 +2371,27 @@ proc recordCallTypeArgs(tc: TypeChecker, sig: FnSig,
     args.add(t)
   setCallTypeArgs(semLayer, e, args)
 
+proc recordIfaceInstance(tc: TypeChecker, fnName: string, sig: FnSig,
+                         bindings: Table[string, Type], e: Expr) =
+  ## A call to `fn join[T: AudioSource]` records what T is here, so
+  ## iface_generics can clone `join` once per object type. Every type param,
+  ## in declaration order; nil where one is unbound.
+  if not tc.groupBoundsOf.hasKey(fnName): return
+  var bounded = false
+  for bs in tc.groupBoundsOf[fnName]:
+    for b in bs:
+      if tc.ifaceDecls.hasKey(groupNameOf(b)): bounded = true
+  if not bounded: return
+  if tc.module.findDecl(dkFn, fnName) == nil:
+    fail("Type Error: '" & fnName & "' has a type parameter bounded by an " &
+         "interface and is declared in another module; such a fn is " &
+         "expanded per object type in the module that declares it, so it " &
+         "can only be called from there for now", e.span)
+  var args: seq[Type]
+  for g in sig.generics: args.add(bindings.getOrDefault(g))
+  ensureId(e)
+  semLayer.ifaceInstances[e.id] = args
+
 proc checkWholeBind(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
                     t: Type, bindings: var Table[string, Type]): bool =
   ## A single-param fn whose param accepts the value WHOLE takes it as-is
@@ -2162,7 +2415,7 @@ proc checkWholeBind(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
   if sig.generics.len > 0:
     tc.inferBindings(param.typ, t, sig.generics, bindings, fnName, arg.span)
     tc.checkGroupBoundsSatisfied(fnName, sig, bindings, arg.span)
-  let expected = substituteType(param.typ, bindings)
+  let expected = substType(param.typ, bindings)
   if tc.compatible(t, expected): return true
   if tc.fieldsOf(t).len == 0:
     fail("Type Error: argument to '" & fnName & "' expects " &
@@ -2204,7 +2457,7 @@ proc substituteParams(tc: var TypeChecker, fnName: string, sig: FnSig,
   if argFields.len > 0:
     tc.checkGroupBoundsSatisfied(fnName, sig, bindings, argFields[0].span)
   for p in sig.params:
-    result.add(Param(name: p.name, typ: substituteType(p.typ, bindings),
+    result.add(Param(name: p.name, typ: substType(p.typ, bindings),
                      span: p.span))
 
 proc payloadFieldExpr(e: Expr, name: string): Expr =
@@ -2387,6 +2640,37 @@ proc claimByType(tc: var TypeChecker, fnName: string, params: seq[Param],
     claimed[candidate] = true
     resolved[pi] = argFields[candidate].name
 
+proc bindPayloadFields(tc: var TypeChecker, fnName: string,
+                       params: seq[Param], argStruct: Expr, sp: Span): seq[Expr] =
+  ## The method form's payload (`b.grow {...}`, `s ..withPort {...}`), bound
+  ## to `params` by the same passes as any call — subset, then by name, then
+  ## by type — and answered as one value per param, in param order.
+  ##
+  ## The method form kept its own by-name loop, so a field meant to claim a
+  ## param BY TYPE was reported missing there while the same payload bound
+  ## against a top-level fn (#20). It skipped what checkNamedField does per
+  ## field, too: the interface wrap and the uninitialised-field read.
+  var argFields: seq[ArgField]
+  if argStruct != nil:
+    var hints = initTable[string, Type]()
+    for p in params: hints[p.name] = p.typ
+    tc.withFieldHints(hints):
+      for f in argStruct.fields:
+        argFields.add((f.name, tc.synthFieldValue(f), f.value.span))
+  # The claim passes read the payload off a call's single argument.
+  let call = Expr(span: sp, kind: exkCall,
+                  args: (if argStruct != nil: @[argStruct] else: @[]))
+  var claimed = newSeq[bool](argFields.len)
+  var resolved = newSeq[string](params.len)
+  let pending = tc.claimByName(fnName, params, argFields, call, claimed, resolved)
+  tc.claimByType(fnName, params, argFields, call, pending, claimed, resolved)
+  for pi, p in params:
+    if resolved[pi] == "":
+      # A `Self` param past the receiver's slot: no pass claims one.
+      fail("Type Error: call to '" & fnName & "' is missing required field '" &
+           p.name & ": " & typeName(p.typ) & "'", sp)
+    result.add payloadFieldExpr(call, resolved[pi])
+
 proc checkPayloadCall(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
                       bindings: var Table[string, Type]) =
   ## A call whose single argument is a payload: its fields satisfy the params.
@@ -2429,6 +2713,9 @@ proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
 
 # === CALL SYNTHESIS ========================================================
 proc checkFnValueCall(tc: var TypeChecker, fnT: Type, e: Expr): Type =
+  ## A call through a fn-typed VALUE: its parameter list is rebuilt from the
+  ## tkFunc (names where it has them, `argN` otherwise) and checked like any
+  ## call. The result is the fn type's return.
   if fnT == nil or fnT.kind != tkFunc:
     fail("Type Error: expression is not callable", e.span)
   var params: seq[Param]
@@ -2629,7 +2916,7 @@ proc inferConstructionArgs(tc: var TypeChecker, e: Expr, calleeName: string,
     var want: Type = nil
     for df in declFields:
       if df.name == f.name:
-        want = substituteType(df.typ, bindings)
+        want = substType(df.typ, bindings)
         break
     var ft: Type
     tc.withExpected(want):
@@ -2701,19 +2988,20 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
          e.span.line, e.span.col)
   var bindings = initTable[string, Type]()
   tc.checkCallArgs(calleeName, sig, e, bindings)
-  # A fn with no `->` declares no return type; its body is statements, so a
-  # call to it yields unit. Without this the resolved call answers nil and
-  # falls into synthCall's undeclared-callee error — the callee IS declared,
-  # only its result type is absent.
-  let ret = if sig.ret == nil: Type(span: e.span, kind: tkNamed, name: "unit")
+  # A fn with no `->` returns `void` — exactly as if it said `-> void` (ruled
+  # 2026-09-27, #5). Without this the resolved call answers nil and falls
+  # into synthCall's undeclared-callee error — the callee IS declared, only
+  # its result type is omitted.
+  let ret = if sig.ret == nil: Type(span: e.span, kind: tkNamed, name: "void")
             else: sig.ret
   if sig.generics.len == 0: return ret
   tc.recordCallTypeArgs(sig, bindings, e)
+  tc.recordIfaceInstance(calleeName, sig, bindings, e)
   for g in sig.generics:
     if not bindings.hasKey(g):
       fail("Type Error: cannot infer generic parameter '" & g & "' of call to '" &
            calleeName & "'", e.span)
-  substituteType(ret, bindings)
+  substType(ret, bindings)
 
 proc viaTransitionChain(e: Expr): bool =
   ## Is this construction fed by a transitionTo chain? That is a transition,
@@ -2769,6 +3057,8 @@ proc failIfChainAfterPayloadCall(tc: TypeChecker, e: Expr) =
        "first, not more dots on the same line.", e.span)
 
 proc isRegistryRaiseCall(e: Expr): bool =
+  ## Is `e` `{payload} Registry.raise Event` — a call whose callee is the
+  ## raise of a declared registry event?
   e != nil and e.callee != nil and e.callee.kind == exkCall and
     e.callee.callee != nil and e.callee.callee.kind == exkVar and
     registryEventOwner(e.callee.callee.name) != ""
@@ -3016,6 +3306,7 @@ proc payloadCarriesTypeParam(tc: var TypeChecker, e: Expr, tp: string): bool =
   ## `[C: Indexable[E]]` is the group's `at` only because `c` is the C, and
   ## an unrelated call to a same-named concrete fn must not be hijacked.
   proc isParam(t: Type, tp: string): bool =
+    ## Is `t` the type param `tp`, spelled either way?
     # A type param reaches here spelled `<typeparam:C>`, not `C` — the same
     # sentinel inferBindings reads through typeParamName.
     t != nil and (typeParamName(t) == tp or
@@ -3244,6 +3535,7 @@ proc synthVar(tc: var TypeChecker, e: Expr): Type =
   let (found, b) = tc.lookup(e.name)
   if found:
     tc.markUsed(e.name)
+    if tc.resolvesToOwnerField(e.name): semLayer.markOwnerField(e)
     # A BARE read hands the whole value somewhere — returned, passed on,
     # discarded — so both questions travel with it. Reading it as the
     # receiver of `.ok`/`.value` is not that, and asResultIntrospection says
@@ -3661,6 +3953,24 @@ proc checkTransition(tc: var TypeChecker, e: Expr, targetT: Type) =
   tc.checkTransSet(tn, cur, next, e.span)
   tc.varVariants[e.target.name] = next
 
+proc isRegisterField(e: Expr): bool =
+  ## `REG.FIELD` — a field of a `register` declaration.
+  e != nil and e.kind == exkField and e.receiver != nil and
+    e.receiver.kind == exkRegisterRef
+
+proc synthAssignTarget(tc: var TypeChecker, target: Expr): Type =
+  ## The type an assignment writes into. A register field is WRITTEN here,
+  ## so it is held to `[read]` (TK-RE01) — not synthesized as a field access,
+  ## which checks it as a READ and refused `CTRL.GO = true` on a `[write]`
+  ## field while letting `[read]` ones be assigned.
+  if not isRegisterField(target): return tc.synthesize(target)
+  tc.failIfReadOnlyRegister(target.receiver.refName, target.fieldName,
+                            target.span)
+  result = registerFieldType(tc.module, target.receiver.refName,
+                             target.fieldName, target.span)
+  if result == nil: return tc.synthesize(target)   # no such field: its error
+  setType(semLayer, target, result)
+
 proc synthReassign(tc: var TypeChecker, e: Expr) =
   ## Assignment to an existing binding.
   tc.failIfTargetUnbound(e)
@@ -3673,7 +3983,7 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
   if e.target != nil and e.target.kind == exkField and
      e.target.receiver != nil and e.target.receiver.kind == exkVar:
     tc.clearUninit(e.target.receiver.name, e.target.fieldName)
-  let targetT = tc.synthesize(e.target)
+  let targetT = tc.synthAssignTarget(e.target)
   let valT = tc.synthAssignVal(e, targetT)
   if not tc.compatible(valT, targetT):
     fail("Type Error: cannot assign " & typeName(valT) & " to " &
@@ -3749,12 +4059,23 @@ proc failIfReturnNeedsValue(tc: TypeChecker, e: Expr) =
        "zero-inits. Fix: return a value, or declare `-> ?" & rt &
        "` if \"nothing to return\" is a real state for this fn", e.span)
 
+proc failValueWithoutReturnType(tc: TypeChecker, e: Expr) =
+  ## `return x` in a body with no `-> T`. Wrong whatever omitting `->` comes
+  ## to mean (void, or a required annotation — a ruling still open on #5):
+  ## either way no caller receives the value.
+  let who = if tc.currentFn.len > 0: "'" & tc.currentFn & "'" else: "this body"
+  fail(dcTyReturnWithoutType,
+       who & " declares no return type, so `return` cannot carry a value. " &
+       "Fix: declare it (`-> T`), or return nothing", e.span)
+
 proc synthReturn(tc: var TypeChecker, e: Expr): Type =
-  ## A return checks its value against the fn's declared return type.
+  ## A return checks its value against the fn's declared return type; a body
+  ## that declares none takes no value at all.
   if e.returnVal != nil and tc.currentRet != nil:
     tc.checkReturnValue(e)
   elif e.returnVal != nil:
     discard tc.synthesize(e.returnVal)
+    tc.failValueWithoutReturnType(e)
   else:
     tc.failIfReturnNeedsValue(e)
   unitType(e.span)
@@ -4019,6 +4340,9 @@ proc synthQualified(tc: var TypeChecker, e: Expr): Type =
   Type(span: e.span, kind: tkFunc, params: ps, paramNames: names, result: sig.ret)
 
 proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
+  ## The checker's expression dispatch: one `synth*` per ExprKind, no `else`,
+  ## so a new kind fails to compile here until it is typed. Kinds only
+  ## lowering builds are typed defensively rather than crashing.
   case e.kind
   of exkLit: tc.synthLit(e)
   of exkVar: tc.synthVar(e)
@@ -4065,6 +4389,10 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # of the interface call it replaced.
     discard tc.synthesize(e.dispatchRecv)
     semLayer.typeFor(e)
+  of exkPoolOp:
+    # Stamped by the checker (asPoolOp) in place of `Pool.op {...}`; its
+    # type was recorded when it was built.
+    semLayer.typeFor(e)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum
     # variant (synthBareVariant), named after the declaration itself. Field
@@ -4079,6 +4407,8 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
 # else is indexing (`xs[i]`). The parser deliberately does not guess.
 
 proc typeAppFromBracket(tc: var TypeChecker, e: Expr, name: string): Type =
+  ## `Name[a, b]` for a declared type: a type application, with its arity
+  ## checked against the declaration's generic params.
   # `Name[a, b]` where Name is declared — the type-application form. Argument
   # arity is checked against the decl's generic params when it has any;
   # value arguments (`Array[128, u8]`) carry sizes and are not resolved here.
@@ -4112,6 +4442,8 @@ proc seqElem(recvT: Type): Type =
 
 proc indexCallee(tc: var TypeChecker, recvT: Type, fnName: string,
                  sp: Span): Expr =
+  ## The runtime intrinsic an index or index-assignment calls: `tuckAt`/
+  ## `tuckSetAt` for a Seq, the fixed-array versions for an `Array[N, T]`.
   # A Seq index lowers to a RESERVED RUNTIME INTRINSIC, not to a call into
   # std/seq. `tuckAt`/`tuckSetAt` are always linked (tuck_rt is imported by
   # every emitted file, unconditionally), so the sugar works whether or not
@@ -4139,11 +4471,11 @@ proc indexCallee(tc: var TypeChecker, recvT: Type, fnName: string,
          fnName & "' for it", sp)
   Expr(span: sp, kind: exkVar, name: fnName)
 
-# Indexing a VALUE: `at` when value is nil, `setAt` when it is not. The
-# resolved call is stamped as a side node (the house idiom — see exkField's
-# callNode) so the source node survives; codegen emits the stamped call.
 proc resolveIndex(tc: var TypeChecker, br: Expr, value: Expr,
                   recvT: Type, sp: Span): Expr =
+  ## Indexing a VALUE: `at` when value is nil, `setAt` when it is not. The
+  ## resolved call is stamped as a side node (the house idiom — see exkField's
+  ## callNode) so the source node survives; codegen emits the stamped call.
   if br.brArgs.len != 1:
     fail("Type Error: indexing takes exactly one index, got " &
          $br.brArgs.len, sp)
@@ -4159,6 +4491,9 @@ proc resolveIndex(tc: var TypeChecker, br: Expr, value: Expr,
        args: @[Expr(span: sp, kind: exkStruct, fields: fields)])
 
 proc synthBracket(tc: var TypeChecker, e: Expr): Type =
+  ## `x[...]`: a type application when `x` names a declared type, else an
+  ## index — stamped with its resolved intrinsic call and typed off the
+  ## receiver's element type.
   if e.brReceiver != nil and e.brReceiver.kind == exkVar and
      tc.typeDecls.hasKey(e.brReceiver.name):
     return tc.typeAppFromBracket(e, e.brReceiver.name)
@@ -4205,6 +4540,8 @@ proc failIfMutatingIndexTarget(tc: var TypeChecker, e: Expr) =
          " — it was declared with 'let'; use 'var'", e.span)
 
 proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type =
+  ## `x[i] = v`: refuses a type application or an immutable target, stamps the
+  ## resolved setter call, checks `v` against the element type, and is `void`.
   let br = e.brTarget
   if br.brReceiver != nil and br.brReceiver.kind == exkVar and
      tc.typeDecls.hasKey(br.brReceiver.name):
@@ -4223,6 +4560,8 @@ proc synthBracketAssign(tc: var TypeChecker, e: Expr): Type =
   tc.synthesize(ac)
 
 proc synthesize(tc: var TypeChecker, e: Expr): Type =
+  ## Synthesis mode: the type of `e`, recorded in the semantic layer (with any
+  ## `<uninit>` marker stripped from the stored copy) and returned.
   if e == nil: return afterErrorType(Span())
   result = tc.synthesizeKind(e)
   # Two different consumers, two different answers. The RETURNED type keeps
@@ -4282,9 +4621,9 @@ proc bindParam(tc: var TypeChecker, p: Param, gsub: Table[string, Type]) =
   let (shadowsMutable, outer) = tc.lookup(p.name)
   let inheritsMutable = shadowsMutable and outer.isVar and not outer.isParam
   if inheritsMutable:
-    tc.bindName(p.name, substituteType(p.typ, gsub), true)
+    tc.bindName(p.name, substType(p.typ, gsub), true)
   else:
-    tc.bindName(p.name, substituteType(p.typ, gsub), false, isParam = true)
+    tc.bindName(p.name, substType(p.typ, gsub), false, isParam = true)
   # spec 4.4b: a param of a tracked type enters at the FULL variant set —
   # transitions on it need `match` narrowing first.
   let tn = tc.transType(p.typ)
@@ -4296,7 +4635,7 @@ proc bindInput(tc: var TypeChecker, params: seq[Param],
   if params.len == 0: return
   var inputFields: seq[FieldDef]
   for p in params:
-    inputFields.add(FieldDef(name: p.name, typ: substituteType(p.typ, gsub),
+    inputFields.add(FieldDef(name: p.name, typ: substType(p.typ, gsub),
                              span: p.span))
   tc.bindName("input", Type(span: params[0].span, kind: tkRecord,
                             fields: inputFields), false)
@@ -4389,11 +4728,10 @@ proc checkBoundNames(tc: TypeChecker, d: Decl) =
     for bound in d.fnGenericBounds[i]:
       let n = groupNameOf(bound)
       if tc.groupDecls.hasKey(n): continue
-      if tc.ifaceDecls.hasKey(n):
-        fail("Type Error: '" & n & "' is an interface, not a group " &
-             "(spec §5.5) — a generic bound needs a `group`, declared for " &
-             "exactly this; interfaces stay attached to objects with " &
-             "`satisfies`", d.span)
+      if tc.ifaceDecls.hasKey(n) and d.fnGenericBounds[i].len > 1:
+        fail("Type Error: '" & g & "' is bounded by interface '" & n &
+             "' and by something else; an interface bound stands alone " &
+             "(`[" & g & ": " & n & "]`)", d.span)
 
 proc checkFnDecl(tc: var TypeChecker, d: Decl) =
   ## A decision table is checked as a table; anything else as a fn body.
@@ -4417,7 +4755,8 @@ proc checkObjectDecl(tc: var TypeChecker, d: Decl) =
   tc.pushScope()
   for f in d.objFields: tc.bindName(f.name, f.typ, true)
   tc.bindName("self", tc.namedType(d.name, d.span), true)
-  for m in d.objMembers: tc.checkDecl(m)
+  tc.withOwnerFields:
+    for m in d.objMembers: tc.checkDecl(m)
   tc.popScope()
 
 proc checkHandler(tc: var TypeChecker, h: Decl) =
@@ -4495,7 +4834,8 @@ proc checkInvariants(tc: var TypeChecker, d: Decl) =
   for member in d.typeMembers:
     if member == nil or member.kind != dkExpr or member.expr == nil: continue
     tc.failIfUndeclaredName(member.expr, d.name)
-    let t = tc.synthesize(member.expr)
+    var t: Type
+    tc.withOwnerFields: t = tc.synthesize(member.expr)
     if not (t.kind == tkNamed and t.name == "bool"):
       fail(dcIvNotBool,
            "invariant on '" & d.name & "' must be a bool, got " &
@@ -4545,6 +4885,10 @@ proc checkArenaAttrs(m: Module, d: Decl) =
   ## from the dkType arm rather than an arm of its own.
   if d.typeBody == nil: return
   for attr in d.typeBody.attrs:
+    if attr.name == ArenaMarker:
+      warn(dcMeArenaInert, "arena '" & d.name & "' is not implemented yet: " &
+           "its body is discarded, and nothing in it is checked or emitted",
+           attr.span.line, attr.span.col)
     if attr.name != "size": continue
     let got = constIntOf(m, attr.value)
     if got.isNone:
@@ -4659,10 +5003,14 @@ proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   tc.pushScope()
   for f in d.actorFields: tc.bindName(f.name, f.typ, true)
   tc.bindName("self", tc.namedType(d.name, d.span), true)
-  for h in d.handlers: tc.checkHandler(h)
+  tc.withOwnerFields:
+    for h in d.handlers: tc.checkHandler(h)
   tc.popScope()
 
 proc checkDecl(tc: var TypeChecker, d: Decl) =
+  ## The checker's declaration dispatch. Every DeclKind is named, so a new one
+  ## fails to compile here until it is decided; kinds whose content the
+  ## collect phase already checked are no-ops.
   if d == nil: return
   case d.kind
   of dkFn: tc.checkFnDecl(d)
@@ -4705,6 +5053,8 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     discard                 # recorded by the collect phase; no body to check
 
 proc sigStr(d: Decl): string =
+  ## One fn's signature as the pending report prints it:
+  ## `name({a: T, ...}) -> R`.
   var parts: seq[string]
   for p in d.fnParams:
     parts.add(p.name & ": " & typeName(p.typ))
@@ -4713,6 +5063,8 @@ proc sigStr(d: Decl): string =
     result.add(" -> " & typeName(d.fnReturnType))
 
 proc collectPending(decls: seq[Decl], acc: var seq[string]) =
+  ## Appends every `pending` fn in `decls`, members of objects, blocks and
+  ## actors included, as a signature line with its source line.
   for d in decls:
     if d == nil: continue
     case d.kind
@@ -4724,12 +5076,14 @@ proc collectPending(decls: seq[Decl], acc: var seq[string]) =
     of dkActor: collectPending(d.handlers, acc)
     else: discard
 
-# The compile-time TODO list: every debug build prints what is still unimplemented.
 proc pendingReport*(m: Module): seq[string] =
+  ## The compile-time TODO list: every debug build prints what is still unimplemented.
+  ## One line per `pending` fn in `m`, members of objects, blocks and actors included.
   collectPending(m.decls, result)
 
-# Same line format as pendingReport, from an index SigInfo (no AST needed).
 proc sigLine*(si: SigInfo): string =
+  ## Same line format as pendingReport, from an index SigInfo (no AST needed),
+  ## so a cached import's pending fns are listed without re-parsing it.
   var parts: seq[string]
   for p in si.params:
     parts.add(p.name & ": " & typeName(p.typ))
@@ -4808,6 +5162,10 @@ proc typecheckModule*(m: Module,
                       externBounds = initTable[string, seq[seq[Type]]](),
                       externAmbiguous = initTable[string, seq[string]](),
                       externBareOwner = initTable[string, string]()): seq[string] {.discardable.} =
+  ## Checks one module against what its imports export (the `extern*`
+  ## tables): collect signatures, bind consts, check every declaration, then
+  ## the module-level passes. Returns the dropped-result sites the `errors`
+  ## policy routes to its handler (always empty under `strict`, which fails).
   var tc = newModuleChecker(m, externSigs, externPending)
   # An imported `fnsig` is a signature TYPE, not just another callable. Seed
   # that before collectSigs so a slot typed `Mapper[int, str]` from another
@@ -4854,6 +5212,8 @@ proc typecheckModule*(m: Module,
   for d in m.decls:
     failIfTopLevelStatement(d)
     tc.checkDecl(d)
+  # After checkDecl: it reads the pool ops the checker has now stamped.
+  checkCellAddresses(semLayer, m, tc.externFnNames())
   # INFERRED types get their declaration edge too, now that every expression
   # has been typed. resolveTypeNames above only walks types MENTIONED IN
   # DECLARATIONS; the types the checker synthesizes for expressions never
@@ -4865,9 +5225,9 @@ proc typecheckModule*(m: Module,
   tc.resolveInferredTypes()
   tc.reportUnhandled(m)
 
-# Signature export for the .tuck-cache index: same collection walk the
-# checker uses (nested fns in objects/mixins/actors included).
 proc moduleSigs*(m: Module): seq[SigInfo] =
+  ## Signature export for the .tuck-cache index: same collection walk the
+  ## checker uses (nested fns in objects/mixins/actors included).
   var tc = TypeChecker(module: m,
                        fnSigs: initTable[string, seq[FnSig]](),
                        typeDecls: initTable[string, Type](),
@@ -4978,6 +5338,8 @@ proc collectProgramSigs(mods: seq[tuple[name, path: string, m: Module]]): Progra
     # directly and still sees everything it declared.
     let (restricted, allowed) = exportedNames(m)
     proc visible(n: string): bool =
+      ## Does `n` leave this module: everything when there is no `public:` list,
+      ## else only the listed names (and anything already qualified).
       not restricted or n in allowed or "::" in n
     var sigs: Table[string, seq[FnSig]]
     for n, sg in tc.fnSigs:
@@ -5064,8 +5426,8 @@ proc importScopeFor(sigs: ProgramSigs, preSigs: Table[string, seq[SigInfo]],
     if sigs.byMod.hasKey(imp): result.importChecked(sigs, imp)
     else: result.importPrebuilt(preSigs, imp)
 
-proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
-                       preSigs = initTable[string, seq[SigInfo]]()): seq[string] {.discardable.} =
+proc checkProgramOnce(mods: seq[tuple[name, path: string, m: Module]],
+                      preSigs: Table[string, seq[SigInfo]]): seq[string] =
   ## Signatures are gathered across the whole program first, then each module
   ## is checked against what its imports export.
   resetResolution()  # one semantic layer per program
@@ -5081,3 +5443,44 @@ proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
                                scope.ambiguous, scope.bareOwner)
     except SemanticError as err:
       raise withModulePrefix(err, path)
+
+const MaxExpansionRounds = 16
+  ## Rounds of interface-bounded generic expansion (iface_generics) before
+  ## the checker gives up: each round expands the calls one more level of
+  ## generic-calls-generic deep, so only a type that grows without end — a
+  ## fn calling itself on a bigger type — needs more.
+
+proc typecheckExpanding*(mods: var seq[tuple[name, path: string, m: Module]],
+                         preSigs = initTable[string, seq[SigInfo]]()): seq[string] {.discardable.} =
+  ## Check the whole program. When it calls a fn bounded by an interface
+  ## (`fn join[T: AudioSource]`), each call is pointed at a clone of the fn
+  ## for its object type and the program is checked AGAIN, until a round
+  ## expands nothing; then the generic originals are dropped
+  ## (iface_generics). A program with no such fn is checked exactly once.
+  ##
+  ## `var`: expansion adds and drops declarations, and `Module` is a value —
+  ## the caller must see the module lists this leaves.
+  result = checkProgramOnce(mods, preSigs)
+  var rounds = 0
+  while true:
+    var expanded = false
+    for i in 0 ..< mods.len:
+      if expandIfaceGenerics(semLayer, mods[i].m): expanded = true
+    if not expanded: break
+    inc rounds
+    if rounds > MaxExpansionRounds:
+      fail("Type Error: expanding interface-bounded generic fns did not " &
+           "settle after " & $MaxExpansionRounds & " rounds — a fn calls " &
+           "itself (or another) on a type that keeps growing",
+           Span(line: 1, col: 1))
+    for (name, path, m) in mods: fillIds(m)
+    result = checkProgramOnce(mods, preSigs)
+  for i in 0 ..< mods.len: dropIfaceGenerics(mods[i].m)
+
+proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
+                       preSigs = initTable[string, seq[SigInfo]]()): seq[string] {.discardable.} =
+  ## `typecheckExpanding` on a copy of the module list, for a caller that
+  ## emits nothing afterwards (the benches). The driver uses
+  ## `typecheckExpanding`, since it must emit the expanded declarations.
+  var copy = mods
+  typecheckExpanding(copy, preSigs)

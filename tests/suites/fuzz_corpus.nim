@@ -17,6 +17,8 @@ import std/[os, algorithm, strutils]
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the fuzz-corpus replay: every saved input is rejected with a
+  ## diagnostic or accepted, never a crash.
   # `parse` rather than `check`: the corpus targets the FRONT END, and a
   # malformed file has nothing for the typechecker to say anyway.
   var files: seq[string]

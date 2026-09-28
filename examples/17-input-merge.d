@@ -10,27 +10,27 @@ struct TRec_title_duration_playSpeed_volume_speed(T_title, T_duration, T_playSpe
     T_speed speed;
 }
 
-struct tuck_type_Episode {
+struct tuckˑtypeˑEpisode {
     string title;
     uint duration;
     double playSpeed;
 }
 
-struct tuck_type_PlayerPrefs {
+struct tuckˑtypeˑPlayerPrefs {
     long volume;
     double speed;
 }
 
-string tuck_fn_describe(string title, long volume) {
+string tuckˑfnˑdescribe(string title, long volume) {
     return title;
 }
 
-string tuck_fn_header(tuck_type_Episode episode, long n) {
+string tuckˑfnˑheader(tuckˑtypeˑEpisode episode, long n) {
     return episode.title;
 }
 
-string tuck_fn_play(tuck_type_Episode episode, tuck_type_PlayerPrefs prefs) {
-    TRec_title_duration_playSpeed_volume_speed!(string, uint, double, long, double) tuck_ctx = TRec_title_duration_playSpeed_volume_speed!(string, uint, double, long, double)(title: episode.title, duration: episode.duration, playSpeed: episode.playSpeed, volume: prefs.volume, speed: prefs.speed);
-    return tuck_fn_describe(tuck_ctx.title, tuck_ctx.volume);
+string tuckˑfnˑplay(tuckˑtypeˑEpisode episode, tuckˑtypeˑPlayerPrefs prefs) {
+    TRec_title_duration_playSpeed_volume_speed!(string, uint, double, long, double) tuckˑvˑctx = TRec_title_duration_playSpeed_volume_speed!(string, uint, double, long, double)(title: episode.title, duration: episode.duration, playSpeed: episode.playSpeed, volume: prefs.volume, speed: prefs.speed);
+    return tuckˑfnˑdescribe(tuckˑvˑctx.title, tuckˑvˑctx.volume);
 }
 

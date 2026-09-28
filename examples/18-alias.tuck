@@ -9,7 +9,7 @@ fn playTrack({id: int, name: str, length: int}) -> void:
 
 fn main() -> void:
   let externalTrack = {trackId: 42, title: "Slow Jam", durationMs: 215000}
-  let playerInput = externalTrack alias(trackId: id, title: name, durationMs: length)
+  let playerInput = externalTrack alias(trackId -> id, title -> name, durationMs -> length)
   # Now the local function can consume the normalized struct shape.
   playerInput playTrack
   return

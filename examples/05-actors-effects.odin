@@ -12,24 +12,24 @@ TRec_feed :: struct ($T_feed: typeid) {
 	feed: T_feed,
 }
 
-tuck_type_Feed :: struct {
+tuckˑtypeˑFeed :: struct {
 	title: string,
 	episodeCount: int,
 }
 
-tuck_type_CounterMsgKind :: enum { msgIncrement, msgReset }
-tuck_type_CounterMsg :: struct {
-	tuckTag: tuck_type_CounterMsgKind,
+tuckˑactorˑCounterMsgKind :: enum { msgIncrement, msgReset }
+tuckˑactorˑCounterMsg :: struct {
+	tuckTag: tuckˑactorˑCounterMsgKind,
 	n: int,
 }
-tuck_type_Counter :: struct {
+tuckˑactorˑCounter :: struct {
 	count: int,
-	mailbox: rt.Mailbox(tuck_type_CounterMsg, 8),
+	mailbox: rt.Mailbox(tuckˑactorˑCounterMsg, 8),
 }
 
-tuck_type_CounterSingleton: tuck_type_Counter
+tuckˑactorˑCounterSingleton: tuckˑactorˑCounter
 
-handleMsg_tuck_type_Counter :: proc(self: ^tuck_type_Counter, msg: tuck_type_CounterMsg) {
+handleMsg_tuckˑactorˑCounter :: proc(self: ^tuckˑactorˑCounter, msg: tuckˑactorˑCounterMsg) {
 	switch msg.tuckTag {
 	case .msgIncrement:
 		n := msg.n
@@ -39,38 +39,38 @@ handleMsg_tuck_type_Counter :: proc(self: ^tuck_type_Counter, msg: tuck_type_Cou
 	}
 }
 
-tuck_type_CounterSlot: rawptr
+tuckˑactorˑCounterSlot: rawptr
 
-drain_tuck_type_Counter :: proc() -> bool {
+drain_tuckˑactorˑCounter :: proc() -> bool {
 	didWork := false
-	batch, n := rt.takeBatch(&tuck_type_CounterSingleton.mailbox)
+	batch, n := rt.takeBatch(&tuckˑactorˑCounterSingleton.mailbox)
 	for i in 0 ..< n {
-		handleMsg_tuck_type_Counter(&tuck_type_CounterSingleton, batch[i])
+		handleMsg_tuckˑactorˑCounter(&tuckˑactorˑCounterSingleton, batch[i])
 		rt.tuckCheckWaiters()
 		didWork = true
 	}
 	return didWork
 }
 
-sendIncrement_tuck_type_Counter :: proc(self: ^tuck_type_Counter, n: int) {
-	_ = rt.enqueue(&self.mailbox, tuck_type_CounterMsg{tuckTag = .msgIncrement, n = n})
-	rt.tuckNotifySend(tuck_type_CounterSlot)
+sendIncrement_tuckˑactorˑCounter :: proc(self: ^tuckˑactorˑCounter, n: int) {
+	_ = rt.enqueue(&self.mailbox, tuckˑactorˑCounterMsg{tuckTag = .msgIncrement, n = n})
+	rt.tuckNotifySend(tuckˑactorˑCounterSlot)
 }
 
-sendReset_tuck_type_Counter :: proc(self: ^tuck_type_Counter) {
-	_ = rt.enqueue(&self.mailbox, tuck_type_CounterMsg{tuckTag = .msgReset})
-	rt.tuckNotifySend(tuck_type_CounterSlot)
+sendReset_tuckˑactorˑCounter :: proc(self: ^tuckˑactorˑCounter) {
+	_ = rt.enqueue(&self.mailbox, tuckˑactorˑCounterMsg{tuckTag = .msgReset})
+	rt.tuckNotifySend(tuckˑactorˑCounterSlot)
 }
 
-tuck_fn_readSensor :: proc(payload: $T) -> rt.TuckResult(TRec_value(u16)) {
-	fmt.println("TUCK PENDING: tuck_fn_readSensor invoked (not implemented)")
+tuckˑfnˑreadSensor :: proc(payload: $T) -> rt.TuckResult(TRec_value(u16)) {
+	fmt.println("TUCK PENDING: readSensor invoked (not implemented)")
 	return {}
 }
 
-tuck_type_PodcastApp :: struct {
+tuckˑobjectˑPodcastApp :: struct {
 }
 
-fetchFeed :: proc(payload: $T) -> rt.TuckResult(TRec_feed(tuck_type_Feed)) {
+fetchFeed :: proc(payload: $T) -> rt.TuckResult(TRec_feed(tuckˑtypeˑFeed)) {
 	fmt.println("TUCK PENDING: fetchFeed invoked (not implemented)")
 	return {}
 }
@@ -79,9 +79,9 @@ fetchFeed :: proc(payload: $T) -> rt.TuckResult(TRec_feed(tuck_type_Feed)) {
 
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
-	tuck_type_CounterSingleton.count = 0
+	tuckˑactorˑCounterSingleton.count = 0
 	rt.tuckAsyncInit()
-	tuck_type_CounterSlot = rt.tuckStartActor(drain_tuck_type_Counter)
+	tuckˑactorˑCounterSlot = rt.tuckStartActor(drain_tuckˑactorˑCounter)
 	rt.tuckDrainActors()
 	rt.tuckTrackCheck()
 }

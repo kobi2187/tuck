@@ -8,10 +8,10 @@ TRec_body :: struct ($T_body: typeid) {
 	body: T_body,
 }
 
-tuck_type_HttpError :: enum { Unreachable, BadStatus }
+tuckˑtypeˑHttpError :: enum { Unreachable, BadStatus }
 
-tuck_fn_get :: proc(payload: $T) -> rt.TuckResult(TRec_body(string)) {
-	fmt.println("TUCK PENDING: tuck_fn_get invoked (not implemented)")
+tuckˑfnˑget :: proc(payload: $T) -> rt.TuckResult(TRec_body(string)) {
+	fmt.println("TUCK PENDING: get invoked (not implemented)")
 	return {}
 }
 

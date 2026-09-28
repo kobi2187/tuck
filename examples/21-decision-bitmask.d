@@ -2,10 +2,10 @@ module _21_decision_bitmask;
 
 import rt = tuck_rt;
 
-enum tuck_type_Priority { High, Low }
+enum tuckˑtypeˑPriority { High, Low }
 
-long tuck_fn_route(tuck_type_Priority priority, bool encrypted) {
-    switch (((cast(long)(priority) * 2L) + cast(long)(encrypted))) {
+long tuckˑdecisionˑroute(tuckˑtypeˑPriority urgency, bool encrypted) {
+    switch (((cast(long)(urgency) * 2L) + cast(long)(encrypted))) {
     case 0:
         return 2L;
     case 1:

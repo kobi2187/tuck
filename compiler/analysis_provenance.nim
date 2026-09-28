@@ -44,7 +44,6 @@
 import ast, tables, sets, os, strutils, sequtils
 import resolution
 import ast_query
-from lowering import getFieldsForType
 import twin_shape
 import ssa_ir, ssa_cache
 
@@ -56,11 +55,15 @@ const MaxRounds = 8
 
 type
   Origin* = enum
+    ## Where a value's storage came from, as a three-level lattice ordered
+    ## fresh < aliased < unknown; joins take the maximum.
     oFresh      ## allocated in this body, or built only out of fresh things
     oAliased    ## may alias a parameter, so the caller may still hold it
     oUnknown    ## not determined; read exactly as oAliased
 
   Cell* = object
+    ## The provenance of one storage slot: its origin, which allocation it is
+    ## when fresh, and which parameter slot it is when directly aliased.
     origin*: Origin
     token*: NodeId  ## WHICH allocation this is. Two fields of one returned
                     ## record can both be fresh and still be the SAME buffer
@@ -74,6 +77,8 @@ type
                     ## to know whether the callee's WRAPPER copied it.
 
   Prov* = object
+    ## The provenance of a whole value: one cell for the value and one per field
+    ## the walk could name. Unnamed fields fall back to `whole`.
     whole*: Cell                    ## the value itself — and the answer for
                                     ## any field not named below, so the walk
                                     ## never has to enumerate a type's fields
@@ -94,11 +99,18 @@ proc keyOf(m: Module, name: string): string =
   ## A module is identified by its PATH — `Module` has no name field.
   m.path.join(".") & "\0" & name
 
-proc noToken(): NodeId = NodeId(0)
+proc noToken(): NodeId =
+  ## The "no particular allocation" token: fresh, but not known to be any one
+  ## buffer, so never reported exclusive.
+  NodeId(0)
 
-proc unknownCell(): Cell = Cell(origin: oUnknown, token: noToken())
+proc unknownCell(): Cell =
+  ## A slot the walk knows nothing about — read exactly as aliased.
+  Cell(origin: oUnknown, token: noToken())
 
-proc unknownProv(): Prov = Prov(whole: unknownCell())
+proc unknownProv(): Prov =
+  ## A value the walk knows nothing about, whole and every field.
+  Prov(whole: unknownCell())
 
 proc cellFor*(p: Prov, field: string): Cell =
   ## The cell for a named field, falling back to the value as a whole. The
@@ -130,6 +142,8 @@ proc fieldOf(whole: Cell, field: string): Cell =
     else: result.src = ""
 
 proc joinProv(a, b: Prov): Prov =
+  ## Joins two values' provenance: the whole cells, and each field either side
+  ## names (a field only one side names joins with the other's fallback).
   result.whole = join(a.whole, b.whole)
   for k in a.fields.keys:
     result.fields[k] = join(cellFor(a, k), cellFor(b, k))
@@ -155,6 +169,9 @@ proc isSeqTyped(t: Type): bool =
 # --- the walk ---------------------------------------------------------------
 
 type Ctx = object
+  ## Walk state for one body: the params (which arrived from the caller), the
+  ## param a MOVED twin takes, the body's final reads, and each local's
+  ## provenance so far.
   res: Resolution
   m: Module
   params: HashSet[string]   ## names that arrived from the caller
@@ -197,6 +214,9 @@ proc throughWrapper(c: var Ctx, e: Expr, p: var Prov) =
         copied = movedCopyFields(c.res, c.m, prm.typ)
         bare = copied.len == 0
   proc rewrite(c: var Ctx, cell: Cell, key: string): Cell =
+    ## Translates one of the callee's result cells to this side of the call: a
+    ## slot that was the moved param's (copied by the wrapper) becomes fresh
+    ## joined with the argument; any other parameter reference is cleared.
     result = cell
     if cell.origin == oAliased and cell.src.len > 0 and cell.src == moved and
        ((cell.srcField.len == 0 and bare) or cell.srcField in copied):
@@ -428,6 +448,8 @@ proc noteAssignments(c: var Ctx, e: Expr) =
   for ch in e.children: noteAssignments(c, ch)
 
 proc collectReturns(c: var Ctx, e: Expr, acc: var Prov, any: var bool) =
+  ## Joins the provenance of every `return` value under `e` into `acc`; `any`
+  ## records whether one was found at all.
   if e == nil: return
   if e.kind == exkReturn:
     let p = provOf(c, e.returnVal)
@@ -482,10 +504,6 @@ proc summarize(res: Resolution, m: Module, d: Decl): Prov =
 # destructively — and there `slotsMovedAway` already stops the twin freeing
 # what it has handed on, which is the same fact read from the other end.
 
-proc seqFieldsOfType(c: Ctx, t: Type): seq[string] =
-  for f in getFieldsForType(c.res, c.m, t):
-    if seqElem(f.typ) != nil: result.add(f.name)
-
 proc ownedForMove(c: Ctx, p: Prov, t: Type): bool =
   ## Is EVERY heap slot the twin would free one this body allocated?
   ##
@@ -494,7 +512,7 @@ proc ownedForMove(c: Ctx, p: Prov, t: Type): bool =
   ## fresh the others are.
   if t == nil: return false
   if seqElem(t) != nil: return p.whole.origin == oFresh
-  let fs = seqFieldsOfType(c, t)
+  let fs = seqFieldNames(c.res, c.m, t)   # the heap slots a twin frees
   if fs.len == 0: return false     # not a container, or a shape not resolved
   for f in fs:
     if f notin p.fields: return false
@@ -502,6 +520,8 @@ proc ownedForMove(c: Ctx, p: Prov, t: Type): bool =
   true
 
 proc provOfRoot(c: var Ctx, root: string): Prov =
+  ## What the walk knows of local `root`, or unknown for anything that is not a
+  ## tracked local (a param, a global).
   if root in c.locals: c.locals[root] else: unknownProv()
 
 proc threadsFirstArg(res: Resolution, m: Module, e: Expr): bool =
@@ -611,6 +631,8 @@ proc threadSites(res: Resolution, m: Module, body: Expr): seq[Expr] =
     result.add(n.args[0])
 
 proc debugOwn(d: Decl, c: Ctx, fn: SsaFn, own: seq[bool]) =
+  ## `TUCK_DEBUG_MOVE`: prints which SSA values of `d` the mirror considers
+  ## owned. Compiled out of release builds.
   when not defined(release):
     if getEnv("TUCK_DEBUG_MOVE") in ["", "diff"]: return
     var owned: seq[string]
@@ -653,7 +675,9 @@ proc moveFactsSsa*(res: Resolution, m: Module, d: Decl):
   if d.fnBody == nil or d.isExtern or d.isPending or d.isDecision: return
   var c = moveCtx(res, m, d)
   let g = ssaOf(res, d, ssLowered)
-  template fn: untyped = g.fn
+  template fn: untyped =
+    ## Short name for the graph's fn.
+    g.fn
   if fn.values.len == 0: return
   let own = ssaOwnership(c, m, fn)
   debugOwn(d, c, fn, own)
@@ -669,24 +693,14 @@ proc moveFactsSsa*(res: Resolution, m: Module, d: Decl):
       result.consumed.incl slotOfMoved(c, place)
 
 proc consumedSlotsSsa*(res: Resolution, m: Module, d: Decl): HashSet[string] =
+  ## The slots of `d`'s moved parameter it hands on to another twin — which it
+  ## must therefore not free itself.
   moveFactsSsa(res, m, d).consumed
 
 proc movableArgsSsa*(res: Resolution, m: Module, d: Decl): HashSet[NodeId] =
-  ## Which arguments this body may hand on destructively — the mirror's
-  ## answer to exactly what `markMovableArgs` decides above.
-  if d.fnBody == nil or d.isExtern or d.isPending or d.isDecision: return
-  var c = Ctx(res: res, m: m, moved: movedFnParam(res, m, d))
-  for p in d.fnParams: c.params.incl(p.name)
-  for _ in 0 ..< 2: noteAssignments(c, d.fnBody)
-  let g = ssaOf(res, d, ssLowered)
-  template fn: untyped = g.fn
-  if fn.values.len == 0: return
-  let own = ssaOwnership(c, m, fn)
-  template final: untyped = g.final
-  debugOwn(d, c, fn, own)
-  for a in threadSites(res, m, d.fnBody):
-    if a.id notin final or a.id notin fn.byNode: continue
-    if own[int32(fn.byNode[a.id])]: result.incl(a.id)
+  ## Which arguments this body may hand on destructively — the `sites` half
+  ## of moveFactsSsa, which `markMovableArgs` stamps.
+  moveFactsSsa(res, m, d).sites
 
 proc markMovableArgs(res: Resolution, m: Module, d: Decl) =
   ## Stamp the first argument of every threading call this body may give away.
@@ -706,6 +720,8 @@ proc markMovableArgs(res: Resolution, m: Module, d: Decl) =
     markMovedArgId(res, site)
 
 proc oldStampsIn(res: Resolution, d: Decl): HashSet[NodeId] =
+  ## The argument nodes of `d` already stamped as moved in the semantic layer —
+  ## the "other side" of `moveDiffReport`'s comparison.
   var stack = @[d.fnBody]
   while stack.len > 0:
     let n = stack.pop()
@@ -738,6 +754,8 @@ proc moveDiffReport(res: Resolution, m: Module) =
          " onlyMirror=", onlyMirror, " onlyOld=", onlyOld
 
 proc markAllMovableArgs(res: Resolution, m: Module) =
+  ## Stamps the movable arguments of every fn in `m`, then (under
+  ## `TUCK_DEBUG_MOVE=diff`) reports the differential.
   for d in m.allFns(): markMovableArgs(res, m, d)
   moveDiffReport(res, m)
 

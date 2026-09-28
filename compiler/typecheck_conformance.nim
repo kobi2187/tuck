@@ -12,7 +12,7 @@
 # follows. It took a `tc` parameter in typecheck.nim to match its sibling
 # checkers' shape and never read it; the parameter is dropped here rather than
 # carried along dead, exactly as typecheck_transitions.nim did.
-import ast, ast_query, tables, strutils
+import ast, ast_query, ast_ops, tables, strutils
 import typecheck_util
 
 proc sameType(a, b: Type): bool
@@ -49,7 +49,7 @@ proc sameType(a, b: Type): bool =
   else: typeName(a) == typeName(b)
 
 proc substSelf(t: Type, objName: string): Type =
-  ## `Self` in a required signature means the implementing type.
+  ## `t` with every `Self` in it read as `objName`.
   if t == nil: return nil
   if t.kind == tkNamed and t.name == "Self":
     return Type(span: t.span, kind: tkNamed, name: objName)
@@ -71,9 +71,37 @@ proc sigText(d: Decl): string =
   if effs.len > 0: result.add(" [" & effs.join(", ") & "]")
 
 proc failConformance(objName, iname: string, want, got: Decl, why: string) =
+  ## Reports that object `objName` does not satisfy interface `iname`: both
+  ## signatures side by side, then `why` they differ.
   fail("Conformance Error: object '" & objName & "' does not satisfy '" &
        iname & "'\n  contract   " & sigText(want) &
        "\n  implements " & sigText(got) & "\n  " & why, got.span)
+
+proc named(name: string): Type =
+  ## A bare named type, for a substitution table.
+  Type(kind: tkNamed, name: name)
+
+proc contractSubst(want: Decl, objName, iname: string,
+                   isReceiver: bool): Table[string, Type] =
+  ## How a contract member's placeholders read for one implementation (R13,
+  ## ruled 2026-09-27). `Self` in the receiver is the object running; any
+  ## other `Self` is the INTERFACE — any satisfier, since a caller holding
+  ## only an interface value can pass any. A type param bounded by `Self`
+  ## (`fn splice[A: Self, B: Self]`) is the object when it is the receiver's
+  ## letter — `other: A` is the same object type as `self: A` — and the
+  ## interface otherwise.
+  result["Self"] = named(if isReceiver: objName else: iname)
+  let recv = receiverTypeParam(want)
+  for g in selfBoundParams(want):
+    result[g] = named(if g == recv: objName else: iname)
+
+proc contractParamType(want: Decl, w: Param, objName, iname: string): Type =
+  ## What one contract param's type asks of an implementation.
+  substType(w.typ, contractSubst(want, objName, iname, w.name == "self"))
+
+proc isBareSelf(t: Type): bool =
+  ## Is `t` exactly `Self` — not `Seq[Self]`, not `!Self`?
+  t != nil and t.kind == tkNamed and t.name == "Self"
 
 proc checkParamMatch(want, got: Decl, objName, iname: string) =
   ## Parameters match by count, by NAME, and by type. The name is part of the
@@ -90,10 +118,15 @@ proc checkParamMatch(want, got: Decl, objName, iname: string) =
         "parameter " & $(i + 1) & " is named '" & g.name &
         "', the contract calls it '" & w.name &
         "' (payload fields bind by name, so the name is part of the contract)")
-    if not sameType(substSelf(w.typ, objName), g.typ):
+    let wt = contractParamType(want, w, objName, iname)
+    if not sameType(wt, g.typ):
       failConformance(objName, iname, want, got,
         "parameter '" & w.name & "' is " & typeName(g.typ) &
-        ", the contract declares " & typeName(substSelf(w.typ, objName)))
+        ", the contract declares " & typeName(wt) &
+        (if isBareSelf(w.typ) and w.name != "self":
+           " (`Self` outside the receiver means the interface: any " &
+           "satisfier may be passed)"
+         else: ""))
 
 proc checkEffectSubset(want, got: Decl, objName, iname: string) =
   ## Effects may be a SUBSET: an implementation may do less than the contract
@@ -107,11 +140,18 @@ proc checkEffectSubset(want, got: Decl, objName, iname: string) =
 
 proc checkSigMatch(want, got: Decl, objName, iname: string) =
   ## One required signature against the member that implements it.
+  ## A return of exactly `Self` is the interface, and the object's own type
+  ## is accepted too (covariant): dispatch wraps it back into the interface.
   checkParamMatch(want, got, objName, iname)
-  if not sameType(substSelf(want.fnReturnType, objName), got.fnReturnType):
+  let asIface = substType(want.fnReturnType,
+                          contractSubst(want, objName, iname, false))
+  let covariant = isBareSelf(want.fnReturnType) and
+                  sameType(substSelf(want.fnReturnType, objName), got.fnReturnType)
+  if not covariant and not sameType(asIface, got.fnReturnType):
     failConformance(objName, iname, want, got,
       "returns " & typeName(got.fnReturnType) & ", the contract declares " &
-      typeName(substSelf(want.fnReturnType, objName)))
+      typeName(asIface) &
+      (if isBareSelf(want.fnReturnType): " or " & objName else: ""))
   checkEffectSubset(want, got, objName, iname)
 
 proc whyNotAnObject(m: Module, name: string): string =
@@ -151,6 +191,19 @@ proc whyNotAnObject(m: Module, name: string): string =
   return "'" & name & "' is not declared in this module. Fix: check the " &
          "spelling, or import the module that declares it."
 
+proc mergeRenames(obj: Decl, d: Decl) =
+  ## A top-level `satisfies Obj: I {old -> new}` line's renames join the
+  ## object's own. Re-stating one is a no-op; renaming the same member to a
+  ## DIFFERENT name than the object already does is refused.
+  for r in d.satisfyRenames:
+    let (iname, old, renamed) = r
+    let prior = implementingName(obj, iname, old)
+    if prior != old and prior != renamed:
+      fail("Conformance Error: object '" & obj.name & "' already " &
+           "implements '" & iname & "." & old & "' as '" & prior &
+           "'; this line renames it to '" & renamed & "'", d.span)
+    if r notin obj.satisfiesRenames: obj.satisfiesRenames.add(r)
+
 proc applySatisfiesDecls(m: Module) =
   ## Fold every top-level `Obj satisfies Iface` into that object's own
   ## `satisfies` list, BEFORE conformance runs.
@@ -180,23 +233,47 @@ proc applySatisfiesDecls(m: Module) =
     for iname in d.satisfyTargets:
       if iname notin obj.satisfies:
         obj.satisfies.add(iname)
+    mergeRenames(obj, d)
 
-proc implementationOf(obj: Decl, want: Decl): Decl =
-  ## The member that implements a required fn. A body-less member is a
-  ## signature, not an implementation — there would be no code to run.
+proc implementationOf(obj: Decl, name: string): Decl =
+  ## The member named `name` that implements a required fn. A body-less
+  ## member is a signature, not an implementation — there would be no code
+  ## to run.
   for have in obj.members():
-    if have.kind == dkFn and have.name == want.name and have.fnBody != nil:
+    if have.kind == dkFn and have.name == name and have.fnBody != nil:
       return have
   nil
 
+proc checkRenamesExist(obj: Decl, iface: Decl, iname: string) =
+  ## Every `satisfies iname {old -> new}` rename must name a member of the
+  ## interface: a rename of nothing would silently do nothing.
+  for (i, old, renamed) in obj.satisfiesRenames:
+    if i != iname: continue
+    var found = false
+    for want in iface.ifaceMembers:
+      if want != nil and want.kind == dkFn and want.name == old: found = true
+    if not found:
+      fail(dcCoUnknownRename,
+           "`satisfies " & iname & " {" & old & " -> " & renamed & "}` on '" &
+           obj.name & "' renames '" & old & "', but interface '" & iname &
+           "' has no member '" & old & "'", obj.span)
+
 proc checkSatisfiesIface(obj: Decl, iface: Decl, iname: string) =
-  ## Every fn the interface requires must be implemented, and match.
+  ## Every fn the interface requires must be implemented — under its own
+  ## name, or the name a `{old -> new}` rename gives it — and match.
+  checkRenamesExist(obj, iface, iname)
   for want in iface.ifaceMembers:
     if want == nil or want.kind != dkFn: continue
-    let got = implementationOf(obj, want)
+    let name = implementingName(obj, iname, want.name)
+    let got = implementationOf(obj, name)
     if got == nil:
+      let renamedNote =
+        if name == want.name: ""
+        else: "\n  under the name '" & name & "' (renamed by `satisfies " &
+              iname & " {" & want.name & " -> " & name & "}`)"
       fail("Conformance Error: object '" & obj.name & "' satisfies '" &
            iname & "' but does not implement\n    " & sigText(want) &
+           renamedNote &
            "\n  (add it as a member fn, or drop the `satisfies " & iname &
            "` line)", obj.span)
     checkSigMatch(want, got, obj.name, iname)

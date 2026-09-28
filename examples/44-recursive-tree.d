@@ -2,78 +2,78 @@ module _44_recursive_tree;
 
 import rt = tuck_rt;
 
-enum tuck_type_ExprKind { Num, Neg, Add }
+enum tuckˑtypeˑExprKind { Num, Neg, Add }
 
-struct tuck_type_Expr_Num {
+struct tuckˑtypeˑExpr_Num {
     long value;
 }
 
-struct tuck_type_Expr_Neg {
-    tuck_type_Expr[] operand;
+struct tuckˑtypeˑExpr_Neg {
+    tuckˑtypeˑExpr[] operand;
 }
 
-struct tuck_type_Expr_Add {
-    tuck_type_Expr[] left;
-    tuck_type_Expr[] right;
+struct tuckˑtypeˑExpr_Add {
+    tuckˑtypeˑExpr[] left;
+    tuckˑtypeˑExpr[] right;
 }
 
-struct tuck_type_Expr {
-    tuck_type_ExprKind kind;
+struct tuckˑtypeˑExpr {
+    tuckˑtypeˑExprKind kind;
     union {
-        tuck_type_Expr_Num tuck_num;
-        tuck_type_Expr_Neg tuck_neg;
-        tuck_type_Expr_Add tuck_add;
+        tuckˑtypeˑExpr_Num tuckˑvariantˑnum;
+        tuckˑtypeˑExpr_Neg tuckˑvariantˑneg;
+        tuckˑtypeˑExpr_Add tuckˑvariantˑadd;
     }
-    bool opEquals(const tuck_type_Expr o) const {
+    bool opEquals(const tuckˑtypeˑExpr o) const {
         if (kind != o.kind) return false;
         final switch (kind) {
-        case tuck_type_ExprKind.Num: return tuck_num == o.tuck_num;
-        case tuck_type_ExprKind.Neg: return tuck_neg == o.tuck_neg;
-        case tuck_type_ExprKind.Add: return tuck_add == o.tuck_add;
+        case tuckˑtypeˑExprKind.Num: return tuckˑvariantˑnum == o.tuckˑvariantˑnum;
+        case tuckˑtypeˑExprKind.Neg: return tuckˑvariantˑneg == o.tuckˑvariantˑneg;
+        case tuckˑtypeˑExprKind.Add: return tuckˑvariantˑadd == o.tuckˑvariantˑadd;
         }
     }
 }
 
-long tuck_fn_eval(tuck_type_Expr e) {
+long tuckˑfnˑeval(tuckˑtypeˑExpr e) {
     final switch (e.kind) {
-    case tuck_type_ExprKind.Num:
-        return e.tuck_num.value;
-    case tuck_type_ExprKind.Neg:
-        return (0L - tuck_fn_eval(rt.tuckAt(e.tuck_neg.operand, 0L)));
-    case tuck_type_ExprKind.Add:
-        return (tuck_fn_eval(rt.tuckAt(e.tuck_add.left, 0L)) + tuck_fn_eval(rt.tuckAt(e.tuck_add.right, 0L)));
+    case tuckˑtypeˑExprKind.Num:
+        return e.tuckˑvariantˑnum.value;
+    case tuckˑtypeˑExprKind.Neg:
+        return (0L - tuckˑfnˑeval(rt.tuckAt(e.tuckˑvariantˑneg.operand, 0L)));
+    case tuckˑtypeˑExprKind.Add:
+        return (tuckˑfnˑeval(rt.tuckAt(e.tuckˑvariantˑadd.left, 0L)) + tuckˑfnˑeval(rt.tuckAt(e.tuckˑvariantˑadd.right, 0L)));
     }
     return typeof(return).init;
 }
 
-long tuck_fn_depth(tuck_type_Expr e) {
+long tuckˑfnˑdepth(tuckˑtypeˑExpr e) {
     final switch (e.kind) {
-    case tuck_type_ExprKind.Num:
+    case tuckˑtypeˑExprKind.Num:
         return 1L;
-    case tuck_type_ExprKind.Neg:
-        return (1L + tuck_fn_depth(rt.tuckAt(e.tuck_neg.operand, 0L)));
-    case tuck_type_ExprKind.Add:
-        long tuck_l = tuck_fn_depth(rt.tuckAt(e.tuck_add.left, 0L));
-        long tuck_r = tuck_fn_depth(rt.tuckAt(e.tuck_add.right, 0L));
-        if ((tuck_l > tuck_r)) {
-            return (1L + tuck_l);
+    case tuckˑtypeˑExprKind.Neg:
+        return (1L + tuckˑfnˑdepth(rt.tuckAt(e.tuckˑvariantˑneg.operand, 0L)));
+    case tuckˑtypeˑExprKind.Add:
+        long tuckˑvˑl = tuckˑfnˑdepth(rt.tuckAt(e.tuckˑvariantˑadd.left, 0L));
+        long tuckˑvˑr = tuckˑfnˑdepth(rt.tuckAt(e.tuckˑvariantˑadd.right, 0L));
+        if ((tuckˑvˑl > tuckˑvˑr)) {
+            return (1L + tuckˑvˑl);
         }
-        return (1L + tuck_r);
+        return (1L + tuckˑvˑr);
     }
     return typeof(return).init;
 }
 
-long tuck_fn_main() {
-    tuck_type_Expr tuck_three = tuck_type_Expr(kind: tuck_type_ExprKind.Num, tuck_num: tuck_type_Expr_Num(value: 3L));
-    tuck_type_Expr tuck_four = tuck_type_Expr(kind: tuck_type_ExprKind.Num, tuck_num: tuck_type_Expr_Num(value: 4L));
-    tuck_type_Expr tuck_sum = tuck_type_Expr(kind: tuck_type_ExprKind.Add, tuck_add: tuck_type_Expr_Add(left: [tuck_three], right: [tuck_four]));
-    tuck_type_Expr tuck_neg = tuck_type_Expr(kind: tuck_type_ExprKind.Neg, tuck_neg: tuck_type_Expr_Neg(operand: [tuck_sum]));
-    tuck_type_Expr tuck_whole = tuck_type_Expr(kind: tuck_type_ExprKind.Add, tuck_add: tuck_type_Expr_Add(left: [tuck_sum], right: [tuck_neg]));
-    return ((tuck_fn_eval(tuck_whole) + tuck_fn_depth(tuck_whole)) - 4L);
+long tuckˑfnˑmain() {
+    tuckˑtypeˑExpr tuckˑvˑthree = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Num, tuckˑvariantˑnum: tuckˑtypeˑExpr_Num(value: 3L));
+    tuckˑtypeˑExpr tuckˑvˑfour = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Num, tuckˑvariantˑnum: tuckˑtypeˑExpr_Num(value: 4L));
+    tuckˑtypeˑExpr tuckˑvˑsum = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Add, tuckˑvariantˑadd: tuckˑtypeˑExpr_Add(left: [tuckˑvˑthree], right: [tuckˑvˑfour]));
+    tuckˑtypeˑExpr tuckˑvˑneg = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Neg, tuckˑvariantˑneg: tuckˑtypeˑExpr_Neg(operand: [tuckˑvˑsum]));
+    tuckˑtypeˑExpr tuckˑvˑwhole = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Add, tuckˑvariantˑadd: tuckˑtypeˑExpr_Add(left: [tuckˑvˑsum], right: [tuckˑvˑneg]));
+    return ((tuckˑfnˑeval(tuckˑvˑwhole) + tuckˑfnˑdepth(tuckˑvˑwhole)) - 4L);
 }
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
-    auto mainRc = tuck_fn_main();
+    auto mainRc = tuckˑfnˑmain();
     return cast(int) mainRc;
 }

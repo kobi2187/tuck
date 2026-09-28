@@ -1427,7 +1427,15 @@ folds a message into state.
 
 ## EV-8 — a type and a fn differing only in first-letter case collide on Nim
 
-**Issue #78.**
+**Issue #78. FIXED.** The mangled name carries the declaration's kind as a
+word (`tuckˑtypeˑSweep` against `tuckˑfnˑsweep`), so two names of different
+kinds differ in the word, where Nim does not ignore anything. Re-verified
+2026-09-26: the program below exits 7 on all three backends. Pinned as
+`bugFixed` in `known_bugs` ("a type and a fn differing only in case coexist
+(#78)"). Still open, and a different question: two names of the SAME kind
+that differ only in case or `_` after the first letter (`fn getX` and
+`fn get_x`) are one name to Nim — the checker accepts both, and the Nim
+build fails.
 
 **Severity: high. It fires on the most ordinary naming in the language, and
 only on one backend.** Found 2026-09-20 while writing an application, not a
@@ -1502,6 +1510,23 @@ namespaces that differs only in case.
 ---
 
 ## EV-6 — a multi-actor D program crashes at exit, about 1 run in 10
+
+**FIXED 2026-09-26, D only (Nim and Odin were never affected).** The guess
+below was right. `tuckDrainActors` now retires every actor thread after
+quiescence — a `retiring` flag the park loop checks, then a join — so no
+thread is left in `Condition.wait` when rt_term runs. `gc_term` collects
+(suspending every registered thread by signal) and then UNMAPS the GC heap,
+which is where a parked actor's slot, Mutex, Condition and Thread object
+live. Two failure shapes, both from one core dump: the parked thread's
+futex word vanished under it ("unexpected error code"), and a thread
+resuming from the collection's suspend touched its freed Thread object
+(segfault in `thread_postSuspend`).
+
+Worse than measured below: a two-actor program with `waitUntil` failed
+24/60, a one-actor one 13/60. After: 0/100 each, and 45-intersection 0/60.
+Test: `d_backend` "actors: two parked actors survive exit", which runs one
+binary 40 times and wants exit 7 every time — red before the fix, with
+exactly the two messages above.
 
 **Severity: medium. Intermittent, and it is a CRASH, not a warning.** Found
 2026-09-20, the first time a D toolchain was available to run the suite.

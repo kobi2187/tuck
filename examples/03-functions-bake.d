@@ -8,31 +8,31 @@ struct TRec_a_b_op(T_a, T_b, T_op) {
     T_op op;
 }
 
-alias tuck_type_BinOp = long function(long a, long b);
+alias tuckˑfnsigˑBinOp = long function(long a, long b);
 
-struct tuck_type_Ctx {
+struct tuckˑtypeˑCtx {
     long a;
     long b;
-    tuck_type_BinOp op;
+    tuckˑfnsigˑBinOp op;
 }
 
-long tuck_fn_plus(long a, long b) {
+long tuckˑfnˑplus(long a, long b) {
     return (a + b);
 }
 
-long tuck_fn_applyOperation(long a, long b, tuck_type_BinOp op) {
+long tuckˑfnˑapplyOperation(long a, long b, tuckˑfnsigˑBinOp op) {
     return op(a, b);
 }
 
-void tuck_fn_main() {
-    tuck_type_Ctx tuck_x = tuck_type_Ctx(a: 5L, b: 10L);
-    TRec_a_b_op!(long, long, tuck_type_BinOp) tuck_withOp = TRec_a_b_op!(long, long, tuck_type_BinOp)(a: tuck_x.a, b: tuck_x.b, op: &tuck_fn_plus);
-    TRec_a_b_op!(long, long, tuck_type_BinOp) tuck_smaller = TRec_a_b_op!(long, long, tuck_type_BinOp)(a: tuck_withOp.a, b: 2L, op: tuck_withOp.op);
-    long tuck_r = tuck_fn_applyOperation(tuck_smaller.a, tuck_smaller.b, tuck_smaller.op);
+void tuckˑfnˑmain() {
+    tuckˑtypeˑCtx tuckˑvˑx = tuckˑtypeˑCtx(a: 5L, b: 10L);
+    TRec_a_b_op!(long, long, tuckˑfnsigˑBinOp) tuckˑvˑwithOp = TRec_a_b_op!(long, long, tuckˑfnsigˑBinOp)(a: tuckˑvˑx.a, b: tuckˑvˑx.b, op: &tuckˑfnˑplus);
+    TRec_a_b_op!(long, long, tuckˑfnsigˑBinOp) tuckˑvˑsmaller = TRec_a_b_op!(long, long, tuckˑfnsigˑBinOp)(a: tuckˑvˑwithOp.a, b: 2L, op: tuckˑvˑwithOp.op);
+    long tuckˑvˑr = tuckˑfnˑapplyOperation(tuckˑvˑsmaller.a, tuckˑvˑsmaller.b, tuckˑvˑsmaller.op);
     return;
 }
 
 void main(string[] args) {
     rt.tuckSetArgs(args);
-    tuck_fn_main();
+    tuckˑfnˑmain();
 }

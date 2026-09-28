@@ -34,7 +34,8 @@ proc compatible*(tc: TypeChecker, actual, expected: Type): bool
 proc unwrapForCompare*(actual, expected: Type, a, e: var Type): bool =
   ## Wrapper discipline: a bare T may flow where !T is expected (auto-wrap on
   ## return), and !T matches !T — but a !T/?T value where bare T is expected is
-  ## an UNHANDLED error and never compatible. `or` / `?` unwrap explicitly.
+  ## an UNHANDLED error and never compatible. `.ok` / `.value` unwrap
+  ## explicitly.
   ## Returns false when the pair is already known incompatible.
   a = actual
   e = expected
@@ -128,10 +129,10 @@ proc importedFnSigInstance(tc: TypeChecker, t: Type): Type =
   var ps: seq[Type]
   var names: seq[string]
   for prm in sig.params:
-    ps.add(substParams(prm.typ, binds))
+    ps.add(substType(prm.typ, binds))
     names.add(prm.name)
   Type(span: t.span, kind: tkFunc, params: ps, paramNames: names,
-       result: substParams(sig.ret, binds))
+       result: substType(sig.ret, binds))
 
 proc fnSigSlotInstance(tc: TypeChecker, t: Type): Type =
   ## The tkFunc a generic fnsig slot stands for, wherever the fnsig was
@@ -141,6 +142,8 @@ proc fnSigSlotInstance(tc: TypeChecker, t: Type): Type =
   if result == nil: result = tc.importedFnSigInstance(t)
 
 type FnRefVerdict = enum
+  ## The answer `fnRefVerdict` gives: undecided (not a fn-ref question — keep
+  ## checking), or a definite yes/no.
   vUndecided,   ## not a fn-ref question at all — fall through to the rest
   vYes, vNo
 

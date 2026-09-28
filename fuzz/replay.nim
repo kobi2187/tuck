@@ -14,21 +14,17 @@
 # declaration count), or a crash — which is the finding.
 import std/[cmdline, syncio, os]
 import ../lexer
+from ../compiler/modules import lexSource
 import ../compiler/[ast, parser, parser_base]
 
-proc lexAll(source: string): seq[Token] =
-  var lex = Lexer(source: source, position: 0, line: 1, column: 1,
-                  indentStack: @[0])
-  while true:
-    let t = lex.nextToken()
-    result.add(t)
-    if t.kind == tkEOF: break
 
 proc replay(path: string) =
+  ## Runs the front end on one saved input and prints whether it was accepted,
+  ## rejected with a diagnostic, or raised something unexpected.
   let source = readFile(path)
   stdout.write path, " (", source.len, " bytes): "
   try:
-    var p = Parser(source: source, tokens: lexAll(source), cursor: 0)
+    var p = Parser(source: source, tokens: lexSource(source), cursor: 0)
     let m = p.parseModule()
     echo "ACCEPTED — ", m.decls.len, " declaration(s)"
   except SyntaxError as err:

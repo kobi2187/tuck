@@ -39,17 +39,19 @@
 import ast, ast_ops
 import resolution
 from ownership_str import ownedStrCall
+from ast_query import isStr
 
 var counter = 0
   ## Names are program-wide unique, like every other lowering-minted name.
 
 type Hoist = object
+  ## Walk state for one statement: the backend's allocating procs, the temps
+  ## lifted so far, and whether an effect has already run (after which nothing
+  ## may move ahead of it).
   res: Resolution
   procs: seq[string]
   lifted: seq[Expr]    ## `let`s to insert ahead of the current statement
   settled: bool        ## an effect has been evaluated: nothing later moves
-
-proc isStr(t: Type): bool = t != nil and t.kind == tkNamed and t.name == "str"
 
 proc hasEffect(h: Hoist, n: Expr): bool =
   ## A call that is not one of the allocating `str` procs may do anything,
@@ -86,10 +88,12 @@ proc visit(h: var Hoist, n: Expr, own: bool) =
   case n.kind
   of exkIf, exkMatch, exkBlock, exkWhile, exkFor, exkDefer, exkSelect,
      exkChain, exkCombinator, exkAssign, exkBracketAssign, exkSend,
-     exkReturn, exkRaise, exkAcquire, exkFinish, exkDiscard, exkValidate:
+     exkReturn, exkRaise, exkAcquire, exkFinish, exkDiscard, exkValidate,
+     exkPoolOp:
     # Control flow, a scope, or a statement inside an expression: what is in
     # it is conditional, or ordered by something this pass does not model.
-    # It may also do anything, so nothing after it may move before it.
+    # It may also do anything, so nothing after it may move before it. (A
+    # pool op changes the pool's state, which this pass does not model.)
     h.settled = true
     return
   of exkBinary:
@@ -100,7 +104,6 @@ proc visit(h: var Hoist, n: Expr, own: bool) =
     h.visit(n.right, false)
   of exkUnary:
     h.visit(n.operand, false)
-    if n.unaryOp == uoPropagate: h.settled = true   # `x?` may return early
   of exkIfaceCall:
     h.visit(n.dispatchRecv, false)
     h.settled = true             # exactly one arm runs; lift nothing out of one

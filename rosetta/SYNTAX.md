@@ -114,7 +114,7 @@ return value
 `decision` tables for tabular logic (rows use `->`, unlike match's `:`):
 
 ```tuck
-decision route({priority: Priority, encrypted: bool}) -> int:
+decision route({urgency: Priority, encrypted: bool}) -> int:
   | high  true  -> 1
   | high  false -> 2
   | low   _     -> 3
@@ -141,7 +141,7 @@ readable-under-`if r.ok` narrowing described in TOUR.md is the only route.
 ```tuck
 let all = input                          # the whole incoming payload
 let ctx = {episode, prefs} merge         # flatten into one struct
-let n = track alias(trackId: id, title: name)   # rename fields
+let n = track alias(trackId -> id, title -> name)   # rename fields
 let f = x bake {op: :plus}               # partial application; :name is a fn ref
 ```
 

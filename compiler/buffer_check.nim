@@ -37,13 +37,19 @@ from lowering_seqcopy import needsDup, recordDupFields
 
 type
   Buffers = HashSet[string]
+    ## A set of abstract buffer names ("tag:value.slot"). Two free sites whose
+    ## sets intersect release the same buffer.
   Checker = object
+    ## State for one function: its SSA graph, plus a memo of (value, slot) ->
+    ## buffers and the in-progress set that stops a phi cycle recursing forever.
     res: Resolution
     fn: SsaFn
     memo: Table[(int32, string), Buffers]
     busy: HashSet[(int32, string)]
 
 proc slotName(place, slot: string): string =
+  ## Joins a place and a slot into one dotted name; the empty slot is the
+  ## value itself.
   if slot.len == 0: place else: place & "." & slot
 
 proc buffersOf(c: var Checker, v: ValueId, slot: string): Buffers
@@ -60,6 +66,8 @@ proc bindingCopied(res: Resolution, e: Expr, slot: string): bool =
   else: slot in recordDupFields(res, e)
 
 proc fresh(v: Value, tag, slot: string): Buffers =
+  ## A buffer nothing else denotes: named by the value that creates it, so it
+  ## can only collide with itself. `tag` says why it is new (`n`ew or `c`opied).
   result.incl tag & ":" & $int32(v.id) & "." & slot
 
 proc projectBuffers(c: var Checker, v: Value, slot: string): Buffers =
@@ -95,6 +103,9 @@ proc callBuffers(c: var Checker, v: Value, slot: string): Buffers =
     for b in c.buffersOfRead(src.args[0], slot): result.incl b
 
 proc buffersOfDef(c: var Checker, v: Value, slot: string): Buffers =
+  ## The buffers a value may denote, by how the SSA graph defines it: entry
+  ## params name the caller's place, phis take the union of their operands, and
+  ## literals and constructions are always new.
   case v.def.kind
   of dkEntry: result.incl "p:" & slotName(v.place, slot)
   of dkProject: result = c.projectBuffers(v, slot)
@@ -106,6 +117,8 @@ proc buffersOfDef(c: var Checker, v: Value, slot: string): Buffers =
   of dkLiteral, dkConstruct, dkOpaque, dkUndef: result = fresh(v, "n", slot)
 
 proc buffersOf(c: var Checker, v: ValueId, slot: string): Buffers =
+  ## Memoized `buffersOfDef` for one (value, slot). A value reached again while
+  ## it is still being computed is a phi cycle and contributes nothing extra.
   let key = (int32(v), slot)
   if key in c.memo: return c.memo[key]
   if key in c.busy: return   # a phi cycle: its other operands answer

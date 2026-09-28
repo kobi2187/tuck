@@ -79,6 +79,8 @@ proc phiIndex(fn: SsaFn): Table[(int32, Place), ValueId] =
       result[(int32(v.blk), v.place)] = v.id
 
 proc isField(fn: SsaFn, v: ValueId): bool =
+  ## Is `v` a field of another value — a projection with an input record —
+  ## rather than a whole local?
   let d = fn.values[int32(v)].def
   d.kind == dkProject and d.inputs.len > 0
 
@@ -167,6 +169,8 @@ proc finalUses*(fn: SsaFn): HashSet[NodeId] =
 # --- structural invariants --------------------------------------------------
 
 proc blockErrors(fn: SsaFn): seq[string] =
+  ## Every block must be sealed (all its predecessors known) and every
+  ## predecessor must name a real block.
   for b in fn.blocks:
     if not b.sealed:
       result.add "block " & b.label & " left unsealed"
@@ -175,6 +179,8 @@ proc blockErrors(fn: SsaFn): seq[string] =
         result.add "block " & b.label & " has a bogus predecessor"
 
 proc phiErrors(fn: SsaFn, v: Value): seq[string] =
+  ## A live phi has one operand per predecessor of its block, never exactly
+  ## one (a trivial phi left in place), and only operands of its own place.
   # A LIVE phi has at least two operands; one means `tryRemoveTrivialPhi` did
   # not run, which is how five versions of an unchanging `exit` happened.
   # Zero means it was removed and the slot is a tombstone.
@@ -200,6 +206,8 @@ proc isTombstone(v: Value): bool =
   v.def.kind == dkPhi and v.def.inputs.len == 0
 
 proc useErrors(fn: SsaFn, v: Value): seq[string] =
+  ## Every recorded read of `v` sits in a real block and is indexed by
+  ## `byNode` as a read of `v` itself — the use lists and the front door agree.
   # THE FRONT DOOR AGREES WITH THE USE LISTS. A consumer asks `byNode` which
   # value a read saw; `finalUses` answers from the value's own `uses`. If
   # they disagree, the move decision and the read it is about describe two
@@ -215,6 +223,8 @@ proc useErrors(fn: SsaFn, v: Value): seq[string] =
                  "attributes to " & $fn.byNode[u.at]
 
 proc inputErrors(fn: SsaFn, v: Value): seq[string] =
+  ## No input of `v` is a removed phi: removal must reroute every reference to
+  ## the tombstone, or a consumer reads a value that no longer exists.
   # NOTHING POINTS AT A REMOVED PHI. Removal reroutes every reference; a
   # projection once kept its input on the tombstone (`f.test` of a parked
   # `f`), so ownership read a value that no longer existed.
@@ -249,6 +259,8 @@ proc structuralErrors*(fn: SsaFn): seq[string] =
 # --- rendering --------------------------------------------------------------
 
 proc defText(fn: SsaFn, v: Value): string =
+  ## How a value's definition prints in a dump: its kind without the `dk`
+  ## prefix, lower-cased, then its inputs in parens.
   result = ($v.def.kind)[2 .. ^1].toLowerAscii
   if v.def.inputs.len > 0:
     var ins: seq[string]

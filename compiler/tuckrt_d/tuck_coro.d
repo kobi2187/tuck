@@ -662,6 +662,8 @@ private struct ActorSlot
     shared bool parked;   /// asleep on `cond`. Read WITHOUT the lock: it is
                           /// the whole fast path of a send, so it must be
                           /// per-actor rather than a global anything.
+    bool retiring;        /// set once, at exit: leave the loop, do not park
+    Thread thread;        /// kept so the exit drain can join it
     Waiter*[] waiters;
 }
 
@@ -762,7 +764,12 @@ private void actorMain(ActorSlot* slot)
             continue;
         }
         slot.lock.lock();
-        while (!slot.pending) slot.cond.wait();
+        while (!slot.pending && !slot.retiring) slot.cond.wait();
+        if (slot.retiring)
+        {
+            slot.lock.unlock();
+            return;
+        }
         atomicStore(slot.parked, false);
         slot.pending = false;
         slot.working = true;
@@ -787,7 +794,11 @@ void* tuckStartActor(DrainProc drain)
     gActorSlots ~= slot;
     gSlotsLock.unlock();
     auto t = new Thread({ actorMain(slot); });
+    // Daemon still: an uncaught throw out of main tears the runtime down
+    // without passing tuckDrainActors, and a non-daemon thread would hang
+    // that exit forever instead.
     t.isDaemon = true;
+    slot.thread = t;
     t.start();
     return cast(void*) slot;
 }
@@ -834,25 +845,55 @@ void tuckWaitOn(void* handle, bool function() pred)
     close(fds[0]);
 }
 
-/// Wait for every actor to empty its mailbox. Emitted at the END of main:
-/// without it `send` races teardown, since the actor thread is detached and
-/// may never have been scheduled.
+/// Wait for every actor to empty its mailbox, then retire its thread.
+/// Emitted at the END of main: without it `send` races teardown, since the
+/// actor thread is detached and may never have been scheduled.
+///
+/// THE RETIRE IS D'S ALONE. Returning from D's main runs rt_term, whose
+/// gc_term collects — suspending every registered thread by signal — and
+/// then unmaps the GC heap. A parked actor lives in that heap: its slot,
+/// its Mutex and Condition, its Thread object. Unmapping them under a
+/// thread still in pthread_cond_wait crashed about half of all two-actor
+/// runs, as "The futex facility returned an unexpected error code" or a
+/// segfault in thread_postSuspend. Nim and Odin exit without tearing down a
+/// heap, so their twins wait for quiescence and stop there.
 void tuckDrainActors()
 {
     if (gSlotsLock is null) return;
-    while (true)
+    while (!allActorsIdle()) {}
+    retireActors();
+}
+
+private bool allActorsIdle()
+{
+    bool allIdle = true;
+    gSlotsLock.lock();
+    foreach (s; gActorSlots)
     {
-        bool allIdle = true;
-        gSlotsLock.lock();
-        foreach (s; gActorSlots)
-        {
-            s.lock.lock();
-            if (s.pending || s.working) allIdle = false;
-            s.lock.unlock();
-        }
-        gSlotsLock.unlock();
-        if (allIdle) return;
+        s.lock.lock();
+        if (s.pending || s.working) allIdle = false;
+        s.lock.unlock();
     }
+    gSlotsLock.unlock();
+    return allIdle;
+}
+
+/// Stop every actor thread and join it, so none outlives the runtime.
+/// Only after quiescence: a retiring actor leaves at its next park, and
+/// one that still had work would leave it undone.
+private void retireActors()
+{
+    gSlotsLock.lock();
+    auto slots = gActorSlots.dup;
+    gSlotsLock.unlock();
+    foreach (s; slots)
+    {
+        s.lock.lock();
+        s.retiring = true;
+        s.cond.notify();
+        s.lock.unlock();
+    }
+    foreach (s; slots) s.thread.join();
 }
 
 /// Emitted by each send after enqueue: wake every actor so whichever owns that

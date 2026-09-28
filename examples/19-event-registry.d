@@ -2,39 +2,39 @@ module _19_event_registry;
 
 import rt = tuck_rt;
 
-enum tuck_AppEventsKind { SensorFailure, LowMemory }
+enum tuckˑregistryˑAppEventsKind { SensorFailure, LowMemory }
 
-struct tuck_AppEvents {
-    tuck_AppEventsKind tuckTag;
+struct tuckˑregistryˑAppEvents {
+    tuckˑregistryˑAppEventsKind tuckTag;
     ubyte port;
     string reason;
     uint remaining;
 }
 
-__gshared tuck_AppEvents latesttuck_AppEvents;
+__gshared tuckˑregistryˑAppEvents latesttuckˑregistryˑAppEvents;
 
-void raise_tuck_AppEvents_SensorFailure(ubyte port, string reason) {
-    latesttuck_AppEvents = tuck_AppEvents(tuck_AppEventsKind.SensorFailure, port: port, reason: reason);
-    tuck_fn_AppEvents_SensorFailure(port, reason);
+void raise_tuckˑregistryˑAppEvents_SensorFailure(ubyte port, string reason) {
+    latesttuckˑregistryˑAppEvents = tuckˑregistryˑAppEvents(tuckˑregistryˑAppEventsKind.SensorFailure, port: port, reason: reason);
+    tuckˑfnˑAppEvents_SensorFailure(port, reason);
 }
 
-void raise_tuck_AppEvents_LowMemory(uint remaining) {
-    latesttuck_AppEvents = tuck_AppEvents(tuck_AppEventsKind.LowMemory, remaining: remaining);
-    tuck_fn_AppEvents_LowMemory(remaining);
+void raise_tuckˑregistryˑAppEvents_LowMemory(uint remaining) {
+    latesttuckˑregistryˑAppEvents = tuckˑregistryˑAppEvents(tuckˑregistryˑAppEventsKind.LowMemory, remaining: remaining);
+    tuckˑfnˑAppEvents_LowMemory(remaining);
 }
 
 
-void tuck_fn_triggerEvent() {
-    raise_tuck_AppEvents_SensorFailure(1L, "timeout");
+void tuckˑfnˑtriggerEvent() {
+    raise_tuckˑregistryˑAppEvents_SensorFailure(1L, "timeout");
 }
 
-void tuck_fn_AppEvents_SensorFailure(ubyte port, string reason) {
-    ubyte tuck_x = port;
-    string tuck_y = reason;
+void tuckˑfnˑAppEvents_SensorFailure(ubyte port, string reason) {
+    ubyte tuckˑvˑx = port;
+    string tuckˑvˑy = reason;
 }
 
-void tuck_fn_AppEvents_LowMemory(uint remaining) {
-    uint tuck_left = remaining;
+void tuckˑfnˑAppEvents_LowMemory(uint remaining) {
+    uint tuckˑvˑleft = remaining;
 }
 
 static assert((1L == 1L));

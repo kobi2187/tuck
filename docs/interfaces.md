@@ -162,7 +162,7 @@ backend prints only the switch:
 | | Nim | Odin | D |
 |---|---|---|---|
 | variant | `case tag*: AnimalTag` | `tag: AnimalTag` + payload fields | `AnimalTag tag;` + one field per branch |
-| construction | `Animal(tag: …, tuck_type_DogVal: d)` | `Animal{tag = …, tuck_type_DogVal = d}` | `Animal(AnimalTag.…, tuck_type_DogVal: d)` |
+| construction | `Animal(tag: …, tuckˑobjectˑDogVal: d)` | `Animal{tag = …, tuckˑobjectˑDogVal = d}` | `Animal(AnimalTag.…, tuckˑobjectˑDogVal: d)` |
 | dispatch | `case a.tag` (an expression) | `switch v.tag` inside a closure typed with the call's own type, since Odin has no switch expression | `switch (v.tag)` inside a function |
 
 All three produce 42 for the example above.

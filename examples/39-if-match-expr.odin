@@ -3,19 +3,19 @@ package main
 
 import sys "./mod_sys"
 
-tuck_type_Color :: enum { Red, Green, Blue }
+tuckˑtypeˑColor :: enum { Red, Green, Blue }
 
-tuck_fn_main :: proc () {
-  tuck_hot := true
-  tuck_limit := (tuck_hot ? 90 : 20)
-  tuck_c := tuck_type_Color.Green
-  tuck_code := ((tuck_c == tuck_type_Color.Red) ? 1 : ((tuck_c == tuck_type_Color.Green) ? 2 : 3))
-  tuck_name := ((tuck_c == tuck_type_Color.Red) ? 10 : ((tuck_c == tuck_type_Color.Green) ? 20 : 30))
-  tuck_scaled := ((tuck_c == tuck_type_Color.Red) ? (tuck_hot ? 100 : 1) : ((tuck_c == tuck_type_Color.Green) ? (tuck_hot ? 200 : 2) : (tuck_hot ? 300 : 3)))
-  if (tuck_limit == 90) {
-      if (tuck_code == 2) {
-          if (tuck_name == 20) {
-              if (tuck_scaled == 200) {
+tuckˑfnˑmain :: proc () {
+  tuckˑvˑhot := true
+  tuckˑvˑlimit := (tuckˑvˑhot ? 90 : 20)
+  tuckˑvˑc := tuckˑtypeˑColor.Green
+  tuckˑvˑcode := ((tuckˑvˑc == tuckˑtypeˑColor.Red) ? 1 : ((tuckˑvˑc == tuckˑtypeˑColor.Green) ? 2 : 3))
+  tuckˑvˑname := ((tuckˑvˑc == tuckˑtypeˑColor.Red) ? 10 : ((tuckˑvˑc == tuckˑtypeˑColor.Green) ? 20 : 30))
+  tuckˑvˑscaled := ((tuckˑvˑc == tuckˑtypeˑColor.Red) ? (tuckˑvˑhot ? 100 : 1) : ((tuckˑvˑc == tuckˑtypeˑColor.Green) ? (tuckˑvˑhot ? 200 : 2) : (tuckˑvˑhot ? 300 : 3)))
+  if (tuckˑvˑlimit == 90) {
+      if (tuckˑvˑcode == 2) {
+          if (tuckˑvˑname == 20) {
+              if (tuckˑvˑscaled == 200) {
                   sys.exit(0)
               }
           }
@@ -25,5 +25,5 @@ tuck_fn_main :: proc () {
 }
 
 main :: proc() {
-	tuck_fn_main()
+	tuckˑfnˑmain()
 }

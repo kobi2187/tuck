@@ -16,6 +16,9 @@ const dPrims = {
   "u8": "ubyte", "u16": "ushort", "u32": "uint", "u64": "ulong",
   "f32": "float", "f64": "double", "float": "double",
   "bool": "bool", "str": "string", "void": "void", "unit": "void",
+  # The builtin FFI pointers (typecheck_pointers): C's `uint8_t*` and
+  # `char*`. D had no spelling for either and printed the bare Tuck name.
+  "Buf": "ubyte*", "cstring": "const(char)*",
 }.toTable
 
 const DCastablePrims* = ["long", "byte", "short", "int",
@@ -35,6 +38,9 @@ proc dPrimName*(name: string): string =
 
 type
   DCodegenCtx* = object
+    ## Everything the D emitter carries while printing one module: the semantic
+    ## layer, the current fn's return shape, hoisted record/sum names, and the
+    ## FFI libraries and impl modules the file header must declare.
     res*: Resolution
       ## The semantic layer this emission reads. Handed over by the pipeline
       ## rather than reached for: which is what makes the stage ordering —
@@ -60,8 +66,6 @@ type
     inlineSumOwner*: string  # "<Owner><Field>" while typing a field position,
                             # so an INLINE sum can hoist under a stable name
                             # instead of dying. Empty everywhere else.
-    fieldVars*: HashSet[string]  # inside an invariant: names that are fields
-    fieldPrefix*: string         # what those names are reached through
     matchNarrowed*: Table[string, string]  # subject text -> the variant a
                                             # match arm currently narrows it
                                             # to (see codegen.nim's twin)
@@ -283,6 +287,8 @@ proc dTypeIn*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   ## dDeclType (returns "") — which is a shape that drifts: a mapping added
   ## to one silently missed the other.
   template giveUp(what: string): string =
+    ## The one place the two modes differ: a required type aborts the emit
+    ## with a diagnostic, an optional one answers "" so the caller can fall back.
     if mode == tmRequired: dUnsupported(what) else: ""
   if t == nil: return (if mode == tmRequired: "void" else: "")
   case t.kind
@@ -379,6 +385,9 @@ proc recStructNameD*(ctx: var DCodegenCtx, fields: seq[FieldDef],
 proc newDCtx*(m: Module, realModules: Table[string, Module],
              moduleName: string, res: Resolution,
              modPrefix = ""): DCodegenCtx =
+  ## A fresh D emission context for module `m`, with its decl index built up
+  ## front and the `errors` policy read off the module. `modPrefix` is set for
+  ## library modules, whose hoisted names must not collide with the entry's.
   result = DCodegenCtx(definedVars: initHashSet[string](), indent: 0,
                        module: m, realModules: realModules,
                        moduleName: moduleName, modPrefix: modPrefix,

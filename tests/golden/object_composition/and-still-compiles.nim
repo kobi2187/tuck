@@ -1,21 +1,21 @@
 {.experimental: "codeReordering".}
 
-proc tuck_fn_use*(m: tuck_type_M): int
-proc tuck_fn_main*(): int
+proc tuckˑfnˑuse*(m: tuckˑtypeˑM): int
+proc tuckˑfnˑmain*(): int
 
-type tuck_type_A* = object
+type tuckˑtypeˑA* = object
   x*: int
 
-type tuck_type_B* = object
+type tuckˑtypeˑB* = object
   y*: int
 
-type tuck_type_M* = object
+type tuckˑtypeˑM* = object
   x*: int
   y*: int
 
-proc tuck_fn_use*(m: tuck_type_M): int =
+proc tuckˑfnˑuse*(m: tuckˑtypeˑM): int =
   return (m.x + m.y)
 
-proc tuck_fn_main*(): int =
+proc tuckˑfnˑmain*(): int =
   return 0
 

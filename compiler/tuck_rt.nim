@@ -5,71 +5,94 @@ import std/strutils
 import std/math as stdmath
 
 type
-  AccessMode* = enum
-    ReadOnly, WriteOnly, ReadWrite
-
-type
   TuckStatus* = enum
+    ## How a fallible or optional result came out: a value, an error code, or
+    ## absence.
     tsOk, tsErr, tsAbsent
   TuckResult*[T] = object
+    ## The runtime shape of `!T`, `?T` and `!?T`: a status, the 16-bit error code
+    ## when it failed, and the value when it succeeded.
     status*: TuckStatus
     err*: uint16   # app-wide error code; meaningful only when status == tsErr
     value*: T
 
-proc toStr*[T](value: T): string = $value
+proc toStr*[T](value: T): string =
+  ## Any value as its string form, through Nim's `$`.
+  $value
 
-# seq access. Bounds are a PRECONDITION: violating one is a program error,
-# reported with the caller's file/line, not an error value the caller matches.
 proc tuckSeqBounds(index, length: int, op: string) =
+  ## Raises IndexDefect unless `0 <= index < length`; `op` names the access.
+  ##
+  ## Bounds are a PRECONDITION: violating one is a program error,
+  ## reported with the caller's file/line, not an error value the caller matches.
   if index < 0 or index >= length:
     raise newException(IndexDefect,
       op & ": index " & $index & " out of bounds for seq of length " & $length)
 
-# `xs[i]` bracket sugar lowers to tuckAt/tuckSetAt, NOT to std/seq's `at` —
-# brackets are grammar, so they must work without `import seq`, and the
-# reserved `tuck` prefix (same convention as tuckConcat/tuckSat above) is
-# what keeps them from colliding with a user's own `fn at`. std/seq.tuck's
-# `at`/`setAt` stay as the explicit spelling and delegate here.
 proc tuckAt*[T](items: seq[T], index: int): T =
+  ## What `xs[i]` lowers to: a bounds-checked read.
+  ##
+  ## `xs[i]` bracket sugar lowers to tuckAt/tuckSetAt, NOT to std/seq's `at` —
+  ## brackets are grammar, so they must work without `import seq`, and the
+  ## reserved `tuck` prefix (same convention as tuckConcat/tuckSat above) is
+  ## what keeps them from colliding with a user's own `fn at`. std/seq.tuck's
+  ## `at`/`setAt` stay as the explicit spelling and delegate here.
   tuckSeqBounds(index, items.len, "at")
   items[index]
 
-proc at*[T](items: seq[T], index: int): T = tuckAt(items, index)
+proc at*[T](items: seq[T], index: int): T =
+  ## std/seq's explicit `at`: the same bounds-checked read as `xs[i]`.
+  tuckAt(items, index)
 
 proc charAt*(s: string, index: int): string =
+  ## The character at `index` as a one-character string. Out of range is a
+  ## program error, like any index.
   tuckSeqBounds(index, s.len, "charAt")
   $s[index]
 
-proc containsChar*(s: string, ch: string): bool = strutils.contains(s, ch)
+proc containsChar*(s: string, ch: string): bool =
+  ## Does `s` contain the substring `ch`?
+  strutils.contains(s, ch)
 
-proc splitLines*(s: string): seq[string] = strutils.splitLines(s)
+proc splitLines*(s: string): seq[string] =
+  ## `s` split at line breaks (`\n`, `\r\n`), without the breaks.
+  strutils.splitLines(s)
 
 proc ord*(ch: string): int =
+  ## The byte value of a string's first character. An empty string is an
+  ## out-of-bounds read.
   tuckSeqBounds(0, ch.len, "ord")
   system.ord(ch[0])
 
 proc tuckSetAt*[T](items: var seq[T], index: int, value: T) =
+  ## What `xs[i] = v` lowers to: a bounds-checked write, in place.
   tuckSeqBounds(index, items.len, "setAt")
   items[index] = value
 
 proc setAt*[T](items: var seq[T], index: int, value: T) =
+  ## std/seq's explicit `setAt`: the same bounds-checked write as
+  ## `xs[i] = v`.
   tuckSetAt(items, index, value)
 
-# `Array[N, T]` needs its OWN pair, separate from tuckAt/tuckSetAt above.
-# core.array's `at`/`setAt` cannot be plain Tuck functions using `items[i]`:
-# the bracket-index dispatch (typecheck.nim's indexCallee) routes to whatever
-# `fn at` is in scope, which — inside `at`'s OWN body — is `at` itself. A
-# Tuck-body `at` for Array[N, T] self-recurses infinitely rather than
-# indexing. std/seq.tuck's `at`/`setAt` dodge this because THIS proc, not a
-# Tuck fn, is what the bracket actually lowers to; core.array's `at`/`setAt`
-# must be `extern` declarations bound to these, with no Tuck body to recurse
-# in — same shape, one container over.
 proc tuckArrayAt*[N: static int, T](items: array[N, T], index: int): T =
+  ## A bounds-checked read of a fixed `Array[N, T]`.
+  ##
+  ## `Array[N, T]` needs its OWN pair, separate from tuckAt/tuckSetAt above.
+  ## core.array's `at`/`setAt` cannot be plain Tuck functions using `items[i]`:
+  ## the bracket-index dispatch (typecheck.nim's indexCallee) routes to whatever
+  ## `fn at` is in scope, which — inside `at`'s OWN body — is `at` itself. A
+  ## Tuck-body `at` for Array[N, T] self-recurses infinitely rather than
+  ## indexing. std/seq.tuck's `at`/`setAt` dodge this because THIS proc, not a
+  ## Tuck fn, is what the bracket actually lowers to; core.array's `at`/`setAt`
+  ## must be `extern` declarations bound to these, with no Tuck body to recurse
+  ## in — same shape, one container over.
   tuckSeqBounds(index, N, "at")
   items[index]
 
 proc tuckArraySetAt*[N: static int, T](items: var array[N, T], index: int,
                                        value: T) =
+  ## A bounds-checked write into a fixed `Array[N, T]`, in place; the length
+  ## is the type's `N`.
   tuckSeqBounds(index, N, "setAt")
   items[index] = value
 
@@ -87,24 +110,30 @@ proc tuckArraySetAt*[N: static int, T](items: var array[N, T], index: int,
 # matter how a caller spells it, so there is no workaround short of not
 # declaring it. `Seq.len`'s existing accidental-UFCS behavior (TODO.md §3)
 # is the only way to get a count today.
-proc getLength*[T](x: T): int = system.len(x)
+proc getLength*[T](x: T): int =
   ## Behind `len`. Named so nothing can be ambiguous with it: a runtime proc
   ## actually called `len` collides with `system.len` at every unqualified
   ## `.len` in this module. FULLY GENERIC on purpose — `len` has to answer for
   ## a Seq AND a str, which a `seq[T]`-only signature cannot.
+  system.len(x)
 
-proc count*[T](items: seq[T]): int = system.len(items)
+proc count*[T](items: seq[T]): int =
   ## PROTOCOLS.md's verb for "how many". Named `count` rather than `len`
   ## precisely so it does not make every unqualified `len` in this module
   ## ambiguous — see std/seq.tuck.
+  system.len(items)
 
-proc byteCount*(s: string): int = s.len
+proc byteCount*(s: string): int =
+  ## A string's length in BYTES (UTF-8 code units), not characters.
+  s.len
 
 proc fromBytes*(bytes: seq[uint8]): string =
+  ## A string whose bytes are exactly `bytes`, uninterpreted.
   result = newString(bytes.len)
   for i, b in bytes: result[i] = char(b)
 
 proc byteAt*(s: string, index: int): uint8 =
+  ## The byte at `index`; out of range is a program error.
   tuckSeqBounds(index, s.len, "byteAt")
   uint8(s[index])
 
@@ -113,6 +142,8 @@ proc joinStr*(parts: seq[string], sep: string): string =
   parts.join(sep)
 
 proc push*[T](items: seq[T], value: T): seq[T] =
+  ## `items` with `value` appended, as a NEW seq: the caller's seq is
+  ## unchanged (value semantics).
   result = items
   result.add(value)
 
@@ -131,10 +162,18 @@ proc push*[T](items: seq[T], value: T): seq[T] =
 #
 # u64 throughout: bit work is on the widest unsigned type, and Tuck's own
 # `int` is signed, where a shift would be arithmetic rather than logical.
-proc bitAnd*(a, b: uint64): uint64 {.inline.} = a and b
-proc bitOr*(a, b: uint64): uint64 {.inline.} = a or b
-proc bitXor*(a, b: uint64): uint64 {.inline.} = a xor b
-proc bitNot*(a: uint64): uint64 {.inline.} = not a
+proc bitAnd*(a, b: uint64): uint64 {.inline.} =
+  ## Bitwise AND.
+  a and b
+proc bitOr*(a, b: uint64): uint64 {.inline.} =
+  ## Bitwise OR.
+  a or b
+proc bitXor*(a, b: uint64): uint64 {.inline.} =
+  ## Bitwise exclusive OR.
+  a xor b
+proc bitNot*(a: uint64): uint64 {.inline.} =
+  ## Bitwise complement of all 64 bits.
+  not a
 
 proc shiftLeft*(a: uint64, by: int): uint64 {.inline.} =
   ## A shift at or past the width is 0, not undefined. C leaves `x << 64`
@@ -143,48 +182,64 @@ proc shiftLeft*(a: uint64, by: int): uint64 {.inline.} =
   if by >= 64 or by < 0: 0'u64 else: a shl by
 
 proc shiftRight*(a: uint64, by: int): uint64 {.inline.} =
+  ## Logical right shift; a shift at or past the width is 0, as for
+  ## `shiftLeft`.
   if by >= 64 or by < 0: 0'u64 else: a shr by
 
-proc tuckConcat*(a, b: string): string {.inline.} = a & b
+proc tuckConcat*(a, b: string): string {.inline.} =
+  ## What `str + str` lowers to: a new string, both inputs untouched.
+  a & b
 
-# `[saturating]` (spec 4.1): clamp at the type's bounds instead of wrapping.
-# This is VALUE SEMANTICS, not an assertion — unlike validate() it is never
-# stripped in release, because removing it would change results.
-#
-# The guard runs where a value is STORED, on a wider intermediate, so a
-# chain like `a + b - c` clamps once against the final value rather than at
-# every operator (an intermediate that overshoots and comes back is not an
-# overflow). Compiles to a branchless cmov: ~3 instructions.
-#
-# ponytail: u64 has no wider intermediate, so a chain that overflows u64
-# itself wraps before this sees it. Exact for u8/u16/u32. See known_bugs.
 proc tuckSat*[T: SomeUnsignedInt](v: uint64): T {.inline.} =
+  ## Clamps a wide unsigned intermediate to `T`'s maximum.
+  ##
+  ## `[saturating]` (spec 4.1): clamp at the type's bounds instead of wrapping.
+  ## This is VALUE SEMANTICS, not an assertion — unlike validate() it is never
+  ## stripped in release, because removing it would change results.
+  ##
+  ## The guard runs where a value is STORED, on a wider intermediate, so a
+  ## chain like `a + b - c` clamps once against the final value rather than at
+  ## every operator (an intermediate that overshoots and comes back is not an
+  ## overflow). Compiles to a branchless cmov: ~3 instructions.
+  ##
+  ## ponytail: u64 has no wider intermediate, so a chain that overflows u64
+  ## itself wraps before this sees it. Exact for u8/u16/u32. See known_bugs.
   if v > uint64(T.high): T.high else: T(v)
 
 proc tuckSatI*[T: SomeSignedInt](v: int64): T {.inline.} =
+  ## The signed twin of `tuckSat`: clamps a wide intermediate to `T`'s range
+  ## at both ends.
   if v > int64(T.high): T.high
   elif v < int64(T.low): T.low
   else: T(v)
 
 proc errCode*(name: static string): uint16 =
+  ## An error variant's stable 16-bit code, computed at compile time from its
+  ## qualified name — the same hash every backend uses, so codes agree.
   # compile-time FNV-1a, folded to 16 bits; stable across builds, no tables
   var h = 2166136261'u32
   for c in name:
     h = (h xor uint32(c)) * 16777619'u32
   uint16((h xor (h shr 16)) and 0xFFFF'u32)
 
-proc ok*[T](r: TuckResult[T]): bool {.inline.} = r.status == tsOk
+proc ok*[T](r: TuckResult[T]): bool {.inline.} =
+  ## Did the result succeed (not failed, not absent)?
+  r.status == tsOk
 
 proc tok*[T](v: T): TuckResult[T] {.inline.} =
+  ## A successful result carrying `v`.
   TuckResult[T](status: tsOk, value: v)
 
 proc tokVoid*(): TuckResult[tuple[]] {.inline.} =
+  ## A successful `!void` result, which carries nothing.
   TuckResult[tuple[]](status: tsOk)
 
 proc terr*[T](code: uint16): TuckResult[T] {.inline.} =
+  ## A failed result carrying the error `code`.
   TuckResult[T](status: tsErr, err: code)
 
 proc tnone*[T](): TuckResult[T] {.inline.} =
+  ## An absent result (`?T` with no value).
   TuckResult[T](status: tsAbsent)
 
 proc parseFloat*(s: string): TuckResult[float] =
@@ -198,6 +253,8 @@ proc tfwd*[T](status: TuckStatus, err: uint16): TuckResult[T] {.inline.} =
   TuckResult[T](status: status, err: err)
 
 proc tuckReportUnhandled*(code: uint16, site: string) =
+  ## The default `errors` handler: reports a dropped error's code and call
+  ## site on stderr and lets the program continue.
   stderr.writeLine("TUCK UNHANDLED: error " & $code & " at " & site)
 
 proc tuckInvariantFailed*(cond, typeName: string) =
@@ -214,16 +271,20 @@ proc tuckInvariantFailed*(cond, typeName: string) =
 
 type
   BumpArena*[Size: static int] = object
+    ## A fixed-size bump allocator (spec 7.3): allocation advances a cursor,
+    ## and only `reset` frees. No backend emits a use of it yet.
     buffer*: array[Size, byte]
     cursor*: int
 
 proc alloc*[Size: static int](arena: var BumpArena[Size], bytes: int): pointer =
+  ## `bytes` from the arena, or an `OutOfMemoryDefect` when it is exhausted.
   if arena.cursor + bytes > Size:
     raise newException(OutOfMemoryDefect, "Arena buffer exhausted")
   result = addr arena.buffer[arena.cursor]
   arena.cursor += bytes
 
 proc reset*[Size: static int](arena: var BumpArena[Size]) =
+  ## Frees everything the arena handed out, at once.
   arena.cursor = 0
 
 # spec 7.2: N slots of an arbitrary T plus an occupancy bitmask. Fixed size,
@@ -256,32 +317,73 @@ type
     slot*: int32
     gen*: uint32
 
+  CellState* = enum
+    ## Where one cell of a pool stands. A cell STARTS ABSENT (#42): acquiring
+    ## it hands out a handle, not a value, and it reads absent until something
+    ## writes it — so zeroed storage is never read as a value of the element
+    ## type, which may break its invariant.
+    csFree      ## nobody holds it
+    csAbsent    ## held, and nothing written since it was acquired
+    csPresent   ## held, and written — by `write`, or handed out by `addr`
+
   ObjectPool*[T; Count: static int] = object
+    ## A fixed pool of `Count` cells of `T` (spec 7.2): storage, a tenancy
+    ## counter per cell, and each cell's state. Exhaustion is absence, never nil.
     storage*: array[Count, T]
     gen*: array[Count, uint32]  ## tenancy counter per cell; 0 = never handed out
-    occupied*: uint64        # ponytail: 64 slots max; widen to an array if needed
+    state*: array[Count, CellState]
+      ## one per cell; it was a single `u64` of held bits, which capped a pool
+      ## at 64 cells the checker never enforced
 
-proc acquire*[T; Count: static int](pool: var ObjectPool[T, Count]): TuckResult[PoolHandle] =
+proc tuckPoolAcquire*[T; Count: static int](pool: var ObjectPool[T, Count]): TuckResult[PoolHandle] =
+  ## The first free cell, now held and absent, as a handle carrying its new
+  ## tenancy; none when every cell is held.
   for i in 0 ..< Count:
-    if (pool.occupied and (1'u64 shl i)) == 0:
-      pool.occupied = pool.occupied or (1'u64 shl i)
+    if pool.state[i] == csFree:
+      pool.state[i] = csAbsent
       pool.gen[i] = pool.gen[i] + 1'u32
       return tok(PoolHandle(slot: int32(i), gen: pool.gen[i]))
   tnone[PoolHandle]()
 
-proc release*[T; Count: static int](pool: var ObjectPool[T, Count], h: PoolHandle) =
-  ## The handle names the cell, so there is nothing to search for and nothing
-  ## to guess. Every way of being wrong is caught rather than absorbed.
+proc heldCell[T; Count: static int](pool: ObjectPool[T, Count], h: PoolHandle,
+                                   what: string): int =
+  ## The cell a handle names, if its holder still holds it. The handle names
+  ## the cell, so there is nothing to search for and nothing to guess; every
+  ## way of being wrong is caught rather than absorbed.
   let i = int(h.slot)
   if i < 0 or i >= Count:
-    tuckPoolMisuse("release of a handle that names no slot (" & $i & ")")
-  elif (pool.occupied and (1'u64 shl i)) == 0:
-    tuckPoolMisuse("double release of slot " & $i)
+    tuckPoolMisuse(what & " of a handle that names no slot (" & $i & ")")
+  elif pool.state[i] == csFree:
+    tuckPoolMisuse(what & " of slot " & $i & ", which nobody holds")
   elif pool.gen[i] != h.gen:
-    tuckPoolMisuse("release of a stale handle for slot " & $i & ": tenancy " &
+    tuckPoolMisuse(what & " of a stale handle for slot " & $i & ": tenancy " &
                    $h.gen & ", slot is on " & $pool.gen[i])
-  else:
-    pool.occupied = pool.occupied and not(1'u64 shl i)
+  i
+
+proc tuckPoolRelease*[T; Count: static int](pool: var ObjectPool[T, Count], h: PoolHandle) =
+  ## Frees the cell `h` holds. A stale or foreign handle aborts the program.
+  pool.state[pool.heldCell(h, "release")] = csFree
+
+proc tuckPoolRead*[T; Count: static int](pool: var ObjectPool[T, Count], h: PoolHandle): TuckResult[T] =
+  ## The value in `h`'s cell, or none if nothing has been written since it was
+  ## acquired.
+  let i = pool.heldCell(h, "read")
+  if pool.state[i] == csPresent: tok(pool.storage[i]) else: tnone[T]()
+
+proc tuckPoolWrite*[T; Count: static int](pool: var ObjectPool[T, Count], h: PoolHandle, v: T) =
+  ## Stores `v` in `h`'s cell, which then reads as present.
+  let i = pool.heldCell(h, "write")
+  pool.storage[i] = v
+  pool.state[i] = csPresent
+
+proc tuckPoolAddr*[T; Count: static int](pool: var ObjectPool[T, Count], h: PoolHandle): ptr UncheckedArray[uint8] =
+  ## The cell's bytes, for an extern to fill (DMA). It is PRESENT from here
+  ## on: it was handed out to be filled, and the checker allows `addr` only
+  ## on a pool whose element carries no invariant (TK-TY31), so whatever the
+  ## extern leaves there is a value of the type.
+  let i = pool.heldCell(h, "addr")
+  pool.state[i] = csPresent
+  cast[ptr UncheckedArray[uint8]](addr pool.storage[i])
 
 # ---------------------------------------------------------------------------
 # spec 7.4: the resource registry.
@@ -333,6 +435,8 @@ type
     ## which is what a kind with no OS side (a test, a counter) wants.
 
   ResourceEntry* = object
+    ## One registered OS handle: the handle itself, its tenancy, whether the slot
+    ## is in use and whether it has been finished, and where it was acquired.
     reference*: int64   ## the OS handle: an fd, or a pointer cast to int
     gen*: uint32        ## tenancy; bumped at the MARK, so the handle dies there
     live*: bool         ## this slot is occupied at all
@@ -340,6 +444,9 @@ type
     site*: string       ## where it was acquired — the report's whole value
 
   ResourceTable* = object
+    ## The registry for one resource kind (spec §7.4): its knobs, its entries,
+    ## registration order (close-all runs it backwards) and how many entries
+    ## await reclamation.
     kind*: string            ## the declared kind name, for messages
     cap*: int                ## 0 = unbounded (seq-backed); >0 = the bound
     policy*: RtResourcePolicy
@@ -362,6 +469,8 @@ proc tuckResourceMisuse*(table: string, what: string) =
 proc initResourceTable*(t: var ResourceTable, kind: string, cap: int,
                         policy: RtResourcePolicy, sweepBatch: int,
                         onFull = rtoAbsent) =
+  ## Sets a kind's knobs. A capped kind gets all its slots up front, since
+  ## its cap is a memory budget, not a limit found at runtime.
   t.kind = kind
   t.cap = cap
   t.policy = policy
@@ -515,6 +624,7 @@ iterator openEntries*(t: ResourceTable): tuple[slot: int, site: string] =
       yield (i, t.entries[i].site)
 
 proc openCount*(t: ResourceTable): int =
+  ## How many handles of this kind were acquired and never finished.
   for _ in t.openEntries(): result.inc
 
 proc reportOpenResources*(t: ResourceTable) =
@@ -681,11 +791,13 @@ type
     registered*: bool        ## already on this thread's flush-hook list
 
 proc acquire(l: var MailboxLock) {.inline.} =
+  ## Takes the mailbox spin lock (a no-op in single-thread mode).
   when MailboxNeedsLock:
     while l.flag.exchange(true, moAcquire):
       while l.flag.load(moRelaxed): cpuRelax()
 
 proc release(l: var MailboxLock) {.inline.} =
+  ## Releases the mailbox spin lock (a no-op in single-thread mode).
   when MailboxNeedsLock:
     l.flag.store(false, moRelease)
 
@@ -733,6 +845,8 @@ when TuckActorsBatch:
     true
 
   proc flushHook[T; Cap: static int](p: pointer): bool {.nimcall, gcsafe.} =
+    ## The flush entry registered for one thread's staging buffer: hands over
+    ## whatever batch it holds.
     handOver(cast[ptr Staging[T, Cap]](p)[])
 
   proc flushDueHook[T; Cap: static int](p: pointer): bool {.nimcall, gcsafe.} =
@@ -750,6 +864,8 @@ when TuckActorsBatch:
       handOver(st[])
 
   proc stagingFor[T; Cap: static int](mb: var Mailbox[T, Cap]): ptr Staging[T, Cap] =
+    ## This thread's staging buffer for mailbox `mb`, created (and registered
+    ## for flushing) on first use.
     var st {.threadvar.}: Staging[T, Cap]
     if not st.registered:
       st.registered = true
@@ -763,6 +879,9 @@ when TuckActorsBatch:
 
 
 proc enqueue*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: T): bool =
+  ## Sends `msg` to the mailbox; false when it is full and the message is
+  ## dropped (spec §9.1). In batch mode the message is staged and handed
+  ## over when the batch fills or its deadline passes.
   when TuckActorsBatch:
     let st = stagingFor(mb)
     if st.cur == nil:
@@ -917,6 +1036,7 @@ proc cFree(p: pointer) {.importc: "free", header: "<stdlib.h>".}
 
 type
   FileOp = enum
+    ## Which file operation a request to the blocking worker performs.
     fopRead, fopWrite, fopAppend, fopRemove
 
   IoStatus = enum
@@ -939,6 +1059,8 @@ type
     nekIoFailed
 
   FileReq = object
+    ## One file operation for the blocking worker. Every pointer is C memory the
+    ## caller owns, so no GC memory crosses to the worker thread.
     op: FileOp
     path: cstring          ## caller-owned, alive for the whole call
     data: cstring          ## write/append payload; caller-owned
@@ -1018,6 +1140,8 @@ proc fsErr[T](s: IoStatus): TuckResult[T] =
   of iosOk, iosIoFailed, iosEndOfInput: terr[T](errCode("fs/FsError.IoFailed"))
 
 proc readFile*(path: string): TuckResult[tuple[content: string]] =
+  ## The whole file at `path`, read on the blocking worker so other coroutines
+  ## keep running. Fails with an fs error code.
   var r = runFileOp(fopRead, path)
   if r.status != iosOk: return fsErr[tuple[content: string]](r.status)
   var content = newString(r.outLen)
@@ -1027,21 +1151,26 @@ proc readFile*(path: string): TuckResult[tuple[content: string]] =
   tok((content: content))
 
 proc writeFile*(path: string, content: string): TuckResult[tuple[]] =
+  ## Replaces the file at `path` with `content`, on the blocking worker.
   let r = runFileOp(fopWrite, path, content)
   if r.status == iosOk: tokVoid() else: fsErr[tuple[]](r.status)
 
 proc appendFile*(path: string, content: string): TuckResult[tuple[]] =
+  ## Appends `content` to the file at `path`, creating it if needed, on the
+  ## blocking worker.
   let r = runFileOp(fopAppend, path, content)
   if r.status == iosOk: tokVoid() else: fsErr[tuple[]](r.status)
 
 proc removeFile*(path: string): TuckResult[tuple[]] =
+  ## Deletes the file at `path`, on the blocking worker.
   let r = runFileOp(fopRemove, path)
   if r.status == iosOk: tokVoid() else: fsErr[tuple[]](r.status)
 
-proc fileExists*(path: string): bool = os.fileExists(path)
+proc fileExists*(path: string): bool =
   ## NOT offloaded: a stat is a metadata lookup, microseconds on any live
   ## filesystem. Paying a thread handoff and a pipe round-trip for it would
   ## cost more than the call.
+  os.fileExists(path)
 
 proc makeDir*(path: string): TuckResult[tuple[]] =
   ## NOT offloaded, same rationale as fileExists. Idempotent by an explicit
@@ -1055,8 +1184,12 @@ proc makeDir*(path: string): TuckResult[tuple[]] =
     if e.errorCode == 13: fsErr[tuple[]](iosAccessDenied)
     else: fsErr[tuple[]](iosIoFailed)
 
-proc print*(text: string) = stdout.write(text)
-proc printLine*(text: string) = stdout.writeLine(text)
+proc print*(text: string) =
+  ## Writes `text` to stdout with no newline.
+  stdout.write(text)
+proc printLine*(text: string) =
+  ## Writes `text` and a newline to stdout.
+  stdout.writeLine(text)
 
 type
   ReadLineReq = object
@@ -1135,10 +1268,14 @@ proc classifyErrno(): NetErrKind =
   else: nekIoFailed
 
 proc setNonBlocking(fd: cint) =
+  ## Puts `fd` in non-blocking mode, so the reactor can wait on it instead of
+  ## the call blocking the thread.
   let fl = posix.fcntl(fd, posix.F_GETFL, 0)
   discard posix.fcntl(fd, posix.F_SETFL, fl or posix.O_NONBLOCK)
 
 proc listen*(port: int): TuckResult[tuple[fd: int]] =
+  ## A non-blocking TCP socket listening on all interfaces at `port`
+  ## (SO_REUSEADDR set, backlog 64), or the classified errno.
   let sh = posix.socket(posix.AF_INET, posix.SOCK_STREAM, 0)
   if cint(sh) < 0: return netErr[tuple[fd: int]](classifyErrno())
   let fd = cint(sh)
@@ -1254,20 +1391,30 @@ proc send*(fd: int, data: string): TuckResult[tuple[sent: int]] =
   tok((sent: sent))
 
 proc close*(fd: int) =
+  ## Closes an fd. Errors are ignored: there is nothing a caller can do.
   discard posix.close(cint(fd))
 
-proc argCount*(): tuple[count: int] = (count: paramCount())
-proc argAt*(index: int): tuple[arg: string] = (arg: paramStr(index))
+proc argCount*(): tuple[count: int] =
+  ## How many command-line arguments were passed, not counting the program.
+  (count: paramCount())
+proc argAt*(index: int): tuple[arg: string] =
+  ## Command-line argument `index` (1-based; 0 is the program).
+  (arg: paramStr(index))
 
 proc getEnv*(name: string): TuckResult[tuple[value: string]] =
+  ## The environment variable `name`, or none when it is unset.
   if os.existsEnv(name):
     tok((value: os.getEnv(name)))
   else:
     tnone[tuple[value: string]]()
 
-proc exit*(code: int) = quit(code)
+proc exit*(code: int) =
+  ## Ends the process with `code` at once.
+  quit(code)
 
-proc nowMs*(): tuple[ms: uint64] = (ms: uint64(epochTime() * 1000))
+proc nowMs*(): tuple[ms: uint64] =
+  ## Wall-clock time in milliseconds since the Unix epoch.
+  (ms: uint64(epochTime() * 1000))
 proc sleepMs*(ms: uint32) =
   ## The reactor's timer, NOT the worker and NOT os.sleep. A sleep is the one
   ## "blocking" op that was never blocking-by-nature: waiting for a deadline is
@@ -1288,6 +1435,7 @@ proc sleepMs*(ms: uint32) =
 const pcgMult = 6364136223846793005'u64
 
 proc pcgStep(state, inc: uint64): tuple[state: uint64, value: uint32] =
+  ## One PCG32 step: the next state, and the 32-bit output of the current one.
   let newState = state * pcgMult + inc
   let xorshifted = uint32(((state shr 18) xor state) shr 27)
   let rot = int(state shr 59)
@@ -1295,12 +1443,15 @@ proc pcgStep(state, inc: uint64): tuple[state: uint64, value: uint32] =
   (state: newState, value: value)
 
 proc newDice*(seed: uint64): tuple[state: uint64, inc: uint64] =
+  ## A PCG32 generator seeded with `seed`: the stream is derived from the seed,
+  ## and the state is warmed up by two steps.
   let inc = (seed shl 1) or 1'u64
   let (warm, _) = pcgStep(0'u64, inc)
   let (state, _) = pcgStep(warm + seed, inc)
   (state: state, inc: inc)
 
 proc newDiceFromOs*(): tuple[state: uint64, inc: uint64] =
+  ## A PCG32 generator seeded from the OS's cryptographic random source.
   var seed: uint64
   let bytes = sysrand.urandom(sizeof(seed))
   copyMem(addr seed, unsafeAddr bytes[0], sizeof(seed))
@@ -1308,17 +1459,52 @@ proc newDiceFromOs*(): tuple[state: uint64, inc: uint64] =
 
 proc rollRange*(state, inc: uint64, low, high: int64):
     tuple[state: uint64, inc: uint64, value: int64] =
-  let (newState, value) = pcgStep(state, inc)
-  let span = uint64(high - low + 1)
-  (state: newState, inc: inc, value: low + int64(uint64(value) mod span))
+  ## The next value in `low .. high` (inclusive, `low <= high`) and the
+  ## advanced state. Every value in the span is equally likely: a draw in
+  ## the partial bucket at the top of the draw's range is rejected and drawn
+  ## again (PCG's bounded_rand), where reducing it modulo the span would
+  ## favour the low values. A span wider than 2^32 draws 64 bits from two
+  ## steps. The span is computed in wrapping uint64, so the full i64 range —
+  ## span 2^64, which wraps to 0 — is a plain 64-bit draw rather than the
+  ## overflow `high - low + 1` was.
+  var s = state
+  template next32(): uint64 =
+    ## One PCG32 output, advancing `s`.
+    let (ns, v) = pcgStep(s, inc)
+    s = ns
+    uint64(v)
+  template next64(): uint64 =
+    ## Two PCG32 outputs as one 64-bit draw.
+    let hi = next32()
+    (hi shl 32) or next32()
+  let span = cast[uint64](high) - cast[uint64](low) + 1'u64
+  var r: uint64
+  if span == 0:
+    r = next64()
+  elif span <= (1'u64 shl 32):
+    let threshold = ((1'u64 shl 32) - span) mod span
+    r = next32()
+    while r < threshold: r = next32()
+    r = r mod span
+  else:
+    let threshold = (0'u64 - span) mod span
+    r = next64()
+    while r < threshold: r = next64()
+    r = r mod span
+  (state: s, inc: inc, value: cast[int64](cast[uint64](low) + r))
 
 # std/math — elementary float functions, direct passthroughs to Nim's own.
-proc sqrt*(value: float64): float64 = stdmath.sqrt(value)
-proc pow*(base, exp: float64): float64 = stdmath.pow(base, exp)
+proc sqrt*(value: float64): float64 =
+  ## Square root.
+  stdmath.sqrt(value)
+proc pow*(base, exp: float64): float64 =
+  ## `base` raised to `exp`.
+  stdmath.pow(base, exp)
 
 # std/hash — FNV-1a, 64-bit. Same algorithm as errCode above (32-bit,
 # compile-time only); this is the runtime, arbitrary-length variant.
 proc hash*(data: string): uint64 =
+  ## 64-bit FNV-1a of the string's bytes.
   result = 14695981039346656037'u64
   for c in data:
     result = (result xor uint64(ord(c))) * 1099511628211'u64

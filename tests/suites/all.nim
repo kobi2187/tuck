@@ -41,7 +41,9 @@ import memory
 import object_composition
 import odin_backend
 import optimize
+import owner_fields
 import pointer_containment
+import pools
 import recursive_types
 import resources
 import resources_rt
@@ -57,6 +59,8 @@ import when_target
 import with_update
 
 type Entry = tuple[name: string, body: SuiteProc, quick: bool]
+  ## One registered suite: its name, its body, and whether it is check-only
+  ## (part of the `--quick` set).
 
 # `quick` marks the check-only suites — no `tuck build`, no `odin build`. Those
 # are what tests/run --quick runs, the inner-loop gate that quick-test.sh was.
@@ -96,7 +100,9 @@ let registry: seq[Entry] = @[
   ("object_composition",  SuiteProc(object_composition.run),  false),
   ("odin_backend",        SuiteProc(odin_backend.run),        false),
   ("optimize",            SuiteProc(optimize.run),            false),
+  ("owner_fields",        SuiteProc(owner_fields.run),        false),
   ("pointer_containment", SuiteProc(pointer_containment.run), true),
+  ("pools",               SuiteProc(pools.run),               false),
   ("recursive_types",     SuiteProc(recursive_types.run),     false),
   ("resources",           SuiteProc(resources.run),           false),
   ("resources_rt",        SuiteProc(resources_rt.run),        false),
@@ -113,13 +119,17 @@ let registry: seq[Entry] = @[
 ]
 
 proc suiteBody*(name: string): SuiteProc =
+  ## The body of the suite called `name`; an unknown name is an error, not a
+  ## silent no-op.
   for e in registry:
     if e.name == name: return e.body
   raise newException(ValueError, "no such suite: " & name)
 
 proc allSuites*(): seq[string] =
+  ## Every registered suite name, in registration order.
   for e in registry: result.add e.name
 
 proc quickSuites*(): seq[string] =
+  ## The check-only suites — what `tests/run --quick` runs.
   for e in registry:
     if e.quick: result.add e.name

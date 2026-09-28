@@ -7,40 +7,40 @@ struct TRec_value(T_value) {
     T_value value;
 }
 
-struct tuck_type_EthernetFrame {
+struct tuckˑtypeˑEthernetFrame {
     ubyte[6] dst;
     ubyte[6] src;
     ushort ethertype;
 }
 
-struct tuck_type_Temperature {
+struct tuckˑtypeˑTemperature {
     float celsius;
 }
 
-void validate_tuck_type_Temperature(tuck_type_Temperature self)
+void validate_tuckˑtypeˑTemperature(tuckˑtypeˑTemperature self)
 {
     version (tuckNoInvariants) {} else
     {
         if (!((self.celsius >= -273.15)))
-            rt.tuckInvariantFailed("(self.celsius >= -273.15)", "tuck_type_Temperature");
+            rt.tuckInvariantFailed("(self.celsius >= -273.15)", "tuckˑtypeˑTemperature");
     }
 }
 
-tuck_type_Temperature __validated_tuck_type_Temperature(tuck_type_Temperature v)
+tuckˑtypeˑTemperature __validated_tuckˑtypeˑTemperature(tuckˑtypeˑTemperature v)
 {
-    validate_tuck_type_Temperature(v);
+    validate_tuckˑtypeˑTemperature(v);
     return v;
 }
 
-struct tuck_type_UartDriver {
+struct tuckˑactorˑUartDriver {
     // no state
 }
 
-__gshared tuck_type_UartDriver tuck_type_UartDriverSingleton;
+__gshared tuckˑactorˑUartDriver tuckˑactorˑUartDriverSingleton;
 
 
-rt.TuckResult!(TRec_value!(ushort)) tuck_fn_readSensor(T)(T payload) {
-    stderr.writeln("TUCK PENDING: tuck_fn_readSensor invoked (not implemented)");
+rt.TuckResult!(TRec_value!(ushort)) tuckˑfnˑreadSensor(T)(T payload) {
+    stderr.writeln("TUCK PENDING: readSensor invoked (not implemented)");
     return typeof(return).init;
 }
 

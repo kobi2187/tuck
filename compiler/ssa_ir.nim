@@ -63,7 +63,10 @@ import ast, tables, sets, strutils
 
 type
   ValueId* = distinct int32
+    ## Index of a value in `SsaFn.values`; `NoValue` (-1) when there is none.
+    ## Distinct so a value index cannot be passed where a block index is meant.
   BlockId* = distinct int32
+    ## Index of a block in `SsaFn.blocks`; `NoBlock` (-1) when there is none.
 
   Place* = string
     ## An access path: `b`, `b.ask`. "" means the walk could not NAME this
@@ -101,6 +104,8 @@ type
     fkTwinParam
 
   Def* = object
+    ## How a value was defined: the kind of definition, the expression that
+    ## produced it, and the values it was built from.
     kind*: DefKind
     at*: NodeId          ## the expression that produced it; unset for phis
     src*: Expr           ## ...and that expression, for a consumer that needs
@@ -108,6 +113,8 @@ type
     inputs*: seq[ValueId]  ## phi operands, or the base of a projection
 
   Use* = object
+    ## One read of a value: the node that reads it, the block the read happens
+    ## in, and its source position for dumps.
     at*: NodeId
     blk*: BlockId        ## WHERE the read happens. Replaces the region
                          ## string: "can these two both happen" is now a
@@ -116,6 +123,9 @@ type
                          ## the goldens — a NodeId means nothing to a reader
 
   Value* = object
+    ## One version of one place: its definition, the block it is defined in,
+    ## and every read of it. `freedAt`/`freedBy` are reserved for the ownership
+    ## pass's decision and are not written today.
     id*: ValueId
     place*: Place
     version*: int
@@ -126,6 +136,8 @@ type
     freedBy*: FreeKind
 
   Block* = object
+    ## A basic block: its predecessors, whether all of them are known yet
+    ## (`sealed`), and whether control always leaves the body from it.
     id*: BlockId
     label*: string       ## human-readable, for `dump` — never parsed
     preds*: seq[BlockId]
@@ -141,6 +153,8 @@ type
                          ## (`return`, `raise`), so nothing after it runs
 
   SsaFn* = object
+    ## One body's SSA graph: every value and block, the entry block, and the
+    ## node -> value index every consumer starts from.
     name*: string
     values*: seq[Value]
     blocks*: seq[Block]
@@ -181,15 +195,29 @@ const
 
 proc `==`*(a, b: ValueId): bool {.borrow.}
 proc `==`*(a, b: BlockId): bool {.borrow.}
-proc `$`*(v: ValueId): string = "%" & $int32(v)
-proc `$`*(b: BlockId): string = "b" & $int32(b)
-proc isSet*(v: ValueId): bool = int32(v) >= 0
-proc isSet*(b: BlockId): bool = int32(b) >= 0
+proc `$`*(v: ValueId): string =
+  ## A value id as dumps print it: `%3`.
+  "%" & $int32(v)
+proc `$`*(b: BlockId): string =
+  ## A block id as dumps print it: `b2`.
+  "b" & $int32(b)
+proc isSet*(v: ValueId): bool =
+  ## Does this name a value, rather than `NoValue`?
+  int32(v) >= 0
+proc isSet*(b: BlockId): bool =
+  ## Does this name a block, rather than `NoBlock`?
+  int32(b) >= 0
 
-proc val*(fn: SsaFn, v: ValueId): Value = fn.values[int32(v)]
-proc blk*(fn: SsaFn, b: BlockId): Block = fn.blocks[int32(b)]
+proc val*(fn: SsaFn, v: ValueId): Value =
+  ## The value `v` of this graph.
+  fn.values[int32(v)]
+proc blk*(fn: SsaFn, b: BlockId): Block =
+  ## The block `b` of this graph.
+  fn.blocks[int32(b)]
 
 proc rootOf*(p: Place): string =
+  ## The variable a place starts at: `b.ask` -> `b`. A bare name is its own
+  ## root.
   let i = p.find('.')
   if i < 0: p else: p[0 ..< i]
 

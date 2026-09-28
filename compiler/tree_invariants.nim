@@ -23,9 +23,14 @@ type Census = object
   bad: seq[string]
 
 proc where(sp: Span): string =
+  ## A span as `file:line:col` (the file omitted when unknown), for the
+  ## reports these checks produce.
   (if sp.file.len > 0: sp.file & ":" else: "") & $sp.line & ":" & $sp.col
 
 proc note(c: var Census, id: NodeId, obj: pointer, what: string) =
+  ## Records that `obj` holds `id`, and reports a missing id or a second,
+  ## DIFFERENT object holding the same id. The same object seen twice is
+  ## deliberate sharing and is fine.
   if not id.isSet:
     c.bad.add what & " has no id"
     return
@@ -40,6 +45,8 @@ proc note(c: var Census, id: NodeId, obj: pointer, what: string) =
               " and " & what
 
 proc walk(c: var Census, e: Expr) =
+  ## Census of an expression tree, iteratively: every node, plus each chain
+  ## step (which carries its own id but is not an Expr).
   var stack = @[e]
   while stack.len > 0:
     let n = stack.pop()
@@ -52,6 +59,8 @@ proc walk(c: var Census, e: Expr) =
     for ch in n.children: stack.add ch
 
 proc walk(c: var Census, d: Decl) =
+  ## Census of a declaration: its own id, then every expression it owns and
+  ## every declaration nested in it.
   if d == nil: return
   c.note(d.id, cast[pointer](d), $d.kind & " " & d.name & " at " & where(d.span))
   for e in d.ownExprs: c.walk(e)
@@ -68,6 +77,8 @@ proc idErrors*(mods: seq[Module]): seq[string] =
   c.bad
 
 proc declaredTypeNames(m: Module): HashSet[string] =
+  ## The names of every `type` and `object` declared in `m` — what a named
+  ## type's declaration edge may point at.
   for d in m.decls:
     if d != nil and d.kind in {dkType, dkObject}: result.incl d.name
 

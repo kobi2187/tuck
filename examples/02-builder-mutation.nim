@@ -1,26 +1,26 @@
 {.experimental: "codeReordering".}
 import ../compiler/tuck_rt
 
-proc tuck_fn_withDefaults*(self: tuck_type_ServerConfig): tuck_type_ServerConfig
-proc tuck_fn_start*(self: tuck_type_ServerConfig): bool
-proc tuck_fn_main*(): void
+proc tuckˑfnˑwithDefaults*(self: tuckˑtypeˑServerConfig): tuckˑtypeˑServerConfig
+proc tuckˑfnˑstart*(self: tuckˑtypeˑServerConfig): bool
+proc tuckˑfnˑmain*(): void
 
-type tuck_type_ServerConfig* = object
+type tuckˑtypeˑServerConfig* = object
   port*: int
   timeout*: uint32
   running*: bool
 
-proc tuck_fn_withDefaults*(self: tuck_type_ServerConfig): tuck_type_ServerConfig =
-  return tuck_type_ServerConfig(port: 80, timeout: 30'u32, running: false)
+proc tuckˑfnˑwithDefaults*(self: tuckˑtypeˑServerConfig): tuckˑtypeˑServerConfig =
+  return tuckˑtypeˑServerConfig(port: 80, timeout: 30'u32, running: false)
 
-proc tuck_fn_start*(self: tuck_type_ServerConfig): bool =
+proc tuckˑfnˑstart*(self: tuckˑtypeˑServerConfig): bool =
   return true
 
-proc tuck_fn_main*(): void =
-  var tuck_server = tuck_type_ServerConfig(port: 0, timeout: 0'u32, running: false)
-  tuck_server = tuck_type_ServerConfig(port: 80, timeout: 30'u32, running: false)
-  tuck_server.port = 8080
-  tuck_server.timeout = 60
-  var tuck_ok = tuck_fn_start(tuck_server)
+proc tuckˑfnˑmain*(): void =
+  var tuckˑvˑserver = tuckˑtypeˑServerConfig(port: 0, timeout: 0'u32, running: false)
+  tuckˑvˑserver = tuckˑtypeˑServerConfig(port: 80, timeout: 30'u32, running: false)
+  tuckˑvˑserver.port = 8080
+  tuckˑvˑserver.timeout = 60
+  var tuckˑvˑok = tuckˑfnˑstart(tuckˑvˑserver)
   return
 

@@ -2,5 +2,5 @@
 import ../compiler/tuck_rt
 export tuck_rt
 
-type tuck_type_NetError* = enum Refused, AddressInUse, Unreachable, Closed, IoFailed
+type tuckˑtypeˑNetError* = enum Refused, AddressInUse, Unreachable, Closed, IoFailed
 

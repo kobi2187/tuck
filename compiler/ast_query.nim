@@ -43,7 +43,10 @@ export strutils.repeat, strutils.capitalizeAscii
 # strutils. Re-exported instead so the backends that relied on getting them
 # from this module still do, and so the codebase has one implementation rather
 # than a stdlib one nobody reached for.
-template capitalize*(s: string): string = capitalizeAscii(s)
+template capitalize*(s: string): string =
+  ## Upper-cases the first character (ASCII only). An alias for
+  ## `capitalizeAscii`, kept so existing backend call sites read unchanged.
+  capitalizeAscii(s)
 
 # --- Declaration lookup ----------------------------------------------------
 #
@@ -190,6 +193,16 @@ proc recordFieldsNamed(m: Module, name: string): seq[FieldDef] =
     if cd.typeBody == nil or cd.typeBody.kind != tkRecord: continue
     for f in cd.typeBody.fields: result.add(f)
 
+proc renamedFields*(fields: seq[FieldDef],
+                    renames: seq[(string, string)]): seq[FieldDef] =
+  ## `fields` as `+ Name {old -> new}` brings them in: a renamed field under
+  ## its new name, the rest unchanged.
+  for f in fields:
+    var g = f
+    for (old, renamed) in renames:
+      if f.name == old: g.name = renamed
+    result.add g
+
 proc composedFields*(m: Module, d: Decl): seq[FieldDef] =
   ## An object's fields INCLUDING everything `+ Record` merges in — composition
   ## is set union (spec §4.5), so a composed field is the object's own as far
@@ -202,7 +215,8 @@ proc composedFields*(m: Module, d: Decl): seq[FieldDef] =
   if d.kind != dkObject: return
   for mem in d.objMembers:
     let name = composedName(mem)
-    if name.len > 0: result.add recordFieldsNamed(m, name)
+    if name.len > 0:
+      result.add renamedFields(recordFieldsNamed(m, name), mem.renames)
 
 iterator allFns*(m: Module): Decl =
   ## Every fn in the module with a body to walk: top-level, plus the members
@@ -392,27 +406,48 @@ proc matchArmsReturn*(m: Expr): bool =
       return true
   false
 
+proc implicitTailValue*(body: Expr): Expr =
+  ## The expression a fn body's value falls off the end as — its last
+  ## statement, when that is a value rather than control flow — or nil.
+  ##
+  ## One definition for the two readers that must agree: lowering, which
+  ## makes it an explicit `return` (injectTailReturn), and the checker's
+  ## variant tracing (typecheck_flow), which must count what it yields.
+  ## They used to keep two exclusion lists; the checker's lacked a tail
+  ## `match`, so a fn returning `Closed` early and `Open` from a tail match
+  ## was traced as returning only `Closed`, and an illegal transition out of
+  ## `Open` checked clean.
+  if body == nil or body.kind != exkBlock or body.stmts.len == 0: return nil
+  let lastS = body.stmts[^1]
+  if lastS == nil: return nil
+  # (A tail `..` chain is the base as its steps leave it: lowering_chains
+  # writes that `return`, so no chain reaches here.)
+  case lastS.kind
+  of exkMatch:
+    # `match subject:` whose arms are VALUES is an expression, so the tail
+    # match is the fn's result. Arms that return on their own already are
+    # the result — wrapping those in `return (case ...)` asks Nim to type a
+    # case expression whose branches never produce a value. (A decision
+    # table — subject == nil — keeps its per-row returns.)
+    if lastS.subject != nil and not matchArmsReturn(lastS): lastS else: nil
+  of exkReturn, exkRaise, exkIf, exkFor, exkWhile, exkBreak, exkContinue,
+     exkAssign, exkBlock, exkSelect, exkSend, exkDiscard, exkTripleDot:
+    nil
+  of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkCall,
+     exkChain, exkBinary, exkUnary, exkBracket, exkBracketAssign, exkImport,
+     exkCombinator, exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef,
+     exkMixinRef, exkDefer, exkFinish, exkAcquire, exkOrdinal, exkValidate,
+     exkIfaceCall, exkPoolOp:
+    lastS
+
 proc injectTailReturn*(body: Expr, retTypeStr: string) =
-  ## Turn a fn body's trailing expression statement into an explicit `return`
-  ## (Nim needs it), leaving control-flow tails and decision tables alone.
-  if body != nil and body.kind == exkBlock and body.stmts.len > 0 and
-     retTypeStr != "void":
-    let lastS = body.stmts[^1]
-    # (A tail `..` chain is the base as its steps leave it: lowering_chains
-    # writes that `return`, so no chain reaches here.)
-    if lastS.kind == exkMatch and lastS.subject != nil and
-         not matchArmsReturn(lastS):
-      # `match subject:` whose arms are VALUES is an expression, so the tail
-      # match is the fn's result. Arms that return on their own already are
-      # the result — wrapping those in `return (case ...)` asks Nim to type a
-      # case expression whose branches never produce a value. (A decision
-      # table — subject == nil — keeps its per-row returns.)
-      body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
-    elif lastS.kind notin {exkReturn, exkRaise, exkIf, exkMatch, exkFor,
-                           exkWhile, exkBreak, exkContinue,
-                           exkAssign, exkBlock, exkSelect, exkSend,
-                           exkDiscard, exkTripleDot}:
-      body.stmts[^1] = Expr(span: lastS.span, kind: exkReturn, returnVal: lastS)
+  ## Turn a fn body's trailing value (implicitTailValue) into an explicit
+  ## `return` (Nim needs it), leaving control-flow tails and decision tables
+  ## alone.
+  if retTypeStr == "void": return
+  let v = implicitTailValue(body)
+  if v != nil:
+    body.stmts[^1] = Expr(span: v.span, kind: exkReturn, returnVal: v)
 
 
 # --- sketch-mode type queries --------------------------------------------
@@ -424,11 +459,15 @@ proc injectTailReturn*(body: Expr, retTypeStr: string) =
 proc typeMentionsName*(t: Type, name: string): bool
 
 proc anyMentionName(ts: seq[Type], name: string): bool =
+  ## Does any type in `ts` mention the type name `name`? The seq case of
+  ## `typeMentionsName`.
   for t in ts:
     if typeMentionsName(t, name): return true
   false
 
 proc fieldsMentionName(fs: seq[FieldDef], name: string): bool =
+  ## Does any field's type mention the type name `name`? The field-list case
+  ## of `typeMentionsName`, for records and sum variants.
   for f in fs:
     if typeMentionsName(f.typ, name): return true
   false
@@ -455,9 +494,10 @@ proc typeMentionsName*(t: Type, name: string): bool =
   else: false
 
 proc hasMissingType*(t: Type): bool =
-  ## Does this type contain the checker's "I could not work it out" marker
-  ## anywhere inside it? A backend that must spell a type needs to know
-  ## before it tries.
+  ## Does this type have a hole — a nil where a type belongs — anywhere
+  ## inside it, or is it nil outright? A backend that must spell a type needs
+  ## to know before it tries. (There was once a named `missing type`
+  ## sentinel as well; the checker now reports instead of stamping one.)
   if t == nil: return true
   case t.kind
   of tkNamed: false
@@ -500,6 +540,12 @@ proc inferLitType*(e: Expr): Type =
 # The test for belonging here: the answer depends only on the AST and the
 # checker, never on the target language.
 
+proc isStr*(t: Type): bool =
+  ## Is `t` the builtin `str` type? Strings get their own overwrite rule in
+  ## ownership (a literal is static storage, not an owned buffer), and they
+  ## are the only type whose temporaries lowering_strtemps names and frees.
+  t != nil and t.kind == tkNamed and t.name == "str"
+
 proc isStringConcat*(e: Expr): bool =
   ## `+` over strings. Every backend spells the RESULT differently (Nim `&`,
   ## D `~`, a runtime call in Odin) but they all ask this same question.
@@ -537,16 +583,10 @@ proc memberOwner*(m: Module, recvT: Type): string =
     if d != nil and d.kind == dkObject and d.name == recvT.name: return d.name
   ""
 
-proc memberCalleeOf*(m: Module, owner, calleeName: string): string =
-  ## The qualified name a member call must emit, or "" when `calleeName` is
-  ## not a member of `owner`.
-  ##
-  ## A member call arrives as a bare-name callee with the receiver as args[0]
-  ## (the checker's rewrite), so the name alone cannot say which fn is meant
-  ## once a top-level fn shares it. The receiver's TYPE can, and the
-  ## declaration emitted under exactly this name — deriving it here is what
-  ## keeps the two in step.
-  if owner == "": return ""
+proc memberDeclOf*(m: Module, owner, calleeName: string): Decl =
+  ## The member fn of object `owner` a call named `calleeName` reaches, or nil
+  ## when `owner` declares no such member.
+  if owner == "": return nil
   for d in m.decls:
     if d == nil or d.kind != dkObject or d.name != owner: continue
     for mem in d.objMembers:
@@ -557,8 +597,20 @@ proc memberCalleeOf*(m: Module, owner, calleeName: string): string =
       # Both spellings mean this member. Same comparison
       # resolution.poolHandleName makes, for the same reason.
       if mem.name == calleeName or prefixed(mem.name, nkFn) == calleeName:
-        return owner & "_" & mem.name
-  ""
+        return mem
+  nil
+
+proc memberCalleeOf*(m: Module, owner, calleeName: string): string =
+  ## The qualified name a member call must emit, or "" when `calleeName` is
+  ## not a member of `owner`.
+  ##
+  ## A member call arrives as a bare-name callee with the receiver as args[0]
+  ## (the checker's rewrite), so the name alone cannot say which fn is meant
+  ## once a top-level fn shares it. The receiver's TYPE can, and the
+  ## declaration emitted under exactly this name — deriving it here is what
+  ## keeps the two in step.
+  let mem = memberDeclOf(m, owner, calleeName)
+  if mem == nil: "" else: memberProcName(owner, mem.name)
 
 proc memberRecvType*(res: Resolution, e: Expr): Type =
   ## A member call's receiver type: args[0]'s (the checker's rewrite), or the
@@ -568,8 +620,16 @@ proc memberRecvType*(res: Resolution, e: Expr): Type =
     for f in e.args[0].fields:
       if f.name == "self": result = res.typeFor(f.value)
 
+proc memberCallDecl*(res: Resolution, m: Module, e: Expr): Decl =
+  ## The member fn a call reaches, by its receiver's type — the declaration
+  ## `memberCallee` names — or nil when it is not a member call.
+  if e == nil or e.kind != exkCall or e.callee == nil or
+     e.callee.kind != exkVar or e.args.len < 1 or e.args[0] == nil:
+    return nil
+  memberDeclOf(m, memberOwner(m, memberRecvType(res, e)), e.callee.name)
+
 proc memberCallee*(res: Resolution, m: Module, e: Expr): string =
-  ## The qualified name of the member fn a call reaches — `tuck_type_Dog_noise`
+  ## The qualified name of the member fn a call reaches — `tuckˑobjectˑDogˑnoise`
   ## for `noise(d)` with `d: Dog` — or "" when it is not a member call. Every
   ## emitter, and the pass that decides twin calls, asks this; each derived
   ## it for itself once, and two of the four ignored the payload-literal form.
@@ -622,10 +682,10 @@ proc constDeclFor*(m: Module, raw: string): Decl =
   # (declared differently in two modules) stays unresolved rather than
   # resolving to whichever loaded first.
   result = m.findDecl(dkConst, raw)
-  if result == nil: result = m.findDecl(dkConst, prefixed(raw, nkValue))
+  if result == nil: result = m.findDecl(dkConst, prefixed(raw, nkConst))
   if result != nil or raw in semLayer.ambiguousConsts: return
   result = semLayer.constNames.getOrDefault(raw, nil)
-  if result == nil: result = semLayer.constNames.getOrDefault(prefixed(raw, nkValue), nil)
+  if result == nil: result = semLayer.constNames.getOrDefault(prefixed(raw, nkConst), nil)
 
 proc constIntOf*(m: Module, text: string, depth = 0): Option[int] =
   ## A size written as TEXT — an attribute's value, or an `Array[N, T]` size,
@@ -840,18 +900,6 @@ proc markUnimplemented*(d: Decl) =
 # Nothing is lost by erasing it: a fn type is structural in all three targets,
 # so there was no nominal identity to keep.
 
-proc substParams*(t: Type, binds: Table[string, Type]): Type =
-  ## `t` with every type-param NAME replaced by what it was bound to.
-  if t == nil: return nil
-  case t.kind
-  of tkNamed:
-    if binds.hasKey(t.name): binds[t.name] else: t
-  of tkApp:
-    var args: seq[Type]
-    for a in t.args: args.add(substParams(a, binds))
-    Type(span: t.span, kind: tkApp, base: substParams(t.base, binds), args: args)
-  else: t
-
 proc fnSigInstance*(m: Module, t: Type): Type =
   ## `Pred[int]` -> the tkFunc it stands for, with T substituted. nil when `t`
   ## is not a generic fnsig application, so a caller can fall through to its
@@ -866,10 +914,10 @@ proc fnSigInstance*(m: Module, t: Type): Type =
     var ps: seq[Type]
     var names: seq[string]
     for prm in d.sigParams:
-      ps.add(substParams(prm.typ, binds))
+      ps.add(substType(prm.typ, binds))
       names.add(prm.name)
     return Type(span: t.span, kind: tkFunc, params: ps, paramNames: names,
-                result: substParams(d.sigReturn, binds))
+                result: substType(d.sigReturn, binds))
   nil
 
 # --- interfaces: who satisfies what (moved from codegen_common so the
@@ -881,6 +929,35 @@ proc findObjectMember*(obj: Decl, name: string): Decl =
   ## and cannot tell two same-named methods on different objects apart.
   for mem in obj.members():
     if mem != nil and mem.kind == dkFn and mem.name == name: return mem
+
+proc selfBoundParams*(fn: Decl): seq[string] =
+  ## A contract member's type params bounded by exactly `Self` — `A` and `B`
+  ## in `fn splice[A: Self, B: Self]`. Each names one object type that
+  ## satisfies the interface; two params sharing a letter share the type.
+  for i, g in fn.fnGenerics:
+    if i < fn.fnGenericBounds.len and fn.fnGenericBounds[i].len == 1:
+      let b = fn.fnGenericBounds[i][0]
+      if b != nil and b.kind == tkNamed and b.name == "Self": result.add(g)
+
+proc receiverTypeParam*(fn: Decl): string =
+  ## The `Self`-bound type param the receiver is typed with — `A` in
+  ## `{self: A}` — or "" when the receiver is plain `Self` or absent.
+  let letters = selfBoundParams(fn)
+  for p in fn.fnParams:
+    if p.name == "self" and p.typ != nil and p.typ.kind == tkNamed and
+       p.typ.name in letters:
+      return p.typ.name
+  ""
+
+proc implementingName*(obj: Decl, iface, member: string): string =
+  ## The name under which object `obj` implements contract member
+  ## `iface.member`: the new name from a `satisfies iface {member -> new}`
+  ## rename, or `member` itself. The rename is what lets one object satisfy
+  ## two interfaces that each require a member of the same name with
+  ## different signatures.
+  for (i, old, renamed) in obj.satisfiesRenames:
+    if i == iface and old == member: return renamed
+  member
 
 proc moduleDeclaringType*(module: Module, name: string): string =
   ## The imported module a TYPE came from, or "" when this module declares it.
@@ -909,9 +986,11 @@ proc moduleDeclaringType*(module: Module, name: string): string =
     return d.span.file[ImportedTypeMarker.len + 1 .. ^1]
   ""
 
-# An actor's receive branch, gathered from BOTH `on <name>` blocks AND `on
-# select` message arms (spec §9.3): a message kind + typed binding + body.
 type ActorMsgHandler* = object
+  ## An actor's receive branch, gathered from BOTH `on <name>` blocks AND `on
+  ## select` message arms (spec §9.3): a message kind + typed binding + body.
+  ## Built by `actorMsgHandlers`, so each backend emits one dispatch arm per
+  ## handler without caring which syntax declared it.
   name*: string
   params*: seq[Param]
   body*: Expr

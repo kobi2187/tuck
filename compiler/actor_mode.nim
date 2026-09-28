@@ -61,6 +61,8 @@ type
     amBatch = "batch"
 
   ActorPolicy* = object
+    ## The resolved actor scheduling policy for one build: the mode plus the
+    ## batch-flush knobs, which only `amBatch` reads.
     mode*: ActorMode
     batchCount*: int      ## flush after this many staged sends (0 = never)
     batchTimeoutMs*: int  ## ...or this long after the first (0 = never)

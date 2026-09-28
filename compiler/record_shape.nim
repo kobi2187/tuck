@@ -29,6 +29,7 @@ import ast, ast_query, lowering, codegen_common, resolution
 
 type
   ValueSrc* = enum
+    ## Where one result field's value comes from.
     vsExpr      ## emit this expression as the field's value
     vsProject   ## emit a receiver, then read one of its fields
 
@@ -44,11 +45,15 @@ type
       fromField*: string
 
   CtorKind* = enum
+    ## Which constructor a combinator's result goes through.
     ckNamedType    ## rebuild through the receiver's own declared type
     ckStructural   ## an anonymous shape: a Nim tuple, or a synthesized struct
     ckPassThrough  ## nothing to build — emit the receiver unchanged
 
   RecordShape* = object
+    ## A combinator's result as data: its fields in order with each one's
+    ## source, the constructor to build it through, and the receivers a backend
+    ## should bind once because they are read more than once.
     fields*: seq[ShapeField]
     ctor*: CtorKind
     typeName*: string           ## ckNamedType — the declared type's name
@@ -60,9 +65,11 @@ type
                                 ## a backend that binds temps binds these
 
 proc project(name: string, recv: Expr, field: string): ShapeField =
+  ## A result field `name` read from field `field` of `recv`.
   ShapeField(name: name, src: vsProject, fromExpr: recv, fromField: field)
 
 proc overrideWith(name: string, value: Expr): ShapeField =
+  ## A result field `name` whose value is `value`, as the payload gave it.
   ShapeField(name: name, src: vsExpr, value: value)
 
 proc overrideFor(payload: Expr, fname: string): Expr =
@@ -73,6 +80,7 @@ proc overrideFor(payload: Expr, fname: string): Expr =
   nil
 
 proc passThrough(e: Expr): RecordShape =
+  ## The shape that builds nothing: the result is `e` itself, emitted as is.
   RecordShape(ctor: ckPassThrough, passThrough: e)
 
 proc structuralFields(m: Module, res: Resolution, recvT: Type, payload: Expr,

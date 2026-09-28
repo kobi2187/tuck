@@ -70,6 +70,8 @@ type
     cStr         ## a `str` the body allocated
 
   SealRule* = object
+    ## How one escape question is asked: what is being followed (`carried`),
+    ## and which calls and bindings are known not to carry their operands out.
     carried*: Carried
     exemptCalls*: HashSet[NodeId]
       ## calls (and `str` concatenations) whose result holds none of their
@@ -126,6 +128,8 @@ proc holdsHeapSlots*(res: Resolution, m: Module, t: Type): bool =
   seqElem(t) != nil or seqFieldNames(res, m, t).len > 0
 
 proc holds(ix: BodyIndex, rule: SealRule, t: Type): bool =
+  ## Can a value of type `t` carry what `rule` follows? The filter that keeps
+  ## a scalar from ever being reported as an escape.
   case rule.carried
   of cHeapSlots: holdsHeapSlots(ix.res, ix.m, t)
   of cStr: holdsAStrType(t)
@@ -168,6 +172,9 @@ proc coverageErrors(ix: BodyIndex): seq[string] =
 # --- the index ---------------------------------------------------------------
 
 proc addParent(ix: var BodyIndex, child, parent: Expr) =
+  ## Records `parent` as one place `child` is used, once each. The index maps
+  ## a value to every expression that reads it, which is what the escape walk
+  ## climbs.
   let ps = addr ix.parents.mgetOrPut(child.id, @[])
   if parent notin ps[]: ps[].add parent
 
@@ -186,7 +193,12 @@ proc indexResolvedCall(ix: var BodyIndex, field: Expr) =
   ## The CALL itself is not indexed: the walk this replaced never treated a
   ## resolved field as a call, and a pure refactor keeps that answer.
   var stack: seq[(Expr, Expr)]
-  for a in ix.res.call(field).args: stack.add (a, field)
+  let stamped = ix.res.call(field)
+  # A call's ARGUMENTS; a pool op's handle and value (its own node kind).
+  if stamped.kind == exkCall:
+    for a in stamped.args: stack.add (a, field)
+  else:
+    for a in stamped.children: stack.add (a, field)
   while stack.len > 0:
     let (n, parent) = stack.pop()
     if n == nil: continue

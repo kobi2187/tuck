@@ -78,16 +78,22 @@ proc parseObjectBodyLine(p: var Parser, fields: var seq[FieldDef],
 
 proc parseObjectBody(p: var Parser, fields: var seq[FieldDef],
                      members: var seq[Decl]) =
+  ## The indented body of an object or actor: each line sorted into `fields`
+  ## or `members` by `parseObjectBodyLine`.
   discard p.expect(tkNewline)
   p.indentedBlock:
     p.parseObjectBodyLine(fields, members)
 
-# arena Name [size: N]: members — bump allocator (spec 7.3)
 proc parseArenaDecl(p: var Parser): Decl =
+  ## arena Name [size: N]: members — bump allocator (spec 7.3)
+  ## Parsed as a record type with the declared attributes plus
+  ## `ArenaMarker`; the members are parsed (so the block is consumed) but not
+  ## kept on the result. Arenas are not implemented, and the checker says so
+  ## with a TK-ME02 warning rather than letting the block check clean.
   let spArena = p.getSpan()
   discard p.advance() # eat "arena"
   let name = p.expectTypeName("arena").value
-  var attrs: seq[TypeAttr]
+  var attrs = @[TypeAttr(name: ArenaMarker, span: spArena)]
   p.parseDeclAttrs(attrs)
   discard p.expect(tkColon)
   var members: seq[Decl]
@@ -115,12 +121,16 @@ proc parseUnhandledHandler(p: var Parser): Decl =
   handler
 
 proc parseErrorsDecl(p: var Parser, sp: Span): Decl =
+  ## `errors [policy: ...]` (spec 4.9): the module's error policy, plus its
+  ## optional `on unhandled` handler block.
   discard p.advance() # errors
   let policy = p.parseErrorPolicy()
   Decl(span: sp, kind: dkErrors, name: "errors", policyName: policy,
        errHandler: p.parseUnhandledHandler())
 
 proc parseObjectDecl(p: var Parser, sp: Span): Decl =
+  ## `object Name:` — fields and members, with any `satisfies` lines lifted
+  ## out of the members into the decl's contract list.
   discard p.advance()
   let name = p.expectTypeName("object").value
   discard p.expect(tkColon)
@@ -128,11 +138,14 @@ proc parseObjectDecl(p: var Parser, sp: Span): Decl =
   var members: seq[Decl]
   p.parseObjectBody(fields, members)
   var sats: seq[string]
-  let realMembers = siftSatisfies(members, sats)
+  var renames: seq[(string, string, string)]
+  let realMembers = siftSatisfies(members, sats, renames)
   Decl(span: sp, kind: dkObject, name: name, objFields: fields,
-       satisfies: sats, objMembers: realMembers)
+       satisfies: sats, satisfiesRenames: renames, objMembers: realMembers)
 
 proc parseActorDecl(p: var Parser, sp: Span): Decl =
+  ## `actor Name[T] [attrs]:` — an actor's type params, attributes (queue
+  ## size and friends), state fields and handlers.
   discard p.advance()
   let name = p.expectTypeName("actor").value
   # Type params FIRST, then attributes — `actor Inbox[T] [queue: 16]`, the
@@ -155,6 +168,8 @@ proc parseActorDecl(p: var Parser, sp: Span): Decl =
        attrs: attrs, actorFields: fields, handlers: members)
 
 proc parseMixinDecl(p: var Parser, sp: Span): Decl =
+  ## `mixin Name:` — a named block of member declarations another object
+  ## pulls in with `+ Name`.
   discard p.advance()
   let name = p.expectTypeName("mixin").value
   discard p.expect(tkColon)
@@ -184,7 +199,12 @@ proc parseWhenDecl(p: var Parser, sp: Span): Decl =
   discard p.expect(tkColon)
   discard p.expect(tkNewline)
   var members: seq[Decl]
+  # The body is the module's top level, only conditional: the same first
+  # words open a declaration there, so it gets the same check parseModule
+  # makes. Without it a typo or a stray `on put(...)` inside a `when` block
+  # parsed as whatever parseDecl made of it.
   p.indentedBlock:
+    p.failIfNotTopLevelStart()
     members.add(p.parseDecl())
   Decl(span: sp, kind: dkWhen, name: "when", whenTargetValue: valTok.value,
        whenDecls: members)
@@ -223,6 +243,9 @@ proc contextualDecl(p: var Parser, sp: Span, handled: var bool): Decl =
   handled = false
 
 proc parseDecl*(p: var Parser): Decl =
+  ## One top-level (or member) declaration, dispatched on its first token.
+  ## Contextual keywords (`extern`, `errors`, `pool`, ...) are tried first; any
+  ## line that opens no declaration is a top-level expression statement.
   let sp = p.getSpan()
   let curr = p.current()
   var handled = false
@@ -252,7 +275,6 @@ proc parseDecl*(p: var Parser): Decl =
   of tkPlus: return p.parseCompositionDecl(sp)
   of tkConst: return p.parseConstDecl(sp)
   of tkWhen: return p.parseWhenDecl(sp)
-  of tkIdent: return p.parseExprDecl(sp)
   else: return p.parseExprDecl(sp)
 
 proc parseModule*(p: var Parser): Module =

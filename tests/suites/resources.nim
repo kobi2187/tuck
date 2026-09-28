@@ -10,6 +10,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the resource-registry checker assertions: `resources:` blocks,
+  ## kinds, knobs, and `acquire`/`finish` checked against them.
   # --- the `resources:` declaration -----------------------------------------
 
   # The spec's own §7.4 block, verbatim. It is fenced ```tuck there rather than
@@ -606,11 +608,11 @@ fn main() -> int:
   # The kind names the table directly, so the redundancy the source spells out
   # costs nothing at runtime — no dispatch, no table id on the handle.
   t.emits "Nim: the kind resolves to its table at compile time",
-          "finish\\(tuckRes_udp, tuck_sock\\)"
+          "finish\\(tuckRes_udp, tuckˑvˑsock\\)"
   t.emitsOdin "Odin: likewise, by pointer",
-              "rt.finishResource\\(&tuckRes_udp, tuck_sock\\)"
+              "rt.finishResource\\(&tuckRes_udp, tuckˑvˑsock\\)"
   t.emitsD "D: likewise, by ref",
-           "rt.finishResource\\(tuckRes_udp, tuck_sock\\)"
+           "rt.finishResource\\(tuckRes_udp, tuckˑvˑsock\\)"
   # Built, not run: the handle comes from a `pending:` stub, so there is no
   # real registry entry behind it and a run would (correctly) abort on the
   # stale-handle check. What matters here is that the emitted call LINKS.

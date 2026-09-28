@@ -110,6 +110,9 @@ proc genSumType(t: Type): string =
   "enum " & tags.join(", ")
 
 proc genType*(t: Type): string =
+  ## The Nim spelling of a Tuck type. Records become anonymous tuples and
+  ## sums go through `genSumType`; unions, renames and effects should be gone
+  ## by now and print as `pointer`.
   if t == nil: return "void"
   case t.kind
   of tkNamed:

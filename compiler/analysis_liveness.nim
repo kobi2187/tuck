@@ -69,6 +69,8 @@ type
     ## (`isLive`) rather than a plain lookup.
 
   Ctx = object
+    ## Walk state for the backward liveness pass: the side-table to stamp, the
+    ## names never moved from, and the live sets `break`/`continue` jump to.
     res: Resolution
     skip: HashSet[string]     ## fields, and anything a `defer` reads
     afterLoop: Live           ## what `break` jumps to
@@ -76,6 +78,8 @@ type
     inLoop: bool
 
 proc rootOf(path: string): string =
+  ## The variable a dotted path starts at: `b.ask.n` -> `b`. A bare name is
+  ## its own root.
   let i = path.find('.')
   if i < 0: path else: path[0 ..< i]
 
@@ -165,6 +169,8 @@ proc stampSites(c: Ctx, e: Expr, dead: Live) =
   if e == nil: return
   var lastFor: Table[string, Expr]
   proc walk(n: Expr) =
+    ## Records the last site seen for each dead name, in evaluation order, so the
+    ## final read wins.
     if n == nil: return
     if n.kind == exkVar and n.name in dead:
       lastFor[n.name] = n

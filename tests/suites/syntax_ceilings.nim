@@ -18,6 +18,8 @@
 import ../harness
 
 proc run*(t: var T) =
+  ## Registers the deliberate syntax ceilings: each refused with the
+  ## diagnostic that names the ruling.
   # Ceiling 1 was LIFTED on 2026-09-15. A bracketed list wraps, and a line
   # break inside brackets separates exactly as a comma does — so the last
   # comma on a line is optional and the closing bracket may sit on its own.

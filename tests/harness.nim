@@ -38,9 +38,13 @@ type
     vCheck, vEmit, vEmitOdin, vEmitD, vBuild, vRun
 
   Phase* = enum
+    ## Which pass a suite body is in: registering what needs running
+    ## (`pCollect`), or reporting on what ran (`pReport`).
     pCollect, pReport
 
   WorkItem* = object
+    ## One unit of work for the pool: a snippet dir and the verb to run on it,
+    ## the item it depends on, and — once run — its exit code and output.
     dir*: string       ## this snippet's scratch dir
     verb*: Verb
     dep*: int          ## index of the item this one needs first; -1 if none
@@ -78,6 +82,7 @@ type
     root*: string               ## project root, for --root:
 
   SuiteProc* = proc (t: var T) {.nimcall.}
+    ## A suite's body. It runs once per phase against the same `T`.
 
 var tuckExe* = "./tuck"
 
@@ -114,6 +119,8 @@ var quietPasses* = false
 # failure is sometimes the expected result.
 
 proc ok*(t: var T, name: string) =
+  ## Records a passing assertion (or, in quiet mode, only its outcome for a
+  ## following `bugFixed`/`bugOpen` to read).
   t.lastOk = true
   t.lastSkipped = false
   if t.quiet: return
@@ -121,6 +128,8 @@ proc ok*(t: var T, name: string) =
   if not quietPasses: echo &"  PASS  {name}"
 
 proc no*(t: var T, name, why: string) =
+  ## Records a failing assertion with the reason (or, in quiet mode, only the
+  ## outcome).
   t.lastOk = false
   t.lastSkipped = false
   if t.quiet: return
@@ -182,7 +191,9 @@ proc addFile*(t: var T, fname, code: string) =
     createDir(t.cur.parentDir / t.cur.lastPathPart)
     writeFile(t.cur / fname, code)
 
-proc curDir*(t: T): string = t.cur
+proc curDir*(t: T): string =
+  ## The current snippet's scratch dir — where `src` wrote `t.tuck`.
+  t.cur
 
 # --- the work pool -------------------------------------------------------
 
@@ -239,35 +250,44 @@ proc need(t: var T, verb: Verb, dep = -1): int =
   else:
     result = t.byKey[key]
 
-proc item(t: T, idx: int): WorkItem = t.work[idx]
+proc item(t: T, idx: int): WorkItem =
+  ## The work item at `idx`, with its results.
+  t.work[idx]
 
-proc wasSkipped*(t: T, idx: int): bool = t.work[idx].skipped
+proc wasSkipped*(t: T, idx: int): bool =
   ## Did the mode filter drop this item? Exported because a suite that
   ## registers its OWN commands (needCmd) has to answer it for itself — the
   ## built-in assertions do it internally, but `resultOf` on a skipped item
   ## reports rc 0, which reads as a pass.
+  t.work[idx].skipped
 
 proc failedTo(t: T, idx: int): bool =
   ## An item that never ran (because its dependency failed) counts as failed.
   not t.work[idx].done or t.work[idx].rc != 0
 
 proc lastLine(s: string): string =
+  ## The last non-empty line of a command's output — usually the diagnostic
+  ## that matters, and short enough to report.
   let ls = s.strip(leading = false).splitLines()
   if ls.len == 0: "" else: ls[^1]
 
 proc tailLines(s: string, n: int): string =
+  ## The last `n` lines of a command's output, for a failure report.
   let ls = s.strip(leading = false).splitLines()
   ls[max(0, ls.len - n) .. ^1].join("\n")
 
 # --- assertions ----------------------------------------------------------
 
 proc okCheck*(t: var T, name: string) =
+  ## Asserts the current snippet typechecks cleanly (`tuck ch` exits 0).
   let i = t.need(vCheck)
   if t.phase == pCollect: return
   if not t.failedTo(i): t.ok name
   else: t.no name, "expected a clean check, got: " & lastLine(t.item(i).output)
 
 proc badCheck*(t: var T, name, pattern: string) =
+  ## Asserts the current snippet is REJECTED by `tuck ch`, with output
+  ## matching the regex `pattern` — so it fails for the intended reason.
   let i = t.need(vCheck)
   if t.phase == pCollect: return
   let it = t.item(i)
@@ -309,6 +329,7 @@ proc checkSilent*(t: var T, name, pattern: string) =
     t.ok name
 
 proc runs*(t: var T, name: string, code: int) =
+  ## Asserts the current snippet builds and, run, exits with `code`.
   let b = t.need(vBuild)
   let r = t.need(vRun, dep = b)
   if t.phase == pCollect: return
@@ -344,6 +365,7 @@ proc outputs*(t: var T, name, pattern: string) =
     t.no name, &"output did not match /{pattern}/: " & lastLine(t.item(r).output)
 
 proc emittedNim(t: T, i: int): string =
+  ## The Nim `tuck c` emitted for work item `i`, or "" if nothing was written.
   let p = t.item(i).dir / "emit" / "t.nim"
   if fileExists(p): readFile(p) else: ""
 
@@ -375,6 +397,7 @@ proc omits*(t: var T, name, pattern: string) =
     t.ok name
 
 proc emittedOdin(t: T, i: int): string =
+  ## The Odin `tuck c --odin` emitted for work item `i`, or "".
   let p = t.item(i).dir / "odin" / "t.odin"
   if fileExists(p): readFile(p) else: ""
 
@@ -407,6 +430,7 @@ proc omitsOdin*(t: var T, name, pattern: string) =
     t.ok name
 
 proc emittedD(t: T, i: int): string =
+  ## The D `tuck c --dlang` emitted for work item `i`, or "".
   let p = t.item(i).dir / "dlang" / "t.d"
   if fileExists(p): readFile(p) else: ""
 
@@ -471,6 +495,8 @@ proc findDmd*(): string =
 # is the regression this exists to catch.
 
 proc slugify(s: string): string =
+  ## An assertion name as a filename: alphanumerics kept, every other run of
+  ## characters a single `-`, no leading or trailing dash.
   for c in s:
     if c.isAlphaNumeric: result.add c
     elif result.len == 0 or result[^1] != '-': result.add '-'
@@ -512,6 +538,9 @@ proc compareGolden(t: var T, name, ext, got: string) =
   else: t.no name, "emission changed:\n" & unifiedDiff(expected, got, 8)
 
 proc frozen*(t: var T, name: string) =
+  ## Asserts the current snippet's emitted Nim matches its golden under
+  ## tests/golden, byte for byte (minus the machine-specific runtime import).
+  ## With `--bless` the golden is rewritten instead.
   let i = t.need(vEmit)
   if t.phase == pCollect: return
   if t.wasSkipped(i): t.skip name; return
@@ -561,6 +590,8 @@ proc frozenD*(t: var T, name: string) =
 # written when it was first found.
 
 proc bugFixed*(t: var T, name: string) =
+  ## Reads the preceding quiet assertion as a regression guard: it must still
+  ## pass. A skipped assertion is reported as skipped, not as evidence.
   if t.phase == pCollect: return
   # A skipped assertion is not evidence in either direction.
   if t.lastSkipped: t.skip name & " (regression guard)"; return
@@ -568,6 +599,9 @@ proc bugFixed*(t: var T, name: string) =
   else: t.no name, "REGRESSED — this was fixed and has come back"
 
 proc bugOpen*(t: var T, name: string) =
+  ## Reads the preceding quiet assertion as a known bug: it is expected to
+  ## fail, and starting to pass fails the suite until it is flipped to
+  ## `bugFixed`.
   if t.phase == pCollect: return
   if t.lastSkipped: t.skip name & " (known bug)"; return
   if t.lastOk:
@@ -634,16 +668,18 @@ proc needCmd*(t: var T, argv: seq[string], verb = vCheck): int =
   else:
     result = t.byKey[key]
 
-proc skippedCmd*(t: T, idx: int): bool = t.work[idx].skipped
+proc skippedCmd*(t: T, idx: int): bool =
   ## For suites driving raw commands: report SKIP rather than reading a result
   ## that was never produced.
+  t.work[idx].skipped
 
 proc resultOf*(t: T, idx: int): (int, string) =
+  ## The exit code and output of a raw command registered with `needCmd`.
   (t.work[idx].rc, t.work[idx].output)
 
 # --- suite lifecycle -----------------------------------------------------
 
-proc buildsAllowed*(): bool = maxVerb >= vBuild
+proc buildsAllowed*(): bool =
   ## Whether the current mode runs backend compiles at all.
   ##
   ## For suites that drive commands through `sh` instead of the pool: `sh`
@@ -651,9 +687,13 @@ proc buildsAllowed*(): bool = maxVerb >= vBuild
   ## before it starts. cli_smoke is the whole reason — it is ~100 sequential
   ## `tuck build` + run steps and dominates a full run, so `--check` and
   ## `--quick` skip it wholesale rather than pretending to filter it.
+  maxVerb >= vBuild
 
 proc shOnce(argv: seq[string]): tuple[rc: int, output: string, ebadf: string]
            {.gcsafe.} =
+  ## Runs `argv` to completion, capturing stdout and stderr together. A pipe
+  ## read that fails (the intermittent EBADF) is returned as `ebadf` rather
+  ## than raised, so `sh` can retry and report it.
   let t0 = getMonoTime()
   let child = startProcess(argv[0], args = argv[1 .. ^1],
                            options = {poUsePath, poStdErrToStdOut})
@@ -915,6 +955,9 @@ proc hostPeakRss*(t: var T, name: string, budgetKB: int) =
   else: t.ok name & "  [" & ran.join(", ") & "]"
 
 proc hostBuilds*(t: var T, name: string) =
+  ## Asserts every available host compiler accepts the current snippet's
+  ## emitted code: always Nim, plus Odin and D when their toolchains are
+  ## installed. Reports which ones ran.
   let nimB = t.need(vBuild)
   let odinExe = findOdin()
   let dmdExe = findDmd()
@@ -971,6 +1014,8 @@ proc rewind*(t: var T) =
   t.lastOk = true
 
 proc finish*(t: var T) =
+  ## Prints the suite's summary line (`<name>.sh: N passed, M failed`, and the
+  ## open-bug count). The `.sh` suffix is kept because scripts grep for it.
   if t.phase == pCollect: return
   if t.open > 0: echo &"open bugs: {t.open}"
   # The `.sh` suffix is kept deliberately: run-all-tests.sh grepped for this

@@ -137,11 +137,9 @@ proc genDErrHandler*(ctx: var DCodegenCtx, d: Decl): string =
     body = "rt.tuckReportUnhandled(code, site);"
   else:
     body = "rt.tuckReportUnhandled(code, site);\n    " & body
-  # Mangled deliberately: the handler is emitted here but CALLED from every
-  # drop site (genDDroppedResult), and the two must agree. The decl arrives
-  # unmangled because it hangs off the errors block rather than the module's
-  # top-level fn list.
-  "void " & mangleName(handler.name) & "(ushort code, string site) {\n    " &
+  # One shared name: the handler is emitted here but CALLED from every drop
+  # site (genDDroppedResult), and the two must agree.
+  "void " & UnhandledHandlerName & "(ushort code, string site) {\n    " &
     body & "\n}\n"
 
 proc dRegistryEventStruct*(ctx: var DCodegenCtx, d: Decl): string =
@@ -175,6 +173,9 @@ proc dRegistryHandlerCalls*(ctx: DCodegenCtx, d: Decl,
   if calls.len > 0: calls.join("\n") & "\n" else: ""
 
 proc dActorFieldLines*(ctx: var DCodegenCtx, d: Decl): seq[string] =
+  ## The actor state struct's field declarations, one D line each, in source
+  ## order. Field types go through `dFieldType` so inline records and sums hoist
+  ## under a name derived from the actor.
   for f in d.actorFields:
     result.add("    " & ctx.dFieldType(d.name, f) & " " & f.name & ";")
 
@@ -383,12 +384,10 @@ proc genDValidate*(ctx: var DCodegenCtx, d: Decl): string =
   ## checks impossible to keep in the build where a violated invariant means
   ## corrupt data. ROADMAP's 2026-08-25 ruling 5 reverses that; this backend
   ## is written to the ruling rather than inheriting the bug.
+  ##
+  ## The predicate's bare names are the type's fields; the checker recorded
+  ## them (Resolution.ownerFields), so they print as `self.<name>`.
   var checks: seq[string]
-  let savedFields = ctx.fieldVars
-  let savedPrefix = ctx.fieldPrefix
-  ctx.fieldVars.clear()
-  for f in d.typeBody.fields: ctx.fieldVars.incl(f.name)
-  ctx.fieldPrefix = "self."
   for member in d.typeMembers:
     if member != nil and member.kind == dkExpr:
       let cond = ctx.genDExpr(member.expr)
@@ -396,10 +395,8 @@ proc genDValidate*(ctx: var DCodegenCtx, d: Decl): string =
       # asserts, which would silently undo the ruling this guard exists to
       # implement (verified — an assert-based version passed in release).
       checks.add("        if (!(" & cond & "))\n" &
-                 "            rt.tuckInvariantFailed(\"" &
-                 cond.replace("\"", "'") & "\", \"" & d.name & "\");")
-  ctx.fieldVars = savedFields
-  ctx.fieldPrefix = savedPrefix
+                 "            rt.tuckInvariantFailed(" &
+                 invariantCondLit(cond) & ", \"" & d.name & "\");")
   if checks.len == 0: return ""
   "\nvoid validate_" & d.name & "(" & d.name & " self)\n{\n" &
     "    version (tuckNoInvariants) {} else\n    {\n" &
@@ -416,7 +413,7 @@ proc genDPendingStub*(ctx: var DCodegenCtx, mem: Decl): string =
   let retStr = ctx.dType(mem.fnReturnType)
   let params = if mem.fnParams.len > 0: "(T)(T payload)" else: "()"
   result = retStr & " " & mem.name & params & " {\n" &
-           "    stderr.writeln(\"TUCK PENDING: " & mem.name &
+           "    stderr.writeln(\"TUCK PENDING: " & mem.writtenName &
            " invoked (not implemented)\");\n"
   if retStr != "void":
     result.add("    return typeof(return).init;\n")
@@ -529,19 +526,13 @@ proc dRegistryRaiseProc*(ctx: var DCodegenCtx, d: Decl,
 proc genDHandlerCase*(ctx: var DCodegenCtx, d: Decl,
                      h: ActorMsgHandler): string =
   ## One dispatch arm: the envelope's fields are already named as the
-  ## handler's params, so the body reads them directly.
-  let saved = ctx.fieldVars
-  let savedPrefix = ctx.fieldPrefix
-  ctx.fieldVars.clear()
-  for f in d.actorFields: ctx.fieldVars.incl(f.name)
-  ctx.fieldPrefix = "self."
+  ## handler's params, so the body reads them directly. A bare name the
+  ## checker resolved to one of the actor's fields prints as `self.<name>`.
   ctx.definedVars.clear()
   for p in h.params: ctx.definedVars.incl(p.name)
   ctx.indent = 3
   var body = ctx.genDStmtOrBlock(h.body)
   ctx.indent = 0
-  ctx.fieldVars = saved
-  ctx.fieldPrefix = savedPrefix
   var unpack = ""
   for p in h.params:
     unpack.add("            auto " & p.name & " = msg." & p.name & ";\n")
@@ -631,6 +622,8 @@ proc genDExternFwd*(ctx: var DCodegenCtx, mem: Decl): string =
     ctx.genDParams(mem.fnParams) & ") {\n" & "    " & body & ";\n" & "}\n"
 
 proc genDPendingBlock*(ctx: var DCodegenCtx, d: Decl): string =
+  ## A `pending` block: one stub per member, each of which fails loudly at
+  ## runtime if called, so a sketch still compiles and links.
   for mem in d.mixinMembers:
     let code = ctx.genDPendingStub(mem)
     if code != "": result.add(code & "\n")
@@ -658,19 +651,10 @@ proc genDDispatch*(ctx: var DCodegenCtx, d: Decl,
     var sdBody = ""
     if shutdownBody != nil:
       # The shutdown arm reads and writes the actor's own fields just like
-      # any other arm, so it needs the same field context — without it
-      # `total = total` looked like a new local whose type nothing had
-      # settled, and the no-auto rule refused it.
-      let saved = ctx.fieldVars
-      let savedPrefix = ctx.fieldPrefix
-      ctx.fieldVars.clear()
-      for f in d.actorFields: ctx.fieldVars.incl(f.name)
-      ctx.fieldPrefix = "self."
+      # any other arm; the checker recorded which bare names are fields.
       ctx.indent = 3
       sdBody = ctx.genDStmtOrBlock(shutdownBody)
       ctx.indent = 0
-      ctx.fieldVars = saved
-      ctx.fieldPrefix = savedPrefix
     cases.add("        case " & d.name & "MsgKind.msgShutdown:\n" & sdBody &
               "            self.finished = true;\n            break;\n")
   "void handleMsg_" & d.name & "(ref " & d.name & " self, " & d.name &
@@ -678,6 +662,9 @@ proc genDDispatch*(ctx: var DCodegenCtx, d: Decl,
     "    }\n}\n\n"
 
 proc genDExternBlock*(ctx: var DCodegenCtx, d: Decl): string =
+  ## An `extern` block: C structs and callback signatures become D types, and
+  ## each fn becomes a forwarder to the runtime, an `impl: d` module, or a
+  ## C-header binding (`genDExternFwd` decides).
   for mem in d.mixinMembers:
     if mem == nil: continue
     # A C struct or callback signature declared in the block, not a fn.
@@ -703,11 +690,11 @@ proc genDActorInits(ctx: var DCodegenCtx, d: Decl): string =
   "shared static this() {\n" & sets.join("") & "}\n\n"
 
 proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
-  if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code
   ## An actor is a SINGLETON SERVICE (spec 9.1): one instance per declared
   ## type, no construction, alive for the whole program. It emits its message
   ## envelope, state struct, the singleton itself, dispatch, a drain and one
   ## send helper per handler.
+  if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code
   let (handlers, shutdownBody, hasShutdown) = collectHandlers(d)
   var variants: seq[string]
   for h in handlers: variants.add(msgVariantName(h.name))
@@ -764,6 +751,8 @@ proc enterReturnContext(ctx: var DCodegenCtx, retType: Type) =
       if inner == "void": "rt.TuckUnit" else: inner
 
 proc leaveReturnContext(ctx: var DCodegenCtx) =
+  ## Undoes `enterReturnContext` after a fn body, so the next emission — a
+  ## sibling fn or a nested member — starts with no return carrier assumed.
   ctx.retWrapped = false
   ctx.retAbsentCapable = false
   ctx.retInnerD = ""
@@ -789,6 +778,9 @@ proc genDTwinWrapper(ctx: var DCodegenCtx, d: Decl, fnName, tmplStr, retStr,
 
 proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
                 refSelf = false): string =
+  ## A fn as D source: a template when generic, the MOVED twin plus its
+  ## dup-and-delegate wrapper when it threads a container, and the body with
+  ## its implicit tail return made explicit. `nameOverride` renames it.
   # A registry handler is declared as `Registry.Event`; the dot is not a D
   # identifier character, and the raise proc calls the sanitised name.
   let fnName = if nameOverride != "": nameOverride
@@ -892,6 +884,9 @@ proc genDGenericRecord(ctx: var DCodegenCtx, d: Decl, body: Type): string =
   res
 
 proc genDTypeDecl*(ctx: var DCodegenCtx, d: Decl): string =
+  ## A `type` declaration as D: a payload-free sum becomes an `enum`, a record
+  ## a `struct` (plus its validator and members), a rename an `alias`, and a
+  ## payload sum a tagged struct. Anything else is refused with a diagnostic.
   let body = d.typeBody
   if d.generics.len > 0: return ctx.genDGenericRecord(d, body)
   if body == nil: return ""
@@ -930,6 +925,8 @@ proc dPolicyName(p: ResourcePolicy): string =
   of rpExit: "rt.RtResourcePolicy.Exit"
 
 proc dOnFullName(f: ResourceOnFull): string =
+  ## How D spells a resource's on-full behaviour: the runtime enum member,
+  ## qualified. Exhaustive, so a new behaviour must state its spelling here.
   case f
   of rofAbsent: "rt.RtOnFull.Absent"
   of rofError: "rt.RtOnFull.Error"
@@ -957,6 +954,9 @@ proc genDResourceTables(d: Decl): string =
   result.add("}\n")
 
 proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
+  ## The D backend's declaration dispatch: one arm per DeclKind, no `else`, so
+  ## a new kind fails to compile here until this backend handles it. Imported
+  ## type decls print nothing — their own module emits them.
   if d == nil: return ""
   # Imported type decls are injected for checking only; the origin module
   # emits them (mirrors codegen.nim:1756 / codegen_odin.nim:2234).

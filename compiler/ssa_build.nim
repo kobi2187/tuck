@@ -66,34 +66,47 @@ import ssa_ir
 
 type
   Builder = object
+    ## Braun et al.'s construction state for one body: the graph so far, the
+    ## current definition of each place per block, the block being filled, and
+    ## the loop heads/exits `continue`/`break` jump to.
     res: Resolution
     fn: SsaFn
     cur: Table[Place, Table[BlockId, ValueId]]
       ## Braun's `currentDef`: place -> block -> the value live there
     here: BlockId               ## the block being filled
+    versions: Table[Place, int] ## how many values each place has so far
     loopHeads: seq[BlockId]     ## for `continue`
     loopExits: seq[BlockId]     ## for `break`
 
 # --- blocks -----------------------------------------------------------------
 
 proc newBlock(b: var Builder, label: string, sealed = true): BlockId =
+  ## Appends an empty block labelled `label`. A loop head is created unsealed:
+  ## its back edge is added only once the body is built.
   result = BlockId(b.fn.blocks.len.int32)
   b.fn.blocks.add Block(id: result, label: label, sealed: sealed)
 
 proc addPred(b: var Builder, blk, pred: BlockId) =
+  ## Records `pred` as a predecessor of `blk`, once. An unset `pred` (no
+  ## block) is ignored.
   if pred.isSet and pred notin b.fn.blocks[int32(blk)].preds:
     b.fn.blocks[int32(blk)].preds.add pred
 
 proc exitsAlready(b: Builder, blk: BlockId): bool =
+  ## Does control always leave the body from `blk` (a `return`, `raise`,
+  ## `break` or `continue` ended it)? Such a block is no predecessor of a join.
   blk.isSet and b.fn.blocks[int32(blk)].exits
 
 # --- values -----------------------------------------------------------------
 
 proc newValue(b: var Builder, place: Place, def: Def, blk: BlockId): ValueId =
+  ## Appends a new value for `place`, defined by `def` in `blk`, numbered as
+  ## the next version of that place. Values are only ever appended, so a
+  ## per-place counter gives the same number the old scan of every value
+  ## did — without making a body's build quadratic in its value count.
   result = ValueId(b.fn.values.len.int32)
-  var version = 0
-  for v in b.fn.values:
-    if v.place == place: inc version
+  let version = b.versions.getOrDefault(place)
+  b.versions[place] = version + 1
   b.fn.values.add Value(id: result, place: place, version: version,
                         def: def, blk: blk, freedBy: fkNotFreed)
 
@@ -246,6 +259,9 @@ proc readVariableRecursive(b: var Builder, place: Place,
   b.writeVariable(place, blk, result)
 
 proc readVariable(b: var Builder, place: Place, blk: BlockId): ValueId =
+  ## The value `place` holds in `blk`: the local definition if there is one; on
+  ## the body's first mention of a field, a fresh projection of its record;
+  ## else Braun's recursive lookup through the predecessors.
   if place.len == 0: return NoValue
   if place in b.cur and blk in b.cur[place]:
     return b.cur[place][blk]                  # local value numbering
@@ -277,6 +293,8 @@ proc sealBlock(b: var Builder, blk: BlockId) =
 # --- walking the tree -------------------------------------------------------
 
 proc defKindOf(e: Expr): DefKind =
+  ## The definition kind a value assigned from `e` gets: literals, records,
+  ## calls, projections and aliases are told apart; anything else is opaque.
   if e == nil: return dkOpaque
   case e.kind
   of exkLit, exkList: dkLiteral
@@ -336,6 +354,8 @@ proc reads(b: var Builder, e: Expr) =
   for ch in e.children: b.reads(ch)
 
 proc defineTo(b: var Builder, target, value: Expr) =
+  ## An assignment: a new version of the target's place, defined by `value`.
+  ## A target with no nameable place (an index, a register) is only a read.
   let place = pathOf(target)
   if place.len == 0:
     b.reads(target)          # an index or a register: no place to version
@@ -364,6 +384,9 @@ proc defineTo(b: var Builder, target, value: Expr) =
   if def.at.isSet and def.at notin b.fn.byNode: b.fn.byNode[def.at] = v
 
 proc walkIf(b: var Builder, e: Expr) =
+  ## `if`: then and else get their own blocks off the current one, and a join
+  ## takes every branch that does not leave the body. With no `else`, the
+  ## condition's block falls through to the join directly.
   b.reads(e.cond)
   let entry = b.here
   let thenB = b.newBlock("then")
@@ -448,6 +471,9 @@ proc bindPattern(b: var Builder, pat: Pattern, src: Place) =
   of pkWild, pkLit: discard
 
 proc walkMatch(b: var Builder, e: Expr) =
+  ## `match`: one block per arm, each binding its pattern against the
+  ## subject's place, joined afterwards. The subject's own block reaches the
+  ## join only when the match might not be exhaustive.
   b.reads(e.subject)
   let entry = b.here
   var armExits: seq[BlockId]
@@ -477,6 +503,9 @@ proc walkMatch(b: var Builder, e: Expr) =
   b.here = join
 
 proc walkLoop(b: var Builder, cond, body: Expr, binds: Pattern = nil) =
+  ## `while`/`for`: an unsealed head (the latch is not built yet), the body,
+  ## and an exit reached from the head and from every `break`. Sealing the
+  ## head after the body fills in the phis the body parked there.
   let entry = b.here
   # THE HEAD IS UNSEALED. Its second predecessor is the latch at the bottom of
   # the body, which does not exist yet. Everything the body reads from the
@@ -508,6 +537,9 @@ proc walkLoop(b: var Builder, cond, body: Expr, binds: Pattern = nil) =
   b.here = exit
 
 proc walk(b: var Builder, e: Expr) =
+  ## Builds the graph for one statement or expression: assignments define,
+  ## control flow makes blocks, and exits mark their block. Everything else
+  ## is walked only for the reads it contains.
   if e == nil: return
   case e.kind
   of exkBlock:

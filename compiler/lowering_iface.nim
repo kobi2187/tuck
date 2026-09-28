@@ -38,26 +38,38 @@ import tables
 const PayloadBind* = "tmp"
   ## what each arm's call names the payload; declared by the emitter's arm
 
-proc memberArgs(res: Resolution, mem: Decl, dotArg: Expr,
+proc memberArgs(res: Resolution, mem: Decl, bound: seq[Expr],
                 bindT: Type, span: Span): seq[Expr] =
   ## The payload taken as the satisfier, then each further param of the
-  ## CONCRETE member, positionally, from the call's payload literal. A fresh
-  ## copy per arm: one node may sit in one place only.
+  ## CONCRETE member from `bound` — the values the checker bound to the
+  ## contract's params past the receiver, in order (typecheck.bindIfaceCall).
+  ## Conformance holds the concrete params to the contract's names and
+  ## order, so position i here is param i there. A fresh copy per arm: one
+  ## node may sit in one place only.
   result.add res.typed(Expr(span: span, kind: exkVar, name: PayloadBind), bindT)
-  for i, pname in mem.paramNames():
-    if i == 0: continue   # self
-    var value: Expr = nil
-    if dotArg != nil and dotArg.kind == exkStruct:
-      for f in dotArg.fields:
-        if f.name == pname: value = f.value
-    doAssert value != nil,
-      "lowering_iface: the call to '" & mem.name & "' supplies no '" & pname &
-      "' — the checker matches an interface call's payload to the contract, " &
-      "so a concrete member wanting a param the contract lacks got past it"
-    result.add res.freshCopy(value)
+  doAssert bound.len == mem.fnParams.len - 1,
+    "lowering_iface: the call to '" & mem.name & "' bound " & $bound.len &
+    " argument(s) past the receiver, the member takes " &
+    $(mem.fnParams.len - 1) & " — conformance should have refused it"
+  for value in bound: result.add res.freshCopy(value)
+
+proc returnsItself(mem: Decl, s: Decl): bool =
+  ## Does member `mem` of object `s` return `s`'s own type?
+  let r = mem.fnReturnType
+  r != nil and r.kind == tkNamed and r.name == s.name
+
+proc returnsInterface(res: Resolution, e: Expr, iface: string): bool =
+  ## Is the call `e` through interface `iface` typed as that interface?
+  let t = res.typeFor(e)
+  t != nil and t.kind == tkNamed and t.name == iface
 
 proc dispatchArm(res: Resolution, e: Expr, s: Decl,
-                 member: string): DispatchArm =
+                 iface, contractMember: string): DispatchArm =
+  ## The arm for one satisfier `s`: a typed call to the member implementing
+  ## `iface.contractMember` — its own name unless `satisfies iface {… -> …}`
+  ## renamed it — with the payload (bound as `PayloadBind`) as `self` and the
+  ## rest from the call's payload literal.
+  let member = implementingName(s, iface, contractMember)
   let mem = findObjectMember(s, member)
   doAssert mem != nil and mem.fnParams.len > 0,
     "lowering_iface: '" & s.name & "' satisfies the interface but declares " &
@@ -65,9 +77,16 @@ proc dispatchArm(res: Resolution, e: Expr, s: Decl,
   # The satisfier's type as the checker built it, edge and all: the member's
   # own `self` param.
   let callee = Expr(span: e.span, kind: exkVar, name: member)
-  let args = memberArgs(res, mem, e.dotArg, mem.fnParams[0].typ, e.span)
+  let checked = res.call(e)
+  let bound = if checked != nil and checked.args.len > 1: checked.args[1 .. ^1]
+              else: @[]
+  let args = memberArgs(res, mem, bound, mem.fnParams[0].typ, e.span)
   let call = res.typed(Expr(span: e.span, kind: exkCall, callee: callee,
                             args: args), res.typeFor(e))
+  # `-> Self` is the interface (R13), and an implementation may return its
+  # own type instead (covariant): that result enters the interface here.
+  if returnsItself(mem, s) and returnsInterface(res, e, iface):
+    res.markWrap(call, s.name, iface)
   DispatchArm(satisfier: s.name, bindName: PayloadBind, call: call)
 
 proc lowerOne(res: Resolution, m: Module, real: Table[string, Module],
@@ -76,7 +95,7 @@ proc lowerOne(res: Resolution, m: Module, real: Table[string, Module],
   let ic = res.ifaceCallOf(e)
   var arms: seq[DispatchArm]
   for s in satisfiersOf(m, real, ic.iface):
-    arms.add dispatchArm(res, e, s, ic.member)
+    arms.add dispatchArm(res, e, s, ic.iface, ic.member)
   let t = res.typeFor(e)
   let node = res.typed(Expr(span: e.span, kind: exkIfaceCall,
                            dispatchRecv: e.receiver, dispatchIface: ic.iface,
@@ -89,6 +108,8 @@ proc lowerOne(res: Resolution, m: Module, real: Table[string, Module],
 
 proc lowerIn(res: Resolution, m: Module, real: Table[string, Module],
              e: Expr) =
+  ## Lowers every interface call under `e`, children first, so an argument
+  ## that is itself an interface call is replaced before its parent copies it.
   if e == nil: return
   for ch in e.children: lowerIn(res, m, real, ch)
   if e.kind == exkField and res.ifaceCallOf(e).member != "":
