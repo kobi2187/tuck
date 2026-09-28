@@ -2559,4 +2559,33 @@ fn main() -> int:
   t.quietly: t.hostRuns("an argument is the object as it was at the call", 1)
   t.bugFixed "one object as a changing member's self and its argument keeps value semantics"
 
+  # A24 — an actor member `fn` is accepted by the checker and emitted by no
+  # backend: every call to it is "undeclared" on Nim, Odin and D. Found
+  # 2026-09-28 working on R10, which moves an `on select` arm's work into a
+  # fn — for an actor, a member fn, since only it can write the fields.
+  t.src """
+import scheduler
+
+actor Acc [queue: 8]:
+  total: int = 0
+  done: bool = false
+
+  fn addIt({n: int}):
+    total += n
+
+  on add({n: int}):
+    {n: n} addIt
+    done = true
+
+fn ready() -> bool:
+  return Acc.done
+
+fn main() -> int:
+  Acc send add {n: 5}
+  Acc.waitUntil {pred: :ready}
+  return Acc.total
+"""
+  t.quietly: t.hostRuns("an actor member fn can be called from its handler", 5)
+  t.bugOpen "an actor member fn can be called from its handler"
+
   t.finish()

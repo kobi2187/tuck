@@ -240,9 +240,11 @@ diff, so that diff is reviewable as "renames only".
 
 ### S6 — Rulings (your decision; the code is small)
 
-Open: **#84** an initialisation barrier between two senders · **#7**
-full-mailbox policy · the rest of
-`thoughts/shared/audits/2026-09-27-rulings-needed.md` (R3, R6–R12).
+RULED 2026-09-28: **#84** (R7) no order is promised between two senders and
+nothing orders them — documented in spec §9.1; R8's TK-TY35 turns #84's crash
+(a field read before its `start` message) into a compile error. **#7** (R6)
+block the sender only if it costs nothing, else drop and let the sender check
+— measuring. Still open in the report: R3, R10 (asked), R11, R12.
 
 RULED 2026-09-27, and implemented:
 - **#4** attribute words are reserved words — refused as any name read bare

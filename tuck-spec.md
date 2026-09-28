@@ -2059,6 +2059,14 @@ unbounded allocation. `queue: N` means N messages may be waiting to be picked
 up; the runtime double-buffers, so an actor may hold up to another N it has
 already taken (the handover is an index flip, never a copy).
 
+**No order is promised between two senders** (ruled 2026-09-28, #84). When
+two senders each send to one actor, which message it handles first is
+whatever the runtime finds fastest, and it can differ by `--actors:` mode and
+from run to run. A program that needs one message handled before another
+sends both from the same place, or waits for the first (`waitUntil`) before
+sending the second. Nothing is added to order them: an initialisation
+barrier was the alternative, and it would cost every message.
+
 #### Observing an actor: a snapshot, or the exact moment
 
 An actor'"'"'s public fields are readable from outside (`Progress.done`). That is a

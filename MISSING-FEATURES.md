@@ -22,11 +22,18 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (3)
+## A. Open bugs (4)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
+
+**A24 — an actor member `fn` is emitted by no backend.** `fn addIt({n: int})`
+inside an actor checks OK, and every call to it — from a handler or an
+`on select` arm — is "undeclared" on Nim, Odin and D. Found 2026-09-28 on
+R10 (an arm becomes one call to a fn that carries its own effect bracket;
+for an actor that fn is a member, the only fn that can write its fields).
+Test: `known_bugs`, "an actor member fn can be called from its handler".
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism

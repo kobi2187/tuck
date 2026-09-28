@@ -99,6 +99,12 @@ the next line does not parse.
 **Recommend (a).** It extends R2's syntactic rule the natural way: an
 assignment is syntactically a statement.
 
+> **2026-09-28: "need to see what codegen produces."** Today
+> `if m > 9: m = 0 else: m = m + 1` checks OK and fails to build on all three
+> (Nim `(if ...: m = 0 else: ...)` at column 0; Odin and D a ternary of
+> assignments). Under (a) it is the statement `if` — the multi-line form's
+> output exactly. Shown to the owner; awaiting the ruling.
+
 ### R4 — #4 / A1: attribute words (`priority`, `error`, `stack`) as names
 TK-PA08's text promises they are "reserved only inside brackets, so usable as
 fields, parameters and function names". Fields work. I made fn names, `::`
@@ -157,6 +163,9 @@ naturally, and all three backends allow it.
 **Recommend (a).** Dropping loses work silently, and raising puts an error
 path on every send.
 
+> **RULED 2026-09-28:** block the sender if that adds no overhead; otherwise
+> drop, and the sender checks the result of its send.
+
 ### R7 — #84: no ordering between two senders into one mailbox
 Thread mode happens to supply an ordering that batch mode doesn't. Per-sender
 FIFO holds in every mode.
@@ -167,6 +176,11 @@ FIFO holds in every mode.
 
 **Recommend (a) now, with (b) if the pattern keeps biting.** R8 turns the
 crash into a compile error either way.
+
+> **RULED 2026-09-28: "we do here what's fast, no order is promised."** No
+> barrier. Spec §9.1 says two senders' messages arrive in no promised order.
+> Asked back: whether a single sender's FIFO order — which the runtime has in
+> every mode and `waitUntil` relies on — stays a promise.
 
 ### R8 — #85: an actor field with no initialiser is silently zero
 Now unblocked: #87 (initialisers discarded) was fixed on 2026-09-25.
@@ -213,6 +227,12 @@ The effect checker skips actor-level `on select` arms deliberately, so an
 **Recommend (a).** It matches how handlers declare effects, and it is one
 bracket.
 
+> **RULED 2026-09-28:** an arm is a one-line call to a fn, and that fn carries
+> the effect bracket. Asked back: scope (actor-level arms, or a task's too,
+> where spec §9.3 keeps a block so an arm can `return`), and whether
+> `return` stays legal as an arm. Found on the way: an actor member `fn` is
+> emitted by no backend (A24, pinned `bugOpen`).
+
 ### R11 — composing a mixin from another module
 `+ Helpers` works only for a mixin declared in the same module, as it did
 before today's change. An imported one silently becomes a sketch. Copying its
@@ -221,6 +241,10 @@ body across modules needs its free names qualified.
 - (b) Support it.
 
 **Recommend (a) now.**
+
+> **RULED 2026-09-28: (b), and wider.** "Importing anything from other
+> modules should work as well as same module — not just mixins." A scan of
+> every construct across a module boundary, on all three backends, follows.
 
 ### R12 — smaller calls
 - **Unused code.** Ruled 2026-09-27: SSA-related unused code stays; other
