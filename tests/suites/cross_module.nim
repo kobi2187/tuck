@@ -798,7 +798,7 @@ fn main() -> int:
   t.addFile("lib.tuck", """const Cap = 4
 """)
   t.quietly: t.hostRuns("R11: an imported const sizes and fills an Array", 10)
-  t.bugOpen "R11: an imported const sizes and fills an Array"
+  t.bugFixed "R11: an imported const sizes and fills an Array"
 
   t.src """
 import lib
@@ -834,7 +834,7 @@ fn main() -> int:
   t.addFile("lib.tuck", """type Level = u8 [saturating]
 """)
   t.quietly: t.hostRuns("R11: an imported saturating type constructs on every backend", 255)
-  t.bugOpen "R11: an imported saturating type constructs on every backend"
+  t.bugFixed "R11: an imported saturating type constructs on every backend"
 
   t.src """
 import lib

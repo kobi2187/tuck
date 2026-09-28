@@ -318,6 +318,9 @@ proc dTypeIn*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
       t.name[NamedTypeParamPrefix.len .. ^2]
     elif t.name.startsWith("<"): giveUp("type sentinel " & t.name)
     elif isPoolHandleType(ctx.module, t.name): "rt.PoolHandle"
+    elif constOrigin(ctx.module, ctx.realModules, t.name) != "":
+      # An Array size naming an imported const (R11, A33).
+      dAlias(constOrigin(ctx.module, ctx.realModules, t.name)) & "." & t.name
     else: ctx.importedTypeQualifierD(t.name)
   of tkApp: ctx.dAppType(t, mode)
   of tkTuple: giveUp("tuple type")

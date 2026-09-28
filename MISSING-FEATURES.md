@@ -22,14 +22,15 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (12)
+## A. Open bugs (10)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
 
 **A27–A37 — constructs that do not cross a module boundary (R11 scan,
-2026-09-28).** Ruled: importing anything should work as well as the same
+2026-09-28).** A25, A26, A28, A31, A33 and A35 are fixed; their pins are
+`bugFixed` in `cross_module`. Ruled: importing anything should work as well as the same
 module. Each construct was built declared in `lib` and used from the
 importer on Nim, Odin and D, against a one-module control that passes; these
 failed. Tests: `cross_module`, each named "R11: …".
@@ -40,11 +41,8 @@ failed. Tests: `cross_module`, each named "R11: …".
 - **A32** an imported actor's fields and handlers are invisible to the
   importer ("no field 'total' on type Acc", #73). Distinct from A18, which is
   an imported actor never STARTED on Odin/D.
-- **A33** an imported const as an Array size or fill count is emitted
-  unqualified, on all three.
 - **A34** (Odin, D) a group bound whose provider is in another module — the
   bounded fn's module cannot name it. A14's sibling.
-- **A35** (Odin, D) an imported saturating type's constructor is unqualified.
 - **A36** (Odin, D) an imported pool.
 - **A37** (Odin, D) an imported registry's `raise` is unqualified.
 
@@ -267,6 +265,13 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **A33, A35 — an imported const and an imported saturating type.** A
+  const is not injected (an importer's own const may shadow it), so Nim now
+  exports it (`const Cap* = …`) and Odin and D qualify each reference to it,
+  as a value and as an Array size (`ast_query.constOrigin`). An imported
+  saturating type's constructor is qualified on Odin and D. Fixed
+  2026-09-28. `cross_module`, "R11: …".
 
 - **A26, A28, A31 — imported interfaces and invariant types.** A call
   through an imported interface value resolved to one satisfier's member,

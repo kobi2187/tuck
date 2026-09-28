@@ -169,7 +169,11 @@ proc odinNamedFallback*(ctx: OdinCodegenCtx, t: Type): string =
   ## A name the primitive table did not cover.
   if isOddBitWidth(t.name): roundedIntType(t.name)
 
-  else: ctx.importedTypeQualifier(t.name)
+  else:
+    # An Array size naming an imported const (R11, A33).
+    let co = constOrigin(ctx.module, ctx.realModules, t.name)
+    if co != "": co.replace("-", "_") & "." & t.name
+    else: ctx.importedTypeQualifier(t.name)
 
 proc odinTupleType*(ctx: var OdinCodegenCtx, t: Type): string =
   ## A tuple as Odin: a one-element tuple is just its element, anything wider

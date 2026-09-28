@@ -1089,3 +1089,16 @@ proc isWrappedType*(t: Type): bool =
   ## `!T`, `?T` or `!?T` — a value already in the result carrier.
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
     t.base.name in ["!", "?", "!?"]
+
+proc constOrigin*(m: Module, real: Table[string, Module], name: string): string =
+  ## The OTHER module declaring the const `name` (as emitted), or "" when `m`
+  ## declares it or no module does. A const is not injected into an importer
+  ## — its own const may shadow an imported one — so Odin and D qualify each
+  ## reference to an imported const, and Nim exports it (R11, A33).
+  for d in m.decls:
+    if d != nil and d.kind == dkConst and d.name == name: return ""
+  for modName, other in real:
+    if other == m: continue
+    for d in other.decls:
+      if d != nil and d.kind == dkConst and d.name == name: return modName
+  ""

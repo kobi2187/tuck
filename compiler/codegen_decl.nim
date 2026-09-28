@@ -875,7 +875,10 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   of dkExpr: ctx.genExpr(d.expr)
   # explicit static block: the backend evaluates the initializer at compile
   # time (pure computation — the checker already enforced purity)
-  of dkConst: "const " & d.name & " = static:\n  " & ctx.genExpr(d.constVal)
+  of dkConst:
+    # Exported like a fn, so an importer can name it (R11, A33).
+    "const " & d.name & (if isExportedDecl(ctx.module, d): "*" else: "") &
+      " = static:\n  " & ctx.genExpr(d.constVal)
   of dkRegister: genRegister(d)
   of dkRegistry: ctx.genRegistry(d)
   of dkPool: genPoolDecl(d)

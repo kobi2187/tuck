@@ -311,7 +311,8 @@ proc genCallWithArgs(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string,
   ## The emission forms, once the arguments are built.
   let satT = ctx.index.saturatingType(calleeStr)
   if satT != nil and args.len == 1:
-    return ctx.genSaturatingCtor(satT, calleeStr, args[0])
+    # An imported saturating type is named through its package (R11, A35).
+    return ctx.genSaturatingCtor(satT, ctx.importedTypeQualifier(calleeStr), args[0])
   let invRet = ctx.index.externInvRet(calleeStr)
   if invRet != "":
     # extern boundary: the returned value validates on entry
@@ -714,6 +715,8 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
       if v.name == e.name: return "." & e.name
   let foreign = ctx.qualifiedForeignFn(e.name)
   if foreign != "": return foreign
+  let co = constOrigin(ctx.module, ctx.realModules, e.name)
+  if co != "": return co.replace("-", "_") & "." & e.name   # R11, A33
   e.name
 
 proc genOdinPoolOp(ctx: var OdinCodegenCtx, e: Expr): string =

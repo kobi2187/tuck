@@ -416,7 +416,8 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
     return "writeln(" & args.join(", ") & ")"
   let satT = ctx.index.saturatingType(calleeStr)
   if satT != nil and args.len == 1:
-    return ctx.genDSaturatingCtor(satT, calleeStr, args[0])
+    # An imported saturating type is named through its module (R11, A35).
+    return ctx.genDSaturatingCtor(satT, ctx.importedTypeQualifierD(calleeStr), args[0])
   let rt = genDRtCall(calleeStr, args)
   if rt != "": return rt
   # A type param mentioned by no parameter cannot be deduced from the call, so
@@ -732,6 +733,8 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
   if e.name notin ctx.definedVars:
     let tag = ctx.qualifyEnumTag(e.name)
     if tag != "": return tag
+    let co = constOrigin(ctx.module, ctx.realModules, e.name)
+    if co != "": return dAlias(co) & "." & e.name   # R11, A33
   e.name
 
 proc dupIfSeq(ctx: var DCodegenCtx, valStr: string, e: Expr): string =
