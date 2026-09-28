@@ -74,8 +74,13 @@ finished** (no longer deferred).
    decision tables, `?T`, tasks, transitions, fnsigs, record composition,
    and the rest of `cross_module`); A25–A37 do not, each pinned `bugOpen`
    (MISSING-FEATURES §A). Fix those, then A18 and A14.
-9. Arena (spec §7.3) — finish it: a design proposal to the owner (what
-   `alloc` returns, how "cannot outlive the arena" is checked), then build.
+9. Arena (spec §7.3) — finish it. **It depends on a slab allocator (owner,
+   2026-09-28)**, so the slab comes first: one owned region of homogeneous
+   slots plus integer indices (Experimental §2 below), then the arena over
+   it. One design proposal to the owner covers both before any code:
+   language support or a library over `pool`/`Seq`; whether an index into
+   the wrong slab is caught (a `distinct` index per slab); what an arena's
+   `alloc` returns; how "cannot outlive the arena" is checked.
 10. M4.3 — actor dispatch lowered (`genActorDispatch` / `genDispatch` /
     `genDDispatch` still build it); needs the message envelope in Tuck first.
 11. A16 / #55 — a fired `timeout` bounds latency.
@@ -1053,6 +1058,8 @@ returning the wrong answer on D. The lesson is in the ratio.
   which is why the boxing lives in a pass rather than in the emitters. The
   arena form was built and run by hand first (all three backends, correct)
   before the boxed one was chosen for being a tenth the machinery.
+
+**2026-09-28: the arena (spec §7.3) is built on this** (owner). Queue item 9.
 
 **The idea:** a slab — one owned arena of homogeneous slots plus integer
 indices into it. Indices are ordinary values, so nothing about the

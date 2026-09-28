@@ -304,7 +304,9 @@ body across modules needs its free names qualified.
 > implementing it** (spec §7.3) — not deferred any more. What `alloc` hands
 > back in a language with no references is the first design question; a
 > proposal goes to the owner before code. `benches/bench_phases` is still
-> open.
+> open. **Later the same day: the arena depends on a slab allocator** — the
+> slab (ROADMAP Experimental §2) comes first, and the arena is built on it;
+> one proposal covers both.
 
 ### Member calls on a parameter (asked 2026-09-28)
 > **RULED 2026-09-28: a parameter is immutable, like `let`.** Tuck has values,
