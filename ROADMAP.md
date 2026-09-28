@@ -28,13 +28,17 @@ M2 (its exit), M3 and M4 except 4.3 are done; the spine's remainder is M2.1
 and M4.3. Open bugs pinned `bugOpen`: A14, A16, A18, A24 — the four
 MISSING-FEATURES §A counts.
 
-**Waiting on the owner** (asked 2026-09-28; only R10 blocks work below):
-- R3 — a one-line `if` with statement branches (codegen shown).
+**Ruled 2026-09-28, later the same day:** R3 (a) — support a one-line `if`
+with statement branches; R7 — one sender's FIFO order stays a promise; R8 —
+an Array takes a fill form `[v; N]`, a zero fill being the host's zeroed
+storage, not a loop; R12 — diagnostic codes per rule, and **arena is to be
+finished** (no longer deferred).
+
+**Waiting on the owner:**
 - R10 — actor arms only, or a task's too (§9.3 keeps a block so an arm can
   `return`); and whether a bare `return` stays an arm.
-- R7 — whether one sender's FIFO order stays a promise (`waitUntil` relies on it).
-- R8 — how an `Array[N, T]` actor field starts: a fill form, a zero exemption, or `T?`.
-- R12 — the arena warning; `benches/bench_phases`; diagnostic codes per rule or per category.
+- R12 — `benches/bench_phases`: rework or delete.
+- Arena — what `alloc` returns (a proposal comes first; see item 9).
 
 **1. Memory and the SSA spine** (the higher priority)
 1. `benches/transpile/dispatch.tuck` crashes the compiler: "the SSA mirror is
@@ -45,35 +49,43 @@ MISSING-FEATURES §A counts.
 **2. Finish partial features, and the rulings already made**
 3. A24 — an actor member `fn` is emitted by no backend. Blocks R10.
 4. R10 — an `on select` arm is one call to a fn that carries the bracket.
-5. R6 (#7) — measure what blocking a full mailbox's sender costs; block if
+5. R3 — a one-line `if c: s1 else: s2` with statement branches is the
+   statement `if` (today it checks and builds on no backend).
+6. R8 — the Array fill form `[v; N]`; spec §9.1's `txBuf` and example 16
+   take it.
+7. R6 (#7) — measure what blocking a full mailbox's sender costs; block if
    free, else drop and have the sender check the result.
-6. R11 — cross-module parity: every construct used from another module, on
+8. R11 — cross-module parity: every construct used from another module, on
    all three backends. It must cover A18 (an imported actor is never started
    on Odin/D), A14 (a group whose providers are in two modules), #73, a mixin
    from another module, and `fn join[T: Interface]` called from another module.
-7. M4.3 — actor dispatch lowered (`genActorDispatch` / `genDispatch` /
-   `genDDispatch` still build it); needs the message envelope in Tuck first.
-8. A16 / #55 — a fired `timeout` bounds latency.
-9. #15 — typed select sources, the task form; unblocks example 16 (meets R10).
-10. #30 — D reads and writes a register through a plain `*ptr`, not
+9. Arena (spec §7.3) — finish it: a design proposal to the owner (what
+   `alloc` returns, how "cannot outlive the arena" is checked), then build.
+10. M4.3 — actor dispatch lowered (`genActorDispatch` / `genDispatch` /
+    `genDDispatch` still build it); needs the message envelope in Tuck first.
+11. A16 / #55 — a fired `timeout` bounds latency.
+12. #15 — typed select sources, the task form; unblocks example 16 (meets R10).
+13. #30 — D reads and writes a register through a plain `*ptr`, not
     `volatileLoad`/`volatileStore` (checked on example 11).
-11. #64 — wire `[no_alloc]` and `[irq_safe]`.
-12. #22 / #23 — `callParamsFor` gaps; quadratic emit.
-13. S3.3 — D runtime networking: `42-net-echo` cannot link `listen`/`accept`. L.
-14. S3.5 — runtime speed parity; the causes are unmeasured.
+14. #64 — wire `[no_alloc]` and `[irq_safe]`.
+15. #22 / #23 — `callParamsFor` gaps; quadratic emit.
+16. S3.3 — D runtime networking: `42-net-echo` cannot link `listen`/`accept`. L.
+17. S3.5 — runtime speed parity; the causes are unmeasured.
 
 **3. Records and hygiene** (small; alongside the above)
-15. Stale docs, each checked wrong on 2026-09-28: spec Appendix A calls
+18. Stale docs, each checked wrong on 2026-09-28: spec Appendix A calls
     generic-record construction a "checker error" (`{value: 5} Box` returns 5
     on all three); MISSING-FEATURES §D says the registry emits invalid Nim and
     example 20 builds on no backend (it builds on all three); LANGUAGE-OVERVIEW
     §0 row 4 says D passes a record parameter as `ref` (all three pass it by
     value), and §18 lists three bugs that are not the four open.
-16. `invariants`' "a violation reads the same on every backend" failed 2 of 5
+19. `invariants`' "a violation reads the same on every backend" failed 2 of 5
     full runs on 2026-09-27 — find the cause.
-17. The seven mechanical refactors listed under the rulings report's Observations.
+20. R12 — a `TK-` code per rule for the 134 uncoded `fail(...)` sites, each
+    appended at the end of its category, each with a `tuck explain` text.
+21. The seven mechanical refactors listed under the rulings report's Observations.
 
-**Deferred — completely missing, not scheduled:** arena · #10 · #11 · #12 ·
+**Deferred — completely missing, not scheduled:** #10 · #11 · #12 ·
 #16 · #17 · #32 · #33 · #57 · #62 (const evaluator) · #65–#71 · #74 · #91 ·
 DNS · a growable `str` on Odin/D (#80's stage 4, #93).
 

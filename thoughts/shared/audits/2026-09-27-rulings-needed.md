@@ -14,13 +14,13 @@ commit says so.
 | Ruling | State |
 |---|---|
 | R1, R2, R4 (made total), R5, R9, R13, parameters immutable, type test | ruled and built |
-| R8 | ruled and built (TK-TY35, `lowering_optional`); asked: how an `Array[N, T]` field starts |
-| R7 | ruled and documented (spec §9.1); asked: does one sender's FIFO stay a promise |
+| R7 | ruled and documented (spec §9.1); one sender's FIFO stays a promise (ruled 2026-09-28) |
+| R8 | ruled and built (TK-TY35, `lowering_optional`); an Array field takes the fill form `[v; N]` — to build |
+| R3 | ruled (a), support it — to build |
+| R12 | unused code removed; diagnostic codes per rule — to build; arena: finish implementing — to design, then build; `bench_phases` still open |
 | R6 | ruled; the cost of blocking is measured first |
 | R10 | ruled; asked: scope (actor arms or task arms too) and a bare `return`; blocked by A24 |
 | R11 | ruled (b), widened to every construct; the scan has not started |
-| R3 | codegen shown; ruling awaited |
-| R12 | unused code removed; arena warning, `bench_phases`, diagnostic codes awaited |
 
 The ordered work that follows from these is ROADMAP.md's "The queue,
 re-validated 2026-09-28".
@@ -120,6 +120,9 @@ assignment is syntactically a statement.
 > (Nim `(if ...: m = 0 else: ...)` at column 0; Odin and D a ternary of
 > assignments). Under (a) it is the statement `if` — the multi-line form's
 > output exactly. Shown to the owner; awaiting the ruling.
+>
+> **RULED 2026-09-28: (a), "support it".** A one-line `if c: s1 else: s2`
+> whose branches are statements is the statement `if`.
 
 ### R4 — #4 / A1: attribute words (`priority`, `error`, `stack`) as names
 TK-PA08's text promises they are "reserved only inside brackets, so usable as
@@ -199,7 +202,8 @@ crash into a compile error either way.
 > field is `T?`. With a constant initialiser — what both benches took — an
 > `edit` before `start` still fails the bounds check at run time.
 > Asked back: whether a single sender's FIFO order — which the runtime has in
-> every mode and `waitUntil` relies on — stays a promise.
+> every mode and `waitUntil` relies on — stays a promise. **RULED 2026-09-28:
+> yes.** Messages from one sender are handled in the order it sent them.
 
 ### R8 — #85: an actor field with no initialiser is silently zero
 Now unblocked: #87 (initialisers discarded) was fixed on 2026-09-25.
@@ -220,6 +224,12 @@ Cost: both `benches/apps` programs (`st: BookState`, `sl: Slice`) become
 > no backend. Both fixed by `lowering_optional` (exkAbsent, exkWrapOk).
 > Open: an `Array[N, T]` field has no short initialiser — a literal lists
 > all N elements — so spec §9.1's `txBuf: Array[256, u8]` is left as it was.
+>
+> **RULED 2026-09-28: arrays take a fill form, `[v; N]`** (`txBuf:
+> Array[256, u8] = [0; 256]`). The owner's note with it: a zero-filled array,
+> or a write-only buffer, could be faster — so a zero fill should become the
+> host's zero-initialised storage rather than a loop. A write-only buffer is
+> an idea recorded, not a ruling.
 
 ### R9 — S3.1 / #43: how `tuck build` reaches the no-invariants switch on Odin and D
 - (a) Pass through `--odin:` / `--dmd:` flags.
@@ -280,6 +290,12 @@ body across modules needs its free names qualified.
   (97 Type, 10 Conformance, 7 Decision, 6 Const, …). One code per rule, or one
   per category? Per rule makes `tuck explain` useful. Per category is a day's
   work.
+
+> **RULED 2026-09-28:** diagnostic codes **per rule**. **Arena: finish
+> implementing it** (spec §7.3) — not deferred any more. What `alloc` hands
+> back in a language with no references is the first design question; a
+> proposal goes to the owner before code. `benches/bench_phases` is still
+> open.
 
 ### Member calls on a parameter (asked 2026-09-28)
 > **RULED 2026-09-28: a parameter is immutable, like `let`.** Tuck has values,

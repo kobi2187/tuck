@@ -2113,7 +2113,8 @@ Three properties follow, and they are the ones a caller needs:
 - **No race.** The predicate reads the actor'"'"'s state on the actor'"'"'s thread. No
   external read, so nothing to synchronise.
 - **Ordered against your own sends.** The registration rides the same mailbox,
-  and a mailbox is FIFO per sender.
+  and a mailbox is FIFO per sender — a promise (ruled 2026-09-28), unlike the
+  order between two senders, which is none.
 - **Free when unused.** An actor nobody registered a predicate with does no
   extra work per message. Thousands of sends stay thousands of sends.
 
