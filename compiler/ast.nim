@@ -864,6 +864,9 @@ type
                             # stays a string. A seq, not a Table: it holds one
                             # or two entries and rides the msgpack AST cache.
       isInline*: bool   # `fn inline name(...)` — codegen hint ({.inline.} / [Inline])
+      isOnHandler*: bool # spelled `on name(...)`: in an actor, a MESSAGE
+                         # handler; a `fn` there is a member the actor's own
+                         # code calls (A24). Both parse to dkFn.
       fnErrorTypes*: seq[string]  # [error: FsError | NetError] — declared error enums
     of dkMixin, dkExtern, dkPending:
       mixinMembers*: seq[Decl]

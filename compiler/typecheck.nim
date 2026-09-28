@@ -848,11 +848,39 @@ proc asInterfaceCall(tc: var TypeChecker, e: Expr, recvT: Type): Type =
        " (a member the concrete object has but the contract does not is not " &
        "reachable through the interface)", e.span)
 
+proc checkActorCall(tc: TypeChecker, e: Expr, name: string) =
+  ## A call naming something declared in an actor (A24). An `on` handler is
+  ## a message and is sent, never called (TK-AC03); a member `fn` runs on the
+  ## actor's thread, so only that actor's own code calls it (TK-AC04). A
+  ## call that may stand is recorded, so each backend prints the member's
+  ## proc with `self` passed on.
+  if name == "": return
+  if tc.actorHandlerOwner.hasKey(name) and not tc.actorMemberOwner.hasKey(name):
+    let owner = tc.actorHandlerOwner[name]
+    fail(dcAcHandlerCalled, "'" & name & "' is a message handler of actor '" &
+         owner & "' — send it: `" & owner & " send " & name & " {...}`", e.span)
+  if not tc.actorMemberOwner.hasKey(name): return
+  let owner = tc.actorMemberOwner[name]
+  if tc.currentActor != owner:
+    fail(dcAcMemberOutside, "'" & name & "' is a member fn of actor '" &
+         owner & "', so only " & owner & "'s own handlers and fns may call " &
+         "it. Fix: send " & owner & " a message whose handler calls it", e.span)
+  ensureId(e)       # a nullary call is built by the checker, id-less so far
+  semLayer.actorMemberCalls[e.id] = (owner, name)
+
 proc asFnByName(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## Not a field: `x.name` resolves to a fn by LOOKUP rather than syntax.
   ## `.fn {args}` is the method form (receiver first, args fill the rest);
   ## bare `.fn` is a whitespace call with the receiver as the payload.
   if not tc.fnSigs.hasKey(e.fieldName): return nil
+  if tc.actorHandlerOwner.hasKey(e.fieldName) or
+     tc.actorMemberOwner.hasKey(e.fieldName):
+    # Neither has a receiver: a handler is sent, a member is `{...} name`.
+    tc.checkActorCall(e, e.fieldName)
+    fail(dcAcMemberOutside, "'" & e.fieldName & "' is declared in actor '" &
+         tc.actorMemberOwner.getOrDefault(e.fieldName) & "' and takes no " &
+         "receiver. Fix: call it as `{...} " & e.fieldName & "` from the " &
+         "actor's own code", e.span)
   tc.recordMemberCall(e, recvT)
   if e.dotArg != nil:
     let mc = tc.synthMethodCall(e.fieldName, e.receiver, recvT,
@@ -3512,6 +3540,7 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
   ## error. The record combinators are NOT here — they are exkCombinator
   ## nodes the parser already decided on.
   let calleeName = tc.calleeNameOf(e)
+  tc.checkActorCall(e, calleeName)
   tc.checkAmbiguousImports(e, calleeName)
   let viaGroup = tc.asGroupRequirement(e, calleeName)
   if viaGroup != nil: return viaGroup
@@ -4375,12 +4404,22 @@ proc synthRaise(tc: var TypeChecker, e: Expr): Type =
   # position has to carry the fn's real return type or it cannot satisfy it.
   tc.currentRet
 
+proc failIfSendToMember(actorDecl: Decl, handler: string) =
+  ## TK-AC05: a `send` names a message, and a `fn` in an actor is a member
+  ## its own code calls, not a message it receives (A24).
+  for h in actorDecl.handlers:
+    if h != nil and h.kind == dkFn and h.name == handler and not h.isOnHandler:
+      fail(dcAcSendToMember, "'" & handler & "' is a member fn of actor '" &
+           actorDecl.name & "', not a message it receives. Fix: send to an " &
+           "`on` handler that calls it", h.span)
+
 proc sendHandlerParams(tc: TypeChecker, actorDecl: Decl, handler: string,
                        found: var bool): seq[Param] =
   ## The params a handler expects. It is an `on <name>` block OR an `on select`
   ## message arm (spec §9.3); `shutdown` is the reserved control message and
   ## takes an empty payload.
   if handler == "shutdown": found = true
+  failIfSendToMember(actorDecl, handler)
   for h in actorDecl.handlers:
     if found: break
     if h != nil and h.kind == dkFn and h.name == handler:
@@ -4934,7 +4973,7 @@ proc checkHandler(tc: var TypeChecker, h: Decl) =
   # `-> void` is not a reply claim — it carries nothing and means exactly
   # what omitting the type means, so it stays legal. Only a type that would
   # carry a VALUE back promises something there is no channel for.
-  if h != nil and h.kind == dkFn and h.fnReturnType != nil and
+  if h != nil and h.kind == dkFn and h.isOnHandler and h.fnReturnType != nil and
      not (h.fnReturnType.kind == tkNamed and
           h.fnReturnType.name in ["void", "unit"]):
     fail(dcAcHandlerReturn,
@@ -5175,8 +5214,11 @@ proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   tc.pushScope()
   for f in d.actorFields: tc.bindName(f.name, f.typ, true)
   tc.bindName("self", tc.namedType(d.name, d.span), true)
+  let outerActor = tc.currentActor
+  tc.currentActor = d.name
   tc.withOwnerFields:
     for h in d.handlers: tc.checkHandler(h)
+  tc.currentActor = outerActor
   tc.popScope()
 
 proc checkDecl(tc: var TypeChecker, d: Decl) =

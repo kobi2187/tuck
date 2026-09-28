@@ -689,6 +689,9 @@ proc genDActorInits(ctx: var DCodegenCtx, d: Decl): string =
   if sets.len == 0: return ""
   "shared static this() {\n" & sets.join("") & "}\n\n"
 
+proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
+                refSelf = false): string
+
 proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
   ## An actor is a SINGLETON SERVICE (spec 9.1): one instance per declared
   ## type, no construction, alive for the whole program. It emits its message
@@ -709,6 +712,14 @@ proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
              ";\n\n")
   result.add(ctx.genDActorInits(d))
   if not hasMessages: return
+  for m in actorMemberFns(d):
+    # An actor's member `fn` (A24): `ref T self`, as the dispatch takes it.
+    let copy = Decl(span: m.span, kind: dkFn, id: m.id, name: m.name,
+                    fnParams: @[actorSelfParam(d.name, m)] & m.fnParams,
+                    fnReturnType: m.fnReturnType, fnBody: m.fnBody,
+                    fnEffects: m.fnEffects)
+    result.add(ctx.genDFnDecl(copy, memberProcName(d.name, m.name),
+                              refSelf = true) & "\n")
   result.add(ctx.genDDispatch(d, handlers, shutdownBody, hasShutdown))
   result.add(genDDrain(d, hasShutdown))
   for h in handlers:

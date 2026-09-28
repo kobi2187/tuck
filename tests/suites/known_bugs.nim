@@ -2586,6 +2586,119 @@ fn main() -> int:
   return Acc.total
 """
   t.quietly: t.hostRuns("an actor member fn can be called from its handler", 5)
-  t.bugOpen "an actor member fn can be called from its handler"
+  t.bugFixed "an actor member fn can be called from its handler"
+  # FIXED 2026-09-28: `fn` and `on` both parsed to a dkFn and every backend
+  # made each one a MESSAGE (`sendAddIt_…`, a `handleMsg` arm), while the
+  # direct call printed a bare `addIt(n)`. `on` now marks a handler
+  # (Decl.isOnHandler); a `fn` is a member emitted as a proc taking the
+  # actor's state as `self`, the way its dispatch does, and a call passes
+  # `self` on (res.actorMemberCalls, codegen_common.actorMemberCallee).
+
+  # A member returns a value, calls another member, and grows a Seq field.
+  t.src """
+import scheduler
+import seq
+
+actor Acc [queue: 8]:
+  total: int = 0
+  log: Seq[int] = []
+  done: bool = false
+
+  fn record({n: int}):
+    log = {items: log, value: n} push
+
+  fn addIt({n: int}) -> int:
+    total += n
+    {n: n} record
+    return total
+
+  on add({n: int}):
+    let t = {n: n} addIt
+    if t > 10:
+      done = true
+
+fn ready() -> bool:
+  return Acc.done
+
+fn main() -> int:
+  Acc send add {n: 5}
+  Acc send add {n: 7}
+  Acc.waitUntil {pred: :ready}
+  return Acc.total * 10 + Acc.log.len
+"""
+  t.hostRuns "an actor member returns a value and calls another member, on every backend", 122
+
+  # From `on select` arms, in the payload form and the bare-name form.
+  t.src """
+import scheduler
+
+actor Acc [queue: 8]:
+  total: int = 0
+  done: bool = false
+
+  fn addIt({n: int}):
+    total += n
+
+  fn finishIt():
+    done = true
+
+  on select:
+    | add -> {n: int}:  {n: n} addIt
+    | finish -> {}:     finishIt
+
+fn ready() -> bool:
+  return Acc.done
+
+fn main() -> int:
+  Acc send add {n: 5}
+  Acc send finish {}
+  Acc.waitUntil {pred: :ready}
+  return Acc.total
+"""
+  t.hostRuns "an `on select` arm calls an actor member, on every backend", 5
+
+  # What stays refused: a handler is a message, and a member is the actor's.
+  t.src """
+actor Acc [queue: 8]:
+  total: int = 0
+
+  on add({n: int}):
+    total += n
+
+fn main() -> int:
+  {n: 5} add
+  return 0
+"""
+  t.badCheck "a message handler called like a fn is refused", "TK-AC03"
+  t.src """
+actor Acc [queue: 8]:
+  total: int = 0
+
+  fn addIt({n: int}):
+    total += n
+
+  on add({n: int}):
+    {n: n} addIt
+
+fn main() -> int:
+  {n: 5} addIt
+  return 0
+"""
+  t.badCheck "an actor member called from outside the actor is refused", "TK-AC04"
+  t.src """
+actor Acc [queue: 8]:
+  total: int = 0
+
+  fn addIt({n: int}):
+    total += n
+
+  on add({n: int}):
+    {n: n} addIt
+
+fn main() -> int:
+  Acc send addIt {n: 5}
+  return 0
+"""
+  t.badCheck "a send naming an actor member, not a handler, is refused", "TK-AC05"
 
   t.finish()

@@ -369,6 +369,11 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   if waitOn != "": return waitOn
   let variant = ctx.asSumVariantCall(e)
   if variant != "": return variant
+  let actorMember = actorMemberCallee(ctx.res, e)
+  if actorMember != "":
+    # The actor's own member fn (A24): `self` is already the `^T` the
+    # dispatch holds, so it is passed as is.
+    return actorMember & "(" & (@["self"] & ctx.genCallArgs(e)).join(", ") & ")"
   var calleeStr = ctx.genOdinExpr(e.callee)
   let member = memberCallee(ctx.res, ctx.module, e)
   if member != "": calleeStr = member

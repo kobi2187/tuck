@@ -727,6 +727,13 @@ actor Counter [queue: 128]:
 No construction, no reference. The scheduler auto-registers every declared
 actor and runs it as a daemon alongside `main`; `main` owns the lifecycle.
 
+**An actor's `fn` is a member; its `on` is a message** (2026-09-28). A `fn`
+declared in an actor reads and writes its fields and is called by the actor's
+own handlers, `on select` arms and member fns (`{n: n} addIt`, or bare
+`finishIt`); it may return a value. It runs on the actor's thread, so a call
+from anywhere else is refused (`TK-AC04`), and a `send` cannot name one
+(`TK-AC05`). An `on` handler is only ever sent, never called (`TK-AC03`).
+
 **Every field has an initialiser or is `T?`** (`TK-TY35`, ruled 2026-09-28,
 #85). A field is what the singleton starts with, before any message arrives;
 without one it was the host's zero, read as data. A `T?` field starts absent

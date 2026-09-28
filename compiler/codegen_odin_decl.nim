@@ -87,6 +87,18 @@ proc genOdinMemberFn*(ctx: var OdinCodegenCtx, m: Decl, objName: string): string
   result = ctx.genOdinDecl(copy)
   ctx.ptrSelf = oldPtrSelf
 
+proc genOdinActorMemberFn*(ctx: var OdinCodegenCtx, m: Decl,
+                           actorName: string): string =
+  ## An actor's member `fn` (A24): `self: ^T`, as the dispatch takes it, so a
+  ## field write reaches the singleton. `ptrSelf` stays off: a bare `self` is
+  ## only ever handed on to another member, which wants the pointer itself.
+  let copy = Decl(span: m.span, kind: dkFn, id: m.id,
+                  name: memberProcName(actorName, m.name),
+                  fnParams: @[actorSelfParam("^" & actorName, m)] & m.fnParams,
+                  fnReturnType: m.fnReturnType, fnBody: m.fnBody,
+                  fnEffects: m.fnEffects)
+  ctx.genOdinDecl(copy)
+
 proc genPendingStub*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## Pending stub: logs on invocation, returns the zero value.
   let ind = "  ".repeat(ctx.indent)
@@ -773,6 +785,7 @@ proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =
   # One instance per declared actor (spec §9.1); sends and field reads target
   # it, so `Counter.total` means `counterSingleton.total`.
   result.add(ind & actorSingletonName(d.name) & ": " & d.name & "\n\n")
+  for m in actorMemberFns(d): result.add(ctx.genOdinActorMemberFn(m, d.name) & "\n")
   result.add(ctx.genDispatch(d, handlers, shutdownBody, hasShutdown, ind))
   result.add(genDrain(d, hasShutdown, ind))
   for h in handlers:

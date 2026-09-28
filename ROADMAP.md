@@ -53,7 +53,10 @@ finished** (no longer deferred).
    no leak and no wrong answer depends on it. Now after item 17.
 
 **2. Finish partial features, and the rulings already made**
-3. A24 — an actor member `fn` is emitted by no backend. Blocks R10.
+3. ~~A24 — an actor member `fn` is emitted by no backend~~ **DONE
+   2026-09-28**: a member is a proc taking the actor's state as `self`;
+   TK-AC03/04/05 refuse a handler called, a member called from outside, a
+   send naming a member.
 4. R10 — an `on select` arm is one call to a fn that carries the bracket.
 5. R3 — a one-line `if c: s1 else: s2` with statement branches is the
    statement `if` (today it checks and builds on no backend).

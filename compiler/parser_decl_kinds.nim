@@ -1142,6 +1142,7 @@ proc parseFnDecl*(p: var Parser, sp: Span): Decl =
   ## parseSelectDecl. A body-less fn is a signature (extern, pending).
   if p.current().kind == tkOn and p.peek(1).kind == tkSelect:
     return p.parseSelectDecl(sp)
+  let fromOn = p.current().kind == tkOn
   discard p.advance()
   # `fn inline name(...)` — codegen-attribute keyword slot after fn
   var isInline = false
@@ -1159,7 +1160,7 @@ proc parseFnDecl*(p: var Parser, sp: Span): Decl =
        fnGenericBounds: genericBounds,
        fnParams: params, fnReturnType: retType, fnEffects: sig.effects,
        fnBody: body, fnErrorTypes: sig.errTypes, isInline: isInline,
-       fnResourceKinds: sig.resources)
+       fnResourceKinds: sig.resources, isOnHandler: fromOn)
   # `fn f(...) -> T:` whose whole body is `...` IS a pending signature that
   # happens to be written inline, so it becomes one rather than growing a
   # second, quieter way to mean the same thing.

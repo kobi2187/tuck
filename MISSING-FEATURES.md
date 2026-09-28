@@ -22,18 +22,11 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (4)
+## A. Open bugs (3)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
-
-**A24 — an actor member `fn` is emitted by no backend.** `fn addIt({n: int})`
-inside an actor checks OK, and every call to it — from a handler or an
-`on select` arm — is "undeclared" on Nim, Odin and D. Found 2026-09-28 on
-R10 (an arm becomes one call to a fn that carries its own effect bracket;
-for an actor that fn is a member, the only fn that can write its fields).
-Test: `known_bugs`, "an actor member fn can be called from its handler".
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism
@@ -254,6 +247,16 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **A24 — an actor member `fn` was emitted by no backend.** `fn` and `on`
+  both parsed to a dkFn, and every backend made each one a MESSAGE (a
+  `handleMsg` arm, a `sendAddIt_…` helper), while a direct call printed a
+  bare `addIt(n)` that named nothing. `on` now marks a handler; a `fn` is
+  a member emitted as a proc taking the actor's state as `self`, and a call
+  passes `self` on. Also refused, where all of it used to check clean and
+  build on no backend: an `on` handler called like a fn (TK-AC03), a
+  member called from outside its actor (TK-AC04), a `send` naming a member
+  (TK-AC05). Found and fixed 2026-09-28. `known_bugs`.
 
 - **`benches/transpile/dispatch.tuck` crashed every `tuck c`** in
   assertSsaWellFormed ("the mirror misses 1 final use"). A variant

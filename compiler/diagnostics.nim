@@ -162,6 +162,9 @@ type
     # rejection Tuck's rather than the backend's.
     dcAcQueueSize = "TK-AC01"           ## an actor's [queue: N] is not a positive count
     dcAcHandlerReturn = "TK-AC02"       ## a handler declares a return type; actors cannot reply yet
+    dcAcHandlerCalled = "TK-AC03"       ## an `on` handler called like a fn; it is sent
+    dcAcMemberOutside = "TK-AC04"       ## an actor's member `fn` called from outside the actor
+    dcAcSendToMember = "TK-AC05"        ## a `send` naming an actor's member `fn`, not a handler
     dcMeSizeCount = "TK-ME01"           ## a pool/arena size or count is not positive
     dcMeArenaInert = "TK-ME02"          ## an `arena` parses, and does nothing yet
     dcIvUnknownField = "TK-IV01"        ## an invariant names a field the type lacks
@@ -752,6 +755,26 @@ proc ruleExplanation(d: DiagCode): string =
     "return type and expose the value as a public field the caller reads " &
     "(`Counter.total`), or have the caller pass its own address and send a " &
     "message back."
+  of dcAcHandlerCalled:
+    "An `on` handler is a MESSAGE the actor receives: it runs on the actor's " &
+    "own thread, one message at a time, when the actor takes it from its " &
+    "mailbox. Called like a fn, it would run on the caller's thread, against " &
+    "the actor's state, at the same time as the actor's own handlers. It " &
+    "checked clean and built on no backend. Fix: send it — `Counter send add " &
+    "{n: 5}`. For code the actor's own handlers share, declare a `fn` in the " &
+    "actor instead."
+  of dcAcMemberOutside:
+    "A `fn` declared in an actor is its member: it reads and writes the " &
+    "actor's fields, so only the actor's own handlers, `on select` arms and " &
+    "member fns may call it — they run on the actor's thread, one message at " &
+    "a time. Called from anywhere else it would run on the caller's thread " &
+    "against state the actor is changing. Fix: send the actor a message whose " &
+    "handler calls it."
+  of dcAcSendToMember:
+    "A `send` names a message: an actor's `on` handler or an `on select` arm. " &
+    "A `fn` in an actor is a member its own code calls, not a message it " &
+    "receives. Fix: send to a handler that calls the member, or declare the " &
+    "member as `on name(...)` if it is meant to be a message."
   of dcAcQueueSize:
     "An actor's `[queue: N]` is the exact capacity of its mailbox ring, so N " &
     "must be a positive whole number. Zero or negative is not a smaller " &

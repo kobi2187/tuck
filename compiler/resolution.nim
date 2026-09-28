@@ -66,6 +66,11 @@ type
     # these instead of re-deriving the mapping, which misses by-type matches.
     argFields*: Table[NodeId, seq[string]]
     callParams*: Table[NodeId, seq[string]]
+    actorMemberCalls*: Table[NodeId, (string, string)]
+                    ## A call to an actor's member `fn`, by the call's id, to
+                    ## (the actor, the member), both as written (A24). The
+                    ## emitters print it as the actor's member proc with
+                    ## `self` passed on.
     selfWriters*: HashSet[NodeId]
                     ## The object members that change `self` — directly, or
                     ## by calling such a member on `self` or on one of its
@@ -635,3 +640,9 @@ proc escapeStringLit*(v: string): string =
     of '\0': result.add("\\x00")
     else: result.add(c)
 
+
+proc actorMemberOf*(res: Resolution, e: Expr): (string, string) =
+  ## The (actor, member) a call to an actor member `fn` names, as written, or
+  ## ("", "") for any other call.
+  if e != nil and res.actorMemberCalls.hasKey(e.id): res.actorMemberCalls[e.id]
+  else: ("", "")

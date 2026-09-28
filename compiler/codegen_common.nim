@@ -123,7 +123,7 @@ proc collectHandlers*(d: Decl):
   ## binding. Walking only dkFn — which the Odin backend did at five separate
   ## sites — made every `on select` actor look like an actor with NO handlers.
   for h in d.handlers:
-    if h.kind == dkFn:
+    if h.kind == dkFn and h.isOnHandler:
       result.handlers.add(ActorMsgHandler(name: h.name, params: h.fnParams,
                                           body: h.fnBody))
     elif h.kind == dkSelect:
@@ -595,3 +595,24 @@ proc handlerProcName*(handler: Decl): string =
   ## A handler is declared as `Registry.Event`, which is no backend's
   ## identifier — the dot becomes an underscore, as its declaration does.
   handler.name.replace(".", "_")
+
+iterator actorMemberFns*(d: Decl): Decl =
+  ## An actor's member `fn`s — the ones spelled `fn`, not `on` (A24). Each is
+  ## printed as a proc taking the actor's state as `self`, the way its message
+  ## dispatch takes it, and a call to one passes that `self` on.
+  for h in d.handlers:
+    if h != nil and h.kind == dkFn and not h.isOnHandler: yield h
+
+proc actorMemberCallee*(res: Resolution, e: Expr): string =
+  ## The proc a call to an actor's member `fn` prints as (A24) — the name the
+  ## member is declared under, `memberProcName` over the mangled actor — or
+  ## "" for any other call. The checker only records a call made from the
+  ## actor's own code, where `self` is its state.
+  let (owner, member) = res.actorMemberOf(e)
+  if member == "": "" else: memberProcName(prefixed(owner, nkActor), member)
+
+proc actorSelfParam*(actorType: string, m: Decl): Param =
+  ## `self`, the state an actor member `fn` works on, typed as `actorType`
+  ## — each backend's spelling of what its message dispatch takes.
+  Param(name: "self", typ: Type(span: m.span, kind: tkNamed, name: actorType),
+        span: m.span)

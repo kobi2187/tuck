@@ -81,6 +81,14 @@ type
     scopes*: seq[Table[string, Binding]]
     currentRet*: Type
     currentFn*: string
+    currentActor*: string
+      ## The actor whose handlers and member fns are being checked, or "".
+    actorMemberOwner*: Table[string, string]
+      ## A `fn` declared in an actor -> that actor (A24). Callable only from
+      ## the actor's own code: anywhere else it would run on the caller's
+      ## thread, against the actor's state.
+    actorHandlerOwner*: Table[string, string]
+      ## An `on` handler -> its actor. A message: sent, never called.
     pendingFns*: Table[string, Span]
     implementedFns*: HashSet[string]
     errPolicy*: string            # strict (default) | continue | exit

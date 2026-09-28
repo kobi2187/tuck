@@ -260,7 +260,7 @@ bracket.
 > the effect bracket. Asked back: scope (actor-level arms, or a task's too,
 > where spec §9.3 keeps a block so an arm can `return`), and whether
 > `return` stays legal as an arm. Found on the way: an actor member `fn` is
-> emitted by no backend (A24, pinned `bugOpen`).
+> emitted by no backend (A24) — fixed 2026-09-28, so an arm can call one.
 
 ### R11 — composing a mixin from another module
 `+ Helpers` works only for a mixin declared in the same module, as it did

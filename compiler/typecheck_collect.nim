@@ -202,6 +202,10 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
     of dkMixin, dkExtern, dkPending: tc.collectSigs(d.mixinMembers, top = false)
     of dkActor:
       tc.collectSigs(d.handlers)
+      for h in d.handlers:
+        if h == nil or h.kind != dkFn: continue
+        if h.isOnHandler: tc.actorHandlerOwner[h.name] = d.name
+        else: tc.actorMemberOwner[h.name] = d.name
       # `<Actor>.waitUntil {pred: :p}` — a static member call, registered the
       # same way `Pool.acquire` is. A plain signature in the flat table, so the
       # call resolves through the ordinary path: the compiler does NOT special-

@@ -2022,6 +2022,26 @@ needs one, it is separate future work, not a mode of what is built today.
 Long-lived isolated state machines, one instance per declared type (a
 singleton — there is no separate construction step, no reference to hold).
 
+**A `fn` in an actor is a member; an `on` is a message.** A member reads and
+writes the actor's fields, may return a value, and is called only by the
+actor's own handlers, `on select` arms and member fns — the code that runs on
+its thread, one message at a time. Called from elsewhere it would race the
+actor's own handlers, so that is refused (TK-AC04), as is a `send` naming a
+member (TK-AC05) and an `on` handler called like a fn (TK-AC03): a handler is
+a message, and is sent.
+
+```tuck
+actor Acc [queue: 8]:
+  total: int = 0
+
+  fn addIt({n: int}) -> int:     # a member: the actor's own code calls it
+    total += n
+    return total
+
+  on add({n: int}):              # a message: `Acc send add {n: 5}`
+    {n: n} addIt discard
+```
+
 Because nothing constructs it, **every field has an initialiser** — the value
 the singleton starts with — **or is `T?`**, which starts absent (TK-TY35,
 ruled 2026-09-28, #85). A field with neither started at whatever the host

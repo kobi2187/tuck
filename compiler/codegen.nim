@@ -328,6 +328,11 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   if ctx.isRecordConstruction(e): return ctx.genRecordCtor(e)
   let variant = ctx.asSumVariantCall(e)
   if variant != "": return variant
+  let actorMember = actorMemberCallee(ctx.res, e)
+  if actorMember != "":
+    # The actor's own member fn (A24): `self` is the state this handler or
+    # member already holds.
+    return actorMember & "(" & (@["self"] & ctx.genCallArgs(e)).join(", ") & ")"
   var calleeStr = ctx.genExpr(e.callee)
   # A member call emits QUALIFIED, matching the declaration. Derived from the
   # RECEIVER's type rather than the callee's name, because the name alone

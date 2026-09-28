@@ -180,6 +180,17 @@ proc genMemberFn*(ctx: var CodegenCtx, m: Decl, objName: string): string =
                   fnEffects: m.fnEffects, fnGenerics: m.fnGenerics)
   ctx.genFnDecl(copy)
 
+proc genActorMemberFn*(ctx: var CodegenCtx, m: Decl, actorName: string): string =
+  ## An actor's member `fn` (A24). Its state rides as `self`, the ref object
+  ## `handleMsg` holds, so a field write reaches the singleton; a bare field
+  ## name prints as `self.<name>` (isOwnerField) as it does in a handler.
+  let copy = Decl(span: m.span, kind: dkFn, id: m.id,
+                  name: memberProcName(actorName, m.name),
+                  fnParams: @[actorSelfParam(actorName, m)] & m.fnParams,
+                  fnReturnType: m.fnReturnType, fnBody: m.fnBody,
+                  fnEffects: m.fnEffects)
+  ctx.genFnDecl(copy)
+
 proc genTransitionProcs*(d: Decl, kindName: string, hasPayload: bool): string =
   ## The two procs a sum with a `transitions` block gets: `canTransition`, a
   ## pure case over the allowed edges, and `transitionTo`, which raises on a
@@ -474,6 +485,8 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
   let singletonStr = "let " & singleton & "* = " & d.name & "(" &
                      inits.join(", ") & ")\n"
   let drainStr = genActorDrain(drainName, singleton, hasShutdown)
+  var memberStr = ""
+  for m in actorMemberFns(d): memberStr.add ctx.genActorMemberFn(m, d.name) & "\n"
   # auto-registration hook: main's prologue calls registerActors()
   # The slot is KEPT, not discarded: `Actor.waitUntil {pred: :p}` names the
   # actor at the call site, so the emitted call needs a handle to hand the
@@ -483,8 +496,8 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
                     "proc registerActor" & d.name & "*() =\n" &
                     "  " & slotName & " = tuckStartActor(" & drainName & ")\n"
 
-  msgTypes & "\n" & stateStr & "\n" & singletonStr & "\n" & dispatchStr & "\n" &
-    drainStr & "\n" & registerStr
+  msgTypes & "\n" & stateStr & "\n" & singletonStr & "\n" & memberStr &
+    dispatchStr & "\n" & drainStr & "\n" & registerStr
 
 proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
   ## An event registry as Nim: a kind enum, a ref-object event holding every

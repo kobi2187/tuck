@@ -366,12 +366,22 @@ proc genDActorWaitOn(ctx: var DCodegenCtx, e: Expr): string =
   "rt.tuckWaitOn(" & actorSlotName(e.args[0].refName) & ", " &
     ctx.genDExpr(e.args[1]) & ")"
 
+proc genDActorCall(ctx: var DCodegenCtx, e: Expr): string =
+  ## The two actor-shaped calls, or "": `Actor.waitOn`, and a call to the
+  ## actor's own member fn (A24), where `self` is already the `ref` the
+  ## dispatch holds.
+  let waitOn = ctx.genDActorWaitOn(e)
+  if waitOn != "": return waitOn
+  let actorMember = actorMemberCallee(ctx.res, e)
+  if actorMember != "":
+    return actorMember & "(" & (@["self"] & ctx.genDCallArgs(e)).join(", ") & ")"
+
 proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   ## A call in D, trying the special shapes first: `waitOn`, a sum variant, a
   ## primitive conversion, a task spawn, a member or combinator call. What is
   ## left is a plain call with its arguments in parameter order.
-  let waitOn = ctx.genDActorWaitOn(e)
-  if waitOn != "": return waitOn
+  let actorCall = ctx.genDActorCall(e)
+  if actorCall != "": return actorCall
   let variant = ctx.asDSumVariantCall(e)
   if variant != "": return variant
   var calleeStr = ctx.resolveDCallee(e)
