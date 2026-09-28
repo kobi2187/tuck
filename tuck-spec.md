@@ -1122,6 +1122,32 @@ merely happens to be *named* `self` gets no exemption — it is still someone
 else's value, and mutating it is still an error. The same reasoning makes an
 actor handler's fields mutable (§9.1).
 
+**A member that changes its object needs a `var`** (ruled 2026-09-28). Tuck
+has values, not references: a parameter is an immutable binding of the
+caller's value, like a `let`. So a member that changes `self` — directly, or
+by calling such a member on `self` or on one of its fields — may be called
+on a `var` only:
+
+```tuck
+object Counter:
+  n: int
+  fn bump({self: Counter}):
+    self.n = self.n + 1          # changes its object
+  fn peek({self: Counter}) -> int:
+    return self.n                # only reads
+
+fn useIt({c: Counter}) -> int:
+  c.bump                         # refused: TK-TY15, as `c ..bump` is
+  var mine = c
+  mine.bump                      # the copy is this fn's own
+  return mine.n + c.peek         # a reading member is allowed on anything
+```
+
+On a `let` the same call is TK-TY13, and on a temporary (a call's result)
+it is refused because the change would be lost. A member that only reads
+takes `self` by value in every backend. Through an interface value held in
+a `var`, a changing member's change sticks.
+
 ### 5.2 Interfaces
 
 A contract: the set of functions a type promises to provide. The body is the

@@ -385,7 +385,8 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   # PASSING member call so far reached its receiver through the chain
   # emitter instead, which threads an existing pointer through, never
   # needing to take one here.
-  if member != "" and args.len > 0: args[0] = "&" & args[0]
+  if member != "" and args.len > 0 and callWritesSelf(ctx.res, ctx.module, e):
+    args[0] = "&" & args[0]
   let emitted = ctx.genCallWithArgs(e, calleeStr, args)
   if emitted != "": return emitted
   if ctx.index.isTaskName(calleeStr) and args.len == 0:
@@ -734,6 +735,21 @@ proc armCallOnParams(ctx: var OdinCodegenCtx, call: Expr): Expr =
       Expr(span: call.span, kind: exkVar, name: DispatchArg & $(i - 1)),
       ctx.res.typeFor(call.args[i]))
 
+proc dispatchArmBody(ctx: var OdinCodegenCtx, arm: DispatchArm,
+                     isVoid: bool): string =
+  ## One arm: the payload copied out, the member called on it, and — when
+  ## the member changes its object — the copy stored back through `v`.
+  let payload = "v." & arm.satisfier & "Val"
+  let call = ctx.genOdinExpr(ctx.armCallOnParams(arm.call))
+  result = "\t\t\t" & arm.bindName & " := " & payload & "\n"
+  if not arm.writesBack:
+    result.add("\t\t\t" & (if isVoid: "" else: "return ") & call)
+  elif isVoid:
+    result.add("\t\t\t" & call & "\n\t\t\t" & payload & " = " & arm.bindName)
+  else:
+    result.add("\t\t\ttuckResult := " & call & "\n\t\t\t" & payload & " = " &
+               arm.bindName & "\n\t\t\treturn tuckResult")
+
 proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A call through an interface value, lowered (lowering_iface): switch on
   ## the tag and print each arm's member call. An immediately-called closure,
@@ -750,8 +766,12 @@ proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   let recv = ctx.genOdinExpr(e.dispatchRecv)
   let t = ctx.res.typeFor(e)
   let isVoid = t == nil or (t.kind == tkNamed and t.name == "void")
-  var params = @["v: " & e.dispatchIface]
-  var values = @[recv]
+  # An arm that changes the object stores it back into the value, so the
+  # closure takes the value by pointer (the checker allows it on a `var`).
+  var writesBack = false
+  for arm in e.dispatchArms: writesBack = writesBack or arm.writesBack
+  var params = @["v: " & (if writesBack: "^" else: "") & e.dispatchIface]
+  var values = @[(if writesBack: "&" else: "") & recv]
   let first = e.dispatchArms[0].call
   for i in 1 ..< first.args.len:
     params.add(DispatchArg & $(i - 1) & ": " & ctx.dispatchArgType(first.args[i]))
@@ -759,9 +779,7 @@ proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   var arms: seq[string]
   for arm in e.dispatchArms:
     arms.add("\t\tcase ." & e.dispatchIface & "_is_" & arm.satisfier & ":\n" &
-             "\t\t\t" & arm.bindName & " := v." & arm.satisfier & "Val\n" &
-             "\t\t\t" & (if isVoid: "" else: "return ") &
-             ctx.genOdinExpr(ctx.armCallOnParams(arm.call)))
+             ctx.dispatchArmBody(arm, isVoid))
   let sig = if isVoid: "" else: " -> " & ctx.odinType(t)
   # The tag is always one of the arms; the panic is what Odin's "missing
   # return" asks for, and what a corrupt value deserves.

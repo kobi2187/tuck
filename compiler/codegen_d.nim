@@ -552,15 +552,30 @@ proc genDIfaceCall(ctx: var DCodegenCtx, e: Expr): string =
   ## return type is inferred. A plain `switch` rather than `final switch`:
   ## the satisfier set can be empty and an unreachable default is cheap.
   let recv = ctx.genDExpr(e.dispatchRecv)
+  let t = ctx.res.typeFor(e)
+  let isVoid = t == nil or (t.kind == tkNamed and t.name == "void")
+  # An arm that changes the object stores it back into the value, so the
+  # lambda takes the value by `ref` (the checker allows it on a `var`).
+  var writesBack = false
   var arms: seq[string]
   for arm in e.dispatchArms:
+    writesBack = writesBack or arm.writesBack
+    let payload = "v." & arm.satisfier & "Val"
+    let call = ctx.genDExpr(arm.call)
+    var body = "            auto " & arm.bindName & " = " & payload & ";\n"
+    if not arm.writesBack:
+      body.add("            return " & call & ";")
+    elif isVoid:
+      body.add("            " & call & ";\n            " & payload & " = " &
+               arm.bindName & ";\n            return;")
+    else:
+      body.add("            auto tuckResult = " & call & ";\n            " &
+               payload & " = " & arm.bindName & ";\n            return tuckResult;")
     arms.add("        case " & e.dispatchIface & "Tag." & e.dispatchIface &
-             "_is_" & arm.satisfier & ":\n" &
-             "            auto " & arm.bindName & " = v." & arm.satisfier &
-             "Val;\n" &
-             "            return " & ctx.genDExpr(arm.call) & ";")
+             "_is_" & arm.satisfier & ":\n" & body)
   if arms.len == 0: return ""
-  "((" & e.dispatchIface & " v) {\n    switch (v.tag) {\n" & arms.join("\n") &
+  "((" & (if writesBack: "ref " else: "") & e.dispatchIface &
+    " v) {\n    switch (v.tag) {\n" & arms.join("\n") &
     "\n        default: assert(0, \"unreachable interface tag\");\n" &
     "    }\n})(" & recv & ")"
 

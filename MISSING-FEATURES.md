@@ -22,11 +22,21 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (3)
+## A. Open bugs (4)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
+
+**A23 — one object as a changing member's `self` and as its argument
+breaks value semantics on Nim and Odin.** `k.absorb {other: k}`, where
+`absorb` changes `self` and then reads `other`: `self` is passed by
+reference (so the change lands in `k`), and Nim and Odin pass the large
+by-value `other` as a hidden pointer to the same `k` — `other.a` reads the
+change (101, not 1). D copies and is correct. The fix proposed is to copy
+such an argument before the call when its root is the receiver's. Test:
+`known_bugs`, "one object as a changing member's self and its argument
+keeps value semantics". Found 2026-09-28.
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism
@@ -247,13 +257,23 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **Three member-call gaps, found 2026-09-28 working through "a member that
+  changes its object on a parameter".** (1) A member with no `->` called as
+  `d.turn {step: 2}`, or through an interface value as `t.bump`, was
+  "not declared" or resolved to the wrong object's member: the call's type
+  was nil where R5 says `void`. (2) `var t: Tally = Counter{...}` was
+  refused ("expects Tally but got Counter"). (3) A changing member called
+  through a `var` interface value changed a copy and the change was lost;
+  the dispatch now stores it back. `tests/suites/value_semantics.nim`,
+  `tests/suites/typecheck.nim`.
+
 - **An object member called on a fn parameter builds on Nim and Odin.**
   Every backend passes a member's `self` mutably (Nim `var T`, Odin `^T`,
   D `ref T`); a Nim parameter is immutable and an Odin one unaddressable, so
-  `fn rate({a: Flac}) = a.sampleRate` built only on D. Such a parameter is
-  now shadowed by a mutable copy at the top of the body — the value a D
-  parameter already is (2026-09-27). `known_bugs` "a member called on a fn
-  parameter builds, on all three".
+  `fn rate({a: Flac}) = a.sampleRate` built only on D (fixed 2026-09-27).
+  Since 2026-09-28 a member that only reads takes `self` by value, and one
+  that changes its object may not be called on a parameter. `known_bugs` "a
+  member called on a fn parameter builds, on all three".
 
 - **A22 — on Odin, an interface call whose payload holds a variable
   builds.** Odin's dispatch is an immediately-called proc literal, which

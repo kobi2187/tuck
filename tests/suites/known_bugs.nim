@@ -2470,10 +2470,11 @@ fn main() -> int:
   # An object member called on a fn PARAMETER built only on D. Every backend
   # passes a member's `self` mutably — Nim `var T`, Odin `^T`, D `ref T` —
   # and a Nim parameter is immutable, an Odin one unaddressable: "type
-  # mismatch" and "Cannot take the pointer address of 'a'". Such a param is
-  # now shadowed by a mutable copy at the top of the body, the value a D
-  # parameter already is. Found and fixed 2026-09-27: every clone of an
-  # interface-bounded generic fn calls members on its parameters.
+  # mismatch" and "Cannot take the pointer address of 'a'". Found and fixed
+  # 2026-09-27 (every clone of an interface-bounded generic fn calls members
+  # on its parameters). Since 2026-09-28 a member that only reads, like
+  # this one, takes `self` by value in every backend, and one that changes
+  # its object may not be called on a parameter at all (value_semantics).
   t.src """
 object Flac:
   bits: int
@@ -2489,5 +2490,30 @@ fn main() -> int:
 """
   t.quietly: t.hostRuns("a member call on a parameter runs", 96)
   t.bugFixed "a member called on a fn parameter builds, on all three"
+
+  # A23. Value semantics break when one object reaches a changing member
+  # twice: as `self` (by reference, so the change lands in the caller's
+  # `var`) and as a by-value argument. `k.absorb {other: k}` must see `other`
+  # as `k` was at the call — 1 — but Nim and Odin pass a large by-value
+  # argument as a hidden pointer to the same `k`, so `other.a` reads the
+  # change made through `self`: 101. D copies and answers 1. Found
+  # 2026-09-28 checking where the backends use references.
+  t.src """
+object Big:
+  a: int
+  b: int
+  c: int
+  d: int
+  e: int
+  fn absorb({self: Big, other: Big}) -> int:
+    self.a = self.a + 100
+    return other.a
+
+fn main() -> int:
+  var k = Big{a: 1, b: 2, c: 3, d: 4, e: 5}
+  return k.absorb {other: k}
+"""
+  t.quietly: t.hostRuns("an argument is the object as it was at the call", 1)
+  t.bugOpen "one object as a changing member's self and its argument keeps value semantics"
 
   t.finish()

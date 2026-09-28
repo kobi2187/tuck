@@ -89,11 +89,11 @@ struct tuckˑobjectˑLoopDetector {
     long lane;
 }
 
-bool tuckˑobjectˑLoopDetectorˑhealthy(ref tuckˑobjectˑLoopDetector self) {
+bool tuckˑobjectˑLoopDetectorˑhealthy(tuckˑobjectˑLoopDetector self) {
     return true;
 }
 
-long tuckˑobjectˑLoopDetectorˑreads(ref tuckˑobjectˑLoopDetector self) {
+long tuckˑobjectˑLoopDetectorˑreads(tuckˑobjectˑLoopDetector self) {
     return self.lane;
 }
 
@@ -102,11 +102,11 @@ struct tuckˑobjectˑCameraDetector {
     ubyte confidence;
 }
 
-bool tuckˑobjectˑCameraDetectorˑhealthy(ref tuckˑobjectˑCameraDetector self) {
+bool tuckˑobjectˑCameraDetectorˑhealthy(tuckˑobjectˑCameraDetector self) {
     return true;
 }
 
-long tuckˑobjectˑCameraDetectorˑreads(ref tuckˑobjectˑCameraDetector self) {
+long tuckˑobjectˑCameraDetectorˑreads(tuckˑobjectˑCameraDetector self) {
     if ((self.confidence > 80L)) {
         return 3L;
     }

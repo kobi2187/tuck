@@ -213,6 +213,14 @@ body across modules needs its free names qualified.
   per category? Per rule makes `tuck explain` useful. Per category is a day's
   work.
 
+### Member calls on a parameter (asked 2026-09-28)
+> **RULED 2026-09-28: a parameter is immutable, like `let`.** Tuck has values,
+> not references, so the caller never sees a change either way; the question
+> was only whether the binding may change. A member that changes `self` is
+> refused on a parameter (TK-TY15) and a `let` (TK-TY13), as `..` already
+> was; a reading member takes `self` by value in every backend. Through a
+> `var` interface value the change now sticks (it was lost).
+
 ### R13 — in an interface, does `Self` stay the interface or narrow to the concrete type?
 An interface value is a tagged variant over the program's satisfiers; its
 concrete type is known only at run time. Today the compiler answers both

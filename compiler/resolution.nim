@@ -66,6 +66,13 @@ type
     # these instead of re-deriving the mapping, which misses by-type matches.
     argFields*: Table[NodeId, seq[string]]
     callParams*: Table[NodeId, seq[string]]
+    selfWriters*: HashSet[NodeId]
+                    ## The object members that change `self` — directly, or
+                    ## by calling such a member on `self` or on one of its
+                    ## fields — by the member Decl's id (typecheck.
+                    ## checkSelfWrites, ruled 2026-09-28). A member NOT here
+                    ## only reads, so every backend takes its `self` by value
+                    ## and it may be called on a parameter or a `let`.
     ifaceInstances*: Table[NodeId, seq[Type]]
                     ## A call to a fn with a type param bounded by an
                     ## INTERFACE (`fn join[T: AudioSource]`): what each of the

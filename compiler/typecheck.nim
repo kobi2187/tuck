@@ -340,7 +340,12 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
              tc.bindPayloadFields(fnName, sig.params[startAt .. ^1], argStruct, sp)
   result = Expr(span: sp, kind: exkCall,
                 callee: Expr(span: sp, kind: exkVar, name: fnName), args: args)
-  setType(semLayer, result, sig.ret)
+  # No `->` is `-> void` (R5). A nil type here read as "unresolved", and
+  # `d.turn {step: 2}` on a member with no `->` was "called with arguments
+  # here but is not declared" (found 2026-09-28).
+  setType(semLayer, result,
+          if sig.ret == nil: Type(span: sp, kind: tkNamed, name: "void")
+          else: sig.ret)
 
 # `a.b` is one spelling for seven different things. Each of the procs below
 # recognises exactly one of them and returns nil for "not mine", so
@@ -619,6 +624,64 @@ proc asVariantPayloadField(tc: var TypeChecker, e: Expr, recvT: Type): Type =
       return f.typ
   nil
 
+var ifaceMatchModule*: string
+  ## The path of the module being checked, for an interface match's report.
+
+proc assignRoot*(e: Expr): Expr =
+  ## The variable a write ultimately lands on: `c` for `c`, `c.n`, or
+  ## `c.inner.n`. Indexing is deliberately NOT followed — `xs[i]` writes
+  ## through a collection, which is its own question.
+  result = e
+  while result != nil and result.kind == exkField and result.receiver != nil:
+    result = result.receiver
+
+
+type
+  RecvKind* = enum
+    ## What a member call's receiver is bound as — whether a member that
+    ## changes `self` may be called on it.
+    rkVar      # a `var`, `self`, or an owner field: may change
+    rkLet      # a `let`, a loop variable, a pattern binding
+    rkParam    # a parameter (immutable, ruled 2026-09-28)
+    rkTemp     # not a place at all: a call's result, a literal
+
+  MemberCall* = object
+    ## One call of a member on a receiver, kept for checkSelfWrites: which
+    ## members change `self` is known only once every body is checked.
+    member*: Decl                 # the object's member; nil for an interface
+    iface*, ifaceMember*: string  # a call through an interface value
+    recvKind*: RecvKind
+    recvName*: string
+    span*: Span
+    modulePath*: string
+
+var memberCalls*: seq[MemberCall]
+  ## This check round's member calls; reset by checkProgramOnce.
+
+proc receiverKind(tc: TypeChecker, recv: Expr): (RecvKind, string) =
+  ## How the receiver's root is bound. A name the checker cannot find is
+  ## gradual code and reads as a `var`: nothing is refused on a guess.
+  let root = assignRoot(recv)
+  if root == nil or root.kind != exkVar: return (rkTemp, "")
+  let (found, b) = tc.lookup(root.name)
+  # A bare fn name is a nullary CALL (`make.bump`): its result is a
+  # temporary, not a place.
+  if not found and tc.fnSigs.hasKey(root.name): return (rkTemp, "")
+  if not found: return (rkVar, root.name)
+  if b.isParam: (rkParam, root.name)
+  elif not b.isVar: (rkLet, root.name)
+  else: (rkVar, root.name)
+
+proc recordMemberCall(tc: TypeChecker, e: Expr, recvT: Type) =
+  ## `x.m` on an object `x` whose type declares member `m`.
+  if recvT == nil or recvT.kind != tkNamed or
+     not tc.objDecls.hasKey(recvT.name): return
+  let mem = findObjectMember(tc.objDecls[recvT.name], e.fieldName)
+  if mem == nil: return
+  let (kind, name) = tc.receiverKind(e.receiver)
+  memberCalls.add MemberCall(member: mem, recvKind: kind, recvName: name,
+                             span: e.span, modulePath: ifaceMatchModule)
+
 proc ifaceBoundOf(tc: TypeChecker, typeParam: string): string =
   ## The interface bounding type param `typeParam` of the fn being checked
   ## (`fn join[T: AudioSource]`), or "". Takes the bare name `T` or the
@@ -687,7 +750,16 @@ proc bindIfaceCall(tc: var TypeChecker, e: Expr, recvT: Type, mem: Decl): Type =
                             callee: Expr(span: e.span, kind: exkVar,
                                          name: e.fieldName)))
   semLayer.markIfaceCall(e, recvT.name, mem.name)
-  substituteSelf(mem.fnReturnType, selfT, selfBoundParams(mem))
+  let (kind, name) = tc.receiverKind(e.receiver)
+  memberCalls.add MemberCall(iface: recvT.name, ifaceMember: mem.name,
+                             recvKind: kind, recvName: name, span: e.span,
+                             modulePath: ifaceMatchModule)
+  # No `->` is `-> void` (R5). Answering nil here meant "not mine", and the
+  # field access fell through to asFnByName — which found the OBJECT's own
+  # member and refused the interface receiver ("expects Counter but got
+  # Tally"). Found 2026-09-28.
+  let ret = substituteSelf(mem.fnReturnType, selfT, selfBoundParams(mem))
+  if ret == nil: Type(span: e.span, kind: tkNamed, name: "void") else: ret
 
 proc contractMember(tc: TypeChecker, iname, name: string): Decl =
   ## Interface `iname`'s required fn `name`, or nil.
@@ -750,7 +822,8 @@ proc asBoundIfaceCall(tc: var TypeChecker, e: Expr, recvT: Type): Type =
                             args: @[e.receiver] & bound,
                             callee: Expr(span: e.span, kind: exkVar,
                                          name: e.fieldName)))
-  substType(mem.fnReturnType, subs)
+  let ret = substType(mem.fnReturnType, subs)   # no `->` is `-> void` (R5)
+  if ret == nil: Type(span: e.span, kind: tkNamed, name: "void") else: ret
 
 proc asInterfaceCall(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## `a.noise` where `a` is an interface value — resolved against the CONTRACT,
@@ -780,6 +853,7 @@ proc asFnByName(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## `.fn {args}` is the method form (receiver first, args fill the rest);
   ## bare `.fn` is a whitespace call with the receiver as the payload.
   if not tc.fnSigs.hasKey(e.fieldName): return nil
+  tc.recordMemberCall(e, recvT)
   if e.dotArg != nil:
     let mc = tc.synthMethodCall(e.fieldName, e.receiver, recvT,
                                 e.dotArg, e.span)
@@ -1648,8 +1722,6 @@ type
 
 var ifaceMatches*: seq[IfaceMatch]
   ## This check round's interface matches; reset by checkProgramOnce.
-var ifaceMatchModule*: string
-  ## The path of the module being checked, for an interface match's report.
 
 proc ifaceArmType(tc: TypeChecker, arm: MatchArm, iname: string): string =
   ## The object a `| Flac f ->` arm tests for, checked against the interface.
@@ -1728,14 +1800,6 @@ proc synthMatch(tc: var TypeChecker, e: Expr): Type =
 # `x ..field {v}` / `x ..fn`. Who may be written (mutability), what a step
 # means (field set vs mutator call), and what a write does to the checker's
 # knowledge — transitions taken, <uninit> holes filled.
-
-proc assignRoot*(e: Expr): Expr =
-  ## The variable a write ultimately lands on: `c` for `c`, `c.n`, or
-  ## `c.inner.n`. Indexing is deliberately NOT followed — `xs[i]` writes
-  ## through a collection, which is its own question.
-  result = e
-  while result != nil and result.kind == exkField and result.receiver != nil:
-    result = result.receiver
 
 proc failIfMutatingLet(tc: var TypeChecker, e: Expr) =
   ## Spec 2.3: `..` mutation only on var bindings — and NEVER on a parameter,
@@ -3943,9 +4007,20 @@ proc synthDeclAssign(tc: var TypeChecker, e: Expr) =
   ## exists, and an empty list only resolves if the expectation reaches it
   ## before it synthesizes.
   var valT: Type
-  if e.declType != nil:
+  let what = "'" & e.target.name & "'"
+  if e.declType != nil and tc.ifaceSlot(e.declType) != "":
+    # `var t: Tally = Counter{...}`: an interface slot, filled as any other
+    # is — the object is wrapped (checkIfaceArg). `check` compared the two
+    # names and refused ("expects Tally but got Counter"). Found 2026-09-28.
+    tc.checkIfaceArg(tc.ifaceSlot(e.declType), tc.synthesize(e.assignVal),
+                     e.assignVal, what)
+    valT = e.declType
+  elif e.declType != nil and tc.ifaceElemSlot(e.declType) != "":
+    tc.checkIfaceElems(tc.ifaceElemSlot(e.declType), e.assignVal, what)
+    valT = e.declType
+  elif e.declType != nil:
     let want = tc.resolve(e.declType)
-    tc.check(e.assignVal, want, "'" & e.target.name & "'")
+    tc.check(e.assignVal, want, what)
     valT = want
   else:
     valT = tc.synthesize(e.assignVal)
@@ -5515,6 +5590,7 @@ proc checkProgramOnce(mods: seq[tuple[name, path: string, m: Module]],
   checkErrCodeCollisions(mods)
   checkRegistry(mods)
   checkResources(mods)   # spec §7.4: kinds are program-wide, so this is too
+  memberCalls = @[]
   ifaceMatches = @[]
   let sigs = collectProgramSigs(mods)
   for (name, path, m) in mods:
@@ -5550,6 +5626,126 @@ proc checkIfaceMatchesComplete(mods: seq[tuple[name, path: string, m: Module]]) 
       err.col = rec.span.col
       raise withModulePrefix(err, rec.modulePath)
 
+proc selfRooted(res: Resolution, e: Expr): bool =
+  ## Does `e` name `self` or a place inside it — `self.n`, `self.inner`, or
+  ## a field written bare (an owner field, Resolution.ownerFields)?
+  let r = assignRoot(e)
+  r != nil and r.kind == exkVar and (r.name == "self" or res.isOwnerField(r))
+
+proc writesSelfDirectly(res: Resolution, fn: Decl): bool =
+  ## Does member `fn`'s own body write its object: an assignment, an
+  ## element write or a `..` chain on `self` or a field of it?
+  for n in nodes(fn.fnBody):
+    if n.kind == exkAssign and not n.isDecl and selfRooted(res, n.target):
+      return true
+    if n.kind == exkBracketAssign and selfRooted(res, n.brTarget): return true
+    if n.kind == exkChain and selfRooted(res, n.base): return true
+  false
+
+proc selfCallees(res: Resolution, objs: Table[string, Decl], fn: Decl): seq[Decl] =
+  ## The members `fn` calls on `self` or on a field of it — each one that
+  ## changes its object changes `fn`'s too.
+  for n in nodes(fn.fnBody):
+    let c = if n.kind == exkCall: n else: res.call(n)
+    if c == nil or c.kind != exkCall or c.callee == nil or
+       c.callee.kind != exkVar or c.args.len == 0: continue
+    if not selfRooted(res, c.args[0]): continue
+    let t = res.typeFor(c.args[0])
+    if t == nil or t.kind != tkNamed or t.name notin objs: continue
+    let mem = findObjectMember(objs[t.name], c.callee.name)
+    if mem != nil: result.add mem
+
+proc objectMembers(mods: seq[tuple[name, path: string, m: Module]]):
+    (Table[string, Decl], seq[Decl]) =
+  ## Every object by name (the first declaration of a name wins: an imported
+  ## type's copy carries the original's ids), and every member with a body.
+  for (name, path, m) in mods:
+    for d in m.decls:
+      if d == nil or d.kind != dkObject: continue
+      if d.name notin result[0]: result[0][d.name] = d
+      for mem in d.members():
+        if mem != nil and mem.kind == dkFn and mem.fnBody != nil:
+          result[1].add mem
+
+proc closeOverCalls(writers: var HashSet[NodeId], members: seq[Decl],
+                    callees: Table[NodeId, seq[Decl]]) =
+  ## A member calling a writer on `self` is a writer — repeated until nothing
+  ## is added, so a chain of members through any number of objects is
+  ## followed.
+  var changed = true
+  while changed:
+    changed = false
+    for mem in members:
+      if mem.id in writers: continue
+      for c in callees[mem.id]:
+        if c.id in writers:
+          writers.incl mem.id
+          changed = true
+          break
+
+proc computeSelfWriters(mods: seq[tuple[name, path: string, m: Module]]): HashSet[NodeId] =
+  ## Every object member that changes `self`: a direct write, or a call of
+  ## such a member on `self` or on a field of it.
+  let (objs, members) = objectMembers(mods)
+  var callees = initTable[NodeId, seq[Decl]]()
+  for mem in members:
+    if writesSelfDirectly(semLayer, mem): result.incl mem.id
+    callees[mem.id] = selfCallees(semLayer, objs, mem)
+  closeOverCalls(result, members, callees)
+
+proc callWritesSelf(call: MemberCall, writers: HashSet[NodeId],
+                    mods: seq[tuple[name, path: string, m: Module]],
+                    real: Table[string, Module]): bool =
+  ## Does this call run a member that changes `self`? Through an interface
+  ## value: when ANY satisfier's implementation of it does.
+  if call.member != nil: return call.member.id in writers
+  for d in satisfiersOf(mods[^1].m, real, call.iface):
+    let mem = findObjectMember(d, implementingName(d, call.iface,
+                                                   call.ifaceMember))
+    if mem != nil and mem.id in writers: return true
+  false
+
+proc failSelfWrite(call: MemberCall, member: string) =
+  ## The refusal, worded as the `..` and assignment refusals are.
+  let (dc, msg) = case call.recvKind
+    of rkParam:
+      (dcTyParamMutation, "cannot call '" & member & "' on parameter '" &
+       call.recvName & "' — '" & member & "' changes its object, and a " &
+       "parameter is a value the caller owns, not a var. Fix: copy it " &
+       "first (`var s = " & call.recvName & "`) and call it on the copy")
+    of rkLet:
+      (dcTyImmutable, "cannot call '" & member & "' on '" & call.recvName &
+       "' — '" & member & "' changes its object, and '" & call.recvName &
+       "' was declared with 'let'; use 'var'")
+    of rkTemp:
+      (dcTyImmutable, "cannot call '" & member & "' on a temporary value — '" &
+       member & "' changes its object, and the change would be lost. Fix: " &
+       "bind the value with `var` first")
+    of rkVar: (dcNone, "")
+  var err = newException(SemanticError, withCode(dc, msg))
+  err.line = call.span.line
+  err.col = call.span.col
+  raise withModulePrefix(err, call.modulePath)
+
+proc checkSelfWrites(mods: seq[tuple[name, path: string, m: Module]]) =
+  ## A member that changes its object may be called on a `var` only — never
+  ## on a parameter or a `let` (ruled 2026-09-28: a parameter is immutable
+  ## like a `let`; values, not references) nor on a temporary. The same
+  ## rule `..` and assignment already keep (TK-TY15, TK-TY13); a member call
+  ## was the one door left open. Whole-program, after every body is checked:
+  ## whether a member writes `self` can depend on members in other modules.
+  ## The answer is kept on the semantic layer for the backends: a member
+  ## that only reads takes `self` by value.
+  let writers = computeSelfWriters(mods)
+  semLayer.selfWriters = writers
+  var real = initTable[string, Module]()
+  for (name, path, m) in mods: real[name] = m
+  for call in memberCalls:
+    if call.recvKind == rkVar: continue
+    if not callWritesSelf(call, writers, mods, real): continue
+    failSelfWrite(call, if call.member != nil: call.member.name
+                        else: call.ifaceMember)
+
 const MaxExpansionRounds = 16
   ## Rounds of interface-bounded generic expansion (iface_generics) before
   ## the checker gives up: each round expands the calls one more level of
@@ -5583,6 +5779,7 @@ proc typecheckExpanding*(mods: var seq[tuple[name, path: string, m: Module]],
     result = checkProgramOnce(mods, preSigs)
   for i in 0 ..< mods.len: dropIfaceGenerics(mods[i].m)
   checkIfaceMatchesComplete(mods)
+  checkSelfWrites(mods)
 
 proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
                        preSigs = initTable[string, seq[SigInfo]]()): seq[string] {.discardable.} =

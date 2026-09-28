@@ -884,4 +884,105 @@ fn main() -> int:
   # is why this is asserted by VALUE and on every backend.
   t.hostRuns("...so the caller's buffer survives the call", 13)
 
+  # --- a member that changes its object (ruled 2026-09-28) ---------------
+  #
+  # Values, not references: a parameter is the caller's value, and a `let`
+  # never changes. A member that changes `self` — `bump` — is refused on
+  # either, as `..` and assignment already are; one that only reads — `peek`
+  # — is allowed anywhere, and takes `self` by value in every backend.
+  const counterSrc = """
+interface Tally:
+  fn bump({self: Self})
+
+object Counter:
+  satisfies Tally
+  n: int
+  fn bump({self: Counter}):
+    self.n = self.n + 1
+  fn peek({self: Counter}) -> int:
+    return self.n
+"""
+  t.src counterSrc & """
+fn useIt({c: Counter}) -> int:
+  c.bump
+  return c.n
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a changing member on a parameter is TK-TY15", "TK-TY15"
+
+  t.src counterSrc & """
+fn main() -> int:
+  let k = Counter{n: 10}
+  k.bump
+  return k.n
+"""
+  t.badCheck "...and on a `let` is TK-TY13", "TK-TY13"
+
+  t.src counterSrc & """
+fn make() -> Counter:
+  return Counter{n: 1}
+
+fn main() -> int:
+  make.bump
+  return 0
+"""
+  t.badCheck "...and on a temporary is refused: the change would be lost",
+             "cannot call 'bump' on a temporary value"
+
+  t.src counterSrc & """
+object Outer:
+  inner: Counter
+  fn poke({self: Outer}):
+    self.inner.bump
+
+fn useIt({o: Outer}) -> int:
+  o.poke
+  return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a member changing a field's object changes its own (transitive)",
+             "cannot call 'poke' on parameter 'o'"
+
+  t.src counterSrc & """
+fn useIt({t: Tally}) -> int:
+  t.bump
+  return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "through an interface parameter too", "cannot call 'bump' on parameter 't'"
+
+  t.src counterSrc & """
+fn look({c: Counter}) -> int:
+  return c.peek
+
+fn main() -> int:
+  var k = Counter{n: 10}
+  k.bump
+  let r = {c: k} look
+  return r + k.peek
+"""
+  t.okCheck "a reading member on a parameter or `let`; a changing one on a `var`"
+  t.hostRuns "...on every backend, with no copy of the parameter", 22
+
+  # Through an interface value held in a `var`, the change sticks: each
+  # dispatch arm works on a copy of the payload and stores it back. It was
+  # lost before (found 2026-09-28), as was `var t: Tally = Counter{...}`
+  # ("expects Tally but got Counter") and `t.bump` on a member with no `->`
+  # (resolved to Counter's own `bump`).
+  t.src counterSrc & """
+fn main() -> int:
+  var t: Tally = Counter{n: 10}
+  t.bump
+  t.bump
+  match t:
+    | Counter c -> return c.n
+"""
+  t.hostRuns "a changing member through a `var` interface value sticks, on every backend", 12
+
   t.finish()

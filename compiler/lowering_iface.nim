@@ -88,7 +88,8 @@ proc dispatchArm(res: Resolution, e: Expr, s: Decl,
   # own type instead (covariant): that result enters the interface here.
   if returnsItself(mem, s) and returnsInterface(res, e, iface):
     res.markWrap(call, s.name, iface)
-  DispatchArm(satisfier: s.name, bindName: PayloadBind, call: call)
+  DispatchArm(satisfier: s.name, bindName: PayloadBind, call: call,
+              writesBack: writesSelf(res, mem))
 
 proc lowerOne(res: Resolution, m: Module, real: Table[string, Module],
               e: Expr) =
@@ -206,8 +207,18 @@ proc lowerMatchesIn(res: Resolution, e: Expr) =
   ## value position.
   if e == nil: return
   if e.kind == exkBlock:
+    var stmts: seq[Expr]
     for s in e.stmts:
-      if s != nil and isIfaceMatch(s): res.lowerOneMatch(s, stmt = true)
+      if s != nil and isIfaceMatch(s):
+        res.lowerOneMatch(s, stmt = true)
+        # One arm for the only satisfier: no test, just that arm's block —
+        # spliced in, so a `return` in it is the block's last statement
+        # (Odin refuses its fallback `return {}` after one).
+        if s.kind == exkBlock:
+          stmts.add s.stmts
+          continue
+      stmts.add s
+    e.stmts = stmts
   elif isIfaceMatch(e):
     res.lowerOneMatch(e, stmt = false)
   for ch in e.children: lowerMatchesIn(res, ch)

@@ -103,17 +103,17 @@ proc tuckˑdecisionˑnextPhase*(current: tuckˑtypeˑPhase, demand: tuckˑtypeˑ
   else:
     return tuckˑtypeˑPhase.EwClearing)
 
-proc tuckˑobjectˑLoopDetectorˑhealthy*(self: var tuckˑobjectˑLoopDetector): bool =
+proc tuckˑobjectˑLoopDetectorˑhealthy*(self: tuckˑobjectˑLoopDetector): bool =
   return true
 
-proc tuckˑobjectˑLoopDetectorˑreads*(self: var tuckˑobjectˑLoopDetector): int =
+proc tuckˑobjectˑLoopDetectorˑreads*(self: tuckˑobjectˑLoopDetector): int =
   return self.lane
 
 
-proc tuckˑobjectˑCameraDetectorˑhealthy*(self: var tuckˑobjectˑCameraDetector): bool =
+proc tuckˑobjectˑCameraDetectorˑhealthy*(self: tuckˑobjectˑCameraDetector): bool =
   return true
 
-proc tuckˑobjectˑCameraDetectorˑreads*(self: var tuckˑobjectˑCameraDetector): int =
+proc tuckˑobjectˑCameraDetectorˑreads*(self: tuckˑobjectˑCameraDetector): int =
   if (self.confidence > 80):
     if true:
       return 3

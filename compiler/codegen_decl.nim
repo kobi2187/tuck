@@ -151,12 +151,7 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
   let oldIndent = ctx.indent
   ctx.enterReturnContext(d.fnReturnType)
   injectTailReturn(d.fnBody, retTypeStr)
-  var bodyStr = ctx.genFnBody(d.fnBody, "  ".repeat(ctx.indent))
-  # A param a member call takes as `self: var T` is shadowed mutable first
-  # (codegen_common.paramsCalledAsReceiver).
-  let pad = leadingIndent(bodyStr)
-  for p in paramsCalledAsReceiver(ctx.res, ctx.module, d):
-    bodyStr = pad & "var " & p & " = " & p & "\n" & bodyStr
+  let bodyStr = ctx.genFnBody(d.fnBody, "  ".repeat(ctx.indent))
   ctx.indent = oldIndent
   ctx.leaveReturnContext()
   ctx.definedVars = oldVars
@@ -165,11 +160,13 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
 proc genMemberFn*(ctx: var CodegenCtx, m: Decl, objName: string): string =
   ## lowering.normalizeSelf has already given the member its `self`
   ## parameter, and rewrite.bindSelf resolved `Self` to the object. What is
-  ## left here is the one thing that is a NIM question: self is mutable,
-  ## spelled `var T`, so a mutation reaches the caller's value.
+  ## left here is the one thing that is a NIM question: a member that
+  ## changes its object takes `self: var T`, so the change reaches the
+  ## caller's value; one that only reads takes `self: T`, so it may be called
+  ## on a parameter or a `let` (typecheck.checkSelfWrites, ruled 2026-09-28).
   var params = m.fnParams
   for i in 0 ..< params.len:
-    if params[i].name == "self":
+    if params[i].name == "self" and writesSelf(ctx.res, m):
       params[i].typ = Type(span: m.span, kind: tkNamed,
                            name: "var " & objName)
   # QUALIFIED, like Odin and D. Nim overloads on the self parameter's type so

@@ -285,6 +285,9 @@ type
     satisfier*: string   # the object's (mangled) declared name
     bindName*: string    # what `call` names the payload
     call*: Expr          # an ordinary member call; its args[0] reads bindName
+    writesBack*: bool    # the member changes its object: the changed payload
+                         # is stored back into the interface value, which
+                         # the checker allows only when that is a `var`
 
   MatchArm* = object
     ## One arm of a `match`: pattern and body. (An arm guard field, never

@@ -518,12 +518,24 @@ proc genIfaceCall(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## member call the lowering built. A case EXPRESSION, so it composes
   ## anywhere a value is expected.
   let recv = ctx.genExpr(e.dispatchRecv)
+  let t = ctx.res.typeFor(e)
+  let isVoid = t == nil or (t.kind == tkNamed and t.name == "void")
   var arms: seq[string]
   for arm in e.dispatchArms:
+    let payload = recv & "." & arm.satisfier & "Val"
+    var body = ind & "    var " & arm.bindName & " = " & payload & "\n"
+    if not arm.writesBack:
+      body.add(ind & "    " & ctx.genExpr(arm.call))
+    elif isVoid:
+      # The member changed the copy; the interface value takes it back.
+      body.add(ind & "    " & ctx.genExpr(arm.call) & "\n" &
+               ind & "    " & payload & " = " & arm.bindName)
+    else:
+      body.add(ind & "    let tuckResult = " & ctx.genExpr(arm.call) & "\n" &
+               ind & "    " & payload & " = " & arm.bindName & "\n" &
+               ind & "    tuckResult")
     arms.add(ind & "  of " & e.dispatchIface & "_is_" & arm.satisfier & ":\n" &
-             ind & "    var " & arm.bindName & " = " & recv & "." &
-             arm.satisfier & "Val\n" &
-             ind & "    " & ctx.genExpr(arm.call))
+             body)
   if arms.len == 0: return ""
   "(block:\n" & ind & "  case " & recv & ".tag\n" & arms.join("\n") & ")"
 

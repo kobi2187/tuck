@@ -234,6 +234,12 @@ object Dog:
 `satisfies` comes FIRST, before any field — state the contract, then the
 data. A field above it is a parse error (`TK-PA06`).
 
+**A member that changes its object needs a `var`** (ruled 2026-09-28;
+values, not references). `c.bump`, where `bump` writes `self`, is refused on
+a parameter (`TK-TY15`) and a `let` (`TK-TY13`), the same as `c ..bump`; copy
+first (`var mine = c`). A member that only reads may be called on anything
+and takes `self` by value (`tests/suites/value_semantics.nim`).
+
 Objects carry fields, `+ Composed` entries, `satisfies` lines, member fns, and
 `self`. A member reads and writes its object's fields bare (`return name`,
 `n = n + 1`) as well as through `self`, the way an actor's handlers read its

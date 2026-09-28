@@ -614,6 +614,12 @@ proc memberCalleeOf*(m: Module, owner, calleeName: string): string =
   let mem = memberDeclOf(m, owner, calleeName)
   if mem == nil: "" else: memberProcName(owner, mem.name)
 
+proc writesSelf*(res: Resolution, mem: Decl): bool =
+  ## Does object member `mem` change its `self` (typecheck.checkSelfWrites)?
+  ## Only such a member takes `self` by reference in a backend; one that
+  ## reads takes it by value, so it may be called on a parameter or a `let`.
+  mem != nil and mem.id.isSet and mem.id in res.selfWriters
+
 proc memberRecvType*(res: Resolution, e: Expr): Type =
   ## A member call's receiver type: args[0]'s (the checker's rewrite), or the
   ## `self` field's of a payload literal (`{self: c} bump`).
@@ -639,6 +645,15 @@ proc memberCallee*(res: Resolution, m: Module, e: Expr): string =
      e.callee.kind != exkVar or e.args.len < 1 or e.args[0] == nil:
     return ""
   memberCalleeOf(m, memberOwner(m, memberRecvType(res, e)), e.callee.name)
+
+proc callWritesSelf*(res: Resolution, m: Module, e: Expr): bool =
+  ## Is `e` a call of an object member that changes its `self`? Its receiver
+  ## is then passed by reference (Odin `&x`); a reading member's by value.
+  if e == nil or e.kind != exkCall or e.callee == nil or
+     e.callee.kind != exkVar or e.args.len < 1 or e.args[0] == nil:
+    return false
+  writesSelf(res, memberDeclOf(m, memberOwner(m, memberRecvType(res, e)),
+                               e.callee.name))
 
 # --- compile-time whole numbers -----------------------------------------
 #

@@ -65,9 +65,13 @@ proc genOdinMemberFn*(ctx: var OdinCodegenCtx, m: Decl, objName: string): string
   # and rewrite.bindSelf resolved `Self` to the object. What is left is the
   # ODIN spelling: self is a pointer, `^T`, so a mutation reaches the
   # caller's value.
+  # Only a member that changes its object takes a pointer; one that reads
+  # takes `self: T` by value, so it may be called on a parameter, which Odin
+  # cannot take the address of (typecheck.checkSelfWrites).
+  let byPointer = writesSelf(ctx.res, m)
   var params = m.fnParams
   for i in 0 ..< params.len:
-    if params[i].name == "self":
+    if params[i].name == "self" and byPointer:
       params[i].typ = Type(span: m.span, kind: tkNamed, name: "^" & objName)
   # THE MEMBER'S OWN ID: this is the same fn — same body, same decisions —
   # printed with Odin's `self` convention, and every side table (ownership,
@@ -79,7 +83,7 @@ proc genOdinMemberFn*(ctx: var OdinCodegenCtx, m: Decl, objName: string): string
   # `self` is a POINTER here, so every mention in the body needs a deref —
   # `self^` reads the value and `self^ = x` writes through to the caller.
   let oldPtrSelf = ctx.ptrSelf
-  ctx.ptrSelf = true
+  ctx.ptrSelf = byPointer
   result = ctx.genOdinDecl(copy)
   ctx.ptrSelf = oldPtrSelf
 
@@ -323,18 +327,7 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   let movedP = movedFnParam(ctx.res, ctx.module, d)
   let savedMoved = ctx.movedParam
   ctx.movedParam = movedP
-  var bodyStr = ctx.genFnBody(d, retTypeStr, ind)
-  # A param a member call takes as `self: ^T` is shadowed first — an Odin
-  # parameter cannot be addressed (codegen_common.paramsCalledAsReceiver).
-  let brace = bodyStr.find('\n')
-  let rest = if bodyStr.startsWith("{") and brace >= 0: bodyStr[brace + 1 .. ^1]
-             else: bodyStr
-  var shadows = ""
-  for p in paramsCalledAsReceiver(ctx.res, ctx.module, d):
-    shadows.add(leadingIndent(rest) & p & " := " & p & "\n")
-  if shadows != "":
-    bodyStr = if rest.len < bodyStr.len: bodyStr[0 .. brace] & shadows & rest
-              else: shadows & bodyStr
+  let bodyStr = ctx.genFnBody(d, retTypeStr, ind)
   ctx.movedParam = savedMoved
   ctx.leaveReturnContext()
   ctx.definedVars = savedVars

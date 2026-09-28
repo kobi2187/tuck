@@ -263,6 +263,9 @@ RULED 2026-09-27, and implemented:
   `iface_generics`). Not yet: calling such a fn from another module.
 - **Type test on an interface value** (2026-09-28): `match v: | Flac f ->`,
   complete with an arm per satisfier or `| _ ->`; TK-TY34.
+- **A parameter is immutable, like `let`** (2026-09-28): a member that
+  changes `self` is refused on a parameter or `let`; a reading member takes
+  `self` by value.
 
 ### Deferred — completely missing, not scheduled
 
