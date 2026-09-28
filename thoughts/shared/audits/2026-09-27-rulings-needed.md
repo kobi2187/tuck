@@ -179,6 +179,9 @@ crash into a compile error either way.
 
 > **RULED 2026-09-28: "we do here what's fast, no order is promised."** No
 > barrier. Spec §9.1 says two senders' messages arrive in no promised order.
+> Correction to "R8 turns the crash into a compile error": only when the
+> field is `T?`. With a constant initialiser — what both benches took — an
+> `edit` before `start` still fails the bounds check at run time.
 > Asked back: whether a single sender's FIFO order — which the runtime has in
 > every mode and `waitUntil` relies on — stays a promise.
 
