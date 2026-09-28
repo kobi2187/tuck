@@ -1147,8 +1147,6 @@ proc genDMatchArm(ctx: var DCodegenCtx, arm: MatchArm, narrowKey = ""): string =
   ## D switch cases fall through by default where Tuck's arms never do, so
   ## the break is the semantics, not decoration. (A body ending in `return`
   ## makes it unreachable, so it is omitted there.)
-  if arm.guard != nil:
-    return dUnsupported("a guarded match arm (M4b)")
   let label = ctx.dPatternStr(arm.pattern)
   let isWild = arm.pattern != nil and arm.pattern.kind == pkWild
   let head = if isWild: ctx.indD & "default:\n"
@@ -1217,9 +1215,6 @@ proc genDMatchExpr(ctx: var DCodegenCtx, e: Expr): string =
   ctx.indent = 1
   var arms = ""
   for arm in e.arms:
-    if arm.guard != nil:
-      ctx.indent = saved
-      return dUnsupported("a guarded match arm (M4b)")
     let label = ctx.dPatternStr(arm.pattern)
     let isWild = arm.pattern != nil and arm.pattern.kind == pkWild
     let head = if isWild: ctx.indD & "default: "

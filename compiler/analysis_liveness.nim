@@ -246,9 +246,7 @@ proc matchLive(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =
   var r: Live
   var any = false
   for arm in e.arms:
-    var armOut = liveOut
-    if arm.guard != nil: uses(c, arm.guard, armOut)
-    let a = lastUseSites(c, arm.body, armOut, stamp)
+    let a = lastUseSites(c, arm.body, liveOut, stamp)
     r = if any: r + a else: a
     any = true
   if not any: r = liveOut

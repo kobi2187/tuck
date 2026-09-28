@@ -199,9 +199,10 @@ body across modules needs its free names qualified.
 
 ### R12 — smaller calls
 - **Unused code.** Ruled 2026-09-27: SSA-related unused code stays; other
-  unused code is likely superfluous. Not yet removed, pending an explicit
-  go-ahead because the ruling says "likely": `ChainOp.coDot`,
-  `MatchArm.guard`, `tuck_coro`'s libaco branches.
+  unused code is likely superfluous. Go-ahead given 2026-09-28, and removed:
+  `ChainOp` (only `coDotDot` was ever produced, so the enum and the step's
+  `op` field went together), `MatchArm.guard` (never produced by the
+  parser), and `tuck_coro`'s libaco branches.
 - **Arena.** TK-ME02 is a warning so that example 13 still compiles. Keep it a
   warning until arenas exist? (Recommend yes.)
 - **`benches/bench_phases`** needs `benchy`. Its pooled lower/emit timings

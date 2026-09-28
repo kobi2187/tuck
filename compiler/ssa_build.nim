@@ -479,12 +479,8 @@ proc walkMatch(b: var Builder, e: Expr) =
   var armExits: seq[BlockId]
   var allLeave = e.arms.len > 0
   for i, arm in e.arms:
-    # NO GUARDS. The parser never builds one, and an arm with a guard is not
-    # entered from the subject alone — a failed guard falls through to the
-    # next arm, an edge this CFG does not have. Model it before allowing it.
-    doAssert arm.guard == nil,
-      "ssa_build: a match arm guard reached the builder, which has no edge " &
-      "for a guard that fails"
+    # An arm is entered from the subject alone: Tuck has no arm guards, so
+    # there is no "guard failed, try the next arm" edge to model.
     let ab = b.newBlock("arm" & $i)
     b.addPred(ab, entry)
     b.sealBlock(ab)

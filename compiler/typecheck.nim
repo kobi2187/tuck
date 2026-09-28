@@ -1228,7 +1228,7 @@ proc checkRegisterChainWrite(tc: var TypeChecker, e: Expr) =
   if e == nil or e.kind != exkChain or e.base == nil or e.base.kind != exkRegisterRef:
     return
   for step in e.steps:
-    if step.op != coDotDot or step.target == nil: continue
+    if step.target == nil: continue
     tc.failIfReadOnlyRegister(e.base.refName, step.target.name, step.span)
 
 proc checkRegisterFieldRead(tc: var TypeChecker, e: Expr) =
@@ -1673,10 +1673,7 @@ proc failIfMutatingLet(tc: var TypeChecker, e: Expr) =
   if e.base == nil: return
   let base = assignRoot(e.base)
   if base == nil or base.kind != exkVar: return
-  var hasMutation = false
-  for step in e.steps:
-    if step.op == coDotDot: hasMutation = true
-  if not hasMutation: return
+  if e.steps.len == 0: return   # every step is a `..` mutation
   let (found, b) = tc.lookup(base.name)
   if not found: return
   let whole = base.id == e.base.id     # `c ..n` vs `c.inner ..n`

@@ -263,7 +263,7 @@ proc freshCopy*(r: Resolution, e: Expr): Expr =
 
 proc freshStep*(r: Resolution, s: ChainStep): ChainStep =
   ## The same, for a chain step, which carries an id of its own.
-  result = ChainStep(op: s.op, span: s.span, id: newNodeId(),
+  result = ChainStep(span: s.span, id: newNodeId(),
                      target: r.freshCopy(s.target), arg: r.freshCopy(s.arg))
   if s.id.isSet: r.copyMeaning(s.id, result.id)
 

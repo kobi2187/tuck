@@ -431,7 +431,7 @@ proc chainMutation(p: var Parser, expr: Expr, sp: Span): Expr =
                   qualName: member)
   var arg: Expr = nil
   if p.current().kind == tkLBrace: arg = p.parsePrimaryExpr()
-  let step = ChainStep(op: coDotDot, arg: arg, span: sp, target: target)
+  let step = ChainStep(arg: arg, span: sp, target: target)
   if expr.kind == exkChain:
     expr.steps.add(step)
     return expr
@@ -822,7 +822,7 @@ proc parseMatchArm(p: var Parser): MatchArm =
   # arm body: a single expression on the same line, or an indented block
   let body = if p.current().kind == tkNewline: p.parseBlock()
              else: p.parseExpr()
-  result = MatchArm(pattern: pat, guard: nil, body: body, span: p.getSpan())
+  result = MatchArm(pattern: pat, body: body, span: p.getSpan())
   if p.current().kind == tkNewline: discard p.advance()
 
 proc parseMatchExpr(p: var Parser, sp: Span): Expr =

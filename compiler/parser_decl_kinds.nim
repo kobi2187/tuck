@@ -189,7 +189,7 @@ proc parseDecisionBody*(p: var Parser): Expr =
       rowPats.add(p.parsePattern())
     discard p.expect(tkArrow)
     let bodyExpr = p.parseExpr()
-    let rowArm = MatchArm(pattern: Pattern(span: sp, kind: pkTuple, elems: rowPats), guard: nil, body: bodyExpr, span: sp)
+    let rowArm = MatchArm(pattern: Pattern(span: sp, kind: pkTuple, elems: rowPats), body: bodyExpr, span: sp)
     let rowExpr = Expr(span: sp, kind: exkMatch, subject: nil, arms: @[rowArm])
     stmts.add(rowExpr)
     if p.current().kind == tkNewline:

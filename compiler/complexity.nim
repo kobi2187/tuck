@@ -139,10 +139,6 @@ proc walkMatch(m: var Metrics, e: Expr) =
   ## Arm bodies ARE measured; it is only the tabulation that is free.
   walk(m, e.subject)
   for arm in e.arms:
-    # A guard IS branching logic — it is a condition, not a table row.
-    if arm.guard != nil:
-      m.complexity += 1
-      walkTabular(m, arm.guard)
     walkTabular(m, arm.body)
 
 proc walkSelect(m: var Metrics, e: Expr) =

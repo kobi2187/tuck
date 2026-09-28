@@ -281,10 +281,9 @@ type
     call*: Expr          # an ordinary member call; its args[0] reads bindName
 
   MatchArm* = object
-    ## One arm of a `match`: pattern, optional guard (never produced by the
-    ## parser today) and body.
+    ## One arm of a `match`: pattern and body. (An arm guard field, never
+    ## produced by the parser, was removed 2026-09-28.)
     pattern*: Pattern
-    guard*: Expr
     body*: Expr
     span*: Span
 
@@ -335,12 +334,6 @@ type
     uoComposition  # `+ Type` in an object/type body — a MEMBER, sifted out
                    # before any expression is emitted (ast_query.composedName)
 
-  ChainOp* = enum
-    ## How a chain step attaches. Only `..` (coDotDot) is produced; a plain `.`
-    ## is a field access, not a chain step.
-    coDot
-    coDotDot
-
   NodeId* = distinct uint32
     ## Identity for the semantic layer. Assigned once, right after parsing, and
     ## carried through every later pass — including a per-target clone — so the
@@ -349,8 +342,9 @@ type
 
   ChainStep* = object
     ## One `..step {arg}` of a builder chain: the step's name or call target, its
-    ## payload, and its own id (a step resolves to a call).
-    op*: ChainOp
+    ## payload, and its own id (a step resolves to a call). Every step is a
+    ## `..` step: a plain `.` is a field access, never a chain step (the
+    ## unused `ChainOp` enum that said so was removed 2026-09-28).
     target*: Expr
     arg*: Expr
     span*: Span

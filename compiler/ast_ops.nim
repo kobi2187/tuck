@@ -229,7 +229,6 @@ iterator childSlots*(e: Expr): var Expr =
     of exkMatch:
       yield e.subject
       for arm in e.arms.mitems:
-        yield arm.guard
         yield arm.body
     of exkFor:
       yield e.iterable

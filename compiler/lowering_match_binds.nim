@@ -77,11 +77,10 @@ proc replaceInBlock(res: Resolution, b: Expr, name: string, by: Expr) =
     replaceFreeIn(res, s, name, by)
 
 proc replaceInArms(res: Resolution, m: Expr, name: string, by: Expr) =
-  ## A nested match: its subject and guards, and each arm that does not bind
-  ## `name` again.
+  ## A nested match: its subject, and each arm that does not bind `name`
+  ## again.
   replaceFreeIn(res, m.subject, name, by)
   for arm in m.arms.mitems:
-    replaceFreeIn(res, arm.guard, name, by)
     if not bindsName(arm.pattern, name): replaceFreeIn(res, arm.body, name, by)
 
 proc replaceFree(res: Resolution, e: Expr, name: string, by: Expr) =
