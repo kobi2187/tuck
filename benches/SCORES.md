@@ -854,3 +854,30 @@ to bisect; the bench is not in any gate, which is how it went unseen.
 container-threaded-through-a-record shape: `{ns: l.nodes, ..} build` passes
 `l.nodes` on while `l.slot` is still read, so the field cannot be moved out
 and is copied. On Odin the same shape is a double free (A38).
+
+### Slab storage: doubling vs chunks — 2026-09-29
+
+`benches/trees/storage.nim`: one node array SHARED by every tree (so a
+construction is one append, no merge), grown to 2^(D+1)-1 nodes, then walked
+as a tree ×10 and read once in a scrambled order. `-d:release --mm:orc`, ms.
+
+| 8.4M nodes | build | worst append | peak RSS | walk ×10 | scattered |
+|---|---|---|---|---|---|
+| Seq, doubling, Nim's allocator | 2870 | 1178 | 373 MB | 856 | 156 |
+| Seq, doubling, `-d:useMalloc` | 370 | 0.23 | 130 MB | 784 | 134 |
+| chunks of 4096 cells | ~120 | 0.3 | 130–138 MB | 709–890 | 189 |
+
+(2.1M nodes: the same shape — chunks 25 ms to build against 272 / 44.)
+
+- **Contiguous growth is only as good as the allocator's realloc.** glibc
+  remaps a large block's pages (`mremap`) instead of copying them, which is
+  why doubling looks free under `-d:useMalloc`; Nim's allocator copies, and
+  one append at 8.4M nodes stalled 1.2 s with a 2.7x memory peak. Neither
+  Odin's nor D's allocator was measured here, and a target without virtual
+  memory has no remap to fall back on.
+- **Chunks give the same answer everywhere:** no copy on growth, no pause,
+  the lowest peak, and cells that never move — so a cell's ADDRESS is stable,
+  which an extern (DMA, `Pool.addr`) needs and contiguous growth cannot give.
+- **What chunks cost:** one extra dependent load per access. A tree walk
+  sits inside the run-to-run noise; a read with no locality at all is
+  ~20–40% slower. A chunk-by-chunk loop pays nothing.
