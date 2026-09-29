@@ -227,6 +227,14 @@ template withFieldHints(tc: var TypeChecker, hints: Table[string, Type],
   try: body
   finally: tc.fieldTypeHints = savedHints
 
+proc markIfPlainIntoOptional(tc: TypeChecker, v: Expr, got, place: Type) =
+  ## A plain `T` accepted into a `?T` place is WRAPPED there — noted for
+  ## lowering_optional, which prints the wrap. Only a place that names its own
+  ## type counts (a field or parameter), never a context merely passed down.
+  if place == nil or got == nil or isFlexible(got) or isWrappedType(got): return
+  if not absenceIsDeclared(place): return
+  if tc.compatible(got, place.args[0]): semLayer.markOptWrap(v, place)
+
 proc synthFieldValue(tc: var TypeChecker, f: FieldInit): Type =
   ## One field of a payload or record literal, synthesized under the DECLARED
   ## type of the field it is going into when there is one — which is what lets
@@ -237,10 +245,11 @@ proc synthFieldValue(tc: var TypeChecker, f: FieldInit): Type =
   ## then synthStruct walks them again), so both walks have to apply the hint
   ## or the second one undoes the first. Having one proc is what keeps them
   ## agreeing.
-  let want = if tc.fieldTypeHints.hasKey(f.name): tc.fieldTypeHints[f.name]
-             else: tc.expectedType
+  let hinted = tc.fieldTypeHints.hasKey(f.name)
+  let want = if hinted: tc.fieldTypeHints[f.name] else: tc.expectedType
   tc.withExpected(want):
     result = tc.synthesize(f.value)
+  if hinted: tc.markIfPlainIntoOptional(f.value, result, want)
 
 # === FIELD ACCESS: WHAT `a.b` MEANS ========================================
 # The ordered dispatch documented at the top of this file — seven different
@@ -571,11 +580,19 @@ proc failUninitRead(name: string, t: Type, sp: Span) =
   ## The READ is the error, not the omission: an untouched hole is legal, so
   ## the message names what to do about it rather than scolding the
   ## construction.
+  ## A field that is ALREADY `T?` is told to say `none`; suggesting it be
+  ## declared optional once printed `'?int?'` for one that already was.
+  let declared = unwrapUninit(t)
+  let absent = if absenceIsDeclared(declared):
+                 ", or construct it with `" & name & ": none` if it is " &
+                 "genuinely absent"
+               else:
+                 ", or declare it '" & typeName(declared) & "?' if it is " &
+                 "genuinely optional"
   fail(dcTyUninitRead,
        "'" & name & "' is " & UninitName & " here — it was not " &
        "supplied at construction and nothing has assigned it since. Set it " &
-       "first (`" & name & " = ...` or `.." & name & " {...}`), or declare " &
-       "it '" & typeName(unwrapUninit(t)) & "?' if it is genuinely optional",
+       "first (`" & name & " = ...` or `.." & name & " {...}`)" & absent,
        sp)
 
 proc asPlainField(tc: var TypeChecker, e: Expr, fields: seq[FieldDef],
@@ -2867,6 +2884,7 @@ proc checkPositionalArgs(tc: var TypeChecker, fnName: string,
     if not tc.compatible(t, params[i].typ):
       fail("Type Error: argument " & $(i+1) & " to '" & fnName & "' expects " &
            typeName(params[i].typ) & " but got " & typeName(t), e.args[i].span)
+    tc.markIfPlainIntoOptional(e.args[i], t, params[i].typ)
 
 proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
                    bindings: var Table[string, Type]) =
@@ -3625,7 +3643,26 @@ proc litTypeName(k: LitKind, value = ""): string =
   of lkFloat: "float"
   of lkStr: "str"
   of lkBool: "bool"
-  of lkUnit: "unit"
+
+proc synthNone(tc: var TypeChecker, e: Expr): Type =
+  ## `none` — the absent `?T` (ruled 2026-09-29). It names no T of its own, so
+  ## the place it is written supplies one: a `T?` field in a construction, a
+  ## `-> T?` return, an assignment into a `T?` place, a `T?` parameter. The
+  ## node records that T (`optInner`), which is everything every backend
+  ## needs to print an absent value of it.
+  let want = tc.expectedType
+  if want == nil or want.kind != tkApp or want.base == nil or
+     want.base.kind != tkNamed or want.base.name != "?" or want.args.len != 1:
+    fail(dcTyNoneNoPlace,
+         "`none` is an absent `T?`, and nothing here says which T — " &
+         (if want == nil or isFlexible(want): "this place expects no type"
+          else: "this place expects " & typeName(want)) &
+         ". Fix: write it where a `T?` is expected (a `T?` field, a " &
+         "`-> T?` return, a `T?` parameter), or give the binding a type " &
+         "(`var x: int? = none`)", e.span)
+  e.optInner = want.args[0]
+  semLayer.setType(e, want)
+  want
 
 proc synthLit(tc: var TypeChecker, e: Expr): Type =
   ## A literal's type, taking the context's when there is one.
@@ -4658,9 +4695,12 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # Built by lowering from a `| Flac f ->` arm, typed as it is built.
     discard tc.synthesize(e.tagSubject)
     semLayer.typeFor(e)
-  of exkWrapOk, exkAbsent:
+  of exkAbsent:
+    if e.optInner == nil: tc.synthNone(e)   # written `none`
+    else: semLayer.typeFor(e)                # built by lowering_optional
+  of exkWrapOk:
     # Built by lowering_optional, typed `?T` as it is built.
-    if e.optValue != nil: discard tc.synthesize(e.optValue)
+    discard tc.synthesize(e.optValue)
     semLayer.typeFor(e)
   of exkPoolOp:
     # Stamped by the checker (asPoolOp) in place of `Pool.op {...}`; its

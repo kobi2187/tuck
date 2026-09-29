@@ -208,3 +208,73 @@ fn main() -> int:
   return c.timeout
 """
   t.omits "the marker never reaches emitted code", "uninit"
+
+  # --- `none`: how a construction says "absent" (ruled 2026-09-29) ---------
+  #
+  # A field left out of a construction is still a hole. A `T?` field that is
+  # genuinely empty says so with `none`, which takes its T from the place it
+  # is written: a construction field, a `-> T?` return, an assignment, a
+  # stated binding type, a parameter. Asserted by value — each place adds its
+  # own bit, and a `none` read as present, or a plain value not wrapped into
+  # its `T?`, answers a different number.
+  t.src """
+type Node:
+  data: int
+  next: int?
+
+fn find({xs: Seq[int], want: int}) -> int?:
+  for x in xs:
+    if x == want:
+      return x
+  return none
+
+fn orZero({v: int?}) -> int:
+  if v.ok:
+    return v.value
+  return 0
+
+fn bits({n: Node}) -> int:
+  var score = 0
+  if not n.next.ok:
+    score = score + 1
+  var m: int? = none
+  if not m.ok:
+    score = score + 2
+  return score
+
+fn main() -> int:
+  var n = {data: 1, next: none} Node
+  var score = {n: n} bits
+  n.next = 7
+  n.next = none
+  score = score + ({n: n} bits) * 2
+  let hit = {xs: [3, 5], want: 5} find
+  let miss = {xs: [3, 5], want: 9} find
+  if hit.ok and not miss.ok:
+    score = score + 16
+  score = score + {v: none} orZero + {v: 32} orZero
+  let k = {data: 64, next: 1} Node
+  if k.next.ok:
+    score = score + k.data
+  return score
+"""
+  t.okCheck "`none` checks in every place a `T?` is expected"
+  t.hostRuns "...and is absent there, on every backend (and a plain value " &
+             "into a `T?` argument or field is present)", 121
+
+  t.src """
+fn main() -> int:
+  let x = none
+  return 0
+"""
+  t.badCheck "`none` with no `T?` to go into is refused (TK-TY38)", "TK-TY38"
+
+  t.src """
+fn twice({n: int}) -> int:
+  return n * 2
+
+fn main() -> int:
+  return {n: none} twice
+"""
+  t.badCheck "...and so is `none` where a plain `int` is expected",
+             "this place expects int"

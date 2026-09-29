@@ -15,7 +15,7 @@ reference is how one thing points at another — a parent, a next node, a
 shared child — without a pointer and without leaving value semantics for
 anything else.
 
-```tuck
+```tuck-rejected
 type Node:
   data: int
   prev: NodesRef?
@@ -52,7 +52,7 @@ child) and **cycles** (a graph).
 
 ## 3. Surface
 
-```tuck
+```tuck-rejected
 slab Nodes = Node                          # chunked, grows (the default)
 slab Nodes = Node [count: 1024]            # fixed Array: static, embedded
 slab Nodes = Node [storage: contiguous]    # one Seq: opt-in (§5)
@@ -175,7 +175,7 @@ and independent of this feature.
 
 An arena is **a lifetime shared by several slabs**:
 
-```tuck
+```tuck-rejected
 arena Frame                              # a lifetime, not a block
 
 fn handle({pkt: Packet}) [io]:

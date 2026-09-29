@@ -295,8 +295,10 @@ proc parsePrimaryExpr(p: var Parser): Expr =
     discard p.advance()
     return Expr(span: sp, kind: exkLit, litKind: lkBool, litValue: "false")
   of tkNone:
+    # `none`: an absent `?T`, whose T the checker takes from the place it is
+    # written (synthNone).
     discard p.advance()
-    return Expr(span: sp, kind: exkLit, litKind: lkUnit, litValue: "none")
+    return Expr(span: sp, kind: exkAbsent)
   of tkIdent:
     let name = p.advance().value
     return Expr(span: sp, kind: exkVar, name: name)

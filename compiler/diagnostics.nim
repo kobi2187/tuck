@@ -136,6 +136,7 @@ type
                                         ## or a name, or not a scalar
     dcTyActorFieldNoInit = "TK-TY35"    ## an actor field with no initialiser
                                         ## that is not `T?`
+    dcTyNoneNoPlace = "TK-TY38"         ## `none` where no `T?` is expected
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -465,6 +466,13 @@ proc parseExplanation(d: DiagCode): string =
     "the copies share nothing: a `Seq` or `str` element would put one " &
     "buffer in every slot. Fix: a scalar value, named or literal; for other " &
     "elements write the list, or build it with a loop."
+  of dcTyNoneNoPlace:
+    "`none` is the absent value of a `T?` — no `next` yet, no result, nothing " &
+    "found. It names no T itself, so it takes one from where it is written: " &
+    "a `T?` field in a construction (`{data: 1, next: none} Node`), a " &
+    "`-> T?` return, an assignment into a `T?` place, a `T?` parameter. " &
+    "Anywhere else there is nothing to say what it is absent OF. Fix: write " &
+    "it in such a place, or state the binding's type (`var x: int? = none`)."
   of dcTyActorFieldNoInit:
     "An actor is one instance the language creates for you, before any " &
     "message arrives, so each field starts with its initialiser — " &

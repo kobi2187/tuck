@@ -1038,6 +1038,15 @@ three wrappers share one tri-state representation — `ok | err(code) | absent`
 — so `!?T` distinguishes failure from absence exactly, and error codes keep
 the full 16-bit space.
 
+**Absence is written `none`** (ruled 2026-09-29). It names no T of its own:
+the place it is written supplies one — a `T?` field in a construction
+(`{data: 1, next: none} Node`), a `-> T?` return, an assignment into a `T?`
+place, a stated binding type (`var m: int? = none`), a `T?` parameter.
+Anywhere nothing expects a `T?`, it is TK-TY38. A field left out of a
+construction is still a hole (TK-TY16): `none` is absence on purpose, an
+omission is not. A plain `T` goes into any `T?` place as it is and is present
+there.
+
 **An `if r.ok` guard answers ONE question.** For `!T` and for `?T` that is the
 only question there is, so the guard is complete handling. `!?T` asks two —
 *did it fail* and *was it absent* — over the same tri-state carrier, and

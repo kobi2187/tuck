@@ -47,6 +47,17 @@ proc lowerAssigns(res: Resolution, body: Expr) =
     if n.kind == exkAssign and n.target != nil:
       n.assignVal = res.wrapIfPlain(res.typeFor(n.target), n.assignVal)
 
+proc lowerMarkedValues(res: Resolution, body: Expr) =
+  ## Every payload field, construction field and positional argument the
+  ## checker accepted as a plain `T` into a `?T` place (optWraps).
+  for n in nodes(body):
+    if n.kind == exkStruct:
+      for f in n.fields.mitems:
+        f.value = res.wrapIfPlain(res.optWrapOf(f.value), f.value)
+    elif n.kind == exkCall:
+      for a in n.args.mitems:
+        a = res.wrapIfPlain(res.optWrapOf(a), a)
+
 proc lowerActorFields(res: Resolution, d: Decl) =
   ## A `T?` field starts absent, or holds its initialiser wrapped.
   for f in d.actorFields.mitems:
@@ -56,6 +67,8 @@ proc lowerActorFields(res: Resolution, d: Decl) =
 
 proc lowerOptionals*(res: Resolution, m: Module) =
   ## Every body and actor field of this backend's copy of the module.
-  for body in m.bodies: res.lowerAssigns(body)
+  for body in m.bodies:
+    res.lowerAssigns(body)
+    res.lowerMarkedValues(body)
   for d in m.allDecls:
     if d.kind == dkActor: res.lowerActorFields(d)

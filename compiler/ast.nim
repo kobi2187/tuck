@@ -457,9 +457,13 @@ type
                     # `T`, held in a `?T` — an assignment into a `?T` place.
                     # Every backend prints its result carrier's typed
                     # constructor with status Ok.
-    exkAbsent       # lowered only: an absent `?T` — what a `T?` actor field
-                    # with no initialiser starts as. The carrier's zero value
-                    # is status OK (the enum's first member), not absent.
+    exkAbsent       # an absent `?T`. Written `none` (ruled 2026-09-29): the
+                    # parser leaves `optInner` nil and the checker fills it
+                    # from the `?T` the place expects (synthNone). Also built
+                    # by lowering_optional for a `T?` actor field with no
+                    # initialiser. The carrier's zero value is status OK (the
+                    # enum's first member), not absent — so it is never left
+                    # to a zero.
     exkPoolOp       # `Cells.acquire`, `Cells.read {h}`, ... — an operation on a
                     # pool (spec §7.2). Its own node, stamped by the checker:
                     # it used to be a call whose callee was the bare member
@@ -629,9 +633,9 @@ type
                         # this node stays small and deepCopy/JSON-safe
 
   LitKind* = enum
-    ## The literal kinds. `lkUnit` is the `none` keyword: the one value of
-    ## the unit type.
-    lkInt, lkFloat, lkStr, lkBool, lkUnit
+    ## The literal kinds. `none` is not one: it is an absent `?T`
+    ## (exkAbsent), typed by where it is written.
+    lkInt, lkFloat, lkStr, lkBool
 
   # Imported type decls are injected into the importer for checking and
   # lowering, marked with this span.file so codegen skips re-emitting them.

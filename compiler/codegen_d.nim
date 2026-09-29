@@ -91,7 +91,6 @@ proc genDLit(e: Expr): string =
       e.litValue & "UL"
     else: e.litValue & "L"
   of lkFloat, lkBool: e.litValue
-  of lkUnit: ""
 
 const dNarrowNames = ["i8", "i16", "i32", "u8", "u16", "u32", "u64", "f32"]
   ## The Tuck numeric types narrower than (or unsigned against) D's `long`

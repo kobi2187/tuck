@@ -66,6 +66,12 @@ type
     # these instead of re-deriving the mapping, which misses by-type matches.
     argFields*: Table[NodeId, seq[string]]
     callParams*: Table[NodeId, seq[string]]
+    optWraps*: Table[NodeId, Type]
+      ## A plain `T` the checker accepted into a `T?` place it has no other
+      ## way to reach — a payload field, a construction field, a positional
+      ## argument — keyed by the value, holding the `?T` it goes into.
+      ## lowering_optional wraps each one; assignments and returns it wraps
+      ## on its own.
     actorMemberCalls*: Table[NodeId, (string, string)]
                     ## A call to an actor's member `fn`, by the call's id, to
                     ## (the actor, the member), both as written (A24). The
@@ -249,6 +255,7 @@ proc copyMeaning(r: Resolution, src, dst: NodeId) =
   if src in r.declOf: r.declOf[dst] = r.declOf[src]
   if src in r.argFields: r.argFields[dst] = r.argFields[src]
   if src in r.callParams: r.callParams[dst] = r.callParams[src]
+  if src in r.optWraps: r.optWraps[dst] = r.optWraps[src]
   if src in r.callTypeArgs: r.callTypeArgs[dst] = r.callTypeArgs[src]
   if src in r.wraps: r.wraps[dst] = r.wraps[src]
   if src in r.ifaceCalls: r.ifaceCalls[dst] = r.ifaceCalls[src]
@@ -355,6 +362,7 @@ proc newResolution*(): Resolution =
              declOf: initTable[NodeId, NodeId](),
              argFields: initTable[NodeId, seq[string]](),
              callParams: initTable[NodeId, seq[string]](),
+             optWraps: initTable[NodeId, Type](),
              callTypeArgs: initTable[NodeId, seq[Type]](),
              wraps: initTable[NodeId, tuple[objName, iface: string]](),
              ifacePairs: initHashSet[tuple[objName, iface: string]](),
@@ -516,6 +524,17 @@ proc setArgFields*(r: Resolution, e: Expr, fields: seq[string]) =
   if e == nil: return
   ensureId(e)
   r.argFields[e.id] = fields
+
+proc markOptWrap*(r: Resolution, e: Expr, place: Type) =
+  ## `e`, a plain `T`, goes into the `?T` place `place` (see optWraps).
+  if e == nil: return
+  ensureId(e)
+  r.optWraps[e.id] = place
+
+proc optWrapOf*(r: Resolution, e: Expr): Type =
+  ## The `?T` place `e` was accepted into as a plain `T`, or nil.
+  if e == nil or not e.id.isSet: return nil
+  r.optWraps.getOrDefault(e.id, nil)
 
 proc argFieldsFor*(r: Resolution, e: Expr): seq[string] =
   ## Empty when the checker recorded no mapping — callers fall back to

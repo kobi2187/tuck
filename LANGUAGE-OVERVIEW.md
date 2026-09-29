@@ -408,6 +408,21 @@ together, or an interface value, are refused (`tests/suites/interfaces.nim`).
 **A fallible fn must be `[io]`** — otherwise `must be marked [io]`
 (`tests/suites/typecheck.nim`). `?T` carries no such requirement.
 
+**`none` is the absent `T?`** (ruled 2026-09-29). It names no T of its own,
+so it takes one from where it is written:
+
+```tuck
+let n = {data: 1, next: none} Node   # a `next: int?` field
+return none                          # in a `-> T?` fn
+n.next = none                        # into a `T?` place
+var m: int? = none                   # a stated binding type
+```
+
+Anywhere nothing expects a `T?` it is `TK-TY38`. A field LEFT OUT of a
+construction is still a hole (`TK-TY16`) — `none` is how a construction says
+"absent" on purpose. A plain value goes into a `T?` field, argument or
+binding as it is (`{data: 1, next: 7} Node`) and is present there.
+
 ### Handling
 
 ```tuck
