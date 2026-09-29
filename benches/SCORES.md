@@ -881,3 +881,21 @@ as a tree ×10 and read once in a scrambled order. `-d:release --mm:orc`, ms.
 - **What chunks cost:** one extra dependent load per access. A tree walk
   sits inside the run-to-run noise; a read with no locality at all is
   ~20–40% slower. A chunk-by-chunk loop pays nothing.
+
+**Two levels (ruled 2026-09-29, slab proposal Q8).** `storage.nim dir2`: a
+FIXED top of 64 directory pages, each 1024 chunk pointers, each chunk 4096
+cells — 256M cells before anything is copied, every allocation one of two
+fixed sizes, made when first needed. 8.4M nodes, three runs each:
+
+| | build | worst append | walk ×10 | scattered |
+|---|---|---|---|---|
+| one level, `-d:release` | 105–264 | 0.07–0.56 | 789–821 | 149–172 |
+| two levels, `-d:release` | 102–107 | **0.03–0.05** | 1081–1175 | 142–191 |
+| one level, `-d:danger` | 106–197 | 0.06–0.16 | 840–884 | — |
+| two levels, `-d:danger` | 114–127 | 0.06–0.14 | **805–822** | — |
+
+The two levels' 40% on the walk under `-d:release` is BOUNDS CHECKS on the
+two fixed arrays, not the extra load: with them off it is as fast or faster.
+Those indices are in range by construction (a shift and a mask of an index
+the slab has already checked against its length), so the runtime's accessor
+skips them and the second level costs nothing measurable.

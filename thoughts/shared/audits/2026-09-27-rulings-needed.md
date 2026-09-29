@@ -208,6 +208,12 @@ path on every send.
 > intent behind it, several queues in one actor so urgent messages go first,
 > is deferred as a per-handler `[urgent]` (ROADMAP, Deferred).
 
+### Slab (ROADMAP item 9) — ruled 2026-09-29
+`thoughts/shared/plans/2026-09-29-slab-proposal.md` §10: yes to all eight,
+except Q4 (absent is spelled `none`, typed from context) and Q8 (no resize
+may make a program wait: a directory of chunk pages rather than one growable
+chunk table). Recorded in the proposal.
+
 ### R7 — #84: no ordering between two senders into one mailbox
 Thread mode happens to supply an ordering that batch mode doesn't. Per-sender
 FIFO holds in every mode.

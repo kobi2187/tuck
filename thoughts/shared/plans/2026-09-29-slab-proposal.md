@@ -118,6 +118,18 @@ chunk and cell with a shift and a mask.
 A cell is `{tenancy: u32, value: T}` — the stale check and the read touch one
 cache line.
 
+**Two levels (Q8, measured — SCORES.md "Slab storage").** The growable
+storage is a fixed top of directory pages, each a fixed array of chunk
+pointers, each chunk a fixed array of cells: 64 x 1024 x 4096 = 256M cells
+before anything is copied, and then only the 64-entry top. Every allocation
+is one of two fixed sizes, made when first needed — which a fixed-block
+allocator on a target without a heap can serve. It costs nothing measurable
+once the accessor skips the bounds checks its own shift-and-mask makes
+redundant (the slab checks the index against its length once, with the
+tenancy). A chunk is sized in BYTES (64 KiB, rounded down to a power-of-two
+cell count, at least one), so a large element does not make a 4096-cell
+chunk of megabytes.
+
 ## 6. Freeing
 
 Per-cell `free` with tenancy, plus a whole-slab `reset`:
@@ -199,6 +211,23 @@ is replaced: an arena is a declaration, used anywhere, reset explicitly.
 | Q6 | Top-level slabs belong to main's thread; an actor reaching one, or a reference crossing an actor boundary, is a compile error (§7) | yes |
 | Q7 | `pool` stays as it is for now; converging it into a counted slab (plus `addr`) is later | yes |
 | Q8 | Chunk size 4096 cells, fixed; a `[chunk: N]` knob only if a workload asks | yes |
+
+**RULED 2026-09-29 (owner): yes to all, with two changes.**
+
+- **Q4 → `none`.** Absent gets a spelling of its own: `none`, a literal whose
+  `?T` comes from where it is written — a field in a construction
+  (`{data: 1, next: none} Node`), a `return`, an assignment, an argument. A
+  field left OUT of a construction is still refused (TK-TY16); `none` is how
+  a construction says "no `next` yet".
+- **Q8 → no resize may make a program wait.** "With embedded or systems we
+  prefer another indirection, 3 ops instead of 2, over unpredictable waiting
+  when resizing. Even an array of chunks of chunks — then copying once if
+  really reached even that huge amount. Arrays created at run time as needed
+  keep memory low." So the chunk DIRECTORY must not grow by copying either:
+  a fixed top level of directory pages, each a fixed array of chunk
+  pointers, each chunk a fixed array of cells — every allocation one of two
+  fixed sizes, made when first needed, and nothing copied until the top level
+  itself is full. Measured before it is built (§5, "Two levels").
 
 ## 11. Building it
 

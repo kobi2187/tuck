@@ -43,6 +43,37 @@ proc add(s: var ChunkStore, n: Node): int32 {.inline.} =
 proc `[]`(s: ChunkStore, i: int32): lent Node {.inline.} =
   s.chunks[i shr Shift][i and Mask]
 
+# --- two levels: a FIXED top of directory pages, each a fixed array of chunk
+# pointers. Every allocation is one of two fixed sizes, made when first
+# needed, and nothing is ever copied: 64 pages x 1024 chunks x 4096 cells =
+# 256M cells before the top level would have to grow at all.
+const PageShift = 10
+const PageN = 1 shl PageShift
+const TopN = 64
+
+type
+  Chunk = UncheckedArray[Node]
+  Page = array[PageN, ptr Chunk]
+  Dir2Store = object
+    top: array[TopN, ptr Page]
+    len: int
+
+proc add(s: var Dir2Store, n: Node): int32 {.inline.} =
+  if (s.len and Mask) == 0:                    # this append opens a chunk
+    let t0 = getMonoTime()
+    let pg = s.len shr (Shift + PageShift)
+    if s.top[pg] == nil:
+      s.top[pg] = cast[ptr Page](allocShared0(sizeof(Page)))
+    s.top[pg][(s.len shr Shift) and (PageN - 1)] =
+      cast[ptr Chunk](allocShared(K * sizeof(Node)))
+    worstNs = max(worstNs, (getMonoTime() - t0).inNanoseconds)
+  s.top[s.len shr (Shift + PageShift)][(s.len shr Shift) and (PageN - 1)][s.len and Mask] = n
+  inc s.len
+  int32(s.len - 1)
+
+proc `[]`(s: Dir2Store, i: int32): lent Node {.inline.} =
+  s.top[i shr (Shift + PageShift)][(i shr Shift) and (PageN - 1)][i and Mask]
+
 proc build[S](s: var S, d: int): int32 =
   if d == 0: return s.add Node(kind: 0, v: 1)
   let l = build(s, d - 1)
@@ -92,6 +123,9 @@ let d = parseInt(paramStr(2))
 if which == "seq":
   var s: SeqStore
   run(s, d, "seq")
+elif which == "dir2":
+  var s: Dir2Store
+  run(s, d, "dir2")
 else:
   var s: ChunkStore
   run(s, d, "chunk")
