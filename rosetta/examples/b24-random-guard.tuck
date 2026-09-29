@@ -1,5 +1,5 @@
 # Loop-with-guard driven by a random number (coin flip until heads)
-import io
+import console
 
 pending:
   fn randomBool({}) -> bool

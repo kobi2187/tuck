@@ -1,5 +1,5 @@
 # Factorial of a number, computed iteratively
-import io
+import console
 
 fn main() -> void [io]:
   let n = 10

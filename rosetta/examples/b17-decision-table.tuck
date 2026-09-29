@@ -1,5 +1,5 @@
 # Decision table for tabular logic
-import io
+import console
 
 type Priority:
   | High({})

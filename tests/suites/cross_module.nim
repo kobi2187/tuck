@@ -584,4 +584,291 @@ fn mk({x: int}) -> Point:
 """)
   t.badCheck "...and one naming a type the module lacks", "declares a public type 'Nope'"
 
+
+  # --- R11: every construct across a module boundary (scan 2026-09-28) -----
+  #
+  # Ruled 2026-09-28: "importing anything from other modules should work as
+  # well as same module". Each construct was built declared in `lib` and used
+  # from the importer, on Nim, Odin and D, against a one-module control that
+  # passes. These are the ones that did not; each states the CORRECT result.
+
+  t.src """
+import lib
+
+fn main() -> int:
+  let c = {n: 7} Counter
+  return c.read
+"""
+  t.addFile("lib.tuck", """object Counter:
+  n: int
+  fn read({self: Counter}) -> int:
+    return self.n
+""")
+  t.quietly: t.hostRuns("R11: an imported object is constructed and its member called", 7)
+  t.bugFixed "R11: an imported object is constructed and its member called"
+  # FIXED 2026-09-28: modules.injectImportedTypes injected only `type`s. An
+  # object is now copied into the importer as its SHAPE — fields, `satisfies`
+  # lines, members as body-less signatures under fresh ids — codegen skips
+  # the copy, and Odin and D qualify its type and member procs with the
+  # defining module. A member that changes `self` must still take it by
+  # reference on the importer's side: the copy's signatures take the
+  # original members' writer status (typecheck.copyWriters).
+  t.src """
+import lib
+
+fn main() -> int:
+  var c = {n: 7} Counter
+  c.bump
+  var b = {n: 1} Counter
+  b ..grown
+  return c.n + b.n
+"""
+  t.addFile("lib.tuck", """object Counter:
+  n: int
+  fn bump({self: Counter}):
+    self.n = self.n + 1
+  fn grown({self: Counter}) -> Counter:
+    return self with {n: self.n + 1}
+""")
+  t.hostRuns "R11: an imported object's changing member, called and chained, on every backend", 10
+
+  t.src """
+import lib
+
+fn total({a: Shape, b: Shape}) -> int:
+  return a.area + b.area
+
+fn main() -> int:
+  let x: Shape = {s: 3} Sq
+  let y: Shape = {w: 2, h: 5} Rc
+  return {a: x, b: y} total
+"""
+  t.addFile("lib.tuck", """interface Shape:
+  fn area({self: Self}) -> int
+
+object Sq:
+  satisfies Shape
+  s: int
+  fn area({self: Sq}) -> int:
+    return self.s * self.s
+
+object Rc:
+  satisfies Shape
+  w: int
+  h: int
+  fn area({self: Rc}) -> int:
+    return self.w * self.h
+""")
+  t.quietly: t.hostRuns("R11: a call through an imported interface value reaches the satisfier's member", 19)
+  t.bugFixed "R11: a call through an imported interface value reaches the satisfier's member"
+
+  t.src """
+import lib
+
+object Sq:
+  satisfies Shape
+  s: int
+  fn area({self: Sq}) -> int:
+    return self.s * self.s
+
+fn main() -> int:
+  let x: Shape = {s: 4} Sq
+  return x.area
+"""
+  t.addFile("lib.tuck", """interface Shape:
+  fn area({self: Self}) -> int
+""")
+  t.quietly: t.hostRuns("R11: an object satisfies an interface declared in another module", 16)
+  t.bugOpen "R11: an object satisfies an interface declared in another module"
+
+  t.src """
+import lib
+
+fn side({v: Shape}) -> int:
+  match v:
+    | Sq q -> return q.s
+    | _ -> return 0
+
+fn main() -> int:
+  let x: Shape = {s: 6} Sq
+  return {v: x} side
+"""
+  t.addFile("lib.tuck", """interface Shape:
+  fn area({self: Self}) -> int
+
+object Sq:
+  satisfies Shape
+  s: int
+  fn area({self: Sq}) -> int:
+    return self.s * self.s
+
+object Rc:
+  satisfies Shape
+  w: int
+  h: int
+  fn area({self: Rc}) -> int:
+    return self.w * self.h
+""")
+  t.quietly: t.hostRuns("R11: a type test on an imported interface's value", 6)
+  t.bugFixed "R11: a type test on an imported interface's value"
+
+  t.src """
+import lib
+
+object Num:
+  n: int
+  + Doubler
+
+fn main() -> int:
+  let x = {n: 21} Num
+  return x.double
+"""
+  t.addFile("lib.tuck", """mixin Doubler:
+  fn double({self: Self}) -> int:
+    return self.n * 2
+""")
+  t.quietly: t.hostRuns("R11: a mixin composed from another module", 42)
+  t.bugOpen "R11: a mixin composed from another module"
+
+  t.src """
+import lib
+
+fn main() -> int [io]:
+  let r = {p: 0} open
+  if not r.ok:
+    match r.err:
+      NotFound: return 4
+      _: return 5
+  return r.value
+"""
+  t.addFile("lib.tuck", """type FsError:
+  | NotFound
+  | Denied
+
+fn open({p: int}) -> !int [io, error: FsError]:
+  if p == 0:
+    err FsError.NotFound
+  return p
+""")
+  t.quietly: t.hostRuns("R11: match on the error of an imported fallible fn", 4)
+  t.bugFixed "R11: match on the error of an imported fallible fn"
+
+  t.src """
+import lib
+
+fn main() -> int:
+  let t = {c: -300} Temp
+  return 0
+"""
+  t.addFile("lib.tuck", """type Temp:
+  c: int
+  invariant:
+    c >= -273
+""")
+  t.quietly: t.hostRuns("R11: an imported invariant type validates without crashing the compiler", 1)
+  t.bugFixed "R11: an imported invariant type validates without crashing the compiler"
+
+  t.src """
+import scheduler
+import lib
+
+fn done() -> bool:
+  return Acc.total > 0
+
+fn main() -> int:
+  Acc send add {n: 6}
+  Acc.waitUntil {pred: :done}
+  return Acc.total
+"""
+  t.addFile("lib.tuck", """actor Acc [queue: 8]:
+  total: int = 0
+  on add({n: int}):
+    total += n
+""")
+  t.quietly: t.hostRuns("R11: an imported actor's fields and handlers are visible to the importer", 6)
+  t.bugOpen "R11: an imported actor's fields and handlers are visible to the importer"
+
+  t.src """
+import lib
+
+fn main() -> int:
+  let a: Array[Cap, int] = [5; Cap]
+  return a[0] + a[3]
+"""
+  t.addFile("lib.tuck", """const Cap = 4
+""")
+  t.quietly: t.hostRuns("R11: an imported const sizes and fills an Array", 10)
+  t.bugFixed "R11: an imported const sizes and fills an Array"
+
+  t.src """
+import lib
+
+type Blob:
+  n: int
+
+fn size({self: Blob}) -> int:
+  return self.n
+
+fn main() -> int:
+  let b = {n: 20} Blob
+  if {x: b} big:
+    return 1
+  return 0
+"""
+  t.addFile("lib.tuck", """group Sized:
+  fn size({self: Self}) -> int
+
+fn big[T: Sized]({x: T}) -> bool:
+  return {self: x} size > 10
+""")
+  t.quietly: t.hostRuns("R11: a group's provider in another module is found on every backend", 1)
+  t.bugOpen "R11: a group's provider in another module is found on every backend"
+
+  t.src """
+import lib
+
+fn main() -> int:
+  let l = {value: 300} Level
+  return {value: l} int
+"""
+  t.addFile("lib.tuck", """type Level = u8 [saturating]
+""")
+  t.quietly: t.hostRuns("R11: an imported saturating type constructs on every backend", 255)
+  t.bugFixed "R11: an imported saturating type constructs on every backend"
+
+  t.src """
+import lib
+
+fn main() -> int:
+  let h = Cells.acquire
+  if not h.ok:
+    return 0
+  Cells.write {h: h.value, value: 5}
+  let v = Cells.read {h: h.value}
+  if v.ok:
+    return v.value
+  return 1
+"""
+  t.addFile("lib.tuck", """pool Cells = int [count: 2]
+""")
+  t.quietly: t.hostRuns("R11: an imported pool works on every backend", 5)
+  t.bugFixed "R11: an imported pool works on every backend"
+
+  t.src """
+import console
+import lib
+
+on AppEvents.Low({left: int}) [io]:
+  {text: "low"} console::printLine
+
+fn main() -> int [io]:
+  AppEvents.raise Low {left: 3}
+  return 0
+"""
+  t.addFile("lib.tuck", """registry AppEvents:
+  | Low({left: int})
+""")
+  t.quietly: t.hostRuns("R11: an imported registry is raised on every backend", 0)
+  t.bugOpen "R11: an imported registry is raised on every backend"
+
   t.finish()

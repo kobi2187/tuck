@@ -1,5 +1,5 @@
 # Compare two strings for equality and ordering
-import io
+import console
 
 pending:
   fn lessThan({a: str, b: str}) -> bool

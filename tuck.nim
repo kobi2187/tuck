@@ -129,6 +129,8 @@ Takes every `tuck compile` flag, plus:
   --nim:FLAGS  extra flags passed through to `nim c`, e.g.
                --nim:"--os:standalone --cpu:arm"
   --release    promote the size-budget report to a build failure
+  --no-invariants  drop the runtime `invariant:` checks (they survive
+               --release otherwise), on every backend
 
 Run `tuck help compile` for the rest of the shared flags.""",
   "dump": """tuck dump file.tuck [--stage:X] [--format:X] [options]
@@ -226,6 +228,8 @@ options:
                 was rewritten. See compiler/optimize.nim for what each does
                 and what it refuses to touch.
   --nim:FLAGS   (build) extra nim flags, e.g. --nim:"--os:standalone --cpu:arm"
+  --no-invariants (build) drop the runtime `invariant:` checks on every
+                backend. They survive --release; this is the only way off.
   --max-complexity:N  size budget: max independent paths through a fn
                 (any command; default 6, `:0` disables). A match/select costs
                 nothing for the construct — only what its arms do is counted.
@@ -1132,6 +1136,11 @@ when isMainModule:
       # here (backend-agnostic, needed by all three build arms below) rather
       # than computed once per backend.
       let wantRelease = "--release" in opts
+      # `--no-invariants` (R9, ruled 2026-09-28): one flag, and each backend
+      # sets the define its emitted checks already test — Nim `-d:`, Odin
+      # `#config` via `-define:`, D `version`. Independent of `--release`:
+      # invariants survive a release build and go only when asked.
+      let noInvariants = "--no-invariants" in opts
       var binBase = base.replace("-", "_")
       if binBase.len > 0 and binBase[0] in {'0' .. '9'}: binBase = "m_" & binBase
       case backend
@@ -1247,8 +1256,9 @@ when isMainModule:
         # `--actors:MODE` reaches the runtime as a define: tuck_async and
         # tuck_rt are compiled INTO the program, so this is how the mode
         # becomes a compile-time fact there rather than a branch at run time.
+        let invFlag = if noInvariants: " -d:tuckNoInvariants " else: ""
         let nimCmd = "nim c --hints:off --warnings:off " & nimFlags & asyncFlags &
-                     nimDefinesFor(actorPolicy) &
+                     nimDefinesFor(actorPolicy) & invFlag &
                      speedFlags & " --nimcache:" & quoteShell(nimCache) &
                      " -o:" & quoteShell(binPath) & " " &
                      quoteShell(binNim)
@@ -1275,6 +1285,7 @@ when isMainModule:
           # and then (tests/harness.nim, OdinThreads).
           let odinCmd = quoteShell(odinExe) & " build " & quoteShell(outDir) &
                         " " & odinOpt & " -out:" & quoteShell(odinBin) &
+                        (if noInvariants: " -define:tuckNoInvariants=true" else: "") &
                         " " & getEnv("TUCK_ODIN_EXTRA")
           let odT0 = epochTime()
           let odRc = execShellCmd(odinCmd)
@@ -1345,7 +1356,8 @@ when isMainModule:
                 implDirs.incl(parentDir(path) / module.parentDir())
           var implIArgs = ""
           for dir in implDirs: implIArgs.add(" -I" & quoteShell(dir))
-          let dCmd = quoteShell(dmdExe) & " -i" & dOpt &
+          let dInv = if noInvariants: " -version=tuckNoInvariants" else: ""
+          let dCmd = quoteShell(dmdExe) & " -i" & dOpt & dInv &
                      " -I" & quoteShell(outDir) & implIArgs &
                      " -of=" & quoteShell(dBin) & " " &
                      quoteShell(outDir / (base & ".d")) & cObjs & mcoArg

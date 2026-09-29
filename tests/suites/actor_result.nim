@@ -330,7 +330,7 @@ fn main() -> int:
 """
   t.okCheck "a match arm may be a bare send"
   t.emits "...and its notify stays inside the arm",
-          r"of 0:\n {4}discard enqueue\([^\n]*\n {4}tuckNotifySend"
+          r"of 0:\n {4}sendWaiting\([^\n]*\n {4}tuckNotifySend"
   t.runs "...and every arm delivers", 23
   t.hostRuns "...on every backend", 23
 

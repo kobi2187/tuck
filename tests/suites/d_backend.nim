@@ -757,8 +757,9 @@ fn main() -> int:
            r"enum tuckˑobjectˑLightStateKind \{ Red, Yellow, Green \}"
   t.emitsD "inline sum: a tag is qualified — D enum members do not leak",
            r"case tuckˑobjectˑLightStateKind\.Green:"
+  # By value: `advance` only reads its object (typecheck.checkSelfWrites).
   t.emitsD "member with no declared params still takes self",
-           r"tuckˑobjectˑLightˑadvance\(ref tuckˑobjectˑLight self\)"
+           r"tuckˑobjectˑLightˑadvance\(tuckˑobjectˑLight self\)"
   t.runsD "inline sum: state Green selects the second arm", 2, dmdExe
 
   # --- bake: a fn-typed slot is a FUNCTION POINTER, not a delegate -------
@@ -828,7 +829,7 @@ object Deck:
   t.emitsD "compose: a composed type's field lands flat on the object",
            r"struct tuckˑobjectˑDeck \{\n    long volume;"
   t.emitsD "compose: a mixin fn materialises as a member of the object",
-           r"tuckˑobjectˑDeckˑbump\(ref tuckˑobjectˑDeck self"
+           r"tuckˑobjectˑDeckˑbump\(tuckˑobjectˑDeck self"   # reads: by value
   t.omitsD "compose: never embedded as a nested field",
            r"tuckˑtypeˑAudioPlayer audioPlayer"
   t.emitsD "chain: a standalone step writes back through the base",

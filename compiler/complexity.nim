@@ -139,10 +139,6 @@ proc walkMatch(m: var Metrics, e: Expr) =
   ## Arm bodies ARE measured; it is only the tabulation that is free.
   walk(m, e.subject)
   for arm in e.arms:
-    # A guard IS branching logic — it is a condition, not a table row.
-    if arm.guard != nil:
-      m.complexity += 1
-      walkTabular(m, arm.guard)
     walkTabular(m, arm.body)
 
 proc walkSelect(m: var Metrics, e: Expr) =
@@ -183,10 +179,11 @@ proc walk(m: var Metrics, e: Expr) =
   # from its scope, so counting it would charge the same branch twice. Their
   # operands and bodies still walk — the statements inside fork like any
   # others.
-  of exkUnary, exkBlock, exkCall, exkCombinator, exkStruct, exkList,
+  of exkUnary, exkBlock, exkCall, exkCombinator, exkStruct, exkList, exkFill,
      exkBracket, exkBracketAssign, exkAssign, exkField, exkReturn, exkRaise,
      exkDiscard, exkTripleDot, exkSend, exkAcquire, exkFinish, exkDefer,
-     exkOrdinal, exkValidate, exkIfaceCall, exkPoolOp, exkLit, exkVar,
+     exkOrdinal, exkValidate, exkIfaceCall, exkIfaceIs, exkIfacePayload,
+     exkWrapOk, exkAbsent, exkPoolOp, exkLit, exkVar,
      exkQualified, exkBreak, exkContinue, exkImport, exkActorRef,
      exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
     discard

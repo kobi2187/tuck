@@ -1,5 +1,5 @@
 # A Temperature type with an invariant: must stay >= absolute zero
-import io
+import console
 
 type Temperature:
   celsius: int

@@ -126,6 +126,17 @@ type
     dcTySameTypeThroughIface = "TK-TY33" ## a member needing an argument of
                                         ## the receiver's own object type,
                                         ## called through an interface value
+    dcTyIfaceArm = "TK-TY34"            ## an arm of a `match` on an interface
+                                        ## value that is not `| Obj name ->`,
+                                        ## `_` or a catch-all binding
+    dcTyFillCount = "TK-TY36"           ## `[v; N]` whose N is not a known
+                                        ## whole number, or does not match
+                                        ## the destination Array's size
+    dcTyFillValue = "TK-TY37"           ## `[v; N]` whose v is not a literal
+                                        ## or a name, or not a scalar
+    dcTyActorFieldNoInit = "TK-TY35"    ## an actor field with no initialiser
+                                        ## that is not `T?`
+    dcTyNoneNoPlace = "TK-TY38"         ## `none` where no `T?` is expected
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -157,6 +168,11 @@ type
     # rejection Tuck's rather than the backend's.
     dcAcQueueSize = "TK-AC01"           ## an actor's [queue: N] is not a positive count
     dcAcHandlerReturn = "TK-AC02"       ## a handler declares a return type; actors cannot reply yet
+    dcAcHandlerCalled = "TK-AC03"       ## an `on` handler called like a fn; it is sent
+    dcAcMemberOutside = "TK-AC04"       ## an actor's member `fn` called from outside the actor
+    dcAcSendToMember = "TK-AC05"        ## a `send` naming an actor's member `fn`, not a handler
+    dcAcOnFull = "TK-AC06"              ## an actor's [on_full: X] is not drop, wait or assert
+    dcAcUnknownAttr = "TK-AC07"         ## an actor attribute other than queue and on_full
     dcMeSizeCount = "TK-ME01"           ## a pool/arena size or count is not positive
     dcMeArenaInert = "TK-ME02"          ## an `arena` parses, and does nothing yet
     dcIvUnknownField = "TK-IV01"        ## an invariant names a field the type lacks
@@ -326,12 +342,12 @@ proc parseExplanation(d: DiagCode): string =
     "Reservation is total — a keyword is reserved everywhere, which is what " &
     "keeps `pending:` and `when TARGET == \"...\"` decidable no matter what " &
     "the surrounding code declares. Attribute names (`error`, `priority`, " &
-    "`stack`, `io`, …) are reserved words too: they cannot name a parameter, " &
-    "a local, a fn, a member or a handler, because a name like that is read " &
-    "bare, and inside brackets an attribute word reads as an attribute — " &
-    "`xs[stack]` would lose its index. The one exception is a FIELD, which " &
-    "is only ever read through `.` (`job.priority`) or written as a record " &
-    "key (`{priority: 1}`). Ruled 2026-09-27. Fix: choose another name."
+    "`stack`, `io`, …) are reserved words too, and name nothing — no " &
+    "parameter, local, fn, member, handler, field, variant or module — " &
+    "because inside brackets an attribute word reads as an attribute: " &
+    "`xs[stack]` would lose its index. Ruled 2026-09-27; fields, once the " &
+    "one exception, were brought under the same rule 2026-09-28. Fix: " &
+    "choose another name."
   of dcPaEmptyBlock:
     "A `:` opened a block with nothing inside it — no statement, and no " &
     "`discard`. An empty body reads as an accident (a stray blank line, a " &
@@ -436,6 +452,44 @@ proc parseExplanation(d: DiagCode): string =
     "type with `-> T`, or return nothing. An actor handler never replies " &
     "(spec 9.1), so there the value has to go somewhere else — a field, or a " &
     "`send`."
+  of dcTyFillCount:
+    "`[v; N]` is an Array of N copies of v — `txBuf: Array[256, u8] = [0; " &
+    "256]` (ruled 2026-09-28). N is a size, written the way an Array's size " &
+    "is: a whole-number literal or a `const` naming one, at least 1. Into a " &
+    "declared `Array[M, T]`, N must be M. Fix: write the count as a literal " &
+    "or a const, and make it match the Array it fills."
+  of dcTyFillValue:
+    "`[v; N]` copies ONE value into N slots, so two things must hold. The " &
+    "value is read once, on every backend, so it is a literal or a name " &
+    "(`[0; 256]`, `[blank; 16]`): bind anything else with `let` first. And " &
+    "the element is a scalar — a number, a bool, a char or an enum — so " &
+    "the copies share nothing: a `Seq` or `str` element would put one " &
+    "buffer in every slot. Fix: a scalar value, named or literal; for other " &
+    "elements write the list, or build it with a loop."
+  of dcTyNoneNoPlace:
+    "`none` is the absent value of a `T?` — no `next` yet, no result, nothing " &
+    "found. It names no T itself, so it takes one from where it is written: " &
+    "a `T?` field in a construction (`{data: 1, next: none} Node`), a " &
+    "`-> T?` return, an assignment into a `T?` place, a `T?` parameter. " &
+    "Anywhere else there is nothing to say what it is absent OF. Fix: write " &
+    "it in such a place, or state the binding's type (`var x: int? = none`)."
+  of dcTyActorFieldNoInit:
+    "An actor is one instance the language creates for you, before any " &
+    "message arrives, so each field starts with its initialiser — " &
+    "`level: int = 80`. A field with none used to start at whatever the host " &
+    "zero-fills (0, an empty record, an enum's first variant), and a handler " &
+    "that read it before anything wrote it read that zero as data (#85). " &
+    "Ruled 2026-09-28: every actor field has an initialiser, or is `T?`, " &
+    "which declares that it starts absent and makes every read say what " &
+    "happens then. Fix: add `= value`, or write the type as `T?`."
+  of dcTyIfaceArm:
+    "A `match` on an interface value asks which object it holds. Each arm is " &
+    "`| Flac f ->` — an object that satisfies the interface, and the name " &
+    "the arm reads it by, typed as that object — or `| _ ->`, or a catch-all " &
+    "name bound to the interface value. `| Flac ->` without a name is " &
+    "refused rather than read as a catch-all named `Flac`, which is what it " &
+    "silently was before 2026-09-28. The match must cover every object that " &
+    "satisfies the interface, or end in `| _ ->`."
   of dcTySameTypeThroughIface:
     "`fn splice[A: Self, B: Self]({self: A, other: A, next: B})` says `other` " &
     "is the SAME object type as the receiver, whichever that is; `next` may " &
@@ -730,6 +784,40 @@ proc ruleExplanation(d: DiagCode): string =
     "return type and expose the value as a public field the caller reads " &
     "(`Counter.total`), or have the caller pass its own address and send a " &
     "message back."
+  of dcAcHandlerCalled:
+    "An `on` handler is a MESSAGE the actor receives: it runs on the actor's " &
+    "own thread, one message at a time, when the actor takes it from its " &
+    "mailbox. Called like a fn, it would run on the caller's thread, against " &
+    "the actor's state, at the same time as the actor's own handlers. It " &
+    "checked clean and built on no backend. Fix: send it — `Counter send add " &
+    "{n: 5}`. For code the actor's own handlers share, declare a `fn` in the " &
+    "actor instead."
+  of dcAcMemberOutside:
+    "A `fn` declared in an actor is its member: it reads and writes the " &
+    "actor's fields, so only the actor's own handlers, `on select` arms and " &
+    "member fns may call it — they run on the actor's thread, one message at " &
+    "a time. Called from anywhere else it would run on the caller's thread " &
+    "against state the actor is changing. Fix: send the actor a message whose " &
+    "handler calls it."
+  of dcAcSendToMember:
+    "A `send` names a message: an actor's `on` handler or an `on select` arm. " &
+    "A `fn` in an actor is a member its own code calls, not a message it " &
+    "receives. Fix: send to a handler that calls the member, or declare the " &
+    "member as `on name(...)` if it is meant to be a message."
+  of dcAcOnFull:
+    "`[on_full: ...]` says what a send does when it finds the actor's " &
+    "mailbox full, and takes one of three words: `wait` (the default) holds " &
+    "the sender until the actor makes room; `drop` loses the message; " &
+    "`assert` stops the program, naming the actor. A send an actor makes to " &
+    "itself cannot wait — it is the one that would make room — so under " &
+    "`wait` that send stops the program instead. Fix: write one of the three."
+  of dcAcUnknownAttr:
+    "An actor takes two attributes: `queue` (its mailbox capacity) and " &
+    "`on_full` (what a send does when the mailbox is full). Any other name " &
+    "is read by nothing, so a misspelled `on_full` would silently mean the " &
+    "default. (`priority` is not one: message priority, if it comes, belongs " &
+    "on a handler rather than the actor — ROADMAP, deferred.) Fix: check the " &
+    "spelling, or remove the attribute."
   of dcAcQueueSize:
     "An actor's `[queue: N]` is the exact capacity of its mailbox ring, so N " &
     "must be a positive whole number. Zero or negative is not a smaller " &

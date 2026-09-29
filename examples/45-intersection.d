@@ -89,11 +89,11 @@ struct tuckˑobjectˑLoopDetector {
     long lane;
 }
 
-bool tuckˑobjectˑLoopDetectorˑhealthy(ref tuckˑobjectˑLoopDetector self) {
+bool tuckˑobjectˑLoopDetectorˑhealthy(tuckˑobjectˑLoopDetector self) {
     return true;
 }
 
-long tuckˑobjectˑLoopDetectorˑreads(ref tuckˑobjectˑLoopDetector self) {
+long tuckˑobjectˑLoopDetectorˑreads(tuckˑobjectˑLoopDetector self) {
     return self.lane;
 }
 
@@ -102,11 +102,11 @@ struct tuckˑobjectˑCameraDetector {
     ubyte confidence;
 }
 
-bool tuckˑobjectˑCameraDetectorˑhealthy(ref tuckˑobjectˑCameraDetector self) {
+bool tuckˑobjectˑCameraDetectorˑhealthy(tuckˑobjectˑCameraDetector self) {
     return true;
 }
 
-long tuckˑobjectˑCameraDetectorˑreads(ref tuckˑobjectˑCameraDetector self) {
+long tuckˑobjectˑCameraDetectorˑreads(tuckˑobjectˑCameraDetector self) {
     if ((self.confidence > 80L)) {
         return 3L;
     }
@@ -160,7 +160,7 @@ bool drain_tuckˑactorˑSignals() {
 }
 
 void sendSense_tuckˑactorˑSignals(ref tuckˑactorˑSignals self, tuckˑtypeˑDemand demand, bool preempt) {
-    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑSignalsMsg(tuckTag: tuckˑactorˑSignalsMsgKind.msgSense, demand: demand, preempt: preempt));
+    rt.sendWaiting(self.mailbox, tuckˑactorˑSignalsMsg(tuckTag: tuckˑactorˑSignalsMsgKind.msgSense, demand: demand, preempt: preempt), tuckˑactorˑSignalsSlot, "Signals");
     rt.tuckNotifySend(tuckˑactorˑSignalsSlot);
 }
 

@@ -367,13 +367,51 @@ proc resolveImport*(importerPath, module: string): string =
 # importer's own decl list, tagged with ImportedTypeMarker so later stages can
 # still tell them apart (codegen skips them: the target's own import already
 # brings them in).
+proc importedShape(d: Decl, sp: Span): Decl =
+  ## What an importer needs of an imported declaration: a type whole (its
+  ## body and members — an invariant is checked where a value is produced,
+  ## and that may be the importer); an interface's requirement signatures;
+  ## an object's SHAPE — fields, `satisfies` lines, and each member as a
+  ## body-less signature, so its bodies are checked only where they live.
+  case d.kind
+  of dkType:
+    Decl(kind: dkType, name: d.name, generics: d.generics,
+         typeBody: d.typeBody, typeMembers: d.typeMembers, span: sp)
+  of dkInterface:
+    Decl(kind: dkInterface, name: d.name, ifaceMembers: d.ifaceMembers, span: sp)
+  else:
+    var members: seq[Decl]
+    for m in d.objMembers:
+      if m == nil or m.kind != dkFn: continue
+      members.add Decl(kind: dkFn, name: m.name, fnParams: m.fnParams,
+                       fnReturnType: m.fnReturnType, fnEffects: m.fnEffects,
+                       fnGenerics: m.fnGenerics,
+                       fnGenericBounds: m.fnGenericBounds,
+                       fnErrorTypes: m.fnErrorTypes, span: sp)
+    Decl(kind: dkObject, name: d.name, objFields: d.objFields,
+         satisfies: d.satisfies, satisfiesRenames: d.satisfiesRenames,
+         objMembers: members, span: sp)
+
+proc importedCopy(d: Decl, imp: string): Decl =
+  ## The importer's copy of an imported type, interface or object, stamped
+  ## with its origin (`isImportedCopy` in ast_query reads the stamp back).
+  ## A DEEP copy under fresh ids: sharing the original's nodes put two
+  ## objects under one id once each backend took its own copy (A31).
+  let sp = Span(line: d.span.line, col: d.span.col,
+                file: ImportedTypeMarker & ":" & imp)
+  result = deepCopy(importedShape(d, sp))
+  result.span = sp
+  freshIds(result)
+
 proc injectImportedTypes*(prog: var seq[LoadedModule]) =
-  ## Make each module's imported types visible unqualified in the importer.
+  ## Make each module's imported types — and objects — visible unqualified in
+  ## the importer.
   var typesByName = initTable[string, seq[Decl]]()
   for lm in prog:
     var own: seq[Decl]
     for d in lm.m.decls:
-      if d != nil and d.kind == dkType and not d.span.file.startsWith(ImportedTypeMarker):
+      if d != nil and d.kind in {dkType, dkObject, dkInterface} and
+         not d.span.file.startsWith(ImportedTypeMarker):
         own.add(d)
     typesByName[lm.name] = own
   # A module's `public:` list, if it has one, decides which of its types an
@@ -386,14 +424,10 @@ proc injectImportedTypes*(prog: var seq[LoadedModule]) =
       let (restricted, allowed) = exportsByName.getOrDefault(imp, (false, initHashSet[string]()))
       for td in typesByName.getOrDefault(imp):
         if restricted and td.name notin allowed: continue
-        let marked = Decl(kind: dkType, name: td.name, generics: td.generics,
-                          typeBody: td.typeBody, typeMembers: td.typeMembers,
-                          span: Span(line: td.span.line, col: td.span.col,
-                                     file: ImportedTypeMarker & ":" & imp))
-        # An id like every parsed declaration: a type reference resolves TO
-        # this decl, and an edge needs an id to point at. Without one,
-        # `resolveTypeTo` could record nothing for any imported type (#21).
-        marked.id = newNodeId()
+        # importedCopy numbers it (and everything in it) afresh: a type
+        # reference resolves TO this decl, and an edge needs an id to point
+        # at (#21).
+        let marked = importedCopy(td, imp)
         prog[i].m.decls.insert(marked, 0)
 
 proc loadProgram*(entryPath: string): seq[LoadedModule] =

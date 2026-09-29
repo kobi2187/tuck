@@ -1,5 +1,5 @@
 # Sum type for a shape, with match computing area
-import io
+import console
 
 type Shape:
   | Circle({r: int})

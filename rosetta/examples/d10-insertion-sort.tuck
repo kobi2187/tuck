@@ -1,5 +1,5 @@
 # Insertion sort a fixed-size list in place
-import io
+import console
 import seq
 
 fn main() -> void [io]:

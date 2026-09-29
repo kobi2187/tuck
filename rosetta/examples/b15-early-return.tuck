@@ -1,5 +1,5 @@
 # Early return from a function once a condition is met
-import io
+import console
 
 fn firstDivisor({n: int}) -> int:
   for d in 2 .. 100:

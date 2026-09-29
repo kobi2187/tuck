@@ -23,11 +23,11 @@ proc parseTypeUseAttrs(p: var Parser): seq[TypeAttr] =
       # [error: FsError | NetError] — one attr per listed enum
       discard p.expect(tkColon)
       result.add(TypeAttr(name: "error",
-        value: p.expectMemberName("Expected error enum name").value, span: attrSp))
+        value: p.expectName("Expected error enum name").value, span: attrSp))
       while p.current().kind == tkPipe:
         discard p.advance()
         result.add(TypeAttr(name: "error",
-          value: p.expectMemberName("Expected error enum name after '|'").value, span: attrSp))
+          value: p.expectName("Expected error enum name after '|'").value, span: attrSp))
       if p.current().kind == tkComma:
         discard p.advance()
       continue
@@ -90,7 +90,7 @@ proc parseBraceType(p: var Parser, sp: Span): Type =
     var fields: seq[FieldDef]
     while p.current().kind != tkRBrace and p.current().kind != tkEOF:
       let fSp = p.getSpan()
-      let name = p.expectMemberName("Expected field name in record definition").value
+      let name = p.expectName("Expected field name in record definition").value
       p.failIfHostKeyword(name, fSp, "field")
       discard p.expect(tkColon)
       let typ = p.parseType()

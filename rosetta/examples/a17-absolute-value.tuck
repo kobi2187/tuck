@@ -1,5 +1,5 @@
 # Absolute value of an integer
-import io
+import console
 
 pending:
   fn abs({value: int}) -> int

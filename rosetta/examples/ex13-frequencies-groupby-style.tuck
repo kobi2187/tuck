@@ -1,5 +1,5 @@
 # Elixir Enum.frequencies / Ruby #tally style counting, via invented pending fns
-import io
+import console
 import seq
 
 pending:

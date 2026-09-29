@@ -91,7 +91,6 @@ proc genDLit(e: Expr): string =
       e.litValue & "UL"
     else: e.litValue & "L"
   of lkFloat, lkBool: e.litValue
-  of lkUnit: ""
 
 const dNarrowNames = ["i8", "i16", "i32", "u8", "u16", "u32", "u64", "f32"]
   ## The Tuck numeric types narrower than (or unsigned against) D's `long`
@@ -170,15 +169,15 @@ proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
   # instantiation: `Pair!(string, long)(...)`. The arguments come from the
   # type the checker stamped on this very call — D cannot infer them from a
   # named-argument literal.
-  var name = e.callee.name
-  if ctx.declaredGenericD(name):
+  var name = ctx.importedTypeQualifierD(e.callee.name)
+  if ctx.declaredGenericD(e.callee.name):
     let t = ctx.res.typeFor(e)
     if t != nil and t.kind == tkApp:
       let inst = ctx.dDeclType(t)
       if inst != "": name = inst
   let ctor = name & "(" & parts.join(", ") & ")"
   if ctx.index.hasInvariants(e.callee.name):
-    return "__validated_" & e.callee.name & "(" & ctor & ")"
+    return ctx.validatorNameD(e.callee.name) & "(" & ctor & ")"
   ctor
 
 proc renderShape(ctx: var DCodegenCtx, s: RecordShape): string =
@@ -203,7 +202,7 @@ proc renderShape(ctx: var DCodegenCtx, s: RecordShape): string =
     return ctx.recStructNameD(s.declFields) & "(" & parts.join(", ") & ")"
   let ctor = s.typeName & "(" & parts.join(", ") & ")"
   # a rebuilt record is a production site too: its invariants must hold
-  if s.invariantsOwed: return "__validated_" & s.typeName & "(" & ctor & ")"
+  if s.invariantsOwed: return ctx.validatorNameD(s.typeName) & "(" & ctor & ")"
   ctor
 
 
@@ -366,12 +365,30 @@ proc genDActorWaitOn(ctx: var DCodegenCtx, e: Expr): string =
   "rt.tuckWaitOn(" & actorSlotName(e.args[0].refName) & ", " &
     ctx.genDExpr(e.args[1]) & ")"
 
+proc dMemberCallee(ctx: DCodegenCtx, e: Expr): string =
+  ## `memberCallee`, qualified with its module when the receiver's object is
+  ## imported (R11, A25); "" when `e` is not a member call.
+  let member = memberCallee(ctx.res, ctx.module, e)
+  if member == "": return ""
+  let origin = memberCalleeModule(ctx.res, ctx.module, e)
+  (if origin != "": dAlias(origin) & "." else: "") & member
+
+proc genDActorCall(ctx: var DCodegenCtx, e: Expr): string =
+  ## The two actor-shaped calls, or "": `Actor.waitOn`, and a call to the
+  ## actor's own member fn (A24), where `self` is already the `ref` the
+  ## dispatch holds.
+  let waitOn = ctx.genDActorWaitOn(e)
+  if waitOn != "": return waitOn
+  let actorMember = actorMemberCallee(ctx.res, e)
+  if actorMember != "":
+    return actorMember & "(" & (@["self"] & ctx.genDCallArgs(e)).join(", ") & ")"
+
 proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   ## A call in D, trying the special shapes first: `waitOn`, a sum variant, a
   ## primitive conversion, a task spawn, a member or combinator call. What is
   ## left is a plain call with its arguments in parameter order.
-  let waitOn = ctx.genDActorWaitOn(e)
-  if waitOn != "": return waitOn
+  let actorCall = ctx.genDActorCall(e)
+  if actorCall != "": return actorCall
   let variant = ctx.asDSumVariantCall(e)
   if variant != "": return variant
   var calleeStr = ctx.resolveDCallee(e)
@@ -388,7 +405,7 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
     let args = ctx.genDCallArgs(e)
     return "rt.tuckSpawn({ cast(void) " & calleeStr &
            "(" & args.join(", ") & "); })"
-  let member = memberCallee(ctx.res, ctx.module, e)
+  let member = ctx.dMemberCallee(e)
   if member != "": calleeStr = member
   let combinator = ctx.asCombinatorCallD(e, calleeStr)
   if combinator != "": return combinator
@@ -398,7 +415,8 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
     return "writeln(" & args.join(", ") & ")"
   let satT = ctx.index.saturatingType(calleeStr)
   if satT != nil and args.len == 1:
-    return ctx.genDSaturatingCtor(satT, calleeStr, args[0])
+    # An imported saturating type is named through its module (R11, A35).
+    return ctx.genDSaturatingCtor(satT, ctx.importedTypeQualifierD(calleeStr), args[0])
   let rt = genDRtCall(calleeStr, args)
   if rt != "": return rt
   # A type param mentioned by no parameter cannot be deduced from the call, so
@@ -472,7 +490,7 @@ proc genDReturn(ctx: var DCodegenCtx, e: Expr): string =
   # already validated at the construction site, on this same value.
   if rt != nil and rt.kind == tkNamed and ctx.index.hasInvariants(rt.name) and
      not validatesItself(ctx.module, e.returnVal):
-    return "return __validated_" & rt.name & "(" & v & ")"
+    return "return " & ctx.validatorNameD(rt.name) & "(" & v & ")"
   "return " & v
 
 proc indD(ctx: DCodegenCtx): string =
@@ -531,13 +549,20 @@ proc genDInterfaceWrap(ctx: var DCodegenCtx, e: Expr,
   ## A variable, or a call — an interface dispatch arm whose member returns
   ## its own object type where the call's type is the interface.
   let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
-  let inner = if e.kind == exkCall: ctx.genDCall(e) else: e.name
-  ifaceName & "(" & ifaceName & "Tag." & ifaceName & "_is_" & objName &
-    ", " & objName & "Val: " & inner & ")"
+  let inner = case e.kind
+              of exkCall: ctx.genDCall(e)
+              of exkIfacePayload:
+                ctx.genDExpr(e.tagSubject) & "." & e.tagObject & "Val"
+              else: e.name
+  let pre = ctx.importPrefixD(ifaceName)
+  pre & ifaceName & "(" & pre & ifaceName & "Tag." & ifaceName & "_is_" &
+    objName & ", " & objName & "Val: " & inner & ")"
 
 proc genDPoolOp(ctx: var DCodegenCtx, e: Expr): string =
   ## A pool operation: `codegen_common.poolOpProc`, the pool by `ref`.
-  var args = @[e.poolRef.refName]
+  let origin = declOrigin(ctx.module, ctx.realModules, e.poolRef.refName, {dkPool})
+  let pre = if origin == "": "" else: dAlias(origin) & "."   # R11, A36
+  var args = @[pre & e.poolRef.refName]
   for a in e.poolOperands: args.add ctx.genDExpr(a)
   "rt." & poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
 
@@ -548,15 +573,31 @@ proc genDIfaceCall(ctx: var DCodegenCtx, e: Expr): string =
   ## return type is inferred. A plain `switch` rather than `final switch`:
   ## the satisfier set can be empty and an unreachable default is cheap.
   let recv = ctx.genDExpr(e.dispatchRecv)
+  let pre = ctx.importPrefixD(e.dispatchIface)   # an imported interface (R11)
+  let t = ctx.res.typeFor(e)
+  let isVoid = t == nil or (t.kind == tkNamed and t.name == "void")
+  # An arm that changes the object stores it back into the value, so the
+  # lambda takes the value by `ref` (the checker allows it on a `var`).
+  var writesBack = false
   var arms: seq[string]
   for arm in e.dispatchArms:
-    arms.add("        case " & e.dispatchIface & "Tag." & e.dispatchIface &
-             "_is_" & arm.satisfier & ":\n" &
-             "            auto " & arm.bindName & " = v." & arm.satisfier &
-             "Val;\n" &
-             "            return " & ctx.genDExpr(arm.call) & ";")
+    writesBack = writesBack or arm.writesBack
+    let payload = "v." & arm.satisfier & "Val"
+    let call = ctx.genDExpr(arm.call)
+    var body = "            auto " & arm.bindName & " = " & payload & ";\n"
+    if not arm.writesBack:
+      body.add("            return " & call & ";")
+    elif isVoid:
+      body.add("            " & call & ";\n            " & payload & " = " &
+               arm.bindName & ";\n            return;")
+    else:
+      body.add("            auto tuckResult = " & call & ";\n            " &
+               payload & " = " & arm.bindName & ";\n            return tuckResult;")
+    arms.add("        case " & pre & e.dispatchIface & "Tag." & e.dispatchIface &
+             "_is_" & arm.satisfier & ":\n" & body)
   if arms.len == 0: return ""
-  "((" & e.dispatchIface & " v) {\n    switch (v.tag) {\n" & arms.join("\n") &
+  "((" & (if writesBack: "ref " else: "") & pre & e.dispatchIface &
+    " v) {\n    switch (v.tag) {\n" & arms.join("\n") &
     "\n        default: assert(0, \"unreachable interface tag\");\n" &
     "    }\n})(" & recv & ")"
 
@@ -693,6 +734,8 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
   if e.name notin ctx.definedVars:
     let tag = ctx.qualifyEnumTag(e.name)
     if tag != "": return tag
+    let co = constOrigin(ctx.module, ctx.realModules, e.name)
+    if co != "": return dAlias(co) & "." & e.name   # R11, A33
   e.name
 
 proc dupIfSeq(ctx: var DCodegenCtx, valStr: string, e: Expr): string =
@@ -751,7 +794,7 @@ proc ctorDeclType(ctx: var DCodegenCtx, val: Expr): string =
   if ctx.declaredGenericD(val.callee.name):
     let inst = ctx.dDeclType(ctx.res.typeFor(val))
     if inst != "": return inst
-  val.callee.name
+  ctx.importedTypeQualifierD(val.callee.name)
 
 proc declTypeForValue(ctx: var DCodegenCtx, target, val: Expr): string =
   ## The declared D type for `let x = <val>`, naming a foreign record shape
@@ -1100,6 +1143,13 @@ proc genDFor(ctx: var DCodegenCtx, e: Expr): string =
   ctx.indD & "foreach (" & dForVars(e) & "; " & iterStr & ") {\n" &
     ctx.genDNested(e.body) & ctx.indD & "}"
 
+proc genDFill(ctx: var DCodegenCtx, e: Expr): string =
+  ## `[v; N]` (R8): `rt.tuckFill`, whose `T[N] r = v` is D's block
+  ## initialisation — for a zero, the zeroed storage.
+  let t = ctx.dType(fillElemType(ctx.res, e))
+  "rt.tuckFill!(" & t & ", " & ctx.genDExpr(e.fillCount) & ")(cast(" & t &
+    ")(" & ctx.genDExpr(e.fillValue) & "))"
+
 proc genDList(ctx: var DCodegenCtx, e: Expr): string =
   ## A list literal as a D array literal.
   var parts: seq[string]
@@ -1147,8 +1197,6 @@ proc genDMatchArm(ctx: var DCodegenCtx, arm: MatchArm, narrowKey = ""): string =
   ## D switch cases fall through by default where Tuck's arms never do, so
   ## the break is the semantics, not decoration. (A body ending in `return`
   ## makes it unreachable, so it is omitted there.)
-  if arm.guard != nil:
-    return dUnsupported("a guarded match arm (M4b)")
   let label = ctx.dPatternStr(arm.pattern)
   let isWild = arm.pattern != nil and arm.pattern.kind == pkWild
   let head = if isWild: ctx.indD & "default:\n"
@@ -1217,9 +1265,6 @@ proc genDMatchExpr(ctx: var DCodegenCtx, e: Expr): string =
   ctx.indent = 1
   var arms = ""
   for arm in e.arms:
-    if arm.guard != nil:
-      ctx.indent = saved
-      return dUnsupported("a guarded match arm (M4b)")
     let label = ctx.dPatternStr(arm.pattern)
     let isWild = arm.pattern != nil and arm.pattern.kind == pkWild
     let head = if isWild: ctx.indD & "default: "
@@ -1297,7 +1342,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   # A concrete value entering an interface slot is copied into the variant
   # at THIS site — the checker marked it (spec 5.3).
   let w = ctx.res.wrapOf(e)
-  if w.objName != "" and e.kind in {exkVar, exkCall}:
+  if w.objName != "" and e.kind in {exkVar, exkCall, exkIfacePayload}:
     return ctx.genDInterfaceWrap(e, w)
   # A fn used as a VALUE needs `&` in D, whichever way it was written —
   # checked here, where exkVar and exkQualified both pass through.
@@ -1313,6 +1358,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkQualified: ctx.genDQualified(e)
   of exkStruct: ctx.genDStructLit(e)
   of exkList: ctx.genDList(e)
+  of exkFill: ctx.genDFill(e)
   of exkBracket, exkBracketAssign:
     # Indexing resolved to an at()/setAt() call by the checker; a type
     # application never reaches codegen (mirrors both other backends).
@@ -1343,6 +1389,18 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkTripleDot: ""   # `...` outside a fn body: a no-op statement
   of exkImport: ""   # imports are assembled by dImports from realModules
   of exkIfaceCall: ctx.genDIfaceCall(e)
+  of exkIfaceIs:
+    # `| Flac f ->`'s test: the interface value's tag (lowering_iface).
+    "(" & ctx.genDExpr(e.tagSubject) & ".tag == " & ctx.importPrefixD(e.tagIface) &
+      e.tagIface & "Tag." &
+      e.tagIface & "_is_" & e.tagObject & ")"
+  of exkIfacePayload:
+    ctx.genDExpr(e.tagSubject) & "." & e.tagObject & "Val"
+  of exkWrapOk:
+    # A plain value into a `?T` place (lowering_optional), instantiated
+    # explicitly so a literal takes T rather than its own default type.
+    "rt.tok!(" & ctx.dType(e.optInner) & ")(" & ctx.genDExpr(e.optValue) & ")"
+  of exkAbsent: "rt.tnone!(" & ctx.dType(e.optInner) & ")()"
   of exkPoolOp: ctx.genDPoolOp(e)
   of exkOrdinal:
     # A cast, for an enum and a bool alike: D converts both to their ordinal.

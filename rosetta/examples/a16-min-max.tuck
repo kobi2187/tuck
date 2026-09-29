@@ -1,5 +1,5 @@
 # Min and max of a fixed-size list
-import io
+import console
 import seq
 
 pending:

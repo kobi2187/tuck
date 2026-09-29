@@ -101,7 +101,7 @@ tuckˑobjectˑPodcastApp :: struct {
 	timeout: u32,
 }
 
-tuckˑobjectˑPodcastAppˑsetMany :: proc (self: ^tuckˑobjectˑPodcastApp, pairs: [dynamic]tuckˑtypeˑPair) -> rt.TuckResult(rt.TuckUnit) {
+tuckˑobjectˑPodcastAppˑsetMany :: proc (self: tuckˑobjectˑPodcastApp, pairs: [dynamic]tuckˑtypeˑPair) -> rt.TuckResult(rt.TuckUnit) {
 
   return {}
 }

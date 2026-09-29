@@ -1,5 +1,5 @@
 # Read all lines from a file, check existence, join a path
-import io
+import console
 import fs
 
 pending:

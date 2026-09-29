@@ -1,5 +1,5 @@
 # A Person record with a greeting fn and a formatted description
-import io
+import console
 
 type Person:
   name: str

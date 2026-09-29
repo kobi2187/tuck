@@ -46,7 +46,7 @@ bool drain_tuckˑactorˑTrafficLight() {
 }
 
 void sendNext_tuckˑactorˑTrafficLight(ref tuckˑactorˑTrafficLight self) {
-    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑTrafficLightMsg(tuckTag: tuckˑactorˑTrafficLightMsgKind.msgNext));
+    rt.sendWaiting(self.mailbox, tuckˑactorˑTrafficLightMsg(tuckTag: tuckˑactorˑTrafficLightMsgKind.msgNext), tuckˑactorˑTrafficLightSlot, "TrafficLight");
     rt.tuckNotifySend(tuckˑactorˑTrafficLightSlot);
 }
 

@@ -1,5 +1,5 @@
 # alias renames incoming fields to the local call shape
-import io
+import console
 
 pending:
   fn playTrack({id: int, name: str}) -> void [io]

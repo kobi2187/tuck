@@ -1,5 +1,5 @@
 # Greatest common divisor via Euclid's algorithm
-import io
+import console
 
 fn main() -> void [io]:
   var a = 48

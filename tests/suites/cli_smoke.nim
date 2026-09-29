@@ -40,6 +40,19 @@ fn main() -> void:
 """), d / "out")
   mustAbort(d / "out" / "viol", "Invariant violated")
 
+  # `--no-invariants` (R9) is the one way off, on every backend: the same
+  # violating program runs to completion. Each backend's binary gets its own
+  # suffix; a backend whose compiler is absent is skipped, as elsewhere.
+  for (flag, exe, suffix) in [("", "nim", ""), ("--odin", "odin", "_odin"),
+                              ("--dlang", "dmd", "_d")]:
+    if findExe(exe) == "": continue
+    var args = @["./tuck", "build", d / "viol.tuck", "-o:" & d / "outNoInv",
+                 "--root:" & getCurrentDir(), "--no-invariants"]
+    if flag != "": args.add flag
+    let (rc, outp) = sh(args)
+    if rc != 0: fail "--no-invariants " & flag & " build failed: " & outp.strip()
+    mustExit(d / "outNoInv" / ("viol" & suffix), 0)
+
   buildOk(d.write("ok.tuck", body & """
 fn freeze() -> Temperature:
   return {celsius: 0} Temperature

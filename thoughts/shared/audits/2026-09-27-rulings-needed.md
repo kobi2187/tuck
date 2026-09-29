@@ -9,6 +9,22 @@ Everything listed under "Landed" is on `claude/actor-throughput-profiling-sbfhq8
 (PR #94). The full suite passes, and the emitted examples change only where a
 commit says so.
 
+## Status, 2026-09-28 (reassessed at `1d94eae`)
+
+| Ruling | State |
+|---|---|
+| R1, R2, R4 (made total), R5, R9, R13, parameters immutable, type test | ruled and built |
+| R7 | ruled and documented (spec §9.1); one sender's FIFO stays a promise (ruled 2026-09-28) |
+| R8 | ruled and built (TK-TY35, `lowering_optional`); the fill form `[v; N]` built too (exkFill, TK-TY36/37) |
+| R3 | ruled (a), support it — built |
+| R12 | unused code removed; diagnostic codes per rule — to build; arena: finish implementing — to design, then build; `bench_phases` still open |
+| R6 | ruled; the cost of blocking is measured first |
+| R10 | ruled; asked: scope (actor arms or task arms too) and a bare `return`; blocked by A24 |
+| R11 | ruled (b), widened to every construct; the scan has not started |
+
+The ordered work that follows from these is ROADMAP.md's "The queue,
+re-validated 2026-09-28".
+
 ---
 
 ## Landed
@@ -99,6 +115,18 @@ the next line does not parse.
 **Recommend (a).** It extends R2's syntactic rule the natural way: an
 assignment is syntactically a statement.
 
+> **2026-09-28: "need to see what codegen produces."** Today
+> `if m > 9: m = 0 else: m = m + 1` checks OK and fails to build on all three
+> (Nim `(if ...: m = 0 else: ...)` at column 0; Odin and D a ternary of
+> assignments). Under (a) it is the statement `if` — the multi-line form's
+> output exactly. Shown to the owner; awaiting the ruling.
+>
+> **RULED 2026-09-28: (a), "support it".** A one-line `if c: s1 else: s2`
+> whose branches are statements is the statement `if`. Built: an assignment,
+> `return`, `raise`, `break`, `continue`, `discard` or `send` branch — or an
+> `elif` chain of them — selects the statement form; so does an `if` over
+> void calls, which is syntactically an expression and typed `void`.
+
 ### R4 — #4 / A1: attribute words (`priority`, `error`, `stack`) as names
 TK-PA08's text promises they are "reserved only inside brackets, so usable as
 fields, parameters and function names". Fields work. I made fn names, `::`
@@ -126,6 +154,15 @@ could never pass as written.
 > still use one (`d168477`). This reverses FRICTIONS #5b (`fn error` in a
 > `pending:` block), and renamed the `priority` decision column to
 > `urgency` in examples 09/21 and in the docs that show the same example.
+>
+> **AMENDED 2026-09-28: no exception.** "Let's just simplify and reject
+> reserved words." A field may no longer use an attribute word either; the
+> parser refuses it for every name (`parser_base.expectName`). The one read
+> outside a bracket is a closed vocabulary's value (`[on_full: error]`,
+> `expectVocabWord`), which names nothing. A keyword field (`pending:
+> Seq[int]` in an object or actor) now names the word too — #4's second
+> part, which blamed `Seq`. Docs and programs that imported `io` now import
+> `console`, the module's name since the rename.
 
 ### R5 — #5: what omitting `->` means
 Returning a value from such a fn is now refused (TK-TY32), so the only
@@ -148,6 +185,35 @@ naturally, and all three backends allow it.
 **Recommend (a).** Dropping loses work silently, and raising puts an error
 path on every send.
 
+> **RULED 2026-09-28:** block the sender if that adds no overhead; otherwise
+> drop, and the sender checks the result of its send.
+>
+> **Measured 2026-09-28** (benches/SCORES.md, "R6"): checking a send's result
+> costs nothing measurable on the fast path — single mode 1.003, thread mode
+> 1.044 inside a spread of 81–172 ms. So the ruling says block. Asked back:
+> blocking can wait forever — an actor sending to its own full mailbox, or
+> two actors whose full mailboxes wait on each other. Dropping never does.
+>
+> **RULED 2026-09-28: the program decides — drop, wait or assert — on the
+> send that finds the mailbox full** (the capacity + 1th message). Written
+> per actor as `actor Acc [queue: 8, on_full: wait]`. Unwritten, `wait`,
+> which is what the first ruling chose once blocking measured free. A send
+> an actor makes to ITSELF cannot wait (it is the one that would drain), so
+> under `wait` it asserts, with a message saying why; a cycle of full
+> mailboxes under `wait` is the program's choice and can hang.
+>
+> **RULED 2026-09-28, alongside:** an actor takes `queue` and `on_full` and
+> nothing else (TK-AC07) — a misspelled `on_full` must not silently mean
+> `wait`. Example 15's `priority: high` was read by nothing and goes. The
+> intent behind it, several queues in one actor so urgent messages go first,
+> is deferred as a per-handler `[urgent]` (ROADMAP, Deferred).
+
+### Slab (ROADMAP item 9) — ruled 2026-09-29
+`thoughts/shared/plans/2026-09-29-slab-proposal.md` §10: yes to all eight,
+except Q4 (absent is spelled `none`, typed from context) and Q8 (no resize
+may make a program wait: a directory of chunk pages rather than one growable
+chunk table). Recorded in the proposal.
+
 ### R7 — #84: no ordering between two senders into one mailbox
 Thread mode happens to supply an ordering that batch mode doesn't. Per-sender
 FIFO holds in every mode.
@@ -158,6 +224,15 @@ FIFO holds in every mode.
 
 **Recommend (a) now, with (b) if the pattern keeps biting.** R8 turns the
 crash into a compile error either way.
+
+> **RULED 2026-09-28: "we do here what's fast, no order is promised."** No
+> barrier. Spec §9.1 says two senders' messages arrive in no promised order.
+> Correction to "R8 turns the crash into a compile error": only when the
+> field is `T?`. With a constant initialiser — what both benches took — an
+> `edit` before `start` still fails the bounds check at run time.
+> Asked back: whether a single sender's FIFO order — which the runtime has in
+> every mode and `waitUntil` relies on — stays a promise. **RULED 2026-09-28:
+> yes.** Messages from one sender are handled in the order it sent them.
 
 ### R8 — #85: an actor field with no initialiser is silently zero
 Now unblocked: #87 (initialisers discarded) was fixed on 2026-09-25.
@@ -170,12 +245,34 @@ Now unblocked: #87 (initialisers discarded) was fixed on 2026-09-25.
 Cost: both `benches/apps` programs (`st: BookState`, `sl: Slice`) become
 `T?`. Initialisers must be constants, so a call can't initialise them.
 
+> **RULED 2026-09-28: (a).** TK-TY35. The bench records took a constant
+> construction (`{bid: [], …} BookState`) rather than `T?` — a construction
+> is a constant, and it builds on all three backends. Making `T?` usable
+> found two bugs: an unwritten `T?` field read as PRESENT (the carrier's
+> zero status is Ok), and a plain `T` assigned into a `T?` place built on
+> no backend. Both fixed by `lowering_optional` (exkAbsent, exkWrapOk).
+> Open: an `Array[N, T]` field has no short initialiser — a literal lists
+> all N elements — so spec §9.1's `txBuf: Array[256, u8]` is left as it was.
+>
+> **RULED 2026-09-28: arrays take a fill form, `[v; N]`** (`txBuf:
+> Array[256, u8] = [0; 256]`). The owner's note with it: a zero-filled array,
+> or a write-only buffer, could be faster — so a zero fill should become the
+> host's zero-initialised storage rather than a loop. A write-only buffer is
+> an idea recorded, not a ruling.
+
 ### R9 — S3.1 / #43: how `tuck build` reaches the no-invariants switch on Odin and D
 - (a) Pass through `--odin:` / `--dmd:` flags.
 - (b) A Tuck-level `--no-invariants` that each backend translates.
 
 **Recommend (b).** It keeps one flag per behaviour, consistent with the rule
 that runtime behaviour does not depend on the backend.
+
+> **RULED 2026-09-28: (b).** The related flag already existed as a define,
+> `tuckNoInvariants`, which every backend's emitted checks test; only Nim
+> could reach it (`--nim:"-d:tuckNoInvariants"`). `--no-invariants` now sets
+> it on each backend (Nim `-d:`, Odin `-define:…=true`, D `-version=`).
+> Not to be confused with `--no-verify-stages`, which skips the compiler's
+> own pipeline checks.
 
 ### R10 — `on select` arms have no effect bracket
 The effect checker skips actor-level `on select` arms deliberately, so an
@@ -188,6 +285,12 @@ The effect checker skips actor-level `on select` arms deliberately, so an
 **Recommend (a).** It matches how handlers declare effects, and it is one
 bracket.
 
+> **RULED 2026-09-28:** an arm is a one-line call to a fn, and that fn carries
+> the effect bracket. Asked back: scope (actor-level arms, or a task's too,
+> where spec §9.3 keeps a block so an arm can `return`), and whether
+> `return` stays legal as an arm. Found on the way: an actor member `fn` is
+> emitted by no backend (A24) — fixed 2026-09-28, so an arm can call one.
+
 ### R11 — composing a mixin from another module
 `+ Helpers` works only for a mixin declared in the same module, as it did
 before today's change. An imported one silently becomes a sketch. Copying its
@@ -197,11 +300,16 @@ body across modules needs its free names qualified.
 
 **Recommend (a) now.**
 
+> **RULED 2026-09-28: (b), and wider.** "Importing anything from other
+> modules should work as well as same module — not just mixins." A scan of
+> every construct across a module boundary, on all three backends, follows.
+
 ### R12 — smaller calls
 - **Unused code.** Ruled 2026-09-27: SSA-related unused code stays; other
-  unused code is likely superfluous. Not yet removed, pending an explicit
-  go-ahead because the ruling says "likely": `ChainOp.coDot`,
-  `MatchArm.guard`, `tuck_coro`'s libaco branches.
+  unused code is likely superfluous. Go-ahead given 2026-09-28, and removed:
+  `ChainOp` (only `coDotDot` was ever produced, so the enum and the step's
+  `op` field went together), `MatchArm.guard` (never produced by the
+  parser), and `tuck_coro`'s libaco branches.
 - **Arena.** TK-ME02 is a warning so that example 13 still compiles. Keep it a
   warning until arenas exist? (Recommend yes.)
 - **`benches/bench_phases`** needs `benchy`. Its pooled lower/emit timings
@@ -211,6 +319,22 @@ body across modules needs its free names qualified.
   (97 Type, 10 Conformance, 7 Decision, 6 Const, …). One code per rule, or one
   per category? Per rule makes `tuck explain` useful. Per category is a day's
   work.
+
+> **RULED 2026-09-28:** diagnostic codes **per rule**. **Arena: finish
+> implementing it** (spec §7.3) — not deferred any more. What `alloc` hands
+> back in a language with no references is the first design question; a
+> proposal goes to the owner before code. `benches/bench_phases` is still
+> open. **Later the same day: the arena depends on a slab allocator** — the
+> slab (ROADMAP Experimental §2) comes first, and the arena is built on it;
+> one proposal covers both.
+
+### Member calls on a parameter (asked 2026-09-28)
+> **RULED 2026-09-28: a parameter is immutable, like `let`.** Tuck has values,
+> not references, so the caller never sees a change either way; the question
+> was only whether the binding may change. A member that changes `self` is
+> refused on a parameter (TK-TY15) and a `let` (TK-TY13), as `..` already
+> was; a reading member takes `self` by value in every backend. Through a
+> `var` interface value the change now sticks (it was lost).
 
 ### R13 — in an interface, does `Self` stay the interface or narrow to the concrete type?
 An interface value is a tagged variant over the program's satisfiers; its
@@ -267,6 +391,11 @@ Worked through with an audio player (`AudioSource` satisfied by `Mp3`,
   -> ...` binds `f` as the `Flac` when the tag says so; `| _ -> ...` is the
   generic path.
 
+> **RULED 2026-09-28, and built:** `| Flac f ->` binds a name (not the
+> sum-type narrowing); a match is complete with an arm per satisfier or a
+> `| _ ->`; `| Flac ->` without a name is TK-TY34. Lowered to an `if` chain
+> over the value's tag (`lowering_iface`), on all three backends.
+
 ---
 
 ## Observations (no ruling needed)
@@ -277,7 +406,7 @@ Worked through with an audio player (`AudioSource` satisfied by `Mp3`,
   suspicion is the harness's `timeout 10` under full-suite load; the failure
   detail wasn't captured.
 - **GitHub issues.** #20 is linked to PR #94 and closes when it merges. #73
-  still has its Odin/D half open (MISSING-FEATURES A18), and #43 has R9 open.
+  still has its Odin/D half open (MISSING-FEATURES A18), and #43 is done (R9, 2026-09-28).
   No manual closing is needed.
 - **The lexer's `delete(0)`** is not quadratic in practice. The queue only
   ever holds one scan step's tokens, so the audit overstated it.

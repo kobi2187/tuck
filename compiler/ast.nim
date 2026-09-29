@@ -253,6 +253,9 @@ type
     pkRecord
     pkTuple
     pkOr
+    pkTypeTest  # `| Flac f ->` on an INTERFACE value: the arm runs when the
+                # value holds a Flac, with `f` bound to it (ruled 2026-09-28).
+                # Lowered to an `if` chain (lowering_iface.lowerIfaceMatches)
 
   Pattern* = ref object
     ## One match pattern, one case branch per PatternKind. Or-patterns nest as
@@ -272,6 +275,9 @@ type
       elems*: seq[Pattern]
     of pkOr:
       left*, right*: Pattern
+    of pkTypeTest:
+      testType*: string  # the object the value must hold (`Flac`)
+      bindAs*: string    # the name it is bound to in the arm (`f`)
 
   DispatchArm* = object
     ## One satisfier's arm of an `exkIfaceCall`: the receiver's payload, taken
@@ -279,12 +285,14 @@ type
     satisfier*: string   # the object's (mangled) declared name
     bindName*: string    # what `call` names the payload
     call*: Expr          # an ordinary member call; its args[0] reads bindName
+    writesBack*: bool    # the member changes its object: the changed payload
+                         # is stored back into the interface value, which
+                         # the checker allows only when that is a `var`
 
   MatchArm* = object
-    ## One arm of a `match`: pattern, optional guard (never produced by the
-    ## parser today) and body.
+    ## One arm of a `match`: pattern and body. (An arm guard field, never
+    ## produced by the parser, was removed 2026-09-28.)
     pattern*: Pattern
-    guard*: Expr
     body*: Expr
     span*: Span
 
@@ -335,12 +343,6 @@ type
     uoComposition  # `+ Type` in an object/type body — a MEMBER, sifted out
                    # before any expression is emitted (ast_query.composedName)
 
-  ChainOp* = enum
-    ## How a chain step attaches. Only `..` (coDotDot) is produced; a plain `.`
-    ## is a field access, not a chain step.
-    coDot
-    coDotDot
-
   NodeId* = distinct uint32
     ## Identity for the semantic layer. Assigned once, right after parsing, and
     ## carried through every later pass — including a per-target clone — so the
@@ -349,8 +351,9 @@ type
 
   ChainStep* = object
     ## One `..step {arg}` of a builder chain: the step's name or call target, its
-    ## payload, and its own id (a step resolves to a call).
-    op*: ChainOp
+    ## payload, and its own id (a step resolves to a call). Every step is a
+    ## `..` step: a plain `.` is a field access, never a chain step (the
+    ## unused `ChainOp` enum that said so was removed 2026-09-28).
     target*: Expr
     arg*: Expr
     span*: Span
@@ -366,6 +369,8 @@ type
     exkQualified
     exkStruct
     exkList
+    exkFill         # `[v; N]` — an Array of N copies of a scalar v (R8,
+                    # ruled 2026-09-28); its own node, not a list of N items
     exkBracket
     exkBracketAssign
     exkCall
@@ -442,6 +447,23 @@ type
                     # node rather than a `match`: it sits in VALUE position,
                     # where Odin's match is a ternary chain that can bind no
                     # payload and would evaluate the receiver once per arm.
+    exkIfaceIs      # lowered only (lowering_iface): does interface value
+                    # `tagSubject` hold a `tagObject`? A `| Flac f ->` arm's
+                    # test. Every backend prints a comparison of the tag.
+    exkIfacePayload # lowered only: the `tagObject` inside interface value
+                    # `tagSubject` — what `f` of `| Flac f ->` reads. Every
+                    # backend prints the variant's `<object>Val` field.
+    exkWrapOk       # lowered only (lowering_optional): `optValue`, a plain
+                    # `T`, held in a `?T` — an assignment into a `?T` place.
+                    # Every backend prints its result carrier's typed
+                    # constructor with status Ok.
+    exkAbsent       # an absent `?T`. Written `none` (ruled 2026-09-29): the
+                    # parser leaves `optInner` nil and the checker fills it
+                    # from the `?T` the place expects (synthNone). Also built
+                    # by lowering_optional for a `T?` actor field with no
+                    # initialiser. The carrier's zero value is status OK (the
+                    # enum's first member), not absent — so it is never left
+                    # to a zero.
     exkPoolOp       # `Cells.acquire`, `Cells.read {h}`, ... — an operation on a
                     # pool (spec §7.2). Its own node, stamped by the checker:
                     # it used to be a call whose callee was the bare member
@@ -495,6 +517,9 @@ type
       fields*: seq[FieldInit]
     of exkList:
       items*: seq[Expr]
+    of exkFill:
+      fillValue*: Expr   # `[v; N]`'s v — a literal or a name, read once
+      fillCount*: Expr   # N — a literal or a const, as an Array size is
     of exkBracket:
       # `recv[a, b, ...]`. The receiver decides the meaning, not the argument
       # count: a declared type is a type application, a value is an index.
@@ -582,6 +607,13 @@ type
       dispatchRecv*: Expr          # the interface value, evaluated once
       dispatchIface*: string       # the interface's (mangled) type name
       dispatchArms*: seq[DispatchArm]
+    of exkWrapOk, exkAbsent:
+      optValue*: Expr              # the value held (exkWrapOk); nil if absent
+      optInner*: Type              # T, the type inside the `?T`
+    of exkIfaceIs, exkIfacePayload:
+      tagSubject*: Expr            # the interface value (a place: read twice)
+      tagIface*: string            # the interface's (mangled) type name
+      tagObject*: string           # the object's (mangled) declared name
     of exkValidate:
       validated*: Expr  # the value to re-check; its TYPE names the invariants
     of exkAcquire:
@@ -601,9 +633,9 @@ type
                         # this node stays small and deepCopy/JSON-safe
 
   LitKind* = enum
-    ## The literal kinds. `lkUnit` is the `none` keyword: the one value of
-    ## the unit type.
-    lkInt, lkFloat, lkStr, lkBool, lkUnit
+    ## The literal kinds. `none` is not one: it is an absent `?T`
+    ## (exkAbsent), typed by where it is written.
+    lkInt, lkFloat, lkStr, lkBool
 
   # Imported type decls are injected into the importer for checking and
   # lowering, marked with this span.file so codegen skips re-emitting them.
@@ -674,6 +706,8 @@ type
                                  # cached signature that dropped them would make
                                  # an imported acquirer look non-acquiring, which
                                  # is the bug effects themselves once had
+    errTypes*: seq[string]       # [error: FsError] — `match r.err` on a call
+                                 # names its arms from these (R11, A30)
     isPending*: bool
     line*: int
 
@@ -841,6 +875,9 @@ type
                             # stays a string. A seq, not a Table: it holds one
                             # or two entries and rides the msgpack AST cache.
       isInline*: bool   # `fn inline name(...)` — codegen hint ({.inline.} / [Inline])
+      isOnHandler*: bool # spelled `on name(...)`: in an actor, a MESSAGE
+                         # handler; a `fn` there is a member the actor's own
+                         # code calls (A24). Both parse to dkFn.
       fnErrorTypes*: seq[string]  # [error: FsError | NetError] — declared error enums
     of dkMixin, dkExtern, dkPending:
       mixinMembers*: seq[Decl]

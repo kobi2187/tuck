@@ -1,5 +1,5 @@
 # Extract a substring by start and length
-import io
+import console
 
 pending:
   fn substring({text: str, start: int, length: int}) -> str

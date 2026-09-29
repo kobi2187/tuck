@@ -196,12 +196,12 @@ bool drain_tuckˑactorˑPipeline() {
 }
 
 void sendNal_tuckˑactorˑPipeline(ref tuckˑactorˑPipeline self, tuckˑtypeˑNalKind nal, bool midFrame) {
-    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑPipelineMsg(tuckTag: tuckˑactorˑPipelineMsgKind.msgNal, nal: nal, midFrame: midFrame));
+    rt.sendWaiting(self.mailbox, tuckˑactorˑPipelineMsg(tuckTag: tuckˑactorˑPipelineMsgKind.msgNal, nal: nal, midFrame: midFrame), tuckˑactorˑPipelineSlot, "Pipeline");
     rt.tuckNotifySend(tuckˑactorˑPipelineSlot);
 }
 
 void sendOverrun_tuckˑactorˑPipeline(ref tuckˑactorˑPipeline self, long n) {
-    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑPipelineMsg(tuckTag: tuckˑactorˑPipelineMsgKind.msgOverrun, n: n));
+    rt.sendWaiting(self.mailbox, tuckˑactorˑPipelineMsg(tuckTag: tuckˑactorˑPipelineMsgKind.msgOverrun, n: n), tuckˑactorˑPipelineSlot, "Pipeline");
     rt.tuckNotifySend(tuckˑactorˑPipelineSlot);
 }
 

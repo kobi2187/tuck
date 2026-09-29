@@ -1,6 +1,6 @@
 # rs03 — match on sum type with payload bindings, nested match, guards.
 # Stresses: `| Variant({fields})` sum decl, match arm payload binding, nesting.
-import io
+import console
 
 type Shape:
   | Circle({r: int})

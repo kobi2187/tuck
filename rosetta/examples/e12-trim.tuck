@@ -1,5 +1,5 @@
 # Trim leading/trailing whitespace
-import io
+import console
 
 pending:
   fn trim({text: str}) -> str

@@ -1,5 +1,5 @@
 # Parse a raw string into a record
-import io
+import console
 
 type Point:
   x: int

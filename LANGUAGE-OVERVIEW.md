@@ -44,7 +44,7 @@ auditing this compiler, who read a payload binding as a checker bug and nearly
 | 11 | `self ..field` is banned like any parameter | **Legal for object members and actor fields** — state the callee OWNS. A plain fn whose param is merely NAMED `self` gets no exemption. | §5.1, §7.1 |
 | 12 | Concurrency targets microcontrollers | **Hosted OS today** — stackful minicoro coroutines over `mmap`, epoll/kqueue reactor. Tier 3, not Tier 1. | §10 |
 | 13 | A line break inside brackets is a parse error | **Lines wrap, two ways.** Inside `(`/`{`/`[` indentation is not structure, so a wrapped payload may align under its opening brace, and a line break there reads as a comma — the last comma on a line is optional. Separately, a line ending in a **binary operator, comma or `=`** continues, inside brackets or not, because it cannot have ended. A trailing `:` still opens a block and `...` still ends its line. Ruled 2026-09-15, reversing the earlier ceiling. | §0 |
-| 14 | `t + if hot: 1 else: 2` works, since `if` is an expression | **A value-`if` is a whole right-hand side, never an operand.** `let add = if hot: 1 else: 2` then use `add`. Also a ruled ceiling. | §0, and `examples/39` for the forms that DO work |
+| 14 | `t + if hot: 1 else: 2` works, since `if` is an expression | **A value-`if` is a whole right-hand side, never an operand.** `let add = if hot: 1 else: 2` then use `add`. Also a ruled ceiling. On one line with STATEMENT branches — `if n > 9: n = 0 else: n = n + 1`, a `return`, void calls — it is the statement `if` (R3, 2026-09-28; `syntax_ceilings`). | §0, and `examples/39` for the forms that DO work |
 | 15 | `a and b or c` means `(a and b) or c` | **Refused (`TK-PA16`).** `and`, `or` and `xor` do not rank against each other, so mixing two of them needs parentheses: `(a and b) or c`. One operator repeated (`a and b and c`) needs none. Ruled 2026-09-27. | `tests/suites/diagnostics.nim` |
 
 **If something here looks like a bug:** read the cited section first, then
@@ -234,6 +234,14 @@ object Dog:
 `satisfies` comes FIRST, before any field — state the contract, then the
 data. A field above it is a parse error (`TK-PA06`).
 
+**A member that changes its object needs a `var`** (ruled 2026-09-28;
+values, not references). `c.bump`, where `bump` writes `self`, is refused on
+a parameter (`TK-TY15`) and a `let` (`TK-TY13`), the same as `c ..bump`; copy
+first (`var mine = c`). A member that only reads may be called on anything
+and takes `self` by value (`tests/suites/value_semantics.nim`). In
+`k.absorb {other: k}`, `other` is `k` as it was at the call; the compiler
+copies it before the statement.
+
 Objects carry fields, `+ Composed` entries, `satisfies` lines, member fns, and
 `self`. A member reads and writes its object's fields bare (`return name`,
 `n = n + 1`) as well as through `self`, the way an actor's handlers read its
@@ -378,13 +386,15 @@ together, or an interface value, are refused (`tests/suites/interfaces.nim`).
 
 > **Attribute words are reserved words** (`error`, `stack`, `align`,
 > `priority`, `volatile`, `io`, and the rest of the lexer's attribute list).
-> Ruled 2026-09-27: one may name a FIELD, which is only ever read through `.`
-> or written as a record key, and nothing else — not a parameter (a decision
-> column included), a local, a fn, a member, a handler, or a type argument
-> (`Box[error]` is refused; type arguments are Capitalized). A name that is
-> read bare can land inside brackets, where the word reads as an attribute:
-> `xs[stack]` would lose its index. The refusal is `TK-PA08`
-> (`tests/suites/known_bugs.nim`, `tests/suites/diagnostics.nim`).
+> They name nothing: not a field, a parameter (a decision column included),
+> a local, a fn, a member, a handler, a variant, a module, or a type
+> argument (`Box[error]` is refused; type arguments are Capitalized). A name
+> can land inside brackets, where the word reads as an attribute:
+> `xs[stack]` would lose its index. Ruled 2026-09-27; a field was the one
+> exception until 2026-09-28. The refusal is `TK-PA08`, made by the parser
+> (`tests/suites/known_bugs.nim`, `tests/suites/diagnostics.nim`). The one
+> place such a word is read outside a bracket is a closed vocabulary's value,
+> `[on_full: error]`, which names nothing.
 
 ---
 
@@ -397,6 +407,21 @@ together, or an interface value, are refused (`tests/suites/interfaces.nim`).
 
 **A fallible fn must be `[io]`** — otherwise `must be marked [io]`
 (`tests/suites/typecheck.nim`). `?T` carries no such requirement.
+
+**`none` is the absent `T?`** (ruled 2026-09-29). It names no T of its own,
+so it takes one from where it is written:
+
+```tuck
+let n = {data: 1, next: none} Node   # a `next: int?` field
+return none                          # in a `-> T?` fn
+n.next = none                        # into a `T?` place
+var m: int? = none                   # a stated binding type
+```
+
+Anywhere nothing expects a `T?` it is `TK-TY38`. A field LEFT OUT of a
+construction is still a hole (`TK-TY16`) — `none` is how a construction says
+"absent" on purpose. A plain value goes into a `T?` field, argument or
+binding as it is (`{data: 1, next: 7} Node`) and is present there.
 
 ### Handling
 
@@ -486,6 +511,10 @@ fn hear({a: Animal}) -> int:
   interface value the result is the interface.
 - A call through an interface value checks its payload against the
   contract like any call.
+- **Which object does it hold?** `match next: | Flac f -> f.bits | _ -> 0`
+  binds `f` as the `Flac` a value of the interface holds. The match needs an
+  arm per satisfier or a `| _ ->`; `| Flac ->` without a name is `TK-TY34`
+  (`tests/suites/interfaces.nim`).
 - "The same object type as `self`" is a type parameter bounded by `Self`:
   `fn splice[A: Self, B: Self]({self: A, other: A, next: B})` is implemented
   as `{self: Flac, other: Flac, next: AudioSource}`. Compile-time only:
@@ -651,8 +680,8 @@ type Temperature:
 They **survive release builds** (ruling 2026-08-25). A violation prints
 `Invariant violated on <type>: <cond>` and exits 1 on all three backends, and
 the one opt-out is the `tuckNoInvariants` define, which each backend guards its
-checks with (`tests/suites/invariants.nim`). Only Nim's `--nim:` passthrough
-reaches that define from `tuck build` today (#43).
+checks with (`tests/suites/invariants.nim`). `tuck build --no-invariants` sets
+it on every backend (`cli_smoke`).
 
 ---
 
@@ -713,10 +742,33 @@ actor Counter [queue: 128]:
 No construction, no reference. The scheduler auto-registers every declared
 actor and runs it as a daemon alongside `main`; `main` owns the lifecycle.
 
+**An actor's `fn` is a member; its `on` is a message** (2026-09-28). A `fn`
+declared in an actor reads and writes its fields and is called by the actor's
+own handlers, `on select` arms and member fns (`{n: n} addIt`, or bare
+`finishIt`); it may return a value. It runs on the actor's thread, so a call
+from anywhere else is refused (`TK-AC04`), and a `send` cannot name one
+(`TK-AC05`). An `on` handler is only ever sent, never called (`TK-AC03`).
+
+**Every field has an initialiser or is `T?`** (`TK-TY35`, ruled 2026-09-28,
+#85). A field is what the singleton starts with, before any message arrives;
+without one it was the host's zero, read as data. A `T?` field starts absent
+(`last: int?`), and a plain value assigned into it is stored as present. A
+record field starts from a construction (`st: Book = {bids: [], depth: 0}
+Book`).
+
 ```tuck
 Counter send add {n: i}          # send
 Counter.total                    # read public state
 ```
+
+**A send into a full mailbox WAITS, unless the actor says otherwise**
+(`[on_full: wait | drop | assert]`, ruled 2026-09-28, #7). Every send used to
+drop silently. `wait` holds the sender until the actor has made room; `drop`
+loses the message; `assert` stops the program, naming the actor. A send that
+fits costs the same under all three. The one send that cannot wait is an
+actor's send to ITSELF — it is the one that would make room — so under `wait`
+it stops the program with a message saying so. Any other word is `TK-AC06`,
+and an attribute other than `queue` and `on_full` is `TK-AC07`.
 
 A handler may not declare a value return type: a message is fire-and-forget
 (spec §9.1) and there is no reply channel yet — correlation tokens are
@@ -863,7 +915,7 @@ cold and warm, and both must reject identically.
 
 ```tuck
 import fs
-import io
+import console
 
 let w = {path: "/tmp/x", content: "hi"} fs::writeFile   # qualified
 {text: "hi"} printLine                                  # unqualified — idiomatic
@@ -1272,6 +1324,12 @@ xs[0] += 5
 Bracket sugar desugars to `seq::at` / `seq::setAt`. **Bounds are a
 precondition, not a result** — out of range aborts with `out of bounds for seq
 of length 3`, reported at the caller's line.
+
+**An Array of N copies is `[v; N]`** (ruled 2026-09-28): `txBuf: Array[256, u8]
+= [0; 256]`. N is a literal or a `const`, as an Array's size is, and must match
+the destination's (`TK-TY36`); v is a literal or a name, and a scalar — a
+number, bool, char or enum — so the copies share nothing (`TK-TY37`). A zero
+fill is the host's zeroed storage, not a loop. `;` means nothing anywhere else.
 
 ---
 

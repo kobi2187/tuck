@@ -1,5 +1,5 @@
 # Struct field update via the mutation operator `..`
-import io
+import console
 
 type Counter:
   count: int

@@ -328,6 +328,11 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   if ctx.isRecordConstruction(e): return ctx.genRecordCtor(e)
   let variant = ctx.asSumVariantCall(e)
   if variant != "": return variant
+  let actorMember = actorMemberCallee(ctx.res, e)
+  if actorMember != "":
+    # The actor's own member fn (A24): `self` is the state this handler or
+    # member already holds.
+    return actorMember & "(" & (@["self"] & ctx.genCallArgs(e)).join(", ") & ")"
   var calleeStr = ctx.genExpr(e.callee)
   # A member call emits QUALIFIED, matching the declaration. Derived from the
   # RECEIVER's type rather than the callee's name, because the name alone
@@ -518,12 +523,24 @@ proc genIfaceCall(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## member call the lowering built. A case EXPRESSION, so it composes
   ## anywhere a value is expected.
   let recv = ctx.genExpr(e.dispatchRecv)
+  let t = ctx.res.typeFor(e)
+  let isVoid = t == nil or (t.kind == tkNamed and t.name == "void")
   var arms: seq[string]
   for arm in e.dispatchArms:
+    let payload = recv & "." & arm.satisfier & "Val"
+    var body = ind & "    var " & arm.bindName & " = " & payload & "\n"
+    if not arm.writesBack:
+      body.add(ind & "    " & ctx.genExpr(arm.call))
+    elif isVoid:
+      # The member changed the copy; the interface value takes it back.
+      body.add(ind & "    " & ctx.genExpr(arm.call) & "\n" &
+               ind & "    " & payload & " = " & arm.bindName)
+    else:
+      body.add(ind & "    let tuckResult = " & ctx.genExpr(arm.call) & "\n" &
+               ind & "    " & payload & " = " & arm.bindName & "\n" &
+               ind & "    tuckResult")
     arms.add(ind & "  of " & e.dispatchIface & "_is_" & arm.satisfier & ":\n" &
-             ind & "    var " & arm.bindName & " = " & recv & "." &
-             arm.satisfier & "Val\n" &
-             ind & "    " & ctx.genExpr(arm.call))
+             body)
   if arms.len == 0: return ""
   "(block:\n" & ind & "  case " & recv & ".tag\n" & arms.join("\n") & ")"
 
@@ -579,6 +596,14 @@ proc genStruct(ctx: var CodegenCtx, e: Expr): string =
   var parts: seq[string]
   for f in e.fields: parts.add(f.name & ": " & ctx.genExpr(f.value))
   "(" & parts.join(", ") & ")"
+
+proc genFill(ctx: var CodegenCtx, e: Expr): string =
+  ## `[v; N]` (R8): a zero fill is `default(array[N, T])`, the zeroed
+  ## storage; any other value goes through `tuckFill`.
+  let n = ctx.genExpr(e.fillCount)
+  let t = genType(fillElemType(ctx.res, e))
+  if isZeroFill(e): "default(array[" & n & ", " & t & "])"
+  else: "tuckFill[" & n & ", " & t & "](" & t & "(" & ctx.genExpr(e.fillValue) & "))"
 
 proc genList(ctx: var CodegenCtx, e: Expr): string =
   ## `@[a, b]` for a `Seq[T]` (Nim's dynamic seq), bare `[a, b]` for an
@@ -833,6 +858,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkCombinator: ctx.genCombinator(e)
   of exkStruct: ctx.genStruct(e)
   of exkList: ctx.genList(e)
+  of exkFill: ctx.genFill(e)
   of exkBracket, exkBracketAssign: ctx.genCallResolved(e)
   of exkFor: ctx.genFor(e, ind)
   of exkWhile: ctx.genWhile(e, ind)
@@ -872,6 +898,17 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkOrdinal: "ord(" & ctx.genExpr(e.ordinalOf) & ")"   # enum and bool alike
   of exkValidate: "validate(" & ctx.genExpr(e.validated) & ")"
   of exkIfaceCall: ctx.genIfaceCall(e, ind)
+  of exkIfaceIs:
+    # `| Flac f ->`'s test: the interface value's tag (lowering_iface).
+    "(" & ctx.genExpr(e.tagSubject) & ".tag == " & e.tagIface & "_is_" &
+      e.tagObject & ")"
+  of exkIfacePayload: ctx.genExpr(e.tagSubject) & "." & e.tagObject & "Val"
+  of exkWrapOk:
+    # A plain value into a `?T` place (lowering_optional). The object
+    # constructor, not `tok[T](v)`, for the bracket ambiguity genReturn notes.
+    "TuckResult[" & genType(e.optInner) & "](status: tsOk, value: " &
+      ctx.genExpr(e.optValue) & ")"
+  of exkAbsent: "TuckResult[" & genType(e.optInner) & "](status: tsAbsent)"
   of exkPoolOp: ctx.genPoolOp(e)
 
 proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
@@ -1098,8 +1135,21 @@ proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
   # had to take a global lock and signal every actor in the program to reach
   # the one that owned this mailbox — O(actors) per send, on a line shared by
   # every sender. The slot global is right here at the send site.
-  "discard enqueue(" & singleton & ".mailbox, " & msgType & "(" & ctorArgs &
-    "))\n" & ind & "tuckNotifySend(" & actorSlotName(e.sendActor) & ")"
+  #
+  # The enqueue is the actor's `on_full` (R6): the message is built once and
+  # handed to the wrapper, which waits, stops or — `drop` — is the bare
+  # enqueue every send used to be.
+  let mb = singleton & ".mailbox"
+  let msg = msgType & "(" & ctorArgs & ")"
+  let target = actorDeclNamed(ctx.module, ctx.realModules, e.sendActor)
+  let actor = actorLabel(target, e.sendActor)
+  let enqueue =
+    case actorOnFull(target)
+    of ofDrop: "discard enqueue(" & mb & ", " & msg & ")"
+    of ofWait: "sendWaiting(" & mb & ", " & msg & ", " &
+               actorSlotName(e.sendActor) & ", " & escape(actor) & ")"
+    of ofAssert: "sendAsserting(" & mb & ", " & msg & ", " & escape(actor) & ")"
+  enqueue & "\n" & ind & "tuckNotifySend(" & actorSlotName(e.sendActor) & ")"
 
 proc selectTimeoutMs(ctx: var CodegenCtx, arm: SelectArm): string =
   ## The `timeout` arm's deadline as a plain int of milliseconds.

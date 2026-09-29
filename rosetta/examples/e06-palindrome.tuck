@@ -1,5 +1,5 @@
 # Detect whether a string is a palindrome
-import io
+import console
 
 pending:
   fn reverse({text: str}) -> str

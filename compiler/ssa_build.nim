@@ -297,7 +297,7 @@ proc defKindOf(e: Expr): DefKind =
   ## calls, projections and aliases are told apart; anything else is opaque.
   if e == nil: return dkOpaque
   case e.kind
-  of exkLit, exkList: dkLiteral
+  of exkLit, exkList, exkFill: dkLiteral
   of exkStruct: dkConstruct
   of exkCall, exkChain: dkCall
   of exkField, exkBracket: dkProject
@@ -432,7 +432,10 @@ proc matchIsExhaustive(b: Builder, e: Expr): bool =
   ## final uses in `46-h264-driver`'s `nal` handler alone — a `match` over a
   ## four-variant `Action` with all four covered.
   for arm in e.arms:
-    if arm.pattern == nil or arm.pattern.kind in {pkWild, pkVar, pkBind}:
+    # A type test is on an interface value, and the checker refuses such a
+    # match unless every satisfier has an arm or there is a `_`.
+    if arm.pattern == nil or
+       arm.pattern.kind in {pkWild, pkVar, pkBind, pkTypeTest}:
       return true
   let t = b.res.typeFor(e.subject)
   if t == nil: return false
@@ -452,14 +455,17 @@ proc bindPattern(b: var Builder, pat: Pattern, src: Place) =
   ## projection of what it was taken from.
   if pat == nil: return
   case pat.kind
-  of pkVar, pkBind:
+  of pkVar, pkBind, pkTypeTest:
+    # A type test binds `f` to the subject's payload: a projection of it,
+    # the same as a binding arm is.
+    let name = if pat.kind == pkTypeTest: pat.bindAs else: pat.name
     var def = Def(kind: dkProject)
     if src.len > 0:
       let whole = b.readVariable(src, b.here)
       if whole.isSet: def.inputs = @[whole]
-    let v = b.newValue(pat.name, def, b.here)
-    b.writeVariable(pat.name, b.here, v)
-    b.reproject(pat.name, v, b.here)
+    let v = b.newValue(name, def, b.here)
+    b.writeVariable(name, b.here, v)
+    b.reproject(name, v, b.here)
   of pkRecord:
     for (field, sub) in pat.fields:
       b.bindPattern(sub, if src.len > 0: src & "." & field else: "")
@@ -479,12 +485,8 @@ proc walkMatch(b: var Builder, e: Expr) =
   var armExits: seq[BlockId]
   var allLeave = e.arms.len > 0
   for i, arm in e.arms:
-    # NO GUARDS. The parser never builds one, and an arm with a guard is not
-    # entered from the subject alone — a failed guard falls through to the
-    # next arm, an edge this CFG does not have. Model it before allowing it.
-    doAssert arm.guard == nil,
-      "ssa_build: a match arm guard reached the builder, which has no edge " &
-      "for a guard that fails"
+    # An arm is entered from the subject alone: Tuck has no arm guards, so
+    # there is no "guard failed, try the next arm" edge to model.
     let ab = b.newBlock("arm" & $i)
     b.addPred(ab, entry)
     b.sealBlock(ab)

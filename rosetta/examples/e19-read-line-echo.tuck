@@ -1,5 +1,5 @@
 # Read a line from stdin and echo it back
-import io
+import console
 
 fn main() -> void [io]:
   let input = readLine

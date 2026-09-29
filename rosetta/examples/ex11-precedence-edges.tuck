@@ -1,5 +1,5 @@
 # Operator/postfix-call precedence edges: `x + y fnName` binds as `x + (y fnName)`
-import io
+import console
 
 fn double({n: int}) -> int:
   return n * 2

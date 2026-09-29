@@ -135,6 +135,19 @@ proc importedTypeQualifier*(ctx: OdinCodegenCtx, name: string): string =
   if origin != "" and pkg != ctx.moduleName.replace("-", "_"): pkg & "." & name
   else: name
 
+proc importPrefix*(ctx: OdinCodegenCtx, name: string): string =
+  ## `pkg.` when another module declares the type, object or interface
+  ## `name` (R11), else "" — for the names derived from it (`<I>Tag`,
+  ## `__validated_<T>`) that `importedTypeQualifier` cannot look up.
+  let origin = moduleDeclaringType(ctx.module, name)
+  let pkg = origin.replace("-", "_")
+  if origin != "" and pkg != ctx.moduleName.replace("-", "_"): pkg & "." else: ""
+
+proc validatorName*(ctx: OdinCodegenCtx, typeName: string): string =
+  ## The proc that validates an invariant-carrying type, qualified with its
+  ## module when the type is imported (R11, A31).
+  ctx.importPrefix(typeName) & "__validated_" & typeName
+
 proc qualifyEnumOwner*(ctx: OdinCodegenCtx, owner: string): string =
   ## An enum owner reached through its module when the TYPE it belongs to was
   ## imported. `importedTypeQualifier` above already does this for a type in
@@ -156,7 +169,11 @@ proc odinNamedFallback*(ctx: OdinCodegenCtx, t: Type): string =
   ## A name the primitive table did not cover.
   if isOddBitWidth(t.name): roundedIntType(t.name)
 
-  else: ctx.importedTypeQualifier(t.name)
+  else:
+    # An Array size naming an imported const (R11, A33).
+    let co = constOrigin(ctx.module, ctx.realModules, t.name)
+    if co != "": co.replace("-", "_") & "." & t.name
+    else: ctx.importedTypeQualifier(t.name)
 
 proc odinTupleType*(ctx: var OdinCodegenCtx, t: Type): string =
   ## A tuple as Odin: a one-element tuple is just its element, anything wider

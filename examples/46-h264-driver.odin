@@ -194,12 +194,12 @@ drain_tuckˑactorˑPipeline :: proc() -> bool {
 }
 
 sendNal_tuckˑactorˑPipeline :: proc(self: ^tuckˑactorˑPipeline, nal: tuckˑtypeˑNalKind, midFrame: bool) {
-	_ = rt.enqueue(&self.mailbox, tuckˑactorˑPipelineMsg{tuckTag = .msgNal, nal = nal, midFrame = midFrame})
+	rt.sendWaiting(&self.mailbox, tuckˑactorˑPipelineMsg{tuckTag = .msgNal, nal = nal, midFrame = midFrame}, tuckˑactorˑPipelineSlot, "Pipeline")
 	rt.tuckNotifySend(tuckˑactorˑPipelineSlot)
 }
 
 sendOverrun_tuckˑactorˑPipeline :: proc(self: ^tuckˑactorˑPipeline, n: int) {
-	_ = rt.enqueue(&self.mailbox, tuckˑactorˑPipelineMsg{tuckTag = .msgOverrun, n = n})
+	rt.sendWaiting(&self.mailbox, tuckˑactorˑPipelineMsg{tuckTag = .msgOverrun, n = n}, tuckˑactorˑPipelineSlot, "Pipeline")
 	rt.tuckNotifySend(tuckˑactorˑPipelineSlot)
 }
 

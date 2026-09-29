@@ -65,9 +65,13 @@ proc genOdinMemberFn*(ctx: var OdinCodegenCtx, m: Decl, objName: string): string
   # and rewrite.bindSelf resolved `Self` to the object. What is left is the
   # ODIN spelling: self is a pointer, `^T`, so a mutation reaches the
   # caller's value.
+  # Only a member that changes its object takes a pointer; one that reads
+  # takes `self: T` by value, so it may be called on a parameter, which Odin
+  # cannot take the address of (typecheck.checkSelfWrites).
+  let byPointer = writesSelf(ctx.res, m)
   var params = m.fnParams
   for i in 0 ..< params.len:
-    if params[i].name == "self":
+    if params[i].name == "self" and byPointer:
       params[i].typ = Type(span: m.span, kind: tkNamed, name: "^" & objName)
   # THE MEMBER'S OWN ID: this is the same fn — same body, same decisions —
   # printed with Odin's `self` convention, and every side table (ownership,
@@ -79,9 +83,21 @@ proc genOdinMemberFn*(ctx: var OdinCodegenCtx, m: Decl, objName: string): string
   # `self` is a POINTER here, so every mention in the body needs a deref —
   # `self^` reads the value and `self^ = x` writes through to the caller.
   let oldPtrSelf = ctx.ptrSelf
-  ctx.ptrSelf = true
+  ctx.ptrSelf = byPointer
   result = ctx.genOdinDecl(copy)
   ctx.ptrSelf = oldPtrSelf
+
+proc genOdinActorMemberFn*(ctx: var OdinCodegenCtx, m: Decl,
+                           actorName: string): string =
+  ## An actor's member `fn` (A24): `self: ^T`, as the dispatch takes it, so a
+  ## field write reaches the singleton. `ptrSelf` stays off: a bare `self` is
+  ## only ever handed on to another member, which wants the pointer itself.
+  let copy = Decl(span: m.span, kind: dkFn, id: m.id,
+                  name: memberProcName(actorName, m.name),
+                  fnParams: @[actorSelfParam("^" & actorName, m)] & m.fnParams,
+                  fnReturnType: m.fnReturnType, fnBody: m.fnBody,
+                  fnEffects: m.fnEffects)
+  ctx.genOdinDecl(copy)
 
 proc genPendingStub*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## Pending stub: logs on invocation, returns the zero value.
@@ -323,18 +339,7 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   let movedP = movedFnParam(ctx.res, ctx.module, d)
   let savedMoved = ctx.movedParam
   ctx.movedParam = movedP
-  var bodyStr = ctx.genFnBody(d, retTypeStr, ind)
-  # A param a member call takes as `self: ^T` is shadowed first — an Odin
-  # parameter cannot be addressed (codegen_common.paramsCalledAsReceiver).
-  let brace = bodyStr.find('\n')
-  let rest = if bodyStr.startsWith("{") and brace >= 0: bodyStr[brace + 1 .. ^1]
-             else: bodyStr
-  var shadows = ""
-  for p in paramsCalledAsReceiver(ctx.res, ctx.module, d):
-    shadows.add(leadingIndent(rest) & p & " := " & p & "\n")
-  if shadows != "":
-    bodyStr = if rest.len < bodyStr.len: bodyStr[0 .. brace] & shadows & rest
-              else: shadows & bodyStr
+  let bodyStr = ctx.genFnBody(d, retTypeStr, ind)
   ctx.movedParam = savedMoved
   ctx.leaveReturnContext()
   ctx.definedVars = savedVars
@@ -706,9 +711,20 @@ proc genDrain*(d: Decl, hasShutdown: bool, ind: string): string =
     ind & "\t}\n" &
     ind & "\treturn didWork\n" & ind & "}\n"
 
+proc odinEnqueue(d: Decl, msg: string): string =
+  ## A send helper's enqueue of `msg` under the actor's `on_full` (R6): wait
+  ## for room (the default), stop the program, or drop — the bare enqueue
+  ## every send used to be.
+  let actor = "\"" & actorLabel(d, d.name) & "\""
+  case actorOnFull(d)
+  of ofDrop: "_ = rt.enqueue(&self.mailbox, " & msg & ")"
+  of ofWait: "rt.sendWaiting(&self.mailbox, " & msg & ", " &
+             actorSlotName(d.name) & ", " & actor & ")"
+  of ofAssert: "rt.sendAsserting(&self.mailbox, " & msg & ", " & actor & ")"
+
 proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
                    ind: string): string =
-  ## Enqueue an envelope; a full ring drops (spec §9.1).
+  ## Enqueue an envelope under the actor's `on_full` (R6, `odinEnqueue`).
   ##
   ## A CONTAINER PAYLOAD IS COPIED IN. `[dynamic]T` assignment copies the
   ## header, so `Msg{xs = xs}` handed the actor the sender's own buffer: the
@@ -739,8 +755,7 @@ proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
   let sep = if params.len > 0: ", " else: ""
   "\n" & ind & "send" & h.name.capitalize() & "_" & d.name & " :: proc(self: ^" &
     d.name & sep & params.join(", ") & ") {\n" & copies &
-    ind & "\t_ = rt.enqueue(&self.mailbox, " & d.name & "Msg{" & ctorArgs &
-    "})\n" &
+    ind & "\t" & odinEnqueue(d, d.name & "Msg{" & ctorArgs & "}") & "\n" &
     # The send NOTIFIES. It never did: the actor parks on a condvar when its
     # mailbox comes up empty, so a send to a parked Odin actor was a lost
     # wakeup — the message sat in the ring and nothing arrived to drain it
@@ -752,8 +767,8 @@ proc genShutdownSender*(d: Decl, ind: string): string =
   ## `sendShutdown_<Actor>`: enqueues the shutdown message and wakes the
   ## actor's scheduler slot, like any other send helper.
   "\n" & ind & "sendShutdown_" & d.name & " :: proc(self: ^" & d.name &
-    ") {\n" & ind & "\t_ = rt.enqueue(&self.mailbox, " & d.name &
-    "Msg{" & TagField & " = .msgShutdown})\n" &
+    ") {\n" & ind & "\t" &
+    odinEnqueue(d, d.name & "Msg{" & TagField & " = .msgShutdown}") & "\n" &
     ind & "\trt.tuckNotifySend(" & actorSlotName(d.name) & ")\n" & ind & "}\n"
 
 proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =
@@ -780,6 +795,7 @@ proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =
   # One instance per declared actor (spec §9.1); sends and field reads target
   # it, so `Counter.total` means `counterSingleton.total`.
   result.add(ind & actorSingletonName(d.name) & ": " & d.name & "\n\n")
+  for m in actorMemberFns(d): result.add(ctx.genOdinActorMemberFn(m, d.name) & "\n")
   result.add(ctx.genDispatch(d, handlers, shutdownBody, hasShutdown, ind))
   result.add(genDrain(d, hasShutdown, ind))
   for h in handlers:
@@ -1237,7 +1253,7 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## One top-level declaration. Every DeclKind is named, so a new one fails
   ## to compile here until it is decided (CLAUDE.md).
   if d == nil: return ""
-  if d.kind == dkType and d.span.file.startsWith(ImportedTypeMarker):
+  if d.kind in {dkType, dkObject, dkInterface} and d.span.file.startsWith(ImportedTypeMarker):
     return ""  # defined in its own module; that module's Odin file has it
   let ind = "  ".repeat(ctx.indent)
   case d.kind

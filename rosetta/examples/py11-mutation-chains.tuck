@@ -1,5 +1,5 @@
 # .. mutation chains, var reassignment, indexed write chains
-import io
+import console
 import seq
 
 fn main() -> void [io]:

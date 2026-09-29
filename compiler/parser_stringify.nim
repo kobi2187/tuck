@@ -92,6 +92,7 @@ proc toString*(e: Expr): string =
   of exkBracketAssign:
     return e.brTarget.toString() & " = " & e.brValue.toString()
   of exkList: return listToString(e.items, "[", "]")
+  of exkFill: return "[" & e.fillValue.toString() & "; " & e.fillCount.toString() & "]"
   of exkCall:
     if e.args.len == 0: return e.callee.toString()
     return e.callee.toString() & listToString(e.args, "(", ")")
@@ -152,6 +153,16 @@ proc toString*(e: Expr): string =
     for arm in e.dispatchArms: sats.add arm.satisfier
     return e.dispatchRecv.toString() & " dispatch<" & e.dispatchIface & ": " &
            sats.join(" | ") & ">"
+  of exkIfaceIs:
+    # Lowering-built, from a `| Flac f ->` arm.
+    return e.tagSubject.toString() & " is " & e.tagObject
+  of exkIfacePayload:
+    return e.tagSubject.toString() & " as " & e.tagObject
+  of exkWrapOk:
+    # Lowering-built: a plain value stored into a `?T` place.
+    return "some(" & e.optValue.toString() & ")"
+  of exkAbsent:
+    return "absent"
   of exkAcquire:
     return "acquire " & optToString(e.acquireRef) & ", " & e.acquireKind
   of exkFinish:

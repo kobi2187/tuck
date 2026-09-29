@@ -1,5 +1,5 @@
 # A tiny tagged-union interpreter: Add/Sub expression evaluator
-import io
+import console
 
 type Expr:
   | Add({lhs: int, rhs: int})

@@ -35,7 +35,8 @@ type
     ## and `isParam: false` — they mutate state the callee OWNS, which is the
     ## stated exception (§5.1), not a caller's value.
   FnSig* = tuple[params: seq[Param], ret: Type, generics: seq[string],
-                 effects: seq[EffectMarker], resources: seq[string]]
+                 effects: seq[EffectMarker], resources: seq[string],
+                 errTypes: seq[string]]
     ## The in-memory twin of ast.nim's SigInfo: what the checker needs to know
     ## about a fn it is calling, whether that fn was read from source or restored
     ## from the cached index. Keep the two in step — a field here that SigInfo
@@ -47,6 +48,10 @@ type
     ## an acquirer declares the kind itself). Left out, an imported acquirer
     ## would look non-acquiring across a module boundary, which is the bug
     ## effects themselves had before they were carried here.
+    ##
+    ## `errTypes` (`[error: FsError]`) likewise: `match r.err` on an imported
+    ## fallible fn names its arms from them, so without them every arm read as
+    ## a binding and printed as a default (R11, A30).
   TypeChecker* = object
     ## The checker's state for one module: the signature and type tables it
     ## checks against, the scope stack, and the per-fn context (generics, return
@@ -81,6 +86,14 @@ type
     scopes*: seq[Table[string, Binding]]
     currentRet*: Type
     currentFn*: string
+    currentActor*: string
+      ## The actor whose handlers and member fns are being checked, or "".
+    actorMemberOwner*: Table[string, string]
+      ## A `fn` declared in an actor -> that actor (A24). Callable only from
+      ## the actor's own code: anywhere else it would run on the caller's
+      ## thread, against the actor's state.
+    actorHandlerOwner*: Table[string, string]
+      ## An `on` handler -> its actor. A message: sent, never called.
     pendingFns*: Table[string, Span]
     implementedFns*: HashSet[string]
     errPolicy*: string            # strict (default) | continue | exit
@@ -281,7 +294,7 @@ proc sigOfCallByName*(tc: TypeChecker, name: string): FnSig =
   let d = tc.topLevelDeclOfFn(name)
   if d != nil and d.kind == dkFn:
     return (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects,
-            d.fnResourceKinds)
+            d.fnResourceKinds, d.fnErrorTypes)
   tc.sigOf(name)
 
 proc sigsOf*(tc: TypeChecker, name: string): seq[FnSig] =

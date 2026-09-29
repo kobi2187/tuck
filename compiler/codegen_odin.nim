@@ -180,7 +180,7 @@ proc renderShape(ctx: var OdinCodegenCtx, s: RecordShape): string =
     return ctx.recStructName(s.declFields) & "{" & parts.join(", ") & "}"
   let ctor = s.typeName & "{" & parts.join(", ") & "}"
   # a rebuilt record is a production site too: its invariants must hold
-  if s.invariantsOwed: return "__validated_" & s.typeName & "(" & ctor & ")"
+  if s.invariantsOwed: return ctx.validatorName(s.typeName) & "(" & ctor & ")"
   ctor
 
 
@@ -218,7 +218,7 @@ proc genRecordCtor(ctx: var OdinCodegenCtx, e: Expr): string =
   let ctor = ctx.genericCtorName(e, e.callee.name) & "{" & parts.join(", ") & "}"
   if ctx.index.hasInvariants(e.callee.name):
     # production site: construction — validate before the value flows on
-    return "__validated_" & e.callee.name & "(" & ctor & ")"
+    return ctx.validatorName(e.callee.name) & "(" & ctor & ")"
   ctor
 
 proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
@@ -311,11 +311,12 @@ proc genCallWithArgs(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string,
   ## The emission forms, once the arguments are built.
   let satT = ctx.index.saturatingType(calleeStr)
   if satT != nil and args.len == 1:
-    return ctx.genSaturatingCtor(satT, calleeStr, args[0])
+    # An imported saturating type is named through its package (R11, A35).
+    return ctx.genSaturatingCtor(satT, ctx.importedTypeQualifier(calleeStr), args[0])
   let invRet = ctx.index.externInvRet(calleeStr)
   if invRet != "":
     # extern boundary: the returned value validates on entry
-    return "__validated_" & invRet & "(" & calleeStr & "(" &
+    return ctx.validatorName(invRet) & "(" & calleeStr & "(" &
            args.join(", ") & "))"
   if calleeStr == "echo": return "fmt.println(" & args.join(", ") & ")"
   let rt = genRtCall(calleeStr, args)
@@ -369,9 +370,17 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   if waitOn != "": return waitOn
   let variant = ctx.asSumVariantCall(e)
   if variant != "": return variant
+  let actorMember = actorMemberCallee(ctx.res, e)
+  if actorMember != "":
+    # The actor's own member fn (A24): `self` is already the `^T` the
+    # dispatch holds, so it is passed as is.
+    return actorMember & "(" & (@["self"] & ctx.genCallArgs(e)).join(", ") & ")"
   var calleeStr = ctx.genOdinExpr(e.callee)
   let member = memberCallee(ctx.res, ctx.module, e)
-  if member != "": calleeStr = member
+  if member != "":
+    # An imported object's member lives in its own package (R11, A25).
+    let origin = memberCalleeModule(ctx.res, ctx.module, e)
+    calleeStr = (if origin != "": origin.replace("-", "_") & "." else: "") & member
   let combinator = ctx.asCombinatorCall(e, calleeStr)
   if combinator != "": return combinator
   var args = ctx.genCallArgs(e)
@@ -385,7 +394,8 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   # PASSING member call so far reached its receiver through the chain
   # emitter instead, which threads an existing pointer through, never
   # needing to take one here.
-  if member != "" and args.len > 0: args[0] = "&" & args[0]
+  if member != "" and args.len > 0 and callWritesSelf(ctx.res, ctx.module, e):
+    args[0] = "&" & args[0]
   let emitted = ctx.genCallWithArgs(e, calleeStr, args)
   if emitted != "": return emitted
   if ctx.index.isTaskName(calleeStr) and args.len == 0:
@@ -489,7 +499,7 @@ proc genOdinReturn(ctx: var OdinCodegenCtx, e: Expr): string =
     # production site: return value of an invariant-carrying type.
     # `validatesItself` keeps a construction from being wrapped twice — it
     # already validated at the construction site, on this same value.
-    return "return __validated_" & ctx.retInvName & "(" &
+    return "return " & ctx.validatorName(ctx.retInvName) & "(" &
            ctx.genOdinExpr(e.returnVal) & ")"
   else: return "return " & ctx.genOdinExpr(e.returnVal)
 
@@ -642,9 +652,13 @@ proc genInterfaceWrap(ctx: var OdinCodegenCtx, e: Expr,
   ## A variable, or a call — an interface dispatch arm whose member returns
   ## its own object type where the call's type is the interface.
   let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
-  let inner = if e.kind == exkCall: ctx.genOdinCall(e) else: e.name
-  ifaceName & "{tag = ." & ifaceName & "_is_" & objName & ", " &
-    objName & "Val = " & inner & "}"
+  let inner = case e.kind
+              of exkCall: ctx.genOdinCall(e)
+              of exkIfacePayload:
+                ctx.genOdinExpr(e.tagSubject) & "." & e.tagObject & "Val"
+              else: e.name
+  ctx.importPrefix(ifaceName) & ifaceName & "{tag = ." & ifaceName & "_is_" &
+    objName & ", " & objName & "Val = " & inner & "}"
 
 proc genLit(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A literal in Odin syntax. A number in an inferred position spells the
@@ -701,11 +715,15 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
       if v.name == e.name: return "." & e.name
   let foreign = ctx.qualifiedForeignFn(e.name)
   if foreign != "": return foreign
+  let co = constOrigin(ctx.module, ctx.realModules, e.name)
+  if co != "": return co.replace("-", "_") & "." & e.name   # R11, A33
   e.name
 
 proc genOdinPoolOp(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A pool operation: `codegen_common.poolOpProc`, the pool by pointer.
-  var args = @["&" & e.poolRef.refName]
+  let origin = declOrigin(ctx.module, ctx.realModules, e.poolRef.refName, {dkPool})
+  let pre = if origin == "": "" else: origin.replace("-", "_") & "."   # R11, A36
+  var args = @["&" & pre & e.poolRef.refName]
   for a in e.poolOperands: args.add ctx.genOdinExpr(a)
   "rt." & poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
 
@@ -730,6 +748,21 @@ proc armCallOnParams(ctx: var OdinCodegenCtx, call: Expr): Expr =
       Expr(span: call.span, kind: exkVar, name: DispatchArg & $(i - 1)),
       ctx.res.typeFor(call.args[i]))
 
+proc dispatchArmBody(ctx: var OdinCodegenCtx, arm: DispatchArm,
+                     isVoid: bool): string =
+  ## One arm: the payload copied out, the member called on it, and — when
+  ## the member changes its object — the copy stored back through `v`.
+  let payload = "v." & arm.satisfier & "Val"
+  let call = ctx.genOdinExpr(ctx.armCallOnParams(arm.call))
+  result = "\t\t\t" & arm.bindName & " := " & payload & "\n"
+  if not arm.writesBack:
+    result.add("\t\t\t" & (if isVoid: "" else: "return ") & call)
+  elif isVoid:
+    result.add("\t\t\t" & call & "\n\t\t\t" & payload & " = " & arm.bindName)
+  else:
+    result.add("\t\t\ttuckResult := " & call & "\n\t\t\t" & payload & " = " &
+               arm.bindName & "\n\t\t\treturn tuckResult")
+
 proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A call through an interface value, lowered (lowering_iface): switch on
   ## the tag and print each arm's member call. An immediately-called closure,
@@ -746,8 +779,13 @@ proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   let recv = ctx.genOdinExpr(e.dispatchRecv)
   let t = ctx.res.typeFor(e)
   let isVoid = t == nil or (t.kind == tkNamed and t.name == "void")
-  var params = @["v: " & e.dispatchIface]
-  var values = @[recv]
+  # An arm that changes the object stores it back into the value, so the
+  # closure takes the value by pointer (the checker allows it on a `var`).
+  var writesBack = false
+  for arm in e.dispatchArms: writesBack = writesBack or arm.writesBack
+  var params = @["v: " & (if writesBack: "^" else: "") &
+                 ctx.importPrefix(e.dispatchIface) & e.dispatchIface]
+  var values = @[(if writesBack: "&" else: "") & recv]
   let first = e.dispatchArms[0].call
   for i in 1 ..< first.args.len:
     params.add(DispatchArg & $(i - 1) & ": " & ctx.dispatchArgType(first.args[i]))
@@ -755,9 +793,7 @@ proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   var arms: seq[string]
   for arm in e.dispatchArms:
     arms.add("\t\tcase ." & e.dispatchIface & "_is_" & arm.satisfier & ":\n" &
-             "\t\t\t" & arm.bindName & " := v." & arm.satisfier & "Val\n" &
-             "\t\t\t" & (if isVoid: "" else: "return ") &
-             ctx.genOdinExpr(ctx.armCallOnParams(arm.call)))
+             ctx.dispatchArmBody(arm, isVoid))
   let sig = if isVoid: "" else: " -> " & ctx.odinType(t)
   # The tag is always one of the arms; the panic is what Odin's "missing
   # return" asks for, and what a corrupt value deserves.
@@ -860,6 +896,14 @@ proc genCallResolved(ctx: var OdinCodegenCtx, e: Expr): string =
   ## Indexing resolved to an at() call; a type application never reaches
   ## codegen, so an unresolved bracket emits nothing.
   if ctx.res.hasCall(e): ctx.genOdinExpr(ctx.res.call(e)) else: ""
+
+proc genFill(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `[v; N]` (R8): `[N]T{}` is the zeroed storage; any other value is a
+  ## range literal, `[N]T{0..<N = v}`.
+  let n = ctx.genOdinExpr(e.fillCount)
+  let arr = "[" & n & "]" & ctx.odinType(fillElemType(ctx.res, e))
+  if isZeroFill(e): arr & "{}"
+  else: arr & "{0..<" & n & " = " & ctx.genOdinExpr(e.fillValue) & "}"
 
 proc genList(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `[dynamic]T{a, b}` — the element type SPELLED OUT, not inferred.
@@ -1403,7 +1447,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
   let w = ctx.res.wrapOf(e)
-  if w.objName != "" and e.kind in {exkVar, exkCall}:
+  if w.objName != "" and e.kind in {exkVar, exkCall, exkIfacePayload}:
     return ctx.genInterfaceWrap(e, w)
   case e.kind
   of exkLit: ctx.genLit(e)
@@ -1416,6 +1460,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkCombinator: ctx.genOdinCombinator(e)
   of exkStruct: ctx.genStructLit(e)
   of exkList: ctx.genList(e)
+  of exkFill: ctx.genFill(e)
   of exkBracket, exkBracketAssign: ctx.genCallResolved(e)
   of exkFor: ctx.genFor(e, ind)
   of exkWhile: ctx.genWhile(e, ind)
@@ -1451,6 +1496,18 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkImport: ""  # imports are declarations, never expression position
   of exkOrdinal: ctx.genOrdinal(e)
   of exkIfaceCall: ctx.genIfaceCall(e)
+  of exkIfaceIs:
+    # `| Flac f ->`'s test: the interface value's tag (lowering_iface).
+    "(" & ctx.genOdinExpr(e.tagSubject) & ".tag == ." & e.tagIface & "_is_" &
+      e.tagObject & ")"
+  of exkIfacePayload:
+    ctx.genOdinExpr(e.tagSubject) & "." & e.tagObject & "Val"
+  of exkWrapOk:
+    # A plain value into a `?T` place (lowering_optional). Typed, so an
+    # untyped literal takes T rather than `int`.
+    "rt.TuckResult(" & ctx.odinType(e.optInner) & "){status = .Ok, value = " &
+      ctx.genOdinExpr(e.optValue) & "}"
+  of exkAbsent: "rt.tnone(" & ctx.odinType(e.optInner) & ")"
   of exkPoolOp: ctx.genOdinPoolOp(e)
   of exkValidate:
     "validate_" & ctx.res.typeFor(e.validated).name & "(" &

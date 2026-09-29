@@ -1,5 +1,5 @@
 # Distinct unit types: Meters vs Feet, prevented from mixing directly
-import io
+import console
 
 distinct Meters = int
 distinct Feet = int

@@ -1,5 +1,5 @@
 # Compare two integers and report the relation
-import io
+import console
 
 fn main() -> void [io]:
   let a = 7

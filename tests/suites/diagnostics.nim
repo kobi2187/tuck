@@ -299,7 +299,7 @@ fn main() -> int:
   # An ATTRIBUTE word is a reserved word (ruled 2026-09-27, R4): refused as a
   # fn name, in a `pending:` block too. FRICTIONS #5b had made this legal for
   # a log verb, but no call to such a fn could be written — `{msg: m} error`
-  # cannot parse the word as a callee. A FIELD may still use one.
+  # cannot parse the word as a callee. Nor may a field (2026-09-28).
   t.src """
 pending:
   fn error({msg: str}) -> void

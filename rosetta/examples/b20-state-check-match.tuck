@@ -1,5 +1,5 @@
 # Simple state check via match on a sum type
-import io
+import console
 
 type Light:
   | Red({})

@@ -1,5 +1,5 @@
 # Build and print a 3x3 identity matrix
-import io
+import console
 import seq
 
 fn main() -> void [io]:

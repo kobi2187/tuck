@@ -22,11 +22,34 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (3)
+## A. Open bugs (9)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
+
+**A38 — (Odin) a local's Seq field handed to a moved twin is freed twice.**
+`let r = {ns: l.nodes, d: ..} grow` inside `grow_moved` hands `l.nodes` to
+`grow_moved`, which keeps the buffer and returns it in `r.nodes`; the
+ownership pass still frees `l.nodes` at scope exit beside `r.nodes`. A
+segfault, where Nim and D answer. The twin's own parameter already follows the
+rule "a slot moved into a call is no longer ours"; a local's field does not.
+Found 2026-09-29 by `benches/trees/slab_thread.tuck`. `known_bugs`.
+
+**A27–A37 — constructs that do not cross a module boundary (R11 scan,
+2026-09-28).** A25, A26, A28, A30, A31, A33, A35 and A36 are fixed; their pins are
+`bugFixed` in `cross_module`. Ruled: importing anything should work as well as the same
+module. Each construct was built declared in `lib` and used from the
+importer on Nim, Odin and D, against a one-module control that passes; these
+failed. Tests: `cross_module`, each named "R11: …".
+- **A27** an object in the importer cannot `satisfies` an imported interface.
+- **A29** `+ Mixin` from another module: `Self` is not bound (R11's origin).
+- **A32** an imported actor's fields and handlers are invisible to the
+  importer ("no field 'total' on type Acc", #73). Distinct from A18, which is
+  an imported actor never STARTED on Odin/D.
+- **A34** (Odin, D) a group bound whose provider is in another module — the
+  bounded fn's module cannot name it. A14's sibling.
+- **A37** (Odin, D) an imported registry's `raise` is unqualified.
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism
@@ -73,9 +96,10 @@ though TK-PA08's own text promised "only inside brackets") was RULED on
 2026-09-27 rather than fixed: the compiler was right. A name that is read
 bare can land in brackets, where an attribute word reads as an attribute
 (`xs[stack]` dropped its index when the words were let through). Attribute
-words are reserved words; a FIELD may still use one, since it is only read
-through `.`. TK-PA08's text now says so. Test: `known_bugs`, "an attribute
-word is refused as a fn name" and "...and as a parameter name".
+words are reserved words, fields included since 2026-09-28 (a field was the
+one exception for a day). TK-PA08's text now says so. Test: `known_bugs`,
+"an attribute word is refused as a fn name", "...and as a parameter name"
+and "...as a field name too".
 
 A2 (a fn with no declared return type accepted `return x`, and `tuck c`
 wrote `proc tuck_f*(x: int): void = return x`, which nim refuses) was fixed
@@ -247,13 +271,100 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **A36 — an imported pool, on Odin and D.** A pool is not injected into an
+  importer, and Odin and D named it bare — `&tuckˑpoolˑCells`, which only
+  `lib` declares — so the importer did not even import `lib`. Each pool
+  operation now qualifies a pool another module declares
+  (`ast_query.declOrigin`), and D maps an imported pool's handle type to
+  `rt.PoolHandle` as it does its own (`resolution.isImportedPoolHandle`).
+  Fixed 2026-09-28. `cross_module`, "R11: …".
+
+- **A30 — `match r.err` on an imported fallible fn.** A binding remembered
+  its producer's `[error: E]` enums only when the producer was declared in
+  the same module, so an imported fn's arms were never qualified and printed
+  as defaults ("multiple default clauses" on Nim, `else` on Odin and D). The
+  error enums now ride in the signature (`FnSig.errTypes`, and
+  `SigInfo.errTypes` for one served from the index), and `rememberErrTypes`
+  falls back to it. Fixed 2026-09-28. `cross_module`, "R11: …".
+
+- **A33, A35 — an imported const and an imported saturating type.** A
+  const is not injected (an importer's own const may shadow it), so Nim now
+  exports it (`const Cap* = …`) and Odin and D qualify each reference to it,
+  as a value and as an Array size (`ast_query.constOrigin`). An imported
+  saturating type's constructor is qualified on Odin and D. Fixed
+  2026-09-28. `cross_module`, "R11: …".
+
+- **A26, A28, A31 — imported interfaces and invariant types.** A call
+  through an imported interface value resolved to one satisfier's member,
+  a type test on one was refused, and an imported invariant type crashed
+  the compiler ("id … is held by two nodes"). Interfaces are now injected
+  like types and objects; every injected copy is a deep copy under fresh
+  ids (`ast_ops.freshIds` — a copy that SHARED its original's nodes became
+  two objects under one id once each backend took its own copy); a copied
+  object skips conformance, which its own module checked; and Odin and D
+  qualify an imported interface's variant, tag enum and `__validated_*`
+  proc (`importPrefix`, `validatorName`). Fixed 2026-09-28. `cross_module`.
+
+- **A25 — an imported `object` could not be constructed**, so none of its
+  members could be called: `injectImportedTypes` copied only `type`s into an
+  importer. An object's copy is now its shape (fields, `satisfies`, members
+  as body-less signatures); Odin and D qualify its type and member procs,
+  and a changing member keeps its by-reference `self` on the importer's
+  side. Fixed 2026-09-28. `cross_module`, "R11: …".
+
+- **A24 — an actor member `fn` was emitted by no backend.** `fn` and `on`
+  both parsed to a dkFn, and every backend made each one a MESSAGE (a
+  `handleMsg` arm, a `sendAddIt_…` helper), while a direct call printed a
+  bare `addIt(n)` that named nothing. `on` now marks a handler; a `fn` is
+  a member emitted as a proc taking the actor's state as `self`, and a call
+  passes `self` on. Also refused, where all of it used to check clean and
+  build on no backend: an `on` handler called like a fn (TK-AC03), a
+  member called from outside its actor (TK-AC04), a `send` naming a member
+  (TK-AC05). Found and fixed 2026-09-28. `known_bugs`.
+
+- **`benches/transpile/dispatch.tuck` crashed every `tuck c`** in
+  assertSsaWellFormed ("the mirror misses 1 final use"). A variant
+  construction bound inside an `if` (`let c = Shape.Circle {r: i}`) was
+  enough. The liveness oracle the graph is checked against skipped a
+  `.name {args}`'s argument, missed the read of `i`, and proved the earlier
+  `if i == 0` read final; the graph was right. Unseen since 2026-09-22
+  because the ssa suite's corpus left out `benches/transpile`. `ssa`,
+  "a variant construction's argument is a read, on every backend".
+
+- **A `T?` actor field read as present before anything wrote it, and a
+  plain `T` could not be stored into one.** The result carrier's zero status
+  is Ok, so `last: int?` started present holding 0, on all three backends;
+  `last = v` stored a bare `int` where the carrier was expected and failed
+  to build on all three. Found 2026-09-28 making R8's `T?` escape usable;
+  `lowering_optional` emits an absent start and a wrapped store.
+  `known_bugs`, "a `T?` actor field starts absent…".
+
+- **A23 — one object as a changing member's `self` and as its argument
+  keeps value semantics.** `k.absorb {other: k}` (or `k ..absorb {other:
+  k}`): `self` is passed by reference, and Nim and Odin passed the large
+  by-value `other` as a hidden pointer to the same `k`, so it read the
+  change (101 instead of 1). Such an argument is now copied into a `let`
+  before the statement (`lowering_alias`, 2026-09-28); a statement that
+  also changes that variable earlier is refused rather than guessed at.
+  `known_bugs`, `value_semantics`.
+
+- **Three member-call gaps, found 2026-09-28 working through "a member that
+  changes its object on a parameter".** (1) A member with no `->` called as
+  `d.turn {step: 2}`, or through an interface value as `t.bump`, was
+  "not declared" or resolved to the wrong object's member: the call's type
+  was nil where R5 says `void`. (2) `var t: Tally = Counter{...}` was
+  refused ("expects Tally but got Counter"). (3) A changing member called
+  through a `var` interface value changed a copy and the change was lost;
+  the dispatch now stores it back. `tests/suites/value_semantics.nim`,
+  `tests/suites/typecheck.nim`.
+
 - **An object member called on a fn parameter builds on Nim and Odin.**
   Every backend passes a member's `self` mutably (Nim `var T`, Odin `^T`,
   D `ref T`); a Nim parameter is immutable and an Odin one unaddressable, so
-  `fn rate({a: Flac}) = a.sampleRate` built only on D. Such a parameter is
-  now shadowed by a mutable copy at the top of the body — the value a D
-  parameter already is (2026-09-27). `known_bugs` "a member called on a fn
-  parameter builds, on all three".
+  `fn rate({a: Flac}) = a.sampleRate` built only on D (fixed 2026-09-27).
+  Since 2026-09-28 a member that only reads takes `self` by value, and one
+  that changes its object may not be called on a parameter. `known_bugs` "a
+  member called on a fn parameter builds, on all three".
 
 - **A22 — on Odin, an interface call whose payload holds a variable
   builds.** Odin's dispatch is an immediately-called proc literal, which

@@ -83,7 +83,7 @@ struct tuckˑobjectˑPodcastApp {
     uint timeout;
 }
 
-rt.TuckResult!(rt.TuckUnit) tuckˑobjectˑPodcastAppˑsetMany(ref tuckˑobjectˑPodcastApp self, tuckˑtypeˑPair[] pairs) {
+rt.TuckResult!(rt.TuckUnit) tuckˑobjectˑPodcastAppˑsetMany(tuckˑobjectˑPodcastApp self, tuckˑtypeˑPair[] pairs) {
     return typeof(return).init;
 }
 

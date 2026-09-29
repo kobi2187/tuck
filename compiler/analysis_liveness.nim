@@ -124,6 +124,11 @@ proc uses(c: Ctx, e: Expr, acc: var Live) =
     let p = pathOf(e)
     if p.len > 0:
       acc.incl(p)
+      # `Shape.Circle {r: i}` — a `.name {args}` the checker did not make a
+      # call (a variant construction) still reads its argument. Skipped, the
+      # oracle missed `i` there and proved an earlier read final that was not
+      # (benches/transpile/dispatch.tuck; the graph had it right).
+      uses(c, e.dotArg, acc)
       return
     # Not a nameable path (an index or a call in the chain): fall through and
     # let the receiver be used wholesale.
@@ -185,6 +190,7 @@ proc stampSites(c: Ctx, e: Expr, dead: Live) =
         # Keep descending: the ROOT may be dead as a whole, and its stamp is
         # what `paramIsMovable` reads.
         walk(n.receiver)
+        walk(n.dotArg)           # read after the receiver: see `uses`
         return
     if n.kind == exkAssign:
       walk(n.assignVal)
@@ -246,9 +252,7 @@ proc matchLive(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =
   var r: Live
   var any = false
   for arm in e.arms:
-    var armOut = liveOut
-    if arm.guard != nil: uses(c, arm.guard, armOut)
-    let a = lastUseSites(c, arm.body, armOut, stamp)
+    let a = lastUseSites(c, arm.body, liveOut, stamp)
     r = if any: r + a else: a
     any = true
   if not any: r = liveOut

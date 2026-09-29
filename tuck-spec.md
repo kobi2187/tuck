@@ -330,7 +330,7 @@ public:
   Box[T]
 
 actor Box[T] [queue: 4]:
-  last: T
+  last: T?
 ```
 
   Such a declaration survives as a template rather than being expanded away,
@@ -874,9 +874,9 @@ is independent of `release` (ruling, 2026-08-25; this replaced an earlier
 `when not defined(release)` that gave no way to keep them). Every backend
 guards its checks with that define (Nim `when not defined`, D `version`, Odin
 `#config`), and a violation reports `Invariant violated on <type>: <cond>` and
-exits 1 on all three. Only the Nim backend's define is reachable from
-`tuck build` today (`--nim:"-d:tuckNoInvariants"`); how the other two are
-reached is open (#43).
+exits 1 on all three. `tuck build --no-invariants` sets that define on
+whichever backend it builds (ruled 2026-09-28): one flag per behaviour, not a
+passthrough per backend.
 
 Block form only — `invariant:` inside the type body, one predicate per line:
 
@@ -1038,6 +1038,15 @@ three wrappers share one tri-state representation — `ok | err(code) | absent`
 — so `!?T` distinguishes failure from absence exactly, and error codes keep
 the full 16-bit space.
 
+**Absence is written `none`** (ruled 2026-09-29). It names no T of its own:
+the place it is written supplies one — a `T?` field in a construction
+(`{data: 1, next: none} Node`), a `-> T?` return, an assignment into a `T?`
+place, a stated binding type (`var m: int? = none`), a `T?` parameter.
+Anywhere nothing expects a `T?`, it is TK-TY38. A field left out of a
+construction is still a hole (TK-TY16): `none` is absence on purpose, an
+omission is not. A plain `T` goes into any `T?` place as it is and is present
+there.
+
 **An `if r.ok` guard answers ONE question.** For `!T` and for `?T` that is the
 only question there is, so the guard is complete handling. `!?T` asks two —
 *did it fail* and *was it absent* — over the same tri-state carrier, and
@@ -1121,6 +1130,39 @@ The distinction is ownership, not syntax. A plain `fn` whose first parameter
 merely happens to be *named* `self` gets no exemption — it is still someone
 else's value, and mutating it is still an error. The same reasoning makes an
 actor handler's fields mutable (§9.1).
+
+**A member that changes its object needs a `var`** (ruled 2026-09-28). Tuck
+has values, not references: a parameter is an immutable binding of the
+caller's value, like a `let`. So a member that changes `self` — directly, or
+by calling such a member on `self` or on one of its fields — may be called
+on a `var` only:
+
+```tuck
+object Counter:
+  n: int
+  fn bump({self: Counter}):
+    self.n = self.n + 1          # changes its object
+  fn peek({self: Counter}) -> int:
+    return self.n                # only reads
+
+fn useIt({c: Counter}) -> int:
+  c.bump                         # refused: TK-TY15, as `c ..bump` is
+  var mine = c
+  mine.bump                      # the copy is this fn's own
+  return mine.n + c.peek         # a reading member is allowed on anything
+```
+
+On a `let` the same call is TK-TY13, and on a temporary (a call's result)
+it is refused because the change would be lost. A member that only reads
+takes `self` by value in every backend. Through an interface value held in
+a `var`, a changing member's change sticks.
+
+An argument is the value as it was at the call, even when it is the object
+the member changes: in `k.absorb {other: k}`, `other` is `k` before
+`absorb` ran, not a view of the `k` being changed. The compiler copies such
+an argument into a `let` before the statement. If another call in the same
+statement also changes `k` (`k.bump + k.absorb {other: k}`), the statement
+is refused: split it.
 
 ### 5.2 Interfaces
 
@@ -1274,6 +1316,33 @@ what makes the collection uniform. Mutating a satisfying type's own field
 through a stored `+`-composed member still works exactly as it does anywhere
 else in Tuck — it mutates the copy the interface value holds, same as passing
 any other Tuck value ever does; there is no separate rule for interfaces.
+
+**Asking which object a value holds** (ruled 2026-09-28). A `match` on an
+interface value can test for one satisfying object and bind it by name:
+
+```tuck
+fn transition({cur: AudioSource, next: AudioSource}) -> int:
+  match next:
+    | Flac f -> return f.bits * 2        # f is the Flac next holds
+    | Mp3 m -> return m.bitrate
+    | _ -> return next.sampleRate /i 1000
+```
+
+- `| Flac f ->` runs when the value holds a `Flac`; inside the arm `f` is
+  that `Flac`, a `let`. `Flac` must be an object that satisfies the
+  interface.
+- `| _ ->` takes every other object; a bare name (`| other ->`) does the same
+  and binds the whole value, as in any `match`.
+- The match must have an arm for every object in the program that satisfies
+  the interface, or a `| _ ->`. An arm after `| _ ->`, or a second arm for
+  the same object, is refused.
+- `| Flac ->` with no name is refused (TK-TY34), not read as a catch-all
+  named `Flac`.
+
+Sum types narrow the subject in an arm instead (`| Ready -> s.feed`); an
+interface arm names the object because it is a different type from the
+subject. The match is compiled to a test of the value's tag, one per arm —
+the same tag interface dispatch switches on.
 
 ### 5.4 The `pending` Block — Walking Skeleton
 
@@ -1962,6 +2031,32 @@ needs one, it is separate future work, not a mode of what is built today.
 Long-lived isolated state machines, one instance per declared type (a
 singleton — there is no separate construction step, no reference to hold).
 
+**A `fn` in an actor is a member; an `on` is a message.** A member reads and
+writes the actor's fields, may return a value, and is called only by the
+actor's own handlers, `on select` arms and member fns — the code that runs on
+its thread, one message at a time. Called from elsewhere it would race the
+actor's own handlers, so that is refused (TK-AC04), as is a `send` naming a
+member (TK-AC05) and an `on` handler called like a fn (TK-AC03): a handler is
+a message, and is sent.
+
+```tuck
+actor Acc [queue: 8]:
+  total: int = 0
+
+  fn addIt({n: int}) -> int:     # a member: the actor's own code calls it
+    total += n
+    return total
+
+  on add({n: int}):              # a message: `Acc send add {n: 5}`
+    {n: n} addIt discard
+```
+
+Because nothing constructs it, **every field has an initialiser** — the value
+the singleton starts with — **or is `T?`**, which starts absent (TK-TY35,
+ruled 2026-09-28, #85). A field with neither started at whatever the host
+zero-fills, and a handler that read it before anything wrote it read that
+zero as data. A plain `T` assigned into a `T?` field is stored as present.
+
 **Each actor runs on its own OS thread**, with its own scheduler and its own
 I/O reactor, and a static ring-buffer mailbox. An actor is a SERVICE: it is
 started before `main` runs and it outlives every call into it. `main` does not
@@ -1969,13 +2064,13 @@ have to yield, poll or drive anything for an actor to make progress — the
 thread is already running, blocked on its mailbox, and a `send` wakes it.
 
 This is why an actor and a task differ in more than lifetime. A task is a JOB:
-a coroutine on `main`'"'"'s thread, where `[io]` is a cooperative yield and the
+a coroutine on `main`'s thread, where `[io]` is a cooperative yield and the
 scheduler hands control to the next task. An actor is a SERVICE: a thread,
 where `[io]` suspends that actor alone and nothing else notices.
 
 ```tuck
 actor UartDriver [queue: 8]:
-  txBuf: Array[256, u8]
+  txBuf: Array[256, u8] = [0; 256]    # the fill form: 256 zero bytes
 
   on send({data: Seq[u8]}) -> void:
     txBuf.copyFrom {data}
@@ -1993,10 +2088,43 @@ unbounded allocation. `queue: N` means N messages may be waiting to be picked
 up; the runtime double-buffers, so an actor may hold up to another N it has
 already taken (the handover is an index flip, never a copy).
 
+**What a send does when it finds the mailbox full is the program's choice**
+(ruled 2026-09-28, #7), declared per actor as `[on_full: ...]`:
+
+| `on_full` | the send that finds the mailbox full |
+|---|---|
+| `wait` (the default) | waits for room: the sender yields until the actor has drained |
+| `drop` | loses the message |
+| `assert` | stops the program, naming the actor (exit 1) |
+
+```tuck
+actor Journal [queue: 1024, on_full: drop]:   # losing a log line is fine
+  lines: int = 0
+  on log({text: str}):
+    lines += 1
+```
+
+A send that fits costs the same under all three: the policy is consulted
+only once a send has found the mailbox full. An actor cannot wait on its own
+mailbox — it is the one that would make room — so under `wait` a send to
+itself that finds the mailbox full stops the program instead. A cycle of
+actors whose full mailboxes each wait on the next can hang; that is what
+`wait` means, and why `drop` and `assert` exist. Any other word is TK-AC06.
+An actor takes these two attributes, `queue` and `on_full`, and no others
+(TK-AC07).
+
+**No order is promised between two senders** (ruled 2026-09-28, #84). When
+two senders each send to one actor, which message it handles first is
+whatever the runtime finds fastest, and it can differ by `--actors:` mode and
+from run to run. A program that needs one message handled before another
+sends both from the same place, or waits for the first (`waitUntil`) before
+sending the second. Nothing is added to order them: an initialisation
+barrier was the alternative, and it would cost every message.
+
 #### Observing an actor: a snapshot, or the exact moment
 
-An actor'"'"'s public fields are readable from outside (`Progress.done`). That is a
-deliberate departure from Erlang, Akka and Pony, where a process'"'"'s state cannot
+An actor's public fields are readable from outside (`Progress.done`). That is a
+deliberate departure from Erlang, Akka and Pony, where a process's state cannot
 be named from outside at all and every observation is a request/reply round
 trip. Tuck allows the read because it is what a display or a progress bar
 actually wants, and a round trip for `done` would be heavier than the thing
@@ -2036,20 +2164,21 @@ transition that happened while an earlier message was being handled.
 
 Three properties follow, and they are the ones a caller needs:
 
-- **No race.** The predicate reads the actor'"'"'s state on the actor'"'"'s thread. No
+- **No race.** The predicate reads the actor's state on the actor's thread. No
   external read, so nothing to synchronise.
 - **Ordered against your own sends.** The registration rides the same mailbox,
-  and a mailbox is FIFO per sender.
+  and a mailbox is FIFO per sender — a promise (ruled 2026-09-28), unlike the
+  order between two senders, which is none.
 - **Free when unused.** An actor nobody registered a predicate with does no
   extra work per message. Thousands of sends stay thousands of sends.
 
 The predicate must be effect-free, and that is checked rather than trusted: it
 runs inside the actor after each message, so a predicate that did I/O or sent
-messages would turn every message into unbounded work. (Ada'"'"'s protected-object
+messages would turn every message into unbounded work. (Ada's protected-object
 entry barriers are the same construct and impose the same rule, but can only
 make violating it a bounded error; Tuck has the effect system to reject it.)
 
-It must also read exactly ONE actor'"'"'s fields — the actor it is registered with.
+It must also read exactly ONE actor's fields — the actor it is registered with.
 A predicate over two actors is the racy case wearing a safe-looking spelling:
 no single actor can evaluate it soundly.
 
@@ -2062,7 +2191,7 @@ element type instead of being written twice.
 import seq
 
 actor Inbox[T] [queue: 16]:
-  items: Seq[T]
+  items: Seq[T] = []
   seen: int = 0
 
   on put({item: T}):
@@ -2176,26 +2305,26 @@ than until THIS task does. Issue #55.
 ### 9.4 The Scheduler
 
 There is not ONE scheduler. There is one per thread, and a thread per actor
-plus `main`'"'"'s.
+plus `main`'s.
 
 **Within a thread, scheduling is cooperative.** Coroutines on that thread are
 items in its ready queue, each gets one `resume` per tick — a switch onto that
-coroutine'"'"'s own stack (see the runtime note opening this Part) — and runs to
+coroutine's own stack (see the runtime note opening this Part) — and runs to
 its next `[io]` yield point, then re-enqueues or parks. Each thread has its own
 epoll/kqueue reactor driving readiness for its own parked waits. No preemption
 INSIDE a thread, so a handler or a task body runs to a yield point without
 interruption, and the state it owns needs no lock against itself.
 
-**Between threads, the OS schedules.** An actor'"'"'s thread runs whether or not
+**Between threads, the OS schedules.** An actor's thread runs whether or not
 `main` yields — that is the whole point of a service — so actors genuinely run
 in parallel with `main` and with each other, and there are kernel context
 switches between them.
 
 Where they meet:
 
-- `main`'"'"'s thread runs `main` and every task. A task is a coroutine, so `[io]`
+- `main`'s thread runs `main` and every task. A task is a coroutine, so `[io]`
   in a task yields to the next task.
-- Each actor'"'"'s thread runs that actor alone. `[io]` in a handler suspends that
+- Each actor's thread runs that actor alone. `[io]` in a handler suspends that
   actor and nothing else — no other actor is delayed, and `main` never notices.
 - The only shared mutable thing is the **mailbox**, which carries a lock for
   exactly that reason (it has since before actors were threads: "sends come

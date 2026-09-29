@@ -1,5 +1,5 @@
 # operator precedence edge cases: postfix binds tighter than operators
-import io
+import console
 
 pending:
   fn double({n: int}) -> int

@@ -81,48 +81,37 @@ proc expectAttrName*(p: var Parser, msg: string): Token =
     return p.advance()
   p.reportError(msg)
 
-proc expectMemberName*(p: var Parser, msg: string): Token =
-  ## A name in a position where ONLY a name can appear — a parameter, field,
-  ## variant, module or member. Accepts tkAttr as well as tkIdent.
+proc expectName*(p: var Parser, msg: string): Token =
+  ## A name — a parameter, local, fn, member, handler, field, variant, module
+  ## or rename. Only tkIdent is one.
   ##
-  ## Attribute names are reserved so `Box[error]` cannot be a type argument.
-  ## But `{priority: Priority}` is a FIELD, and `import console` a MODULE —
-  ## positions where no attribute could ever appear, so the reserved word is
-  ## just a name and the parser says so. The lexer cannot make that call; the
-  ## parser knows what it is looking for.
+  ## Reservation is total (R4, ruled 2026-09-27 and made total 2026-09-28):
+  ## an attribute word (`priority`, `error`, `stack`, `io`, …) is a reserved
+  ## word everywhere, fields included, and is refused with TK-PA08. A name
+  ## read bare can land inside brackets, where the word reads as an
+  ## attribute — `xs[stack]` parsed as an annotation and dropped the index.
+  ## A field once kept the words as the one exception; one rule with no
+  ## exception is simpler to state and to check, so it went too.
   ##
-  ## This is what lets reservation be total without stealing ordinary words
-  ## from the user. Type names are Capitalized, so a lowercase field named
-  ## `priority` never collides with the type `Priority` either.
-  ##
-  ## A KEYWORD is different: `pending` and `when` open real constructs, so
-  ## they stay reserved even here. The author still deserves to be told which
-  ## word collided — "expected a field name" while pointing at one reads as a
-  ## parser fault rather than a naming one.
-  if p.current().kind in {tkIdent, tkAttr}:
+  ## A KEYWORD (`pending`, `when`, …) is refused here the same way. Either
+  ## way the author is told which word collided — "expected a field name"
+  ## while pointing at one reads as a parser fault rather than a naming one.
+  if p.current().kind == tkIdent:
     return p.advance()
   let t = p.current()
-  if t.value.len > 0 and t.value[0] in {'a'..'z'} and
-     t.kind notin {tkIndent, tkDedent, tkNewline, tkEOF}:
+  if t.kind == tkAttr or (t.value.len > 0 and t.value[0] in {'a'..'z'} and
+                          t.kind notin {tkIndent, tkDedent, tkNewline, tkEOF}):
     p.reportError(msg & " — `" & t.value & "` is a reserved word and cannot " &
-                  "be used as a name here", dc = dcPaReservedWord)
+                  "be used as a name", dc = dcPaReservedWord)
   p.reportError(msg)
 
-proc expectBindingName*(p: var Parser, msg: string): Token =
-  ## A name the code will READ BARE — a parameter, a `let`/`var` local, a
-  ## fn, member or handler name. An attribute word (`priority`, `stack`,
-  ## `error`, …) is refused here with TK-PA08. Ruled 2026-09-27: a name
-  ## that is read bare can land inside brackets, where an attribute word
-  ## reads as an attribute — `xs[stack]` parsed as an annotation and the
-  ## index was dropped — so such a word can never safely be a bare name.
-  ##
-  ## A FIELD is the one name an attribute word may still be: it is read
-  ## only through `.` (`job.priority`) or written as a record-literal key
-  ## (`{priority: 1}`), never bare. Fields go through expectMemberName.
-  if p.current().kind == tkAttr:
-    p.reportError(msg & " — `" & p.current().value & "` is a reserved " &
-                  "word and cannot be used as a name here", dc = dcPaReservedWord)
-  p.expectMemberName(msg)
+proc expectVocabWord*(p: var Parser, msg: string): Token =
+  ## One word from a CLOSED VOCABULARY — `[on_full: error]`, a resource
+  ## kind's knob value. Not a name: nothing is declared or read by it, so an
+  ## attribute word is just the word here.
+  if p.current().kind in {tkIdent, tkAttr}:
+    return p.advance()
+  p.reportError(msg)
 
 proc parseRenameList*(p: var Parser, what: string): seq[(string, string)] =
   ## `{old -> new, ...}` — Tuck's one rename spelling (ruled 2026-09-27),
@@ -133,13 +122,13 @@ proc parseRenameList*(p: var Parser, what: string): seq[(string, string)] =
   ## fix (TK-PA17). Assumes the opening `{`.
   discard p.expect(tkLBrace)
   while p.current().kind notin {tkRBrace, tkEOF}:
-    let old = p.expectMemberName("Expected the name to rename in " & what).value
+    let old = p.expectName("Expected the name to rename in " & what).value
     if p.current().kind == tkColon:
       p.reportError("a rename is written `old -> new`: write `" & old &
                     " -> " & (if p.peek().kind in {tkIdent, tkAttr}: p.peek().value
                               else: "newName") & "`", dc = dcPaRenameArrow)
     discard p.expect(tkArrow, "Expected `->` after '" & old & "' in " & what)
-    let renamed = p.expectMemberName("Expected the new name in " & what).value
+    let renamed = p.expectName("Expected the new name in " & what).value
     result.add((old, renamed))
     if p.current().kind == tkComma: discard p.advance()
   discard p.expect(tkRBrace)

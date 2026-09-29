@@ -1,5 +1,5 @@
 # Clamp a value into a range, using min/max helpers
-import io
+import console
 
 pending:
   fn min({a: int, b: int}) -> int

@@ -177,7 +177,6 @@ proc allPlainFieldSets(mid: Expr, tmpName, paramName: string): bool =
     return false
   if mid.steps.len == 0: return false
   for s in mid.steps:
-    if s.op != coDotDot: return false
     if semLayer.stepCall(s) != nil: return false   # nested call, not a set
     if s.target == nil or s.target.kind != exkVar: return false
     if mentionsName(s.arg, tmpName) or mentionsName(s.arg, paramName):
@@ -203,7 +202,7 @@ proc isSpliceableStep(s: ChainStep): bool =
   ## A step that could carry a builder call: `..fn` with a resolved call and
   ## no braced payload. A payload means the call takes more than the receiver,
   ## which is not the shape a builder splice can replace.
-  s.op == coDotDot and semLayer.stepCall(s) != nil and
+  semLayer.stepCall(s) != nil and
     s.target != nil and s.target.kind == exkVar and
     (s.arg == nil or (s.arg.kind == exkStruct and s.arg.fields.len == 0))
 

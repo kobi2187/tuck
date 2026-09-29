@@ -1,5 +1,5 @@
 # Sign check and absolute value — everyday numeric branching
-import io
+import console
 
 pending:
   fn abs({n: int}) -> int

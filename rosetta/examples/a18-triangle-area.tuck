@@ -1,5 +1,5 @@
 # Area of a right triangle from base and height
-import io
+import console
 
 fn main() -> void [io]:
   let base = 10

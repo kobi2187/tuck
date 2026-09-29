@@ -146,21 +146,28 @@ fn main() -> int:
 """
   t.okCheck "a Capitalized, unreserved type argument is accepted"
 
-  # A reserved word is still a legal FIELD name (ruled 2026-09-27, R4): a
-  # field is only ever read through `.` or written as a record key, never
-  # bare, so no bracket can mistake it for an attribute. Every name that IS
-  # read bare — parameter, local, fn, handler — refuses the word (TK-PA08).
-  # (This snippet used a decision COLUMN named `priority`; a column is a
-  # parameter, which the ruling refuses.)
+  # A reserved word is not a FIELD name either (R4, made total 2026-09-28).
+  # A field was the one exception on 2026-09-27 — it is read through `.`,
+  # never bare — but one rule with no exception is simpler to state and to
+  # check, so the parser refuses the word for every name (TK-PA08).
   t.src """
 type Job:
   priority: int
 
 fn main() -> int:
-  let j = Job{priority: 3}
-  return j.priority
+  return 0
 """
-  t.frozen "a reserved word is still a legal field name"
+  t.badCheck "an attribute word is refused as a field name too", "TK-PA08"
+
+  # #4's second part: a KEYWORD as a field of an object or actor. `pending:`
+  # opened a `pending:` block and the error blamed the type (`Seq`); the
+  # parser now sees a keyword, a `:` and more on the line as a field and
+  # names the word.
+  for kind in ["object", "actor"]:
+    t.src "import seq\n\n" & kind & " Box:\n  pending: Seq[int]\n\n" &
+          "fn main() -> int:\n  return 0\n"
+    t.badCheck "a keyword field in an " & kind & " names the word (" & kind & ")",
+               "`pending` is a reserved word"
 
   # And the attribute reading still wins where it must, in the same file shape
   # the corpus uses everywhere.
@@ -261,7 +268,7 @@ fn main() -> int:
   # undeclared callee is a clean checker error, not a silent field read.
   t.src """
 actor Driver [queue: 8]:
-  buf: Seq[u8]
+  buf: Seq[u8] = []
 
   on send({data: Seq[u8]}) -> void:
     buf.copyFrom {data}
@@ -940,8 +947,8 @@ fn main() -> int:
   # compiler was right: a name read bare can land in brackets, and
   # `xs[stack]` then parsed as an attribute and dropped the index. RULED
   # (R4, 2026-09-27): attribute words are reserved words — refused as a
-  # parameter, local, fn, member or handler name with TK-PA08; a FIELD may
-  # still use one. The text of TK-PA08 now says so.
+  # parameter, local, fn, member or handler name with TK-PA08, and since
+  # 2026-09-28 as a field too. The text of TK-PA08 now says so.
   t.src """
 fn priority({x: int}) -> int:
   return x
@@ -1182,7 +1189,7 @@ type NalKind:
   | sps
 
 actor Pipe:
-  seen: int
+  seen: int = 0
   on nal({kind: NalKind}):
     self.seen = self.seen + 1
 
@@ -1209,7 +1216,7 @@ type Level:
   | high
 
 actor Sink:
-  seen: int
+  seen: int = 0
 
   on setLevel({lvl: Level}):
     self.seen = self.seen + 1
@@ -1428,8 +1435,8 @@ fn applyBuy({b: BookState, px: int}) -> BookState:
   return {fills: f, total: b.total + px} BookState
 
 actor Book [queue: 8]:
-  st: BookState
-  xs: Seq[int]
+  st: BookState = {fills: [], total: 0} BookState
+  xs: Seq[int] = []
   n: int = 0
 
   on buy({px: int}):
@@ -1933,6 +1940,121 @@ type R:
   x: int = 3
 """
   t.badCheck "...not a record field either", "TK-TY30"
+
+  # #85 (R8, ruled 2026-09-28): every actor field has an initialiser or is
+  # `T?`. A field with neither started at the host's zero value, and a
+  # handler reading it before anything wrote it read that zero as data.
+  t.src """
+actor A:
+  x: int
+  on go({n: int}):
+    x += n
+"""
+  t.badCheck "an actor field with no initialiser is refused (#85)", "TK-TY35"
+  # The `T?` half, which no backend could build or started correctly: the
+  # result carrier's zero value is status OK, so an unwritten `last: int?`
+  # read as PRESENT (1 on all three before lowering_optional), and `seed:
+  # int? = 5` stored a bare int where the carrier was expected.
+  t.src """
+actor Box [queue: 4]:
+  last: int?
+  seed: int? = 5
+
+  on put({v: int}):
+    last = v
+
+fn main() -> int:
+  let a = Box.last
+  let b = Box.seed
+  var r = 0
+  if not a.ok:
+    r = r + 1
+  if b.ok:
+    r = r + b.value * 10
+  return r
+"""
+  t.hostRuns "a `T?` actor field starts absent, an initialised one present, on every backend", 51
+
+  # The Array fill form `[v; N]` (R8, ruled 2026-09-28): an Array field had
+  # no practical initialiser, since a literal lists all N elements. A zero
+  # fill is the host's zeroed storage (`default(array…)`, `[N]T{}`); a named
+  # const count, a negative value and an enum element all fill. 0 non-zero
+  # bytes, 7*8 - 3*4 = 44, 3 greens.
+  t.src """
+const Cap = 8
+
+type Color:
+  | Red
+  | Green
+  | Blue
+
+fn zeros() -> int:
+  let z: Array[256, u8] = [0; 256]
+  var nz = 0
+  for i in 0 ..< 256:
+    if z[i] != 0:
+      nz = nz + 1
+  return nz
+
+fn sevens() -> int:
+  let s: Array[Cap, int] = [7; Cap]
+  let neg = [-3; 4]
+  var total = 0
+  for i in 0 ..< Cap:
+    total = total + s[i]
+  for i in 0 ..< 4:
+    total = total + neg[i]
+  return total
+
+fn greens() -> int:
+  let cs: Array[3, Color] = [Green; 3]
+  var g = 0
+  for i in 0 ..< 3:
+    if cs[i] == Green:
+      g = g + 1
+  return g
+
+fn main() -> int:
+  return {} zeros * 100 + {} sevens + {} greens * 50
+"""
+  t.hostRuns "an Array fill `[v; N]` builds and reads back, on every backend", 194
+  t.emits "...a zero fill is the zeroed storage, not a loop (Nim)",
+          r"default\(array\[256, uint8\]\)"
+  t.emitsOdin "...and on Odin", r"\[256\]u8\{\}"
+
+  # What an actor field needed it for.
+  t.src """
+import scheduler
+
+actor Uart [queue: 8]:
+  txBuf: Array[64, u8] = [0; 64]
+  sent: int = 0
+
+  on put({at: int}):
+    txBuf[at] = 9
+    sent = sent + 1
+
+fn done() -> bool:
+  return Uart.sent > 0
+
+fn main() -> int:
+  Uart send put {at: 5}
+  Uart.waitUntil {pred: :done}
+  let b = Uart.txBuf
+  if b[5] == 9 and b[4] == 0:
+    return 1
+  return 0
+"""
+  t.hostRuns "an actor's Array field starts from a fill, on every backend", 1
+
+  for (what, body, code) in [
+      ("a count that is a local, not a const", "let n = 4\n  let a = [0; n]", "TK-TY36"),
+      ("a count that is not the Array's size", "let a: Array[8, int] = [0; 4]", "TK-TY36"),
+      ("a value that is a call", "let a = [{} f; 4]", "TK-TY37"),
+      ("an element that is not a scalar", "let a = [\"x\"; 4]", "TK-TY37")]:
+    t.src "fn f() -> int:\n  return 1\n\nfn main() -> int:\n  " & body &
+          "\n  return 0\n"
+    t.badCheck "an Array fill is refused: " & what, code
 
   # An `on select` arm's body was never type-checked nor mangled: `checkDecl`
   # and `mangleMember` ended in `else: discard`, and dkSelect fell into it.
@@ -2470,10 +2592,11 @@ fn main() -> int:
   # An object member called on a fn PARAMETER built only on D. Every backend
   # passes a member's `self` mutably — Nim `var T`, Odin `^T`, D `ref T` —
   # and a Nim parameter is immutable, an Odin one unaddressable: "type
-  # mismatch" and "Cannot take the pointer address of 'a'". Such a param is
-  # now shadowed by a mutable copy at the top of the body, the value a D
-  # parameter already is. Found and fixed 2026-09-27: every clone of an
-  # interface-bounded generic fn calls members on its parameters.
+  # mismatch" and "Cannot take the pointer address of 'a'". Found and fixed
+  # 2026-09-27 (every clone of an interface-bounded generic fn calls members
+  # on its parameters). Since 2026-09-28 a member that only reads, like
+  # this one, takes `self` by value in every backend, and one that changes
+  # its object may not be called on a parameter at all (value_semantics).
   t.src """
 object Flac:
   bits: int
@@ -2489,5 +2612,207 @@ fn main() -> int:
 """
   t.quietly: t.hostRuns("a member call on a parameter runs", 96)
   t.bugFixed "a member called on a fn parameter builds, on all three"
+
+  # A23. Value semantics break when one object reaches a changing member
+  # twice: as `self` (by reference, so the change lands in the caller's
+  # `var`) and as a by-value argument. `k.absorb {other: k}` must see `other`
+  # as `k` was at the call — 1 — but Nim and Odin pass a large by-value
+  # argument as a hidden pointer to the same `k`, so `other.a` reads the
+  # change made through `self`: 101. D copies and answers 1. Found
+  # 2026-09-28 checking where the backends use references; fixed the same
+  # day: such an argument is copied into a `let` before the statement
+  # (lowering_alias).
+  t.src """
+object Big:
+  a: int
+  b: int
+  c: int
+  d: int
+  e: int
+  fn absorb({self: Big, other: Big}) -> int:
+    self.a = self.a + 100
+    return other.a
+
+fn main() -> int:
+  var k = Big{a: 1, b: 2, c: 3, d: 4, e: 5}
+  return k.absorb {other: k}
+"""
+  t.quietly: t.hostRuns("an argument is the object as it was at the call", 1)
+  t.bugFixed "one object as a changing member's self and its argument keeps value semantics"
+
+  # A24 — an actor member `fn` is accepted by the checker and emitted by no
+  # backend: every call to it is "undeclared" on Nim, Odin and D. Found
+  # 2026-09-28 working on R10, which moves an `on select` arm's work into a
+  # fn — for an actor, a member fn, since only it can write the fields.
+  t.src """
+import scheduler
+
+actor Acc [queue: 8]:
+  total: int = 0
+  done: bool = false
+
+  fn addIt({n: int}):
+    total += n
+
+  on add({n: int}):
+    {n: n} addIt
+    done = true
+
+fn ready() -> bool:
+  return Acc.done
+
+fn main() -> int:
+  Acc send add {n: 5}
+  Acc.waitUntil {pred: :ready}
+  return Acc.total
+"""
+  t.quietly: t.hostRuns("an actor member fn can be called from its handler", 5)
+  t.bugFixed "an actor member fn can be called from its handler"
+  # FIXED 2026-09-28: `fn` and `on` both parsed to a dkFn and every backend
+  # made each one a MESSAGE (`sendAddIt_…`, a `handleMsg` arm), while the
+  # direct call printed a bare `addIt(n)`. `on` now marks a handler
+  # (Decl.isOnHandler); a `fn` is a member emitted as a proc taking the
+  # actor's state as `self`, the way its dispatch does, and a call passes
+  # `self` on (res.actorMemberCalls, codegen_common.actorMemberCallee).
+
+  # A member returns a value, calls another member, and grows a Seq field.
+  t.src """
+import scheduler
+import seq
+
+actor Acc [queue: 8]:
+  total: int = 0
+  log: Seq[int] = []
+  done: bool = false
+
+  fn record({n: int}):
+    log = {items: log, value: n} push
+
+  fn addIt({n: int}) -> int:
+    total += n
+    {n: n} record
+    return total
+
+  on add({n: int}):
+    let t = {n: n} addIt
+    if t > 10:
+      done = true
+
+fn ready() -> bool:
+  return Acc.done
+
+fn main() -> int:
+  Acc send add {n: 5}
+  Acc send add {n: 7}
+  Acc.waitUntil {pred: :ready}
+  return Acc.total * 10 + Acc.log.len
+"""
+  t.hostRuns "an actor member returns a value and calls another member, on every backend", 122
+
+  # From `on select` arms, in the payload form and the bare-name form.
+  t.src """
+import scheduler
+
+actor Acc [queue: 8]:
+  total: int = 0
+  done: bool = false
+
+  fn addIt({n: int}):
+    total += n
+
+  fn finishIt():
+    done = true
+
+  on select:
+    | add -> {n: int}:  {n: n} addIt
+    | finish -> {}:     finishIt
+
+fn ready() -> bool:
+  return Acc.done
+
+fn main() -> int:
+  Acc send add {n: 5}
+  Acc send finish {}
+  Acc.waitUntil {pred: :ready}
+  return Acc.total
+"""
+  t.hostRuns "an `on select` arm calls an actor member, on every backend", 5
+
+  # What stays refused: a handler is a message, and a member is the actor's.
+  t.src """
+actor Acc [queue: 8]:
+  total: int = 0
+
+  on add({n: int}):
+    total += n
+
+fn main() -> int:
+  {n: 5} add
+  return 0
+"""
+  t.badCheck "a message handler called like a fn is refused", "TK-AC03"
+  t.src """
+actor Acc [queue: 8]:
+  total: int = 0
+
+  fn addIt({n: int}):
+    total += n
+
+  on add({n: int}):
+    {n: n} addIt
+
+fn main() -> int:
+  {n: 5} addIt
+  return 0
+"""
+  t.badCheck "an actor member called from outside the actor is refused", "TK-AC04"
+  t.src """
+actor Acc [queue: 8]:
+  total: int = 0
+
+  fn addIt({n: int}):
+    total += n
+
+  on add({n: int}):
+    {n: n} addIt
+
+fn main() -> int:
+  Acc send addIt {n: 5}
+  return 0
+"""
+  t.badCheck "a send naming an actor member, not a handler, is refused", "TK-AC05"
+
+  # A38 (found 2026-09-29, by benches/trees/slab_thread.tuck). A local's Seq
+  # FIELD handed on to a threaded fn's moved twin is freed twice on Odin.
+  # `{ns: l.nodes, d: ..} grow` inside `grow_moved` passes `l.nodes` to
+  # `grow_moved`, which keeps the buffer and returns it in `r.nodes` — and the
+  # ownership pass still schedules `defer delete(l.nodes)` beside
+  # `defer delete(r.nodes)`. A slot moved into a call is the caller's no
+  # longer (the twin's own parameter already follows that rule); a local's
+  # field does not yet. Nim and D answer 15; Odin segfaults.
+  t.src """
+import seq
+
+type Built:
+  nodes: Seq[int]
+  slot: int
+
+fn grow({ns: Seq[int], d: int}) -> Built:
+  if d == 0:
+    var out = ns
+    out = {items: out, value: 1} push
+    return {nodes: out, slot: out.len - 1} Built
+  let l = {ns: ns, d: d - 1} grow
+  let r = {ns: l.nodes, d: d - 1} grow
+  var out = r.nodes
+  out = {items: out, value: l.slot} push
+  return {nodes: out, slot: out.len - 1} Built
+
+fn main() -> int:
+  let t = {ns: [], d: 3} grow
+  return t.nodes.len
+"""
+  t.quietly: t.hostRuns("a Seq field handed to a moved twin is freed once, on every backend", 15)
+  t.bugOpen "a Seq field handed to a moved twin is freed once, on every backend"
 
   t.finish()

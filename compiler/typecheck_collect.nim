@@ -27,7 +27,7 @@ proc collectFnSig*(tc: var TypeChecker, d: Decl, top: bool) =
   # evicting the first is what made `b.hash` on a Blob check against Commit's
   # signature.
   tc.addFnSig(d.name, (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects,
-                       d.fnResourceKinds))
+                       d.fnResourceKinds, d.fnErrorTypes))
   for b in d.fnGenericBounds:
     if b.len > 0:
       tc.groupBoundsOf[d.name] = d.fnGenericBounds
@@ -57,7 +57,8 @@ proc collectFnSigType*(tc: var TypeChecker, d: Decl) =
   ## A signature TYPE declares no effects of its own — what gets baked into
   ## the slot carries them.
   tc.setFnSig(d.name, (d.sigParams, d.sigReturn,
-                       newSeq[string](), newSeq[EffectMarker](), newSeq[string]()))
+                       newSeq[string](), newSeq[EffectMarker](), newSeq[string](),
+                       newSeq[string]()))
   tc.fnSigNames.incl(d.name)
   if d.sigGenerics.len > 0: tc.fnSigGenerics[d.name] = d.sigGenerics
 
@@ -83,7 +84,7 @@ proc collectPoolSigs*(tc: var TypeChecker, d: Decl) =
                        base: Type(span: d.span, kind: tkNamed, name: "?"))
   tc.setFnSig(d.name & ".acquire", (newSeq[Param](), optHandle,
                                     newSeq[string](), newSeq[EffectMarker](),
-                                    newSeq[string]()))
+                                    newSeq[string](), newSeq[string]()))
   let void = Type(span: d.span, kind: tkNamed, name: "void")
   let h = Param(name: "h", typ: handle, span: d.span)
   let optElem = Type(span: d.span, kind: tkApp, args: @[d.poolElem],
@@ -96,7 +97,8 @@ proc collectPoolSigs*(tc: var TypeChecker, d: Decl) =
       # extern may take (typecheck_pointers).
       ("addr", @[h], Type(span: d.span, kind: tkNamed, name: "Buf"))]:
     tc.setFnSig(d.name & "." & op, (params, ret, newSeq[string](),
-                                    newSeq[EffectMarker](), newSeq[string]()))
+                                    newSeq[EffectMarker](), newSeq[string](),
+                                    newSeq[string]()))
   # Opaque: a record with no fields. Nothing to read, nothing to do
   # arithmetic on, and `{} <Pool>Handle` yields a zeroed handle whose tenancy
   # is 0 — which no live slot ever has, so a forged one is refused at release
@@ -185,7 +187,7 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
       tc.taskNames.incl(d.name)
       tc.setFnSig(d.name, (d.taskParams, d.taskReturnType,
                            newSeq[string](), d.taskEffects,
-                           d.taskResourceKinds))
+                           d.taskResourceKinds, d.taskErrorTypes))
     of dkFnSig: tc.collectFnSigType(d)
     of dkPool: tc.collectPoolSigs(d)
     of dkType: tc.collectTypeDecl(d)
@@ -202,6 +204,10 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
     of dkMixin, dkExtern, dkPending: tc.collectSigs(d.mixinMembers, top = false)
     of dkActor:
       tc.collectSigs(d.handlers)
+      for h in d.handlers:
+        if h == nil or h.kind != dkFn: continue
+        if h.isOnHandler: tc.actorHandlerOwner[h.name] = d.name
+        else: tc.actorMemberOwner[h.name] = d.name
       # `<Actor>.waitUntil {pred: :p}` — a static member call, registered the
       # same way `Pool.acquire` is. A plain signature in the flat table, so the
       # call resolves through the ordinary path: the compiler does NOT special-
@@ -221,7 +227,7 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
                            paramNames: @[]),
                  span: d.span)],
          Type(span: d.span, kind: tkNamed, name: "void"),
-         newSeq[string](), @[emIo], newSeq[string]()))
+         newSeq[string](), @[emIo], newSeq[string](), newSeq[string]()))
     of dkErrors: tc.collectErrPolicy(d)
     of dkResources: tc.collectResourceHandles(d)
     else: discard

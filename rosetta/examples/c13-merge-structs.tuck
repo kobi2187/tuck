@@ -1,5 +1,5 @@
 # merge two structs into one context struct
-import io
+import console
 
 type Episode:
   title: str

@@ -1,5 +1,5 @@
 # Sum numbers 1, 2, 3, ... until the running total passes a threshold
-import io
+import console
 
 fn main() -> void [io]:
   let threshold = 50

@@ -698,7 +698,47 @@ proc tuckNotifySend*(handle: pointer) =
     if atomicLoadN(addr slot.parked, ATOMIC_ACQUIRE) == 0: return
     wakeSlot(slot)
 
+proc tuckMailboxFull*(actor, why: string) =
+  ## The send that found `actor`'s mailbox full cannot go on (R6): the actor
+  ## declares `on_full: assert`, or it waits and never could. Stops the way
+  ## a registry misuse does, exit 1 on every backend.
+  stderr.writeLine("TUCK ACTOR [" & actor & "]: mailbox full — " & why)
+  quit(1)
+
 proc pumpOnce(): bool   # forward: tuckWaitOn drives main's own tasks
+
+proc tuckAwaitRoom*(handle: pointer, actor: string) =
+  ## One step of a send waiting for room in `actor`'s full mailbox — its
+  ## `on_full: wait`, the default (R6). Reached only once a send has found
+  ## the mailbox full, so the send that finds room pays nothing for it.
+  ##
+  ## Each step lets the receiver drain: wake it, then give up the CPU the way
+  ## the caller can. A task or single-mode actor re-queues itself and yields
+  ## (tuckYield); main runs something ready; a thread-mode actor or main with
+  ## nothing to run yields its thread.
+  ##
+  ## An actor waiting on its OWN mailbox would wait forever — the one that
+  ## would make room is the one waiting — so that send stops with a message
+  ## rather than hanging. A cycle of full mailboxes can still hang: that is
+  ## what `wait` means, and why `drop` and `assert` exist.
+  if handle == nil:
+    tuckMailboxFull(actor, "the actor was never started, so nothing drains it")
+  let slot = cast[ptr ActorSlot](handle)
+  let selfSend =
+    when TuckActorsSingle: inCoroutine() and running() == slot.co
+    else: gMySlot == slot
+  if selfSend:
+    tuckMailboxFull(actor, "it sent to itself, and the actor that would " &
+                    "make room is the one waiting. Declare `on_full: drop` " &
+                    "or a larger `queue`")
+  when TuckActorsBatch: tuckFlushStaged()
+  tuckNotifySend(handle)
+  when TuckActorsSingle:
+    if inCoroutine(): tuckYield() else: discard pumpOnce()
+  else:
+    if inCoroutine(): tuckYield()
+    elif hasPending(): discard runNext()
+    else: discard posix.sched_yield()
 
 proc tuckWaitOn*(handle: pointer, pred: proc(): bool) =
   ## `Actor.waitUntil {pred: :p}` — hand `pred` to that actor and block until it

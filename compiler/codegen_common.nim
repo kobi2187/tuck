@@ -123,7 +123,7 @@ proc collectHandlers*(d: Decl):
   ## binding. Walking only dkFn — which the Odin backend did at five separate
   ## sites — made every `on select` actor look like an actor with NO handlers.
   for h in d.handlers:
-    if h.kind == dkFn:
+    if h.kind == dkFn and h.isOnHandler:
       result.handlers.add(ActorMsgHandler(name: h.name, params: h.fnParams,
                                           body: h.fnBody))
     elif h.kind == dkSelect:
@@ -178,6 +178,40 @@ proc actorQueueSize*(m: Module, d: Decl): string =
     if attr.name != "queue": continue
     let n = constIntOf(m, attr.value)
     return if n.isSome: $n.get else: attr.value
+
+type
+  OnFull* = enum
+    ## What the send that finds an actor's mailbox full does (R6, ruled
+    ## 2026-09-28): the program picks, per actor, `[on_full: ...]`.
+    ofWait = "wait"       ## wait for room — the default
+    ofDrop = "drop"       ## lose the message, as every send once did
+    ofAssert = "assert"   ## stop the program, naming the actor
+
+proc actorOnFull*(d: Decl): OnFull =
+  ## The actor's `[on_full: ...]`, or `wait` when it names none. The checker
+  ## has refused any other word (TK-AC06), so the fallback is reached only
+  ## for an unchecked tree.
+  result = ofWait
+  if d == nil: return
+  for attr in d.attrs:
+    if attr.name != "on_full": continue
+    for p in OnFull:
+      if $p == attr.value: return p
+
+proc actorLabel*(d: Decl, fallback: string): string =
+  ## The actor's name as its author wrote it, for a runtime message.
+  if d == nil: fallback else: writtenName(d)
+
+proc actorDeclNamed*(m: Module, real: Table[string, Module], name: string): Decl =
+  ## The actor a send names, declared in this module or one it imports.
+  for d in m.decls:
+    if d != nil and d.kind == dkActor and (d.name == name or writtenName(d) == name):
+      return d
+  for other in real.values:
+    if other == m: continue
+    for d in other.decls:
+      if d != nil and d.kind == dkActor and (d.name == name or writtenName(d) == name):
+        return d
 
 proc isDistinctAlias*(body: Type): bool =
   ## Does this alias declare a type the compiler must keep SEPARATE from its
@@ -538,15 +572,127 @@ proc hasLastUse(res: Resolution, e: Expr, name: string): bool =
     if hasLastUse(res, c, name): return true
   false
 
+# --- which final reads of a parameter KEEP it ------------------------------
+#
+# `sink` tells Nim the callee may keep the argument: a caller then MOVES an
+# argument that dies at the call and COPIES one that is still live. So a
+# parameter the callee only READS must not be `sink` — and marking one anyway
+# is not merely wasted. Every call whose argument is still needed pays a full
+# copy, and a recursive reader (`eval(ns, n.left) + eval(ns, n.right)`) pays
+# one per call: 87 s against 0.037 s on a 2^15-leaf tree held as a node array,
+# and 0.25 s against 0.011 s for the boxed tree lowering_recursive emits
+# (benches/SCORES.md, "Trees"). Leaving `sink` off is always sound — it only
+# gives up a move — so every unrecognised case below answers "kept", which is
+# what every final read was taken to mean before.
+
+type ConsumeMemo = object
+  known: Table[string, bool]  ## "fn\0param" -> does the fn keep that param
+  busy: HashSet[string]       ## being answered: a recursive call reads as not kept
+
+proc fnNamed(m: Module, name: string): Decl =
+  ## The one top-level fn called `name`, or nil — none, or several, when the
+  ## call cannot say which and the answer has to be the safe one.
+  for d in m.decls:
+    if d != nil and d.kind == dkFn and d.name == name:
+      if result != nil: return nil
+      result = d
+
+proc paramKept(res: Resolution, m: Module, fnD: Decl, pname: string,
+               memo: var ConsumeMemo): bool
+
+proc calleeKeeps(res: Resolution, m: Module, call: Expr, pname: string,
+                 idx: int, memo: var ConsumeMemo): bool =
+  ## Does the callee keep the argument bound to its parameter `pname` (by
+  ## name, for a record-style call) or at position `idx`? A fn declared in
+  ## this module answers from its own body; a construction, an extern or an
+  ## import is taken to keep it.
+  if call.callee == nil or call.callee.kind != exkVar: return true
+  let d = fnNamed(m, call.callee.name)
+  if d == nil or d.fnBody == nil: return true
+  if pname != "":
+    for p in d.fnParams:
+      if p.name == pname: return paramKept(res, m, d, pname, memo)
+    return true
+  if idx < 0 or idx >= d.fnParams.len: return true
+  paramKept(res, m, d, d.fnParams[idx].name, memo)
+
+proc keptAt(res: Resolution, m: Module, stack: seq[Expr], k: int,
+            memo: var ConsumeMemo): bool
+
+proc fieldKept(res: Resolution, m: Module, stack: seq[Expr], k: int,
+               memo: var ConsumeMemo): bool =
+  ## stack[k] is a field VALUE of the record literal stack[k-1]. A literal
+  ## that is a call's payload hands each field to the parameter of that name;
+  ## any other literal holds what it is given.
+  let s = stack[k - 1]
+  if k >= 2 and stack[k - 2].kind == exkCall and s in stack[k - 2].args:
+    for f in s.fields:
+      if f.value == stack[k]:
+        return calleeKeeps(res, m, stack[k - 2], f.name, -1, memo)
+  true
+
+proc keptAt(res: Resolution, m: Module, stack: seq[Expr], k: int,
+            memo: var ConsumeMemo): bool =
+  ## Is the value stack[k] kept by where it sits — bound, stored, returned,
+  ## sent, or handed to a parameter that keeps it? Walks outward while the
+  ## value only passes through (a branch, a block's last value, a field read).
+  if k == 0: return true   # the body's own value is the fn's result
+  let n = stack[k]
+  let p = stack[k - 1]
+  case p.kind
+  of exkReturn, exkList, exkFill, exkSend, exkChain: true
+  of exkAssign: n == p.assignVal
+  of exkBracketAssign: n == p.brValue
+  of exkStruct: fieldKept(res, m, stack, k, memo)
+  of exkCall: n != p.callee and calleeKeeps(res, m, p, "", p.args.find(n), memo)
+  of exkField:
+    p.dotArg != nil or (n == p.receiver and keptAt(res, m, stack, k - 1, memo))
+  of exkIf: n != p.cond and keptAt(res, m, stack, k - 1, memo)
+  of exkMatch: n != p.subject and keptAt(res, m, stack, k - 1, memo)
+  of exkBlock:
+    p.stmts.len > 0 and n == p.stmts[^1] and keptAt(res, m, stack, k - 1, memo)
+  else: false   # an operand, an index, a condition, a loop's iterable: read
+
+proc keptLastUse(res: Resolution, m: Module, e: Expr, name: string,
+                 stack: var seq[Expr], memo: var ConsumeMemo): bool =
+  ## Is some read of `name` under `e` both its final use and a keeping one?
+  if e == nil: return false
+  stack.add e
+  if e.kind == exkVar and e.name == name and res.isLastUse(e):
+    result = keptAt(res, m, stack, stack.high, memo)
+  if not result:
+    for c in e.children:
+      if keptLastUse(res, m, c, name, stack, memo):
+        result = true
+        break
+  discard stack.pop()
+
+proc paramKept(res: Resolution, m: Module, fnD: Decl, pname: string,
+               memo: var ConsumeMemo): bool =
+  ## Does `fnD` keep its parameter `pname`? The least fixed point over the
+  ## module's fns: a call back into one still being answered reads as "only
+  ## read", which is what a recursive reader is.
+  let key = fnD.name & "\0" & pname
+  if memo.known.hasKey(key): return memo.known[key]
+  if key in memo.busy: return false
+  memo.busy.incl key
+  var stack: seq[Expr]
+  result = keptLastUse(res, m, fnD.fnBody, pname, stack, memo)
+  memo.busy.excl key
+  memo.known[key] = result
+
 proc paramIsMovable*(res: Resolution, m: Module, body: Expr, p: Param): bool =
-  ## May this parameter be taken destructively? True when the analysis proved
-  ## the body's final read of it — so the caller's copy is unobservable from
-  ## that point — AND the type owns storage worth not copying.
+  ## May this parameter be taken destructively (`sink`)? True when the type
+  ## owns storage worth not copying AND the body's final read of it KEEPS it
+  ## (keptAt). A parameter the body only reads — indexes, measures, walks,
+  ## passes on to another reader — is borrowed instead.
   ##
   ## A parameter the body never reads has no stamped use and stays as it was,
   ## which is the safe answer for anything the analysis did not reach.
   if not ownsHeap(m, p.typ): return false
-  hasLastUse(res, body, p.name)
+  var memo: ConsumeMemo
+  var stack: seq[Expr]
+  keptLastUse(res, m, body, p.name, stack, memo)
 
 # --- the MOVED twin ---------------------------------------------------------
 #
@@ -596,38 +742,35 @@ proc handlerProcName*(handler: Decl): string =
   ## identifier — the dot becomes an underscore, as its declaration does.
   handler.name.replace(".", "_")
 
-proc memberReceiverVar(res: Resolution, m: Module, n: Expr): string =
-  ## The variable node `n` calls a member on — `a` in `a.sampleRate`, as the
-  ## call itself or as the checker resolved it — or "".
-  let c = if n.kind == exkCall: n else: res.call(n)
-  if c == nil or c.kind != exkCall or c.args.len == 0: return ""
-  let r = c.args[0]
-  if r == nil or r.kind != exkVar or memberCallee(res, m, c) == "": return ""
-  r.name
+iterator actorMemberFns*(d: Decl): Decl =
+  ## An actor's member `fn`s — the ones spelled `fn`, not `on` (A24). Each is
+  ## printed as a proc taking the actor's state as `self`, the way its message
+  ## dispatch takes it, and a call to one passes that `self` on.
+  for h in d.handlers:
+    if h != nil and h.kind == dkFn and not h.isOnHandler: yield h
 
-proc paramsCalledAsReceiver*(res: Resolution, m: Module, fn: Decl): seq[string] =
-  ## The params of `fn` (never `self`) that a member call in its body takes
-  ## as the receiver. Every backend passes a member's `self` mutably — Nim
-  ## `var T`, Odin `^T`, D `ref T` — and a Nim or Odin parameter is neither
-  ## mutable nor addressable, so a member call on one did not compile
-  ## (found 2026-09-27). Such a param is shadowed by a mutable copy at the top
-  ## of the body: the value a D parameter already is, so a member writing
-  ## `self` writes the copy on every backend alike.
-  if fn == nil or fn.fnBody == nil: return
-  var names: seq[string]
-  for p in fn.fnParams:
-    if p.name != "self": names.add(p.name)
-  if names.len == 0: return
-  for n in nodes(fn.fnBody):
-    let r = memberReceiverVar(res, m, n)
-    if r in names and r notin result: result.add(r)
+proc actorMemberCallee*(res: Resolution, e: Expr): string =
+  ## The proc a call to an actor's member `fn` prints as (A24) — the name the
+  ## member is declared under, `memberProcName` over the mangled actor — or
+  ## "" for any other call. The checker only records a call made from the
+  ## actor's own code, where `self` is its state.
+  let (owner, member) = res.actorMemberOf(e)
+  if member == "": "" else: memberProcName(prefixed(owner, nkActor), member)
 
-proc leadingIndent*(body: string): string =
-  ## The indentation of `body`'s first non-blank line — where a line put in
-  ## front of an emitted body has to start.
-  for line in body.splitLines:
-    if line.strip.len == 0: continue
-    for ch in line:
-      if ch in {' ', '\t'}: result.add(ch)
-      else: return
-  ""
+proc actorSelfParam*(actorType: string, m: Decl): Param =
+  ## `self`, the state an actor member `fn` works on, typed as `actorType`
+  ## — each backend's spelling of what its message dispatch takes.
+  Param(name: "self", typ: Type(span: m.span, kind: tkNamed, name: actorType),
+        span: m.span)
+
+proc isZeroFill*(e: Expr): bool =
+  ## `[0; N]`, `[0.0; N]`, `[false; N]` — a fill each host can give as its
+  ## zero-initialised storage rather than a loop (R8, the owner's note).
+  let v = e.fillValue
+  v != nil and v.kind == exkLit and v.litValue.len > 0 and
+    (v.litValue == "false" or v.litValue.allCharsInSet({'0', '.', '_'}))
+
+proc fillElemType*(res: Resolution, e: Expr): Type =
+  ## `[v; N]`'s element type, as the checker settled it (synthFill).
+  let t = res.typeFor(e)
+  if t != nil and t.kind == tkApp and t.args.len == 2: t.args[1] else: nil

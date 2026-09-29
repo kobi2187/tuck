@@ -1,6 +1,6 @@
 # rs11 — decision table alongside sum types and match, for-in-range mix.
 # Stresses: decision rows (->), sum type param, for range loop.
-import io
+import console
 
 type Priority:
   | High

@@ -1,5 +1,5 @@
 # Sum of the first N natural numbers
-import io
+import console
 
 fn main() -> void [io]:
   var total = 0

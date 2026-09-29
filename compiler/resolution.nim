@@ -66,6 +66,24 @@ type
     # these instead of re-deriving the mapping, which misses by-type matches.
     argFields*: Table[NodeId, seq[string]]
     callParams*: Table[NodeId, seq[string]]
+    optWraps*: Table[NodeId, Type]
+      ## A plain `T` the checker accepted into a `T?` place it has no other
+      ## way to reach — a payload field, a construction field, a positional
+      ## argument — keyed by the value, holding the `?T` it goes into.
+      ## lowering_optional wraps each one; assignments and returns it wraps
+      ## on its own.
+    actorMemberCalls*: Table[NodeId, (string, string)]
+                    ## A call to an actor's member `fn`, by the call's id, to
+                    ## (the actor, the member), both as written (A24). The
+                    ## emitters print it as the actor's member proc with
+                    ## `self` passed on.
+    selfWriters*: HashSet[NodeId]
+                    ## The object members that change `self` — directly, or
+                    ## by calling such a member on `self` or on one of its
+                    ## fields — by the member Decl's id (typecheck.
+                    ## checkSelfWrites, ruled 2026-09-28). A member NOT here
+                    ## only reads, so every backend takes its `self` by value
+                    ## and it may be called on a parameter or a `let`.
     ifaceInstances*: Table[NodeId, seq[Type]]
                     ## A call to a fn with a type param bounded by an
                     ## INTERFACE (`fn join[T: AudioSource]`): what each of the
@@ -144,6 +162,12 @@ proc isPoolHandleType*(m: Module, name: string): bool =
     # teaching mangle about a type that does not exist in the tree.
     if d.name == pool or d.name == prefixed(pool, nkPool): return true
   return false
+
+proc isImportedPoolHandle*(m: Module, real: Table[string, Module],
+                           name: string): bool =
+  ## The handle type of a pool some OTHER module declares (R11, A36).
+  for other in real.values:
+    if other != m and isPoolHandleType(other, name): return true
 
 proc resourceHandleName*(kind: string): string =
   ## The per-kind handle type's name (spec §7.4). Capitalized, because it IS a
@@ -231,6 +255,7 @@ proc copyMeaning(r: Resolution, src, dst: NodeId) =
   if src in r.declOf: r.declOf[dst] = r.declOf[src]
   if src in r.argFields: r.argFields[dst] = r.argFields[src]
   if src in r.callParams: r.callParams[dst] = r.callParams[src]
+  if src in r.optWraps: r.optWraps[dst] = r.optWraps[src]
   if src in r.callTypeArgs: r.callTypeArgs[dst] = r.callTypeArgs[src]
   if src in r.wraps: r.wraps[dst] = r.wraps[src]
   if src in r.ifaceCalls: r.ifaceCalls[dst] = r.ifaceCalls[src]
@@ -263,7 +288,7 @@ proc freshCopy*(r: Resolution, e: Expr): Expr =
 
 proc freshStep*(r: Resolution, s: ChainStep): ChainStep =
   ## The same, for a chain step, which carries an id of its own.
-  result = ChainStep(op: s.op, span: s.span, id: newNodeId(),
+  result = ChainStep(span: s.span, id: newNodeId(),
                      target: r.freshCopy(s.target), arg: r.freshCopy(s.arg))
   if s.id.isSet: r.copyMeaning(s.id, result.id)
 
@@ -337,6 +362,7 @@ proc newResolution*(): Resolution =
              declOf: initTable[NodeId, NodeId](),
              argFields: initTable[NodeId, seq[string]](),
              callParams: initTable[NodeId, seq[string]](),
+             optWraps: initTable[NodeId, Type](),
              callTypeArgs: initTable[NodeId, seq[Type]](),
              wraps: initTable[NodeId, tuple[objName, iface: string]](),
              ifacePairs: initHashSet[tuple[objName, iface: string]](),
@@ -499,6 +525,17 @@ proc setArgFields*(r: Resolution, e: Expr, fields: seq[string]) =
   ensureId(e)
   r.argFields[e.id] = fields
 
+proc markOptWrap*(r: Resolution, e: Expr, place: Type) =
+  ## `e`, a plain `T`, goes into the `?T` place `place` (see optWraps).
+  if e == nil: return
+  ensureId(e)
+  r.optWraps[e.id] = place
+
+proc optWrapOf*(r: Resolution, e: Expr): Type =
+  ## The `?T` place `e` was accepted into as a plain `T`, or nil.
+  if e == nil or not e.id.isSet: return nil
+  r.optWraps.getOrDefault(e.id, nil)
+
 proc argFieldsFor*(r: Resolution, e: Expr): seq[string] =
   ## Empty when the checker recorded no mapping — callers fall back to
   ## matching by param name.
@@ -628,3 +665,9 @@ proc escapeStringLit*(v: string): string =
     of '\0': result.add("\\x00")
     else: result.add(c)
 
+
+proc actorMemberOf*(res: Resolution, e: Expr): (string, string) =
+  ## The (actor, member) a call to an actor member `fn` names, as written, or
+  ## ("", "") for any other call.
+  if e != nil and res.actorMemberCalls.hasKey(e.id): res.actorMemberCalls[e.id]
+  else: ("", "")

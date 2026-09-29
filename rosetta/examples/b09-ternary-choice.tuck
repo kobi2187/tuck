@@ -1,6 +1,6 @@
 # Ternary-style choice via if/else assigning to a var
 # (Tuck has no `if` expression, so this is the natural workaround)
-import io
+import console
 
 fn main() -> void [io]:
   let n = 7

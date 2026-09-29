@@ -1,5 +1,5 @@
 # Enumerate a list with both index and value
-import io
+import console
 
 fn main() -> void [io]:
   let names = ["Ada", "Bo", "Cy"]

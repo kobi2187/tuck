@@ -1,5 +1,5 @@
 # Contains / index-of a value in a list
-import io
+import console
 import seq
 
 pending:

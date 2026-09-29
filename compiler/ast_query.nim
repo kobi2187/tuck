@@ -345,15 +345,29 @@ proc saturatingType*(m: Module, name: string): Type =
     if a.name == "saturating": return d.typeBody
   nil
 
+proc isValueIf*(e: Expr): bool
+
+proc isStatementBranch(b: Expr): bool =
+  ## A one-line branch that is a STATEMENT, not a value: an assignment, a
+  ## `return`, `raise`, `break`, `continue`, `discard` or `send` — or an `if`
+  ## that is itself the statement form (an `elif` chain lands here).
+  b != nil and (b.kind in {exkAssign, exkBracketAssign, exkReturn, exkRaise,
+                           exkBreak, exkContinue, exkDiscard, exkSend} or
+                (b.kind == exkIf and not isValueIf(b)))
+
 proc isValueIf*(e: Expr): bool =
   ## An `if` used as a VALUE rather than a statement (ruling R2):
-  ## `let x = if c: a else: b`. Both branches must be present and neither may
-  ## be a block — a block body is the statement form, written across lines.
-  ## The distinction is syntactic on purpose: it is visible at the call site,
-  ## so no type inference decides how the same source emits.
+  ## `let x = if c: a else: b`. Both branches must be present, neither may
+  ## be a block — a block body is the statement form, written across lines —
+  ## and neither may be a statement (R3, ruled 2026-09-28): `if n > 9: n = 0
+  ## else: n = n + 1` is the statement `if` on one line. It checked and then
+  ## built on no backend (a bare expression on Nim, a ternary of assignments
+  ## on Odin and D). The distinction is syntactic on purpose: it is visible
+  ## at the call site, so no type inference decides how the same source emits.
   e != nil and e.kind == exkIf and
   e.thenBranch != nil and e.thenBranch.kind != exkBlock and
-  e.elseBranch != nil and e.elseBranch.kind != exkBlock
+  e.elseBranch != nil and e.elseBranch.kind != exkBlock and
+  not isStatementBranch(e.thenBranch) and not isStatementBranch(e.elseBranch)
 
 proc isSingleFieldPayload*(e: Expr): bool =
   ## A payload carrying exactly one field: `{n}`, `{value: 5}`, `{host: h}`.
@@ -390,6 +404,8 @@ proc genPatternStr*(p: Pattern): string =
   of pkVar: p.name
   of pkBind: raiseAssert "genPatternStr: a binding arm reached an emitter " &
                         "unlowered (lowering_match_binds)"
+  of pkTypeTest: raiseAssert "genPatternStr: a type-test arm reached an " &
+                            "emitter unlowered (lowering_iface)"
   of pkLit: p.litValue
   of pkOr: genPatternStr(p.left) & ", " & genPatternStr(p.right)
   of pkRecord, pkTuple: "_"   # destructuring binds; as a label it tests nothing
@@ -433,11 +449,12 @@ proc implicitTailValue*(body: Expr): Expr =
   of exkReturn, exkRaise, exkIf, exkFor, exkWhile, exkBreak, exkContinue,
      exkAssign, exkBlock, exkSelect, exkSend, exkDiscard, exkTripleDot:
     nil
-  of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkCall,
+  of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill, exkCall,
      exkChain, exkBinary, exkUnary, exkBracket, exkBracketAssign, exkImport,
      exkCombinator, exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef,
      exkMixinRef, exkDefer, exkFinish, exkAcquire, exkOrdinal, exkValidate,
-     exkIfaceCall, exkPoolOp:
+     exkIfaceCall, exkIfaceIs, exkIfacePayload, exkPoolOp, exkWrapOk,
+     exkAbsent:
     lastS
 
 proc injectTailReturn*(body: Expr, retTypeStr: string) =
@@ -612,6 +629,12 @@ proc memberCalleeOf*(m: Module, owner, calleeName: string): string =
   let mem = memberDeclOf(m, owner, calleeName)
   if mem == nil: "" else: memberProcName(owner, mem.name)
 
+proc writesSelf*(res: Resolution, mem: Decl): bool =
+  ## Does object member `mem` change its `self` (typecheck.checkSelfWrites)?
+  ## Only such a member takes `self` by reference in a backend; one that
+  ## reads takes it by value, so it may be called on a parameter or a `let`.
+  mem != nil and mem.id.isSet and mem.id in res.selfWriters
+
 proc memberRecvType*(res: Resolution, e: Expr): Type =
   ## A member call's receiver type: args[0]'s (the checker's rewrite), or the
   ## `self` field's of a payload literal (`{self: c} bump`).
@@ -637,6 +660,24 @@ proc memberCallee*(res: Resolution, m: Module, e: Expr): string =
      e.callee.kind != exkVar or e.args.len < 1 or e.args[0] == nil:
     return ""
   memberCalleeOf(m, memberOwner(m, memberRecvType(res, e)), e.callee.name)
+
+proc moduleDeclaringType*(module: Module, name: string): string
+
+proc memberCalleeModule*(res: Resolution, m: Module, e: Expr): string =
+  ## The module declaring the object a member call's receiver is, when that
+  ## is another module (an imported object, R11), else "" — what Odin and D
+  ## qualify the member proc with.
+  if memberCallee(res, m, e) == "": return ""
+  moduleDeclaringType(m, memberOwner(m, memberRecvType(res, e)))
+
+proc callWritesSelf*(res: Resolution, m: Module, e: Expr): bool =
+  ## Is `e` a call of an object member that changes its `self`? Its receiver
+  ## is then passed by reference (Odin `&x`); a reading member's by value.
+  if e == nil or e.kind != exkCall or e.callee == nil or
+     e.callee.kind != exkVar or e.args.len < 1 or e.args[0] == nil:
+    return false
+  writesSelf(res, memberDeclOf(m, memberOwner(m, memberRecvType(res, e)),
+                               e.callee.name))
 
 # --- compile-time whole numbers -----------------------------------------
 #
@@ -981,10 +1022,15 @@ proc moduleDeclaringType*(module: Module, name: string): string =
   ## three, and why the stdlib design's "modules rely on each other" had never
   ## been exercised.
   for d in module.decls:
-    if d == nil or d.kind != dkType or d.name != name: continue
+    if d == nil or d.kind notin {dkType, dkObject, dkInterface} or d.name != name: continue
     if not d.span.file.startsWith(ImportedTypeMarker & ":"): return ""
     return d.span.file[ImportedTypeMarker.len + 1 .. ^1]
   ""
+
+proc isImportedCopy*(d: Decl): bool =
+  ## Is `d` an importer's copy of another module's type or object
+  ## (modules.injectImportedTypes)? Its origin checks and emits it.
+  d != nil and d.span.file.startsWith(ImportedTypeMarker & ":")
 
 type ActorMsgHandler* = object
   ## An actor's receive branch, gathered from BOTH `on <name>` blocks AND `on
@@ -1031,3 +1077,35 @@ proc errIdCode*(name: string): uint16 =
   for c in name:
     h = (h xor uint32(c)) * 16777619'u32
   uint16((h xor (h shr 16)) and 0xFFFF'u32)
+
+proc absenceIsDeclared*(t: Type): bool =
+  ## `T?` / `!?T`: a type whose values include "not there". An actor field of
+  ## it may start that way (TK-TY35), and a plain `T` stored into it is
+  ## wrapped (lowering_optional).
+  t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+    t.base.name in ["?", "!?"]
+
+proc isWrappedType*(t: Type): bool =
+  ## `!T`, `?T` or `!?T` — a value already in the result carrier.
+  t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+    t.base.name in ["!", "?", "!?"]
+
+proc declOrigin*(m: Module, real: Table[string, Module], name: string,
+                 kinds: set[DeclKind]): string =
+  ## The OTHER module declaring `name` (as emitted) as one of `kinds`, or ""
+  ## when `m` declares it or no module does. For a declaration that is not
+  ## injected into an importer, which Odin and D must then qualify with its
+  ## module at every reference (R11).
+  for d in m.decls:
+    if d != nil and d.kind in kinds and d.name == name: return ""
+  for modName, other in real:
+    if other == m: continue
+    for d in other.decls:
+      if d != nil and d.kind in kinds and d.name == name: return modName
+  ""
+
+proc constOrigin*(m: Module, real: Table[string, Module], name: string): string =
+  ## The module declaring an imported const. Not injected — the importer's
+  ## own const may shadow it — so Nim exports it and Odin and D qualify each
+  ## reference (A33).
+  declOrigin(m, real, name, {dkConst})

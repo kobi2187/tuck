@@ -1,5 +1,5 @@
 # Remove duplicates from a list, preserving first-seen order
-import io
+import console
 import seq
 
 pending:

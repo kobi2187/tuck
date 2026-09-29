@@ -74,6 +74,14 @@ TuckResult!T terr(T)(ushort code)
     return r;
 }
 
+/// `[v; N]` (R8): N copies of a scalar. `T[N] r = v` is D's block
+/// initialisation — for a zero, the zeroed storage, not a loop.
+T[N] tuckFill(T, size_t N)(T v)
+{
+    T[N] r = v;
+    return r;
+}
+
 TuckResult!T tnone(T)()
 {
     TuckResult!T r;
@@ -411,14 +419,13 @@ struct Mailbox(T, size_t Cap)
     }
 }
 
-/// Returns false when the mailbox is FULL — the message is dropped.
+/// Returns false when the mailbox is FULL, and the message is not taken.
 ///
-/// That is the existing de-facto behaviour of the Nim runtime, matched here
-/// deliberately rather than improved on: the spec states no full-mailbox
-/// policy (FRICTIONS.md #9), so choosing one is a language decision, not a
-/// backend's. Verified consequence, recorded in the actor playground: a
-/// waitUntil whose predicate needs the dropped messages spins forever, on
-/// the Nim backend too.
+/// What happens then is the actor's `on_full` (R6, ruled 2026-09-28), decided
+/// by the send helper the compiler emits: `sendWaiting` waits for room (the
+/// default), `sendAsserting` stops the program, and `drop` discards this
+/// result — which is what every send did before the ruling, when a waitUntil
+/// needing a dropped message spun forever.
 bool enqueue(T, size_t Cap)(ref Mailbox!(T, Cap) mb, T msg)
 {
     mb.lock.lock();
@@ -432,6 +439,23 @@ bool enqueue(T, size_t Cap)(ref Mailbox!(T, Cap) mb, T msg)
     mb.fill[c]++;
     mb.lock.unlock();
     return true;
+}
+
+/// A send to an actor declaring `on_full: wait`, the default (R6): when the
+/// mailbox is full, wait for room. `msg` is built once, by the caller.
+void sendWaiting(T, size_t Cap)(ref Mailbox!(T, Cap) mb, T msg, void* handle,
+                                string actor)
+{
+    while (!enqueue(mb, msg)) tuckAwaitRoom(handle, actor);
+}
+
+/// A send to an actor declaring `on_full: assert` (R6): a full mailbox stops
+/// the program.
+void sendAsserting(T, size_t Cap)(ref Mailbox!(T, Cap) mb, T msg, string actor)
+{
+    if (!enqueue(mb, msg))
+        tuckMailboxFull(actor, "the actor declares `on_full: assert` (queue: " ~
+                        Cap.to!string ~ ")");
 }
 
 bool hasRoom(T, size_t Cap)(ref Mailbox!(T, Cap) mb)
@@ -858,6 +882,181 @@ ubyte* tuckPoolAddr(T, size_t Count)(ref ObjectPool!(T, Count) pool, PoolHandle 
     const i = heldCell(pool, h, "addr");
     pool.state[i] = CellState.present;
     return cast(ubyte*) &pool.storage[i];
+}
+
+// ---------------------------------------------------------------------------
+// The slab (thoughts/shared/plans/2026-09-29-slab-proposal.md). The Nim twin
+// (compiler/tuck_rt.nim) carries the reasoning; this mirrors it — three
+// storages under one set of operations, a cell of {tenancy, link, value}, the
+// free list in the dead cells, and every slab zero at the start apart from
+// its name. Cells are GC-allocated, so the collector sees what they hold.
+
+struct SlabRef { uint slot; uint gen; }
+
+struct SlabCell(T)
+{
+    uint gen;
+    int link;      // SLAB_LIVE while it holds a value; else next free + 1 (0 = end)
+    T value;
+}
+
+enum int SLAB_LIVE = -1;
+enum uint SLAB_PAGE_SHIFT = 10;
+enum uint SLAB_PAGE_N = 1u << SLAB_PAGE_SHIFT;
+enum uint SLAB_TOP_N = 64;
+enum size_t SLAB_CHUNK_BYTES = 65536;
+
+/// log2 of the cells per chunk: the most that fit in SLAB_CHUNK_BYTES, >= 1.
+template slabChunkShift(T)
+{
+    enum uint slabChunkShift = () {
+        uint s = 0;
+        while ((2u << s) * SlabCell!T.sizeof <= SLAB_CHUNK_BYTES) s++;
+        return s;
+    }();
+}
+
+void tuckSlabMisuse(string name, string what)
+{
+    import std.stdio : stderr;
+    import core.stdc.stdlib : exit;
+    stderr.writeln("TUCK SLAB [", name, "]: ", what);
+    exit(1);
+}
+
+struct SlabChunked(T)
+{
+    alias Chunk = SlabCell!T*;           // the first cell of a chunk
+    alias Page = Chunk[SLAB_PAGE_N];     // a directory page of chunks
+    string name;
+    Page*[SLAB_TOP_N] top;
+    uint len;
+    int freeHead;
+    long live;
+
+    private enum uint cs = slabChunkShift!T;
+
+    SlabCell!T* cellAt(uint i) @trusted
+    {
+        auto pg = top.ptr[i >> (cs + SLAB_PAGE_SHIFT)];
+        return (*pg).ptr[(i >> cs) & (SLAB_PAGE_N - 1)] + (i & ((1u << cs) - 1));
+    }
+
+    uint grow()
+    {
+        immutable i = len;
+        if ((i & ((1u << cs) - 1)) == 0)
+        {
+            immutable pi = i >> (cs + SLAB_PAGE_SHIFT);
+            if (pi >= SLAB_TOP_N) tuckSlabMisuse(name, "full (" ~ i.to!string ~ " cells)");
+            if (top[pi] is null) top[pi] = (new Page[1]).ptr;
+            immutable ci = (i >> cs) & (SLAB_PAGE_N - 1);
+            if ((*top[pi])[ci] is null) (*top[pi])[ci] = (new SlabCell!T[1u << cs]).ptr;
+        }
+        len++;
+        return i;
+    }
+}
+
+struct SlabFixed(T, size_t N)
+{
+    string name;
+    SlabCell!T[N] cells;
+    uint len;
+    int freeHead;
+    long live;
+
+    SlabCell!T* cellAt(uint i) @trusted { return cells.ptr + i; }
+    uint grow() { return len++; }
+}
+
+struct SlabSeq(T)
+{
+    string name;
+    SlabCell!T[] cells;
+    uint len;
+    int freeHead;
+    long live;
+
+    SlabCell!T* cellAt(uint i) @trusted { return cells.ptr + i; }
+    uint grow()
+    {
+        if (len == cells.length) cells ~= SlabCell!T.init;
+        return len++;
+    }
+}
+
+private uint slabTake(S)(ref S s)
+{
+    if (s.freeHead != 0)
+    {
+        immutable i = cast(uint)(s.freeHead - 1);
+        s.freeHead = s.cellAt(i).link;
+        return i;
+    }
+    return s.grow();
+}
+
+private SlabRef slabFill(S, T)(ref S s, uint i, T v)
+{
+    auto c = s.cellAt(i);
+    c.gen++;
+    c.link = SLAB_LIVE;
+    c.value = v;
+    s.live++;
+    return SlabRef(i, c.gen);
+}
+
+/// A cell holding `v`. A growable slab never runs out.
+SlabRef tuckSlabNew(T)(ref SlabChunked!T s, T v) { return slabFill(s, slabTake(s), v); }
+/// ditto
+SlabRef tuckSlabNew(T)(ref SlabSeq!T s, T v) { return slabFill(s, slabTake(s), v); }
+
+/// `[count: N]`: absent when every cell holds a value.
+TuckResult!SlabRef tuckSlabNew(T, size_t N)(ref SlabFixed!(T, N) s, T v)
+{
+    if (s.freeHead == 0 && s.len >= N) return tnone!SlabRef();
+    return tok(slabFill(s, slabTake(s), v));
+}
+
+/// The cell `r` names, if it still holds the value `r` was made for.
+auto tuckSlabCell(S)(ref S s, SlabRef r)
+{
+    if (r.slot >= s.len) tuckSlabMisuse(s.name, "stale reference to cell " ~ r.slot.to!string);
+    auto c = s.cellAt(r.slot);
+    if (c.link != SLAB_LIVE || c.gen != r.gen)
+        tuckSlabMisuse(s.name, "stale reference to cell " ~ r.slot.to!string);
+    return c;
+}
+
+/// Does `r` still name a live cell? The question to ask before using one.
+bool tuckSlabLive(S)(ref S s, SlabRef r)
+{
+    if (r.slot >= s.len) return false;
+    auto c = s.cellAt(r.slot);
+    return c.link == SLAB_LIVE && c.gen == r.gen;
+}
+
+/// The cell is free; every reference to it is stale from here on.
+void tuckSlabFree(S)(ref S s, SlabRef r)
+{
+    auto c = tuckSlabCell(s, r);
+    c.value = typeof(c.value).init;   // what it holds goes now, not at reuse
+    c.link = s.freeHead;
+    s.freeHead = cast(int) r.slot + 1;
+    s.live--;
+}
+
+/// Every cell free and every reference stale, in O(1).
+void tuckSlabReset(S)(ref S s) { s.len = 0; s.freeHead = 0; s.live = 0; }
+
+long tuckSlabCount(S)(ref S s) { return s.live; }
+
+/// At exit: say how many cells were never freed (slab proposal Q3).
+void tuckSlabReport(S)(ref S s)
+{
+    import std.stdio : stderr;
+    if (s.live > 0) stderr.writeln("TUCK SLAB [", s.name, "]: ", s.live, " cell(s) never freed");
 }
 
 // std/fs — the filesystem. The error codes are the FsError variants the

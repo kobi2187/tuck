@@ -1,5 +1,5 @@
 # Greatest element, appended via a growable seq to show the push gap too
-import io
+import console
 import seq
 
 pending:

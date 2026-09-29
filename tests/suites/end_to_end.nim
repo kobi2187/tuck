@@ -97,7 +97,7 @@ fn doWork() -> void:
   # suspend point, so codegen would skip the async transform for it.
   t.src """
 actor Sink:
-  hits: int
+  hits: int = 0
   on ping({n: int}):
     self.hits = n
 
@@ -130,7 +130,7 @@ fn quiet() -> void:
 fnsig Thunk = {} -> int
 
 actor Sink:
-  total: int
+  total: int = 0
 
   on ping({make: Thunk}) -> void:
     let v = {} make
@@ -153,7 +153,7 @@ fn main() -> int:
 fnsig Adder = {n: int} -> int
 
 actor Sink:
-  total: int
+  total: int = 0
 
   on add({op: Adder, n: int}) -> void:
     let v = {n: n} op

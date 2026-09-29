@@ -1,5 +1,5 @@
 # Perfect number check: sum of proper divisors equals the number
-import io
+import console
 
 pending:
   fn sumProperDivisors({value: int}) -> int

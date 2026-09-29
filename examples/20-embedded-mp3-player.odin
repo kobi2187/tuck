@@ -208,17 +208,17 @@ drain_tuckˑactorˑDecoder :: proc() -> bool {
 }
 
 sendPlay_tuckˑactorˑDecoder :: proc(self: ^tuckˑactorˑDecoder, rate: tuckˑtypeˑHz) {
-	_ = rt.enqueue(&self.mailbox, tuckˑactorˑDecoderMsg{tuckTag = .msgPlay, rate = rate})
+	rt.sendWaiting(&self.mailbox, tuckˑactorˑDecoderMsg{tuckTag = .msgPlay, rate = rate}, tuckˑactorˑDecoderSlot, "Decoder")
 	rt.tuckNotifySend(tuckˑactorˑDecoderSlot)
 }
 
 sendPause_tuckˑactorˑDecoder :: proc(self: ^tuckˑactorˑDecoder) {
-	_ = rt.enqueue(&self.mailbox, tuckˑactorˑDecoderMsg{tuckTag = .msgPause})
+	rt.sendWaiting(&self.mailbox, tuckˑactorˑDecoderMsg{tuckTag = .msgPause}, tuckˑactorˑDecoderSlot, "Decoder")
 	rt.tuckNotifySend(tuckˑactorˑDecoderSlot)
 }
 
 sendStop_tuckˑactorˑDecoder :: proc(self: ^tuckˑactorˑDecoder) {
-	_ = rt.enqueue(&self.mailbox, tuckˑactorˑDecoderMsg{tuckTag = .msgStop})
+	rt.sendWaiting(&self.mailbox, tuckˑactorˑDecoderMsg{tuckTag = .msgStop}, tuckˑactorˑDecoderSlot, "Decoder")
 	rt.tuckNotifySend(tuckˑactorˑDecoderSlot)
 }
 

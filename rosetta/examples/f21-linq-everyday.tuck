@@ -1,5 +1,5 @@
 # The everyday LINQ shapes (Where/Select/Any/Count/Sum/OrderBy/Take), Tuck postfix style
-import io
+import console
 import seq
 
 type Employee:

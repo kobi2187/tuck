@@ -244,8 +244,10 @@ let tuckGrammar = peg("module", st: Stats):
   # shorthand for `{value: 8080}`, so the field name is optional in a way a
   # `name`-first rule cannot express.
   fieldInit <- (name * "tkColon " * expr) | expr
-  listLit   <- "tkLBracket " * ?sep * ?(expr * *(sep * expr)) * ?sep *
-               "tkRBracket "
+  # `[v; N]`, the Array fill (R8): tried first, since it begins like a list.
+  listLit   <- ("tkLBracket " * expr * "tkSemicolon " * expr * "tkRBracket ") |
+               ("tkLBracket " * ?sep * ?(expr * *(sep * expr)) * ?sep *
+                "tkRBracket ")
   parenExpr <- "tkLParen " * expr * "tkRParen "
   literal   <- "tkIntLit " | "tkFloatLit " | "tkStrLit " | "tkTrue " |
                "tkFalse " | "tkNone "

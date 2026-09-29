@@ -312,7 +312,7 @@ of Nim (one target per build — run again with `--dlang` for a third).
 
 ```tuck
 actor Counter:
-  count: int
+  count: int = 0
 
   on increment({by: int}) -> void:
     count = count + by

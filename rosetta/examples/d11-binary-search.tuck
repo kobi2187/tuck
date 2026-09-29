@@ -1,5 +1,5 @@
 # Binary search in a sorted fixed-size list
-import io
+import console
 import seq
 
 fn main() -> void [io]:

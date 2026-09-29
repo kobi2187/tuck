@@ -1,5 +1,5 @@
 # fnsig-typed callback field, threaded through a generic fn
-import io
+import console
 import seq
 
 fnsig Combiner = {a: int, b: int} -> int

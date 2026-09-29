@@ -1,12 +1,12 @@
 {.experimental: "codeReordering".}
 
-proc tuckˑfnˑtotal*(xs: sink seq[tuckˑtypeˑP]): int
+proc tuckˑfnˑtotal*(xs: seq[tuckˑtypeˑP]): int
 proc tuckˑfnˑmain*(): int
 
 type tuckˑtypeˑP* = object
   n*: int
 
-proc tuckˑfnˑtotal*(xs: sink seq[tuckˑtypeˑP]): int =
+proc tuckˑfnˑtotal*(xs: seq[tuckˑtypeˑP]): int =
   var tuckˑvˑs = 0
   for tuckˑvˑi, tuckˑvˑx in xs:
     if true:

@@ -107,9 +107,10 @@ proc visit(h: var Hoist, n: Expr, own: bool) =
   of exkIfaceCall:
     h.visit(n.dispatchRecv, false)
     h.settled = true             # exactly one arm runs; lift nothing out of one
-  of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkBracket,
+  of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill, exkBracket,
      exkCall, exkBreak, exkContinue, exkTripleDot, exkImport, exkActorRef,
-     exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef, exkOrdinal:
+     exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef, exkOrdinal,
+     exkIfaceIs, exkIfacePayload, exkWrapOk, exkAbsent:
     for ch in n.children: h.visit(ch, false)
   if h.settled: return
   if not own and isStr(h.res.typeFor(n)) and ownedStrCall(h.res, h.procs, n):

@@ -35,7 +35,7 @@ proc registerActortuckˑactorˑSink*() =
   tuckˑactorˑSinkSlot = tuckStartActor(draintuckˑactorˑSink)
 
 proc tuckˑtaskˑfire*(): void =
-  discard enqueue(tuckˑactorˑSinkSingleton.mailbox, tuckˑactorˑSinkMsg(tuckTag: msgPing, n: 5))
+  sendWaiting(tuckˑactorˑSinkSingleton.mailbox, tuckˑactorˑSinkMsg(tuckTag: msgPing, n: 5), tuckˑactorˑSinkSlot, "Sink")
   tuckNotifySend(tuckˑactorˑSinkSlot)
   return
 

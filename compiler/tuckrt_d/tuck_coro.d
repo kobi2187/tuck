@@ -926,16 +926,44 @@ void tuckNotifySend(void* handle)
     slot.lock.unlock();
 }
 
+/// The send that found `actor`'s mailbox full cannot go on (R6): the actor
+/// declares `on_full: assert`, or it waits and never could. exit(1), as
+/// tuckResourceMisuse does, so the three backends end alike.
+void tuckMailboxFull(string actor, string why)
+{
+    import core.stdc.stdlib : exit;
+    stderr.writeln("TUCK ACTOR [", actor, "]: mailbox full — ", why);
+    exit(1);
+}
+
+/// One step of a send waiting for room in `actor`'s full mailbox — its
+/// `on_full: wait`, the default (R6). Reached only once a send has found the
+/// mailbox full. The Nim twin (tuck_async.tuckAwaitRoom) carries the
+/// reasoning: wake the receiver, give up the CPU the way the caller can, and
+/// stop rather than hang when an actor waits on its OWN mailbox.
+void tuckAwaitRoom(void* handle, string actor)
+{
+    if (handle is null)
+        tuckMailboxFull(actor, "the actor was never started, so nothing drains it");
+    auto slot = cast(ActorSlot*) handle;
+    if (gMySlot is slot)
+        tuckMailboxFull(actor, "it sent to itself, and the actor that would " ~
+                        "make room is the one waiting. Declare `on_full: drop` " ~
+                        "or a larger `queue`");
+    tuckNotifySend(handle);
+    if (inCoroutine()) tuckYield();          // re-queues the caller first
+    else if (readyCount > 0) stepOne();
+    else Thread.yield();
+}
+
 /// Main blocks until a predicate over public actor state holds, driving the
 /// runtime cooperatively meanwhile — main is not a coroutine, so there is
 /// nothing to yield to and it must pump the queue itself.
 ///
-/// NOTE, verified in scratchpad/actor-playground: if the predicate can never
-/// hold — because a full mailbox silently dropped the messages it was
-/// waiting on — this spins forever, and the Nim backend does the same. The
-/// full-mailbox policy is unstated in the spec (FRICTIONS.md #9); fixing it
-/// is a language decision, so this matches the reference rather than
-/// inventing a third behaviour.
+/// NOTE: if the predicate can never hold, this spins forever. A full mailbox
+/// once made that easy to reach, by silently dropping the messages it was
+/// waiting on; since R6 (2026-09-28) a send waits for room unless its actor
+/// declares `on_full: drop`.
 void runTasksUntil(bool function() pred)
 {
     while (!pred())

@@ -735,7 +735,7 @@ fn main() -> int:
   # Until it is, this is refused rather than dropped.
   t.src """
 actor Box[T] [queue: 4]:
-  last: T
+  last: T?
 
   on put({v: T}):
     last = v
@@ -753,7 +753,7 @@ import scheduler
 import console
 
 actor Box[T] [queue: 4]:
-  last: T
+  last: T?
   hits: int = 0
 
   on put({v: T}):
@@ -766,13 +766,20 @@ fn intDone() -> bool:
 fn strDone() -> bool:
   return Box[str].hits > 0
 
+fn say({s: str?}) [io]:
+  if s.ok:
+    {text: s.value} printLine
+
 fn main() -> int [io]:
   Box[int] send put {v: 7}
   Box[str] send put {v: "hi"}
   Box[int].waitUntil {pred: :intDone}
   Box[str].waitUntil {pred: :strDone}
-  {text: Box[str].last} printLine
-  return Box[int].last
+  {s: Box[str].last} say
+  let n = Box[int].last
+  if not n.ok:
+    return 0
+  return n.value
 """
   t.okCheck "one generic actor, two instantiations"
   t.emits "...expands to a SEPARATE singleton per instantiation",
@@ -790,7 +797,7 @@ fn main() -> int [io]:
 import seq
 
 actor Box[T] [queue: 4]:
-  items: Seq[T]
+  items: Seq[T] = []
 
   on put({v: T}):
     items = {items: items, value: v} push
@@ -810,7 +817,7 @@ fn main() -> int:
   # author's mistake into a host compiler error in code they never wrote.
   t.src """
 actor Box[T] [queue: 4]:
-  last: T
+  last: T?
 
   on put({v: T}):
     last = v
@@ -879,7 +886,7 @@ public:
   Box[T]
 
 actor Box[T] [queue: 4]:
-  last: T
+  last: T?
 
   on put({v: T}):
     last = v
@@ -899,21 +906,24 @@ public:
   Box[T]
 
 actor Box[T] [queue: 4]:
-  last: T
+  last: T?
 
   on put({v: T}):
     last = v
 
 fn arrived() -> bool:
-  return Box[int].last > 0
+  return Box[int].last.ok
 
 fn main() -> int [io]:
   Box[int] send put {v: 4}
   Box[int].waitUntil {pred: :arrived}
-  return Box[int].last
+  let n = Box[int].last
+  if not n.ok:
+    return 0
+  return n.value
 """
   t.okCheck "an exported template is still instantiable in its own module"
-  t.omits "...and the template itself is NOT emitted", "last\\*: T"
+  t.omits "...and the template itself is NOT emitted", "last\\*: TuckResult\\[T\\]"
   t.runs "...while its instantiation runs", 4
   t.hostRuns "...on every backend", 4
 

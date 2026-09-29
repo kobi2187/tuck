@@ -1,5 +1,5 @@
 # Repeat a string n times
-import io
+import console
 
 pending:
   fn repeat({text: str, times: int}) -> str

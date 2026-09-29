@@ -844,12 +844,37 @@ fn main() -> int:
 """
   t.okCheck "a member fn with no explicit self is called via .fn {payload}"
   t.runs "the receiver fills self, the payload fills the rest: 5 + 1", 6
-  # genOdinMemberFn gives EVERY member fn's self a pointer, ^T,
-  # unconditionally — this call shape was unreachable before the checker
-  # fix above, and the emitted call passed the receiver by value, which
-  # Odin itself rejects ("Cannot assign value 'd' ... to '^tuck_type_Deck'").
-  t.emitsOdin "Odin passes the receiver by address to match self: ^T",
-              r"tuckˑobjectˑDeckˑcrank\(&tuckˑvˑd, 1\)"
+  # `crank` only reads its object, so it takes `self` by value and the
+  # call passes the receiver by value (ruled 2026-09-28; a member that
+  # changes its object takes `^T` and is passed `&d` — tested below).
+  t.emitsOdin "a reading member takes the receiver by value",
+              r"tuckˑobjectˑDeckˑcrank\(tuckˑvˑd, 1\)"
+
+  # A member that CHANGES its object takes it by reference in every backend
+  # and is passed `&d` on Odin; one that only reads takes it by value. And a
+  # member with no `->` is `-> void` through `.fn {args}` too: `d.turn {…}`
+  # was "called with arguments here but is not declared" (found 2026-09-28).
+  t.src """
+object Deck:
+  volume: int
+
+  fn crank({step: int}) -> int:
+    return self.volume + step
+  fn turn({step: int}):
+    self.volume = self.volume + step
+
+fn main() -> int:
+  var d = {volume: 5} Deck
+  d.turn {step: 2}
+  return d.crank {step: 1}
+"""
+  t.emits "Nim: a changing member takes `self: var T`",
+          r"tuckˑobjectˑDeckˑturn\*\(self: var tuckˑobjectˑDeck"
+  t.emits "...a reading member takes `self: T`",
+          r"tuckˑobjectˑDeckˑcrank\*\(self: tuckˑobjectˑDeck,"
+  t.emitsOdin "Odin: a changing member takes `^T` and is passed by address",
+              r"tuckˑobjectˑDeckˑturn\(&tuckˑvˑd, 2\)"
+  t.hostRuns "5 + 2 + 1, on every backend", 8
 
   t.src """
 type Server:
