@@ -398,6 +398,193 @@ proc tuckPoolAddr*[T; Count: static int](pool: var ObjectPool[T, Count], h: Pool
   cast[ptr UncheckedArray[uint8]](addr pool.storage[i])
 
 # ---------------------------------------------------------------------------
+# The slab (thoughts/shared/plans/2026-09-29-slab-proposal.md): a table of
+# cells of one type, addressed by REFERENCES — which cell, and which tenancy
+# of it. Three storages under one set of operations, each storage giving only
+# "the cell at i" and "one more cell":
+#   SlabChunked  the default: two levels, never copied (below)
+#   SlabFixed    `[count: N]`: a static array, for a target with no heap
+#   SlabSeq      `[storage: contiguous]`: one Seq, grown by doubling
+#
+# A cell is {tenancy, link, value}: the stale check and the read touch one
+# cache line. `link` is SlabLive while the cell holds a value; a free cell
+# keeps the next free cell's index + 1 there instead, so the free list lives
+# in the dead cells and freeing allocates nothing. Every slab starts ZERO —
+# no free cell, nothing handed out — so a slab is a global with a constant
+# initialiser (its name) on every backend, Odin's included.
+
+type
+  SlabRef* = object
+    ## Eight bytes: a cell's index and the tenancy the reference was made in.
+    ## Opaque on the Tuck side: `<Slab>Ref` is emitted per slab as an alias of
+    ## this, so the CHECKER keeps two slabs' references apart.
+    slot*: uint32
+    gen*: uint32
+
+  SlabCell*[T] = object
+    gen: uint32
+    link: int32
+    value*: T
+
+const SlabLive = -1'i32   ## `link` of a cell holding a value
+
+proc tuckSlabMisuse*(name, what: string) =
+  ## A reference that no longer names a live cell. Stops, exit 1, as a stale
+  ## pool handle does, on every backend.
+  stderr.writeLine("TUCK SLAB [" & name & "]: " & what)
+  quit(1)
+
+# --- the default storage: two levels, never copied -------------------------
+#
+# A fixed top of directory pages, each a fixed array of chunk pointers, each
+# chunk a fixed array of cells (ruled 2026-09-29, Q8: no resize may make a
+# program wait). Every allocation is one of two fixed sizes, made when first
+# needed; nothing is copied, ever. A chunk is sized in BYTES — 64 KiB rounded
+# down to a power-of-two cell count, at least one — so a large element does
+# not make a chunk of megabytes. 64 pages x 1024 chunks x 64 KiB is 4 TiB of
+# cells, so the top never has to grow. Measured: benches/SCORES.md, "Slab
+# storage" — the second level costs nothing once the accessor skips the
+# bounds checks its own shifts and masks make redundant.
+
+const
+  SlabPageShift = 10
+  SlabPageN = 1 shl SlabPageShift
+  SlabTopN = 64
+  SlabChunkBytes = 65536
+
+proc slabChunkShift(cellBytes: int): int {.compileTime.} =
+  ## log2 of the cells per chunk: the most that fit in SlabChunkBytes, >= 1.
+  while (2 shl result) * cellBytes <= SlabChunkBytes: inc result
+
+type
+  SlabChunk[T] = UncheckedArray[SlabCell[T]]
+  SlabPage[T] = array[SlabPageN, ptr SlabChunk[T]]
+  SlabChunked*[T] = object
+    name*: string
+    top: array[SlabTopN, ptr SlabPage[T]]
+    len: uint32        ## cells handed out since the last reset
+    freeHead: int32    ## the first free cell + 1; 0 = none
+    live*: int         ## cells holding a value now
+
+  SlabFixed*[T; N: static int] = object
+    name*: string
+    cells: array[N, SlabCell[T]]
+    len: uint32
+    freeHead: int32
+    live*: int
+
+  SlabSeq*[T] = object
+    name*: string
+    cells: seq[SlabCell[T]]
+    len: uint32
+    freeHead: int32
+    live*: int
+
+  AnySlab[T] = SlabChunked[T] | SlabSeq[T]
+
+{.push boundChecks: off.}
+proc cellAt[T](s: SlabChunked[T], i: uint32): ptr SlabCell[T] {.inline.} =
+  ## The cell at `i` (< len): every part in range by construction.
+  const cs = slabChunkShift(sizeof(SlabCell[T]))
+  addr s.top[i shr (cs + SlabPageShift)][(i shr cs) and (SlabPageN - 1)][
+    i and ((1'u32 shl cs) - 1)]
+
+proc cellAt[T; N: static int](s: SlabFixed[T, N], i: uint32): ptr SlabCell[T] {.inline.} =
+  unsafeAddr s.cells[i]
+
+proc cellAt[T](s: SlabSeq[T], i: uint32): ptr SlabCell[T] {.inline.} =
+  unsafeAddr s.cells[i]
+{.pop.}
+
+proc growCell[T](s: var SlabChunked[T]): uint32 =
+  ## One more cell: opens a page and a chunk when this is the first cell of
+  ## one. A chunk left by a `reset` is reused as it stands.
+  const cs = slabChunkShift(sizeof(SlabCell[T]))
+  let i = s.len
+  if (i and ((1'u32 shl cs) - 1)) == 0:
+    let pi = int(i shr (cs + SlabPageShift))
+    if pi >= SlabTopN: tuckSlabMisuse(s.name, "full (" & $i & " cells)")
+    if s.top[pi] == nil:
+      s.top[pi] = cast[ptr SlabPage[T]](allocShared0(sizeof(SlabPage[T])))
+    let ci = int((i shr cs) and (SlabPageN - 1))
+    if s.top[pi][ci] == nil:
+      s.top[pi][ci] = cast[ptr SlabChunk[T]](
+        allocShared0((1 shl cs) * sizeof(SlabCell[T])))
+  inc s.len
+  i
+
+proc growCell[T](s: var SlabSeq[T]): uint32 =
+  if int(s.len) == s.cells.len: s.cells.setLen(s.cells.len + 1)
+  result = s.len
+  inc s.len
+
+proc growCell[T; N: static int](s: var SlabFixed[T, N]): uint32 =
+  result = s.len
+  inc s.len
+
+proc slabTake[S](s: var S): uint32 {.inline.} =
+  ## A cell to fill: a freed one first, else one more.
+  if s.freeHead != 0:
+    result = uint32(s.freeHead - 1)
+    s.freeHead = s.cellAt(result).link
+  else:
+    result = s.growCell()
+
+proc slabFill[S, T](s: var S, i: uint32, v: sink T): SlabRef {.inline.} =
+  let c = s.cellAt(i)
+  c.gen = c.gen + 1'u32
+  c.link = SlabLive
+  c.value = v
+  inc s.live
+  SlabRef(slot: i, gen: c.gen)
+
+proc tuckSlabNew*[T](s: var AnySlab[T], v: sink T): SlabRef =
+  ## A cell holding `v`. A growable slab never runs out.
+  s.slabFill(s.slabTake(), v)
+
+proc tuckSlabNew*[T; N: static int](s: var SlabFixed[T, N], v: sink T): TuckResult[SlabRef] =
+  ## A cell holding `v`, or absent when every cell holds one (`[count: N]`).
+  if s.freeHead == 0 and int(s.len) >= N: return tnone[SlabRef]()
+  tok(s.slabFill(s.slabTake(), v))
+
+proc tuckSlabCell*[S](s: S, r: SlabRef): auto {.inline.} =
+  ## The cell `r` names, if it still holds the value `r` was made for.
+  if r.slot >= s.len: tuckSlabMisuse(s.name, "stale reference to cell " & $r.slot)
+  result = s.cellAt(r.slot)
+  if result.link != SlabLive or result.gen != r.gen:
+    tuckSlabMisuse(s.name, "stale reference to cell " & $r.slot)
+
+proc tuckSlabLive*[S](s: S, r: SlabRef): bool =
+  ## Does `r` still name a live cell? The question to ask before using one.
+  if r.slot >= s.len: return false
+  let c = s.cellAt(r.slot)
+  c.link == SlabLive and c.gen == r.gen
+
+proc tuckSlabFree*[S](s: var S, r: SlabRef) =
+  ## The cell is free; every reference to it is stale from here on.
+  let c = s.tuckSlabCell(r)
+  reset(c.value)          # what it holds goes now, not at reuse
+  c.link = s.freeHead
+  s.freeHead = int32(r.slot) + 1
+  dec s.live
+
+proc tuckSlabReset*[S](s: var S) =
+  ## Every cell free and every reference stale, in O(1): the storage stays and
+  ## is reused in order, each cell's tenancy moving on as it is.
+  s.len = 0
+  s.freeHead = 0
+  s.live = 0
+
+proc tuckSlabCount*[S](s: S): int = s.live
+
+proc tuckSlabReport*[S](s: S) =
+  ## At exit: say how many cells were never freed (slab proposal Q3). A slab
+  ## declared `[leaks: ok]` is not reported.
+  if s.live > 0:
+    stderr.writeLine("TUCK SLAB [" & s.name & "]: " & $s.live &
+                     " cell(s) never freed")
+
+# ---------------------------------------------------------------------------
 # spec 7.4: the resource registry.
 #
 # Scope-based RAII is the wrong model for an OS handle: a hot loop that opens

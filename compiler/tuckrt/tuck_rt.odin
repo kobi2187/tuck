@@ -770,6 +770,205 @@ tuckPoolAddr :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle) -> [^]u8 {
 	return cast([^]u8)&pool.storage[i]
 }
 
+// ---------------------------------------------------------------------------
+// The slab (thoughts/shared/plans/2026-09-29-slab-proposal.md). The Nim twin
+// (compiler/tuck_rt.nim) carries the reasoning; this mirrors it exactly —
+// three storages under one set of operations, a cell of {tenancy, link,
+// value}, the free list in the dead cells, and every slab ZERO at the start,
+// so `SlabChunked(T){name = "..."}` is a package-level constant initialiser.
+
+SlabRef :: struct {
+	slot: u32,
+	gen:  u32,
+}
+
+SlabCell :: struct($T: typeid) {
+	gen:   u32,
+	link:  i32, // SLAB_LIVE while it holds a value; else next free + 1 (0 = end)
+	value: T,
+}
+
+SLAB_LIVE :: i32(-1)
+SLAB_PAGE_SHIFT :: 10
+SLAB_PAGE_N :: 1 << SLAB_PAGE_SHIFT
+SLAB_TOP_N :: 64
+SLAB_CHUNK_BYTES :: 65536
+
+tuckSlabMisuse :: proc(name: string, what: string) {
+	fmt.eprintln("TUCK SLAB [", name, "]: ", what, sep = "")
+	os.exit(1)
+}
+
+// log2 of the cells per chunk: the most that fit in SLAB_CHUNK_BYTES, >= 1.
+slab_chunk_shift :: proc "contextless" ($T: typeid) -> u32 {
+	s: u32 = 0
+	for (2 << s) * size_of(SlabCell(T)) <= SLAB_CHUNK_BYTES do s += 1
+	return s
+}
+
+SlabChunked :: struct($T: typeid) {
+	name:      string,
+	top:       [SLAB_TOP_N]^[SLAB_PAGE_N][^]SlabCell(T),
+	len:       u32,
+	free_head: i32,
+	live:      int,
+}
+
+SlabFixed :: struct($T: typeid, $N: int) {
+	name:      string,
+	cells:     [N]SlabCell(T),
+	len:       u32,
+	free_head: i32,
+	live:      int,
+}
+
+SlabSeq :: struct($T: typeid) {
+	name:      string,
+	cells:     [dynamic]SlabCell(T),
+	len:       u32,
+	free_head: i32,
+	live:      int,
+}
+
+@(private)
+slab_cell_chunked :: #force_inline proc(s: ^SlabChunked($T), i: u32) -> ^SlabCell(T) #no_bounds_check {
+	cs := slab_chunk_shift(T)
+	return &s.top[i >> (cs + SLAB_PAGE_SHIFT)][(i >> cs) & (SLAB_PAGE_N - 1)][i & ((1 << cs) - 1)]
+}
+@(private)
+slab_cell_fixed :: #force_inline proc(s: ^SlabFixed($T, $N), i: u32) -> ^SlabCell(T) #no_bounds_check {
+	return &s.cells[i]
+}
+@(private)
+slab_cell_seq :: #force_inline proc(s: ^SlabSeq($T), i: u32) -> ^SlabCell(T) #no_bounds_check {
+	return &s.cells[i]
+}
+@(private)
+slab_cell_at :: proc{slab_cell_chunked, slab_cell_fixed, slab_cell_seq}
+
+@(private)
+slab_grow_chunked :: proc(s: ^SlabChunked($T)) -> u32 {
+	cs := slab_chunk_shift(T)
+	i := s.len
+	if i & ((1 << cs) - 1) == 0 {
+		pi := i >> (cs + SLAB_PAGE_SHIFT)
+		if pi >= SLAB_TOP_N do tuckSlabMisuse(s.name, fmt.tprintf("full (%d cells)", i))
+		if s.top[pi] == nil do s.top[pi] = new([SLAB_PAGE_N][^]SlabCell(T))
+		ci := (i >> cs) & (SLAB_PAGE_N - 1)
+		if s.top[pi][ci] == nil do s.top[pi][ci] = raw_data(make([]SlabCell(T), 1 << cs))
+	}
+	s.len += 1
+	return i
+}
+@(private)
+slab_grow_seq :: proc(s: ^SlabSeq($T)) -> u32 {
+	if int(s.len) == len(s.cells) do append(&s.cells, SlabCell(T){})
+	s.len += 1
+	return s.len - 1
+}
+@(private)
+slab_grow_fixed :: proc(s: ^SlabFixed($T, $N)) -> u32 {
+	s.len += 1
+	return s.len - 1
+}
+@(private)
+slab_grow :: proc{slab_grow_chunked, slab_grow_seq, slab_grow_fixed}
+
+@(private)
+slab_take :: proc(s: ^$S) -> u32 {
+	if s.free_head != 0 {
+		i := u32(s.free_head - 1)
+		s.free_head = slab_cell_at(s, i).link
+		return i
+	}
+	return slab_grow(s)
+}
+
+@(private)
+slab_fill :: proc(s: ^$S, i: u32, v: $T) -> SlabRef {
+	c := slab_cell_at(s, i)
+	c.gen += 1
+	c.link = SLAB_LIVE
+	c.value = v
+	s.live += 1
+	return SlabRef{slot = i, gen = c.gen}
+}
+
+@(private)
+slab_new_chunked :: proc(s: ^SlabChunked($T), v: T) -> SlabRef { return slab_fill(s, slab_take(s), v) }
+@(private)
+slab_new_seq :: proc(s: ^SlabSeq($T), v: T) -> SlabRef { return slab_fill(s, slab_take(s), v) }
+// A growable slab never runs out.
+tuckSlabNew :: proc{slab_new_chunked, slab_new_seq}
+
+// `[count: N]`: absent when every cell holds a value.
+tuckSlabNewFixed :: proc(s: ^SlabFixed($T, $N), v: T) -> TuckResult(SlabRef) {
+	if s.free_head == 0 && int(s.len) >= N do return tnone(SlabRef)
+	return tok(slab_fill(s, slab_take(s), v))
+}
+
+@(private)
+slab_checked :: #force_inline proc(s: ^$S, r: SlabRef) -> u32 {
+	// The index a reference names, if it is one this slab handed out; the
+	// tenancy is checked by the caller, on the cell it then has in hand.
+	if r.slot >= s.len do tuckSlabMisuse(s.name, fmt.tprintf("stale reference to cell %d", r.slot))
+	return r.slot
+}
+
+@(private)
+slab_check_tenancy :: #force_inline proc(name: string, link: i32, gen: u32, r: SlabRef) {
+	if link != SLAB_LIVE || gen != r.gen do tuckSlabMisuse(name, fmt.tprintf("stale reference to cell %d", r.slot))
+}
+@(private)
+slab_ref_chunked :: #force_inline proc(s: ^SlabChunked($T), r: SlabRef) -> ^SlabCell(T) {
+	c := slab_cell_chunked(s, slab_checked(s, r))
+	slab_check_tenancy(s.name, c.link, c.gen, r)
+	return c
+}
+@(private)
+slab_ref_fixed :: #force_inline proc(s: ^SlabFixed($T, $N), r: SlabRef) -> ^SlabCell(T) {
+	c := slab_cell_fixed(s, slab_checked(s, r))
+	slab_check_tenancy(s.name, c.link, c.gen, r)
+	return c
+}
+@(private)
+slab_ref_seq :: #force_inline proc(s: ^SlabSeq($T), r: SlabRef) -> ^SlabCell(T) {
+	c := slab_cell_seq(s, slab_checked(s, r))
+	slab_check_tenancy(s.name, c.link, c.gen, r)
+	return c
+}
+// The cell `r` names, if it still holds the value `r` was made for.
+tuckSlabCell :: proc{slab_ref_chunked, slab_ref_fixed, slab_ref_seq}
+
+// Does `r` still name a live cell? The question to ask before using one.
+tuckSlabLive :: proc(s: ^$S, r: SlabRef) -> bool {
+	if r.slot >= s.len do return false
+	c := slab_cell_at(s, r.slot)
+	return c.link == SLAB_LIVE && c.gen == r.gen
+}
+
+// The cell is free; every reference to it is stale from here on.
+tuckSlabFree :: proc(s: ^$S, r: SlabRef) {
+	c := tuckSlabCell(s, r)
+	c.link = s.free_head
+	s.free_head = i32(r.slot) + 1
+	s.live -= 1
+}
+
+// Every cell free and every reference stale, in O(1).
+tuckSlabReset :: proc(s: ^$S) {
+	s.len = 0
+	s.free_head = 0
+	s.live = 0
+}
+
+tuckSlabCount :: proc(s: ^$S) -> int { return s.live }
+
+// At exit: say how many cells were never freed (slab proposal Q3).
+tuckSlabReport :: proc(s: ^$S) {
+	if s.live > 0 do fmt.eprintln("TUCK SLAB [", s.name, "]: ", s.live, " cell(s) never freed", sep = "")
+}
+
 // A spinlock for the mailbox. NOT decoration: this runtime spawns one OS
 // thread per actor (tuck_coro.odin's tuckStartActor), so a send from main and
 // a drain on the actor's thread genuinely race. The mailbox carried NO
