@@ -78,10 +78,12 @@ finished** (no longer deferred).
 9. Arena (spec §7.3) — finish it. **It depends on a slab allocator (owner,
    2026-09-28)**, so the slab comes first: one owned region of homogeneous
    slots plus integer indices (Experimental §2 below), then the arena over
-   it. One design proposal to the owner covers both before any code:
-   language support or a library over `pool`/`Seq`; whether an index into
-   the wrong slab is caught (a `distinct` index per slab); what an arena's
-   `alloc` returns; how "cannot outlive the arena" is checked.
+   it. **Proposal written 2026-09-29:
+   `thoughts/shared/plans/2026-09-29-slab-proposal.md`** — a `slab`
+   declaration with a typed reference per slab, chunked storage by default
+   (measured, SCORES.md "Slab storage"), per-cell free + tenancy + reset,
+   the arena as a lifetime over slabs. Eight decisions (its §10) await the
+   owner before code.
 10. M4.3 — actor dispatch lowered (`genActorDispatch` / `genDispatch` /
     `genDDispatch` still build it); needs the message envelope in Tuck first.
 11. A16 / #55 — a fired `timeout` bounds latency.
