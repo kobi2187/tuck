@@ -572,15 +572,127 @@ proc hasLastUse(res: Resolution, e: Expr, name: string): bool =
     if hasLastUse(res, c, name): return true
   false
 
+# --- which final reads of a parameter KEEP it ------------------------------
+#
+# `sink` tells Nim the callee may keep the argument: a caller then MOVES an
+# argument that dies at the call and COPIES one that is still live. So a
+# parameter the callee only READS must not be `sink` — and marking one anyway
+# is not merely wasted. Every call whose argument is still needed pays a full
+# copy, and a recursive reader (`eval(ns, n.left) + eval(ns, n.right)`) pays
+# one per call: 87 s against 0.037 s on a 2^15-leaf tree held as a node array,
+# and 0.25 s against 0.011 s for the boxed tree lowering_recursive emits
+# (benches/SCORES.md, "Trees"). Leaving `sink` off is always sound — it only
+# gives up a move — so every unrecognised case below answers "kept", which is
+# what every final read was taken to mean before.
+
+type ConsumeMemo = object
+  known: Table[string, bool]  ## "fn\0param" -> does the fn keep that param
+  busy: HashSet[string]       ## being answered: a recursive call reads as not kept
+
+proc fnNamed(m: Module, name: string): Decl =
+  ## The one top-level fn called `name`, or nil — none, or several, when the
+  ## call cannot say which and the answer has to be the safe one.
+  for d in m.decls:
+    if d != nil and d.kind == dkFn and d.name == name:
+      if result != nil: return nil
+      result = d
+
+proc paramKept(res: Resolution, m: Module, fnD: Decl, pname: string,
+               memo: var ConsumeMemo): bool
+
+proc calleeKeeps(res: Resolution, m: Module, call: Expr, pname: string,
+                 idx: int, memo: var ConsumeMemo): bool =
+  ## Does the callee keep the argument bound to its parameter `pname` (by
+  ## name, for a record-style call) or at position `idx`? A fn declared in
+  ## this module answers from its own body; a construction, an extern or an
+  ## import is taken to keep it.
+  if call.callee == nil or call.callee.kind != exkVar: return true
+  let d = fnNamed(m, call.callee.name)
+  if d == nil or d.fnBody == nil: return true
+  if pname != "":
+    for p in d.fnParams:
+      if p.name == pname: return paramKept(res, m, d, pname, memo)
+    return true
+  if idx < 0 or idx >= d.fnParams.len: return true
+  paramKept(res, m, d, d.fnParams[idx].name, memo)
+
+proc keptAt(res: Resolution, m: Module, stack: seq[Expr], k: int,
+            memo: var ConsumeMemo): bool
+
+proc fieldKept(res: Resolution, m: Module, stack: seq[Expr], k: int,
+               memo: var ConsumeMemo): bool =
+  ## stack[k] is a field VALUE of the record literal stack[k-1]. A literal
+  ## that is a call's payload hands each field to the parameter of that name;
+  ## any other literal holds what it is given.
+  let s = stack[k - 1]
+  if k >= 2 and stack[k - 2].kind == exkCall and s in stack[k - 2].args:
+    for f in s.fields:
+      if f.value == stack[k]:
+        return calleeKeeps(res, m, stack[k - 2], f.name, -1, memo)
+  true
+
+proc keptAt(res: Resolution, m: Module, stack: seq[Expr], k: int,
+            memo: var ConsumeMemo): bool =
+  ## Is the value stack[k] kept by where it sits — bound, stored, returned,
+  ## sent, or handed to a parameter that keeps it? Walks outward while the
+  ## value only passes through (a branch, a block's last value, a field read).
+  if k == 0: return true   # the body's own value is the fn's result
+  let n = stack[k]
+  let p = stack[k - 1]
+  case p.kind
+  of exkReturn, exkList, exkFill, exkSend, exkChain: true
+  of exkAssign: n == p.assignVal
+  of exkBracketAssign: n == p.brValue
+  of exkStruct: fieldKept(res, m, stack, k, memo)
+  of exkCall: n != p.callee and calleeKeeps(res, m, p, "", p.args.find(n), memo)
+  of exkField:
+    p.dotArg != nil or (n == p.receiver and keptAt(res, m, stack, k - 1, memo))
+  of exkIf: n != p.cond and keptAt(res, m, stack, k - 1, memo)
+  of exkMatch: n != p.subject and keptAt(res, m, stack, k - 1, memo)
+  of exkBlock:
+    p.stmts.len > 0 and n == p.stmts[^1] and keptAt(res, m, stack, k - 1, memo)
+  else: false   # an operand, an index, a condition, a loop's iterable: read
+
+proc keptLastUse(res: Resolution, m: Module, e: Expr, name: string,
+                 stack: var seq[Expr], memo: var ConsumeMemo): bool =
+  ## Is some read of `name` under `e` both its final use and a keeping one?
+  if e == nil: return false
+  stack.add e
+  if e.kind == exkVar and e.name == name and res.isLastUse(e):
+    result = keptAt(res, m, stack, stack.high, memo)
+  if not result:
+    for c in e.children:
+      if keptLastUse(res, m, c, name, stack, memo):
+        result = true
+        break
+  discard stack.pop()
+
+proc paramKept(res: Resolution, m: Module, fnD: Decl, pname: string,
+               memo: var ConsumeMemo): bool =
+  ## Does `fnD` keep its parameter `pname`? The least fixed point over the
+  ## module's fns: a call back into one still being answered reads as "only
+  ## read", which is what a recursive reader is.
+  let key = fnD.name & "\0" & pname
+  if memo.known.hasKey(key): return memo.known[key]
+  if key in memo.busy: return false
+  memo.busy.incl key
+  var stack: seq[Expr]
+  result = keptLastUse(res, m, fnD.fnBody, pname, stack, memo)
+  memo.busy.excl key
+  memo.known[key] = result
+
 proc paramIsMovable*(res: Resolution, m: Module, body: Expr, p: Param): bool =
-  ## May this parameter be taken destructively? True when the analysis proved
-  ## the body's final read of it — so the caller's copy is unobservable from
-  ## that point — AND the type owns storage worth not copying.
+  ## May this parameter be taken destructively (`sink`)? True when the type
+  ## owns storage worth not copying AND the body's final read of it KEEPS it
+  ## (keptAt). A parameter the body only reads — indexes, measures, walks,
+  ## passes on to another reader — is borrowed instead.
   ##
   ## A parameter the body never reads has no stamped use and stays as it was,
   ## which is the safe answer for anything the analysis did not reach.
   if not ownsHeap(m, p.typ): return false
-  hasLastUse(res, body, p.name)
+  var memo: ConsumeMemo
+  var stack: seq[Expr]
+  keptLastUse(res, m, body, p.name, stack, memo)
 
 # --- the MOVED twin ---------------------------------------------------------
 #

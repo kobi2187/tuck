@@ -1,7 +1,7 @@
 {.experimental: "codeReordering".}
 
 proc tuckˑfnˑmakeMany*(): seq[Animal]
-proc tuckˑfnˑtotal*(xs: sink seq[Animal]): int
+proc tuckˑfnˑtotal*(xs: seq[Animal]): int
 proc tuckˑfnˑmain*(): int
 
 type tuckˑobjectˑDog* = object
@@ -30,7 +30,7 @@ proc tuckˑfnˑmakeMany*(): seq[Animal] =
   var tuckˑvˑc = tuckˑobjectˑCat(lives: 9)
   return @[Animal(tag: Animal_is_tuckˑobjectˑDog, tuckˑobjectˑDogVal: tuckˑvˑd), Animal(tag: Animal_is_tuckˑobjectˑCat, tuckˑobjectˑCatVal: tuckˑvˑc)]
 
-proc tuckˑfnˑtotal*(xs: sink seq[Animal]): int =
+proc tuckˑfnˑtotal*(xs: seq[Animal]): int =
   var tuckˑvˑs = 0
   for tuckˑvˑa in xs:
     if true:

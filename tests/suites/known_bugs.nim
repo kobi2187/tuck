@@ -2782,4 +2782,37 @@ fn main() -> int:
 """
   t.badCheck "a send naming an actor member, not a handler, is refused", "TK-AC05"
 
+  # A38 (found 2026-09-29, by benches/trees/slab_thread.tuck). A local's Seq
+  # FIELD handed on to a threaded fn's moved twin is freed twice on Odin.
+  # `{ns: l.nodes, d: ..} grow` inside `grow_moved` passes `l.nodes` to
+  # `grow_moved`, which keeps the buffer and returns it in `r.nodes` — and the
+  # ownership pass still schedules `defer delete(l.nodes)` beside
+  # `defer delete(r.nodes)`. A slot moved into a call is the caller's no
+  # longer (the twin's own parameter already follows that rule); a local's
+  # field does not yet. Nim and D answer 15; Odin segfaults.
+  t.src """
+import seq
+
+type Built:
+  nodes: Seq[int]
+  slot: int
+
+fn grow({ns: Seq[int], d: int}) -> Built:
+  if d == 0:
+    var out = ns
+    out = {items: out, value: 1} push
+    return {nodes: out, slot: out.len - 1} Built
+  let l = {ns: ns, d: d - 1} grow
+  let r = {ns: l.nodes, d: d - 1} grow
+  var out = r.nodes
+  out = {items: out, value: l.slot} push
+  return {nodes: out, slot: out.len - 1} Built
+
+fn main() -> int:
+  let t = {ns: [], d: 3} grow
+  return t.nodes.len
+"""
+  t.quietly: t.hostRuns("a Seq field handed to a moved twin is freed once, on every backend", 15)
+  t.bugOpen "a Seq field handed to a moved twin is freed once, on every backend"
+
   t.finish()

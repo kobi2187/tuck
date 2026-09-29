@@ -30,7 +30,7 @@
 ## those are the part with no prior art in this tree to copy: every other
 ## pass here is a single walk, and this is the first one that has to say what
 ## a value IS after two arms disagreed about it.
-import std/[os, strutils]
+import std/[os, strutils, re]
 import ../harness
 
 proc corpusFiles(): seq[string] =
@@ -223,12 +223,15 @@ fn main() -> int:
   # `analysis_liveness` never stamped a read in a `for`'s ITERABLE at all —
   # its `exkFor` arm walks the body and then folds the iterable into the live
   # set without ever calling `stampSites` on it. So a parameter iterated once
-  # and never touched again was not a final use, and Nim got `seq[T]` where
-  # `sink seq[T]` is correct.
+  # and never touched again was not a final use.
   #
   # Guarded here by INTENT rather than only by the eight goldens the switch
   # rewrote, because a golden records what the compiler did and this records
-  # what it is supposed to do.
+  # what it is supposed to do. Read off `tuck ssa` itself: this used to be
+  # read off Nim's `sink`, until 2026-09-29, when `sink` stopped following
+  # every final read and started following the final reads that KEEP the
+  # value (codegen_common.keptAt). An iterated parameter is only read, so it
+  # is borrowed — a `sink` there made every caller still holding it copy it.
   t.src """
 import seq
 
@@ -242,10 +245,52 @@ fn main() -> int:
   return {xs: [1, 2, 3]} total
 """
   t.okCheck "a parameter iterated once checks"
-  t.emits "...and its only read is final, so Nim gets sink",
-          r"proc tuckˑfnˑtotal\*\(xs: sink seq\[int\]\)"
+  let iterSsa = t.needCmd(@["./tuck", "ssa", t.curDir / "t.tuck",
+                            "--root:" & t.root])
+  if t.phase == pReport:
+    let (rc, outp) = t.resultOf(iterSsa)
+    if rc == 0 and find(outp, re"xs\.0 += entry .* reads 5:12 FINAL") >= 0:
+      t.ok "...and its read as the loop's iterable is its final use"
+    else:
+      t.no "...and its read as the loop's iterable is its final use",
+           "exit " & $rc & ": " & outp
+  t.emits "...which only reads it, so Nim borrows it rather than sinking it",
+          r"proc tuckˑfnˑtotal\*\(xs: seq\[int\]\)"
   t.runs "...and it still computes what it did", 6
   t.hostRuns("...on every backend", 6)
+
+  # --- `sink` follows the final read that KEEPS the value -------------------
+  #
+  # A recursive reader passes its Seq on twice; `sink` there made the first
+  # call copy the whole array, every call — 87 s against 0.037 s on a 2^15-leaf
+  # tree held as a node array (benches/SCORES.md, "Trees"). The call back into
+  # the fn being asked about reads as "only read" (the least fixed point), and
+  # an index is a read. A parameter bound to a `var` and grown is KEPT, and
+  # keeps its `sink` — that is the move the container verbs rest on.
+  t.src """
+import seq
+
+fn walk({ns: Seq[int], i: int}) -> int:
+  if i < 0:
+    return 0
+  return ns[i] + {ns: ns, i: i - 1} walk
+
+fn grow({xs: Seq[int]}) -> Seq[int]:
+  var out = xs
+  out = {items: out, value: 1} push
+  return out
+
+fn main() -> int:
+  let a = {ns: [1, 2, 3], i: 2} walk
+  let b = {xs: [1]} grow
+  return a + b.len
+"""
+  t.okCheck "a recursive reader and a grower check"
+  t.emits "...the reader borrows its Seq",
+          r"proc tuckˑfnˑwalk\*\(ns: seq\[int\], i: int\)"
+  t.emits "...the grower keeps its sink",
+          r"proc tuckˑfnˑgrow\*\(xs: sink seq\[int\]\)"
+  t.hostRuns("...and both compute what they did, on every backend", 8)
 
   # --- an ACTOR FIELD is not this body's to give away ----------------------
   #

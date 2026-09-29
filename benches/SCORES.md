@@ -788,3 +788,69 @@ sooner because it does less work. The cost of blocking is semantic — a
 sender that waits on a mailbox nothing will drain waits forever (an actor
 sending to itself; two actors whose full mailboxes wait on each other) —
 and is a design question, not a measurement.
+
+## Trees — 2026-09-29
+
+`bash benches/trees/run.sh [DEPTH] [ROUNDS]` builds a balanced `Expr` tree to
+depth D and evaluates it ROUNDS times, at D and D+1, on all three backends.
+The question was the owner's: should `lowering_recursive`, which boxes every
+recursive edge in a one-element `Seq`, become a slab — one node array per
+tree, children as indices — if that is faster?
+
+**The representation, alone** (`benches/trees/repr.nim`, hand-written Nim,
+`-d:release --mm:orc`, 10 rounds, ms):
+
+| depth 20 (2.1M nodes) | build | eval ×10 | copy + eval ×10 |
+|---|---|---|---|
+| boxed edges | **81** | 173 | 1424 |
+| one node array per tree | 791 | 170 | **152** |
+
+(Depth 18: 27 / 24 / 277 against 117 / 24 / 39 — the same shape.)
+
+**Not a clear win, so not switched.** A node array copies ~9x faster (one
+array copy instead of an allocation per node) and reads the same, but BUILDS
+4–10x slower: `Expr.Add {left: l, right: r}` over two independent subtrees
+has to merge two arrays (the smaller appended into the larger, so any shape
+is O(n log n), never O(n²)). Which one wins turns on whether a program builds
+trees or copies them. What would win at all three is a node array SHARED by
+every tree of a type, with nodes never changed in place (so a copy is the
+root index): build is one append, copy is O(1), eval unchanged. It needs its
+nodes reclaimed — reference counts, or an arena's lifetime — which is the
+open freeing question of the `slab` keyword itself (ROADMAP item 9).
+
+**What the bench found instead: two Nim emission bugs, one catastrophic.**
+Tuck-emitted code, `--release`, seconds, depth 14 → 15:
+
+| variant | Nim before | Nim after | Odin | D |
+|---|---|---|---|---|
+| boxed | 0.143 → 0.287 | **0.009 → 0.014** | 0.012 → 0.028 | 0.013 → 0.027 |
+| slab_merge | 17.8 → 87.3 | **0.019 → 0.043** | 0.033 → 0.084 | 0.042 → 0.067 |
+| slab_thread | 20.0 → 97.3 | 1.88 → 11.7 | segfault (A38) | 0.85 → 3.80 |
+
+1. **`sink` on a parameter the fn only READS.** `paramIsMovable` marked a
+   parameter `sink` whenever the body had a final read of it, never asking
+   whether that read keeps it. A caller then COPIES a still-live argument
+   into a `sink` parameter — so `eval(ns, n.left) + eval(ns, n.right)` copied
+   the whole node array on every call. It now follows the final read that
+   KEEPS the value (bound, stored, returned, sent, or handed to a parameter
+   that keeps it — the least fixed point over the module's fns;
+   `codegen_common.keptAt`). Leaving `sink` off only ever gives up a move.
+2. **`tuckAt` returned the element BY VALUE.** A boxed edge is read as
+   `tuckAt(e.left, 0)`, and the element is the whole subtree, so a walk
+   copied every subtree it passed through. `tuckAt` now returns `lent T` (a
+   borrow); a caller that keeps the element still gets its own copy.
+
+Each fix alone moves boxed almost nothing (0.248 → 0.222 s without `sink`,
+0.251 s with `lent`), because each copy hides the other; together, 0.011 s.
+`benches/containers/run.sh` reads the same before and after, so no move the
+container verbs rest on was lost. It does NOT read what "Container copying"
+recorded on 2026-09-11, and the difference predates this change: at N=8000,
+five patterns now scale 3–5x per doubling on Nim (`rec_thread`, `chain_form`,
+`generic_box`, `two_fields`, `str_builder`), `seq_setat` and `read_only`
+build on no backend, and `generic_box` does not build on Odin. A regression
+to bisect; the bench is not in any gate, which is how it went unseen.
+
+`slab_thread` stays quadratic on Nim and D for a third reason, the
+container-threaded-through-a-record shape: `{ns: l.nodes, ..} build` passes
+`l.nodes` on while `l.slot` is still read, so the field cannot be moved out
+and is copied. On Odin the same shape is a double free (A38).

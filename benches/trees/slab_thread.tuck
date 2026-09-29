@@ -1,0 +1,41 @@
+# One tree, built to depth DEPTH, evaluated ROUNDS times. See run.sh.
+import seq
+
+# kind 0 = Num (value), kind 1 = Add (left, right): indices into `nodes`.
+type Node:
+  kind: int
+  value: int
+  left: int
+  right: int
+
+type Built:
+  nodes: Seq[Node]
+  slot: int
+
+fn build({ns: Seq[Node], d: int}) -> Built:
+  if d == 0:
+    var out = ns
+    let n = {kind: 0, value: 1, left: 0, right: 0} Node
+    out = {items: out, value: n} push
+    return {nodes: out, slot: out.len - 1} Built
+  let l = {ns: ns, d: d - 1} build
+  let r = {ns: l.nodes, d: d - 1} build
+  var out = r.nodes
+  let n = {kind: 1, value: 0, left: l.slot, right: r.slot} Node
+  out = {items: out, value: n} push
+  return {nodes: out, slot: out.len - 1} Built
+
+fn eval({ns: Seq[Node], i: int}) -> int:
+  let n = ns[i]
+  if n.kind == 0:
+    return n.value
+  return {ns: ns, i: n.left} eval + {ns: ns, i: n.right} eval
+
+fn main() -> int:
+  let t = {ns: [], d: DEPTH} build
+  var total = 0
+  for i in 1 .. ROUNDS:
+    total = total + {ns: t.nodes, i: t.slot} eval
+  if total != ROUNDS * LEAVES:
+    return 1
+  return 0

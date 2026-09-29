@@ -1,6 +1,6 @@
 {.experimental: "codeReordering".}
 
-proc tuckˑfnˑboth*(ps: sink seq[tuckˑtypeˑP], qs: seq[tuckˑtypeˑQ]): int
+proc tuckˑfnˑboth*(ps: seq[tuckˑtypeˑP], qs: seq[tuckˑtypeˑQ]): int
 proc tuckˑfnˑmain*(): int
 
 type tuckˑtypeˑP* = object
@@ -9,7 +9,7 @@ type tuckˑtypeˑP* = object
 type tuckˑtypeˑQ* = object
   m*: int
 
-proc tuckˑfnˑboth*(ps: sink seq[tuckˑtypeˑP], qs: seq[tuckˑtypeˑQ]): int =
+proc tuckˑfnˑboth*(ps: seq[tuckˑtypeˑP], qs: seq[tuckˑtypeˑQ]): int =
   var tuckˑvˑs = 0
   for tuckˑvˑp in ps:
     if true:

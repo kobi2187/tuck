@@ -29,8 +29,15 @@ proc tuckSeqBounds(index, length: int, op: string) =
     raise newException(IndexDefect,
       op & ": index " & $index & " out of bounds for seq of length " & $length)
 
-proc tuckAt*[T](items: seq[T], index: int): T =
+proc tuckAt*[T](items: seq[T], index: int): lent T =
   ## What `xs[i]` lowers to: a bounds-checked read.
+  ##
+  ## A BORROW (`lent`), not a copy. By value, reading an element that owns
+  ## storage copied all of it — and a recursive edge (lowering_recursive reads
+  ## `e.left` as `tuckAt(e.left, 0)`) owns the whole subtree, so a tree walk
+  ## copied every subtree it passed through: 0.25 s against 0.011 s on a
+  ## 2^15-leaf tree (benches/SCORES.md, "Trees"). A caller that keeps the
+  ## element (`var x = xs[i]`) still gets its own copy.
   ##
   ## `xs[i]` bracket sugar lowers to tuckAt/tuckSetAt, NOT to std/seq's `at` —
   ## brackets are grammar, so they must work without `import seq`, and the

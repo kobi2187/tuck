@@ -22,11 +22,19 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (8)
+## A. Open bugs (9)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
+
+**A38 — (Odin) a local's Seq field handed to a moved twin is freed twice.**
+`let r = {ns: l.nodes, d: ..} grow` inside `grow_moved` hands `l.nodes` to
+`grow_moved`, which keeps the buffer and returns it in `r.nodes`; the
+ownership pass still frees `l.nodes` at scope exit beside `r.nodes`. A
+segfault, where Nim and D answer. The twin's own parameter already follows the
+rule "a slot moved into a call is no longer ours"; a local's field does not.
+Found 2026-09-29 by `benches/trees/slab_thread.tuck`. `known_bugs`.
 
 **A27–A37 — constructs that do not cross a module boundary (R11 scan,
 2026-09-28).** A25, A26, A28, A30, A31, A33, A35 and A36 are fixed; their pins are
