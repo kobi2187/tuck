@@ -1176,8 +1176,11 @@ when isMainModule:
         # table. It has to run BEFORE the process exits, which is why a
         # value-returning main binds its result first rather than exiting
         # inline — `quit(tuck_main())` leaves nowhere to put this.
-        let resShutdown =
+        var resShutdown =
           if declaresResources(m): "\n  " & ResourceShutdownProc & "()" else: ""
+        # The slab proposal's exit report (Q3): cells never freed, per slab.
+        for s in reportedSlabs(m, realModules):
+          resShutdown.add "\n  tuckSlabReport(" & s.name & ")"
         # Wait for every actor to empty its mailbox before the process exits.
         # An actor runs on its own DETACHED thread, so without this a `send`
         # is a coin flip against `quit`: the message is in the ring and the

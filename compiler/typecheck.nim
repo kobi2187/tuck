@@ -998,6 +998,122 @@ proc asPoolOp(tc: var TypeChecker, e: Expr, op: PoolOpKind,
   semLayer.setType(node, sig.ret)
   sig.ret
 
+proc slabOpNamed(name: string): Option[SlabOpKind] =
+  ## The operation a `Slab.name` spells, if it is one.
+  case name
+  of "new": some(soNew)
+  of "free": some(soFree)
+  of "live": some(soLive)
+  of "reset": some(soReset)
+  of "count": some(soCount)
+  of "get": some(soGet)
+  of "set": some(soSet)
+  else: none(SlabOpKind)
+
+proc slabHoldsRecord(tc: TypeChecker, d: Decl): bool =
+  ## Is the element a record with fields — one `{...}` constructs?
+  let elem = d.slabElem
+  let rec = tc.resolve(elem)
+  elem.kind == tkNamed and
+    (tc.objDecls.hasKey(elem.name) or
+     (rec != nil and rec.kind == tkRecord and rec.fields.len > 0))
+
+proc constructElement(pay: Expr, elem: Type): Expr =
+  ## `{...}` as a construction of the slab's element, `{...} Node`, so it is
+  ## checked, mangled and emitted as one (a bare record literal would be
+  ## emitted as an anonymous record, which no backend converts).
+  result = Expr(span: pay.span, kind: exkCall, args: @[pay],
+                callee: Expr(span: pay.span, kind: exkVar, name: elem.name))
+  ensureId(result)
+  ensureId(result.callee)
+
+proc slabSetRecord(tc: TypeChecker, e: Expr, d: Decl) =
+  ## `Nodes.set {r, value: {data: 2, ...}}`: a bare record literal for a
+  ## record element is that element's construction, as `new`'s payload is.
+  if e.dotArg == nil or e.dotArg.kind != exkStruct or not tc.slabHoldsRecord(d):
+    return
+  for i in 0 ..< e.dotArg.fields.len:
+    let v = e.dotArg.fields[i].value
+    if e.dotArg.fields[i].name == "value" and v != nil and v.kind == exkStruct:
+      e.dotArg.fields[i].value = constructElement(v, d.slabElem)
+
+proc slabNewValue(tc: var TypeChecker, e: Expr, d: Decl): Expr =
+  ## `Nodes.new {data: 1, next: none}`: the payload IS the new cell's
+  ## construction, so it becomes one in the tree — `{...} Node` — checked as
+  ## any construction is (a field left out is TK-TY16; `none` fills a `T?`),
+  ## and mangled and emitted as one. An element without fields of its own
+  ## (`slab Ints = int`, a sum) takes its value as `{value: v}`.
+  let pay = e.dotArg
+  let q = e.receiver.refName & ".new"
+  if pay == nil or pay.kind != exkStruct:
+    fail("Type Error: '" & q & "' takes the new cell's value: `" & q &
+         " {field: ...}`", e.span)
+  let elem = d.slabElem
+  if tc.slabHoldsRecord(d):
+    let ctor = constructElement(pay, elem)
+    e.dotArg = ctor
+    discard tc.synthesize(ctor)
+    return ctor
+  if pay.fields.len != 1 or pay.fields[0].name != "value":
+    fail("Type Error: '" & q & "' takes the new cell's value as `" & q &
+         " {value: ...}` — a " & typeName(elem) & " has no fields to name",
+         e.span)
+  let v = pay.fields[0].value
+  var got: Type
+  tc.withExpected(elem):
+    got = tc.synthesize(v)
+  if not tc.compatible(got, elem):
+    fail("Type Error: '" & q & "' holds " & typeName(elem) & " but got " &
+         typeName(got), v.span)
+  v
+
+proc asSlabOp(tc: var TypeChecker, e: Expr): Type =
+  ## `Slab.op {...}` becomes an `exkSlabOp` in the semantic layer, as a pool
+  ## operation becomes an `exkPoolOp` — its own node, its operands the
+  ## payload's own nodes, so every walk of the tree still reaches them.
+  let d = semLayer.slabNames.getOrDefault(e.receiver.refName, nil)
+  let op = slabOpNamed(e.fieldName)
+  if d == nil or op.isNone:
+    fail("Type Error: a slab has no '" & e.fieldName & "' — it takes new, " &
+         "free, live, get, set, reset and count", e.span)
+  var arg, value: Expr = nil
+  var ret: Type
+  if op.get == soNew:
+    value = tc.slabNewValue(e, d)
+    let rref = tc.namedType(slabRefName(d.name), e.span)
+    ret = if d.slabStorage == ssFixed:
+            Type(span: e.span, kind: tkApp, args: @[rref],
+                 base: Type(span: e.span, kind: tkNamed, name: "?"))
+          else: rref
+  else:
+    let qualified = d.name & "." & e.fieldName
+    let sig = tc.sigOf(qualified)
+    failIfPoolPayloadStray(e, qualified, sig)
+    if op.get == soSet: tc.slabSetRecord(e, d)
+    var args: seq[Expr]
+    for p in sig.params: args.add tc.poolOpArg(e, qualified, p)
+    arg = args.operand(0)
+    value = args.operand(1)
+    ret = sig.ret
+  let node = Expr(span: e.span, kind: exkSlabOp, slabOp: op.get,
+                  slabRef: e.receiver, slabArg: arg, slabValue: value)
+  setCall(semLayer, e, node)
+  semLayer.setType(node, ret)
+  ret
+
+proc asSlabDeref(tc: var TypeChecker, e: Expr, slab: Decl): Type =
+  ## `r.data`: a field of the cell `r` names, typed from the slab's element.
+  ## lowering_slab routes the access through the checked cell, for a read
+  ## and a write alike.
+  let fields = tc.fieldsOf(tc.resolve(slab.slabElem))
+  for f in fields:
+    if f.name == e.fieldName:
+      semLayer.markSlabDeref(e, slab)
+      return f.typ
+  fail("Type Error: a " & slabRefName(slab.name) & " names a " &
+       typeName(slab.slabElem) & ", which has no field '" & e.fieldName & "'",
+       e.span)
+
 proc asStaticMemberCall(tc: var TypeChecker, e: Expr): Type =
   ## `Pool.acquire` / `Pool.release {v}` (spec 7.2) — a STATIC member call on a
   ## singleton type, the way `StaticClass.method` reads elsewhere. The receiver
@@ -1012,6 +1128,8 @@ proc asStaticMemberCall(tc: var TypeChecker, e: Expr): Type =
   # Pools and ACTORS both. An actor contributes `<Actor>.waitUntil` the same
   # way a pool contributes `<Pool>.acquire` (typecheck_collect), so one path
   # serves both and neither is special-cased by name.
+  if e.receiver != nil and e.receiver.kind == exkSlabRef:
+    return tc.asSlabOp(e)
   if e.receiver == nil or e.receiver.kind notin {exkPoolRef, exkActorRef}:
     return nil
   let qualified = e.receiver.refName & "." & e.fieldName
@@ -1411,6 +1529,9 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   result = tc.syntacticFieldForm(e)
   if result != nil: return
   let rawT = tc.synthesize(e.receiver)
+  if e.dotArg == nil and rawT != nil and rawT.kind == tkNamed:
+    let slab = slabOfRefType(rawT.name)     # a field THROUGH a reference
+    if slab != nil: return tc.asSlabDeref(e, slab)
   if isWrapper(rawT):
     fail("Type Error: unhandled " & typeName(rawT) &
          " — check `.ok` and read `.value`, or pass it to a handling function, " &
@@ -4187,6 +4308,17 @@ proc failIfTargetUnbound(tc: var TypeChecker, e: Expr) =
     fail("Type Error: cannot assign to '" & e.target.name &
          "' — no variable, parameter or field by that name is in scope", e.span)
 
+proc writesIntoSlabCell(target: Expr): bool =
+  ## Does this target land in a slab cell — a field read through a reference
+  ## somewhere along it? Such a write changes the cell, which belongs to the
+  ## slab, not to the `let` or parameter the path starts from: holding a
+  ## reference is holding the right to write through it (slab proposal §4).
+  var t = target
+  while t != nil and t.kind == exkField:
+    if semLayer.slabDerefOf(t) != nil: return true
+    t = t.receiver
+  false
+
 proc failIfTargetImmutable(tc: var TypeChecker, e: Expr) =
   ## An assignment may not write through a parameter or a `let`, whether it
   ## names the binding itself (`c = ...`), one of its fields (`c.n = ...`), or
@@ -4199,7 +4331,7 @@ proc failIfTargetImmutable(tc: var TypeChecker, e: Expr) =
   ## where NIM rejected them with a message naming generated code the user
   ## never wrote ("'c.n' cannot be assigned to"). A rejection Nim makes is a
   ## rejection Tuck should make first, with a code the user can look up.
-  if e.target == nil: return
+  if e.target == nil or writesIntoSlabCell(e.target): return
   let root = assignRoot(e.target)
   if root == nil or root.kind != exkVar: return
   let (found, b) = tc.lookup(root.name)
@@ -4265,7 +4397,6 @@ proc synthAssignTarget(tc: var TypeChecker, target: Expr): Type =
 proc synthReassign(tc: var TypeChecker, e: Expr) =
   ## Assignment to an existing binding.
   tc.failIfTargetUnbound(e)
-  tc.failIfTargetImmutable(e)
   # `c.f = v` fills the hole. Clear it BEFORE synthesizing the target: the
   # target is synthesized for its TYPE, which routes through asPlainField, so
   # clearing afterwards would make the statement that fixes the hole the one
@@ -4275,6 +4406,9 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
      e.target.receiver != nil and e.target.receiver.kind == exkVar:
     tc.clearUninit(e.target.receiver.name, e.target.fieldName)
   let targetT = tc.synthAssignTarget(e.target)
+  # After the target is typed: a write through a slab reference is known by
+  # the deref stamp synthesizing it leaves (writesIntoSlabCell).
+  tc.failIfTargetImmutable(e)
   let valT = tc.synthAssignVal(e, targetT)
   if not tc.compatible(valT, targetT):
     fail("Type Error: cannot assign " & typeName(valT) & " to " &
@@ -4706,7 +4840,11 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # Stamped by the checker (asPoolOp) in place of `Pool.op {...}`; its
     # type was recorded when it was built.
     semLayer.typeFor(e)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+  of exkSlabOp, exkSlabCell:
+    # Stamped by the checker (asSlabOp), or built by lowering_slab from a
+    # field read through a reference; typed as it is built.
+    semLayer.typeFor(e)
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum
     # variant (synthBareVariant), named after the declaration itself. Field
     # access on one of these (synthFieldAccess) special-cases the receiver's
@@ -5156,6 +5294,29 @@ proc checkInvariants(tc: var TypeChecker, d: Decl) =
            "(`value <= 100`), not a computation", member.expr.span)
   tc.popScope()
 
+proc checkSlabDecl(tc: TypeChecker, d: Decl) =
+  ## A slab (slab proposal section 3): cells of a real type. `[count: N]` may
+  ## name a const, deferred here as a pool's is, and must be at least one; a
+  ## growable slab has no count.
+  if d.slabCountText != "":
+    let n = constIntOf(tc.module, d.slabCountText)
+    if n.isNone:
+      fail(dcMeSizeCount, "slab '" & d.name & "': count must be a whole " &
+           "number the compiler knows — a literal, or a `const` naming one. " &
+           "Got '" & d.slabCountText & "'", d.span)
+    d.slabCount = n.get
+    d.slabCountText = ""
+  if d.slabStorage == ssFixed and d.slabCount <= 0:
+    fail(dcMeSizeCount, "slab '" & d.name & "' needs a count of at least 1, " &
+         "got " & $d.slabCount, d.span)
+  if d.slabElem == nil or d.slabElem.kind != tkNamed: return
+  let n = d.slabElem.name
+  if n.len == 0 or not n[0].isUpperAscii: return    # primitive: u8, int, ...
+  if tc.typeDecls.hasKey(n) or tc.objDecls.hasKey(n): return
+  if n in ["Seq", "Array"]: return                  # builtin containers
+  fail(dcTyUndeclared, "slab '" & d.name & "': no type named '" & n &
+       "' — declare it, or check the spelling", d.slabElem.span)
+
 proc checkPoolDecl(tc: TypeChecker, d: Decl) =
   ## spec 7.2: a pool is N slots of a real type, and `count` is required
   ## precisely so the footprint is static. The parser already rejects a
@@ -5380,6 +5541,7 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     checkArenaAttrs(tc.module, d)  # an arena parses into a dkType (spec 7.3)
   of dkRegister: checkRegisterDecl(d)
   of dkPool: tc.checkPoolDecl(d)
+  of dkSlab: tc.checkSlabDecl(d)
   of dkErrors:
     if d.errHandler != nil: tc.checkDecl(d.errHandler)
   of dkSelect:

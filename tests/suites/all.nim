@@ -48,6 +48,7 @@ import pools
 import recursive_types
 import resources
 import resources_rt
+import slabs
 import ssa
 import ssa_golden
 import syntax_ceilings
@@ -108,6 +109,7 @@ let registry: seq[Entry] = @[
   ("recursive_types",     SuiteProc(recursive_types.run),     false),
   ("resources",           SuiteProc(resources.run),           false),
   ("resources_rt",        SuiteProc(resources_rt.run),        false),
+  ("slabs",               SuiteProc(slabs.run),               false),
   ("ssa",                 SuiteProc(ssa.run),                 false),
   ("ssa_golden",          SuiteProc(ssa_golden.run),          false),
   ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     true),

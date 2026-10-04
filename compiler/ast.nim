@@ -469,6 +469,31 @@ type
                     # it used to be a call whose callee was the bare member
                     # name, so a program's own `fn read` was mangled into it,
                     # and backends found pool calls by name lists.
+    exkSlabRef      # a bare slab name (`Nodes` in `Nodes.new {...}`)
+    exkSlabOp       # `Nodes.new {...}`, `Nodes.free {r}`, ... — an operation on
+                    # a slab, stamped by the checker as a pool op is
+    exkSlabCell     # lowered only (lowering_slab): the value in the cell a
+                    # reference names, checked — what `r.field` reads and
+                    # writes through. `r.data` becomes a field of this node,
+                    # so every backend prints it with its ordinary field
+                    # access, for a read and an assignment target alike.
+
+  SlabOpKind* = enum
+    ## What a slab operation does (thoughts/shared/plans/
+    ## 2026-09-29-slab-proposal.md, section 3).
+    soNew     ## a cell holding a value: `<Slab>Ref`, or `<Slab>Ref?` if counted
+    soFree    ## the cell is reusable; its references are stale
+    soLive    ## `bool` — does the reference still name a live cell?
+    soReset   ## every cell free, every reference stale
+    soCount   ## `int` — cells holding a value
+    soGet     ## the whole value, copied out
+    soSet     ## the whole value, stored
+
+  SlabStorage* = enum
+    ## What a slab keeps its cells in (proposal section 5).
+    ssChunked     ## the default: two levels, never copied
+    ssFixed       ## `[count: N]`: a static array
+    ssContiguous  ## `[storage: contiguous]`: one growable array
 
   PoolOpKind* = enum
     ## What a pool operation does. Its operands are fixed per kind: none for
@@ -603,6 +628,15 @@ type
       poolRef*: Expr               # the `exkPoolRef`
       poolHandle*: Expr            # the handle; nil for acquire
       poolValue*: Expr             # the value; write only, else nil
+    of exkSlabOp:
+      slabOp*: SlabOpKind
+      slabRef*: Expr               # the `exkSlabRef`
+      slabArg*: Expr               # the reference operated on; nil for new,
+                                   # reset and count
+      slabValue*: Expr             # new's construction, set's value; else nil
+    of exkSlabCell:
+      cellSlab*: Expr              # the `exkSlabRef`
+      cellRef*: Expr               # the reference whose cell this is
     of exkIfaceCall:
       dispatchRecv*: Expr          # the interface value, evaluated once
       dispatchIface*: string       # the interface's (mangled) type name
@@ -626,7 +660,8 @@ type
       comb*: CombKind
       combRecv*: Expr   # the receiver; for ckMerge, the struct OF members
       combArg*: Expr    # the payload struct; nil for ckMerge
-    of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+    of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
+       exkSlabRef:
       refName*: string  # the resolved name; the Decl itself is one
                         # declFor(semLayer, e) away (resolution.nim) once
                         # resolveDeclRefs links it — not stored here, so
@@ -718,6 +753,7 @@ type
     dkObject
     dkRegistry
     dkPool
+    dkSlab    # `slab Nodes = Node [attrs]` — cells addressed by reference
     dkFn
     dkMixin   # `mixin Name:` — fns materialised onto a composing object
     # `extern:` and `pending:` blocks parse into their own kinds rather than
@@ -825,6 +861,14 @@ type
       poolCountText*: string  ## the source spelling when `[count: N]` names a
                               ## const; resolved by the checker, which unlike
                               ## the parser can see the whole module.
+    of dkSlab:
+      # thoughts/shared/plans/2026-09-29-slab-proposal.md: cells of one type,
+      # handed out as references (`<Slab>Ref`).
+      slabElem*: Type
+      slabStorage*: SlabStorage
+      slabCount*: int          ## ssFixed only: the number of cells
+      slabCountText*: string   ## `[count: N]` as written, when N names a const
+      slabLeaksOk*: bool       ## `[leaks: ok]`: no report of unfreed cells
     of dkFn:
       fnGenerics*: seq[string]
       fnGenericBounds*: seq[seq[Type]]   # parallel to fnGenerics; bounds[i] =

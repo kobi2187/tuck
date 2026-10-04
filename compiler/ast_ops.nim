@@ -190,7 +190,8 @@ iterator childSlots*(e: Expr): var Expr =
   if e != nil:
     case e.kind
     of exkLit, exkVar, exkQualified, exkImport, exkBreak, exkContinue,
-       exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+       exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
+       exkSlabRef:
       discard
     of exkField:
       yield e.receiver
@@ -265,6 +266,13 @@ iterator childSlots*(e: Expr): var Expr =
       yield e.poolRef
       yield e.poolHandle
       yield e.poolValue
+    of exkSlabOp:
+      yield e.slabRef
+      yield e.slabArg
+      yield e.slabValue
+    of exkSlabCell:
+      yield e.cellSlab
+      yield e.cellRef
 
 proc poolOperands*(e: Expr): seq[Expr] =
   ## A pool op's operands in call order — the handle, then the value — for
@@ -320,7 +328,7 @@ iterator childDecls*(d: Decl): Decl =
       # nothing.
       yield d.errHandler
     of dkFn, dkTask, dkConst, dkExpr, dkStaticAssert, dkSelect, dkRegistry,
-       dkPool, dkRegister, dkImport, dkFnSig, dkSatisfies, dkResources:
+       dkPool, dkSlab, dkRegister, dkImport, dkFnSig, dkSatisfies, dkResources:
       discard
 
 iterator ownTypes*(d: Decl): Type =
@@ -350,6 +358,7 @@ iterator ownTypes*(d: Decl): Type =
     of dkActor:
       for f in d.actorFields: yield f.typ
     of dkPool: yield d.poolElem
+    of dkSlab: yield d.slabElem
     of dkRegistry:
       for v in d.variants:
         for f in v.fields: yield f.typ
@@ -394,7 +403,7 @@ iterator ownExprSlots*(d: Decl): var Expr =
       for f in d.actorFields.mitems:
         if f.default != nil: yield f.default
     of dkType, dkObject, dkMixin, dkExtern, dkPending, dkWhen, dkInterface,
-       dkGroup, dkRegistry, dkPool, dkRegister, dkErrors, dkImport,
+       dkGroup, dkRegistry, dkPool, dkSlab, dkRegister, dkErrors, dkImport,
        dkFnSig, dkSatisfies, dkPublic, dkResources:
       discard
 

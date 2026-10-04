@@ -16,6 +16,7 @@
 # share the logic, never share the syntax. `uint32` vs `u32` IS the target
 # language, not incidental duplication.
 import ast, strutils
+import resolution   # slabOfRefType: every `<Slab>Ref` is the runtime's SlabRef
 
 proc widenOddWidth(name: string): string =
   ## Odd bit widths from decision tables (u2, u12, ...) round up to a real
@@ -121,6 +122,7 @@ proc genType*(t: Type): string =
     # generic's own parameter list.
     if t.name.startsWith(NamedTypeParamPrefix):
       t.name[NamedTypeParamPrefix.len .. ^2]
+    elif slabOfRefType(t.name) != nil: "SlabRef"
     else: nimPrimitive(t.name)
   of tkTuple:
     var parts: seq[string]

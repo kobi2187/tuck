@@ -6,7 +6,7 @@
 # tree for its target without carrying (or losing) semantic residue: ids
 # survive the copy, so these lookups still resolve.
 
-import tables, sets, strutils, options
+import tables, sets, strutils, options, algorithm
 import ast
 import ssa_ir
 import name_prefix
@@ -48,6 +48,7 @@ type
     registerNames*: Table[string, Decl]
     registryNames*: Table[string, Decl]
     poolNames*: Table[string, Decl]
+    slabNames*: Table[string, Decl]
     mixinNames*: Table[string, Decl]
     # Consts are whole-program too, but NOT on the same terms as the five
     # above. Those name singletons, so a repeat is a real error; two modules
@@ -66,6 +67,10 @@ type
     # these instead of re-deriving the mapping, which misses by-type matches.
     argFields*: Table[NodeId, seq[string]]
     callParams*: Table[NodeId, seq[string]]
+    slabDerefs*: Table[NodeId, Decl]
+      ## A field read or written THROUGH a slab reference (`r.data`), keyed by
+      ## the field access, holding the slab. lowering_slab routes each one
+      ## through the checked cell.
     optWraps*: Table[NodeId, Type]
       ## A plain `T` the checker accepted into a `T?` place it has no other
       ## way to reach — a payload field, a construction field, a positional
@@ -144,6 +149,11 @@ proc poolHandleName*(pool: string): string =
   ## one place so the checker and every backend spell it alike.
   pool & "Handle"
 
+proc slabRefName*(slab: string): string =
+  ## The reference type a `slab` declaration introduces: `<Slab>Ref`. Named in
+  ## one place so the checker and every backend spell it alike.
+  slab & "Ref"
+
 proc isPoolHandleType*(m: Module, name: string): bool =
   ## Is this the handle type of some pool declared in this module?
   ##
@@ -197,6 +207,24 @@ proc declaresResources*(m: Module): bool =
   for d in m.decls:
     if d != nil and d.kind == dkResources and d.resKinds.len > 0: return true
   false
+
+proc reportedSlabs*(m: Module, real: Table[string, Module]):
+    seq[tuple[origin, name: string]] =
+  ## The slabs whose unfreed cells the exit reports (slab proposal Q3): every
+  ## one the program declares, as emitted, but those marked `[leaks: ok]` —
+  ## with the module declaring it, "" for the entry module's own, which Odin
+  ## and D qualify by (R11). The entry points call `tuckSlabReport` on each,
+  ## after main and whatever runs after it, before the process exits.
+  for d in m.decls:
+    if d != nil and d.kind == dkSlab and not d.slabLeaksOk:
+      result.add ("", d.name)
+  var imported: seq[tuple[origin, name: string]]
+  for modName, other in real:
+    if other == m: continue
+    for d in other.decls:
+      if d != nil and d.kind == dkSlab and not d.slabLeaksOk:
+        imported.add (modName, d.name)
+  result.add imported.sorted   # the table's order is its hashing's
 
 proc acquireSite*(e: Expr, moduleName: string): string =
   ## Where an acquire happened, as the OPEN RESOURCES report prints it —
@@ -256,6 +284,7 @@ proc copyMeaning(r: Resolution, src, dst: NodeId) =
   if src in r.argFields: r.argFields[dst] = r.argFields[src]
   if src in r.callParams: r.callParams[dst] = r.callParams[src]
   if src in r.optWraps: r.optWraps[dst] = r.optWraps[src]
+  if src in r.slabDerefs: r.slabDerefs[dst] = r.slabDerefs[src]
   if src in r.callTypeArgs: r.callTypeArgs[dst] = r.callTypeArgs[src]
   if src in r.wraps: r.wraps[dst] = r.wraps[src]
   if src in r.ifaceCalls: r.ifaceCalls[dst] = r.ifaceCalls[src]
@@ -363,6 +392,7 @@ proc newResolution*(): Resolution =
              argFields: initTable[NodeId, seq[string]](),
              callParams: initTable[NodeId, seq[string]](),
              optWraps: initTable[NodeId, Type](),
+             slabDerefs: initTable[NodeId, Decl](),
              callTypeArgs: initTable[NodeId, seq[Type]](),
              wraps: initTable[NodeId, tuple[objName, iface: string]](),
              ifacePairs: initHashSet[tuple[objName, iface: string]](),
@@ -416,6 +446,7 @@ proc resetResolution*() =
   let registerNames = semLayer.registerNames
   let registryNames = semLayer.registryNames
   let poolNames = semLayer.poolNames
+  let slabNames = semLayer.slabNames
   let mixinNames = semLayer.mixinNames
   let constNames = semLayer.constNames
   let ambiguousConsts = semLayer.ambiguousConsts
@@ -424,9 +455,18 @@ proc resetResolution*() =
   semLayer.registerNames = registerNames
   semLayer.registryNames = registryNames
   semLayer.poolNames = poolNames
+  semLayer.slabNames = slabNames
   semLayer.mixinNames = mixinNames
   semLayer.constNames = constNames
   semLayer.ambiguousConsts = ambiguousConsts
+
+proc slabOfRefType*(name: string): Decl =
+  ## The slab whose reference type is `name` (`NodesRef` -> Nodes), or nil.
+  ## Keyed by the name as WRITTEN: the checker synthesises the reference
+  ## type, so mangling never renames it. Whole-program, so an imported slab's
+  ## references map the same way on every backend.
+  if name.len > 3 and name.endsWith("Ref"):
+    result = semLayer.slabNames.getOrDefault(name[0 ..< name.len - 3], nil)
 
 proc setStepCall*(r: Resolution, s: ChainStep, call: Expr) =
   ## Records the call a chain step resolved to, keyed by the step's own id.
@@ -524,6 +564,17 @@ proc setArgFields*(r: Resolution, e: Expr, fields: seq[string]) =
   if e == nil: return
   ensureId(e)
   r.argFields[e.id] = fields
+
+proc markSlabDeref*(r: Resolution, e: Expr, slab: Decl) =
+  ## `e` (`r.data`) reads or writes a field of the cell a reference names.
+  if e == nil: return
+  ensureId(e)
+  r.slabDerefs[e.id] = slab
+
+proc slabDerefOf*(r: Resolution, e: Expr): Decl =
+  ## The slab whose cell the field access `e` goes through, or nil.
+  if e == nil or not e.id.isSet: return nil
+  r.slabDerefs.getOrDefault(e.id, nil)
 
 proc markOptWrap*(r: Resolution, e: Expr, place: Type) =
   ## `e`, a plain `T`, goes into the `?T` place `place` (see optWraps).

@@ -111,6 +111,31 @@ proc collectPoolSigs*(tc: var TypeChecker, d: Decl) =
   # handle wants — "no widening, no resolving through to the base type".
   tc.distinctNames.incl(poolHandleName(d.name))
 
+proc collectSlabSigs*(tc: var TypeChecker, d: Decl) =
+  ## A slab (thoughts/shared/plans/2026-09-29-slab-proposal.md, section 3):
+  ## its reference type, and the signatures of the operations that take a
+  ## reference. `new` has none: its payload is the ELEMENT's construction,
+  ## which asSlabOp checks as one.
+  ##
+  ## The reference type is PER SLAB — a `NodesRef` is not an `EdgesRef` — so
+  ## handing one slab's reference to another is a type error, made nominal by
+  ## `distinctNames` exactly as a pool handle's is.
+  let rref = tc.namedType(slabRefName(d.name), d.span)
+  let void = Type(span: d.span, kind: tkNamed, name: "void")
+  let r = Param(name: "r", typ: rref, span: d.span)
+  for (op, params, ret) in [
+      ("free", @[r], void),
+      ("live", @[r], Type(span: d.span, kind: tkNamed, name: "bool")),
+      ("get", @[r], d.slabElem),
+      ("set", @[r, Param(name: "value", typ: d.slabElem, span: d.span)], void),
+      ("reset", newSeq[Param](), void),
+      ("count", newSeq[Param](), Type(span: d.span, kind: tkNamed, name: "int"))]:
+    tc.setFnSig(d.name & "." & op, (params, ret, newSeq[string](),
+                                    newSeq[EffectMarker](), newSeq[string](),
+                                    newSeq[string]()))
+  tc.typeDecls[slabRefName(d.name)] = Type(span: d.span, kind: tkRecord, fields: @[])
+  tc.distinctNames.incl(slabRefName(d.name))
+
 proc collectResourceHandles*(tc: var TypeChecker, d: Decl) =
   ## spec §7.4: each declared kind gets its own handle TYPE, registered
   ## exactly as a pool's is — and for the identical reason. A handle is an
@@ -190,6 +215,7 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
                            d.taskResourceKinds, d.taskErrorTypes))
     of dkFnSig: tc.collectFnSigType(d)
     of dkPool: tc.collectPoolSigs(d)
+    of dkSlab: tc.collectSlabSigs(d)
     of dkType: tc.collectTypeDecl(d)
     of dkObject: tc.collectObjectDecl(d)
     of dkInterface:

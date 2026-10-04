@@ -566,6 +566,19 @@ proc genDPoolOp(ctx: var DCodegenCtx, e: Expr): string =
   for a in e.poolOperands: args.add ctx.genDExpr(a)
   "rt." & poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
 
+proc dSlab(ctx: var DCodegenCtx, name: string): string =
+  ## A slab, qualified by its module's alias when another module declares it
+  ## (R11, A36 — as a pool is). The runtime takes it by `ref`.
+  let origin = declOrigin(ctx.module, ctx.realModules, name, {dkSlab})
+  (if origin == "": "" else: dAlias(origin) & ".") & name
+
+proc genDSlabOp(ctx: var DCodegenCtx, e: Expr): string =
+  ## A slab operation (slab proposal, section 3); D overloads `tuckSlabNew`
+  ## on the storage, a fixed slab's answering `?Ref`.
+  let arg = if e.slabArg != nil: ctx.genDExpr(e.slabArg) else: ""
+  let value = if e.slabValue != nil: ctx.genDExpr(e.slabValue) else: ""
+  slabOpCall(e.slabOp, ctx.dSlab(e.slabRef.refName), arg, value, "rt.")
+
 proc genDIfaceCall(ctx: var DCodegenCtx, e: Expr): string =
   ## A call through an interface value, lowered (lowering_iface): switch on
   ## the tag and print each arm's member call — no table, no virtual call.
@@ -1352,7 +1365,8 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   case e.kind
   of exkLit: genDLit(e)
   of exkVar: ctx.genDVarName(e)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef,
+     exkMixinRef:
     e.refName
   of exkField: ctx.genDField(e)
   of exkQualified: ctx.genDQualified(e)
@@ -1402,6 +1416,10 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
     "rt.tok!(" & ctx.dType(e.optInner) & ")(" & ctx.genDExpr(e.optValue) & ")"
   of exkAbsent: "rt.tnone!(" & ctx.dType(e.optInner) & ")()"
   of exkPoolOp: ctx.genDPoolOp(e)
+  of exkSlabOp: ctx.genDSlabOp(e)
+  of exkSlabCell:
+    # The value in the cell a reference names (lowering_slab), checked.
+    slabCellValue(ctx.dSlab(e.cellSlab.refName), ctx.genDExpr(e.cellRef), "rt.")
   of exkOrdinal:
     # A cast, for an enum and a bool alike: D converts both to their ordinal.
     "cast(long)(" & ctx.genDExpr(e.ordinalOf) & ")"

@@ -156,7 +156,7 @@ proc memberSeq*(d: Decl): seq[Decl] =
   of dkActor: d.handlers
   of dkInterface: d.ifaceMembers
   of dkGroup: d.groupMembers
-  of dkTask, dkFn, dkRegistry, dkPool, dkExpr, dkConst, dkRegister,
+  of dkTask, dkFn, dkRegistry, dkPool, dkSlab, dkExpr, dkConst, dkRegister,
      dkStaticAssert, dkErrors, dkImport, dkSelect, dkFnSig, dkSatisfies,
      dkWhen, dkPublic, dkResources: @[]
 
@@ -451,9 +451,9 @@ proc implicitTailValue*(body: Expr): Expr =
     nil
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill, exkCall,
      exkChain, exkBinary, exkUnary, exkBracket, exkBracketAssign, exkImport,
-     exkCombinator, exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef,
+     exkCombinator, exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef,
      exkMixinRef, exkDefer, exkFinish, exkAcquire, exkOrdinal, exkValidate,
-     exkIfaceCall, exkIfaceIs, exkIfacePayload, exkPoolOp, exkWrapOk,
+     exkIfaceCall, exkIfaceIs, exkIfacePayload, exkPoolOp, exkSlabCell, exkSlabOp, exkWrapOk,
      exkAbsent:
     lastS
 
@@ -1103,6 +1103,16 @@ proc declOrigin*(m: Module, real: Table[string, Module], name: string,
     for d in other.decls:
       if d != nil and d.kind in kinds and d.name == name: return modName
   ""
+
+proc declAnywhere*(m: Module, real: Table[string, Module], name: string,
+                   kind: DeclKind): Decl =
+  ## The declaration `name` (as emitted) of `kind`, in `m` or the module that
+  ## declares it — what declOrigin names, as the decl itself.
+  result = m.findDecl(kind, name)
+  if result != nil: return
+  for _, other in real:
+    result = other.findDecl(kind, name)
+    if result != nil: return
 
 proc constOrigin*(m: Module, real: Table[string, Module], name: string): string =
   ## The module declaring an imported const. Not injected — the importer's

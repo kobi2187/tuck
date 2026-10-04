@@ -33,6 +33,7 @@ const
 32-duration-units
 33-ffi-zlib 34-ffi-cstring 35-ffi-struct 36-ffi-enum-callback 37-ffi-handle
 28-async-task 38-division 39-if-match-expr 40-saturating 41-tostr-concat 44-recursive-tree 45-intersection 46-h264-driver
+48-slab-references
 29-task-timeout 30-async-read 47-resource-registry 20-embedded-mp3-player
 """
 
@@ -81,7 +82,7 @@ const
 35-ffi-struct:0 36-ffi-enum-callback:0 37-ffi-handle:0 28-async-task:42
 38-division:0 39-if-match-expr:0 40-saturating:0 41-tostr-concat:0 44-recursive-tree:0 24-stdlib:0
 29-task-timeout:2 30-async-read:1 45-intersection:3 46-h264-driver:41
-47-resource-registry:17 20-embedded-mp3-player:0"""
+47-resource-registry:17 20-embedded-mp3-player:0 48-slab-references:0"""
 
 proc projFor(base: string): string =
   ## The scratch package dir an example is staged and built in: its base name

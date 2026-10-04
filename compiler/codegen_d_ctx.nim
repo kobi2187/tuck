@@ -319,6 +319,7 @@ proc dTypeIn*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
     elif t.name.startsWith("<"): giveUp("type sentinel " & t.name)
     elif isPoolHandleType(ctx.module, t.name) or
          isImportedPoolHandle(ctx.module, ctx.realModules, t.name): "rt.PoolHandle"
+    elif slabOfRefType(t.name) != nil: "rt.SlabRef"
     elif constOrigin(ctx.module, ctx.realModules, t.name) != "":
       # An Array size naming an imported const (R11, A33).
       dAlias(constOrigin(ctx.module, ctx.realModules, t.name)) & "." & t.name

@@ -1060,7 +1060,7 @@ no boxing, no runtime dispatch. `merge` rejects a field-name collision
 
 ---
 
-## 15. Memory: pools, arenas
+## 15. Memory: pools, slabs, arenas
 
 ```tuck
 type Reading:
@@ -1107,6 +1107,43 @@ one, fourth succeeds, exit 42 (`tests/suites/cli_smoke.nim`).
 > **`arena` (`.alloc`, `.reset`) is compile-gated only — zero behavioural
 > assertions.** Same for `registry` (`.raise`, `on Reg.Variant`) and MMIO
 > `register` read-only enforcement.
+
+### Slabs — references, for what values cannot say
+
+Everything above is a value: a child in a parent is the parent's alone. A
+**slab** gives back identity, sharing and cycles — a parent pointer, a doubly
+linked list, a graph — without a pointer:
+
+```tuck
+type Node:
+  data: int
+  next: NodesRef?
+
+slab Nodes = Node                  # grows in chunks; cells never move
+
+fn main() -> int:
+  let a = Nodes.new {data: 1, next: none}   # NodesRef: a cell and a tenancy
+  let b = Nodes.new {data: 2, next: a}
+  a.next = b                       # a cycle; `r.field` reads and writes the cell
+  Nodes.free {r: a}                # every copy of `a` is stale from here
+  Nodes.free {r: b}
+  return 0
+```
+
+A reference is 8 bytes (a 32-bit cell, a 32-bit tenancy), an ordinary value,
+and a per-slab type: an `EdgesRef` is not a `NodesRef`. The operations are
+`new`, `free`, `live`, `get`, `set`, `reset` (every cell at once, O(1)) and
+`count`; `none` is "no link yet" in a `NodesRef?` field (Q4). A stale
+reference stops the program (`TUCK SLAB [Nodes]: stale reference to cell N`,
+exit 1) rather than reading a reused cell; cells never freed are reported at
+exit unless the slab says `[leaks: ok]`. `[count: N]` makes a fixed slab
+whose `new` is `?NodesRef`; `[storage: contiguous]` one growable array.
+Identical on all three backends (`tests/suites/slabs.nim`); on Odin, a value
+that owns a `Seq` is deleted by the slab's own `free`/`set`/`reset`.
+`examples/48-slab-references.tuck` sets a doubly linked list, a tree with
+parent links and a graph with a cycle against their C and Rust forms. Not yet:
+the actor-ownership checks (proposal §7) and the arena over slabs (§9) —
+`thoughts/shared/plans/2026-09-29-slab-proposal.md`.
 
 ### The resource registry — for OS handles, not memory
 
@@ -1380,7 +1417,7 @@ Queries that ask the AST a question live in `codegen_common.nim` and are shared.
 Emitters, which interleave traversal with target syntax, stay twinned and
 diffable.
 
-Current coverage: **46 compile-gated** examples, 43 Odin compiles, 44 D compiles, 21 Odin runs and 19 D runs pinned to exact exit codes. (Every number here is checked against the suite's own gate lists by `tests/suites/examples.nim`, so they cannot drift silently.)
+Current coverage: **47 compile-gated** examples, 44 Odin compiles, 45 D compiles, 22 Odin runs and 20 D runs pinned to exact exit codes. (Every number here is checked against the suite's own gate lists by `tests/suites/examples.nim`, so they cannot drift silently.)
 
 Nim-only so far: `42-net-echo` and `14-task`. Task select/timeouts (29, 30)
 are no longer on that list — both are run-gated on Odin and D as well.

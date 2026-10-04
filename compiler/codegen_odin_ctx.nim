@@ -278,6 +278,7 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
       return t.name[NamedTypeParamPrefix.len .. ^2]
     let builtin = odinNamedBuiltin(ctx, t.name)
     if builtin != "": return builtin
+    if slabOfRefType(t.name) != nil: return "rt.SlabRef"
     ctx.odinNamedFallback(t)
   of tkTuple: ctx.odinTupleType(t)
   of tkApp:

@@ -1200,6 +1200,54 @@ proc genOdinPool(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ind & d.name & ": rt.ObjectPool(" & ctx.odinType(d.poolElem) & ", " &
     $d.poolCount & ")\n"
 
+proc genOdinSlabDrops(d: Decl, elem: string, owns: seq[string],
+                      ind: string): string =
+  ## The slab's `free`, `set` and `reset` for an element that owns heap:
+  ## Odin has no destructors, so each deletes what a value it ends owns
+  ## before the runtime's own step. Nim's runtime resets the value and D's
+  ## collector reclaims it; here it is spelt per slab, by its Seq fields.
+  let s = d.name
+  proc drops(c, ind: string): string =
+    for f in owns:
+      result.add ind & "delete(" & c & ".value" & (if f == "": "" else: "." & f) & ")\n"
+  result = ind & s & "_free :: proc(r: rt.SlabRef) {\n" &
+    ind & "\tc := rt.tuckSlabCell(&" & s & ", r)\n" & drops("c", ind & "\t") &
+    ind & "\trt.tuckSlabFree(&" & s & ", r)\n" & ind & "}\n"
+  result.add ind & s & "_set :: proc(r: rt.SlabRef, v: " & elem & ") {\n" &
+    ind & "\tc := rt.tuckSlabCell(&" & s & ", r)\n" & drops("c", ind & "\t") &
+    ind & "\tc.value = v\n" & ind & "}\n"
+  # A reset ends every live cell's value at once: each one's heap goes here.
+  result.add ind & s & "_reset :: proc() {\n" &
+    ind & "\tfor i in 0 ..< " & s & ".len {\n" &
+    ind & "\t\tc := rt.tuckSlabCellAt(&" & s & ", i)\n" &
+    ind & "\t\tif c.link == rt.SLAB_LIVE {\n" & drops("c", ind & "\t\t\t") &
+    ind & "\t\t}\n" & ind & "\t}\n" &
+    ind & "\trt.tuckSlabReset(&" & s & ")\n" & ind & "}\n"
+
+proc genOdinSlabsRelease*(ctx: var OdinCodegenCtx, m: Module): string =
+  ## Every slab this module declares, handed back at exit under TUCK_TRACK
+  ## (live values first, through the slab's own `reset` when they own heap),
+  ## so the tracker names what the program leaked. Public and called by the
+  ## entry point unconditionally, which keeps this package's import used.
+  result = SlabsReleaseProc & " :: proc() {\n\twhen rt.TUCK_TRACK {\n"
+  for d in m.decls(dkSlab):
+    if ctx.odinSlabOwns(d).len > 0: result.add "\t\t" & d.name & "_reset()\n"
+    result.add "\t\trt.tuckSlabRelease(&" & d.name & ")\n"
+  result.add "\t}\n}\n"
+
+proc genOdinSlab(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## A slab: one package-level instance of the storage its attributes chose,
+  ## zero but for its written name (the stale-reference messages carry it).
+  let elem = ctx.odinType(d.slabElem)
+  let store = case d.slabStorage
+              of ssChunked: "rt.SlabChunked(" & elem & ")"
+              of ssFixed: "rt.SlabFixed(" & elem & ", " & $d.slabCount & ")"
+              of ssContiguous: "rt.SlabSeq(" & elem & ")"
+  result = ind & d.name & " := " & store & "{name = " &
+           escape(actorLabel(d, d.name)) & "}\n"
+  let owns = ctx.odinSlabOwns(d)
+  if owns.len > 0: result.add genOdinSlabDrops(d, elem, owns, ind)
+
 proc collectStaticAssert(ctx: var OdinCodegenCtx, d: Decl): string =
   ## Odin's `#assert` does not reach a runtime value, so the entry point
   ## asserts these; nothing is emitted in place.
@@ -1271,6 +1319,7 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   of dkResources: genOdinResourceTables(d, ind)
   of dkMixin, dkExtern, dkPending: ctx.genMixinBlock(d)
   of dkPool: ctx.genOdinPool(d, ind)
+  of dkSlab: ctx.genOdinSlab(d, ind)
   of dkFnSig: ctx.genOdinFnSig(d, ind)
   of dkInterface: ctx.genOdinInterface(d, ind)
   of dkImport: ""     # same project, same namespace: no import line

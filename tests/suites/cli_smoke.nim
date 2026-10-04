@@ -861,6 +861,8 @@ fn main() -> int:
     # RUN on the other two, which is the gap that lets a Nim-side regression
     # through on a program whose whole claim is what it computes.
     "e44": ("examples/44-recursive-tree.tuck", "m_44_recursive_tree", 0),
+    # Every check in it returns its own code; 0 is all of them holding.
+    "e48": ("examples/48-slab-references.tuck", "m_48_slab_references", 0),
   }
 
   var work: seq[Work]

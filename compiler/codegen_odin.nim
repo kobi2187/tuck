@@ -17,6 +17,7 @@ import ast_query
 import codegen_common
 import twin_calls  # which calls take the moved twin — decided in prepare
 from lowering_seqcopy import needsDup, recordDupFields
+from twin_shape import seqFieldNames
 from ast_ops import pathOf
 from os import getEnv
 
@@ -726,6 +727,45 @@ proc genOdinPoolOp(ctx: var OdinCodegenCtx, e: Expr): string =
   var args = @["&" & pre & e.poolRef.refName]
   for a in e.poolOperands: args.add ctx.genOdinExpr(a)
   "rt." & poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
+
+proc odinSlabPkg(ctx: OdinCodegenCtx, name: string): string =
+  ## The package a slab is reached through when another module declares it,
+  ## "" for this module's own (R11, A36 — as a pool is).
+  let origin = declOrigin(ctx.module, ctx.realModules, name, {dkSlab})
+  if origin == "": "" else: origin.replace("-", "_") & "."
+
+proc odinSlab(ctx: var OdinCodegenCtx, name: string): string =
+  ## A slab by pointer, as the runtime takes it.
+  "&" & ctx.odinSlabPkg(name) & name
+
+proc odinSlabOwns*(ctx: OdinCodegenCtx, d: Decl): seq[string] =
+  ## What a slab's element owns on the heap, as Odin's ownership pass counts
+  ## it — the element's Seq fields, or "" for an element that IS a Seq. Odin
+  ## has no destructors, so a cell's value going (`free`, `set`, `reset`)
+  ## must delete these, which the slab's own procs do (genOdinSlab). Asked of
+  ## the slab's own module, so its declaration and every use agree.
+  let origin = declOrigin(ctx.module, ctx.realModules, d.name, {dkSlab})
+  let home = if origin == "": ctx.module else: ctx.realModules[origin]
+  if seqElem(d.slabElem) != nil: @[""]
+  else: seqFieldNames(ctx.res, home, d.slabElem)
+
+proc genOdinSlabOp(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A slab operation (slab proposal, section 3). A fixed slab's `new` is its
+  ## own proc: it answers `?Ref`, there being no room once every cell holds.
+  let d = declAnywhere(ctx.module, ctx.realModules, e.slabRef.refName, dkSlab)
+  let fixed = d != nil and d.slabStorage == ssFixed
+  let arg = if e.slabArg != nil: ctx.genOdinExpr(e.slabArg) else: ""
+  let value = if e.slabValue != nil: ctx.genOdinExpr(e.slabValue) else: ""
+  if d != nil and e.slabOp in {soFree, soSet, soReset} and
+     ctx.odinSlabOwns(d).len > 0:
+    # A value that owns heap goes through the slab's own procs, which delete
+    # what it owns first (genOdinSlab).
+    let p = ctx.odinSlabPkg(d.name) & d.name & "_"
+    if e.slabOp == soFree: return p & "free(" & arg & ")"
+    if e.slabOp == soSet: return p & "set(" & arg & ", " & value & ")"
+    return p & "reset()"
+  slabOpCall(e.slabOp, ctx.odinSlab(e.slabRef.refName), arg, value, "rt.",
+             if fixed: "tuckSlabNewFixed" else: "tuckSlabNew")
 
 const DispatchArg = "tuckArg"
   ## The dispatch closure's parameter for each argument past the receiver.
@@ -1452,7 +1492,8 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   case e.kind
   of exkLit: ctx.genLit(e)
   of exkVar: ctx.genVar(e)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef,
+     exkMixinRef:
     e.refName
   of exkField: ctx.genFieldAccess(e, ind)
   of exkQualified: genQualified(ctx, e)
@@ -1509,6 +1550,10 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
       ctx.genOdinExpr(e.optValue) & "}"
   of exkAbsent: "rt.tnone(" & ctx.odinType(e.optInner) & ")"
   of exkPoolOp: ctx.genOdinPoolOp(e)
+  of exkSlabOp: ctx.genOdinSlabOp(e)
+  of exkSlabCell:
+    # The value in the cell a reference names (lowering_slab), checked.
+    slabCellValue(ctx.odinSlab(e.cellSlab.refName), ctx.genOdinExpr(e.cellRef), "rt.")
   of exkValidate:
     "validate_" & ctx.res.typeFor(e.validated).name & "(" &
       ctx.genOdinExpr(e.validated) & ")"

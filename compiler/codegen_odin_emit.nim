@@ -5,7 +5,7 @@
 # flags/entry point into one Odin source file. The public entry points
 # (`emitOdin`/`emitOdinModule`) sit above genOdinDecl/genOdinExpr in the
 # import order, same shape as codegen_emit.nim for the Nim backend.
-import ast, strutils, tables
+import ast, strutils, tables, algorithm
 import resolution
 import ast_query
 import codegen_common
@@ -22,6 +22,10 @@ const odinFeatures = "#+feature dynamic-literals\n"
 
 import ./codegen_odin_decl
 import ./codegen_odin
+
+proc declaresSlab(m: Module): bool =
+  for d in m.decls:
+    if d != nil and d.kind == dkSlab: return true
 
 proc emitBody*(ctx: var OdinCodegenCtx, m: Module): tuple[types, mains: string] =
   ## Splits a module into its declarations and its top-level statements (the
@@ -44,6 +48,7 @@ proc emitBody*(ctx: var OdinCodegenCtx, m: Module): tuple[types, mains: string] 
       let code = ctx.genOdinDecl(d)
       if code != "":
         body.add(code & "\n")
+  if declaresSlab(m): body.add(ctx.genOdinSlabsRelease(m) & "\n")
   (body, mainStmts.join("\n"))
 
 proc runtimeUsers*(m: Module, actorNames: var seq[string],
@@ -112,6 +117,16 @@ proc usesRuntime*(m: Module, mains: string): bool =
   runtimeUsers(m, actorNames, hasTasks)
   actorNames.len > 0 or hasTasks or "rt." in mains
 
+proc slabPackages(m: Module, real: Table[string, Module]): seq[string] =
+  ## The modules declaring slabs, "" for the entry module's own. The entry
+  ## point reports their slabs and calls each one's `tuckSlabsRelease`, so it
+  ## imports each — and `rt` — though its body may name neither.
+  if declaresSlab(m): result.add ""
+  var imported: seq[string]
+  for modName, other in real:
+    if other != m and declaresSlab(other): imported.add modName
+  result.add imported.sorted
+
 proc shouldImportRt(m: Module, body, mains: string): bool =
   ## Check if runtime import is needed.
   var actorNames: seq[string]
@@ -131,7 +146,10 @@ proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
     result.add("import \"core:fmt\"")
   if shouldImportOs(m, body):
     result.add("import \"core:os\"")
-  if shouldImportRt(m, body, mains):
+  # The entry point's slab reports and releases name the runtime and each
+  # slab's package, though the body may name neither (genEntryPoint).
+  let slabPkgs = slabPackages(m, realModules)
+  if shouldImportRt(m, body, mains) or slabPkgs.len > 0:
     result.add("import rt \"./tuckrt\"")
   # Imported Tuck modules are sibling packages (mod_<name>/), referenced
   # qualified as `<name>.fn` — import each one the body actually calls. The
@@ -139,7 +157,7 @@ proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
   # module called `io` is fine as long as core:io isn't also imported).
   for modName in realModules.keys:
     let pkg = modName.replace("-", "_")
-    if (pkg & ".") in body or (pkg & ".") in mains:
+    if (pkg & ".") in body or (pkg & ".") in mains or modName in slabPkgs:
       result.add("import " & pkg & " \"./mod_" & pkg & "\"")
   # C libraries bound by extern blocks — see emitOdinModule for why these are
   # hoisted here rather than emitted beside the `foreign` block.
@@ -172,7 +190,8 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   # dependency on every program, breaking 107 assertions over programs that
   # touch no runtime at all. It is also the right rule on its own terms: with
   # no runtime there is no `tuckSeqCopy`, so there is nothing to track.
-  let tracks = usesRuntime(m, mains)
+  let tracks = usesRuntime(m, mains) or
+               slabPackages(m, ctx.realModules).len > 0
   if tracks:
     result.add("\tcontext.allocator = rt.tuckTrackAllocator()\n")
   for a in ctx.staticAsserts:
@@ -208,11 +227,21 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   # entry point already owns the lifecycle (it boots the scheduler); this is
   # the other end of it.
   if declaresResources(m): result.add("\t" & ResourceShutdownProc & "()\n")
+  # The slab proposal's exit report (Q3): cells never freed, per slab.
+  for s in reportedSlabs(m, ctx.realModules):
+    let pre = if s.origin == "": "" else: s.origin.replace("-", "_") & "."
+    result.add("\trt.tuckSlabReport(&" & pre & s.name & ")\n")
   # The allocation report, EXPLICITLY and last. `os.exit` below is `_exit`:
   # it runs no defers and no finalizers, which is the same reason the
   # resource registry closes its tables by hand right above. The exit lives
   # INSIDE tuckTrackCheck so this line need not mention `os`, which the
   # header may not have imported. With tracking off it is a no-op call.
+  # Every slab's values and storage go back before the allocation report (a
+  # no-op unless TUCK_TRACK), so it names what the program leaked rather
+  # than the slabs, which live until exit by design.
+  for p in slabPackages(m, ctx.realModules):
+    result.add("\t" & (if p == "": "" else: p.replace("-", "_") & ".") &
+               SlabsReleaseProc & "()\n")
   if tracks: result.add("\trt.tuckTrackCheck()\n")
   if mainReturns: result.add("\tos.exit(mainRc)\n")
   result.add("}\n")

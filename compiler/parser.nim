@@ -243,6 +243,7 @@ proc contextualDecl(p: var Parser, sp: Span, handled: var bool): Decl =
     if p.peek().kind in {tkColon, tkLBracket}: return p.parseResourcesDecl(sp)
   of "register": return p.parseRegisterDecl(sp)
   of "pool": return p.parsePoolDecl(sp)
+  of "slab": return p.parseSlabDecl(sp)
   of "arena": return p.parseArenaDecl()
   # `satisfies Obj: Iface` (spec 5.2) — gated on the object name following, so
   # a variable or field named `satisfies` still parses as an expression.

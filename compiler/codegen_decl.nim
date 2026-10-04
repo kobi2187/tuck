@@ -808,6 +808,19 @@ proc genPoolDecl(d: Decl): string =
   "var " & d.name & "* = ObjectPool[" & genType(d.poolElem) & ", " &
     $d.poolCount & "]()"
 
+proc genSlabDecl(d: Decl): string =
+  ## A slab (slab proposal, section 5): one global of the runtime storage its
+  ## attributes chose, starting empty and carrying only its written name, for
+  ## the messages a stale reference stops with. No reference type is emitted:
+  ## every `<Slab>Ref` is the runtime's one `SlabRef` (codegen_type), the
+  ## checker having kept two slabs' references apart.
+  let elem = genType(d.slabElem)
+  let store = case d.slabStorage
+              of ssChunked: "SlabChunked[" & elem & "]"
+              of ssFixed: "SlabFixed[" & elem & ", " & $d.slabCount & "]"
+              of ssContiguous: "SlabSeq[" & elem & "]"
+  "var " & d.name & "* = " & store & "(name: " & escape(actorLabel(d, d.name)) & ")"
+
 proc genFnSigType(d: Decl): string =
   ## `fnsig NAME = {params} -> ret` → a Nim closure proc type. Named delegate
   ## for slots/callbacks; call shape already checked by the type checker.
@@ -882,6 +895,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   of dkRegister: genRegister(d)
   of dkRegistry: ctx.genRegistry(d)
   of dkPool: genPoolDecl(d)
+  of dkSlab: genSlabDecl(d)
   of dkStaticAssert: "static: assert(" & ctx.genExpr(d.assertExpr) & ")"
   of dkErrors: ctx.genErrHandler(d)
   of dkResources: genResourceTables(d)

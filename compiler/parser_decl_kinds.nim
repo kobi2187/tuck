@@ -526,14 +526,14 @@ proc parseSatisfyTargets*(p: var Parser,
 
 const TopLevelKeywords = "fn, type, object, actor, task, interface, group, " &
   "mixin, fnsig, registry, decision, pending, distinct, const, import, " &
-  "extern, errors, resources, register, pool, arena, satisfies, " &
+  "extern, errors, resources, register, pool, slab, arena, satisfies, " &
   "static_assert, when, and `on Registry.Event` for a registry handler"
   ## Everything parseDecl accepts to OPEN a declaration — the tokenized
   ## keywords plus the contextual ones recognised in parser.nim's
   ## contextualDecl.
 
 const ContextualOpeners = ["extern", "errors", "resources", "register",
-                           "pool", "arena", "satisfies"]
+                           "pool", "slab", "arena", "satisfies"]
   ## Declaration openers the lexer does not tokenize — recognised by NAME in
   ## parser.nim's contextualDecl. Kept beside opensDeclaration below (which
   ## contextualDecl calls first): a new one added to contextualDecl must be
@@ -742,6 +742,44 @@ proc parsePoolDecl*(p: var Parser, sp: Span): Decl =
   Decl(span: sp, kind: dkPool, name: name,
        poolElem: elem.withoutAttr("count"), poolCount: count,
        poolCountText: countText)
+
+proc parseSlabDecl*(p: var Parser, sp: Span): Decl =
+  ## `slab Name = ElemType [attrs]` (slab proposal, section 3): cells of one
+  ## type, handed out as references. The `X = <type> [attrs]` shape a pool
+  ## uses; the attributes are the SLAB's knobs, read here and stripped from
+  ## the element type:
+  ##   count: N              a fixed array of N cells (a literal or a const)
+  ##   storage: contiguous   one growable array instead of chunks
+  ##   leaks: ok             no report of cells never freed
+  discard p.advance() # eat "slab"
+  let name = p.expectTypeName("slab").value
+  if p.current().kind != tkAssign:
+    p.reportError("A slab declares its element type: `slab " & name &
+                  " = <ElementType>`")
+  discard p.advance() # eat "="
+  let elem = p.parseType()
+  result = Decl(span: sp, kind: dkSlab, name: name, slabStorage: ssChunked)
+  var kept: seq[TypeAttr]
+  for a in elem.attrs:
+    case a.name
+    of "count":
+      result.slabStorage = ssFixed
+      try: result.slabCount = parseInt(a.value.replace("_", ""))
+      except ValueError: result.slabCountText = a.value
+    of "storage":
+      if a.value == "contiguous": result.slabStorage = ssContiguous
+      elif a.value != "chunked":
+        p.reportError("slab '" & name & "': storage is `chunked` (the " &
+                      "default) or `contiguous`, got '" & a.value & "'")
+    of "leaks":
+      if a.value == "ok": result.slabLeaksOk = true
+      else: p.reportError("slab '" & name & "': the one leaks setting is " &
+                          "`leaks: ok`, got '" & a.value & "'")
+    else: kept.add a
+  var bare = elem
+  bare.attrs = kept
+  result.slabElem = bare
+  if p.current().kind == tkNewline: discard p.advance()
 
 proc resourcePolicyFromName*(name: string, dest: var ResourcePolicy): bool =
   ## The three §7.4 policies, by their source spelling. A bool-returning

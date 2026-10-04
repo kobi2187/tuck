@@ -15,7 +15,7 @@ reference is how one thing points at another — a parent, a next node, a
 shared child — without a pointer and without leaving value semantics for
 anything else.
 
-```tuck-rejected
+```tuck
 type Node:
   data: int
   prev: NodesRef?
@@ -24,13 +24,19 @@ type Node:
 slab Nodes = Node                     # grows; cells never move
 
 fn main() -> int:
-  let a = Nodes.new {data: 1}         # prev, next start absent (§10, Q4)
-  let b = Nodes.new {data: 2, prev: a}
+  let a = Nodes.new {data: 1, prev: none, next: none}   # none: no link yet (Q4)
+  let b = Nodes.new {data: 2, prev: a, next: none}
   a.next = b                          # writes a's cell: b and a now link
-  b.prev.value.data += 10             # through the link: a.data is 11
+  let back = b.prev
+  if not back.ok:
+    return 0
+  back.value.data += 10               # through the link: a.data is 11
   Nodes.free {r: a}
-  return b.prev.value.data            # stops: TUCK SLAB [Nodes]: stale reference
+  return back.value.data              # stops: TUCK SLAB [Nodes]: stale reference
 ```
+
+(Runs on all three backends since phase 2, and stops at the last line with
+exit 1.)
 
 What it buys that value semantics cannot say: **identity** (a cursor, a
 parent pointer, a doubly linked list), **sharing** (a DAG; two parents, one
@@ -52,7 +58,7 @@ child) and **cycles** (a graph).
 
 ## 3. Surface
 
-```tuck-rejected
+```tuck
 slab Nodes = Node                          # chunked, grows (the default)
 slab Nodes = Node [count: 1024]            # fixed Array: static, embedded
 slab Nodes = Node [storage: contiguous]    # one Seq: opt-in (§5)

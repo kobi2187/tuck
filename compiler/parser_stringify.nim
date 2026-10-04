@@ -76,6 +76,14 @@ proc poolOpToString(e: Expr): string =
   result = e.poolRef.toString() & "." & ($e.poolOp)[2 .. ^1].toLowerAscii()
   if args.len > 0: result.add " {" & args.join(", ") & "}"
 
+proc slabOpToString(e: Expr): string =
+  ## Checker-stamped: `Slab.op {operands}`, as it was written.
+  var args: seq[string]
+  if e.slabArg != nil: args.add e.slabArg.toString()
+  if e.slabValue != nil: args.add e.slabValue.toString()
+  result = e.slabRef.toString() & "." & ($e.slabOp)[2 .. ^1].toLowerAscii()
+  if args.len > 0: result.add " {" & args.join(", ") & "}"
+
 proc toString*(e: Expr): string =
   ## A one-line, source-like rendering of `e` for messages and dumps. Lossy on
   ## purpose: control flow prints only its keyword (`if`, `match`, `block`), so
@@ -147,6 +155,11 @@ proc toString*(e: Expr): string =
     return "validate(" & e.validated.toString() & ")"   # lowering-built too
   of exkPoolOp:
     return poolOpToString(e)
+  of exkSlabOp:
+    return slabOpToString(e)
+  of exkSlabCell:
+    # Lowering-built: the cell a reference names.
+    return "cell(" & e.cellRef.toString() & ")"
   of exkIfaceCall:
     # Lowering-built: one arm per satisfying object, shown by name.
     var sats: seq[string]
@@ -162,10 +175,11 @@ proc toString*(e: Expr): string =
     # Lowering-built: a plain value stored into a `?T` place.
     return "some(" & e.optValue.toString() & ")"
   of exkAbsent:
-    return "absent"
+    return "none"
   of exkAcquire:
     return "acquire " & optToString(e.acquireRef) & ", " & e.acquireKind
   of exkFinish:
     return "finish " & optToString(e.finishHandle) & ", " & e.finishKind
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
+     exkSlabRef:
     return e.refName

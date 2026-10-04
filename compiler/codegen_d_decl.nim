@@ -994,6 +994,16 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
     # RtByPointer list, which routes it as rt.acquire(&Pool).
     "__gshared rt.ObjectPool!(" & ctx.dType(d.poolElem) & ", " &
       $d.poolCount & ") " & d.name & ";\n"
+  of dkSlab:
+    # A slab: one module-level instance of the storage its attributes
+    # chose, zero but for its written name (for the stale-reference message).
+    let elem = ctx.dType(d.slabElem)
+    let store = case d.slabStorage
+                of ssChunked: "rt.SlabChunked!(" & elem & ")"
+                of ssFixed: "rt.SlabFixed!(" & elem & ", " & $d.slabCount & ")"
+                of ssContiguous: "rt.SlabSeq!(" & elem & ")"
+    "__gshared " & store & " " & d.name & " = " & store & "(" &
+      escape(actorLabel(d, d.name)) & ");\n"
   of dkFn:
     if d.isExtern: ""                  # bare extern fn: emitted via the block
     elif d.isPending: ctx.genDPendingStub(d)

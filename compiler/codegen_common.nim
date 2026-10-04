@@ -99,6 +99,30 @@ proc poolOpProc*(op: PoolOpKind): string =
   of poWrite: "tuckPoolWrite"
   of poAddr: "tuckPoolAddr"
 
+proc slabCellValue*(slab, r: string, rt = ""): string =
+  ## The value in the cell `r` names, through the runtime's checked
+  ## `tuckSlabCell` — a read and a write alike (lowering_slab, `get`, `set`).
+  rt & "tuckSlabCell(" & slab & ", " & r & ").value"
+
+proc slabOpCall*(op: SlabOpKind, slab, arg, value: string, rt = "",
+                 newProc = "tuckSlabNew"): string =
+  ## A slab operation on the runtime's `tuckSlab*` procs, one family in all
+  ## three runtimes. `slab` is the storage as the backend passes it (`Nodes`,
+  ## `&Nodes`), `rt` the runtime's qualifier, `newProc` the proc that fills
+  ## a cell (Odin's fixed slab has its own: its `new` may find no room).
+  case op
+  of soNew: rt & newProc & "(" & slab & ", " & value & ")"
+  of soFree: rt & "tuckSlabFree(" & slab & ", " & arg & ")"
+  of soLive: rt & "tuckSlabLive(" & slab & ", " & arg & ")"
+  of soReset: rt & "tuckSlabReset(" & slab & ")"
+  of soCount: rt & "tuckSlabCount(" & slab & ")"
+  of soGet: slabCellValue(slab, arg, rt)
+  of soSet: slabCellValue(slab, arg, rt) & " = " & value
+
+const SlabsReleaseProc* = "tuckSlabsRelease"
+  ## Odin: each module's proc that hands its slabs back at exit under
+  ## TUCK_TRACK (codegen_odin_decl.genOdinSlabsRelease).
+
 const UnhandledHandlerName* = "tuck_unhandled"
   ## The generated proc every dropped fallible result reports through (spec
   ## 4.9), and the one each backend declares. A compiler-made name, so it

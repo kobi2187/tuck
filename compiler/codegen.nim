@@ -516,6 +516,14 @@ proc genPoolOp(ctx: var CodegenCtx, e: Expr): string =
   for a in e.poolOperands: args.add ctx.genExpr(a)
   poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
 
+proc genSlabOp(ctx: var CodegenCtx, e: Expr): string =
+  ## A slab operation (slab proposal, section 3) on the runtime's slab procs.
+  ## `get` and `set` reach the value through the checked cell, as a field
+  ## access through a reference does (exkSlabCell).
+  let arg = if e.slabArg != nil: ctx.genExpr(e.slabArg) else: ""
+  let value = if e.slabValue != nil: ctx.genExpr(e.slabValue) else: ""
+  slabOpCall(e.slabOp, e.slabRef.refName, arg, value)
+
 proc genIfaceCall(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## A call through an interface value, lowered (lowering_iface): a `case` on
   ## the tag, each arm binding a mutable copy of the payload — a member takes
@@ -850,7 +858,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   case e.kind
   of exkLit: ctx.genLit(e)
   of exkVar: ctx.genVar(e)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkMixinRef:
     e.refName
   of exkField: ctx.genFieldAccess(e, ind)
   of exkQualified: genQualified(ctx, e)
@@ -910,6 +918,10 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
       ctx.genExpr(e.optValue) & ")"
   of exkAbsent: "TuckResult[" & genType(e.optInner) & "](status: tsAbsent)"
   of exkPoolOp: ctx.genPoolOp(e)
+  of exkSlabOp: ctx.genSlabOp(e)
+  of exkSlabCell:
+    # The value in the cell a reference names (lowering_slab), checked.
+    slabCellValue(e.cellSlab.refName, ctx.genExpr(e.cellRef))
 
 proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
   ## Emitting an assignment TARGET. A bracket index must address the element

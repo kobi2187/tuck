@@ -45,6 +45,7 @@ proc collectNames(prog: seq[LoadedModule]) =
   collect(dkRegister, registerNames, "a register")
   collect(dkRegistry, registryNames, "a registry")
   collect(dkPool, poolNames, "a pool")
+  collect(dkSlab, slabNames, "a slab")
   collect(dkMixin, mixinNames, "a mixin")
   # Consts, on DIFFERENT terms: `collect` treats a repeat as an error, which is
   # right for the five singleton kinds above and wrong here — two modules each
@@ -73,6 +74,8 @@ proc declRefFor(name: string): Expr =
     result = Expr(kind: exkRegistryRef, refName: name)
   elif semLayer.poolNames.hasKey(name):
     result = Expr(kind: exkPoolRef, refName: name)
+  elif semLayer.slabNames.hasKey(name):
+    result = Expr(kind: exkSlabRef, refName: name)
   elif semLayer.mixinNames.hasKey(name):
     result = Expr(kind: exkMixinRef, refName: name)
   else:
@@ -82,6 +85,7 @@ proc declRefFor(name: string): Expr =
     of exkRegisterRef: semLayer.registerNames[name]
     of exkRegistryRef: semLayer.registryNames[name]
     of exkPoolRef: semLayer.poolNames[name]
+    of exkSlabRef: semLayer.slabNames[name]
     of exkMixinRef: semLayer.mixinNames[name]
     else: nil
   resolveTo(semLayer, result, d)

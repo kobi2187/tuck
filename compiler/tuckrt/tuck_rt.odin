@@ -846,6 +846,10 @@ slab_cell_seq :: #force_inline proc(s: ^SlabSeq($T), i: u32) -> ^SlabCell(T) #no
 @(private)
 slab_cell_at :: proc{slab_cell_chunked, slab_cell_fixed, slab_cell_seq}
 
+// The cell at `i` (< len), unchecked: a slab's own generated `reset` walks
+// these to delete what each live value owns (codegen_odin_decl).
+tuckSlabCellAt :: proc{slab_cell_chunked, slab_cell_fixed, slab_cell_seq}
+
 @(private)
 slab_grow_chunked :: proc(s: ^SlabChunked($T)) -> u32 {
 	cs := slab_chunk_shift(T)
@@ -968,6 +972,34 @@ tuckSlabCount :: proc(s: ^$S) -> int { return s.live }
 tuckSlabReport :: proc(s: ^$S) {
 	if s.live > 0 do fmt.eprintln("TUCK SLAB [", s.name, "]: ", s.live, " cell(s) never freed", sep = "")
 }
+
+// At exit, under TUCK_TRACK only: hand the slab's own storage back, so the
+// tracker reports what the PROGRAM leaked rather than the slab, which lives
+// until exit by design. Without tracking there is nothing to gain from
+// freeing at exit, and this is a no-op.
+@(private)
+slab_release_chunked :: proc(s: ^SlabChunked($T)) {
+	when TUCK_TRACK {
+		for page in s.top {
+			if page == nil do continue
+			for chunk in page^ {
+				if chunk != nil do free(rawptr(chunk))
+			}
+			free(page)
+		}
+		s.top = {}
+	}
+}
+@(private)
+slab_release_fixed :: proc(s: ^SlabFixed($T, $N)) {}
+@(private)
+slab_release_seq :: proc(s: ^SlabSeq($T)) {
+	when TUCK_TRACK {
+		delete(s.cells)
+		s.cells = nil
+	}
+}
+tuckSlabRelease :: proc{slab_release_chunked, slab_release_fixed, slab_release_seq}
 
 // A spinlock for the mailbox. NOT decoration: this runtime spawns one OS
 // thread per actor (tuck_coro.odin's tuckStartActor), so a send from main and

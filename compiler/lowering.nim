@@ -33,6 +33,7 @@ import ast
 import resolution
 import ast_query
 import lowering_recursive   # recursive sum edges get a Seq handle
+import lowering_slab        # a field through a slab reference reads the checked cell
 import lowering_decisions   # a decision table becomes a match or an if chain
 import lowering_chains      # a `..` chain becomes statements
 import lowering_iface       # a call through an interface becomes a dispatch
@@ -275,9 +276,9 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
      exkWhile, exkBreak, exkContinue, exkAssign, exkReturn, exkRaise,
      exkDiscard, exkTripleDot, exkImport, exkSend, exkSelect, exkCombinator,
      exkActorRef,
-     exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef, exkDefer,
+     exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkMixinRef, exkDefer,
      exkFinish, exkAcquire, exkOrdinal, exkValidate, exkIfaceCall,
-     exkIfaceIs, exkIfacePayload, exkWrapOk, exkAbsent, exkPoolOp:
+     exkIfaceIs, exkIfacePayload, exkWrapOk, exkAbsent, exkPoolOp, exkSlabCell, exkSlabOp:
     discard
 
   # flattenRegistryRaise runs BEFORE the recursive descent, not after: a
@@ -382,6 +383,7 @@ proc lowerModule*(res: Resolution, m: Module, real: Table[string, Module]) =
   # before anything tries to emit one. First, because the phases below read
   # field types.
   boxRecursiveEdges(res, m)
+  lowerSlabDerefs(res, m)
   # A decision table becomes an ordinary body — a `match` over a packed key,
   # or an `if` chain — before anything below walks fn bodies, so the calls
   # in its rows are lowered like any other.

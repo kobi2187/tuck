@@ -110,6 +110,11 @@ proc dImports*(ctx: DCodegenCtx, body, mains: string,
     if usesSymbol(code, alias):
       result.add("import " & alias & ";")
 
+proc slabReports(ctx: DCodegenCtx, m: Module): string =
+  for s in reportedSlabs(m, ctx.realModules):
+    let pre = if s.origin == "": "" else: dAlias(s.origin) & "."
+    result.add("    rt.tuckSlabReport(" & pre & s.name & ");\n")
+
 proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
   ## Tuck's `fn main` is a plain fn; D's entry point calls it. A
   ## value-returning `fn main` IS the process exit code — D's `int main`
@@ -142,7 +147,9 @@ proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
     # is still registered when the tables close. In the entry point rather
     # than a `static ~this()` module destructor, so the three backends put it
     # in one place — Odin cannot use a finalizer at all (os.exit is _exit).
-    (if declaresResources(m): "    " & ResourceShutdownProc & "();\n" else: "")
+    (if declaresResources(m): "    " & ResourceShutdownProc & "();\n" else: "") &
+    # The slab proposal's exit report (Q3): cells never freed, per slab.
+    ctx.slabReports(m)
   let head = "(string[] args) {\n" & seedArgs & boot & mains
   if mainFn != nil and mainFn.returnsValue:
     # The exit code is main's result, but tasks still get to finish first.

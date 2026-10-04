@@ -27,6 +27,8 @@
 #   a `return` / `raise`      when what it hands back could hold ours
 #   a call                    when its result could hold ours — unless the
 #                             rule exempts it (below)
+#   a slab's `new` / `set`    always: the cell outlives the body, and the
+#                             slab's own free, set and reset delete it
 #
 # and one EDGE carries out, the right-hand side of a binding to ANOTHER name:
 #
@@ -259,6 +261,7 @@ proc carriesOut(ix: BodyIndex, rule: SealRule, n: Expr): bool =
     v == nil or ix.holds(rule, ix.res.typeFor(v))
   of exkCall:
     n.id notin rule.exemptCalls and ix.holds(rule, ix.res.typeFor(n))
+  of exkSlabOp: n.slabOp in {soNew, soSet}
   else: false
 
 proc bindsElsewhere(ix: BodyIndex, rule: SealRule, parent, child: Expr,

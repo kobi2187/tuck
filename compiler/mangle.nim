@@ -100,7 +100,7 @@ proc isManglable(d: Decl): bool =
   # so it keeps its name for the same reason extern fns do — the Nim backend
   # emits it as the importc name, which must match the header.
   of dkType: d.typeExternHeader == ""
-  of dkObject, dkActor, dkTask, dkConst, dkPool, dkRegistry,
+  of dkObject, dkActor, dkTask, dkConst, dkPool, dkSlab, dkRegistry,
      dkRegister, dkFnSig: true
   else: false
 
@@ -281,7 +281,7 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
      exkCombinator, exkChain, exkBinary, exkUnary, exkBlock, exkIf, exkWhile,
      exkReturn, exkRaise, exkDiscard, exkDefer, exkFinish, exkAcquire,
      exkOrdinal, exkValidate, exkIfaceCall, exkIfaceIs, exkIfacePayload,
-     exkWrapOk, exkAbsent, exkPoolOp:
+     exkWrapOk, exkAbsent, exkPoolOp, exkSlabCell, exkSlabOp:
     for c in e.children: mangleExpr(res, c, names, locals, fields)
   of exkMatch: mangleMatch(res, e, names, locals, fields)
   of exkFor: mangleFor(res, e, names, locals, fields)
@@ -294,7 +294,7 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
     for arm in e.selArms:
       mangleExpr(res, arm.arg, names, locals, fields)
       mangleExpr(res, arm.body, names, locals, fields)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkMixinRef:
     mangleRefName(e, names)
   # Nothing to rename, and spelled out rather than left to `else: discard`.
   # The `else` that used to close this case swallowed exkCombinator when it
@@ -375,7 +375,7 @@ proc mangleMember(res: Resolution, mem: Decl, names: MangleNames,
   # Exhaustive, so a new DeclKind has to be decided here (CLAUDE.md). None
   # of these holds code a member walk reaches: a top-level one is walked by
   # mangleDeclRefs, and `ownExprs` reaches its expressions.
-  of dkActor, dkTask, dkConst, dkStaticAssert, dkRegistry, dkPool,
+  of dkActor, dkTask, dkConst, dkStaticAssert, dkRegistry, dkPool, dkSlab,
      dkRegister, dkErrors, dkResources, dkImport, dkFnSig, dkSatisfies,
      dkInterface, dkGroup, dkPublic, dkWhen:
     discard
