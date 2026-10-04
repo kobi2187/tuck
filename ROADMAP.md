@@ -38,7 +38,8 @@ finished** (no longer deferred).
 - R10 — actor arms only, or a task's too (§9.3 keeps a block so an arm can
   `return`); and whether a bare `return` stays an arm.
 - R12 — `benches/bench_phases`: rework or delete.
-- Arena — what `alloc` returns (a proposal comes first; see item 9).
+- ~~Arena — what `alloc` returns~~ ruled 2026-09-29 with the slab proposal,
+  built 2026-10-04 (item 9).
 
 **1. Memory and the SSA spine** (the higher priority)
 1. ~~`benches/transpile/dispatch.tuck` crashes the compiler~~ **DONE
@@ -383,8 +384,7 @@ RULED 2026-09-27, and implemented:
 
 ### Deferred — completely missing, not scheduled
 
-`arena` (parses and discards its body; since 2026-09-27 it no longer checks
-clean — TK-ME02, a warning so `examples/13-arena-mem.tuck` still compiles) · #12 hashing · #11 recursive types ·
+#12 hashing · #11 recursive types ·
 #10 correlation tokens · #16 numeric sigils · #17 · #32 · #33 · #57 ·
 #66/#68/#69/#70 · #71 · #74 · DNS. (**#18 generic actors** is done and
 closed: one singleton per instantiation, expanded before typecheck.)
@@ -975,7 +975,7 @@ and those must stay green.
 | Tasks | 9.2 | DONE 2026-08-05 — but STACKFUL coroutines, not the state-machine transform this row assumed. `[io]` calls are yield points; binding a task's result awaits it. Ceiling: on Odin a task WITH ARGUMENTS still emits a direct call (proc literals cannot capture), so its body runs off-coroutine |
 | bake | 3.5 | v1 DONE 2026-07-13 (Factor-fry: :name refs, fn→auto generic lowering, slot.invoke; ex 03 green+runtime-verified). Beef bake = delegate-type ceiling. True Tuck-IR inlining later if ever needed |
 | alias restructuring | 2.5 | DONE 2026-07-13 (typed renamed record, both backends; ex 18 green). Non-exkVar payload args still not exploded (double-eval; bind-to-temp later) |
-| pool / arena | 7.2/7.3 | acquire/release bitmask, reset, scope analysis, size verification |
+| pool / slab / arena | 7.2/7.3 | pool DONE (acquire/release, read/write/addr). Slab and arena DONE 2026-10-04 (slab proposal P0–P4): references by index with a tenancy per cell, chunked storage that never copies, ownership checks (TK-AC08/09), the arena as a lifetime over a slab per element type with a byte budget — run-gated on all three (examples 13, 48; `slabs` suite). Open: generic code over slabs (proposal §12); the arena's "cannot outlive" is a run-time check, a static one later |
 | Resource registry | 7.4 | 2026-09-14: `resources:` declaration (per-kind cap/policy/on_full/on_finish/sweep_batch, block-level policy default), `[resource: k]` marker validated (TK-RS01/02) and propagated through the effect machinery (TK-RS03, cross-module), the registry table in all three runtimes (strict/lazy/exit, inline ~75% watermark sweep, LIFO close-all, stale-handle generation catch — 19 rules pinned per runtime by `tests/suites/resources_rt.nim`), per-kind `<Kind>Handle` type, and the `OPEN RESOURCES` report + close-all at exit. `defer` landed with it as a GENERAL statement on all three backends. Release is `finish <handle>, <kind>` (ruled 2026-09-14): the kind is redundant against the handle's type and CHECKED (TK-RS04), so finishing into the wrong registry is a compile error. `on_full` and `on_finish` reach the table as closed vocabularies, the latter as real syscalls. The registry surface is a symmetric pair, `acquire <raw>, <kind>` / `finish <handle>, <kind>`, one parser building both (TK-RS04/05); the raw fd exists between the extern's return and the acquire and nowhere else, and the acquire site is filled from the span so the leak report can name it. A kind may also NAME a PROTOCOL — `db [cap: 4096, states: DbState]`, where DbState is a sealed sum type with `transitions:` (ruled 2026-09-14, decoupled: a `resources:` block is a deployment decision, the protocol of an OS service is the library's). The library writes only the states, never the handle; initial and terminal are DERIVED, and the machine is checked for what a resource needs (TK-RS06..10, including "the closing state is reachable from every state"). The registry is untouched: handle and table unchanged. Protocols are validated, NOT yet tracked — narrowing a handle through the machine needs a surface for a library op to name the edge it walks, a further ruling. A kind is declared ONCE by the library that owns it and apps import it — verified end-to-end, after fixing two bugs an import exposed: `main`'s blanket kind budget was its own module's kinds rather than the program's, and it REPLACED main's declared marker instead of unioning it, so the one workaround was a no-op too. A kind may be declared by MORE THAN ONE site, one knob each (ruled 2026-09-14): the library declares the protocol and on_finish, the app declares cap/policy/sweep_batch. Per knob, with a later site OVERRIDING an earlier one — a library ships a default, the app deploying it gets the last word. Not file order: modules are dep-first, so the importer overrides the imported. `states` is the exception and refuses a second setting (TK-RS02), since a protocol is what the service does rather than a default. Coherence moved out of the parser to the merged kind (TK-RS11) — a library's `on_full` is incoherent alone and correct once an app adds a cap. The table emits at the first site in dependency order, which is where a library's own acquire site can reach it; re-opens emit nothing, so no backend learns about re-opening. Also: `on_finish: none` now parses (it lexes as a keyword, so it was reserved even where only a name can appear). MISSING: §7.4's static acquire-must-finish check — writable now that both halves have a shape, but its escape arm is already sound by construction. DEFERRED by ruling: single-owner handles (affine types), a language-wide feature rather than a resource one — and not a prerequisite for protocol tracking, which stays sound under copy because a stale `finish` is a missed error the generation check catches, not a false rejection |
 | Interfaces | 5.2/5.3 | DONE. `satisfies` is checked at compile time; an interface value is a TAGGED VARIANT THAT COPIES, not a fat pointer — dispatch is a switch on the tag calling the concrete member fn, so there is no table, no thunk, and no lifetime question (escape analysis was deleted with the pointer design). Both backends |
 | Type composition `+` | 4.5 | conflict detection unverified |
@@ -1087,6 +1087,15 @@ returning the wrong answer on D. The lesson is in the ratio.
   before the boxed one was chosen for being a tenth the machinery.
 
 **2026-09-28: the arena (spec §7.3) is built on this** (owner). Queue item 9.
+
+**BUILT 2026-10-04** (`thoughts/shared/plans/2026-09-29-slab-proposal.md`,
+phases P0–P4; spec §7.3). The two questions below were answered by it: it
+needed language support — a `slab` declaration, because a reference has to be
+a TYPE per slab for a mismatch to be caught, which a library over `Seq` cannot
+make — and a mismatch IS caught: `NodesRef` is not `EdgesRef`, and an arena's
+`FrameRef[A]` is not `FrameRef[B]` even when A and B have the same fields.
+A stale reference stops the program. What stays open is §12 of the proposal,
+generic code over slabs first.
 
 **The idea:** a slab — one owned arena of homogeneous slots plus integer
 indices into it. Indices are ordinary values, so nothing about the

@@ -235,23 +235,6 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   This is the sharp form of §F's "gate lists are the real coverage": a
   feature can be listed, emitted, and entirely unexercised.
 
-- **`arena` parses and does nothing** (spec §7.3, now marked "not
-  implemented" there). There is no `dkArena` kind and no backend support:
-  `parseArenaDecl` reads the body and discards it, returning a `type` of the
-  arena's name with an empty record body. A file using an arena therefore
-  checked clean while allocating nothing and resetting nothing, and its block
-  is absent from the tree. Since 2026-09-27 it no longer checks clean: every
-  arena gets a TK-ME02 WARNING saying its body is discarded (a warning, so the
-  specimen below still compiles). `examples/13-arena-mem.tuck` is a syntax specimen
-  (no `fn main`), so the corpus is not claiming otherwise — but nothing
-  before this said so out loud. Found by `tuck validate`, which is what that
-  tool is for.
-  Its siblings are in three different states. §7.2 `pool` WORKS — verified
-  behaviourally: `count: 2` hands out two, reports absence on the third, and
-  recycles after a release, identically on all three backends. §8.1
-  `register` now works on all three (fixed 2026-09-12: the Nim backend's
-  `registerMMIO` macro was dropped for ordinary emitted code, matching Odin
-  and D).
 - **Three token kinds are dead.** `tkArena`, `tkPool` and `tkRegister` are
   declared in `TokenKind` and referenced nowhere else — the lexer emits none
   of them, so `arena`/`pool`/`register` (and `extern`, `errors`, `resource`)
@@ -270,6 +253,14 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **`arena` parsed and did nothing.** It parsed into a `type` of the arena's
+  name with an empty record and discarded its body; since 2026-09-27 a TK-ME02
+  warning said so. Built 2026-10-04 over slabs (slab proposal §9, phase 4):
+  `arena X [size: N]` is a declaration and a lifetime (the block form is
+  TK-PA18, TK-ME02 is retired), `X.new {value: v}` hands out a `XRef[T]`, and
+  `X.reset` ends everything at once. `examples/13-arena-mem.tuck` is a program
+  now, run-gated at 55 on all three; `tests/suites/slabs.nim`.
 
 - **A36 — an imported pool, on Odin and D.** A pool is not injected into an
   importer, and Odin and D named it bare — `&tuckˑpoolˑCells`, which only

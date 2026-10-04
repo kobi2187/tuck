@@ -226,6 +226,17 @@ This is a recurring theme in compilers — passes share state, and the ordering
 constraints between them are real but invisible. When you find one, write it
 down. (In this codebase it's written on `checkOrDie` in `tuck.nim`.)
 
+Beside it, under the same constraint, runs **slab ownership**
+(`compiler/slab_owner.nim`): a slab belongs to main's thread or to the actor
+that declares it, and this pass walks the whole program's call graph to refuse
+an owner reaching another's slab (TK-AC08) or a reference crossing an actor
+boundary (TK-AC09). It reads what the checker stamped — which field is a slab
+operation, which access goes through a reference, which declaration a call
+names — rather than re-deriving any of it. Just before both, the driver puts
+the slabs the checker MADE for arenas (one per element type) into their
+arena's module (`resolution.placeArenaSlabs`), so everything after typecheck
+finds them as declared slabs.
+
 ---
 
 ## Stage 6 — Mangling: making names safe
@@ -287,7 +298,16 @@ codegen has fewer shapes to handle. Two concrete jobs in this compiler:
   and rewrites the call into positional arguments, so codegen just emits
   arguments in order.
 
-Notice the shape of both: something friendly at the source level becomes
+- **Slab references become checked cell accesses** (`lowering_slab.nim`).
+  `r.data` through a `NodesRef` becomes a field of `tuckSlabCell(Nodes, r)` —
+  the runtime's checked lookup — for a read and a write alike, so every
+  backend emits it with its ordinary field code. A slab or arena operation
+  is rebuilt here from this backend's own copy of its operands: the checker's
+  op node lives in the shared side-table, and a backend pass that rewrote the
+  copy (wrapping `prev: a` into a `?`) never reached it — codegen printed the
+  unwrapped original until the op joined the tree.
+
+Notice the shape of all three: something friendly at the source level becomes
 something boring before it reaches the emitter. That's the whole idea.
 
 Every backend lowers its **own deep copy** of the tree, because lowering
