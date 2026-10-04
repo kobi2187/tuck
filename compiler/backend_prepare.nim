@@ -63,6 +63,7 @@ import resolution
 import lowering
 import lowering_seqcopy
 import lowering_strtemps
+import lowering_field_order
 import analysis_ownership
 import twin_calls
 import call_args
@@ -197,6 +198,8 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     let ts = epochTime()
     lowerModule(semLayer, lm.m, result.real)                         # 3. lower
     hoistStrTemps(semLayer, lm.m, ownedStrProcs(backend))     #    str temps
+    if backend == bkNim:
+      orderConstructionFields(semLayer, lm.m)       #    a moved field goes last
     if backend.aliasesOnAssign:
       markSeqCopiesIn(semLayer, lm.m)                                # 4. marks
     # 5. NUMBER WHAT LOWERING MINTED. Lowering builds nodes (tail returns,

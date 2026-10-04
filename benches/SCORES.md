@@ -879,6 +879,24 @@ container-threaded-through-a-record shape: `{ns: l.nodes, ..} build` passes
 `l.nodes` on while `l.slot` is still read, so the field cannot be moved out
 and is copied. On Odin the same shape is a double free (A38).
 
+**2026-10-04, re-measured; that reason was half right.** On Nim the copy was
+not `l.nodes`, which Nim moves (its last-read analysis follows paths). It was
+the record built on every return, `{nodes: out, slot: out.len - 1}`. Nim
+evaluates an object constructor's fields as written, and `out.len` follows
+`nodes: out`, so that read is not the last one and the whole array was
+copied. `lowering_field_order` (Nim only) now evaluates a field that takes a
+container after the fields that read it again, when those cannot change
+anything. Depth 14 → 15, `--release`:
+
+| variant | Nim | Odin | D |
+|---|---|---|---|
+| slab_thread | **0.010 → 0.016** | 4.11 → 18.2 | 0.88 → 6.04 |
+
+Odin and D copy at `var out = r.nodes` instead. Their copy decision
+(`lowering_seqcopy`) copies every field read, because a local's field taken
+without a copy has to be withdrawn from the local's own frees, or Odin frees
+it twice. That is next.
+
 ### Slab storage: doubling vs chunks — 2026-09-29
 
 `benches/trees/storage.nim`: one node array SHARED by every tree (so a

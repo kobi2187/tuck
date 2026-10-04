@@ -326,6 +326,46 @@ fn main() -> int:
           r"proc tuckˑfnˑsize\*\(b: tuckˑtypeˑBag\)"
   t.hostRuns("...and it computes what it did, on every backend", 10)
 
+  # A construction that hands a container on and reads it again: Nim
+  # evaluates an object constructor's fields as written and moves only at a
+  # last read, so `{nodes: out, slot: out.len - 1}` copied the whole array
+  # into the record on every return — benches/trees slab_thread, 0.44 s at
+  # depth 13 against 0.009 s with the read of `out` last
+  # (lowering_field_order). A field that does not read it again keeps its
+  # written place.
+  t.src """
+import seq
+
+type Built:
+  nodes: Seq[int]
+  slot: int
+
+type Tagged:
+  nodes: Seq[int]
+  tag: int
+
+fn grow({ns: Seq[int], v: int}) -> Built:
+  var out = ns
+  out = {items: out, value: v} push
+  return {nodes: out, slot: out.len - 1} Built
+
+fn tagged({ns: Seq[int]}) -> Tagged:
+  var out = ns
+  out = {items: out, value: 7} push
+  return {nodes: out, tag: 3} Tagged
+
+fn main() -> int:
+  let b = {ns: [5, 6], v: 9} grow
+  let t = {ns: b.nodes} tagged
+  return b.slot + t.nodes.len + t.tag
+"""
+  t.okCheck "a construction reading its container twice checks"
+  t.emits "...and Nim takes the container last, where it moves",
+          r"tuckˑtypeˑBuilt\(slot: .*, nodes: tuckˑvˑout\)"
+  t.emits "...while a field that does not read it again stays as written",
+          r"tuckˑtypeˑTagged\(nodes: tuckˑvˑout, tag: 3\)"
+  t.hostRuns("...and it computes what it did, on every backend", 9)
+
   # --- an ACTOR FIELD is not this body's to give away ----------------------
   #
   # The one place item 4 of thoughts/ssa-mirror-design.md could still bite.
