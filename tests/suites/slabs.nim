@@ -810,4 +810,29 @@ fn main() -> int:
   t.badCheck "an arena reference in a payload is refused",
              "TK-AC09.*takes a FrameRef\\[Item\\] in 'r'"
 
+  # A slab of a generic record: the element's type arguments come from the
+  # slab's declaration, so `new`'s fields, `set`'s record literal and a
+  # plain reference into the `next: R?` link all check and build. (Found
+  # 2026-10-04 probing generic code over slabs: `new` read the element as
+  # having no fields, and the link built on no backend.)
+  t.src """
+type Link[T, R]:
+  value: T
+  next: R?
+
+slab Ints = Link[int, IntsRef] [leaks: ok]
+
+fn main() -> int:
+  let a = Ints.new {value: 1, next: none}
+  let b = Ints.new {value: 2, next: a}
+  Ints.set {r: a, value: {value: 4, next: none}}
+  var n = 0
+  var cur: IntsRef? = b
+  for cur.ok:
+    n = n + cur.value.value
+    cur = cur.value.next
+  return n
+"""
+  t.hostRuns "a slab of a generic record: new, set and a link through it", 6
+
   t.finish()

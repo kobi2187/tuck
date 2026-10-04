@@ -936,7 +936,9 @@ proc poolOpArg(tc: var TypeChecker, e: Expr, qualified: string,
   if v == nil:
     fail("Type Error: '" & qualified & "' needs `" & p.name & "`: `" &
          qualified & " {" & p.name & ": …}`", e.span)
-  let got = tc.synthesize(v)
+  var got: Type
+  tc.withExpected(p.typ):       # a generic element's arguments come from it
+    got = tc.synthesize(v)
   if got != nil and not tc.compatible(got, p.typ):
     let why = if p.name == "h": " — a pool's handle belongs to that pool"
               else: ""
@@ -1011,8 +1013,12 @@ proc slabOpNamed(name: string): Option[SlabOpKind] =
   else: none(SlabOpKind)
 
 proc slabHoldsRecord(tc: TypeChecker, d: Decl): bool =
-  ## Is the element a record with fields — one `{...}` constructs?
+  ## Is the element a record with fields — one `{...}` constructs? A generic
+  ## record's application is one too: `slab Ints = Link[int, IntsRef]`.
   let elem = d.slabElem
+  if elem.kind == tkApp:
+    return elem.base != nil and elem.base.kind == tkNamed and
+           tc.typeGenerics.hasKey(elem.base.name) and tc.fieldsOf(elem).len > 0
   let rec = tc.resolve(elem)
   elem.kind == tkNamed and
     (tc.objDecls.hasKey(elem.name) or
@@ -1021,9 +1027,12 @@ proc slabHoldsRecord(tc: TypeChecker, d: Decl): bool =
 proc constructElement(pay: Expr, elem: Type): Expr =
   ## `{...}` as a construction of the slab's element, `{...} Node`, so it is
   ## checked, mangled and emitted as one (a bare record literal would be
-  ## emitted as an anonymous record, which no backend converts).
+  ## emitted as an anonymous record, which no backend converts). A generic
+  ## element is constructed by its base name, `{...} Link`; the caller
+  ## checks it under the element's type, which supplies the type arguments.
+  let name = if elem.kind == tkApp: elem.base.name else: elem.name
   result = Expr(span: pay.span, kind: exkCall, args: @[pay],
-                callee: Expr(span: pay.span, kind: exkVar, name: elem.name))
+                callee: Expr(span: pay.span, kind: exkVar, name: name))
   ensureId(result)
   ensureId(result.callee)
 
@@ -1052,7 +1061,8 @@ proc slabNewValue(tc: var TypeChecker, e: Expr, d: Decl): Expr =
   if tc.slabHoldsRecord(d):
     let ctor = constructElement(pay, elem)
     e.dotArg = ctor
-    discard tc.synthesize(ctor)
+    tc.withExpected(elem):
+      discard tc.synthesize(ctor)
     return ctor
   if pay.fields.len != 1 or pay.fields[0].name != "value":
     fail("Type Error: '" & q & "' takes the new cell's value as `" & q &
@@ -2350,6 +2360,31 @@ proc bindNamedParam(tc: TypeChecker, paramName: string, actual: Type,
   else:
     bindings[paramName] = actual
 
+proc echoesOwnParam(declared, actual: Type, generics: seq[string],
+                    bindings: Table[string, Type]): bool =
+  ## A value typed by the callee's OWN unbound param — `none` checked against
+  ## a field `next: R?` while R is still unknown — echoes the question back.
+  ## Binding R to R built `Link[int, R]` instead of "cannot infer 'R'".
+  declared.kind == tkNamed and actual.kind == tkNamed and
+    actual.name == declared.name and actual.name in generics and
+    not bindings.hasKey(actual.name)
+
+proc bindableActual(tc: TypeChecker, declared, actual: Type,
+                    generics: seq[string],
+                    bindings: Table[string, Type]): Type =
+  ## `actual` as inferBindings unifies it, or nil when it says nothing.
+  ## A value whose type is the ENCLOSING fn's type param binds the parameter
+  ## to that param by NAME: `fn mk[K, V]({k: K, v: V}) -> Pair[K, V]` builds
+  ## `Pair[K, V]`, not a pair of indistinguishable abstractions. Without this
+  ## every `T` in a body collapsed to one nameless sentinel that isFlexible
+  ## then discarded, and constructing a generic type inside a generic fn was
+  ## "cannot infer generic parameter 'K'".
+  let gname = typeParamName(actual)
+  if gname != "": return tc.namedType(gname, actual.span)
+  if isFlexible(actual) or echoesOwnParam(declared, actual, generics, bindings):
+    return nil
+  actual
+
 proc inferBindings(tc: TypeChecker, declared, actual: Type,
                    generics: seq[string], bindings: var Table[string, Type],
                    fnName: string, sp: Span) =
@@ -2357,17 +2392,8 @@ proc inferBindings(tc: TypeChecker, declared, actual: Type,
   ## recording what each of `generics` must be in `bindings`. A param bound
   ## twice to incompatible types is an error.
   if declared == nil or actual == nil: return
-  # A value whose type is the ENCLOSING fn's type param binds the parameter
-  # to that param by NAME: `fn mk[K, V]({k: K, v: V}) -> Pair[K, V]` builds
-  # `Pair[K, V]`, not a pair of indistinguishable abstractions. Without this
-  # every `T` in a body collapsed to one nameless sentinel that isFlexible
-  # then discarded, and constructing a generic type inside a generic fn was
-  # "cannot infer generic parameter 'K'".
-  var actual = actual
-  let gname = typeParamName(actual)
-  if gname != "":
-    actual = tc.namedType(gname, actual.span)
-  elif isFlexible(actual): return
+  let actual = tc.bindableActual(declared, actual, generics, bindings)
+  if actual == nil: return
   case declared.kind
   of tkNamed:
     tc.bindNamedParam(declared.name, actual, generics, bindings, fnName, sp)
@@ -3374,6 +3400,7 @@ proc inferConstructionArgs(tc: var TypeChecker, e: Expr, calleeName: string,
     for a in e.args: discard tc.synthesize(a)
     return
   let declFields = getFieldsForType(semLayer, tc.module, tc.typeDecls[calleeName])
+  var given: seq[(Expr, Type, Type)]   # a field's value, its type, its place
   for f in e.args[0].fields:
     # Each field is synthesized UNDER its declared type, with whatever the
     # bindings already know substituted in — the same treatment
@@ -3392,7 +3419,12 @@ proc inferConstructionArgs(tc: var TypeChecker, e: Expr, calleeName: string,
     for df in declFields:
       if df.name == f.name:
         tc.inferBindings(df.typ, ft, gs, bindings, calleeName, f.value.span)
+        given.add((f.value, ft, df.typ))
         break
+  # A plain `T` into a `T?` field is wrapped, as in a plain construction —
+  # judged once every binding is known, so `next: R?` reads `?IntsRef`.
+  for (v, got, place) in given:
+    tc.markIfPlainIntoOptional(v, got, substType(place, bindings))
 
 proc seedFromExpected(tc: var TypeChecker, calleeName: string,
                       gs: seq[string], bindings: var Table[string, Type]) =

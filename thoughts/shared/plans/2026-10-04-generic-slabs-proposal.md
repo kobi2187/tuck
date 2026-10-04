@@ -92,8 +92,8 @@ This is the case that motivates the work: a `std` list. Its cell links to the sl
 that holds it, and `std` cannot name that slab. The same parameter does it,
 on a type:
 
-```tuck
-# std/list
+```tuck-rejected
+# std/list — a bound on a type's parameter does not parse yet (below)
 type Cell[T, S: slab]:
   value: T
   next: Ref[S]?
@@ -105,7 +105,7 @@ fn push[T, S: slab]({head: Ref[S]?, value: T}) -> Ref[S]:
 
 ```tuck
 # the user's module
-import std/list
+import list
 
 slab Ints = list::Cell[int, Ints]   # names itself, as `next: NodesRef?` does today
 
@@ -119,19 +119,20 @@ fn main() -> int:
 At emit time S is erased. `Ref[S]` is `SlabRef` on every backend, so the host
 type is `Cell[T]`.
 
-Three things here do not work today:
-- **A slab of a generic record.**
-  - `Ints.new {value: 1, next: none}` says "a Link[int, IntsRef] has no fields to name".
-  - Building the record first fails on inference: `Link[int, R]`, since `none` gives R nothing.
+A slab of a generic record works since 2026-10-04: `slab Ints = Link[int,
+IntsRef]` with `new`, `set` and links through it, on all three backends
+(`slabs`). That needed no ruling. Probing this proposal found it refused
+(`Ints.new` read the element as having no fields), together with two
+generic-record bugs beside it.
 
-  Any `std` container needs this, whatever the ruling.
+Two things here do not work today:
 - **A bound on a type's parameter.** `type Cell[T, S: slab]` is "Expected generic parameter name".
 - **Across modules.** The copy of `list::push` for `Ints` must live where both are visible: the user's module, naming list's own fns qualified. That is the placement problem A34 already has (a group bound whose provider is in another module). It is also why an interface bound is module-local today. Solve it once for both.
 
 ## 4. The alternative: the slab found from the reference
 
 ```tuck
-fn length[T]({head: Ref[T]?}) -> int     # T: the ELEMENT type
+fn length[T]({head: Ref[T]?}) -> int:    # T: the ELEMENT type
   ...
 
 fn drop[T]({r: Ref[T]}):
@@ -153,7 +154,6 @@ also has a slab of T. Not recommended.
 1. **Module-local.**
    - `[S: slab]` on fns, `Ref[S]`, and `S.<op>`.
    - Inference from a reference argument; a copy per slab; the original dropped.
-   - A slab of a generic record.
    - `[S: slab]` on a type, erased at emit.
    - The form in §1 is refused with a TK code naming `[S: slab]`, not left to fail in the host.
 

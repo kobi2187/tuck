@@ -437,6 +437,9 @@ narrow — `if not r.ok: return 0` then `r.value.v` (`tests/suites/known_bugs.ni
 So does a **loop** on it — `for up.ok:` narrows `up` in the body, so a chain
 of `?` links is walked with `up = up.value.parent` (#98). Assigning a `?T` to a
 narrowed name ends its narrowing there: the guard held for the old value.
+Not yet (seen 2026-10-04): a guard narrows a NAME, not a field path —
+`if b.n.ok: b.n.value` is still `unhandled`; bind it first, `let n = b.n` —
+and `if x.ok and y.ok:` narrows neither; nest the two `if`s.
 
 Every unhandled shape is rejected with `unhandled`: arithmetic on `!T`, payload
 access, `or`-defaulting, a bare statement drop, an unhandled pool `acquire`.
@@ -1141,6 +1144,8 @@ reference stops the program (`TUCK SLAB [Nodes]: stale reference to cell N`,
 exit 1) rather than reading a reused cell; cells never freed are reported at
 exit unless the slab says `[leaks: ok]`. `[count: N]` makes a fixed slab
 whose `new` is `?NodesRef`; `[storage: contiguous]` one growable array.
+The element may be a generic record, `slab Ints = Link[int, IntsRef]`; its
+type arguments come from the declaration.
 Identical on all three backends (`tests/suites/slabs.nim`); on Odin, a value
 that owns a `Seq` is deleted by the slab's own `free`/`set`/`reset`.
 `examples/48-slab-references.tuck` sets a doubly linked list, a tree with

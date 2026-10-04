@@ -246,6 +246,19 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **A slab of a generic record could not `new`, and a generic record's
+  `T?` field took no plain value.** `slab Ints = Link[int, IntsRef]` read
+  the element as having no fields, so `Ints.new {value: 1, next: none}` was
+  refused, and `set`'s record literal could not find its type arguments;
+  they come from the slab's declared element now. Beside it, on every
+  backend and with no slab: a generic construction never noted a plain `T`
+  given to a `T?` field (`{v: 1, n: two} Box`), so it was emitted bare and
+  built nowhere; the wrap is judged once every type argument is known. And
+  `none` as the only thing naming R bound R to itself, typing the
+  construction `Link[int, R]`; it is "cannot infer generic parameter 'R'"
+  now. Found 2026-10-04 probing generic code over slabs; fixed the same day.
+  `slabs`, "a slab of a generic record…"; `known_bugs`, two guards.
+
 - **A plain `T` given to a binding stated as `T?` built on no backend.**
   `let x: int? = five` and `var h: NodesRef? = a` were emitted bare, and
   each host refused a plain value where its result carrier was expected.

@@ -2978,4 +2978,40 @@ fn main() -> int:
   t.quietly: t.hostRuns("a plain T into a stated `T?` binding is wrapped", 6)
   t.bugFixed "a plain T into a stated `T?` binding is wrapped"
 
+  # Found the same day, beside it: a GENERIC construction never noted a
+  # plain `T` given to a `T?` field, so `{v: 1, n: two} Box` with `n: T?`
+  # built on no backend. The wrap is judged once every type argument is
+  # known (typecheck.inferConstructionArgs).
+  t.src """
+type Box[T]:
+  v: T
+  n: T?
+
+fn main() -> int:
+  let two = 2
+  let b = {v: 1, n: two} Box
+  let n = b.n
+  if n.ok:
+    return b.v + n.value
+  return 0
+"""
+  t.quietly: t.hostRuns("a plain T into a generic record's `T?` field is wrapped", 3)
+  t.bugFixed "a plain T into a generic record's `T?` field is wrapped"
+
+  # ...and `none` there, with nothing else naming R, bound R to itself: the
+  # construction was typed `Link[int, R]`, and the error landed later as a
+  # mismatch against that, instead of saying R cannot be inferred.
+  t.src """
+type Link[T, R]:
+  value: T
+  next: R?
+
+fn main() -> int:
+  let l = {value: 1, next: none} Link
+  return l.value
+"""
+  t.quietly: t.badCheck("`none` alone cannot infer a generic param",
+                        "cannot infer generic parameter 'R' of 'Link'")
+  t.bugFixed "`none` alone cannot infer a generic param"
+
   t.finish()
