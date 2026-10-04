@@ -1110,9 +1110,166 @@ proc asSlabDeref(tc: var TypeChecker, e: Expr, slab: Decl): Type =
     if f.name == e.fieldName:
       semLayer.markSlabDeref(e, slab)
       return f.typ
-  fail("Type Error: a " & slabRefName(slab.name) & " names a " &
+  let refWord = if slab.slabArena != "":
+                  arenaRefName(slab.slabArena) & "[" & typeName(slab.slabElem) & "]"
+                else: slabRefName(slab.name)
+  fail("Type Error: a " & refWord & " names a " &
        typeName(slab.slabElem) & ", which has no field '" & e.fieldName & "'",
        e.span)
+
+# --- arenas (slab proposal §9) ------------------------------------------------
+#
+# An arena is one lifetime over a slab per element type: `Frame.new {value: v}`
+# puts `v` in the arena's slab for v's type — made here the first time a `new`
+# or a reference names that type, and registered as a slab, so lowering,
+# ownership and every backend treat it as one (tuck.nim appends it to the
+# arena's module once the program is checked). `live`, `get` and `set` take
+# a reference and reach the slab its type names; `reset` resets them all.
+
+proc primitiveBytes(name: string): int =
+  case name
+  of "u8", "i8", "bool": 1
+  of "u16", "i16": 2
+  of "u32", "i32", "f32": 4
+  of "str", "Seq": 16
+  else: 8
+
+proc byteSize(tc: var TypeChecker, t: Type, depth = 0): int
+
+proc fieldBytes(tc: var TypeChecker, fields: seq[FieldDef], depth: int): int =
+  ## A record's fields, each rounded up to 8.
+  for f in fields: result += (tc.byteSize(f.typ, depth + 1) + 7) div 8 * 8
+
+proc appBytes(tc: var TypeChecker, r: Type, depth: int): int =
+  ## `?T` / `!T`, `Array[N, T]`, `Seq[T]`, a reference.
+  if isWrapper(r): return 8 + tc.byteSize(r.args[0], depth + 1)
+  if r.base.kind == tkNamed and r.base.name == "Array" and r.args.len == 2 and
+     r.args[0].kind == tkNamed and r.args[0].name.allCharsInSet(Digits):
+    return parseInt(r.args[0].name) * tc.byteSize(r.args[1], depth + 1)
+  if r.base.kind == tkNamed and r.base.name == "Seq": return 16
+  8
+
+proc byteSize(tc: var TypeChecker, t: Type, depth = 0): int =
+  ## What a value of `t` charges an arena's `[size: N]` budget: the same on
+  ## every backend, by fixed rules rather than any host's layout (an Odin
+  ## `[dynamic]` header is 40 bytes, a Nim or D one 16, and a budget must run
+  ## out at the same `new` everywhere). Primitives their width; a `str`, a
+  ## `Seq` or a reference its header (16, 16, 8); `?T` and `!T` the value and
+  ## a word; `Array[N, T]` N of them; a record its fields, each rounded up to
+  ## 8; a sum a word and its largest payload.
+  if t == nil or depth > 16: return 8
+  let r = tc.resolve(t)
+  if r == nil: return 8
+  case r.kind
+  of tkNamed: return primitiveBytes(r.name)
+  of tkApp: return tc.appBytes(r, depth)
+  of tkRecord: return tc.fieldBytes(r.fields, depth)
+  of tkSum:
+    for v in r.variants: result = max(result, tc.fieldBytes(v.fields, depth))
+    return 8 + result
+  of tkTuple, tkFunc, tkUnion, tkEffect, tkRename: return 8
+
+proc arenaSlabFor(tc: var TypeChecker, arena: Decl, elem: Type, span: Span): Decl =
+  ## The arena's slab for values of `elem`, made the first time it is named.
+  if elem == nil or isFlexible(elem) or elem.kind notin {tkNamed, tkApp} or
+     (elem.kind == tkNamed and elem.name.startsWith(NamedTypeParamPrefix)):
+    fail("Type Error: arena '" & arena.name & "' holds values of a type it " &
+         "can name — bind the value with one first (`let h = {...} Header`)" &
+         (if elem != nil: ", not " & typeName(elem) else: ""), span)
+  let name = arenaSlabName(arena.name, elem)
+  result = semLayer.slabNames.getOrDefault(name, nil)
+  if result != nil and result.slabArena == "":
+    fail("Type Error: arena '" & arena.name & "' keeps its " & typeName(elem) &
+         " cells in a slab named '" & name & "', and the program declares a " &
+         "slab of that name — rename the slab", result.span)
+  if result != nil: return
+  result = Decl(span: arena.span, kind: dkSlab, name: name,
+                slabElem: deepCopy(elem), slabStorage: ssChunked,
+                slabLeaksOk: true, slabOwner: arena.arenaOwner,
+                slabArena: arena.name, slabCost: 8 + tc.byteSize(elem))
+  result.id = newNodeId()     # a declaration like any other (assertTreeIds)
+  semLayer.slabNames[name] = result
+
+proc arenaRefType(tc: var TypeChecker, arena: Decl, elem: Type, span: Span): Type =
+  ## `FrameRef[T]`.
+  Type(span: span, kind: tkApp, args: @[elem],
+       base: tc.namedType(arenaRefName(arena.name), span))
+
+proc arenaOperand(e: Expr, field, op: string): Expr =
+  ## The payload field an arena operation reads, by name.
+  if e.dotArg != nil and e.dotArg.kind == exkStruct:
+    for f in e.dotArg.fields:
+      if f.name == field: return f.value
+  fail("Type Error: '" & e.receiver.refName & "." & op & "' needs `" & field &
+       "`: `" & e.receiver.refName & "." & op & " {" & field & ": …}`", e.span)
+
+proc arenaRefOperand(tc: var TypeChecker, e: Expr, arena: Decl): (Expr, Decl) =
+  ## `{r: …}`: the reference, and the slab its element type names.
+  let r = arenaOperand(e, "r", e.fieldName)
+  let t = tc.synthesize(r)
+  if arenaOfRefType(t) != arena:
+    fail("Type Error: '" & arena.name & "." & e.fieldName & "' expects r: " &
+         arenaRefName(arena.name) & "[T] but got " & typeName(t), r.span)
+  (r, tc.arenaSlabFor(arena, t.args[0], r.span))
+
+proc arenaNew(tc: var TypeChecker, e: Expr, arena: Decl): (Expr, Type) =
+  ## `Frame.new {value: v}`: a cell of the arena's slab for v's type.
+  let v = arenaOperand(e, "value", "new")
+  let t = tc.synthesize(v)
+  let slab = tc.arenaSlabFor(arena, t, v.span)
+  let node = Expr(span: e.span, kind: exkSlabOp, slabOp: soNew, slabValue: v,
+                  slabRef: Expr(span: e.span, kind: exkSlabRef, refName: slab.name))
+  let rref = tc.arenaRefType(arena, t, e.span)
+  let ret = if arena.arenaSize > 0 or arena.arenaSizeText != "":
+              Type(span: e.span, kind: tkApp, args: @[rref],
+                   base: Type(span: e.span, kind: tkNamed, name: "?"))
+            else: rref
+  (node, ret)
+
+proc arenaCellOp(tc: var TypeChecker, e: Expr, arena: Decl,
+                 op: SlabOpKind): (Expr, Type) =
+  ## `live`, `get` and `set` on the cell a reference names.
+  let (r, slab) = tc.arenaRefOperand(e, arena)
+  var value: Expr = nil
+  var ret = slab.slabElem
+  if op == soLive: ret = Type(span: e.span, kind: tkNamed, name: "bool")
+  if op == soSet:
+    value = arenaOperand(e, "value", "set")
+    var got: Type
+    tc.withExpected(slab.slabElem):
+      got = tc.synthesize(value)
+    if not tc.compatible(got, slab.slabElem):
+      fail("Type Error: '" & arena.name & ".set' expects value: " &
+           typeName(slab.slabElem) & " but got " & typeName(got), value.span)
+    ret = Type(span: e.span, kind: tkNamed, name: "void")
+  (Expr(span: e.span, kind: exkSlabOp, slabOp: op, slabArg: r, slabValue: value,
+        slabRef: Expr(span: e.span, kind: exkSlabRef, refName: slab.name)), ret)
+
+proc asArenaOp(tc: var TypeChecker, e: Expr): Type =
+  ## `Frame.new {value: v}`, `Frame.live/get/set {r, …}`, `Frame.reset`.
+  let arena = semLayer.arenaNames.getOrDefault(e.receiver.refName, nil)
+  var node: Expr
+  case e.fieldName
+  of "new": (node, result) = tc.arenaNew(e, arena)
+  of "live": (node, result) = tc.arenaCellOp(e, arena, soLive)
+  of "get": (node, result) = tc.arenaCellOp(e, arena, soGet)
+  of "set": (node, result) = tc.arenaCellOp(e, arena, soSet)
+  of "reset":
+    node = Expr(span: e.span, kind: exkArenaReset, arenaRef: e.receiver)
+    result = Type(span: e.span, kind: tkNamed, name: "void")
+  else:
+    fail("Type Error: an arena has no '" & e.fieldName & "' — it takes new, " &
+         "live, get, set and reset (no per-cell free: `reset` frees it all)",
+         e.span)
+  setCall(semLayer, e, node)
+  semLayer.setType(node, result)
+
+proc asStorageOp(tc: var TypeChecker, e: Expr): Type =
+  ## `Slab.op {...}` or `Arena.op {...}`; nil for any other receiver.
+  if e.receiver == nil: nil
+  elif e.receiver.kind == exkSlabRef: tc.asSlabOp(e)
+  elif e.receiver.kind == exkArenaRef: tc.asArenaOp(e)
+  else: nil
 
 proc asStaticMemberCall(tc: var TypeChecker, e: Expr): Type =
   ## `Pool.acquire` / `Pool.release {v}` (spec 7.2) — a STATIC member call on a
@@ -1128,8 +1285,8 @@ proc asStaticMemberCall(tc: var TypeChecker, e: Expr): Type =
   # Pools and ACTORS both. An actor contributes `<Actor>.waitUntil` the same
   # way a pool contributes `<Pool>.acquire` (typecheck_collect), so one path
   # serves both and neither is special-cased by name.
-  if e.receiver != nil and e.receiver.kind == exkSlabRef:
-    return tc.asSlabOp(e)
+  let storage = tc.asStorageOp(e)
+  if storage != nil: return storage
   if e.receiver == nil or e.receiver.kind notin {exkPoolRef, exkActorRef}:
     return nil
   let qualified = e.receiver.refName & "." & e.fieldName
@@ -1532,6 +1689,9 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
   if e.dotArg == nil and rawT != nil and rawT.kind == tkNamed:
     let slab = slabOfRefType(rawT.name)     # a field THROUGH a reference
     if slab != nil: return tc.asSlabDeref(e, slab)
+  let arena = arenaOfRefType(rawT)         # ...or an arena's
+  if e.dotArg == nil and arena != nil:
+    return tc.asSlabDeref(e, tc.arenaSlabFor(arena, rawT.args[0], e.span))
   if isWrapper(rawT):
     fail("Type Error: unhandled " & typeName(rawT) &
          " — check `.ok` and read `.value`, or pass it to a handling function, " &
@@ -4840,11 +5000,11 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # Stamped by the checker (asPoolOp) in place of `Pool.op {...}`; its
     # type was recorded when it was built.
     semLayer.typeFor(e)
-  of exkSlabOp, exkSlabCell:
+  of exkSlabOp, exkArenaReset, exkSlabCell:
     # Stamped by the checker (asSlabOp), or built by lowering_slab from a
     # field read through a reference; typed as it is built.
     semLayer.typeFor(e)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkMixinRef:
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum
     # variant (synthBareVariant), named after the declaration itself. Field
     # access on one of these (synthFieldAccess) special-cases the receiver's
@@ -5350,32 +5510,26 @@ proc checkPoolDecl(tc: TypeChecker, d: Decl) =
        "pool '" & d.name & "': no type named '" & n &
        "' — a pool holds slots of a declared type", d.span)
 
-proc checkArenaAttrs(m: Module, d: Decl) =
-  ## spec 7.3: `arena A [size: N]` reserves N bytes up front, so N has to be
-  ## a positive count for the same reason an actor's queue does — the number
-  ## IS the allocation.
-  ##
-  ## An arena parses into a dkType carrying its attrs, which is why this runs
-  ## from the dkType arm rather than an arm of its own.
-  if d.typeBody == nil: return
-  for attr in d.typeBody.attrs:
-    if attr.name == ArenaMarker:
-      warn(dcMeArenaInert, "arena '" & d.name & "' is not implemented yet: " &
-           "its body is discarded, and nothing in it is checked or emitted",
-           attr.span.line, attr.span.col)
-    if attr.name != "size": continue
-    let got = constIntOf(m, attr.value)
+proc checkArenaDecl(m: Module, d: Decl) =
+  ## slab proposal §9: `[size: N]` is a byte budget over all the arena's
+  ## slabs, so N has to be a positive count the compiler knows — a literal,
+  ## or a `const` naming one, deferred here as a pool's count is. An arena
+  ## without one (-1, the parser's mark) has no budget.
+  if d.arenaSizeText != "":
+    let got = constIntOf(m, d.arenaSizeText)
     if got.isNone:
       fail(dcMeSizeCount,
            "arena '" & d.name & "': size must be a whole number of bytes " &
            "the compiler knows — a literal, or a `const` naming one. Got '" &
-           attr.value & "'", attr.span)
-    var n = got.get
-    if n <= 0:
+           d.arenaSizeText & "'", d.span)
+    d.arenaSize = got.get
+    d.arenaSizeText = ""
+  if d.arenaSize != -1:
+    if d.arenaSize <= 0:
       fail(dcMeSizeCount,
-           "arena '" & d.name & "': size must be at least 1 byte, got " & $n &
-           " — the size IS the reservation, so a zero or negative one " &
-           "cannot hold anything", attr.span)
+           "arena '" & d.name & "': size must be at least 1 byte, got " &
+           $d.arenaSize & " — the size IS the budget, so a zero or " &
+           "negative one cannot hold anything", d.span)
 
 proc checkActorQueue(m: Module, d: Decl) =
   ## `[queue: N]` is the mailbox ring's exact capacity, so N must be a
@@ -5538,10 +5692,10 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
       failIfFieldInit(d.typeBody.fields, d.name)
     checkTransitions(d)
     tc.checkInvariants(d)
-    checkArenaAttrs(tc.module, d)  # an arena parses into a dkType (spec 7.3)
   of dkRegister: checkRegisterDecl(d)
   of dkPool: tc.checkPoolDecl(d)
   of dkSlab: tc.checkSlabDecl(d)
+  of dkArena: checkArenaDecl(tc.module, d)
   of dkErrors:
     if d.errHandler != nil: tc.checkDecl(d.errHandler)
   of dkSelect:

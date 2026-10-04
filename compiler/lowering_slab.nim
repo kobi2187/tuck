@@ -32,17 +32,29 @@ proc copied(under, orig: Expr): Expr =
     if n.id == orig.id: return n
   raiseAssert "lowering_slab: an operand is not under its operation"
 
+proc slabRefFor(res: Resolution, n, op: Expr): Expr =
+  ## The slab an operation acts on, in this tree. A slab's own operation
+  ## names it as the receiver (`Nodes.new`); an arena's names the arena
+  ## (`Frame.new`), and the checker chose the arena's slab for the element
+  ## type — named on the op node, which mangling has already renamed.
+  if n.receiver.kind == exkSlabRef: return n.receiver
+  Expr(span: n.span, kind: exkSlabRef, refName: op.slabRef.refName)
+
 proc lowerSlabOps(res: Resolution, m: Module) =
   var ops: seq[Expr]
   for body in m.bodies:
     for n in nodes(body):
       if n.kind == exkField and res.call(n) != nil and
-         res.call(n).kind == exkSlabOp: ops.add n
+         res.call(n).kind in {exkSlabOp, exkArenaReset}: ops.add n
   for n in ops:
     let op = res.call(n)
-    let node = Expr(span: n.span, id: n.id, kind: exkSlabOp, slabOp: op.slabOp,
-                    slabRef: n.receiver, slabArg: copied(n, op.slabArg),
-                    slabValue: copied(n, op.slabValue))
+    let node =
+      if op.kind == exkArenaReset:
+        Expr(span: n.span, id: n.id, kind: exkArenaReset, arenaRef: n.receiver)
+      else:
+        Expr(span: n.span, id: n.id, kind: exkSlabOp, slabOp: op.slabOp,
+             slabRef: slabRefFor(res, n, op), slabArg: copied(n, op.slabArg),
+             slabValue: copied(n, op.slabValue))
     n[] = node[]
 
 proc lowerSlabDerefs*(res: Resolution, m: Module) =

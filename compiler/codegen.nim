@@ -522,6 +522,12 @@ proc genSlabOp(ctx: var CodegenCtx, e: Expr): string =
   ## access through a reference does (exkSlabCell).
   let arg = if e.slabArg != nil: ctx.genExpr(e.slabArg) else: ""
   let value = if e.slabValue != nil: ctx.genExpr(e.slabValue) else: ""
+  let slab = declAnywhere(ctx.module, ctx.realModules, e.slabRef.refName, dkSlab)
+  let arena = arenaOfSlab(ctx.module, ctx.realModules, slab)
+  if e.slabOp == soNew and arena != nil and arena.arenaSize > 0:
+    # An arena's budget pays for the cell first (tuckArenaNew).
+    return "tuckArenaNew(" & e.slabRef.refName & ", " & arena.name & ", " &
+           $slab.slabCost & ", " & value & ")"
   slabOpCall(e.slabOp, e.slabRef.refName, arg, value)
 
 proc genIfaceCall(ctx: var CodegenCtx, e: Expr, ind: string): string =
@@ -858,7 +864,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   case e.kind
   of exkLit: ctx.genLit(e)
   of exkVar: ctx.genVar(e)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkMixinRef:
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     e.refName
   of exkField: ctx.genFieldAccess(e, ind)
   of exkQualified: genQualified(ctx, e)
@@ -919,6 +925,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkAbsent: "TuckResult[" & genType(e.optInner) & "](status: tsAbsent)"
   of exkPoolOp: ctx.genPoolOp(e)
   of exkSlabOp: ctx.genSlabOp(e)
+  of exkArenaReset: arenaResetProc(e.arenaRef.refName) & "()"
   of exkSlabCell:
     # The value in the cell a reference names (lowering_slab), checked.
     slabCellValue(e.cellSlab.refName, ctx.genExpr(e.cellRef))

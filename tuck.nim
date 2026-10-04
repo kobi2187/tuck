@@ -470,6 +470,10 @@ proc checkOrDie(path: string, loaded: var seq[LoadedModule],
   ## backend prepared in the same process would read the first one's
   ## decisions. `backend_prepare.prepare` asserts it runs once.
   result = typecheckOnly(path, loaded, sigOnly)
+  # The slabs the checker made for arenas (one per element type) join their
+  # arena's module now, before anything that walks declarations: liveness,
+  # ownership, mangling and the emitters all find them as declared slabs.
+  for lm in loaded.mitems: placeArenaSlabs(lm.m)
   # Last-use facts, whole-program and ONCE. After typecheck because that
   # resets the semantic layer (same constraint the effect pass below has);
   # before the per-backend deepCopies because the answer is about the

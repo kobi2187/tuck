@@ -734,6 +734,11 @@ proc odinSlabPkg(ctx: OdinCodegenCtx, name: string): string =
   let origin = declOrigin(ctx.module, ctx.realModules, name, {dkSlab})
   if origin == "": "" else: origin.replace("-", "_") & "."
 
+proc odinArenaPkg(ctx: OdinCodegenCtx, name: string): string =
+  ## The package an arena is reached through, "" for this module's own.
+  let origin = declOrigin(ctx.module, ctx.realModules, name, {dkArena})
+  if origin == "": "" else: origin.replace("-", "_") & "."
+
 proc odinSlab(ctx: var OdinCodegenCtx, name: string): string =
   ## A slab by pointer, as the runtime takes it.
   "&" & ctx.odinSlabPkg(name) & name
@@ -764,6 +769,12 @@ proc genOdinSlabOp(ctx: var OdinCodegenCtx, e: Expr): string =
     if e.slabOp == soFree: return p & "free(" & arg & ")"
     if e.slabOp == soSet: return p & "set(" & arg & ", " & value & ")"
     return p & "reset()"
+  let arena = arenaOfSlab(ctx.module, ctx.realModules, d)
+  if e.slabOp == soNew and arena != nil and arena.arenaSize > 0:
+    # An arena's budget pays for the cell first (tuckArenaNew).
+    return "rt.tuckArenaNew(" & ctx.odinSlab(e.slabRef.refName) & ", &" &
+           ctx.odinArenaPkg(arena.name) & arena.name & ", " & $d.slabCost &
+           ", " & value & ")"
   slabOpCall(e.slabOp, ctx.odinSlab(e.slabRef.refName), arg, value, "rt.",
              if fixed: "tuckSlabNewFixed" else: "tuckSlabNew")
 
@@ -1492,7 +1503,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   case e.kind
   of exkLit: ctx.genLit(e)
   of exkVar: ctx.genVar(e)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef,
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
      exkMixinRef:
     e.refName
   of exkField: ctx.genFieldAccess(e, ind)
@@ -1551,6 +1562,8 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkAbsent: "rt.tnone(" & ctx.odinType(e.optInner) & ")"
   of exkPoolOp: ctx.genOdinPoolOp(e)
   of exkSlabOp: ctx.genOdinSlabOp(e)
+  of exkArenaReset:
+    ctx.odinArenaPkg(e.arenaRef.refName) & arenaResetProc(e.arenaRef.refName) & "()"
   of exkSlabCell:
     # The value in the cell a reference names (lowering_slab), checked.
     slabCellValue(ctx.odinSlab(e.cellSlab.refName), ctx.genOdinExpr(e.cellRef), "rt.")

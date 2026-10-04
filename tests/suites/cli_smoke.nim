@@ -911,6 +911,8 @@ fn main() -> int:
     "e44": ("examples/44-recursive-tree.tuck", "m_44_recursive_tree", 0),
     # Every check in it returns its own code; 0 is all of them holding.
     "e48": ("examples/48-slab-references.tuck", "m_48_slab_references", 0),
+    # 5 packets' frames and headers in one arena, then one reset.
+    "e13": ("examples/13-arena-mem.tuck", "m_13_arena_mem", 55),
   }
 
   var work: seq[Work]

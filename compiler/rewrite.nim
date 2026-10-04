@@ -223,7 +223,8 @@ proc composeMixins(m: Module) =
     for mem in d.objMembers: bindSelf(mem, owner)
 
 proc failSlabInValue(owner: Decl, slab: Decl) =
-  failRewrite(dcMeSlabInValue, "slab '" & slab.name & "' is declared inside " &
+  failRewrite(dcMeSlabInValue, (if slab.kind == dkArena: "arena '" else: "slab '") &
+              slab.name & "' is declared inside " &
               (if owner.kind == dkMixin: "mixin '" else: "object '") &
               owner.name & "'. A slab belongs to the module or to an " &
               "actor; an object is a value, and each copy would need a slab " &
@@ -231,18 +232,22 @@ proc failSlabInValue(owner: Decl, slab: Decl) =
               "its cells in the object's fields", slab.span, "Memory Error")
 
 proc liftActorSlabs(a: Decl, decls: var seq[Decl]) =
-  ## An actor's slabs, out of its body and onto `decls`, owned by it.
+  ## An actor's slabs and arenas, out of its body and onto `decls`, owned by
+  ## it.
   var kept: seq[Decl]
   for mem in a.handlers:
     if mem != nil and mem.kind == dkSlab:
       mem.slabOwner = a.name
+      decls.add mem
+    elif mem != nil and mem.kind == dkArena:
+      mem.arenaOwner = a.name
       decls.add mem
     else: kept.add mem
   a.handlers = kept
 
 proc refuseSlabsIn(owner: Decl, members: seq[Decl]) =
   for mem in members:
-    if mem != nil and mem.kind == dkSlab: failSlabInValue(owner, mem)
+    if mem != nil and mem.kind in {dkSlab, dkArena}: failSlabInValue(owner, mem)
 
 proc hoistSlabs(m: var Module) =
   ## A slab declared inside an actor belongs to that actor (slab proposal
@@ -258,7 +263,7 @@ proc hoistSlabs(m: var Module) =
       of dkObject: refuseSlabsIn(d, d.objMembers)
       of dkMixin: refuseSlabsIn(d, d.mixinMembers)
       of dkType, dkFn, dkTask, dkInterface, dkGroup, dkRegistry, dkPool,
-         dkSlab, dkExpr, dkConst, dkRegister, dkStaticAssert, dkErrors,
+         dkSlab, dkArena, dkExpr, dkConst, dkRegister, dkStaticAssert, dkErrors,
          dkImport, dkSelect, dkFnSig, dkSatisfies, dkWhen, dkPublic,
          dkResources, dkExtern, dkPending:
         discard

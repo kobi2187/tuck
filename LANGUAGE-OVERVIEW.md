@@ -1104,9 +1104,9 @@ From `examples/25:3`, worth quoting:
 out means. Run-verified exhaustion cycle: acquire 2 of 2, third fails, release
 one, fourth succeeds, exit 42 (`tests/suites/cli_smoke.nim`).
 
-> **`arena` (`.alloc`, `.reset`) is compile-gated only — zero behavioural
-> assertions.** Same for `registry` (`.raise`, `on Reg.Variant`) and MMIO
-> `register` read-only enforcement.
+> **`registry` (`.raise`, `on Reg.Variant`) and MMIO `register` read-only
+> enforcement are compile-gated only — zero behavioural assertions.** (The
+> arena was too, until it was built over slabs; see below.)
 
 ### Slabs — references, for what values cannot say
 
@@ -1153,8 +1153,50 @@ calls, a callback included, is `TK-AC08`, and the message names the chain
 boundary — not in a handler's payload, not in another owner's field
 (`TK-AC09`); send the value (`Nodes.get {r}`). An object or mixin cannot
 declare a slab (`TK-ME03`): it is a value, and each copy would need its own.
-Not yet: the arena over slabs (§9), and generic code over slabs (§12) —
+Not yet: generic code over slabs (§12) —
 `thoughts/shared/plans/2026-09-29-slab-proposal.md`.
+
+### Arenas — one lifetime over many slabs
+
+```tuck
+type Header:
+  len: int
+
+type Body:
+  bytes: int
+  head: FrameRef[Header]          # a reference into the arena
+
+arena Frame [size: 4096]          # a byte budget; omit it for none
+
+fn main() -> int:
+  let h = {len: 3} Header
+  let hr = Frame.new {value: h}   # ?FrameRef[Header]: absent once spent
+  if not hr.ok:
+    return 0
+  let b = {bytes: 10, head: hr.value} Body
+  let br = Frame.new {value: b}
+  if not br.ok:
+    return 0
+  let total = br.value.bytes + br.value.head.len
+  Frame.reset                     # everything, gone at once
+  return total
+```
+
+An arena keeps one slab per element type its `new`s name and resets them all
+together: `Frame.new {value: v}` (bind the value first; its type picks the
+slab), `r.field` through a `FrameRef[T]`, `Frame.live/get/set {r, ...}` and
+`Frame.reset` — **no per-cell `free`**, which is what makes it an arena. A
+reference kept past a reset is stale and stops the program
+(`TUCK SLAB [Frame]: stale reference`). `[size: N]` is a byte budget the
+compiler counts from each Tuck type by fixed rules — the same on every
+backend, so `new` turns absent at the same point on all three — and `reset`
+gives it back. A reference names its element type nominally: a
+`FrameRef[A]` is not a `FrameRef[B]` even when A and B have the same fields,
+since the element picks the slab. An arena is a declaration, not a block
+(`TK-PA18` refuses the old form); declared inside an actor it is that
+actor's, under the same ownership rules as a slab. Run-gated:
+`examples/13-arena-mem.tuck` (55 on all three), and the arena section of
+`tests/suites/slabs.nim`.
 
 ### The resource registry — for OS handles, not memory
 
@@ -1428,7 +1470,7 @@ Queries that ask the AST a question live in `codegen_common.nim` and are shared.
 Emitters, which interleave traversal with target syntax, stay twinned and
 diffable.
 
-Current coverage: **47 compile-gated** examples, 44 Odin compiles, 45 D compiles, 22 Odin runs and 20 D runs pinned to exact exit codes. (Every number here is checked against the suite's own gate lists by `tests/suites/examples.nim`, so they cannot drift silently.)
+Current coverage: **47 compile-gated** examples, 44 Odin compiles, 45 D compiles, 23 Odin runs and 21 D runs pinned to exact exit codes. (Every number here is checked against the suite's own gate lists by `tests/suites/examples.nim`, so they cannot drift silently.)
 
 Nim-only so far: `42-net-echo` and `14-task`. Task select/timeouts (29, 30)
 are no longer on that list — both are run-gated on Odin and D as well.

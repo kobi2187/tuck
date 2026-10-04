@@ -51,6 +51,7 @@ type NameKind* = enum
   nkConst = "const"
   nkPool = "pool"
   nkSlab = "slab"
+  nkArena = "arena"
   nkRegister = "register"
   nkRegistry = "registry"
   nkVariant = "variant"    ## the tag field of a payload-carrying sum variant
@@ -99,6 +100,7 @@ proc declKind*(d: Decl): NameKind =
   of dkConst: nkConst
   of dkPool: nkPool
   of dkSlab: nkSlab
+  of dkArena: nkArena
   of dkRegister: nkRegister
   of dkRegistry: nkRegistry
   of dkMixin, dkExtern, dkPending, dkExpr, dkStaticAssert, dkErrors,

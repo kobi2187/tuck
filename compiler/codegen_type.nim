@@ -128,7 +128,9 @@ proc genType*(t: Type): string =
     var parts: seq[string]
     for e in t.elems: parts.add(genType(e))
     "(" & parts.join(", ") & ")"
-  of tkApp: genAppType(t)
+  of tkApp:
+    # An arena's `FrameRef[T]` is the runtime's one SlabRef, as a slab's is.
+    if arenaOfRefType(t) != nil: "SlabRef" else: genAppType(t)
   of tkFunc: genFuncType(t)
   of tkRecord:
     var parts: seq[string]

@@ -1721,41 +1721,101 @@ Internally: a static array of cells, a tenancy counter and a state (free /
 absent / present) per cell. `acquire` is a scan for a free cell; the other
 operations are O(1) through the handle.
 
-### 7.3 Arena Allocator
+### 7.3 Slabs and Arenas — references by index
 
-Bump-pointer allocator with a clear "frame" lifetime. Reset the whole arena in one
-instruction:
+Everything else in Tuck is a value: a child inside a parent belongs to that
+parent alone. A **slab** gives back what values cannot say — identity (a
+cursor, a parent pointer), sharing (two parents, one child) and cycles (a
+ring, a graph) — without a pointer, and an **arena** is one lifetime over
+many slabs. Designed in `thoughts/shared/plans/2026-09-29-slab-proposal.md`
+and ruled 2026-09-29.
+
+#### Slabs
 
 ```tuck
-arena ScratchSpace [size: 2048]:
-  let buf   = ScratchSpace.alloc Array[128, u8]
-  let frame = ScratchSpace.alloc EthernetFrame
-  # process...
-  ScratchSpace.reset   # entire arena freed in one pointer assignment
+type Node:
+  data: int
+  prev: NodesRef?
+  next: NodesRef?
+
+slab Nodes = Node                          # chunked: grows, cells never move
+slab Small = Node [count: 64]              # a fixed array; `new` is ?NodesRef
+slab Flat  = Node [storage: contiguous]    # one growable array
 ```
 
-Anything allocated from an arena cannot outlive the arena. The compiler enforces
-this via scope analysis. No per-object free, no fragmentation, worst-case
-allocation time is a pointer increment.
+`Nodes.new {data: 1, prev: none, next: none}` builds the element in a cell
+and returns a `NodesRef` — 8 bytes, a 32-bit cell and a 32-bit tenancy, an
+ordinary value of a type of its own (an `EdgesRef` is not a `NodesRef`).
+`r.data` reads and writes the cell; `Nodes.get {r}` / `Nodes.set {r, value}`
+copy the whole value out and in; `Nodes.free {r}` frees the cell;
+`Nodes.live {r}` asks whether `r` is still current; `Nodes.reset` frees every
+cell in O(1); `Nodes.count` counts the live ones. A link is `NodesRef?`, and
+`none` writes "no link yet".
 
-**Status: not implemented.** The syntax above parses, and that is all. There
-is no `dkArena` declaration kind and no backend support: `parseArenaDecl`
-reads the body and then discards it, returning a `type` of the arena's name
-with an EMPTY record body. So a file using an arena compiles, allocates
-nothing, resets nothing, and its block is absent from the tree — do not read
-a successful `tuck check` on one as the feature working.
+Freeing is explicit — no reference counting, no collector — and it is safe:
+a freed cell's next tenant gets a new tenancy, so a stale reference never
+reads it. Using one stops the program with
+`TUCK SLAB [Nodes]: stale reference to cell N` (exit 1), identically on every
+backend. Cells never freed are reported at exit, unless the slab says
+`[leaks: ok]`.
 
-`examples/13-arena-mem.tuck` is a syntax specimen in the sense README gives
-the word: it has no `fn main`, so it claims only "this is how the construct
-is written". The scope analysis described above is part of the unbuilt work,
-not a guarantee in force.
+Storage never makes a program wait: the default is chunks of 64 KiB under a
+fixed two-level directory, allocated when first needed and never copied
+(measured: `benches/SCORES.md`, "Slab storage").
 
-Its siblings are in three different states, which is worth stating rather
-than lumping them together:
+**Ownership.** A slab belongs to where it is declared — at top level to
+main's thread, inside an actor to that actor. Only its owner touches it,
+through any chain of calls (TK-AC08), and a reference never crosses an actor
+boundary (TK-AC09). An object cannot declare one (TK-ME03): it is a value.
+
+#### Arenas
+
+```tuck
+type Header:
+  len: int
+
+type Body:
+  bytes: int
+  head: FrameRef[Header]
+
+arena Frame [size: 4096]
+
+fn handle({len: int}) -> int:
+  let h = {len: len} Header
+  let hr = Frame.new {value: h}       # ?FrameRef[Header]
+  if not hr.ok:
+    return 0
+  let b = {bytes: 10, head: hr.value} Body
+  let br = Frame.new {value: b}
+  if not br.ok:
+    return 0
+  return br.value.bytes + br.value.head.len
+```
+
+An arena keeps one slab per element type its `new`s name, and `Frame.reset`
+resets them all — there is no per-cell free, which is what makes it an arena.
+A reference kept past a reset is stale and stops the program if used ("cannot
+outlive the arena", checked at run time; a static check that proves it never
+fires can come later). `[size: N]` is a byte budget: each `new` charges the
+cell's size as the compiler counts it from the Tuck type — the same on every
+backend — and is absent once the budget cannot cover it; `reset` gives it
+back. A `FrameRef[T]` names its element type nominally, since the element
+picks the slab.
+
+An arena is a declaration and a lifetime, used wherever the program needs it
+(ruled Q5). The earlier block form — `arena X [size: N]:` followed by
+statements — is refused (TK-PA18). `examples/13-arena-mem.tuck` is per-packet
+scratch space in an arena; `examples/48-slab-references.tuck` a doubly linked
+list, a tree with parent links and a graph with a cycle.
+
+#### The memory features' state
 
 - **§7.2 `pool` works.** Verified behaviourally, not by inspection: a pool
   with `count: 2` hands out two, reports absence on the third, and recycles
   after a `release`, identically on Nim, Odin and D.
+- **§7.3 slabs and arenas work** on all three backends, run-gated
+  (`tests/suites/slabs.nim`, examples 13 and 48), including the memory a
+  cell's value owns on Odin, which has no destructors.
 - **§8.1 `register` works on all three backends.** Each emits a mutable
   pointer at the MMIO address, named shift constants, and get/set accessors
   doing the mask/shift arithmetic. Nim used to hand the layout to a
@@ -1765,15 +1825,11 @@ than lumping them together:
   register read and write failed with "undeclared field". Ruling 2026-09-12:
   drop the macro, emit ordinary code like the other two. One shape to
   understand, and the call sites are shared.
-- **§7.3 `arena` is unimplemented**, as above.
 
-That none of this was noticed has one cause, recorded here because it applies
-to every hardware-facing feature: the examples demonstrating them have no
-`fn main`, so `tuck build` treats each as a LIBRARY build and stops after
-emitting. The emitted code is never handed to nim/odin/dmd, so invalid output
-is invisible to the gate. The one example that does have a `main` and uses
-these features, `20-embedded-mp3-player`, fails to build on all three
-backends today.
+That §7.3 went unnoticed for so long has one cause, recorded here because it
+applies to every hardware-facing feature: an example with no `fn main` is a
+LIBRARY build, so `tuck build` stops after emitting and the emitted code is
+never handed to nim/odin/dmd. Example 13 has a `main` now, and is run-gated.
 
 ### 7.4 The Resource Registry
 

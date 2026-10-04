@@ -136,6 +136,17 @@ proc collectSlabSigs*(tc: var TypeChecker, d: Decl) =
   tc.typeDecls[slabRefName(d.name)] = Type(span: d.span, kind: tkRecord, fields: @[])
   tc.distinctNames.incl(slabRefName(d.name))
 
+proc collectArenaRefType*(tc: var TypeChecker, d: Decl) =
+  ## An arena's reference type, `<Arena>Ref[T]` (slab proposal §9): generic
+  ## over the element type, so a `FrameRef[Header]` is not a
+  ## `FrameRef[Body]`, nor any other arena's or slab's reference. An empty
+  ## record with one type parameter; two applications compare by their
+  ## argument (typecheck_compat.appCompatible).
+  let name = arenaRefName(d.name)
+  tc.typeDecls[name] = Type(span: d.span, kind: tkRecord, fields: @[])
+  tc.typeGenerics[name] = @["T"]
+  tc.distinctNames.incl(name)
+
 proc collectResourceHandles*(tc: var TypeChecker, d: Decl) =
   ## spec §7.4: each declared kind gets its own handle TYPE, registered
   ## exactly as a pool's is — and for the identical reason. A handle is an
@@ -216,6 +227,7 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
     of dkFnSig: tc.collectFnSigType(d)
     of dkPool: tc.collectPoolSigs(d)
     of dkSlab: tc.collectSlabSigs(d)
+    of dkArena: tc.collectArenaRefType(d)
     of dkType: tc.collectTypeDecl(d)
     of dkObject: tc.collectObjectDecl(d)
     of dkInterface:

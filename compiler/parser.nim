@@ -76,6 +76,11 @@ proc isSlabLine(p: Parser): bool =
   p.current().kind == tkIdent and p.current().value == "slab" and
     p.peek(1).kind == tkIdent and p.peek(2).kind == tkAssign
 
+proc isArenaLine(p: Parser): bool =
+  ## `arena Name` or `arena Name [size: N]` — never a field, `arena: T`.
+  p.current().kind == tkIdent and p.current().value == "arena" and
+    p.peek(1).kind == tkIdent
+
 proc parseObjectBodyLine(p: var Parser, fields: var seq[FieldDef],
                          members: var seq[Decl]) =
   ## One line of an object or actor body: a pending hole, a member, an
@@ -92,6 +97,8 @@ proc parseObjectBodyLine(p: var Parser, fields: var seq[FieldDef],
     # module with its owner by rewrite.hoistSlabs. In an object it is refused
     # there (TK-ME03) rather than read here as a field.
     members.add(p.parseSlabDecl(p.getSpan()))
+  elif p.isArenaLine():
+    members.add(p.parseArenaDecl(p.getSpan()))   # the actor's own, likewise
   else:
     fields.add(p.parseObjectField())
 
@@ -102,27 +109,6 @@ proc parseObjectBody(p: var Parser, fields: var seq[FieldDef],
   discard p.expect(tkNewline)
   p.indentedBlock:
     p.parseObjectBodyLine(fields, members)
-
-proc parseArenaDecl(p: var Parser): Decl =
-  ## arena Name [size: N]: members — bump allocator (spec 7.3)
-  ## Parsed as a record type with the declared attributes plus
-  ## `ArenaMarker`; the members are parsed (so the block is consumed) but not
-  ## kept on the result. Arenas are not implemented, and the checker says so
-  ## with a TK-ME02 warning rather than letting the block check clean.
-  let spArena = p.getSpan()
-  discard p.advance() # eat "arena"
-  let name = p.expectTypeName("arena").value
-  var attrs = @[TypeAttr(name: ArenaMarker, span: spArena)]
-  p.parseDeclAttrs(attrs)
-  discard p.expect(tkColon)
-  var members: seq[Decl]
-  discard p.expect(tkNewline)
-  while p.current().kind == tkNewline:
-    discard p.advance()
-  p.indentedBlock:
-    members.add(p.parseDecl())
-  let arenaType = Type(span: spArena, kind: tkRecord, fields: @[], attrs: attrs)
-  return Decl(span: spArena, kind: dkType, name: name, generics: @[], typeBody: arenaType)
 
 proc parseUnhandledHandler(p: var Parser): Decl =
   ## The block's one legal member: `on unhandled({code, site})`.
@@ -254,7 +240,7 @@ proc contextualDecl(p: var Parser, sp: Span, handled: var bool): Decl =
   of "register": return p.parseRegisterDecl(sp)
   of "pool": return p.parsePoolDecl(sp)
   of "slab": return p.parseSlabDecl(sp)
-  of "arena": return p.parseArenaDecl()
+  of "arena": return p.parseArenaDecl(sp)
   # `satisfies Obj: Iface` (spec 5.2) — gated on the object name following, so
   # a variable or field named `satisfies` still parses as an expression.
   of "satisfies":

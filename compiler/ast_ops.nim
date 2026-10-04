@@ -191,7 +191,7 @@ iterator childSlots*(e: Expr): var Expr =
     case e.kind
     of exkLit, exkVar, exkQualified, exkImport, exkBreak, exkContinue,
        exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
-       exkSlabRef:
+       exkSlabRef, exkArenaRef:
       discard
     of exkField:
       yield e.receiver
@@ -273,6 +273,7 @@ iterator childSlots*(e: Expr): var Expr =
     of exkSlabCell:
       yield e.cellSlab
       yield e.cellRef
+    of exkArenaReset: yield e.arenaRef
 
 proc poolOperands*(e: Expr): seq[Expr] =
   ## A pool op's operands in call order — the handle, then the value — for
@@ -328,7 +329,7 @@ iterator childDecls*(d: Decl): Decl =
       # nothing.
       yield d.errHandler
     of dkFn, dkTask, dkConst, dkExpr, dkStaticAssert, dkSelect, dkRegistry,
-       dkPool, dkSlab, dkRegister, dkImport, dkFnSig, dkSatisfies, dkResources:
+       dkPool, dkSlab, dkArena, dkRegister, dkImport, dkFnSig, dkSatisfies, dkResources:
       discard
 
 iterator ownTypes*(d: Decl): Type =
@@ -367,8 +368,9 @@ iterator ownTypes*(d: Decl): Type =
     # types the expression walk reaches; dkErrors a policy name; dkImport a
     # module path; dkSelect arm bodies; dkSatisfies interface NAMES, resolved
     # by conformance. dkMixin/dkExtern/dkPending/dkInterface/dkWhen hold only
-    # members — childDecls reaches those.
-    of dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
+    # members — childDecls reaches those. dkArena names no type: its slabs,
+    # one per element type, are dkSlabs of their own.
+    of dkArena, dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
        dkSelect, dkSatisfies, dkMixin, dkExtern, dkPending, dkInterface,
        dkGroup, dkWhen, dkPublic, dkResources:
       discard
@@ -403,7 +405,7 @@ iterator ownExprSlots*(d: Decl): var Expr =
       for f in d.actorFields.mitems:
         if f.default != nil: yield f.default
     of dkType, dkObject, dkMixin, dkExtern, dkPending, dkWhen, dkInterface,
-       dkGroup, dkRegistry, dkPool, dkSlab, dkRegister, dkErrors, dkImport,
+       dkGroup, dkRegistry, dkPool, dkSlab, dkArena, dkRegister, dkErrors, dkImport,
        dkFnSig, dkSatisfies, dkPublic, dkResources:
       discard
 

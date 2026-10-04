@@ -968,6 +968,22 @@ tuckSlabReset :: proc(s: ^$S) {
 
 tuckSlabCount :: proc(s: ^$S) -> int { return s.live }
 
+// An arena's `[size: N]` (slab proposal §9): the bytes its slabs may hold
+// between resets, charged per `new` by a size the COMPILER computed from the
+// Tuck type, so a budget runs out at the same `new` on every backend.
+ArenaBudget :: struct {
+	size: int,
+	used: int,
+}
+
+// A cell of an arena's slab holding `v`, or absent when the budget cannot
+// cover it. The arena's reset gives the whole budget back.
+tuckArenaNew :: proc(s: ^SlabChunked($T), b: ^ArenaBudget, cost: int, v: T) -> TuckResult(SlabRef) {
+	if b.used + cost > b.size do return tnone(SlabRef)
+	b.used += cost
+	return tok(tuckSlabNew(s, v))
+}
+
 // At exit: say how many cells were never freed (slab proposal Q3).
 tuckSlabReport :: proc(s: ^$S) {
 	if s.live > 0 do fmt.eprintln("TUCK SLAB [", s.name, "]: ", s.live, " cell(s) never freed", sep = "")

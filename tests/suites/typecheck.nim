@@ -1164,17 +1164,18 @@ ac:
 """
   t.badCheck "a bare misspelled keyword is rejected on the first word", "does\\ not\\ start\\ a\\ declaration"
 
-  # ...but an arena body holds ordinary STATEMENTS, parsed through the same
-  # parseDecl. `ScratchSpace.reset` is a bare ident there and must stay legal —
-  # which is why the check lives in parseModule, not parseDecl.
+  # ...and an arena's operations are ordinary statements wherever they sit.
+  # (An arena used to be a BLOCK of statements, parsed through parseDecl,
+  # which is why the misspelled-keyword check lives in parseModule; since the
+  # 2026-09-29 ruling it is a declaration, and the block form is TK-PA18.)
   t.src """
-arena ScratchSpace [size: 2048]:
-  ScratchSpace.reset
+arena ScratchSpace [size: 2048]
 
 fn main() -> void:
+  ScratchSpace.reset
   return
 """
-  t.okCheck "an arena body still holds bare statements"
+  t.okCheck "an arena's reset is an ordinary statement"
 
   # `satisfies` is a top-level declaration opener like any other, so it must not
   # be caught by the misspelled-keyword check above. (It used to be spelled

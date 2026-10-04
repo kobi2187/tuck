@@ -1052,6 +1052,20 @@ void tuckSlabReset(S)(ref S s) { s.len = 0; s.freeHead = 0; s.live = 0; }
 
 long tuckSlabCount(S)(ref S s) { return s.live; }
 
+/// An arena's `[size: N]` (slab proposal §9): the bytes its slabs may hold
+/// between resets, charged per `new` by a size the COMPILER computed from
+/// the Tuck type, so a budget runs out at the same `new` on every backend.
+struct ArenaBudget { long size; long used; }
+
+/// A cell of an arena's slab holding `v`, or absent when the budget cannot
+/// cover it. The arena's reset gives the whole budget back.
+TuckResult!SlabRef tuckArenaNew(T)(ref SlabChunked!T s, ref ArenaBudget b, long cost, T v)
+{
+    if (b.used + cost > b.size) return tnone!SlabRef();
+    b.used += cost;
+    return tok(tuckSlabNew(s, v));
+}
+
 /// At exit: say how many cells were never freed (slab proposal Q3).
 void tuckSlabReport(S)(ref S s)
 {

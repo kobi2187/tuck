@@ -1003,7 +1003,16 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
                 of ssFixed: "rt.SlabFixed!(" & elem & ", " & $d.slabCount & ")"
                 of ssContiguous: "rt.SlabSeq!(" & elem & ")"
     "__gshared " & store & " " & d.name & " = " & store & "(" &
-      escape(actorLabel(d, d.name)) & ");\n"
+      escape(slabLabel(d)) & ");\n"
+  of dkArena:
+    # An arena (slab proposal §9): its budget, and its reset — every slab
+    # the checker made for it, then the budget, emptied.
+    var reset = "void " & arenaResetProc(d.name) & "()\n{\n"
+    for s in slabsOfArena(ctx.module, d):
+      reset.add "    rt.tuckSlabReset(" & s.name & ");\n"
+    reset.add "    " & d.name & ".used = 0;\n}\n"
+    "__gshared rt.ArenaBudget " & d.name & " = rt.ArenaBudget(" &
+      $d.arenaSize & ", 0);\n" & reset
   of dkFn:
     if d.isExtern: ""                  # bare extern fn: emitted via the block
     elif d.isPending: ctx.genDPendingStub(d)

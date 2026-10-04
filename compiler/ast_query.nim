@@ -156,7 +156,7 @@ proc memberSeq*(d: Decl): seq[Decl] =
   of dkActor: d.handlers
   of dkInterface: d.ifaceMembers
   of dkGroup: d.groupMembers
-  of dkTask, dkFn, dkRegistry, dkPool, dkSlab, dkExpr, dkConst, dkRegister,
+  of dkTask, dkFn, dkRegistry, dkPool, dkSlab, dkArena, dkExpr, dkConst, dkRegister,
      dkStaticAssert, dkErrors, dkImport, dkSelect, dkFnSig, dkSatisfies,
      dkWhen, dkPublic, dkResources: @[]
 
@@ -451,9 +451,9 @@ proc implicitTailValue*(body: Expr): Expr =
     nil
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill, exkCall,
      exkChain, exkBinary, exkUnary, exkBracket, exkBracketAssign, exkImport,
-     exkCombinator, exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef,
+     exkCombinator, exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
      exkMixinRef, exkDefer, exkFinish, exkAcquire, exkOrdinal, exkValidate,
-     exkIfaceCall, exkIfaceIs, exkIfacePayload, exkPoolOp, exkSlabCell, exkSlabOp, exkWrapOk,
+     exkIfaceCall, exkIfaceIs, exkIfacePayload, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset, exkWrapOk,
      exkAbsent:
     lastS
 

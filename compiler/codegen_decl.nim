@@ -819,7 +819,16 @@ proc genSlabDecl(d: Decl): string =
               of ssChunked: "SlabChunked[" & elem & "]"
               of ssFixed: "SlabFixed[" & elem & ", " & $d.slabCount & "]"
               of ssContiguous: "SlabSeq[" & elem & "]"
-  "var " & d.name & "* = " & store & "(name: " & escape(actorLabel(d, d.name)) & ")"
+  "var " & d.name & "* = " & store & "(name: " & escape(slabLabel(d)) & ")"
+
+proc genArenaDecl(ctx: CodegenCtx, d: Decl): string =
+  ## An arena (slab proposal §9): its budget, and its reset — every slab the
+  ## checker made for it (one per element type), then the budget, emptied.
+  result = "var " & d.name & "* = ArenaBudget(size: " & $d.arenaSize & ")\n" &
+           "proc " & arenaResetProc(d.name) & "*() =\n"
+  for s in slabsOfArena(ctx.module, d):
+    result.add "  tuckSlabReset(" & s.name & ")\n"
+  result.add "  " & d.name & ".used = 0"
 
 proc genFnSigType(d: Decl): string =
   ## `fnsig NAME = {params} -> ret` → a Nim closure proc type. Named delegate
@@ -896,6 +905,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   of dkRegistry: ctx.genRegistry(d)
   of dkPool: genPoolDecl(d)
   of dkSlab: genSlabDecl(d)
+  of dkArena: ctx.genArenaDecl(d)
   of dkStaticAssert: "static: assert(" & ctx.genExpr(d.assertExpr) & ")"
   of dkErrors: ctx.genErrHandler(d)
   of dkResources: genResourceTables(d)

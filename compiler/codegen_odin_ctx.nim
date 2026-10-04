@@ -287,6 +287,7 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
     # parametric. See codegen_common.fnSigInstance.
     let sigInst = fnSigInstance(ctx.module, t)
     if sigInst != nil: ctx.odinFuncType(sigInst)
+    elif arenaOfRefType(t) != nil: "rt.SlabRef"   # an arena's FrameRef[T]
     else: ctx.odinAppType(t)
   of tkFunc: ctx.odinFuncType(t)
   of tkRecord:

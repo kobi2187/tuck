@@ -85,8 +85,9 @@ finished** (no longer deferred).
    the arena as a lifetime over slabs. **Ruled 2026-09-29** (its §10: Q4 →
    `none`, Q8 → two-level storage). **Built:** P0 `none` (`4a5d2c0`), P1
    the runtimes (`03d3310`), P2 the declaration on all three backends plus
-   `examples/48-slab-references.tuck` (`800bd12`). **Next:** P3 the
-   actor-ownership checks (Q6), P4 the arena, P5 the docs.
+   `examples/48-slab-references.tuck` (`800bd12`), P3 the ownership checks
+   (`ea2f5c0`), P4 the arena (spec §7.3 rewritten; example 13 run-gated).
+   **Next:** P5, the rest of the docs.
    **Then, owner 2026-10-04: "when the feature is done, it's time for bug
    fixes and handling discovered gaps"** — #96 (Odin frees a moved `Seq`:
    segfault; memory, so first), #97, #98, and the gaps in the proposal's

@@ -596,4 +596,218 @@ fn main() -> int:
   t.badCheck "a slab inside an object is refused",
              "(?s)TK-ME03.*slab 'Nodes' is declared inside object 'Box'"
 
+  # --- the arena (proposal §9, ruled Q5) -----------------------------------------
+  # One lifetime over a slab per element type: `new` puts a value in the
+  # arena's slab for its type, references link them, `reset` ends them all.
+  t.src """
+type Header:
+  len: int
+
+type Body:
+  bytes: int
+  head: FrameRef[Header]
+
+arena Frame
+
+fn main() -> int:
+  let h = {len: 3} Header
+  let hr = Frame.new {value: h}
+  let b = {bytes: 10, head: hr} Body
+  let br = Frame.new {value: b}
+  hr.len += 1
+  let total = br.bytes + br.head.len
+  Frame.reset
+  if Frame.live {r: hr}:
+    return 1
+  if Frame.live {r: br}:
+    return 2
+  total
+"""
+  t.okCheck "an arena holds values of several types, linked by reference"
+  t.hostRuns "...a write through one reference reads through another, and " &
+             "reset ends them all", 14
+
+  t.src """
+type Item:
+  n: int
+
+arena Frame
+
+fn main() -> int:
+  let it = {n: 5} Item
+  let r = Frame.new {value: it}
+  Frame.reset
+  r.n
+"""
+  t.hostRuns "a reference kept past a reset stops the program", 1,
+             "TUCK SLAB \\[Frame\\]: stale reference to cell 0"
+
+  # `[size: N]` is a byte budget the COMPILER counts from the Tuck type, the
+  # same on every backend: an Item costs 16 (8 + 8), so 3 fit in 48.
+  t.src """
+type Item:
+  n: int
+
+arena Small [size: 48]
+
+fn fill() -> int:
+  var made = 0
+  var i = 0
+  for i < 5:
+    let it = {n: i} Item
+    let r = Small.new {value: it}
+    if r.ok:
+      made += 1
+    i = i + 1
+  made
+
+fn main() -> int:
+  let a = {} fill
+  Small.reset
+  let b = {} fill
+  a * 10 + b
+"""
+  t.hostRuns "a budget runs out at the same new on every backend, and reset " &
+             "gives it back", 33
+
+  # Odin: what a value owns goes when the arena resets — 200 rounds of 1000
+  # Seqs stay in 3 MB.
+  t.src """
+import seq
+
+arena Frame
+
+fn main() -> int:
+  var round = 0
+  var total = 0
+  for round < 200:
+    var i = 0
+    for i < 1000:
+      var xs: Seq[int] = []
+      var j = 0
+      for j < 64:
+        xs = {items: xs, value: j} push
+        j = j + 1
+      let r = Frame.new {value: xs}
+      let back = Frame.get {r: r}
+      total = total + back.len
+      i = i + 1
+    Frame.reset
+    round = round + 1
+  if total != 12800000:
+    return 1
+  return 0
+"""
+  t.hostPeakRss "an arena of Seqs reset 200 times stays in budget", 16384
+
+  # An actor's own arena: its handlers fill it and reset it.
+  t.src """
+import scheduler
+
+type Item:
+  n: int
+  next: ScratchRef[Item]?
+
+actor Batch [queue: 64]:
+  arena Scratch
+  top: ScratchRef[Item]? = none
+  sum: int = 0
+  done: int = 0
+
+  on add({n: int}):
+    let it = {n: n, next: top} Item
+    let r = Scratch.new {value: it}
+    top = r
+    sum += r.n
+
+  on flush({n: int}):
+    Scratch.reset
+    top = none
+    done += 1
+
+fn ready() -> bool:
+  return Batch.done == 1
+
+fn main() -> int:
+  for i in 1 .. 10:
+    Batch send add {n: i}
+  Batch send flush {n: 0}
+  Batch.waitUntil {pred: :ready}
+  return Batch.sum
+"""
+  t.okCheck "an actor declares an arena of its own, its references linking cells"
+  t.hostRuns "...and its handlers fill and reset it", 55
+
+  t.src """
+type A:
+  n: int
+
+type B:
+  n: int
+
+arena Frame
+
+fn main() -> int:
+  let a = {n: 1} A
+  let r = Frame.new {value: a}
+  let s: FrameRef[B] = r
+  0
+"""
+  t.badCheck "a reference names its element type, structurally equal or not",
+             "expects FrameRef\\[B\\] but got FrameRef\\[A\\]"
+
+  t.src """
+type Item:
+  n: int
+
+arena Frame
+
+fn main() -> int:
+  let it = {n: 1} Item
+  let r = Frame.new {value: it}
+  Frame.free {r: r}
+  0
+"""
+  t.badCheck "an arena has no per-cell free", "an arena has no 'free'"
+
+  t.src """
+type Item:
+  n: int
+
+arena Frame
+
+actor Log:
+  total: int = 0
+
+  on tick({n: int}):
+    Frame.reset
+
+fn main() -> int:
+  Log send tick {n: 1}
+  0
+"""
+  t.badCheck "an actor resetting main's arena is refused",
+             "TK-AC08.*actor 'Log' reaches arena 'Frame'.*on tick → Frame.reset"
+
+  t.src """
+type Item:
+  n: int
+
+arena Frame
+
+actor Log:
+  total: int = 0
+
+  on take({r: FrameRef[Item]}):
+    total += 1
+
+fn main() -> int:
+  let it = {n: 1} Item
+  let r = Frame.new {value: it}
+  Log send take {r: r}
+  0
+"""
+  t.badCheck "an arena reference in a payload is refused",
+             "TK-AC09.*takes a FrameRef\\[Item\\] in 'r'"
+
   t.finish()

@@ -572,11 +572,23 @@ proc dSlab(ctx: var DCodegenCtx, name: string): string =
   let origin = declOrigin(ctx.module, ctx.realModules, name, {dkSlab})
   (if origin == "": "" else: dAlias(origin) & ".") & name
 
+proc dArena(ctx: var DCodegenCtx, name: string): string =
+  ## An arena, qualified by its module's alias when another module declares
+  ## it (R11, as a slab is).
+  let origin = declOrigin(ctx.module, ctx.realModules, name, {dkArena})
+  (if origin == "": "" else: dAlias(origin) & ".") & name
+
 proc genDSlabOp(ctx: var DCodegenCtx, e: Expr): string =
   ## A slab operation (slab proposal, section 3); D overloads `tuckSlabNew`
   ## on the storage, a fixed slab's answering `?Ref`.
   let arg = if e.slabArg != nil: ctx.genDExpr(e.slabArg) else: ""
   let value = if e.slabValue != nil: ctx.genDExpr(e.slabValue) else: ""
+  let slab = declAnywhere(ctx.module, ctx.realModules, e.slabRef.refName, dkSlab)
+  let arena = arenaOfSlab(ctx.module, ctx.realModules, slab)
+  if e.slabOp == soNew and arena != nil and arena.arenaSize > 0:
+    # An arena's budget pays for the cell first (tuckArenaNew).
+    return "rt.tuckArenaNew(" & ctx.dSlab(e.slabRef.refName) & ", " &
+           ctx.dArena(arena.name) & ", " & $slab.slabCost & ", " & value & ")"
   slabOpCall(e.slabOp, ctx.dSlab(e.slabRef.refName), arg, value, "rt.")
 
 proc genDIfaceCall(ctx: var DCodegenCtx, e: Expr): string =
@@ -1365,7 +1377,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   case e.kind
   of exkLit: genDLit(e)
   of exkVar: ctx.genDVarName(e)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef,
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
      exkMixinRef:
     e.refName
   of exkField: ctx.genDField(e)
@@ -1417,6 +1429,9 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkAbsent: "rt.tnone!(" & ctx.dType(e.optInner) & ")()"
   of exkPoolOp: ctx.genDPoolOp(e)
   of exkSlabOp: ctx.genDSlabOp(e)
+  of exkArenaReset:
+    let q = ctx.dArena(e.arenaRef.refName)
+    q[0 ..< q.len - e.arenaRef.refName.len] & arenaResetProc(e.arenaRef.refName) & "()"
   of exkSlabCell:
     # The value in the cell a reference names (lowering_slab), checked.
     slabCellValue(ctx.dSlab(e.cellSlab.refName), ctx.genDExpr(e.cellRef), "rt.")

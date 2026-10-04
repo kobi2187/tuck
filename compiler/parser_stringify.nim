@@ -160,6 +160,8 @@ proc toString*(e: Expr): string =
   of exkSlabCell:
     # Lowering-built: the cell a reference names.
     return "cell(" & e.cellRef.toString() & ")"
+  of exkArenaReset:
+    return e.arenaRef.toString() & ".reset"
   of exkIfaceCall:
     # Lowering-built: one arm per satisfying object, shown by name.
     var sats: seq[string]
@@ -181,5 +183,5 @@ proc toString*(e: Expr): string =
   of exkFinish:
     return "finish " & optToString(e.finishHandle) & ", " & e.finishKind
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
-     exkSlabRef:
+     exkSlabRef, exkArenaRef:
     return e.refName

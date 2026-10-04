@@ -472,6 +472,11 @@ type
     exkSlabRef      # a bare slab name (`Nodes` in `Nodes.new {...}`)
     exkSlabOp       # `Nodes.new {...}`, `Nodes.free {r}`, ... — an operation on
                     # a slab, stamped by the checker as a pool op is
+    exkArenaRef     # a bare arena name (`Frame` in `Frame.new {value: v}`)
+    exkArenaReset   # `Frame.reset` — every slab of an arena reset at once
+                    # (slab proposal §9); stamped by the checker, as a slab
+                    # op is. `new`, `live`, `get` and `set` are slab ops on
+                    # the arena's slab for the element type
     exkSlabCell     # lowered only (lowering_slab): the value in the cell a
                     # reference names, checked — what `r.field` reads and
                     # writes through. `r.data` becomes a field of this node,
@@ -634,6 +639,8 @@ type
       slabArg*: Expr               # the reference operated on; nil for new,
                                    # reset and count
       slabValue*: Expr             # new's construction, set's value; else nil
+    of exkArenaReset:
+      arenaRef*: Expr              # the `exkArenaRef`
     of exkSlabCell:
       cellSlab*: Expr              # the `exkSlabRef`
       cellRef*: Expr               # the reference whose cell this is
@@ -661,7 +668,7 @@ type
       combRecv*: Expr   # the receiver; for ckMerge, the struct OF members
       combArg*: Expr    # the payload struct; nil for ckMerge
     of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
-       exkSlabRef:
+       exkSlabRef, exkArenaRef:
       refName*: string  # the resolved name; the Decl itself is one
                         # declFor(semLayer, e) away (resolution.nim) once
                         # resolveDeclRefs links it — not stored here, so
@@ -676,7 +683,6 @@ type
   # lowering, marked with this span.file so codegen skips re-emitting them.
 const ImportedTypeMarker* = "<imported>"
 
-const ArenaMarker* = "<arena>"
   ## The attribute `parseArenaDecl` puts on the record an `arena` parses into,
   ## so the checker can tell an arena from a type. Not spellable in source —
   ## an attribute name is a word, and `<` begins none.
@@ -754,6 +760,8 @@ type
     dkRegistry
     dkPool
     dkSlab    # `slab Nodes = Node [attrs]` — cells addressed by reference
+    dkArena   # `arena Frame [size: N]` — one lifetime over a slab per element
+              # type its `new`s name (slab proposal §9)
     dkFn
     dkMixin   # `mixin Name:` — fns materialised onto a composing object
     # `extern:` and `pending:` blocks parse into their own kinds rather than
@@ -871,6 +879,16 @@ type
       slabLeaksOk*: bool       ## `[leaks: ok]`: no report of unfreed cells
       slabOwner*: string       ## the actor declaring it, "" for the module —
                                ## main's thread (slab proposal §7; slab_owner)
+      slabArena*: string       ## the arena this is the slab of, for one element
+                               ## type; "" for a declared slab (typecheck)
+      slabCost*: int           ## an arena's slab: what one `new` charges the
+                               ## arena's `[size: N]`, in bytes (type_size)
+    of dkArena:
+      # slab proposal §9: a lifetime shared by one slab per element type its
+      # `new`s name — made by the checker (`slabArena`), reset together.
+      arenaSize*: int          ## `[size: N]`: a byte budget; 0 = unbounded
+      arenaSizeText*: string   ## `[size: N]` as written, when N names a const
+      arenaOwner*: string      ## the actor declaring it, "" for the module
     of dkFn:
       fnGenerics*: seq[string]
       fnGenericBounds*: seq[seq[Type]]   # parallel to fnGenerics; bounds[i] =

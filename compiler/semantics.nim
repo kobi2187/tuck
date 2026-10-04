@@ -259,7 +259,7 @@ proc verifyDecl*(c: var Checker, d: Decl) =
     discard   # the `on unhandled` handler runs from the runtime, not a caller
   of dkExpr:
     discard   # a top-level statement runs as part of main, which may do anything
-  of dkConst, dkRegistry, dkPool, dkSlab, dkRegister, dkResources, dkImport,
+  of dkConst, dkRegistry, dkPool, dkSlab, dkArena, dkRegister, dkResources, dkImport,
      dkSatisfies, dkPublic:
     discard   # no body
   of dkWhen:

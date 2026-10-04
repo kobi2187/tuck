@@ -226,6 +226,31 @@ proc actorLabel*(d: Decl, fallback: string): string =
   ## The actor's name as its author wrote it, for a runtime message.
   if d == nil: fallback else: writtenName(d)
 
+proc slabLabel*(d: Decl): string =
+  ## A slab's name in the runtime's messages: as written, or for an arena's
+  ## slab, the arena's (`TUCK SLAB [Frame]: stale reference ...`).
+  if d.slabArena != "": d.slabArena else: actorLabel(d, d.name)
+
+proc arenaOfSlab*(m: Module, real: Table[string, Module], slab: Decl): Decl =
+  ## The arena `slab` is the slab of for one element type, or nil.
+  if slab == nil or slab.slabArena == "": return nil
+  for d in m.decls(dkArena):
+    if writtenName(d) == slab.slabArena: return d
+  for _, other in real:
+    for d in other.decls(dkArena):
+      if writtenName(d) == slab.slabArena: return d
+  nil
+
+proc slabsOfArena*(m: Module, arena: Decl): seq[Decl] =
+  ## An arena's slabs, one per element type its `new`s name — the checker
+  ## made them and the driver put them in the arena's module.
+  for d in m.decls(dkSlab):
+    if d.slabArena == writtenName(arena): result.add d
+
+proc arenaResetProc*(arena: string): string =
+  ## Each arena's generated reset: every slab of it, and its budget.
+  arena & "_reset"
+
 proc actorDeclNamed*(m: Module, real: Table[string, Module], name: string): Decl =
   ## The actor a send names, declared in this module or one it imports.
   for d in m.decls:

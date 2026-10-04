@@ -64,7 +64,7 @@ proc buildDeclIndex*(m: Module): DeclIndex =
       let sat = saturatingType(m, d.name)
       if sat != nil: result.saturating[d.name] = sat
     of dkTask: result.taskNames.incl(d.name)
-    of dkFn, dkActor, dkMixin, dkExtern, dkPending, dkPool, dkSlab, dkFnSig, dkRegistry,
+    of dkFn, dkActor, dkMixin, dkExtern, dkPending, dkPool, dkSlab, dkArena, dkFnSig, dkRegistry,
        dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
        dkSelect, dkSatisfies, dkInterface, dkGroup, dkWhen,
        dkPublic, dkResources: discard

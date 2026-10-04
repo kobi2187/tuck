@@ -15,9 +15,13 @@ acquire/release cycle typechecks clean — verified this pass):
 pool Sessions = Session [count: 64]          # fixed count, decided at link time
 pool RxBuffers = Array[512, u8] [count: 4]
 
-arena ScratchSpace [size: 2048]:
-  let buf = ScratchSpace.alloc Array[128, u8]
-  ScratchSpace.reset                          # whole arena gone in one instruction
+arena ScratchSpace [size: 2048]               # a byte budget over its slabs
+
+fn scratch() -> int:
+  let buf: Array[128, u8] = [0; 128]
+  let r = ScratchSpace.new {value: buf}       # ?ScratchSpaceRef[Array[128, u8]]
+  ScratchSpace.reset                          # whole arena gone at once
+  return 0
 ```
 
 So there is no `Memory` value to thread through signatures — the region is

@@ -262,7 +262,10 @@ let tuckGrammar = peg("module", st: Stats):
   typeExpr  <- typePrefix * typeAtom * *typeSuffix * *typeCompose * ?renames
   typePrefix<- *("tkQuestion " | "tkBang " | "tkBangQuestion ")
   typeAtom  <- typeRecord | typeInlineSum | (name * ?typeArgs)
-  typeArgs  <- "tkLBracket " * typeExpr * *("tkComma " * typeExpr) * "tkRBracket "
+  # `Array[128, u8]`: an Array's count is a whole number (or a const's name,
+  # which `typeExpr` already reads), so a literal is a type argument too.
+  typeArg   <- "tkIntLit " | typeExpr
+  typeArgs  <- "tkLBracket " * typeArg * *("tkComma " * typeArg) * "tkRBracket "
   typeSuffix<- "tkQuestion " | "tkBang " | "tkBangQuestion " |
                ("tkStar " * "tkIntLit ")
   typeCompose <- "tkPlus " * typeAtom
@@ -321,8 +324,9 @@ let tuckGrammar = peg("module", st: Stats):
 
   # spec 7.2: `pool NAME = Type [count: N]`
   poolDecl  <- word * name * "tkAssign " * typeExpr * *attrs * nl
-  # spec 7.3: `arena NAME [size: N]:` + block
-  arenaDecl <- word * name * *attrs * "tkColon " * +nl * rawBlk
+  # spec 7.3: `arena NAME [size: N]` — a declaration, not a block (ruled
+  # 2026-09-29; the block form is TK-PA18)
+  arenaDecl <- word * name * *attrs * nl
   # spec 8.1: `register NAME at ADDR:` + block of bit fields
   regDecl   <- word * name * word * ("tkIntLit " | name) * "tkColon " * +nl * rawBlk
   # THREE forms share one shape: `<word> [attrs]:` opening an opaque block.

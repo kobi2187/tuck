@@ -492,8 +492,7 @@ fn main() -> int:
   t.badCheck "a pool over an undeclared element type is rejected", "TK-TY03"
 
   t.src """
-arena A [size: 0]:
-  discard
+arena A [size: 0]
 
 fn main() -> int:
   return 0
@@ -522,18 +521,24 @@ fn main() -> int:
   t.okCheck "a pool over a primitive array is accepted"
 
   t.src """
+arena A [size: 2048]
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "an arena with a real size is accepted"
+  # The block form is gone (slab proposal Q5): an arena is a declaration and a
+  # lifetime. TK-ME02, which warned that the block did nothing, is retired;
+  # the arena itself is tested in tests/suites/slabs.nim.
+  t.src """
 arena A [size: 2048]:
   discard
 
 fn main() -> int:
   return 0
 """
-  t.okCheck "an arena with a real size is accepted"
-  # ...but not as though it did anything: arenas are not implemented, and the
-  # body is discarded. It checked clean until 2026-09-27; a warning keeps the
-  # specimen (examples/13-arena-mem.tuck) compiling and stops the silence.
-  t.checkSays "...and warns that it is not implemented (TK-ME02)",
-              "Memory Warning \\[TK-ME02\\]: arena 'A' is not implemented"
+  t.badCheck "the old block form is refused, naming the declaration form",
+             "(?s)TK-PA18.*An arena is a declaration, not a block"
 
   # --- a type may not contain itself by value -------------------------------
   #

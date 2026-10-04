@@ -49,6 +49,7 @@ type
     registryNames*: Table[string, Decl]
     poolNames*: Table[string, Decl]
     slabNames*: Table[string, Decl]
+    arenaNames*: Table[string, Decl]
     mixinNames*: Table[string, Decl]
     # Consts are whole-program too, but NOT on the same terms as the five
     # above. Those name singletons, so a repeat is a real error; two modules
@@ -447,6 +448,7 @@ proc resetResolution*() =
   let registryNames = semLayer.registryNames
   let poolNames = semLayer.poolNames
   let slabNames = semLayer.slabNames
+  let arenaNames = semLayer.arenaNames
   let mixinNames = semLayer.mixinNames
   let constNames = semLayer.constNames
   let ambiguousConsts = semLayer.ambiguousConsts
@@ -456,9 +458,64 @@ proc resetResolution*() =
   semLayer.registryNames = registryNames
   semLayer.poolNames = poolNames
   semLayer.slabNames = slabNames
+  semLayer.arenaNames = arenaNames
   semLayer.mixinNames = mixinNames
   semLayer.constNames = constNames
   semLayer.ambiguousConsts = ambiguousConsts
+
+proc placeArenaSlabs*(m: var Module) =
+  ## Each slab the checker made for an arena (one per element type its
+  ## `new`s and references name), into the arena's module just after the
+  ## arena, in name order — so mangling, ownership and every emitter find it
+  ## as they find a declared slab. Called once the program is checked; a
+  ## slab already placed (the checker may run again) is not placed twice.
+  var made: seq[Decl]
+  for _, d in semLayer.slabNames:
+    if d.slabArena != "": made.add d
+  made.sort(proc (a, b: Decl): int = cmp(a.name, b.name))
+  var decls: seq[Decl]
+  for d in m.decls:
+    if d != nil and d.kind == dkSlab and d.slabArena != "": continue
+    decls.add d
+    if d == nil or d.kind != dkArena: continue
+    for s in made:
+      if s.slabArena == d.name: decls.add s
+  m.decls = decls
+
+proc arenaRefName*(arena: string): string =
+  ## The reference type an arena's `new` hands out: `<Arena>Ref[T]`, applied
+  ## to the element type (`FrameRef[Header]`).
+  arena & "Ref"
+
+proc arenaOfRefType*(t: Type): Decl =
+  ## The arena whose reference type `t` is (`FrameRef[Header]` -> Frame), or
+  ## nil. Named as written, like a slab's: the checker synthesises it.
+  if t == nil or t.kind != tkApp or t.base == nil or t.base.kind != tkNamed or
+     t.args.len != 1 or not t.base.name.endsWith("Ref"):
+    return nil
+  semLayer.arenaNames.getOrDefault(t.base.name[0 ..< t.base.name.len - 3], nil)
+
+proc elemName(t: Type): string =
+  ## A type's written shape, for naming the slab that holds it.
+  if t == nil: return "T"
+  case t.kind
+  of tkNamed: t.name
+  of tkApp:
+    var parts = @[elemName(t.base)]
+    for a in t.args: parts.add elemName(a)
+    parts.join("_")
+  of tkTuple, tkFunc, tkRecord, tkSum, tkUnion, tkEffect, tkRename:
+    "T" & $t.kind
+
+proc arenaSlabName*(arena: string, elem: Type): string =
+  ## The slab an arena keeps for one element type: `Frame_Header`,
+  ## `Frame_Array_128_u8`. Each run of characters that cannot be in an
+  ## identifier is one `_`, never two and never last — Nim forbids both.
+  result = arena
+  for c in "_" & elemName(elem):
+    if c.isAlphaNumeric: result.add c
+    elif result[^1] != '_': result.add '_'
+  result.removeSuffix('_')
 
 proc slabOfRefType*(name: string): Decl =
   ## The slab whose reference type is `name` (`NodesRef` -> Nodes), or nil.

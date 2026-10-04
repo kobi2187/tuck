@@ -40,11 +40,13 @@ import resolution
 import diagnostics
 import semantics    # SemanticError
 from modules import LoadedModule
+from typecheck_util import typeName
 
 type
   Touch = object
-    ## One place a body touches a slab.
-    slab: Decl
+    ## One place a body touches a slab — or an arena's slabs all at once
+    ## (`Frame.reset`).
+    slab: Decl            ## a dkSlab, or a dkArena
     site: Expr
     what: string          ## `Nodes.new`, `.data through a NodesRef`
 
@@ -66,6 +68,22 @@ type
 
 proc key(d: Decl): int = cast[int](d)
 
+proc ownerOf(d: Decl): string =
+  ## Whose a slab or an arena is: an actor's name, "" for main's thread.
+  if d.kind == dkArena: d.arenaOwner else: d.slabOwner
+
+proc kindWord(d: Decl): string =
+  if d.kind == dkArena: "arena" elif d.slabArena != "": "arena" else: "slab"
+
+proc shownName(d: Decl): string =
+  ## A slab by its name; an arena's slab by its arena's.
+  if d.kind == dkSlab and d.slabArena != "": d.slabArena else: d.name
+
+proc refWord(d: Decl): string =
+  if d.kind == dkArena: arenaRefName(d.name) & "[T]"
+  elif d.slabArena != "": arenaRefName(d.slabArena) & "[" & typeName(d.slabElem) & "]"
+  else: slabRefName(d.name)
+
 proc ownerWord(owner: string): string =
   if owner == "": "main's thread" else: "actor '" & owner & "'"
 
@@ -77,7 +95,7 @@ proc entryWord(d: Decl): string =
   of dkTask: "task " & d.name
   of dkSelect: "on select"
   of dkExpr: "a top-level statement"
-  of dkType, dkObject, dkRegistry, dkPool, dkSlab, dkMixin, dkExtern,
+  of dkType, dkObject, dkRegistry, dkPool, dkSlab, dkArena, dkMixin, dkExtern,
      dkPending, dkActor, dkConst, dkRegister, dkStaticAssert, dkErrors,
      dkResources, dkImport, dkFnSig, dkSatisfies, dkWhen, dkPublic,
      dkInterface, dkGroup:
@@ -151,17 +169,23 @@ proc slabNamed(name: string): Decl =
   semLayer.slabNames.getOrDefault(name, nil)
 
 proc touchesAt(n: Expr, f: var Facts) =
-  ## A slab operation (the field the checker resolved to an exkSlabOp) or a
-  ## field through a reference (Resolution.slabDerefs) at `n`.
+  ## A slab operation (the field the checker resolved to an exkSlabOp), an
+  ## arena's reset, or a field through a reference (Resolution.slabDerefs)
+  ## at `n`.
   let stamped = semLayer.call(n)
   if n.kind == exkField and stamped != nil and stamped.kind == exkSlabOp:
     let slab = slabNamed(stamped.slabRef.refName)
     if slab != nil:
-      f.touches.add Touch(slab: slab, site: n, what: slab.name & "." & n.fieldName)
+      f.touches.add Touch(slab: slab, site: n,
+                          what: shownName(slab) & "." & n.fieldName)
+  if n.kind == exkField and stamped != nil and stamped.kind == exkArenaReset:
+    let arena = semLayer.arenaNames.getOrDefault(n.receiver.refName, nil)
+    if arena != nil:
+      f.touches.add Touch(slab: arena, site: n, what: arena.name & ".reset")
   let deref = semLayer.slabDerefOf(n)
   if deref != nil:
     f.touches.add Touch(slab: deref, site: n, what: "." & n.fieldName &
-                        " through a " & slabRefName(deref.name))
+                        " through a " & refWord(deref))
 
 proc reachedAt(s: Scan, home: int, actor: Decl, n: Expr): Decl =
   ## The declaration `n` calls or names as a value, or nil.
@@ -220,16 +244,17 @@ proc walkEntry(s: var Scan, entry: Decl, owner: string) =
     inc i
     let f = s.factsOf(d)
     for t in f.touches:
-      if t.slab.slabOwner == owner: continue
+      let theirs = ownerOf(t.slab)
+      if theirs == owner: continue
       let steps = chainTo(parent, entry, d) & @[t.what]
       s.failAt(d, dcAcSlabOwner,
-        ownerWord(owner) & " reaches slab '" & t.slab.name & "', which " &
-        "belongs to " & ownerWord(t.slab.slabOwner) & ": " &
+        ownerWord(owner) & " reaches " & kindWord(t.slab) & " '" &
+        shownName(t.slab) & "', which belongs to " & ownerWord(theirs) & ": " &
         steps.join(" → ") & ". A slab is touched only by its owner — " &
-        (if t.slab.slabOwner == "":
+        (if theirs == "":
            "declare it inside the actor, or send the actor the values it needs"
          else:
-           "ask actor '" & t.slab.slabOwner & "' with a message instead"),
+           "ask actor '" & theirs & "' with a message instead"),
         t.site.span)
     for e in f.edges:
       if key(e.callee) in seen: continue
@@ -298,6 +323,10 @@ proc slabsIn(s: Scan, t: Type, seen: var HashSet[string],
       seen.incl t.name
       for f in s.typeNamed(t.name): s.slabsIn(f.typ, seen, found)
     return
+  let arena = arenaOfRefType(t)          # `FrameRef[T]`
+  if arena != nil:
+    if arena notin found: found.add arena
+    return
   for inner in innerTypes(t): s.slabsIn(inner, seen, found)
 
 proc slabsIn(s: Scan, t: Type): seq[Decl] =
@@ -311,30 +340,30 @@ proc checkPayloads(s: Scan, a: Decl) =
     for p in h.fnParams:
       let slabs = s.slabsIn(p.typ)
       if slabs.len == 0: continue
-      let direct = p.typ != nil and p.typ.kind == tkNamed and
-                   slabOfRefType(p.typ.name) != nil
-      let holds = if direct: "a " & slabRefName(slabs[0].name) & " in '" &
-                             p.name & "'"
-                  else: "'" & p.name & "', which can hold a " &
-                        slabRefName(slabs[0].name)
+      let direct = p.typ != nil and
+                   ((p.typ.kind == tkNamed and slabOfRefType(p.typ.name) != nil) or
+                    arenaOfRefType(p.typ) != nil)
+      let holds = if direct: "a " & typeName(p.typ) & " in '" & p.name & "'"
+                  else: "'" & p.name & "', which can hold a " & refWord(slabs[0])
       s.failAt(h, dcAcRefCrossing,
         "actor '" & a.name & "''s handler '" & h.name & "' takes " &
-        holds & " — a reference cannot be sent: it names a cell in slab '" &
-        slabs[0].name & "', which only " & ownerWord(slabs[0].slabOwner) &
-        " touches. Send the value (`" & slabs[0].name & ".get {r}`) instead",
+        holds & " — a reference cannot be sent: it names a cell in " &
+        kindWord(slabs[0]) & " '" & shownName(slabs[0]) & "', which only " &
+        ownerWord(ownerOf(slabs[0])) & " touches. Send the value (`" &
+        shownName(slabs[0]) & ".get {r}`) instead",
         p.span)
 
 proc checkFields(s: Scan, a: Decl) =
   ## `a`'s fields hold references into its own slabs only.
   for f in a.actorFields:
     for slab in s.slabsIn(f.typ):
-      if slab.slabOwner == a.name: continue
+      if ownerOf(slab) == a.name: continue
       s.failAt(a, dcAcRefCrossing,
         "actor '" & a.name & "''s field '" & f.name & "' holds a " &
-        slabRefName(slab.name) & ", a reference into slab '" & slab.name &
-        "', which belongs to " & ownerWord(slab.slabOwner) & ". An " &
-        "actor's fields may hold references into its own slab only — " &
-        "declare `slab " & slab.name & " = ...` inside the actor",
+        refWord(slab) & ", a reference into " & kindWord(slab) & " '" &
+        shownName(slab) & "', which belongs to " & ownerWord(ownerOf(slab)) &
+        ". An actor's fields may hold references into its own slabs only — " &
+        "declare the " & kindWord(slab) & " inside the actor",
         f.span)
 
 proc checkCrossing(s: Scan) =
@@ -347,7 +376,7 @@ proc checkCrossing(s: Scan) =
 proc checkSlabOwnership*(mods: seq[LoadedModule]) =
   ## The whole program's slabs against their owners. Raises SemanticError
   ## (TK-AC08, TK-AC09) at the first violation.
-  if semLayer.slabNames.len == 0: return
+  if semLayer.slabNames.len == 0 and semLayer.arenaNames.len == 0: return
   var s = Scan(mods: mods)
   s.index()
   s.checkCrossing()

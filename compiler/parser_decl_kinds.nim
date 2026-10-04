@@ -781,6 +781,29 @@ proc parseSlabDecl*(p: var Parser, sp: Span): Decl =
   result.slabElem = bare
   if p.current().kind == tkNewline: discard p.advance()
 
+proc parseArenaDecl*(p: var Parser, sp: Span): Decl =
+  ## `arena Name [size: N]` (slab proposal §9, ruled Q5): a LIFETIME, not a
+  ## block — one slab per element type its `new`s name, all reset together,
+  ## used wherever the program needs it. `[size: N]` is a byte budget.
+  discard p.advance() # eat "arena"
+  let name = p.expectTypeName("arena").value
+  var attrs: seq[TypeAttr]
+  p.parseDeclAttrs(attrs)
+  if p.current().kind == tkColon:
+    p.reportError("An arena is a declaration, not a block (ruled " &
+      "2026-09-29): `arena " & name & " [size: N]`, then `" & name &
+      ".new {value: v}` and `" & name & ".reset` wherever they are needed",
+      dc = dcPaArenaBlock)
+  result = Decl(span: sp, kind: dkArena, name: name, arenaSize: -1)
+  for a in attrs:
+    if a.name != "size":
+      p.reportError("arena '" & name & "': its one attribute is `size: N`, " &
+                    "a byte budget; got '" & a.name & "'", a.span.line,
+                    a.span.col)
+    try: result.arenaSize = parseInt(a.value.replace("_", ""))
+    except ValueError: result.arenaSizeText = a.value
+  if p.current().kind == tkNewline: discard p.advance()
+
 proc resourcePolicyFromName*(name: string, dest: var ResourcePolicy): bool =
   ## The three §7.4 policies, by their source spelling. A bool-returning
   ## lookup rather than a `parse` that raises, so the caller decides what an

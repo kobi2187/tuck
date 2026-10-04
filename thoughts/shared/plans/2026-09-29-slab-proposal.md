@@ -181,15 +181,24 @@ and independent of this feature.
 
 An arena is **a lifetime shared by several slabs**:
 
-```tuck-rejected
+```tuck
 arena Frame                              # a lifetime, not a block
 
-fn handle({pkt: Packet}) [io]:
-  let hdr = Frame.new Header {len: pkt.len}   # FrameRef[Header]
-  let body = Frame.new Body {bytes: pkt.bytes}
-  ...
+fn handle({len: int}) -> int:
+  let h = {len: len} Header
+  let hdr = Frame.new {value: h}         # FrameRef[Header]
+  let b = {bytes: 10, head: hdr} Body
+  let body = Frame.new {value: b}        # FrameRef[Body]
+  let n = body.head.len
   Frame.reset                            # every Frame reference now stale
+  return n
 ```
+
+(As built in phase 4: the value is bound first and handed over as
+`{value: v}`, its type picking the slab. The sketch's `Frame.new Header
+{...}` put a type name between the operation and its payload, which Tuck's
+postfix grammar has no form for; binding first is the rule every payload
+already follows, TK-PA13.)
 
 - The compiler gives the arena one slab per element type its `new` sites
   name; `reset` resets them all (their epochs). There is no per-cell `free`
@@ -250,8 +259,14 @@ Each phase ends green on all three backends, with the full suite.
    access and assignment through a reference, `NodesRef?` links), mangling,
    and the three emitters. Q4 lands here if ruled.
 3. **Ownership** (§7): the actor-reach and boundary checks, with their TK
-   codes and `tuck explain` texts.
+   codes and `tuck explain` texts. **Built 2026-10-04** (`ea2f5c0`):
+   TK-AC08, TK-AC09, TK-ME03, actor-owned slabs.
 4. **The arena** (§9) over phase 1's slabs.
+   **Built 2026-10-04:** `arena X [size: N]` (dkArena; the block form is
+   TK-PA18), `X.new {value: v}` / `live` / `get` / `set` / `reset`,
+   `XRef[T]` compared nominally by element, a slab per element type made
+   by the checker, the byte budget counted from the Tuck type
+   (`typecheck.byteSize`), actor-owned arenas under P3's rules.
 5. **Docs and specimens:** spec §7.3/§7.x, LANGUAGE-OVERVIEW §15, an example
    program per shape — doubly linked list, tree with parent links, graph
    with a cycle — each run-gated with an expected exit code.

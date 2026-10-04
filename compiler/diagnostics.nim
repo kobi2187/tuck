@@ -76,6 +76,8 @@ type
                                           ## parentheses
     dcPaRenameArrow = "TK-PA17"         ## a rename written `old: new`
                                           ## instead of `old -> new`
+    dcPaArenaBlock = "TK-PA18"          ## an arena written as a block
+                                          ## (`arena X:` + body), not a decl
 
     # --- TY: type ---------------------------------------------------------
     dcTyMismatch = "TK-TY01"            ## a value does not fit where it flows
@@ -176,7 +178,7 @@ type
     dcAcSlabOwner = "TK-AC08"           ## a slab reached by an owner other than its own
     dcAcRefCrossing = "TK-AC09"         ## a slab reference crossing an actor boundary
     dcMeSizeCount = "TK-ME01"           ## a pool/arena size or count is not positive
-    dcMeArenaInert = "TK-ME02"          ## an `arena` parses, and does nothing yet
+    dcMeArenaInert = "TK-ME02"          ## RETIRED 2026-10-04: the arena is built
     dcMeSlabInValue = "TK-ME03"         ## a slab declared inside an object or mixin
     dcIvUnknownField = "TK-IV01"        ## an invariant names a field the type lacks
     dcIvNotBool = "TK-IV02"             ## an invariant predicate is not a bool
@@ -239,7 +241,7 @@ proc categoryName*(d: DiagCode): string =
   of "RE": "Register"
   else: "Semantic"   # SM, and a category added without a word here
 
-const WarningCodes* = {dcTyMemberShadowsFn, dcMeArenaInert}
+const WarningCodes* = {dcTyMemberShadowsFn, dcMeArenaInert}  # ME02 retired
   ## Codes that REPORT without stopping the build. Kept beside the registry
   ## rather than inferred from the category letters, because severity is a
   ## property of the individual diagnostic and not of its category — TY holds
@@ -773,11 +775,21 @@ proc ruleExplanation(d: DiagCode): string =
     "not a smaller reservation, it is one that cannot hold anything. Fix: " &
     "give a real count or size."
   of dcMeArenaInert:
-    "`arena` is not implemented yet (spec 7.3, ROADMAP \"Deferred\"). The " &
-    "declaration parses and its size is checked, but its body is discarded: " &
-    "nothing inside it is checked, and no backend emits the arena. A warning " &
-    "rather than an error so specimen code keeps compiling — but a program " &
-    "that relies on the arena does not get one."
+    "Retired 2026-10-04, when the arena was built over slabs (slab proposal " &
+    "§9). It warned that an `arena` block parsed and did nothing: its body " &
+    "was discarded and no backend emitted it. The block form itself is now " &
+    "TK-PA18; the number stays reserved, as every retired code's does."
+  of dcPaArenaBlock:
+    "An arena is a declaration and a lifetime, not a block of statements " &
+    "(ruled 2026-09-29, slab proposal Q5): `arena Frame [size: N]` at top " &
+    "level or in an actor, then `Frame.new {value: v}` — a `FrameRef[T]` " &
+    "for the value's type, or `?FrameRef[T]` under a `[size: N]` budget — " &
+    "and `Frame.reset`, which frees everything the arena holds at once and " &
+    "makes every reference into it stale. The old form scoped the arena to " &
+    "a block, so nothing allocated in it could be handed back out; as a " &
+    "declaration it is used wherever the program needs it, and a reference " &
+    "kept past a reset stops the program when used. Fix: move the block's " &
+    "statements to where they belong, and write the arena as a declaration."
   of dcMeSlabInValue:
     "A slab is declared at a module's top level, where it belongs to main's " &
     "thread, or inside an actor, where it belongs to that actor. An object " &

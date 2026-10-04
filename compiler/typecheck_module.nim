@@ -257,7 +257,7 @@ proc failIfDuplicateMembers*(m: Module) =
       # this per-module walk cannot see. The check lives with the
       # program-wide table instead (typecheck_collect.collectResourceKinds).
       discard
-    of dkRegistry, dkPool, dkSlab, dkMixin, dkExtern, dkPending, dkExpr, dkConst,
+    of dkRegistry, dkPool, dkSlab, dkArena, dkMixin, dkExtern, dkPending, dkExpr, dkConst,
        dkRegister, dkStaticAssert, dkErrors, dkImport, dkInterface,
        dkGroup, dkSelect, dkFnSig, dkSatisfies:
       discard  # no field/param set of their own to check

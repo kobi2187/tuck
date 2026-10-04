@@ -1224,6 +1224,19 @@ proc genOdinSlabDrops(d: Decl, elem: string, owns: seq[string],
     ind & "\t\t}\n" & ind & "\t}\n" &
     ind & "\trt.tuckSlabReset(&" & s & ")\n" & ind & "}\n"
 
+proc genOdinArena(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## An arena (slab proposal §9): its budget, and its reset — every slab the
+  ## checker made for it, through the slab's own reset when its values own
+  ## heap (genOdinSlabDrops), then the budget, emptied.
+  result = ind & d.name & " := rt.ArenaBudget{size = " & $d.arenaSize & "}\n" &
+           ind & arenaResetProc(d.name) & " :: proc() {\n"
+  for s in slabsOfArena(ctx.module, d):
+    if ctx.odinSlabOwns(s).len > 0:
+      result.add ind & "\t" & s.name & "_reset()\n"
+    else:
+      result.add ind & "\trt.tuckSlabReset(&" & s.name & ")\n"
+  result.add ind & "\t" & d.name & ".used = 0\n" & ind & "}\n"
+
 proc genOdinSlabsRelease*(ctx: var OdinCodegenCtx, m: Module): string =
   ## Every slab this module declares, handed back at exit under TUCK_TRACK
   ## (live values first, through the slab's own `reset` when they own heap),
@@ -1244,7 +1257,7 @@ proc genOdinSlab(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
               of ssFixed: "rt.SlabFixed(" & elem & ", " & $d.slabCount & ")"
               of ssContiguous: "rt.SlabSeq(" & elem & ")"
   result = ind & d.name & " := " & store & "{name = " &
-           escape(actorLabel(d, d.name)) & "}\n"
+           escape(slabLabel(d)) & "}\n"
   let owns = ctx.odinSlabOwns(d)
   if owns.len > 0: result.add genOdinSlabDrops(d, elem, owns, ind)
 
@@ -1320,6 +1333,7 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   of dkMixin, dkExtern, dkPending: ctx.genMixinBlock(d)
   of dkPool: ctx.genOdinPool(d, ind)
   of dkSlab: ctx.genOdinSlab(d, ind)
+  of dkArena: ctx.genOdinArena(d, ind)
   of dkFnSig: ctx.genOdinFnSig(d, ind)
   of dkInterface: ctx.genOdinInterface(d, ind)
   of dkImport: ""     # same project, same namespace: no import line

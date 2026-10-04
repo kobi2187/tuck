@@ -289,7 +289,7 @@ proc slabReachers(mods: seq[LoadedModule]): HashSet[string] =
   ## slab_owner always has every body that can touch a slab.
   for lm in mods:
     for d in lm.m.decls:
-      if d != nil and d.kind == dkSlab: result.incl lm.name
+      if d != nil and d.kind in {dkSlab, dkArena}: result.incl lm.name
   var grew = true
   while grew:
     grew = false

@@ -577,6 +577,22 @@ proc tuckSlabReset*[S](s: var S) =
 
 proc tuckSlabCount*[S](s: S): int = s.live
 
+type ArenaBudget* = object
+  ## An arena's `[size: N]` (slab proposal §9): the bytes its slabs may
+  ## hold between resets, charged per `new` by a size the COMPILER computed
+  ## from the Tuck type — the same on every backend, so a budget runs out at
+  ## the same `new` everywhere. `size` 0 is an arena without a budget.
+  size*: int
+  used*: int
+
+proc tuckArenaNew*[T](s: var SlabChunked[T], b: var ArenaBudget, cost: int,
+                      v: sink T): TuckResult[SlabRef] =
+  ## A cell of an arena's slab holding `v`, or absent when the arena's budget
+  ## cannot cover it. `reset` gives the whole budget back.
+  if b.used + cost > b.size: return tnone[SlabRef]()
+  b.used += cost
+  tok(s.tuckSlabNew(v))
+
 proc tuckSlabReport*[S](s: S) =
   ## At exit: say how many cells were never freed (slab proposal Q3). A slab
   ## declared `[leaks: ok]` is not reported.
