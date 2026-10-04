@@ -246,6 +246,13 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **#98 — `for x.ok:` did not narrow x in the loop body**, so a chain of `?`
+  links could only be walked by recursion. It narrows now
+  (`typecheck.synthWhile`). Closing it first closed a soundness hole beside
+  it: a narrowed name given a `?T` again was still read as present (`if
+  x.ok: x = none; x.value` checked clean); such an assignment ends the
+  narrowing now (`synthReassign`). Fixed 2026-10-04. `known_bugs`.
+
 - **#97 — a record literal where a named record is wanted built on no
   backend** — the form TK-PA13's message calls fine. `{b: {tag: 9}} take`
   crashed the compiler: the exploded `take({tag: 9})` looked unexploded and

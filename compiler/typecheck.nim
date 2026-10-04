@@ -4387,13 +4387,19 @@ proc synthFor(tc: var TypeChecker, e: Expr): Type =
   unitType(e.span)
 
 proc synthWhile(tc: var TypeChecker, e: Expr): Type =
-  ## A while condition must be bool.
+  ## A while condition must be bool. `for x.ok:` narrows x in the body, as
+  ## `if x.ok:` does its branch (#98): the condition holds at the top of
+  ## every iteration, and a `?T` assigned to x in the body ends it there
+  ## (synthReassign) — so `up = up.value.parent` walks a chain of links.
+  let guard = tc.okGuardName(e.whileCond)
   if e.whileCond != nil:
     let ct = tc.synthesize(e.whileCond)
     if not isFlexible(ct) and typeName(ct) != "bool":
       fail("Type Error: loop condition must be bool, got " & typeName(ct),
            e.whileCond.span)
+  if guard != "": tc.setNarrowed(guard, true)
   tc.synthLoopBody(e.whileBody)
+  if guard != "": tc.setNarrowed(guard, false)
   unitType(e.span)
 
 proc synthLoopExit(tc: var TypeChecker, e: Expr, what: string): Type =
@@ -4574,6 +4580,13 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
     fail("Type Error: cannot assign " & typeName(valT) & " to " &
          typeName(targetT), e.span)
   tc.checkTransition(e, targetT)
+  # A narrowed `x` given a `?T` again is no longer known present: the guard
+  # held for the OLD value. Without this, `if x.ok: x = none; x.value`
+  # checked clean — and a loop narrowing on `x.ok` (#98) rebinds x every
+  # iteration. A plain T assigned in is present, and keeps it narrowed.
+  if e.target != nil and e.target.kind == exkVar and isWrapper(valT) and
+     tc.isNarrowed(e.target.name):
+    tc.setNarrowed(e.target.name, false)
 
 proc synthAssign(tc: var TypeChecker, e: Expr): Type =
   ## An assignment is a statement: it yields unit.

@@ -2907,4 +2907,49 @@ fn main() -> int:
   t.quietly: t.hostRuns("record literals nest in constructions and arguments, on every backend", 17)
   t.bugFixed "record literals nest in constructions and arguments, on every backend"
 
+  # #98 (found 2026-10-04, writing examples/48). `for up.ok:` did not narrow
+  # `up` in the body, so walking a chain of `?` links — the parent pointers a
+  # slab exists for — needed recursion. The loop narrows now, as `if` does
+  # its branch; a `?T` assigned to the narrowed name ends it.
+  t.src """
+type Dir:
+  bytes: int
+  parent: DirsRef?
+
+slab Dirs = Dir [leaks: ok]
+
+fn total({dir: DirsRef}) -> int:
+  var sum = 0
+  var up = dir.parent
+  for up.ok:
+    sum = sum + up.value.bytes
+    up = up.value.parent
+  sum
+
+fn main() -> int:
+  let root = Dirs.new {bytes: 1, parent: none}
+  let src = Dirs.new {bytes: 2, parent: root}
+  let lib = Dirs.new {bytes: 4, parent: src}
+  {dir: lib} total
+"""
+  t.quietly: t.hostRuns("`for x.ok:` narrows x in the loop body", 3)
+  t.bugFixed "`for x.ok:` narrows x in the loop body"
+
+  # ...and the hole that fix had to close first: a narrowed name given a `?T`
+  # again was still read as present. `if x.ok: x = none; x.value` checked
+  # clean.
+  t.src """
+fn get() -> int?:
+  return 3
+
+fn main() -> int:
+  var x = {} get
+  if x.ok:
+    x = none
+    return x.value
+  return 0
+"""
+  t.quietly: t.badCheck("a ?T assigned to a narrowed name un-narrows it", "unhandled \\?int")
+  t.bugFixed "a ?T assigned to a narrowed name un-narrows it"
+
   t.finish()

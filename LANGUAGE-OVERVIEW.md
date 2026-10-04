@@ -434,6 +434,9 @@ if r.ok:
 Accessing `.value` without a guard → `guard it first`. A guard that *falls
 through* does not narrow (`tests/suites/typecheck.nim`). An **early-return guard does**
 narrow — `if not r.ok: return 0` then `r.value.v` (`tests/suites/known_bugs.nim`, exit 5).
+So does a **loop** on it — `for up.ok:` narrows `up` in the body, so a chain
+of `?` links is walked with `up = up.value.parent` (#98). Assigning a `?T` to a
+narrowed name ends its narrowing there: the guard held for the old value.
 
 Every unhandled shape is rejected with `unhandled`: arithmetic on `!T`, payload
 access, `or`-defaulting, a bare statement drop, an unhandled pool `acquire`.
