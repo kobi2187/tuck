@@ -42,10 +42,12 @@ proc wrapIfPlain(res: Resolution, place: Type, v: Expr): Expr =
   res.optOf(place, place.args[0], v, exkWrapOk)
 
 proc lowerAssigns(res: Resolution, body: Expr) =
-  ## Every assignment in `body` whose target is a `?T` place.
+  ## Every assignment in `body` whose target is a `?T` place, a binding
+  ## whose stated type is one included (`let x: int? = v`).
   for n in nodes(body):
     if n.kind == exkAssign and n.target != nil:
-      n.assignVal = res.wrapIfPlain(res.typeFor(n.target), n.assignVal)
+      let place = if n.declType != nil: n.declType else: res.typeFor(n.target)
+      n.assignVal = res.wrapIfPlain(place, n.assignVal)
 
 proc lowerMarkedValues(res: Resolution, body: Expr) =
   ## Every payload field, construction field and positional argument the

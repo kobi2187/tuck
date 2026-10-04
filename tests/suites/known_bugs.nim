@@ -2952,4 +2952,30 @@ fn main() -> int:
   t.quietly: t.badCheck("a ?T assigned to a narrowed name un-narrows it", "unhandled \\?int")
   t.bugFixed "a ?T assigned to a narrowed name un-narrows it"
 
+  # Found 2026-10-04, probing generic code over slabs. A plain `T` given to
+  # a binding whose stated type is `T?` was emitted bare, and each host
+  # refused it where its result carrier was expected — on all three
+  # backends. R8 (lowering_optional) wrapped a store into a `?T` field but
+  # read the place's type from the target alone, which a new binding's
+  # name does not carry.
+  t.src """
+type Node:
+  data: int
+
+slab Nodes = Node [leaks: ok]
+
+fn main() -> int:
+  let five = 5
+  let x: int? = five
+  var h: NodesRef? = Nodes.new {data: 1}
+  var t = 0
+  if x.ok:
+    t = t + x.value
+  if h.ok:
+    t = t + h.value.data
+  return t
+"""
+  t.quietly: t.hostRuns("a plain T into a stated `T?` binding is wrapped", 6)
+  t.bugFixed "a plain T into a stated `T?` binding is wrapped"
+
   t.finish()

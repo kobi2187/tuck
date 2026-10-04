@@ -246,6 +246,15 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **A plain `T` given to a binding stated as `T?` built on no backend.**
+  `let x: int? = five` and `var h: NodesRef? = a` were emitted bare, and
+  each host refused a plain value where its result carrier was expected.
+  R8's `lowering_optional` wrapped a store into a `?T` field, but took the
+  place's type from the target, which a new binding's name does not carry;
+  it reads the stated type first now. Found 2026-10-04 probing generic code
+  over slabs; fixed the same day. `known_bugs`, "a plain T into a stated
+  `T?` binding is wrapped".
+
 - **#98 — `for x.ok:` did not narrow x in the loop body**, so a chain of `?`
   links could only be walked by recursion. It narrows now
   (`typecheck.synthWhile`). Closing it first closed a soundness hole beside
