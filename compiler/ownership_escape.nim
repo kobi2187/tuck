@@ -336,8 +336,11 @@ proc escapes*(ix: BodyIndex, rule: SealRule, name, slot: string,
       # A MOVED ARGUMENT IS GONE, unconditionally: the callee's twin consumes
       # it. Relaxing this to "gone only if the twin really frees it" once
       # needed a second copy of the twin's own rule, which drifted into a
-      # double free.
-      if v.place == name and n.kind == exkVar and isMovedArg(ix.res, n) and
+      # double free. The local itself (`l`, every slot), or ONE slot of it
+      # (`l.nodes`, that slot only): a field handed to a twin was freed by
+      # the caller beside the twin's result that kept it (A38).
+      if (v.place == name or v.place == name & "." & slot) and
+         n.kind in {exkVar, exkField} and isMovedArg(ix.res, n) and
          not (threading and ix.threadsBack(n, name)):
         return true
       if ix.underCarrier(rule, n, name, memo): return true

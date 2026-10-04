@@ -2789,7 +2789,9 @@ fn main() -> int:
   # ownership pass still schedules `defer delete(l.nodes)` beside
   # `defer delete(r.nodes)`. A slot moved into a call is the caller's no
   # longer (the twin's own parameter already follows that rule); a local's
-  # field does not yet. Nim and D answer 15; Odin segfaults.
+  # field did not. Nim and D answer 15; Odin segfaulted. Fixed 2026-10-04:
+  # ownership_escape.escapes treats a moved FIELD argument as consuming that
+  # slot, as it did a moved bare name.
   t.src """
 import seq
 
@@ -2813,7 +2815,7 @@ fn main() -> int:
   return t.nodes.len
 """
   t.quietly: t.hostRuns("a Seq field handed to a moved twin is freed once, on every backend", 15)
-  t.bugOpen "a Seq field handed to a moved twin is freed once, on every backend"
+  t.bugFixed "a Seq field handed to a moved twin is freed once, on every backend"
 
   # #96, first half (found 2026-10-04, building the slab). A local Seq moved
   # into a record at its last read — `let nb = {items: x2, tag: 9} Bag` — was

@@ -22,19 +22,11 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (9)
+## A. Open bugs (8)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
-
-**A38 — (Odin) a local's Seq field handed to a moved twin is freed twice.**
-`let r = {ns: l.nodes, d: ..} grow` inside `grow_moved` hands `l.nodes` to
-`grow_moved`, which keeps the buffer and returns it in `r.nodes`; the
-ownership pass still frees `l.nodes` at scope exit beside `r.nodes`. A
-segfault, where Nim and D answer. The twin's own parameter already follows the
-rule "a slot moved into a call is no longer ours"; a local's field does not.
-Found 2026-09-29 by `benches/trees/slab_thread.tuck`. `known_bugs`.
 
 **A27–A37 — constructs that do not cross a module boundary (R11 scan,
 2026-09-28).** A25, A26, A28, A30, A31, A33, A35 and A36 are fixed; their pins are
@@ -253,6 +245,14 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **A38 — (Odin) a local's Seq field handed to a moved twin was freed
+  twice.** `let r = {ns: l.nodes, d: ..} grow` inside `grow_moved` hands
+  `l.nodes` to the twin, which keeps the buffer and returns it in `r.nodes`;
+  the caller still freed `l.nodes`. The escape question treated a moved bare
+  name as gone but not a moved field; `ownership_escape.escapes` does both
+  now, slot by slot. Fixed 2026-10-04. `known_bugs`, "a Seq field handed to
+  a moved twin…".
 
 - **#96 — (Odin) a Seq that moved was still freed.** Two shapes, one cause
   each. A local moved into a record at its last read (`let nb = {items: x2}

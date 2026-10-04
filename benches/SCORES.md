@@ -827,6 +827,10 @@ Tuck-emitted code, `--release`, seconds, depth 14 → 15:
 | slab_merge | 17.8 → 87.3 | **0.019 → 0.043** | 0.033 → 0.084 | 0.042 → 0.067 |
 | slab_thread | 20.0 → 97.3 | 1.88 → 11.7 | segfault (A38) | 0.85 → 3.80 |
 
+(2026-10-04: A38 fixed — `slab_thread` runs on Odin now: depth 12 → 13,
+0.266 → 0.860 s, ratio 3.2, against Nim 4.0 and D 3.9 at the same depths.
+Still a copy per step on all three; the threading cost below is unchanged.)
+
 1. **`sink` on a parameter the fn only READS.** `paramIsMovable` marked a
    parameter `sink` whenever the body had a final read of it, never asking
    whether that read keeps it. A caller then COPIES a still-live argument
