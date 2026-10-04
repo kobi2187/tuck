@@ -47,6 +47,7 @@ import compiler/parser
 import compiler/validate   # the spec-side grammar, for `tuck validate`
 import compiler/resolution   # the semantic layer, handed to each emit stage
 import compiler/semantics
+import compiler/slab_owner  # who may touch a slab (TK-AC08/09), after typecheck
 import compiler/ssa_liveness
 import compiler/ssa_query, compiler/ssa_cache, compiler/ssa_ir
 import compiler/complexity
@@ -491,6 +492,10 @@ proc checkOrDie(path: string, loaded: var seq[LoadedModule],
       let ts = epochTime()
       verifyModuleEffects(lm.m, imported, importedRes, programKinds)
       vSub(lm.name, ts)
+    # Who may touch a slab (TK-AC08/09): whole-program, after typecheck
+    # because it reads the checker's stamps (slab ops, slab derefs, callee
+    # decls), which typecheckProgram resets on entry.
+    checkSlabOwnership(loaded)
     if verifyStages: verifyEffectsAssertions(loaded)
   except SemanticError as err:
     dieSemanticError(path, err)

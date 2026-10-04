@@ -1141,8 +1141,19 @@ whose `new` is `?NodesRef`; `[storage: contiguous]` one growable array.
 Identical on all three backends (`tests/suites/slabs.nim`); on Odin, a value
 that owns a `Seq` is deleted by the slab's own `free`/`set`/`reset`.
 `examples/48-slab-references.tuck` sets a doubly linked list, a tree with
-parent links and a graph with a cycle against their C and Rust forms. Not yet:
-the actor-ownership checks (proposal §7) and the arena over slabs (§9) —
+parent links and a graph with a cycle against their C and Rust forms.
+
+**A slab belongs to where it is declared** — at top level to main's thread
+(`main`, the fns it calls, tasks), inside an actor (`slab Items = Item` in
+its body) to that actor, whose fields may then hold its references. Under
+`--actors:thread` a slab is plain shared memory with no lock, so only its
+owner may touch it: an owner reaching another's slab through any chain of
+calls, a callback included, is `TK-AC08`, and the message names the chain
+(`on add → helper → record → Nodes.new`). A reference never crosses an actor
+boundary — not in a handler's payload, not in another owner's field
+(`TK-AC09`); send the value (`Nodes.get {r}`). An object or mixin cannot
+declare a slab (`TK-ME03`): it is a value, and each copy would need its own.
+Not yet: the arena over slabs (§9), and generic code over slabs (§12) —
 `thoughts/shared/plans/2026-09-29-slab-proposal.md`.
 
 ### The resource registry — for OS handles, not memory

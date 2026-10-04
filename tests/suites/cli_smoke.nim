@@ -527,6 +527,53 @@ fn main() -> void [io]:
     fail "good case broke after index warm"
   removeDir(d)
 
+proc caseSlabIndex(w: Work) =
+  ## A module declaring a pool or a slab is resolved BY NAME (`Ints.new`,
+  ## `Cells.acquire`), which a cached entry of fn signatures cannot carry —
+  ## so the second `tuck ch` must load it from source as the first did. It
+  ## served it from the index, and the warm run called `Ints` undeclared.
+  ## And a module of fns only that imports a slab is loaded from source too:
+  ## slab_owner needs every body that can touch a slab, so an actor reaching
+  ## one through it is refused warm as well as cold (TK-AC08).
+  let d = caseDir("slabindex")
+  discard d.write("lib.tuck", "slab Ints = int [leaks: ok]\n" &
+                              "pool Cells = int [count: 2]\n")
+  discard d.write("via.tuck", "import lib\n\nfn stash({n: int}) -> int:\n" &
+                              "  let r = Ints.new {value: n}\n" &
+                              "  Ints.get {r: r}\n")
+  let good = d.write("good.tuck", """
+import lib
+
+fn main() -> int:
+  let r = Ints.new {value: 4}
+  let h = Cells.acquire
+  if not h.ok:
+    return 0
+  Ints.get {r: r}
+""")
+  let bad = d.write("bad.tuck", """
+import via
+
+actor Log:
+  total: int = 0
+
+  on add({n: int}):
+    total += {n: n} stash
+
+fn main() -> int:
+  Log send add {n: 1}
+  0
+""")
+  for pass in ["cold", "warm"]:
+    let (rc, outp) = sh(@["./tuck", "ch", good, "--root:" & d])
+    if rc != 0: fail "an imported pool and slab undeclared on the " & pass &
+                     " cache: " & outp.strip.splitLines[^1]
+    let (brc, boutp) = sh(@["./tuck", "ch", bad, "--root:" & d])
+    if brc == 0 or not boutp.contains("TK-AC08"):
+      fail "an actor reaching a slab through an import not refused on the " &
+           pass & " cache"
+  removeDir(d)
+
 proc caseBytype(w: Work) =
   ## Payload fields matched to params BY TYPE, with a struct LITERAL receiver.
   ## The checker matches by name first, then by type for whatever is left
@@ -843,6 +890,7 @@ fn main() -> int:
     "case_nullary": caseNullary, "case_matchret": caseMatchret,
     "case_seqat": caseSeqat, "case_index": caseIndex, "case_pool": casePool,
     "case_effects": caseEffects, "case_bytype": caseBytype,
+    "case_slabindex": caseSlabIndex,
   }
 
   # The example family: build one example, check its exit code. Nine

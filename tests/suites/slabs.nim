@@ -354,4 +354,246 @@ fn main() -> int:
 """
   t.badCheck "storage is chunked or contiguous", "storage is `chunked`"
 
+  # --- who may touch a slab (proposal §7, ruled Q6) ----------------------------
+  # A slab inside an actor is that actor's: its handlers make and follow
+  # references, and its fields may hold them.
+  t.src """
+import scheduler
+
+type Item:
+  n: int
+  next: ItemsRef?
+
+actor Stack [queue: 64]:
+  slab Items = Item [leaks: ok]
+  top: ItemsRef? = none
+  total: int = 0
+
+  on push({n: int}):
+    let r = Items.new {n: n, next: top}
+    top = r
+    total += r.n
+
+fn ready() -> bool:
+  return Stack.total == 55
+
+fn main() -> int:
+  for i in 1 .. 10:
+    Stack send push {n: i}
+  Stack.waitUntil {pred: :ready}
+  return Stack.total
+"""
+  t.okCheck "an actor declares a slab of its own"
+  t.hostRuns "...and its handlers link cells its fields hold", 55
+
+  # A top-level slab belongs to main's thread: an actor reaching it, through
+  # any chain of calls, is refused — and the message names the chain.
+  t.src """
+type Node:
+  n: int
+
+slab Nodes = Node [leaks: ok]
+
+fn record({n: int}) -> int:
+  let r = Nodes.new {n: n}
+  r.n
+
+fn helper({n: int}) -> int:
+  {n: n} record
+
+actor Log:
+  total: int = 0
+
+  on add({n: int}):
+    total += {n: n} helper
+
+fn main() -> int:
+  Log send add {n: 1}
+  {n: 2} record
+"""
+  t.badCheck "an actor reaching a top-level slab through calls is refused",
+             "TK-AC08.*actor 'Log' reaches slab 'Nodes', which belongs to " &
+             "main's thread: on add → helper → record → Nodes.new"
+
+  # ...through a fn handed on as a value, too.
+  t.src """
+type Node:
+  n: int
+
+slab Nodes = Node [leaks: ok]
+
+fnsig Adder = {a: int, b: int} -> int
+
+type Calc = {add: Adder}
+
+fn touch({a: int, b: int}) -> int:
+  let r = Nodes.new {n: a + b}
+  r.n
+
+actor Log:
+  total: int = 0
+
+  on bump({n: int}):
+    let c = {add: :touch} Calc
+    total += {a: n, b: 1} c.add
+
+fn main() -> int:
+  Log send bump {n: 1}
+  0
+"""
+  t.badCheck "...or through a callback", "TK-AC08.*on bump → touch → Nodes.new"
+
+  # An actor's slab is its own: main reaching it is refused, and so is
+  # another actor.
+  t.src """
+type Item:
+  n: int
+
+actor Stack:
+  slab Items = Item [leaks: ok]
+  total: int = 0
+
+  on push({n: int}):
+    let r = Items.new {n: n}
+    total += r.n
+
+fn peek() -> int:
+  Items.count
+
+fn main() -> int:
+  Stack send push {n: 1}
+  {} peek
+"""
+  t.badCheck "main reaching an actor's slab is refused",
+             "TK-AC08.*main's thread reaches slab 'Items', which belongs to " &
+             "actor 'Stack': main → peek → Items.count"
+
+  t.src """
+type Item:
+  n: int
+
+actor A:
+  slab Mine = Item [leaks: ok]
+  total: int = 0
+
+  on put({n: int}):
+    let r = Mine.new {n: n}
+    total += r.n
+
+actor B:
+  total: int = 0
+
+  on peek({n: int}):
+    total += Mine.count
+
+fn main() -> int:
+  A send put {n: 1}
+  B send peek {n: 1}
+  0
+"""
+  t.badCheck "one actor reaching another's slab is refused",
+             "TK-AC08.*actor 'B' reaches slab 'Mine', which belongs to actor 'A'"
+
+  # A main's-thread program with actors beside it is untouched by the rule.
+  t.src """
+type Node:
+  n: int
+
+slab Nodes = Node [leaks: ok]
+
+fn record({n: int}) -> int:
+  let r = Nodes.new {n: n}
+  r.n
+
+actor Log:
+  total: int = 0
+
+  on add({n: int}):
+    total += n
+
+fn main() -> int:
+  Log send add {n: 1}
+  {n: 4} record
+"""
+  t.okCheck "main using its own slab beside an actor checks"
+
+  # --- a reference crossing an actor boundary ------------------------------------
+  t.src """
+type Node:
+  n: int
+
+slab Nodes = Node [leaks: ok]
+
+actor Log:
+  total: int = 0
+
+  on take({r: NodesRef}):
+    total += 1
+
+fn main() -> int:
+  let r = Nodes.new {n: 1}
+  Log send take {r: r}
+  0
+"""
+  t.badCheck "a reference in a handler's payload is refused",
+             "TK-AC09.*handler 'take' takes a NodesRef in 'r'"
+
+  t.src """
+type Node:
+  n: int
+
+type Pair:
+  a: int
+  link: NodesRef?
+
+slab Nodes = Node [leaks: ok]
+
+actor Log:
+  total: int = 0
+
+  on take({p: Pair}):
+    total += p.a
+
+fn main() -> int:
+  let p = {a: 1, link: none} Pair
+  Log send take {p: p}
+  0
+"""
+  t.badCheck "...and one inside a record in the payload",
+             "TK-AC09.*takes 'p', which can hold a NodesRef"
+
+  t.src """
+type Node:
+  n: int
+
+slab Nodes = Node [leaks: ok]
+
+actor Log:
+  last: NodesRef? = none
+
+  on tick({n: int}):
+    last = none
+
+fn main() -> int:
+  Log send tick {n: 1}
+  0
+"""
+  t.badCheck "an actor's field holding another owner's reference is refused",
+             "TK-AC09.*field 'last' holds a NodesRef"
+
+  # --- a slab is not part of a value ------------------------------------------------
+  t.src """
+type Node:
+  n: int
+
+object Box:
+  slab Nodes = Node
+  size: int
+
+fn main() -> int:
+  0
+"""
+  t.badCheck "a slab inside an object is refused",
+             "(?s)TK-ME03.*slab 'Nodes' is declared inside object 'Box'"
+
   t.finish()

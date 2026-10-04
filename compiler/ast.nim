@@ -869,6 +869,8 @@ type
       slabCount*: int          ## ssFixed only: the number of cells
       slabCountText*: string   ## `[count: N]` as written, when N names a const
       slabLeaksOk*: bool       ## `[leaks: ok]`: no report of unfreed cells
+      slabOwner*: string       ## the actor declaring it, "" for the module —
+                               ## main's thread (slab proposal §7; slab_owner)
     of dkFn:
       fnGenerics*: seq[string]
       fnGenericBounds*: seq[seq[Type]]   # parallel to fnGenerics; bounds[i] =

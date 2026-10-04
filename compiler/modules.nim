@@ -271,23 +271,50 @@ proc entryValid*(idx: Table[string, IndexEntry], dir, name: string): bool =
   var seen: HashSet[string]
   entryValid(idx, dir, name, seen)
 
+proc servedBySigs(m: Module): bool =
+  ## Can an importer be served this module's fn signatures alone? Only when
+  ## it declares nothing but fns: a type, a pool, a slab, an actor, a const, a
+  ## registry — every other declaration — is resolved by NAME, which an
+  ## entry of signatures cannot carry. Listing the by-name kinds instead let
+  ## a module declaring only a pool or a slab be served from the index, and
+  ## its importer's `Ints.new` was undeclared on the second `tuck ch`.
+  for d in m.decls:
+    if d != nil and d.kind notin {dkFn, dkImport, dkExpr, dkStaticAssert}:
+      return false
+  true
+
+proc slabReachers(mods: seq[LoadedModule]): HashSet[string] =
+  ## The modules whose fns can reach a slab: those declaring one, and every
+  ## module importing one of those. Loaded from source, never the index, so
+  ## slab_owner always has every body that can touch a slab.
+  for lm in mods:
+    for d in lm.m.decls:
+      if d != nil and d.kind == dkSlab: result.incl lm.name
+  var grew = true
+  while grew:
+    grew = false
+    for lm in mods:
+      if lm.name in result: continue
+      for imp in importsOf(lm.m):
+        if imp in result:
+          result.incl lm.name
+          grew = true
+          break
+
 proc updateIndex*(dir: string, mods: seq[LoadedModule],
                   sigsOf: proc(m: Module): seq[SigInfo]) =
   ## Refresh index entries for the given fully-loaded modules. `sigsOf` is
   ## injected by the driver (typecheck.moduleSigs) to keep this file free of
   ## checker dependencies. Call only after the program checked clean.
   var idx = SigIndex(stamp: buildStamp, entries: loadIndex(dir))
+  let reachesSlab = slabReachers(mods)
   for lm in mods:
     var deps: seq[tuple[name, hash: string]]
     for imp in importsOf(lm.m):
       let ipath = resolvedImportPath(lm.path.parentDir, imp)
       if ipath != "" and fileExists(ipath):
         deps.add((imp, srcHashOf(ipath)))
-    var byName = false
-    for d in lm.m.decls:
-      if d != nil and d.kind in {dkType, dkObject, dkInterface, dkGroup, dkFnSig}:
-        byName = true
-        break
+    let byName = not servedBySigs(lm.m) or lm.name in reachesSlab
     idx.entries[lm.name] = IndexEntry(
       srcHash: srcHashOf(lm.path),
       cachedAt: getTime().toUnix,

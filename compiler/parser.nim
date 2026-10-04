@@ -71,6 +71,11 @@ proc isKeywordField(p: Parser): bool =
   p.current().kind notin {tkIdent, tkAttr} and p.peek(1).kind == tkColon and
     p.peek(2).kind notin {tkNewline, tkIndent, tkEOF}
 
+proc isSlabLine(p: Parser): bool =
+  ## `slab Name = ...` — never a field, which would be `slab: T`.
+  p.current().kind == tkIdent and p.current().value == "slab" and
+    p.peek(1).kind == tkIdent and p.peek(2).kind == tkAssign
+
 proc parseObjectBodyLine(p: var Parser, fields: var seq[FieldDef],
                          members: var seq[Decl]) =
   ## One line of an object or actor body: a pending hole, a member, an
@@ -82,6 +87,11 @@ proc parseObjectBodyLine(p: var Parser, fields: var seq[FieldDef],
     p.parseInvariantBlock(members)
   elif p.isSatisfiesLine():
     members.add(p.parseSatisfiesLine(fields.len > 0))
+  elif p.isSlabLine():
+    # `slab Nodes = Node` in an actor: the actor's own slab, lifted to the
+    # module with its owner by rewrite.hoistSlabs. In an object it is refused
+    # there (TK-ME03) rather than read here as a field.
+    members.add(p.parseSlabDecl(p.getSpan()))
   else:
     fields.add(p.parseObjectField())
 

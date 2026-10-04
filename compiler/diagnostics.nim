@@ -173,8 +173,11 @@ type
     dcAcSendToMember = "TK-AC05"        ## a `send` naming an actor's member `fn`, not a handler
     dcAcOnFull = "TK-AC06"              ## an actor's [on_full: X] is not drop, wait or assert
     dcAcUnknownAttr = "TK-AC07"         ## an actor attribute other than queue and on_full
+    dcAcSlabOwner = "TK-AC08"           ## a slab reached by an owner other than its own
+    dcAcRefCrossing = "TK-AC09"         ## a slab reference crossing an actor boundary
     dcMeSizeCount = "TK-ME01"           ## a pool/arena size or count is not positive
     dcMeArenaInert = "TK-ME02"          ## an `arena` parses, and does nothing yet
+    dcMeSlabInValue = "TK-ME03"         ## a slab declared inside an object or mixin
     dcIvUnknownField = "TK-IV01"        ## an invariant names a field the type lacks
     dcIvNotBool = "TK-IV02"             ## an invariant predicate is not a bool
     dcRgUnknownEvent = "TK-RG01"        ## raise/handle names no declared event
@@ -775,6 +778,33 @@ proc ruleExplanation(d: DiagCode): string =
     "nothing inside it is checked, and no backend emits the arena. A warning " &
     "rather than an error so specimen code keeps compiling — but a program " &
     "that relies on the arena does not get one."
+  of dcMeSlabInValue:
+    "A slab is declared at a module's top level, where it belongs to main's " &
+    "thread, or inside an actor, where it belongs to that actor. An object " &
+    "or a mixin cannot hold one: an object is a VALUE — copied when it is " &
+    "assigned — so each copy would need a slab of its own, and a reference " &
+    "made through one copy would name a cell in another's. Fix: declare the " &
+    "slab at top level (or in the actor that uses it), and keep references " &
+    "to its cells in the object's fields."
+  of dcAcSlabOwner:
+    "A slab belongs to where it is declared: at top level, to main's thread " &
+    "(`main`, the fns it calls, tasks); inside an actor, to that actor. " &
+    "Under `--actors:thread` an actor runs on a thread of its own, and a " &
+    "slab is plain shared memory with no lock — so only its owner may " &
+    "touch it, through any chain of calls. The message names the chain " &
+    "from the owner that reached it to the operation or field access that " &
+    "touched the slab. Fix: declare the slab inside the actor that uses it, " &
+    "or send that actor the VALUES it needs (`Nodes.get {r}`) rather than " &
+    "letting it reach the slab itself."
+  of dcAcRefCrossing:
+    "A slab reference names a cell in its owner's slab. Sent to an actor — " &
+    "in a handler's payload, directly or inside a record, a Seq or a `?` — " &
+    "or kept in an actor's field when it points into a slab the actor does " &
+    "not own, it would let a second thread touch that slab. Only values " &
+    "cross an actor boundary (spec 9.1). Fix: send the cell's value " &
+    "(`Nodes.get {r}`) instead of the reference; an actor that needs " &
+    "references of its own declares its own slab (`slab Nodes = Node` " &
+    "inside the actor), whose references its fields may hold."
   of dcAcHandlerReturn:
     "A handler declared a return type, but an actor message is " &
     "fire-and-forget (spec 9.1) and there is no reply channel: correlation " &
