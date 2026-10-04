@@ -224,9 +224,10 @@ proc lowerMatchesIn(res: Resolution, e: Expr) =
   for ch in e.children: lowerMatchesIn(res, ch)
 
 proc returnTailMatch(res: Resolution, d: Decl) =
-  ## A fn whose body ENDS in a value-armed match returns that value — the
-  ## codegen adds the `return` for a tail `match` (injectTailReturn) but not
-  ## for a tail `if`, which is what the match becomes. So it is said here.
+  ## A fn whose body ENDS in a value-armed match returns that value —
+  ## lowering.lowerTailReturns adds the `return` for a tail `match`, but runs
+  ## last, when this pass has made the match an `if`, which is not a tail
+  ## value. So it is said here.
   if d == nil or d.kind != dkFn or d.fnReturnType == nil: return
   let body = d.fnBody
   if body == nil or body.kind != exkBlock or body.stmts.len == 0: return

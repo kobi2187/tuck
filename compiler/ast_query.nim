@@ -427,7 +427,8 @@ proc implicitTailValue*(body: Expr): Expr =
   ## statement, when that is a value rather than control flow — or nil.
   ##
   ## One definition for the two readers that must agree: lowering, which
-  ## makes it an explicit `return` (injectTailReturn), and the checker's
+  ## makes it an explicit `return` (injectTailReturn, from lowerTailReturns),
+  ## and the checker's
   ## variant tracing (typecheck_flow), which must count what it yields.
   ## They used to keep two exclusion lists; the checker's lacked a tail
   ## `match`, so a fn returning `Closed` early and `Open` from a tail match
@@ -457,11 +458,10 @@ proc implicitTailValue*(body: Expr): Expr =
      exkAbsent:
     lastS
 
-proc injectTailReturn*(body: Expr, retTypeStr: string) =
-  ## Turn a fn body's trailing value (implicitTailValue) into an explicit
-  ## `return` (Nim needs it), leaving control-flow tails and decision tables
-  ## alone.
-  if retTypeStr == "void": return
+proc injectTailReturn*(body: Expr) =
+  ## Turn a value-returning fn body's trailing value (implicitTailValue) into
+  ## an explicit `return`, leaving control-flow tails and decision tables
+  ## alone. Lowering's job (lowering.lowerTailReturns), for every backend.
   let v = implicitTailValue(body)
   if v != nil:
     body.stmts[^1] = Expr(span: v.span, kind: exkReturn, returnVal: v)

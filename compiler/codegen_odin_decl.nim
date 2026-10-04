@@ -254,7 +254,6 @@ proc genFnBody*(ctx: var OdinCodegenCtx, d: Decl, retTypeStr, ind: string): stri
   ## becomes one `return` line, and a block body gets a trailing return when
   ## the fn owes a value.
   let savedIndent = ctx.indent
-  injectTailReturn(d.fnBody, retTypeStr)
   result = ctx.genOdinExpr(d.fnBody)
   if d.fnBody != nil and d.fnBody.kind != exkBlock:
     # single-expression body: `header {` is already open, so just the line
@@ -993,7 +992,6 @@ proc genTaskDecl*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   (ctx.retWrapped, ctx.retInnerOdin, ctx.retInnerT) =
     ctx.odinBangInfo(d.taskReturnType)
   ctx.retAbsentCapable = absentCapable(d.taskReturnType)
-  injectTailReturn(d.taskBody, retTypeStr)
   var bodyStr = ctx.genOdinExpr(d.taskBody)
   if d.taskBody != nil and d.taskBody.kind != exkBlock:
     let kw = if retTypeStr != "void": "return " else: ""

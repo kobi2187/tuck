@@ -219,8 +219,23 @@ proc collectLocals(body: Expr, timesAssigned: var CountTable[string],
     timesAssigned.inc(n.target.name)
     if n.isDecl: declaredWith[n.target.name] = n.assignVal
 
+proc fieldFedByLocal(m: Module, v: Expr, f: string): bool =
+  ## Is field `f` of the construction `v` a local's value — `{items: xs}`, or
+  ## `{items: b.xs}` — rather than one built in place?
+  if not isRecordConstruction(m, v): return false
+  for fi in v.args[0].fields:
+    if fi.name == f: return pathOf(fi.value) != ""
+  false
+
 proc takesNothingOf(s: Scan, v: Expr): bool =
   ## Is every heap slot this binding holds either copied or exclusive?
+  ##
+  ## Exclusive means two things, and only one of them takes nothing. A
+  ## CALL's result left uncopied is fresh — the callee built it (#77's
+  ## `bump`). A CONSTRUCTION's field left uncopied is the LOCAL that fed it,
+  ## moved in at its last read: `let nb = {items: x2} Bag` hands x2's buffer
+  ## to nb. Counting that as "takes nothing" left x2 un-escaped, so x2 and
+  ## nb.items were both freed — one buffer, two frees, a segfault (#96).
   let t = s.res.typeFor(v)
   if seqElem(t) != nil:
     return needsDup(s.res, v) or decidedExclusive(v, "")
@@ -229,7 +244,8 @@ proc takesNothingOf(s: Scan, v: Expr): bool =
   if want.len == 0: return false
   let copied = recordDupFields(s.res, v)
   for f in want:
-    if f notin copied and not decidedExclusive(v, f): return false
+    if f in copied: continue
+    if not decidedExclusive(v, f) or fieldFedByLocal(s.m, v, f): return false
   true
 
 proc findCopiedOut(s: Scan): HashSet[NodeId] =

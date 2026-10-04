@@ -254,6 +254,16 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **#96 — (Odin) a Seq that moved was still freed.** Two shapes, one cause
+  each. A local moved into a record at its last read (`let nb = {items: x2}
+  Bag`) was freed as x2 and as nb.items — the ownership pass read the copy
+  decision's "left uncopied, the local is dead" as "nothing taken"
+  (`analysis_ownership.takesNothingOf`). And a fn ending in the Seq it
+  returns deleted it after the return value was taken, because the tail
+  became a `return` only at emit time, after ownership had decided; lowering
+  makes it now (`lowering.lowerTailReturns`). Fixed 2026-10-04.
+  `known_bugs`, "a Seq moved into a record…" and "…tail value…".
+
 - **`arena` parsed and did nothing.** It parsed into a `type` of the arena's
   name with an empty record and discarded its body; since 2026-09-27 a TK-ME02
   warning said so. Built 2026-10-04 over slabs (slab proposal §9, phase 4):

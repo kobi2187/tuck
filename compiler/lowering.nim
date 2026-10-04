@@ -375,6 +375,19 @@ proc normalizeSelf(d: Decl) =
       mem.fnParams = @[Param(name: "self", typ: objType, span: mem.span)] &
                      mem.fnParams
 
+proc returnsValue(t: Type): bool =
+  ## Does a fn declared `-> t` hand a value back? Every emitter reads `void`,
+  ## or no type at all, as "no".
+  t != nil and not (t.kind == tkNamed and t.name == "void")
+
+proc lowerTailReturns(m: Module) =
+  ## Each value-returning fn's and task's trailing value, made a `return`.
+  for d in m.allDecls:
+    if d.kind == dkFn and d.fnBody != nil and returnsValue(d.fnReturnType):
+      injectTailReturn(d.fnBody)
+    elif d.kind == dkTask and d.taskBody != nil and returnsValue(d.taskReturnType):
+      injectTailReturn(d.taskBody)
+
 proc lowerModule*(res: Resolution, m: Module, real: Table[string, Module]) =
   ## Rewrite a module in place into the simpler form the backends expect.
   ## `real` is the rest of the program — an object in another module that
@@ -427,6 +440,12 @@ proc lowerModule*(res: Resolution, m: Module, real: Table[string, Module]) =
   # chains above, whose steps become assignments.
   lowerOptionals(res, m)
   # Every call through an interface value becomes a dispatch over the
-  # objects that satisfy it (lowering_iface). Last: an interface call may sit
-  # in a chain step's payload, and a chain's steps are copied above.
+  # objects that satisfy it (lowering_iface). An interface call may sit in a
+  # chain step's payload, and a chain's steps are copied above.
   lowerIfaceCalls(res, m, real)
+  # Last: a value-returning body's tail becomes an explicit `return`, on the
+  # tree every pass above has finished with — the tree the emitters used to
+  # add it to at print time. Made here, BEFORE backend_prepare decides
+  # ownership, which read a tail `xs` as a dead local and freed the Seq the
+  # fn was returning (#96).
+  lowerTailReturns(m)

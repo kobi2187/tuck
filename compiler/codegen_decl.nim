@@ -150,7 +150,6 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     ctx.definedVars.incl(p.name)
   let oldIndent = ctx.indent
   ctx.enterReturnContext(d.fnReturnType)
-  injectTailReturn(d.fnBody, retTypeStr)
   let bodyStr = ctx.genFnBody(d.fnBody, "  ".repeat(ctx.indent))
   ctx.indent = oldIndent
   ctx.leaveReturnContext()
@@ -592,7 +591,6 @@ proc genTaskDecl*(ctx: var CodegenCtx, d: Decl): string =
   let oldInTask = ctx.inTask
   (ctx.retWrapped, ctx.retInnerNim, ctx.retInnerT) = bangInfo(d.taskReturnType)
   ctx.retAbsentCapable = absentCapable(d.taskReturnType)
-  injectTailReturn(d.taskBody, retTypeStr)
   ctx.inTask = true
   # A task lowers to a proc, so its body needs no scope of its own either.
   let bodyStr = ctx.genFnBody(d.taskBody, "  ".repeat(ctx.indent))

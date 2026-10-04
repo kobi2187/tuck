@@ -2815,4 +2815,49 @@ fn main() -> int:
   t.quietly: t.hostRuns("a Seq field handed to a moved twin is freed once, on every backend", 15)
   t.bugOpen "a Seq field handed to a moved twin is freed once, on every backend"
 
+  # #96, first half (found 2026-10-04, building the slab). A local Seq moved
+  # into a record at its last read — `let nb = {items: x2, tag: 9} Bag` — was
+  # freed as x2 AND as nb.items on Odin: one buffer, two frees, a segfault
+  # where Nim and D answer 10. The copy decision leaves that slot uncopied
+  # because x2 is dead after it, and the ownership pass read "uncopied" as
+  # "nothing of x2 was taken" (analysis_ownership.takesNothingOf). A
+  # construction's uncopied field IS the local that fed it.
+  t.src """
+import seq
+
+type Bag:
+  items: Seq[int]
+  tag: int
+
+fn main() -> int:
+  var x2: Seq[int] = []
+  x2 = {items: x2, value: 1} push
+  let nb = {items: x2, tag: 9} Bag
+  nb.tag + nb.items.len
+"""
+  t.quietly: t.hostRuns("a Seq moved into a record is freed once, on every backend", 10)
+  t.bugFixed "a Seq moved into a record is freed once, on every backend"
+
+  # #96, second half. A fn whose body ENDS in the Seq it returns — `xs` as the
+  # tail value, not `return xs` — deleted it on Odin too: `defer delete(xs)`
+  # ran after the return value was taken, so the caller copied freed memory.
+  # The tail became a `return` only at emit time, after ownership had read it
+  # as a dead local; lowering makes it now (lowering.lowerTailReturns).
+  t.src """
+import seq
+
+fn fill({n: int}) -> Seq[int]:
+  var xs: Seq[int] = []
+  for i in 0 .. n:
+    xs = {items: xs, value: i} push
+  xs
+
+fn main() -> int:
+  let a = {n: 4} fill
+  a.len
+"""
+  t.quietly: t.omitsOdin("a Seq a fn returns as its tail value is not freed by it",
+                         "defer delete\\(tuckˑvˑxs\\)")
+  t.bugFixed "a Seq a fn returns as its tail value is not freed by it"
+
   t.finish()

@@ -466,7 +466,6 @@ proc genDTaskDecl*(ctx: var DCodegenCtx, d: Decl): string =
     else:
       let inner = ctx.dType(payload)
       if inner == "void": "rt.TuckUnit" else: inner
-  injectTailReturn(d.taskBody, retStr)
   result = retStr & " " & d.name & "(" & ctx.genDParams(d.taskParams) & ") {\n"
   ctx.indent = 1
   ctx.definedVars.clear()
@@ -814,7 +813,6 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   # ast_query's shared version, not a private port — the Odin backend kept
   # its own copy and it has since drifted (no matchArmsReturn guard, so a
   # tail match whose arms return gets wrapped in a value-position case).
-  injectTailReturn(d.fnBody, retStr)
   # A generic fn is a D TEMPLATE: `T smaller(T)(T a, T b)`. D infers the
   # template argument from the call, so the call site is unchanged — which is
   # what the runtime's own `T[] push(T)(T[] items, T value)` relies on.
