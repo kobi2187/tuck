@@ -82,8 +82,18 @@ finished** (no longer deferred).
    `thoughts/shared/plans/2026-09-29-slab-proposal.md`** — a `slab`
    declaration with a typed reference per slab, chunked storage by default
    (measured, SCORES.md "Slab storage"), per-cell free + tenancy + reset,
-   the arena as a lifetime over slabs. Eight decisions (its §10) await the
-   owner before code.
+   the arena as a lifetime over slabs. **Ruled 2026-09-29** (its §10: Q4 →
+   `none`, Q8 → two-level storage). **Built:** P0 `none` (`4a5d2c0`), P1
+   the runtimes (`03d3310`), P2 the declaration on all three backends plus
+   `examples/48-slab-references.tuck` (`800bd12`). **Next:** P3 the
+   actor-ownership checks (Q6), P4 the arena, P5 the docs.
+   **Then, owner 2026-10-04: "when the feature is done, it's time for bug
+   fixes and handling discovered gaps"** — #96 (Odin frees a moved `Seq`:
+   segfault; memory, so first), #97, #98, and the gaps in the proposal's
+   §12, first among them **generic code over slabs**: a list algorithm
+   written once cannot run over two slabs, each having its own reference
+   type and its own `Slab.op`s. Owner: "since Slab is a single shaped data
+   type, it should be easy to pass a type as generic."
 10. M4.3 — actor dispatch lowered (`genActorDispatch` / `genDispatch` /
     `genDDispatch` still build it); needs the message envelope in Tuck first.
 11. A16 / #55 — a fired `timeout` bounds latency.

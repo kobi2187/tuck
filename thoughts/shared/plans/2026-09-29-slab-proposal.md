@@ -255,3 +255,37 @@ Each phase ends green on all three backends, with the full suite.
 5. **Docs and specimens:** spec §7.3/§7.x, LANGUAGE-OVERVIEW §15, an example
    program per shape — doubly linked list, tree with parent links, graph
    with a cycle — each run-gated with an expected exit code.
+
+## 12. Open after phase 5 — the gaps P2 showed
+
+Recorded 2026-10-04, after the declaration ran on all three backends. A slab
+reference covers identity, sharing and cycles; these are the reference uses it
+does not yet cover. Owner: "when the feature is done, it's time for bug fixes
+and handling discovered gaps."
+
+1. **Generic code over slabs** — first. A reference type and its operations
+   are per slab (`NodesRef`, `Nodes.free`), so `fn length` over a linked list
+   is written once per slab; a `std` container cannot be written at all.
+   Owner, 2026-10-04: "since Slab is a single shaped data type, it should be
+   easy to pass a type as generic." Every slab IS one shape — the runtime's
+   `SlabChunked[T]` / `SlabFixed[T, N]` / `SlabSeq[T]` over one `SlabRef` —
+   so the question is only the surface. Two candidates, to be put to the
+   owner with a sketch each:
+   - **the slab as a type parameter**: `fn length[S: slab]({head: S.Ref?})`,
+     its operations reached as `S.free {r}`, instantiated per slab the way a
+     generic fn is per type today;
+   - **the operations through the reference**: `r.free`, `r.live`, with
+     `fn length[T]({head: Ref[T]?})` — the slab found from the reference's
+     type, so a generic fn names only the element.
+2. **Interior references.** A reference names a whole cell — not one of its
+   fields, not an element of a `Seq` inside it. Today: a cell reference plus
+   the field or index.
+3. **References to locals.** No `&x` for an out-parameter or a swap; Tuck
+   returns values instead, as everywhere else. Probably stays so — listed
+   so that it is a decision, not an omission.
+4. **Automatic lifetime.** No reference counting and no collector: freeing
+   is `free`, a forgotten one is in the exit report, and P4's arena gives a
+   group of cells one lifetime ended by one `reset`.
+5. **Across actors.** P3 makes it a compile error (Q6) — closed by design,
+   not open.
+
