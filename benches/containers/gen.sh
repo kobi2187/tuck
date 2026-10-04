@@ -127,7 +127,8 @@ fn seed({n: int}) -> Seq[int]:
     xs = {items: xs, value: 0} push
   return xs
 fn main() -> int:
-  var bag: Bag = {items: {n: 64} seed} Bag
+  let s = {n: 64} seed
+  var bag: Bag = {items: s} Bag
   for i in 0 .. $N - 1:
     bag = {b: bag, at: 0} bump
   return bag.items[0] - $N
@@ -148,7 +149,8 @@ fn seed({n: int}) -> Seq[int]:
     xs = {items: xs, value: 1} push
   return xs
 fn main() -> int:
-  let bag: Bag = {items: {n: 2000} seed} Bag
+  let s = {n: 2000} seed
+  let bag: Bag = {items: s} Bag
   var acc = 0
   for i in 0 .. $N - 1:
     acc = acc + {b: bag} total

@@ -3014,4 +3014,29 @@ fn main() -> int:
                         "cannot infer generic parameter 'R' of 'Link'")
   t.bugFixed "`none` alone cannot infer a generic param"
 
+  # #96's first shape, generic (found 2026-10-04 by benches/containers
+  # generic_box, which segfaulted on Odin). `seqFieldNames` answered nothing
+  # for a generic application, so the escape analysis read `return {items:
+  # xs} Box` as carrying no buffer out, and Odin deleted `xs` on the way out
+  # of the very fn returning it.
+  t.src """
+import seq
+
+type Box[T]:
+  items: Seq[T]
+
+fn add[T]({b: Box[T], value: T}) -> Box[T]:
+  var xs = b.items
+  xs = {items: xs, value: value} push
+  return {items: xs} Box
+
+fn main() -> int:
+  var b: Box[int] = {items: []} Box
+  for i in 0 .. 99:
+    b = {b: b, value: i} add
+  return b.items.len + b.items[99] - 100
+"""
+  t.quietly: t.hostRuns("a generic record returned with a moved Seq keeps it", 99)
+  t.bugFixed "a generic record returned with a moved Seq keeps it"
+
   t.finish()
