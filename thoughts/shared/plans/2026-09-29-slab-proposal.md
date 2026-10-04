@@ -292,6 +292,10 @@ and handling discovered gaps."
    - **the operations through the reference**: `r.free`, `r.live`, with
      `fn length[T]({head: Ref[T]?})` — the slab found from the reference's
      type, so a generic fn names only the element.
+
+   **Proposal: `2026-10-04-generic-slabs-proposal.md`.** It recommends the
+   first: §4 there shows the second needs either a slab number in the
+   reference or a copy per slab anyway, and costs P3 its precision.
 2. **Interior references.** A reference names a whole cell — not one of its
    fields, not an element of a `Seq` inside it. Today: a cell reference plus
    the field or index.

@@ -1156,8 +1156,11 @@ calls, a callback included, is `TK-AC08`, and the message names the chain
 boundary — not in a handler's payload, not in another owner's field
 (`TK-AC09`); send the value (`Nodes.get {r}`). An object or mixin cannot
 declare a slab (`TK-ME03`): it is a value, and each copy would need its own.
-Not yet: generic code over slabs (§12) —
-`thoughts/shared/plans/2026-09-29-slab-proposal.md`.
+Not yet: generic code over slabs (§12 of
+`thoughts/shared/plans/2026-09-29-slab-proposal.md`; a proposal awaits a
+ruling, `2026-10-04-generic-slabs-proposal.md`). Until then a generic fn
+over a reference type, `fn length[R]({head: R?})`, checks clean and builds
+on no backend: a field read through `R` is emitted on the bare reference.
 
 ### Arenas — one lifetime over many slabs
 

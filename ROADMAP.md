@@ -87,15 +87,20 @@ finished** (no longer deferred).
    `none`, Q8 → two-level storage). **Built:** P0 `none` (`4a5d2c0`), P1
    the runtimes (`03d3310`), P2 the declaration on all three backends plus
    `examples/48-slab-references.tuck` (`800bd12`), P3 the ownership checks
-   (`ea2f5c0`), P4 the arena (spec §7.3 rewritten; example 13 run-gated).
-   **Next:** P5, the rest of the docs.
+   (`ea2f5c0`), P4 the arena (`cca53e3`; spec §7.3 rewritten; example 13
+   run-gated), P5 the docs (`463c82e`).
    **Then, owner 2026-10-04: "when the feature is done, it's time for bug
-   fixes and handling discovered gaps"** — #96 (Odin frees a moved `Seq`:
-   segfault; memory, so first), #97, #98, and the gaps in the proposal's
-   §12, first among them **generic code over slabs**: a list algorithm
-   written once cannot run over two slabs, each having its own reference
-   type and its own `Slab.op`s. Owner: "since Slab is a single shaped data
-   type, it should be easy to pass a type as generic."
+   fixes and handling discovered gaps"** — #96 (`ff38e29`), A38
+   (`12289c4`), #97 (`f8c9d33`) and #98 (`7640082`) are fixed. The gaps
+   are in the proposal's §12, first among them **generic code over slabs**:
+   a list algorithm written once cannot run over two slabs, each having its
+   own reference type and its own `Slab.op`s. Owner: "since Slab is a
+   single shaped data type, it should be easy to pass a type as generic."
+   **Proposal written 2026-10-04, awaiting a ruling:
+   `thoughts/shared/plans/2026-10-04-generic-slabs-proposal.md`** — the
+   slab as a type parameter (`fn length[S: slab]({head: Ref[S]?})`),
+   copied once per slab the way an interface bound is; a cell type may
+   name the slab it lives in (`type Cell[T, S: slab]`).
 10. M4.3 — actor dispatch lowered (`genActorDispatch` / `genDispatch` /
     `genDDispatch` still build it); needs the message envelope in Tuck first.
 11. A16 / #55 — a fired `timeout` bounds latency.
