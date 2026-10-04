@@ -292,6 +292,40 @@ fn main() -> int:
           r"proc tuckˑfnˑgrow\*\(xs: sink seq\[int\]\)"
   t.hostRuns("...and both compute what they did, on every backend", 8)
 
+  # The same through a FIELD. The mirror stamps `b.items`'s final read on the
+  # path, never on the root `b`; the pass before it stamped the root too, and
+  # `sink` read only that. So from the switch until 2026-10-04 no parameter
+  # read through a field was `sink`, and every record-threading container
+  # copied itself on each call on Nim — benches/containers rec_thread,
+  # two_fields, generic_box and str_builder all quadratic. A field only
+  # measured stays borrowed.
+  t.src """
+import seq
+
+type Bag:
+  items: Seq[int]
+
+fn addTo({b: Bag, value: int}) -> Bag:
+  var xs = b.items
+  xs = {items: xs, value: value} push
+  return {items: xs} Bag
+
+fn size({b: Bag}) -> int:
+  return b.items.len
+
+fn main() -> int:
+  var bag: Bag = {items: []} Bag
+  for i in 0 .. 9:
+    bag = {b: bag, value: i} addTo
+  return {b: bag} size
+"""
+  t.okCheck "a container threaded through a record field checks"
+  t.emits "...the threader keeps its sink, read through a field",
+          r"proc tuckˑfnˑaddTo\*\(b: sink tuckˑtypeˑBag, value: int\)"
+  t.emits "...the measurer borrows it",
+          r"proc tuckˑfnˑsize\*\(b: tuckˑtypeˑBag\)"
+  t.hostRuns("...and it computes what it did, on every backend", 10)
+
   # --- an ACTOR FIELD is not this body's to give away ----------------------
   #
   # The one place item 4 of thoughts/ssa-mirror-design.md could still bite.

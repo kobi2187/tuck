@@ -759,6 +759,26 @@ quadratic on NIM because its `sink` predicate had not learned that a generic
 application owns whatever its declared body owns. Both are fixed above; the
 row that remains is the honest one.
 
+**Re-measured 2026-10-04: it had rotted, three ways, unseen.** The bench is
+timed by hand and nothing ran it for three weeks. At N=8000, before the
+fixes:
+- `seq_setat` and `read_only` built on no backend: each wrote a call in a
+  payload, which TK-PA13 refused after they were written. They bind first now.
+- `generic_box` segfaulted on Odin. A generic record's Seq field was
+  invisible to the escape analysis (`seqFieldNames`), so `return {items: xs}
+  Box` deleted `xs` on the way out.
+- `rec_thread`, `two_fields`, `generic_box` and `str_builder` were
+  quadratic on Nim (3.5–4.1). No parameter read through a field was `sink`
+  any more. The SSA mirror stamps a final read on the path (`b.items`), and
+  `sink` read only the root stamp the pass before it also made.
+
+After the fixes, at N=20000 vs 40000, every pattern is linear or below the
+timer on every backend again, except the one above: `str_concat` on Odin,
+3.8, on purpose. `tests/suites/containers_bench.nim` now holds the bench to
+this table without timing it. It generates the patterns with this
+directory's `gen.sh`, requires each to check, and requires the `sink` in each
+threading fn's Nim signature, plus its absence from `read_only`'s reader.
+
 ## R6: what checking a send's result costs — 2026-09-28
 
 The ruling (R6, #7): block a sender at a full mailbox if that adds no

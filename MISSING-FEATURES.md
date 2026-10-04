@@ -246,6 +246,23 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **No parameter read through a field was `sink` on Nim**, so every
+  record-threading container copied itself on each call: benches/containers
+  `rec_thread`, `two_fields`, `generic_box` and `str_builder` were quadratic.
+  The SSA mirror stamps a final read on the path (`b.items`). The pass it
+  replaced also stamped the root `b`, and `sink` (`codegen_common.keptAt`)
+  read only that. It reads the path's stamp now. A path that reads a
+  scalar (`b.items.len`) keeps nothing, so a reader still borrows. Fixed
+  2026-10-04. `ssa`, "the threader keeps its sink, read through a field";
+  `containers_bench` holds the whole bench to its ledger.
+
+- **Odin freed the `Seq` a generic record was returned with.** `return
+  {items: xs} Box` in a `-> Box[T]` fn emitted `defer delete(xs)`, a segfault
+  (benches/containers `generic_box`). `seqFieldNames` answered nothing for a
+  generic application, so the escape analysis saw no buffer leave. Fixed
+  2026-10-04 (`1e79b46`). `known_bugs`, "a generic record returned with a
+  moved Seq keeps it".
+
 - **A slab of a generic record could not `new`, and a generic record's
   `T?` field took no plain value.** `slab Ints = Link[int, IntsRef]` read
   the element as having no fields, so `Ints.new {value: 1, next: none}` was

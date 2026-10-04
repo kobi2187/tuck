@@ -680,6 +680,24 @@ proc fieldKept(res: Resolution, m: Module, stack: seq[Expr], k: int,
         return calleeKeeps(res, m, stack[k - 2], f.name, -1, memo)
   true
 
+proc carriesAlong(res: Resolution, m: Module, read: Expr): bool =
+  ## Can the field read `read` carry its receiver's storage outward? Not when
+  ## what it reads is a scalar: `return b.items.len` keeps nothing of `b`,
+  ## and a `sink` there makes every caller still holding `b` copy it. An
+  ## unknown type answers yes, the answer every unrecognised case gives.
+  let t = res.typeFor(read)
+  t == nil or ownsHeap(m, t)
+
+proc throughField(res: Resolution, m: Module, stack: seq[Expr], k: int,
+                  memo: var ConsumeMemo): bool =
+  ## stack[k] sits under the field read stack[k-1]: a `.name {args}` call
+  ## keeps it; a plain read passes it outward only when what it reads can
+  ## carry the storage along, and that read is itself kept.
+  let p = stack[k - 1]
+  p.dotArg != nil or
+    (stack[k] == p.receiver and carriesAlong(res, m, p) and
+     keptAt(res, m, stack, k - 1, memo))
+
 proc keptAt(res: Resolution, m: Module, stack: seq[Expr], k: int,
             memo: var ConsumeMemo): bool =
   ## Is the value stack[k] kept by where it sits — bound, stored, returned,
@@ -694,20 +712,33 @@ proc keptAt(res: Resolution, m: Module, stack: seq[Expr], k: int,
   of exkBracketAssign: n == p.brValue
   of exkStruct: fieldKept(res, m, stack, k, memo)
   of exkCall: n != p.callee and calleeKeeps(res, m, p, "", p.args.find(n), memo)
-  of exkField:
-    p.dotArg != nil or (n == p.receiver and keptAt(res, m, stack, k - 1, memo))
+  of exkField: throughField(res, m, stack, k, memo)
   of exkIf: n != p.cond and keptAt(res, m, stack, k - 1, memo)
   of exkMatch: n != p.subject and keptAt(res, m, stack, k - 1, memo)
   of exkBlock:
     p.stmts.len > 0 and n == p.stmts[^1] and keptAt(res, m, stack, k - 1, memo)
   else: false   # an operand, an index, a condition, a loop's iterable: read
 
+proc finalReadOf(res: Resolution, e: Expr, name: string): bool =
+  ## Is `e` a final read of `name` — the name itself, or a path through it
+  ## (`b.items`)? The SSA mirror stamps a path's final read on the PATH,
+  ## never on its root. The pass it replaced stamped the root as well, and
+  ## that root stamp is what this predicate read — so from the switch on, no
+  ## parameter read through a field was ever `sink`, and every
+  ## record-threading container copied itself on each call on Nim
+  ## (benches/containers: rec_thread, two_fields, generic_box, str_builder).
+  if not res.isLastUse(e): return false
+  if e.kind == exkField and res.hasCall(e): return false   # `a.total`: a call
+  let p = pathOf(e)
+  p == name or p.startsWith(name & ".")
+
 proc keptLastUse(res: Resolution, m: Module, e: Expr, name: string,
                  stack: var seq[Expr], memo: var ConsumeMemo): bool =
   ## Is some read of `name` under `e` both its final use and a keeping one?
   if e == nil: return false
   stack.add e
-  if e.kind == exkVar and e.name == name and res.isLastUse(e):
+  if e.kind in {exkVar, exkField} and finalReadOf(res, e, name) and
+     (e.kind == exkVar or carriesAlong(res, m, e)):
     result = keptAt(res, m, stack, stack.high, memo)
   if not result:
     for c in e.children:
