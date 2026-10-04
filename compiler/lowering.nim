@@ -209,7 +209,59 @@ proc flattenMemberCallPayload(res: Resolution, e: Expr, m: Module) =
   e.callee = inner.callee
   e.args = merged
 
-proc explodePayload(res: Resolution, e: Expr) =
+proc namedConstruction(res: Resolution, a: Expr, t: Type): Expr
+
+proc declaredFields(m: Module, name: string): seq[FieldDef] =
+  ## A record type's or an object's fields, from its declaration.
+  let d = m.findDecl(dkType, name)
+  if d != nil and d.typeBody != nil and d.typeBody.kind == tkRecord:
+    return d.typeBody.fields
+  let o = m.findDecl(dkObject, name)
+  if o != nil: return composedFields(m, o)
+
+proc constructRecordFields(res: Resolution, m: Module, e: Expr) =
+  ## Inside a construction — `{point: {x: 1, y: 2}, w: 3} Thing` — each field
+  ## given a record literal for a named record type is that type's
+  ## construction too, to any depth. The case TK-PA13's own message calls
+  ## fine; it built on no backend, for the reason constructRecordArgs gives.
+  if not isRecordConstruction(m, e): return
+  let fields = declaredFields(m, e.callee.name)
+  for i in 0 ..< e.args[0].fields.len:
+    let v = e.args[0].fields[i].value
+    if v == nil or v.kind != exkStruct: continue
+    for f in fields:
+      if f.name == e.args[0].fields[i].name and f.typ != nil and
+         f.typ.kind == tkNamed and isRecordType(m, f.typ.name):
+        let ctor = res.namedConstruction(v, f.typ)
+        e.args[0].fields[i].value = ctor
+        res.constructRecordFields(m, ctor)
+
+proc namedConstruction(res: Resolution, a: Expr, t: Type): Expr =
+  ## `{...}` as `{...} T`.
+  result = Expr(span: a.span, kind: exkCall, args: @[a],
+                callee: Expr(span: a.span, kind: exkVar, name: t.name))
+  res.setType(result, t)
+
+proc constructRecordArgs(res: Resolution, m: Module, e: Expr) =
+  ## A record LITERAL passed for a parameter of a named record or object
+  ## type — `{b: {tag: 9}} take` — becomes that type's construction,
+  ## `{tag: 9} Bag`, which every backend prints as one. Left a bare literal,
+  ## each printed an anonymous record (a Nim tuple, an Odin `TRec_tag`) that
+  ## no host would pass as a `Bag` (#97). The checker accepted it by shape;
+  ## the callee's declaration says the name.
+  var callee = res.declFor(e)
+  if callee == nil: callee = memberCallDecl(res, m, e)
+  if callee == nil or callee.kind != dkFn: return
+  for i in 0 ..< min(e.args.len, callee.fnParams.len):
+    let a = e.args[i]
+    let pt = callee.fnParams[i].typ
+    if a == nil or a.kind != exkStruct or pt == nil or pt.kind != tkNamed or
+       not isRecordType(m, pt.name):
+      continue
+    e.args[i] = res.namedConstruction(a, pt)
+    res.constructRecordFields(m, e.args[i])
+
+proc explodePayload(res: Resolution, m: Module, e: Expr) =
   ## `{a: 1, b: 2} f` -> `f(1, 2)`. One arg per declared param, in order.
   ##
   ## The checker recorded the callee's params when it resolved the call —
@@ -238,6 +290,8 @@ proc explodePayload(res: Resolution, e: Expr) =
   let known = res.knownCallParams(e)
   if known.isNone: return
   e.args = argsFor(res, e, known.get)
+  e.argsExploded = true
+  res.constructRecordArgs(m, e)
 
 proc blockVoidIf(res: Resolution, e: Expr) =
   ## A one-line `if` that yields NOTHING — `if n > 2: {} hi else: {} lo`,
@@ -297,7 +351,8 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
 
   if e.kind == exkCall:
     flattenMemberCallPayload(res, e, m)
-    explodePayload(res, e)
+    explodePayload(res, m, e)
+    res.constructRecordFields(m, e)
   elif e.kind == exkIf:
     blockVoidIf(res, e)
 

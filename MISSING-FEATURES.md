@@ -246,6 +246,15 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **#97 — a record literal where a named record is wanted built on no
+  backend** — the form TK-PA13's message calls fine. `{b: {tag: 9}} take`
+  crashed the compiler: the exploded `take({tag: 9})` looked unexploded and
+  was exploded again (`exkCall.argsExploded` now says it was). With more
+  fields, and inside a construction (`{point: {x: 1, y: 2}} Thing`), every
+  backend emitted an anonymous record its host would not pass as the named
+  type; lowering constructs the named type now (`constructRecordArgs`,
+  `constructRecordFields`, to any depth). Fixed 2026-10-04. `known_bugs`.
+
 - **A38 — (Odin) a local's Seq field handed to a moved twin was freed
   twice.** `let r = {ns: l.nodes, d: ..} grow` inside `grow_moved` hands
   `l.nodes` to the twin, which keeps the buffer and returns it in `r.nodes`;

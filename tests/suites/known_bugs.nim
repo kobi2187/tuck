@@ -2862,4 +2862,49 @@ fn main() -> int:
                          "defer delete\\(tuckˑvˑxs\\)")
   t.bugFixed "a Seq a fn returns as its tail value is not freed by it"
 
+  # #97 (found 2026-10-04). A record LITERAL where a named record is wanted —
+  # what TK-PA13's own message calls fine — built on no backend. Three shapes:
+  #   `{b: {tag: 9}} take`  crashed the compiler: exploded to `take({tag:9})`,
+  #                         the call LOOKED unexploded (one struct argument)
+  #                         and the next pass exploded it again (argsExploded);
+  #   `{b: {..}, n: 1} take` and `{point: {x: 1, y: 2}, w: 3} Thing` emitted
+  #                         an anonymous record no host passes as a Bag or a
+  #                         Point. Lowering constructs the named type now
+  #                         (lowering.constructRecordArgs / ...Fields).
+  t.src """
+type Bag:
+  tag: int
+
+fn take({b: Bag}) -> int:
+  b.tag
+
+fn main() -> int:
+  {b: {tag: 9}} take
+"""
+  t.quietly: t.hostRuns("a record literal is a one-param fn's argument, on every backend", 9)
+  t.bugFixed "a record literal is a one-param fn's argument, on every backend"
+
+  t.src """
+type Inner:
+  v: int
+
+type Point:
+  x: int
+  inner: Inner
+
+type Thing:
+  point: Point
+  w: int
+
+fn take({t: Thing, n: int}) -> int:
+  t.point.inner.v + t.w + n
+
+fn main() -> int:
+  let t = {point: {x: 1, inner: {v: 5}}, w: 3} Thing
+  let a = {t: {point: {x: 2, inner: {v: 7}}, w: 1}, n: 0} take
+  t.point.x + t.point.inner.v + t.w + a
+"""
+  t.quietly: t.hostRuns("record literals nest in constructions and arguments, on every backend", 17)
+  t.bugFixed "record literals nest in constructions and arguments, on every backend"
+
   t.finish()

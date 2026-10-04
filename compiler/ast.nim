@@ -566,6 +566,12 @@ type
       # The payload-to-param mapping the checker decides for this call lives
       # in the semantic layer (resolution.argFieldsFor / callParamsFor), not
       # here — it is derived, not syntax.
+      argsExploded*: bool
+        ## lowering.explodePayload made `args` the callee's params in order.
+        ## A call to a one-param fn whose argument is a record literal —
+        ## `{b: {tag: 9}} take` becomes `take({tag: 9})` — otherwise LOOKS
+        ## unexploded (one exkStruct argument), and the next pass exploded
+        ## it again, finding no `b` (#97).
     of exkChain:
       base*: Expr
       steps*: seq[ChainStep]
