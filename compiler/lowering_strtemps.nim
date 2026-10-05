@@ -87,7 +87,7 @@ proc visit(h: var Hoist, n: Expr, own: bool) =
   if n == nil: return
   case n.kind
   of exkIf, exkMatch, exkBlock, exkWhile, exkFor, exkDefer, exkSelect,
-     exkChain, exkCombinator, exkAssign, exkBracketAssign, exkSend,
+     exkChain, exkCombinator, exkAssign, exkAppend, exkBracketAssign, exkSend,
      exkReturn, exkRaise, exkAcquire, exkFinish, exkDiscard, exkValidate,
      exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset:
     # Control flow, a scope, or a statement inside an expression: what is in

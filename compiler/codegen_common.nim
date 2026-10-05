@@ -533,32 +533,6 @@ proc isResultCarrierType*(t: Type): bool =
   t != nil and t.kind == tkApp and t.base != nil and
     t.base.kind == tkNamed and t.base.name in ["!", "?", "!?"]
 
-proc selfConcatValue*(res: Resolution, e: Expr): Expr =
-  ## `s = s + <expr>` on a `str` — a concatenation assigned back over its own
-  ## LEFT operand. Returns `<expr>`, or nil when the statement is not that
-  ## shape.
-  ##
-  ## The twin of selfAppendValue above, and the same argument: the old `s` is
-  ## dead the instant the new one lands, so growing it in place is
-  ## unobservable. Syntactic, so there is no liveness to get wrong.
-  ##
-  ## IT IS WORTH MORE THAN IT LOOKS. `s = s + t` in a loop is O(n^2) on every
-  ## backend, because each concatenation copies the whole string — measured at
-  ## 100k/200k/400k iterations, Nim took 117/461/1859 ms, a clean 4x per
-  ## doubling. Emitting the host's amortised append instead took the 200k case
-  ## from 460 ms to 2 ms and turned the loop linear.
-  ##
-  ## LEFT OPERAND ONLY, and the right must not name the target:
-  ##   `s = t + s`  is a PREPEND, and appending would silently reverse it
-  ##   `s = s + s`  would grow a string while reading it
-  if not plainVarAssign(e): return nil
-  let v = e.assignVal
-  if v == nil or v.kind != exkBinary or not isStringConcat(v): return nil
-  if v.left == nil or v.left.kind != exkVar or v.left.name != e.target.name:
-    return nil
-  if mentionsName(v.right, e.target.name): return nil
-  v.right
-
 proc hasLastUse(res: Resolution, e: Expr, name: string): bool =
   ## Does the liveness pass mark some read of `name` inside `e` as its final
   ## use? That stamp is what licenses moving from a parameter.
@@ -657,6 +631,10 @@ proc keptAt(res: Resolution, m: Module, stack: seq[Expr], k: int,
   of exkReturn, exkList, exkFill, exkSend, exkChain: true
   of exkAssign: n == p.assignVal
   of exkBracketAssign: n == p.brValue
+  # `xs += v`: the target's buffer lives on in the grown value, so its read
+  # keeps it; an element is stored into the Seq, while a str's bytes are only
+  # copied onto the end.
+  of exkAppend: n == p.appendTarget or p.appendsElement
   of exkStruct: fieldKept(res, m, stack, k, memo)
   of exkCall: n != p.callee and calleeKeeps(res, m, p, "", p.args.find(n), memo)
   of exkField: throughField(res, m, stack, k, memo)

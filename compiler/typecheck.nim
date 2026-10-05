@@ -5049,6 +5049,10 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # Stamped by the checker (asSlabOp), or built by lowering_slab from a
     # field read through a reference; typed as it is built.
     semLayer.typeFor(e)
+  of exkAppend:
+    # Built after the checker (ownership_nodes), from an assignment already
+    # checked: a statement, typed as one.
+    tc.namedType("void", e.span)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum
     # variant (synthBareVariant), named after the declaration itself. Field

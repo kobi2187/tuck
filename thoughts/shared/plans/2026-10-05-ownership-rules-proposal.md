@@ -277,7 +277,18 @@ examples byte-identical, or explains each line that changes.
 1. **Stage C: decisions become nodes, written from today's decisions.** A
    last step of `backend_prepare` turns what the passes decided into tree
    nodes, and each emitter's query becomes a print:
-   1. the in-place append and concatenation (`exkAppend`);
+   1. the in-place append and concatenation (`exkAppend`). **DONE
+      2026-10-05** (`compiler/ownership_nodes.nim`, step 9 of `prepare`).
+      Byte-identical over 1026 emissions: every `.tuck` in the tree, on
+      all three backends, against the previous compiler. One lesson for
+      1.2 and 1.3: **a node that replaces a statement keeps the READ nodes
+      the analyses stamped.** The first cut took the assignment's write
+      target as the node's target and dropped `items: xs` with the payload
+      it sat in. That read carried `xs`'s final-use stamp, so Nim's `sink`
+      inference stopped seeing `std/string`'s `add` keep its `text`: the
+      one difference the differential found. The node also records what it
+      appends: a Seq element is a sink (kept), while a str's bytes are only
+      copied (a borrow). That is rule U, now written on the node.
    2. copies (`exkCopy`, with today's field list, which is interim until
       rule G);
    3. frees: a scope-end drop as a `defer` of an `exkDrop`, an overwrite

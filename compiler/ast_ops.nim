@@ -274,6 +274,9 @@ iterator childSlots*(e: Expr): var Expr =
       yield e.cellSlab
       yield e.cellRef
     of exkArenaReset: yield e.arenaRef
+    of exkAppend:
+      yield e.appendTarget
+      yield e.appendValue
 
 proc poolOperands*(e: Expr): seq[Expr] =
   ## A pool op's operands in call order — the handle, then the value — for

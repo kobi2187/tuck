@@ -948,22 +948,20 @@ proc genDLocalDecl(ctx: var DCodegenCtx, e: Expr, valStr: string): string =
                         "' whose type the checker did not settle")
   declT & " " & e.target.name & " = " & valStr
 
+proc genDAppend(ctx: var DCodegenCtx, e: Expr): string =
+  ## `xs += v` — an append, or a str concat, grown in place. ownership_nodes
+  ## made the decision; this prints it. D's `~=` on an array grows through
+  ## the GC's capacity, so it is amortised where `a ~ b` builds a whole new
+  ## array each time — an O(n) loop against an O(n^2) one.
+  ctx.movedAssignTarget(e.appendTarget) & " ~= " & ctx.genDExpr(e.appendValue)
+
 proc genDInPlaceAssign(ctx: var DCodegenCtx, e: Expr): string =
   ## An assignment that updates its target IN PLACE rather than rebinding
-  ## it, or "" when this is not one.
-  # An append assigned back to its own argument is an in-place append.
-  let appended = selfAppendValue(ctx.res, e)
-  if appended != nil:
-    return ctx.movedAssignTarget(e.target) & " ~= " & ctx.genDExpr(appended)
-  # `s = s + v` on a str is the same fact one type over. D's `~=` on an array
-  # grows through the GC's capacity, so it is amortised where `a ~ b` builds a
-  # whole new string each time — an O(n) loop against an O(n^2) one.
-  let concatenated = selfConcatValue(ctx.res, e)
-  if concatenated != nil:
-    return ctx.movedAssignTarget(e.target) & " ~= " & ctx.genDExpr(concatenated)
-  # Same fact one level up: a threaded-container call assigned back over its
-  # own argument may take it destructively, so it calls the MOVED twin — and
-  # the result needs no defensive dup either, since it IS the moved value.
+  ## it, or "" when this is not one. (An append grown in place is no longer
+  ## one of them: it reaches the emitter as `exkAppend`.)
+  # A threaded-container call assigned back over its own argument may take
+  # it destructively, so it calls the MOVED twin — and the result needs no
+  # defensive dup either, since it IS the moved value.
   ctx.genDMovedCall(e)
 
 proc genDRebind(ctx: var DCodegenCtx, e: Expr): string =
@@ -1405,6 +1403,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkBreak: "break"
   of exkContinue: "continue"
   of exkAssign: ctx.genDAssign(e)
+  of exkAppend: ctx.genDAppend(e)
   of exkReturn: ctx.genDReturn(e)
   of exkRaise: ctx.genDRaise(e)
   of exkDiscard:

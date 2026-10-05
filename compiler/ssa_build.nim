@@ -549,6 +549,12 @@ proc walk(b: var Builder, e: Expr) =
   of exkAssign:
     b.reads(e.assignVal)
     b.defineTo(e.target, e.assignVal)
+  of exkAppend:
+    # `xs += v` reads the old `xs`, then `v` (the order the source wrote
+    # them), and defines the new `xs` — the old buffer, grown.
+    b.reads(e.appendTarget)
+    b.reads(e.appendValue)
+    b.defineTo(e.appendTarget, e)
   of exkIf: b.walkIf(e)
   of exkMatch: b.walkMatch(e)
   of exkWhile: b.walkLoop(e.whileCond, e.whileBody)

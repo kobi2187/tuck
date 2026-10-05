@@ -180,7 +180,7 @@ proc walk(m: var Metrics, e: Expr) =
   # operands and bodies still walk — the statements inside fork like any
   # others.
   of exkUnary, exkBlock, exkCall, exkCombinator, exkStruct, exkList, exkFill,
-     exkBracket, exkBracketAssign, exkAssign, exkField, exkReturn, exkRaise,
+     exkBracket, exkBracketAssign, exkAssign, exkAppend, exkField, exkReturn, exkRaise,
      exkDiscard, exkTripleDot, exkSend, exkAcquire, exkFinish, exkDefer,
      exkOrdinal, exkValidate, exkIfaceCall, exkIfaceIs, exkIfacePayload,
      exkWrapOk, exkAbsent, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset, exkLit, exkVar,

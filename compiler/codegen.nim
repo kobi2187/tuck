@@ -76,6 +76,7 @@ proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string
 # The bigger genExpr arms live as their own procs so the dispatch `case` reads
 # as a routing table; each takes the ctx + node and recomputes its own indent.
 proc genExprAssign(ctx: var CodegenCtx, e: Expr): string
+proc genAppend(ctx: var CodegenCtx, e: Expr): string
 proc genExprMatch(ctx: var CodegenCtx, e: Expr): string
 proc genExprSend(ctx: var CodegenCtx, e: Expr): string
 proc genExprSelect(ctx: var CodegenCtx, e: Expr): string
@@ -883,6 +884,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkBlock: ctx.genBlock(e, ind)
   of exkIf: ctx.genIf(e, ind)
   of exkAssign: ctx.genExprAssign(e)
+  of exkAppend: ctx.genAppend(e)
   of exkMatch: ctx.genExprMatch(e)
   of exkReturn: ctx.genReturn(e)
   of exkRaise: ctx.genRaise(e)
@@ -972,32 +974,22 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
     return "var " & e.target.name & " = " & spawn
   ctx.genExpr(e.target) & " = " & spawn
 
-proc genSelfConcatAssignment(ctx: var CodegenCtx, e: Expr): string =
-  ## `s = s + v` on a str appends in place. Nim's `string` is mutable and
-  ## carries spare capacity, so `add` is amortised where `tuckConcat` builds
-  ## a whole new string every time — the difference between an O(n) loop and
-  ## an O(n^2) one.
-  let appended = selfConcatValue(ctx.res, e)
-  if appended == nil: return ""
-  let tgt = if ctx.res.isOwnerField(e.target): "self." & e.target.name
-            else: e.target.name
-  tgt & ".add(" & ctx.genExpr(appended) & ")"
-
-proc genSelfAppendAssignment(ctx: var CodegenCtx, e: Expr): string =
-  ## Self-append: `xs = {items: xs, ...} push` appends in place.
+proc genAppend(ctx: var CodegenCtx, e: Expr): string =
+  ## `xs += v` — an append, or a str concat, grown in place. ownership_nodes
+  ## made the decision (`xs = {items: xs, value: v} push` and `s = s + t`,
+  ## each assigned back over its own argument); this prints it. Nim's `seq`
+  ## and `string` both carry spare capacity, so `add` is amortised where
+  ## `push` / `tuckConcat` build a whole new value every time — the
+  ## difference between an O(n) loop and an O(n^2) one.
   ##
-  ## The target is qualified here rather than taken as a bare `e.target.name`:
-  ## this path bypasses genAssign's field handling, and the appended VALUE is
-  ## built by the ordinary expression emitter, which does add the `self.`. An
-  ## actor handler therefore emitted `xs.add(self.xs[...])` — bare on the
-  ## left, qualified on the right — and Nim rejected it as an undeclared
-  ## identifier. The other two backends have the same two fast paths and had
-  ## the same hole. EV-9.
-  let appended = selfAppendValue(ctx.res, e)
-  if appended == nil: return ""
-  let tgt = if ctx.res.isOwnerField(e.target): "self." & e.target.name
-            else: e.target.name
-  tgt & ".add(" & ctx.genExpr(appended) & ")"
+  ## The target is qualified here rather than taken as a bare name: the
+  ## appended VALUE is built by the ordinary expression emitter, which does
+  ## add the `self.`. An actor handler therefore emitted `xs.add(self.xs[...])`
+  ## — bare on the left, qualified on the right — and Nim rejected it as an
+  ## undeclared identifier. The other two backends had the same hole. EV-9.
+  let t = e.appendTarget
+  let tgt = if ctx.res.isOwnerField(t): "self." & t.name else: t.name
+  tgt & ".add(" & ctx.genExpr(e.appendValue) & ")"
 
 proc genVarDeclaration(ctx: var CodegenCtx, e: Expr, targetStr, valStr: string): string =
   ## Variable declaration with optional stated type.
@@ -1039,14 +1031,10 @@ proc genFieldWrite(ctx: var CodegenCtx, e: Expr,
 
 proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
   ## An assignment or binding, trying the special forms first: a task result
-  ## slot, `xs = xs + [v]` as an append, `s = s + t` as an in-place concat, a
-  ## declaration; else a plain field or variable write.
+  ## slot, a declaration; else a plain field or variable write. (An append
+  ## grown in place is no longer one of them: it reaches here as `exkAppend`.)
   let taskResult = ctx.genTaskAssignment(e)
   if taskResult != "": return taskResult
-  let appendResult = ctx.genSelfAppendAssignment(e)
-  if appendResult != "": return appendResult
-  let concatResult = ctx.genSelfConcatAssignment(e)
-  if concatResult != "": return concatResult
   let targetStr = ctx.genAssignTarget(e.target)
   let valStr = ctx.genExpr(e.assignVal)
   if e.target.kind == exkVar:

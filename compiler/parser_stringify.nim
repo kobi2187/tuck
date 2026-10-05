@@ -162,6 +162,9 @@ proc toString*(e: Expr): string =
     return "cell(" & e.cellRef.toString() & ")"
   of exkArenaReset:
     return e.arenaRef.toString() & ".reset"
+  of exkAppend:
+    # Prepare-built: an append in place.
+    return e.appendTarget.toString() & " += " & e.appendValue.toString()
   of exkIfaceCall:
     # Lowering-built: one arm per satisfying object, shown by name.
     var sats: seq[string]

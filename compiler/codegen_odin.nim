@@ -1341,7 +1341,7 @@ proc genOdinVarDecl(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   # Odin runs it on every path out of the block. See EV-20.
   decl & ctx.scopeFrees(e.target.name) & fixups
 
-proc reportInPlaceBypass(ctx: var OdinCodegenCtx, e: Expr, appended: Expr) =
+proc reportInPlaceBypass(ctx: var OdinCodegenCtx, e: Expr) =
   ## ITEM 4, MEASURED — see thoughts/ssa-mirror-design.md, Stage C.
   when not defined(release):
     # ITEM 4, MEASURED. `markSeqCopies` marks this binding as needing a copy
@@ -1352,8 +1352,11 @@ proc reportInPlaceBypass(ctx: var OdinCodegenCtx, e: Expr, appended: Expr) =
     # Twelve of them across the corpus and both applications; see
     # thoughts/ssa-mirror-design.md, Stage C.
     if DebugInPlace:
+      # The append half of this report retired with Own-1a: an in-place
+      # append is an `exkAppend` node now, and the push call whose mark it
+      # bypassed is no longer in the tree to carry one.
       let threadedDbg = threadedCall(e)
-      if (appended != nil or threadedDbg != nil) and
+      if threadedDbg != nil and
          (needsDup(ctx.res, e.assignVal) or
           recordDupFields(ctx.res, e.assignVal).len > 0):
         echo "INPLACE-BYPASS ", pathOf(e.target), " at ",
@@ -1398,16 +1401,19 @@ proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   ctx.withAssignValidate(e, pre & tgt & " = " & value &
                             ctx.seqFieldFixups(tgt, e.assignVal))
 
+proc genAppend(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `xs += v` — an append assigned back over its own argument, grown in place
+  ## by Odin's amortised `append`. ownership_nodes made the decision; this
+  ## prints it. (A str concat is never one here: Odin's strings do not grow,
+  ## so `s = s + t` stays a `tuckConcat` and a free of the old value.)
+  "append(&" & ctx.movedAssignTarget(e.appendTarget) & ", " &
+    ctx.genOdinExpr(e.appendValue) & ")"
+
 proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
   if ctx.isTaskArgsBind(e):
     return ctx.genOdinTaskArgsBind(e, "  ".repeat(ctx.indent))
-  # An append assigned back to its own argument is an in-place append.
-  let appended = selfAppendValue(ctx.res, e)
-  reportInPlaceBypass(ctx, e, appended)
-  if appended != nil:
-    return "append(&" & ctx.movedAssignTarget(e.target) & ", " &
-           ctx.genOdinExpr(appended) & ")"
+  reportInPlaceBypass(ctx, e)
   # Same fact one level up: a threaded-container call assigned back over its
   # own argument calls the MOVED twin, and needs no fix-up copies after it.
   let threaded = threadedCall(e)
@@ -1523,6 +1529,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkBlock: ctx.genBlock(e, ind)
   of exkIf: ctx.genIf(e, ind)
   of exkAssign: ctx.genAssign(e)
+  of exkAppend: ctx.genAppend(e)
   of exkMatch: (if e.subject != nil: ctx.genMatchExpr(e) else: "")
   of exkReturn: ctx.genReturnStmt(e)
   of exkRaise: ctx.genRaise(e)

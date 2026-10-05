@@ -34,7 +34,7 @@
 # sizes — 32,000 lines still checks in about a third of a second. The fix, when
 # a real program makes it hurt, is a name -> decl table built once per module
 # and shared by every pass, not micro-optimizing the scan.
-import ast, strutils, tables, sets, options, algorithm
+import ast, ast_ops, strutils, tables, sets, options, algorithm
 import resolution
 import name_prefix
 export strutils.repeat, strutils.capitalizeAscii
@@ -351,8 +351,9 @@ proc isStatementBranch(b: Expr): bool =
   ## A one-line branch that is a STATEMENT, not a value: an assignment, a
   ## `return`, `raise`, `break`, `continue`, `discard` or `send` — or an `if`
   ## that is itself the statement form (an `elif` chain lands here).
-  b != nil and (b.kind in {exkAssign, exkBracketAssign, exkReturn, exkRaise,
-                           exkBreak, exkContinue, exkDiscard, exkSend} or
+  b != nil and (b.kind in {exkAssign, exkAppend, exkBracketAssign, exkReturn,
+                           exkRaise, exkBreak, exkContinue, exkDiscard,
+                           exkSend} or
                 (b.kind == exkIf and not isValueIf(b)))
 
 proc isValueIf*(e: Expr): bool =
@@ -448,7 +449,8 @@ proc implicitTailValue*(body: Expr): Expr =
     # table — subject == nil — keeps its per-row returns.)
     if lastS.subject != nil and not matchArmsReturn(lastS): lastS else: nil
   of exkReturn, exkRaise, exkIf, exkFor, exkWhile, exkBreak, exkContinue,
-     exkAssign, exkBlock, exkSelect, exkSend, exkDiscard, exkTripleDot:
+     exkAssign, exkAppend, exkBlock, exkSelect, exkSend, exkDiscard,
+     exkTripleDot:
     nil
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill, exkCall,
      exkChain, exkBinary, exkUnary, exkBracket, exkBracketAssign, exkImport,
@@ -1122,8 +1124,9 @@ proc constOrigin*(m: Module, real: Table[string, Module], name: string): string 
 
 # --- an append assigned back to its own argument ----------------------------
 #
-# Asked by every emitter (it prints a native append) and by provenance (the
-# name keeps the buffer it held), so it lives below both.
+# Asked by ownership_nodes (which rewrites the statement into an `exkAppend`
+# node every emitter prints as its host's native append) and by provenance
+# (the name keeps the buffer it held), so it lives below both.
 
 proc plainVarAssign*(e: Expr): bool =
   ## `x = <value>` where x is a bare name and this is not its declaration.
@@ -1147,10 +1150,11 @@ proc pushCallOf(res: Resolution, e: Expr): Expr =
   if not isRtPushCall(call): return nil
   call
 
-proc selfAppendValue*(res: Resolution, e: Expr): Expr =
+proc selfAppendParts*(res: Resolution, e: Expr): tuple[read, value: Expr] =
   ## `xs = {items: xs, value: v} push` — an append whose result is assigned
-  ## back to its own argument. Returns `v`, or nil when the statement is not
-  ## that shape.
+  ## back to its own argument. Returns the READ of `xs` (the `items:` value,
+  ## which carries the read's stamps — its final use, its owner field) and
+  ## `v`; both nil when the statement is not that shape.
   ##
   ## WHY THIS IS A SPECIAL CASE AND NOT AN OPTIMISATION PASS. The runtime's
   ## `push` returns a NEW seq, because value semantics forbid writing through
@@ -1165,7 +1169,7 @@ proc selfAppendValue*(res: Resolution, e: Expr): Expr =
   ## needs no new runtime — only for the emitters to recognise the shape.
   ##
   let call = pushCallOf(res, e)
-  if call == nil: return nil
+  if call == nil: return
   # The payload is still a STRUCT at this point — the positional explosion
   # happens in the emitters — so the two arguments are read by the names
   # std/seq declares them with.
@@ -1173,6 +1177,36 @@ proc selfAppendValue*(res: Resolution, e: Expr): Expr =
   for f in call.args[0].fields:
     if f.name == "items": items = f.value
     elif f.name == "value": value = f.value
-  if items == nil or value == nil: return nil
-  if items.kind != exkVar or items.name != e.target.name: return nil
-  value
+  if items == nil or value == nil: return
+  if items.kind != exkVar or items.name != e.target.name: return
+  (items, value)
+
+proc selfAppendValue*(res: Resolution, e: Expr): Expr =
+  ## The `v` of `xs = {items: xs, value: v} push`, or nil (selfAppendParts).
+  selfAppendParts(res, e).value
+
+proc selfConcatParts*(res: Resolution, e: Expr): tuple[read, value: Expr] =
+  ## `s = s + <expr>` on a `str` — a concatenation assigned back over its own
+  ## LEFT operand. Returns that operand (the read of `s`, with its stamps)
+  ## and `<expr>`; both nil when the statement is not that shape.
+  ##
+  ## The twin of selfAppendValue above, and the same argument: the old `s` is
+  ## dead the instant the new one lands, so growing it in place is
+  ## unobservable. Syntactic, so there is no liveness to get wrong.
+  ##
+  ## IT IS WORTH MORE THAN IT LOOKS. `s = s + t` in a loop is O(n^2) on every
+  ## backend, because each concatenation copies the whole string — measured at
+  ## 100k/200k/400k iterations, Nim took 117/461/1859 ms, a clean 4x per
+  ## doubling. Emitting the host's amortised append instead took the 200k case
+  ## from 460 ms to 2 ms and turned the loop linear.
+  ##
+  ## LEFT OPERAND ONLY, and the right must not name the target:
+  ##   `s = t + s`  is a PREPEND, and appending would silently reverse it
+  ##   `s = s + s`  would grow a string while reading it
+  if not plainVarAssign(e): return
+  let v = e.assignVal
+  if v == nil or v.kind != exkBinary or not isStringConcat(v): return
+  if v.left == nil or v.left.kind != exkVar or v.left.name != e.target.name:
+    return
+  if mentionsName(v.right, e.target.name): return
+  (v.left, v.right)

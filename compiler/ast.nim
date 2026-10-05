@@ -482,6 +482,13 @@ type
                     # writes through. `r.data` becomes a field of this node,
                     # so every backend prints it with its ordinary field
                     # access, for a read and an assignment target alike.
+    exkAppend       # prepared only (ownership_nodes): `xs = {items: xs,
+                    # value: v} push`, or `s = s + t` on a backend whose
+                    # strings grow, made the in-place growth it always was
+                    # when printed. Its own node so the decision is in the
+                    # tree, where every pass sees it, instead of re-derived by
+                    # each emitter from the assignment's shape (ownership
+                    # proposal §8, Stage C).
 
   SlabOpKind* = enum
     ## What a slab operation does (thoughts/shared/plans/
@@ -650,6 +657,15 @@ type
     of exkSlabCell:
       cellSlab*: Expr              # the `exkSlabRef`
       cellRef*: Expr               # the reference whose cell this is
+    of exkAppend:
+      appendTarget*: Expr          # the place that grows, a bare name: the
+                                   # READ of it the source wrote, so its stamps
+                                   # (final use, owner field) stay attached
+      appendValue*: Expr           # what is added at the end
+      appendsElement*: bool        # true: `appendValue` becomes the Seq's new
+                                   # last element (a SINK — the container
+                                   # keeps it). false: a str's bytes copied
+                                   # onto the end (a BORROW — nothing kept)
     of exkIfaceCall:
       dispatchRecv*: Expr          # the interface value, evaluated once
       dispatchIface*: string       # the interface's (mangled) type name

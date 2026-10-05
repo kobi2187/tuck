@@ -3,7 +3,7 @@
 # GETTING A TREE READY FOR ONE BACKEND — the stage between checking and
 # emitting, in one place.
 #
-# Seven steps, always the same seven, always in this order:
+# Nine steps, always the same nine, always in this order:
 #
 #   1. CLONE. Each backend lowers its own deepCopy, because lowering and the
 #      emitters both mutate the tree in place. Sharing one would hand the
@@ -39,6 +39,11 @@
 #      value for every param its callee declares. The checker's own rule,
 #      asked again after the passes that build calls, which run after it.
 #      The emitters used to fill a hole three ways (`nil`, `{}`, a refusal).
+#   9. MAKE THE DECISIONS NODES (`ownership_nodes`): an append assigned back
+#      over its own argument becomes `exkAppend`, which every emitter prints
+#      as its host's amortised append. The first of the ownership rules'
+#      Stage C nodes; the emitters used to recognise the shape as they
+#      printed, five times over.
 #
 # WHY NOT BEFORE THE CLONE (ROADMAP M3.1 as first written). Two of
 # ownership's inputs are made by lowering, so it cannot precede lowering —
@@ -67,6 +72,7 @@ import lowering_field_order
 import analysis_ownership
 import twin_calls
 import call_args
+import ownership_nodes
 import pipeline
 import verbose
 
@@ -179,7 +185,7 @@ var preparedOnce = false
 
 proc prepare*(prog: seq[LoadedModule], backend: Backend,
               semLayer: Resolution, outDir: string): BackendTree =
-  ## Steps 1-8, for one backend. The checked program goes in; a private,
+  ## Steps 1-9, for one backend. The checked program goes in; a private,
   ## lowered, marked copy comes out.
   doAssert not preparedOnce,
     "backend_prepare: a second backend prepared in one process would read " &
@@ -221,6 +227,10 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     # calls. Asserted here, after the last pass that can, so no emitter is
     # ever handed a call with a hole to fill in its own way.
     assertCallsComplete(semLayer, lm.m, result.real)
+    # 9. DECISIONS BECOME NODES (ownership_nodes, Stage C). Last, because
+    # every pass above reads the statements it replaces; an emitter then
+    # prints the node instead of re-deciding from a predicate.
+    materializeAppends(semLayer, lm.m, strGrows = backend != bkOdin)
     vSub(lm.name, ts)
   vEnd(psLowering, t0)
 
