@@ -40,6 +40,10 @@ finished** (no longer deferred).
 - R12 — `benches/bench_phases`: rework or delete.
 - ~~Arena — what `alloc` returns~~ ruled 2026-09-29 with the slab proposal,
   built 2026-10-04 (item 9).
+- **The ownership rules** (2026-10-05):
+  `thoughts/shared/plans/2026-10-05-ownership-rules-proposal.md`, Q1–Q7.
+- **Generic code over slabs** (2026-10-04):
+  `thoughts/shared/plans/2026-10-04-generic-slabs-proposal.md`, Q1–Q6.
 
 **1. Memory and the SSA spine** (the higher priority)
 1. ~~`benches/transpile/dispatch.tuck` crashes the compiler~~ **DONE
@@ -52,6 +56,17 @@ finished** (no longer deferred).
    provenance walk does not model answers "copy". Moving its origin half
    onto the mirror consolidates an analysis and may drop redundant copies;
    no leak and no wrong answer depends on it. Now after item 17.
+2b. **The ownership rules — proposal written 2026-10-05, awaiting a
+   ruling.** Owner: "we need a more generalized mechanism to consolidate all
+   the bug fixes. I thought SSA was the solution but the rules may need more
+   formalization." Ten rules (borrow vs sink, move at a final use, consuming
+   parameters, drop once at scope end with reset on move, type-derived copy
+   and drop glue, written evaluation order, alias within one call, send as
+   sink, a total checker). Each of the twenty ownership bugs on record maps
+   to one of them, and they replace about 3 100 lines spread over eight
+   passes with one elaborator. It supersedes M2.1 and the mirror design's
+   Stages C and D. A39, and the Odin/D take that makes `slab_thread` linear,
+   wait on it.
 
 **2. Finish partial features, and the rulings already made**
 3. ~~A24 — an actor member `fn` is emitted by no backend~~ **DONE

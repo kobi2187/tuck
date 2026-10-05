@@ -39,7 +39,10 @@ both `whole` and `neg` in example 44), and a tree returned from a fn is
 reachable only through its root. The fix is deep ownership, which Nim and D
 already have: a copy of a value used again is a deep copy, a last use a
 move, and a drop proc frees a tree recursively. Found 2026-10-05 by
-`TUCK_TRACK` on example 44. Test: `known_bugs`, "A39: …".
+`TUCK_TRACK` on example 44. Test: `known_bugs`, "A39: …". Waits on the
+ownership-rules proposal (`thoughts/shared/plans/2026-10-05-ownership-rules-
+proposal.md`), where it falls out of the type-derived glue (rule G) rather
+than becoming a fix outside the model.
 
 **A27–A37 — constructs that do not cross a module boundary (R11 scan,
 2026-09-28).** A25, A26, A28, A30, A31, A33, A35 and A36 are fixed; their pins are
