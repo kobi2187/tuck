@@ -234,6 +234,7 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     # ever handed a call with a hole to fill in its own way.
     assertCallsComplete(semLayer, lm.m, result.real)
     dumpUses(semLayer, lm.m)                   # TUCK_DEBUG_OWN=uses (rule U)
+    planDrops(semLayer, lm.m)                  # TUCK_DEBUG_OWN=drops (D, M)
     # 9. DECISIONS BECOME NODES (ownership_nodes, Stage C). Last, because
     # every pass above reads the statements it replaces; an emitter then
     # prints the node instead of re-deciding from a predicate.
@@ -243,6 +244,7 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     if backend == bkOdin:
       materializeDrops(semLayer, lm.m)
     diffParams(semLayer, lm.m, nim = backend == bkNim)  # TUCK_DEBUG_OWN=params
+    diffDrops(semLayer, lm.m)
     vSub(lm.name, ts)
   vEnd(psLowering, t0)
 

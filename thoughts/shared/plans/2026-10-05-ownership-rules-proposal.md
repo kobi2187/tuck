@@ -358,7 +358,40 @@ examples byte-identical, or explains each line that changes.
      `remove`, `insertAt`): today the twin frees it itself, and under P the
      caller keeps and drops it. Both are sound, and P is the rule.
    - None is unexplained. The suite `ownership_rules` pins one case of each
-     kind. Next: drops (D, M) and copies (S) in shadow. It writes the same nodes
+     kind.
+
+   Rules D and M followed (`dropPlan`). Each owned slot's fate where its
+   scope ends is "owned" (dropped), "moved" (nothing left), or "maybe"
+   (moved on some paths: dropped, and reset where moved). The walk follows
+   control flow: arms join, a loop may run no times, and `return`/`break`
+   end the scopes they leave. Each overwrite records the old value's
+   fate. The shadow differential (`TUCK_DEBUG_OWN=drops`) compares against
+   the Stage C nodes on Odin, over every `.tuck` in the tree:
+   - **Scope-end drops:** 343 agree.
+     - 27 are freed today but not by the rules:
+       - 19 are twin parameters that P says only borrow (the caller drops
+         them instead);
+       - 5 are dead values today copies and then frees (`sweep`'s `ladder`,
+         `pass`'s three fields, `relight`'s `sl.light`), which the rules
+         move: one copy and one free fewer per call;
+       - 3 are handed to a `pending:` fn with no body (the safe default
+         hands them over).
+     - 52 are dropped by the rules and leaked today:
+       - 40 are `str` locals. On Odin these wait on rule G's static-or-heap
+         answer, since a literal must never be freed.
+       - 12 are Seqs today cannot prove owned, or whose read sits inside a
+         call it takes to carry everything out.
+   - **Overwrites:** 26 agree. 2 are freed today but not by the rules
+     (`fromRunes`: `encodeRune` copies its `into`, which P would consume),
+     and 6 are leaked today.
+   - **One real bug: A40.** A local Seq pushed as an element of another was
+     freed at the end of its loop while the outer Seq still held it.
+     Today's pass judged "takes nothing" on the result's own buffer. Odin
+     returned garbage where Nim and D returned 7. It is fixed in today's
+     pass (`9f6f075`) and pinned in `known_bugs`.
+   - Pinned in `ownership_rules`: a moved consuming parameter, an owned
+     local, a `maybe`, and a local today leaks. Next: copies (S) in shadow,
+     then rule V's checker over the elaborated plan. It writes the same nodes
    from the rules. A differential against step 1's nodes runs over the
    corpus, both apps, Savina and the stdlib, and every difference is
    explained.

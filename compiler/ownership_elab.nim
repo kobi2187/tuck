@@ -28,12 +28,12 @@
 # consume: that is the safe answer (the caller hands over a value it will
 # not touch again, moving a dead one and copying a live one), and the one
 # `codegen_common.keptAt` gives every body-less callee today.
-import tables, sets
+import tables, sets, strutils
 import ast, ast_ops, ast_query
 import resolution
 import ownership_rules
 from ssa_ir import rootOf
-from twin_shape import ownsHeap
+from twin_shape import ownsHeap, seqFieldNames
 
 type ConsumeMemo* = object
   ## Rule P's answers so far, and the questions being answered (a recursive
@@ -133,3 +133,224 @@ proc consumes*(res: Resolution, m: Module, d: Decl, pname: string,
   result = res.consumesWhy(m, d, pname, memo).len > 0
   memo.busy.excl key
   memo.known[key] = result
+
+# --- RULES D AND M: where each owned place is dropped -----------------------
+#
+# D: every owned place is dropped once, at the end of its scope, on every
+# path. M: a move out of a place still to be dropped resets it, so the drop
+# frees nothing there. What is decided here, per owned SLOT (the granularity
+# today's pass frees at — the value itself for a Seq or a str, a record's
+# Seq fields by name), is each place's FATE where its scope ends:
+#
+#   fOwned   it still holds what it owns on every path: dropped there
+#   fMoved   it was moved out on every path: nothing is left to drop
+#   fMaybe   moved on some paths and not others: dropped there, and reset
+#            where it was moved (M) — the case a name-level analysis cannot
+#            see, and the one today's pass answers by never freeing it
+#
+# and, at every reassignment of an owned place, the fate of the value it is
+# about to lose (dropped first unless it was moved out).
+#
+# The walk follows control flow: an `if`'s or a `match`'s arms are walked
+# from the same state and joined; a loop may run no times, so its body's
+# end joins its entry; a `return` ends every open scope, a `break` or
+# `continue` every scope inside its loop. A move is a final read (the SSA
+# mirror's stamp, which is per path) put to a sink (rule S), or handed to a
+# consuming parameter (rule P).
+
+type
+  Fate* = enum
+    fOwned, fMoved, fMaybe
+  DropPlan* = object
+    scopeEnd*: Table[string, Fate]
+      ## `place & "\t" & slot` -> its fate where its scope ends, joined over
+      ## every way out of the scope
+    overwrite*: Table[NodeId, Fate]
+      ## a reassignment of an owned place -> the old value's fate
+    strs*: HashSet[string]
+      ## the owned places that are a `str`: dropping one on Odin waits on
+      ## rule G (a literal is static storage, never to be freed)
+  State = Table[string, Fate]
+  DropWalk = object
+    res: Resolution
+    m: Module
+    memo: ConsumeMemo
+    slots: Table[string, seq[string]]  ## owned place -> its slots
+    scopes: seq[seq[string]]           ## the owned places each open block declared
+    loops: seq[int]                    ## scopes.len where each open loop's body began
+    st: State                          ## the current path's fates
+    dead: bool                         ## the current path has left its block
+    plan: DropPlan
+
+proc slotsOf*(res: Resolution, m: Module, t: Type): seq[string] =
+  ## What a value of type `t` owns, slot by slot: "" for a Seq or a str (the
+  ## value itself), else a record's Seq fields by name.
+  if t == nil: return
+  if seqElem(t) != nil or isStr(t): return @[""]
+  seqFieldNames(res, m, t)
+
+proc slotKey*(place, slot: string): string = place & "\t" & slot
+
+proc join(a, b: Fate): Fate =
+  if a == b: a else: fMaybe
+
+proc joinInto(dst: var State, src: State) =
+  ## Paths meet: a slot both left owned stays owned, both moved stays moved.
+  for k, f in src:
+    dst[k] = if k in dst: join(dst[k], f) else: f
+
+proc endScopeOf(w: var DropWalk, place: string) =
+  ## `place`'s scope ends on this path: its fates join its scope-end record.
+  for s in w.slots[place]:
+    let k = slotKey(place, s)
+    let f = w.st.getOrDefault(k, fOwned)
+    w.plan.scopeEnd[k] = if k in w.plan.scopeEnd: join(w.plan.scopeEnd[k], f)
+                         else: f
+
+proc endScopesFrom(w: var DropWalk, depth: int) =
+  ## Every scope opened at `depth` or deeper ends on this path.
+  for i in depth ..< w.scopes.len:
+    for place in w.scopes[i]: w.endScopeOf(place)
+
+proc sinksAway(w: var DropWalk, pu: PlaceUse): bool =
+  ## Is this read a move: put to a sink, or handed to a consuming parameter?
+  pu.use == uSink or
+    (pu.use == uArg and w.res.argConsumesWhy(w.m, pu.arg, w.memo).len > 0)
+
+proc applyMoves(w: var DropWalk, e: Expr, use: Use) =
+  ## Every final read under `e` that sinks an owned place moves it (S).
+  for pu in w.res.placeUsesUnder(e, use):
+    let root = rootOf(pu.path)
+    if root notin w.slots or not w.res.isLastUse(pu.read): continue
+    if not ownsHeap(w.m, w.res.typeFor(pu.read)) or not w.sinksAway(pu):
+      continue
+    if pu.path == root:
+      for s in w.slots[root]: w.st[slotKey(root, s)] = fMoved
+    else:
+      let s = pu.path[root.len + 1 .. ^1].split('.')[0]
+      if s in w.slots[root]: w.st[slotKey(root, s)] = fMoved
+
+proc oldFate(w: DropWalk, place: string): Fate =
+  ## The fate of what an owned place holds now, over all its slots.
+  result = fMoved
+  var first = true
+  for s in w.slots[place]:
+    let f = w.st.getOrDefault(slotKey(place, s), fOwned)
+    result = if first: f else: join(result, f)
+    first = false
+
+proc declare(w: var DropWalk, place: string, t: Type) =
+  ## An owned place begins here, holding what it was given.
+  let ss = slotsOf(w.res, w.m, t)
+  if ss.len == 0: return
+  w.slots[place] = ss
+  w.scopes[^1].add place
+  if isStr(t): w.plan.strs.incl place
+  for s in ss: w.st[slotKey(place, s)] = fOwned
+
+proc walkExpr(w: var DropWalk, e: Expr, use: Use)
+
+proc walkAssign(w: var DropWalk, n: Expr) =
+  ## The value is evaluated (and may move things), then the place is
+  ## defined: a new owned place, or an owned place losing its old value.
+  w.walkExpr(n.assignVal, uSink)
+  let t = n.target
+  if t == nil or t.kind != exkVar or w.res.isOwnerField(t): return
+  if t.name in w.slots:
+    w.plan.overwrite[n.id] = w.oldFate(t.name)
+    for s in w.slots[t.name]: w.st[slotKey(t.name, s)] = fOwned
+  else:
+    let ty = if n.declType != nil: n.declType
+             elif w.res.typeFor(t) != nil: w.res.typeFor(t)
+             else: w.res.typeFor(n.assignVal)
+    w.declare(t.name, ty)
+
+proc walkBlock(w: var DropWalk, b: Expr, use: Use) =
+  ## A scope: its statements in order, then the end of its places' scope.
+  w.scopes.add @[]
+  for i, s in b.stmts:
+    if w.dead: break
+    w.walkExpr(s, if i == b.stmts.high: use else: uNone)
+  if not w.dead:
+    for place in w.scopes[^1]: w.endScopeOf(place)
+  for place in w.scopes[^1]:
+    for s in w.slots[place]: w.st.del slotKey(place, s)
+    w.slots.del place
+  discard w.scopes.pop()
+
+proc walkArms(w: var DropWalk, arms: seq[Expr], use: Use, mayFallThrough: bool) =
+  ## Alternatives from one state, joined where they meet; `mayFallThrough`:
+  ## no arm may run at all (an `if` without `else`, a partial match).
+  let entry = w.st
+  var joined: State
+  var any = false
+  if mayFallThrough:
+    joined = entry
+    any = true
+  for arm in arms:
+    w.st = entry
+    w.dead = false
+    w.walkExpr(arm, use)
+    if w.dead: continue
+    if any: joined.joinInto(w.st) else: joined = w.st
+    any = true
+  w.st = joined
+  w.dead = not any
+
+proc walkLoop(w: var DropWalk, head, body: Expr) =
+  ## The body may run no times: its end joins its entry.
+  if head != nil: w.applyMoves(head, uBorrow)
+  let entry = w.st
+  w.loops.add w.scopes.len
+  w.walkExpr(body, uNone)
+  discard w.loops.pop()
+  var after = entry
+  if not w.dead: after.joinInto(w.st)
+  w.st = after
+  w.dead = false
+
+proc walkExit(w: var DropWalk, e: Expr, depth: int) =
+  ## A way out: what it returns is evaluated, then every scope it leaves ends.
+  if e.kind in {exkReturn, exkRaise}:
+    w.applyMoves(e, uNone)
+  w.endScopesFrom(depth)
+  w.dead = true
+
+proc walkExpr(w: var DropWalk, e: Expr, use: Use) =
+  ## One statement or value, in the order it runs.
+  if e == nil: return
+  case e.kind
+  of exkBlock: w.walkBlock(e, use)
+  of exkIf:
+    w.applyMoves(e.cond, uBorrow)
+    w.walkArms(@[e.thenBranch, e.elseBranch], use, e.elseBranch == nil)
+  of exkMatch:
+    w.applyMoves(e.subject, uBorrow)
+    var bodies: seq[Expr]
+    var wild = false
+    for arm in e.arms:
+      bodies.add arm.body
+      if arm.pattern != nil and arm.pattern.kind == pkWild: wild = true
+    w.walkArms(bodies, use, not wild)
+  of exkFor: w.walkLoop(e.iterable, e.body)
+  of exkWhile: w.walkLoop(e.whileCond, e.whileBody)
+  of exkAssign: w.walkAssign(e)
+  of exkReturn, exkRaise: w.walkExit(e, 0)
+  of exkBreak, exkContinue:
+    w.walkExit(e, if w.loops.len > 0: w.loops[^1] else: w.scopes.len)
+  of exkDefer: discard          # runs at the scope's end, reading only
+  else: w.applyMoves(e, use)
+
+proc dropPlan*(res: Resolution, m: Module, d: Decl): DropPlan =
+  ## Rules D and M for one fn: its owned locals, and its consuming
+  ## parameters (P), each with its fate where its scope ends.
+  if d.fnBody == nil: return
+  var w = DropWalk(res: res, m: m)
+  w.scopes.add @[]
+  for p in d.fnParams:
+    if ownsHeap(m, p.typ) and res.consumes(m, d, p.name, w.memo):
+      w.declare(p.name, p.typ)
+  w.walkExpr(d.fnBody, uSink)
+  if not w.dead:
+    for place in w.scopes[0]: w.endScopeOf(place)
+  w.plan

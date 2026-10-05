@@ -29,6 +29,12 @@ proc paramsDump(t: var T): int =
   t.needCmd(@["env", "TUCK_DEBUG_OWN=params", "./tuck", "c",
               t.curDir / "t.tuck", "-o:" & t.curDir / "outp"], vEmit)
 
+proc dropsDump(t: var T): int =
+  ## Rules D and M beside Odin's frees (the Stage C nodes), for the current
+  ## snippet.
+  t.needCmd(@["env", "TUCK_DEBUG_OWN=drops", "./tuck", "c",
+              t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "outd"], vEmit)
+
 proc dumpHas(t: var T, idx: int, name, line: string) =
   ## The dump has `line` (with the `tuckˑfnˑ` / `tuckˑvˑ` prefixes dropped).
   if t.phase != pReport: return
@@ -46,7 +52,7 @@ proc classifies(t: var T, idx: int, name, line: string) =
   t.dumpHas(idx, name, "USE " & line)
 
 proc run*(t: var T) =
-  ## Registers the rule U classification and rule P assertions.
+  ## Registers the rule U classification, rule P and rules D/M assertions.
   t.src """
 import seq
 
@@ -154,3 +160,43 @@ fn main() -> int:
             "PARAM grow xs same (the runtime's push keeps it at 23:18)"
   t.dumpHas p, "P: a recursive reader borrows (the least fixed point)",
             "PARAM walk xs same\n"
+
+  # --- rules D and M: where each owned place is dropped --------------------
+  #
+  # Beside the drops Stage C made from today's ownership pass. Over every
+  # .tuck in the tree, on Odin: 343 owned slots agree; 27 are freed today
+  # but not by the rules (19 twin parameters P says only borrow — the caller
+  # drops them instead; 5 dead values today copies and then frees, which the
+  # rules move; 3 handed to a `pending:` fn with no body); 52 are dropped by
+  # the rules and leaked today (40 `str` locals, which on Odin wait on rule
+  # G's static-or-heap answer; 12 Seqs today cannot prove owned). The one
+  # real bug among them, a pushed element freed while held, was A40.
+  t.src """
+import seq
+
+fn keep({xs: Seq[int]}) -> Seq[int]:
+  return xs
+
+fn pick({c: bool}) -> Seq[int]:
+  let a = [1, 2]
+  let b = [3]
+  let n = [4, 5, 6]
+  if c:
+    return {xs: a} keep
+  return {items: b, value: n.len} push
+
+fn main() -> int:
+  let r = {c: true} pick
+  return r.len
+"""
+  let dd = t.dropsDump()
+  t.dumpHas dd, "D: a consuming parameter returned is moved: nobody drops it",
+            "DROP keep xs - same moved"
+  t.dumpHas dd, "D: an owned local nothing moves is dropped at its scope's end",
+            "DROP main r - same owned"
+  t.dumpHas dd, "M: moved on one path and kept on the other is `maybe`: " &
+                "dropped, and reset where moved (today leaks it)",
+            "DROP pick a - rules-only maybe"
+  t.dumpHas dd, "D: a local only measured is dropped (today leaks it: its " &
+                "read sits inside a call taken to carry everything out)",
+            "DROP pick n - rules-only owned"

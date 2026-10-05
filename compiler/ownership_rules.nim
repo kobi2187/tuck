@@ -234,6 +234,11 @@ proc placeUsesOf*(res: Resolution, body: Expr): seq[PlaceUse] =
   ## result, so it is a sink.
   res.placeUses(body, (uSink, NoArg), result)
 
+proc placeUsesUnder*(res: Resolution, e: Expr, use: Use): seq[PlaceUse] =
+  ## The place reads under `e`, which is itself put to `use` — for a walk
+  ## that visits statements one at a time.
+  res.placeUses(e, (use, NoArg), result)
+
 let DebugUses = getEnv("TUCK_DEBUG_OWN") == "uses"
   ## Read once at module init.
 
