@@ -52,10 +52,13 @@ type
   Use* = enum
     uBorrow, uSink, uMutBorrow, uArg, uThrough, uProject, uWrite, uDrop, uNone
 
-proc constructs(res: Resolution, call: Expr): bool =
+proc constructs*(res: Resolution, call: Expr): bool =
   ## `{lo: 1, hi: 2} Pair` — a record construction: its callee is the TYPE
-  ## it builds, which the checker types the call as.
-  let t = res.typeFor(call)
+  ## it builds, which the checker types the call as. A generic record's
+  ## construction (`{items: xs} Set`) is typed as the application
+  ## `Set[T]`, so its base is the name.
+  var t = res.typeFor(call)
+  if t != nil and t.kind == tkApp: t = t.base
   call.callee != nil and call.callee.kind == exkVar and
     t != nil and t.kind == tkNamed and t.name == call.callee.name
 
@@ -168,7 +171,9 @@ proc kindUses(res: Resolution, e: Expr): seq[ChildUse] =
   of exkSlabCell: @[(e.cellSlab, uNone), (e.cellRef, uBorrow)]
   of exkArenaReset: @[(e.arenaRef, uNone)]
   of exkAppend: appendUses(e)
-  of exkCopy: @[(e.copied, uBorrow)]
+  # A Seq's copy only reads its value. A record's field copy (`cpFields`)
+  # binds the value itself and then copies the listed fields in place.
+  of exkCopy: @[(e.copied, if e.copyKind == cpFields: uSink else: uBorrow)]
   of exkDrop: @[(e.dropped, uDrop)]
 
 proc uses*(res: Resolution, e: Expr): seq[ChildUse] =
@@ -187,7 +192,7 @@ proc effective*(parent, child: Use): Use =
   of uThrough, uProject: parent
   of uBorrow, uSink, uMutBorrow, uArg, uWrite, uDrop, uNone: child
 
-proc isPlaceRead(res: Resolution, e: Expr): bool =
+proc isPlaceRead*(res: Resolution, e: Expr): bool =
   ## A name, or a path through one (`b.items`) — not a call the checker
   ## resolved in its place: one written as a field (`a.total`), or a nullary
   ## fn named bare (`emptyChain`).

@@ -3170,6 +3170,131 @@ fn main() -> int:
   t.quietly: t.hostPeakRss("A39: building recursive values in a loop does not accumulate them", 32768)
   t.bugOpen "A39: building recursive values in a loop does not accumulate them"
 
+  # A41-A45 (found 2026-10-05 by rule V, the ownership checker, reading
+  # today's Odin tree: compiler/ownership_check.nim, TUCK_DEBUG_OWN=verify).
+  # Each is an owned value the tree never drops, a leak, confirmed at run
+  # time by TUCK_TRACK. They are not patched in today's passes: rule D drops
+  # every owned place and temporary by construction, and the switch to it
+  # (ownership-rules proposal §8 step 4.1) is where they close. Each pin
+  # builds the program tracked, so it must answer what it answers untracked.
+  #
+  # A41: a record field overwritten in place leaks the value it replaced.
+  # The scope-end `defer delete(b.items)` frees only the last one.
+  t.src """
+import seq
+
+type Bag:
+  items: Seq[int]
+
+fn main() -> int:
+  var b = {items: [1]} Bag
+  b.items = [2, 3]
+  return b.items.len
+"""
+  t.quietly: t.odinTracked("A41: a record field overwritten in place frees what it replaced", 2)
+  t.bugOpen "A41: a record field overwritten in place frees what it replaced"
+
+  # A42: a local handed over at its last use (here to `shrink`'s moved twin)
+  # has no scope-end drop, so every return before that use leaks it.
+  t.src """
+import seq
+
+fn shrink({items: Seq[int]}) -> Seq[int]:
+  var out: Seq[int] = []
+  for x in items:
+    if x > 1:
+      out = {items: out, value: x} push
+  return out
+
+fn early({n: int}) -> int:
+  let xs = [1, 2, 3]
+  if n > 5:
+    return 1
+  let ys = {items: xs} shrink
+  return ys.len
+
+fn main() -> int:
+  return {n: 9} early + {n: 0} early
+"""
+  t.quietly: t.odinTracked("A42: a local handed over at its last use is freed on an earlier return", 3)
+  t.bugOpen "A42: a local handed over at its last use is freed on an earlier return"
+
+  # A43: a record local rebound through a threading fn (`b = {b: b} add`,
+  # printed `b = add_moved(b)`) is never freed at all. The stdlib's Set and
+  # List checks leak this way (TUCK_TRACK: 6 and 11 allocations).
+  t.src """
+import seq
+
+type Bag:
+  items: Seq[int]
+
+fn add({b: Bag, value: int}) -> Bag:
+  var xs = b.items
+  xs = {items: xs, value: value} push
+  return {items: xs} Bag
+
+fn main() -> int:
+  var b = {items: []} Bag
+  b = {b: b, value: 1} add
+  b = {b: b, value: 2} add
+  return b.items.len
+"""
+  t.quietly: t.odinTracked("A43: a record local rebound through a threading fn is freed", 2)
+  t.bugOpen "A43: a record local rebound through a threading fn is freed"
+
+  # A44: a local that is returned gets no drop, and so neither do its
+  # overwrites: `out = {r: r, into: out} encode` (a call that does not
+  # consume `out`) leaks the buffer it replaces, once per iteration. The
+  # stdlib's `toUtf16` leaks one buffer per rune this way.
+  t.src """
+import seq
+
+fn encode({r: int, into: Seq[int]}) -> Seq[int]:
+  var out = into
+  out = {items: out, value: r} push
+  return out
+
+fn build() -> Seq[int]:
+  var out: Seq[int] = []
+  for r in 1 .. 3:
+    out = {r: r, into: out} encode
+  return out
+
+fn main() -> int:
+  let b = {} build
+  return b.len
+"""
+  t.quietly: t.odinTracked("A44: a returned local frees what each overwrite replaces", 3)
+  t.bugOpen "A44: a returned local frees what each overwrite replaces"
+
+  # A45: an owning TEMPORARY, a value no place holds, is never freed: a list
+  # literal a `for` iterates, and a call's result handed to a parameter that
+  # only reads it. Rule D drops a temporary where its statement ends; the
+  # tree has no node that does. (`str` temporaries are named and freed by
+  # lowering_strtemps; nothing does it for a Seq.) Over the corpus V finds
+  # 25 such sites, among them a call's result copied at a binding, whose
+  # original is never freed.
+  t.src """
+import seq
+
+fn three() -> Seq[int]:
+  return [1, 2, 3]
+
+fn total({xs: Seq[int]}) -> int:
+  var n = 0
+  for x in xs:
+    n = n + x
+  return n
+
+fn main() -> int:
+  var n = 0
+  for r in [1, 2, 3]:
+    n = n + r
+  return n + {xs: three} total
+"""
+  t.quietly: t.odinTracked("A45: an owning temporary is freed where its statement ends", 12)
+  t.bugOpen "A45: an owning temporary is freed where its statement ends"
+
   # A46 (found 2026-10-05, writing A45's pin): `for r in [1, 2, 3]:` built
   # on Nim and D and not on Odin. In a `for` header Odin, like Go, reads a
   # compound literal's `{` as the start of the loop body, so

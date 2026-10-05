@@ -881,6 +881,38 @@ proc hostRuns*(t: var T, name: string, code: int, pattern = "") =
   if ran.len == 0: t.skip name
   else: t.ok name & "  [" & ran.join(", ") & "]"
 
+proc odinTracked*(t: var T, name: string, code: int) =
+  ## Build on Odin with every allocation tracked (`-define:TUCK_TRACK=true`)
+  ## and run, asserting the program still answers `code`. A leak or a bad
+  ## free exits 90 instead, and the report names each leak's site.
+  ##
+  ## Odin is the backend that frees by hand, so it is the one where an
+  ## ownership decision can be wrong at run time; Nim and D have ARC and a
+  ## collector. `hostRuns` cannot see a leak (the answer is right), and
+  ## `hostPeakRss` sees one only when it is large. This sees one byte.
+  let odinExe = findOdin()
+  if odinExe.len == 0:
+    if t.phase == pReport: t.skip name
+    return
+  let e = t.needOdin()
+  let proj = t.curDir / "odintracked"
+  let src = t.curDir / "odin" / "t.odin"
+  let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none", OdinThreads,
+                           "-define:TUCK_TRACK=true", "-out:" & proj / "prog"],
+                         e, proc (dir: string) = stageOdinPkg(dir, src), proj)
+  let r = t.needCmdAfter(@["timeout", "10", proj / "prog"], b,
+                         proc (dir: string) = discard, proj, verb = vRun)
+  if t.phase != pReport: return
+  if t.skippedCmd(r):
+    t.skip name
+    return
+  let (rc, output) = t.resultOf(r)
+  if rc == code: t.ok name & "  [odin, tracked]"
+  else:
+    t.no name, "exited " & $rc & ", wanted " & $code &
+               (if output.strip == "": " (NO OUTPUT)"
+                else: ": " & tailLines(output, 3))
+
 proc hostPeakRss*(t: var T, name: string, budgetKB: int) =
   ## Build and run on EVERY available backend, asserting each exits 0 and
   ## stays under a memory budget.

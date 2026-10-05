@@ -49,7 +49,10 @@ proc calleeOf(res: Resolution, m: Module, call: Expr): Decl =
     result = m.findFn(call.callee.name)
   if result != nil and result.kind != dkFn: result = nil
 
-type Keeps = enum kUnknown, kBorrows, kKeeps
+type Keeps* = enum
+  kUnknown  ## not the runtime's: a fn with a body to ask, or foreign code
+  kBorrows  ## the runtime reads it and returns fresh values
+  kKeeps    ## the runtime stores it (`push`, `setAt`)
 
 const
   RuntimeKeeps = [("push", "items"), ("push", "value"), ("setAt", "value")]
@@ -86,6 +89,21 @@ proc paramFed(d: Decl, a: ArgOf): string =
   if a.index >= 0 and a.index < d.fnParams.len: d.fnParams[a.index].name
   else: ""
 
+type ArgTarget* = tuple[callee: Decl, name, param: string, runtime: Keeps]
+  ## Where an argument goes: the fn it reaches (nil for one with no
+  ## declaration), that fn's name, the parameter it feeds ("" when unknown),
+  ## and what the runtime does with it when the fn is the runtime's.
+
+proc argTarget*(res: Resolution, m: Module, a: ArgOf): ArgTarget =
+  ## Where the argument `a` goes (`a.call` is not nil).
+  let callee = res.calleeOf(m, a.call)
+  let name = if callee != nil: callee.name
+             elif a.call.callee != nil and a.call.callee.kind == exkVar:
+               a.call.callee.name
+             else: ""
+  let p = if callee != nil: paramFed(callee, a) else: a.name
+  (callee, name, p, runtimeKeeps(name, p, a.index))
+
 proc consumes*(res: Resolution, m: Module, d: Decl, pname: string,
                memo: var ConsumeMemo): bool
 
@@ -93,19 +111,14 @@ proc argConsumesWhy(res: Resolution, m: Module, a: ArgOf,
                     memo: var ConsumeMemo): string =
   ## Why the parameter this argument feeds consumes it, or "" if it borrows.
   if a.call == nil: return "an unresolved call"   # `.name {args}` left as is
-  let callee = res.calleeOf(m, a.call)
-  let name = if callee != nil: callee.name
-             elif a.call.callee != nil and a.call.callee.kind == exkVar:
-               a.call.callee.name
-             else: ""
-  let p = if callee != nil: paramFed(callee, a) else: a.name
-  case runtimeKeeps(name, p, a.index)
-  of kKeeps: return "the runtime's " & name & " keeps it"
+  let t = res.argTarget(m, a)
+  case t.runtime
+  of kKeeps: return "the runtime's " & t.name & " keeps it"
   of kBorrows: return ""
   of kUnknown: discard
-  if callee == nil or callee.fnBody == nil or p.len == 0:
-    return name & " has no body to ask"
-  if res.consumes(m, callee, p, memo): name & " keeps it" else: ""
+  if t.callee == nil or t.callee.fnBody == nil or t.param.len == 0:
+    return t.name & " has no body to ask"
+  if res.consumes(m, t.callee, t.param, memo): t.name & " keeps it" else: ""
 
 proc consumesWhy*(res: Resolution, m: Module, d: Decl, pname: string,
                   memo: var ConsumeMemo): string =
@@ -393,7 +406,7 @@ const ElementReads = ["at", "tuckAt", "tuckArrayAt"]
   ## The runtime's element reads: what they return is the container's own
   ## element, a view and not a fresh value.
 
-proc readsElement(res: Resolution, v: Expr): bool =
+proc readsElement*(res: Resolution, v: Expr): bool =
   ## `items[i]` or `{items, index} at`: an element read. Rule U: an element
   ## is never moved out of its container, so a sink of one copies it.
   let call = if v.kind == exkCall: v elif res.hasCall(v): res.call(v) else: nil

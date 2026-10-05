@@ -67,8 +67,16 @@ finished** (no longer deferred).
    copy marks; byte-identical again. Step 1.3 DONE the same day: Odin's
    frees are `exkDrop` nodes (a `defer` after a declaration, or at the top
    of a moved twin) and an assignment's `dropsOld`; the Odin emitter no
-   longer imports `analysis_ownership`. Stage C is complete. Next: step 2,
-   glue (rule G), then Stage D. Owner: "we need a more generalized mechanism to consolidate all
+   longer imports `analysis_ownership`. Stage C is complete. Stage D, in
+   shadow, the same day: rule U's classifier (`ownership_rules`), and
+   rules P, D/M and S computed from the rules (`ownership_elab`) and
+   compared with today's answers (`ownership_shadow`, `TUCK_DEBUG_OWN`).
+   Every difference is explained in the proposal's §8, and one is a real
+   bug, A40, fixed. Rule V (`ownership_check`) checks the tree itself and
+   found A41–A45, owned values the Odin tree never drops, each confirmed by
+   `TUCK_TRACK`. They close with the switch to rule D. Next: the
+   elaborator writes its own tree behind a flag, V and the tracked runs
+   gate it, then glue (G) and the switch. Owner: "we need a more generalized mechanism to consolidate all
    the bug fixes. I thought SSA was the solution but the rules may need more
    formalization." Ten rules (borrow vs sink, move at a final use, consuming
    parameters, drop once at scope end with reset on move, type-derived copy

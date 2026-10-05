@@ -41,6 +41,24 @@ proc copiesDump(t: var T): int =
   t.needCmd(@["env", "TUCK_DEBUG_OWN=copies", "./tuck", "c",
               t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "outc"], vEmit)
 
+proc verifyDump(t: var T): int =
+  ## Rule V over the current snippet's Odin tree (the Stage C nodes today's
+  ## passes wrote).
+  t.needCmd(@["env", "TUCK_DEBUG_OWN=verify", "./tuck", "c",
+              t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "outv"], vEmit)
+
+proc dumpLacks(t: var T, idx: int, name, needle: string) =
+  ## The dump has no line holding `needle` (prefixes dropped as in dumpHas).
+  if t.phase != pReport: return
+  if t.skippedCmd(idx):
+    t.skip name
+    return
+  let (rc, outp) = t.resultOf(idx)
+  let plain = outp.replace("tuckˑfnˑ", "").replace("tuckˑvˑ", "")
+  if rc != 0: t.no name, "the compile failed: " & outp.splitLines()[^1]
+  elif needle in plain: t.no name, "did not want `" & needle & "` in:\n" & plain
+  else: t.ok name
+
 proc dumpHas(t: var T, idx: int, name, line: string) =
   ## The dump has `line` (with the `tuckˑfnˑ` / `tuckˑvˑ` prefixes dropped).
   if t.phase != pReport: return
@@ -58,8 +76,8 @@ proc classifies(t: var T, idx: int, name, line: string) =
   t.dumpHas(idx, name, "USE " & line)
 
 proc run*(t: var T) =
-  ## Registers the rule U classification, rule P, rules D/M and rule S
-  ## assertions.
+  ## Registers the rule U classification, rule P, rules D/M, rule S and rule
+  ## V assertions.
   t.src """
 import seq
 
@@ -237,3 +255,85 @@ fn main() -> int:
             "COPY main 10:3 same rules=all today=all"
   t.dumpHas cd, "S: an element read is copied (it is never moved out of " &
                 "its container)", "COPY main 12:3 same rules=all today=all"
+
+  # --- rule V: the tree checked ----------------------------------------------
+  #
+  # compiler/ownership_check.nim reads the Odin tree as Stage C left it
+  # (copies, drops, `dropsOld`) under today's convention (a moved twin owns
+  # its first parameter; a call marked for the twin, or threaded through
+  # it, hands its argument over). Over every .tuck in the tree it reports 11
+  # places and 25 temporaries never dropped (A41-A45, each confirmed by
+  # TUCK_TRACK), 3 borrowed values returned for the caller to copy (today's
+  # provenance scheme, where rule S copies in the callee), and one list
+  # holding live Seqs uncopied: sound today only because Odin's drop of a
+  # Seq of Seqs is shallow.
+  t.src """
+import seq
+
+type Bag:
+  items: Seq[int]
+
+type Box[T]:
+  items: Seq[T]
+
+fn shrink({items: Seq[int]}) -> Seq[int]:
+  var out: Seq[int] = []
+  for x in items:
+    if x > 1:
+      out = {items: out, value: x} push
+  return out
+
+fn boxed[T]({xs: Seq[T]}) -> Box[T]:
+  return {items: xs} Box
+
+fn itemsOf({b: Bag}) -> Seq[int]:
+  return b.items
+
+fn early({n: int}) -> int:
+  let xs = [1, 2, 3]
+  if n > 5:
+    return 1
+  let ys = {items: xs} shrink
+  return ys.len
+
+fn refill() -> int:
+  var b = {items: [1]} Bag
+  b.items = [2, 3]
+  return b.items.len
+
+fn nest() -> int:
+  let a = [1]
+  let b = [2]
+  let both = [a, b]
+  return both.len + a.len
+
+fn sumList() -> int:
+  var n = 0
+  for r in [1, 2]:
+    n = n + r
+  return n
+
+fn main() -> int:
+  let b = {items: [4, 5]} Bag
+  let got = {b: b} itemsOf
+  let bx = {xs: [6]} boxed
+  return {n: 1} early + {} refill + {} nest + {} sumList + got.len + bx.items.len
+"""
+  let vd = t.verifyDump()
+  t.dumpLacks vd, "V: a moved twin's body owns, reads and drops its parameter: " &
+                  "nothing to report", "VERIFY shrink"
+  t.dumpHas vd, "V: a borrowed parameter's field handed over uncopied (today " &
+                "the caller copies the result)",
+            "VERIFY itemsOf borrowed-sunk b.items 20:11"
+  t.dumpHas vd, "V: a local handed over at its last use leaks on the return " &
+                "before it (A42)", "VERIFY early leak (some paths) xs 23:3"
+  t.dumpHas vd, "V: a field overwritten without dropping what it held (A41)",
+            "VERIFY refill overwrite-leak b.items 31:3"
+  t.dumpHas vd, "V: a list holding a live Seq uncopied: the Seq is read after " &
+                "it moved...", "VERIFY nest use-after-move a 38:21"
+  t.dumpHas vd, "...and dropped after it moved", "VERIFY nest drop-after-move a 35:3"
+  t.dumpHas vd, "V: a temporary only borrowed is never dropped (A45)",
+            "VERIFY sumList temp-leak list 42:12"
+  let gu = t.usesDump()
+  t.classifies gu, "U: a generic record's construction takes its fields " &
+                   "(`{items: xs} Box` is typed `Box[T]`)", "boxed xs sink final 17:18"

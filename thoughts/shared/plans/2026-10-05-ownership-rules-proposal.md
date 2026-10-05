@@ -417,11 +417,70 @@ examples byte-identical, or explains each line that changes.
    - Copies at other sinks (a construction field inside a call, a list
      element) are not compared yet, because today makes none there.
 
-   Next: rule V's checker over the elaborated plan, then glue (G), then the
-   switch. It writes the same nodes
-   from the rules. A differential against step 1's nodes runs over the
-   corpus, both apps, Savina and the stdlib, and every difference is
-   explained.
+   Rule V followed (`compiler/ownership_check.nim`,
+   `TUCK_DEBUG_OWN=verify`). It is a checker over the TREE, not over a
+   plan, so it can check today's tree now and the elaborator's after the
+   switch:
+   - It reads only what an emitter prints: `exkCopy`, a `defer` of an
+     `exkDrop`, `dropsOld`, `exkAppend`.
+   - A move is what the tree does, not what the mirror proved: a sink read
+     (rule U) with no copy around it hands its value over, final or not.
+     So V does not trust the analysis it checks.
+   - The convention is an input. Today a moved twin owns its first
+     parameter, and a call marked for the twin, or threaded through it,
+     hands that argument over. Under P, P's answer is the input.
+   - Each owned slot's state is the set of what it may hold on the paths
+     reaching it (live, moved, dropped). Arms join, loops run to a fixed
+     point, and exits run the defers of the scopes they leave, as Odin
+     does.
+   - Temporaries are checked too: an owning value no place holds must be
+     taken by something, or it is dropped at its statement's end.
+
+   Over every `.tuck` in the tree on Odin it reports 44 findings, all
+   explained:
+   - **11 places and 25 temporaries never dropped**, all leaks, all in the
+     stdlib modules' own code and the two bench apps. Each class is
+     confirmed by `TUCK_TRACK` and pinned `bugOpen` (A41–A45):
+     - a record field overwritten in place;
+     - a local handed over at its last use, leaked on every earlier
+       return;
+     - a record local rebound through a threading fn, never freed;
+     - a returned local whose overwrites by a non-consuming call are never
+       freed;
+     - an owning temporary only borrowed: a list literal iterated, a call's
+       result given to a reading parameter, or a call's result copied at a
+       binding (the original is dropped by no one).
+
+     These are what rule D fixes by construction, so they wait for the
+     switch rather than five more patches to a retiring pass.
+   - **3 borrowed values returned uncopied** (`toSeq`, `pairs`, `put`).
+     That is today's other scheme: the caller copies the result. Under S
+     the callee copies.
+   - **5 findings at one site**: `[first2, rest]` holds two live Seqs
+     uncopied, and `first2` is read and freed after the list is consumed.
+     It is sound today only because Odin's drop of a `Seq[Seq[int]]` is
+     shallow. Deep drops (G) make it a double free unless S copies there,
+     as it does.
+
+   Building V corrected rule U twice, and found two problems outside the
+   rules:
+   - **A generic record's construction** (`{items: xs} Set`, typed
+     `Set[T]`) was classified as a call, not a construction. P and D gave
+     the right answer anyway, through "no body to ask: consumes". V, which
+     takes an unknown callee as borrowing, saw the leak that was not
+     there.
+   - **A record's field copy** (`cpFields`) binds its value and copies the
+     listed fields in place. Its value is taken, not borrowed.
+   - **`TUCK_TRACK` tracked only programs that used the runtime.** A41's
+     program leaked while its tracked build exited clean. Now every program
+     that allocates is tracked.
+   - **A list literal could not be iterated on Odin** (A46, fixed): a
+     `for` header read the literal's `{` as the body's start.
+
+   Next: the elaborator writes its own tree (its copies, drops, resets and
+   consuming parameters) behind a flag, Odin first. V must report nothing
+   on that tree, and the corpus, both apps, Savina and the stdlib must run
+   clean under `TUCK_TRACK`. Then glue (G), and the switch.
 4. **Switch backend by backend**, Odin first, since it is where frees exist:
    1. frees (D, M), retiring `analysis_ownership`, `ownership_escape`,
       `ownership_str` and `buffer_check`;

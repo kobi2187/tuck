@@ -47,7 +47,9 @@
 #      declaration, or at the top of a moved twin) or an assignment's
 #      `dropsOld`. The ownership rules' Stage C nodes: the emitters used to
 #      recognise the append's shape and look the copy marks and the frees up
-#      as they printed. Now none of them reads steps 4 or 6.
+#      as they printed. Now none of them reads steps 4 or 6. Rule V
+#      (`ownership_check`, TUCK_DEBUG_OWN=verify) then checks the Odin tree
+#      these nodes make.
 #
 # WHY NOT BEFORE THE CLONE (ROADMAP M3.1 as first written). Two of
 # ownership's inputs are made by lowering, so it cannot precede lowering —
@@ -77,6 +79,7 @@ import analysis_ownership
 import twin_calls
 import call_args
 import ownership_nodes
+import ownership_check
 import ownership_rules
 import ownership_shadow
 import pipeline
@@ -244,6 +247,7 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
       materializeCopies(semLayer, lm.m, ownsStrs = backend == bkOdin)
     if backend == bkOdin:
       materializeDrops(semLayer, lm.m)
+      verifyTree(semLayer, lm.m)               # TUCK_DEBUG_OWN=verify (V)
     diffParams(semLayer, lm.m, nim = backend == bkNim)  # TUCK_DEBUG_OWN=params
     diffDrops(semLayer, lm.m)
     diffCopies(semLayer, lm.m)

@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (9)
+## A. Open bugs (14)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -43,6 +43,30 @@ move, and a drop proc frees a tree recursively. Found 2026-10-05 by
 ownership-rules proposal (`thoughts/shared/plans/2026-10-05-ownership-rules-
 proposal.md`), where it falls out of the type-derived glue (rule G) rather
 than becoming a fix outside the model.
+
+**A41–A45 — (Odin) owned values the tree never drops.** Found 2026-10-05 by
+rule V, the ownership checker, reading today's Odin tree
+(`compiler/ownership_check.nim`, `TUCK_DEBUG_OWN=verify`). Every one is
+confirmed at run time by `TUCK_TRACK`. Over the corpus they are 11 places
+and 25 temporaries, all in the stdlib modules' own code and the two bench
+apps; the stdlib's Set, List, Vec and Array checks leak under tracking.
+Rule D drops every owned place and temporary by construction. So they are
+left for the switch to it (proposal §8 step 4.1) rather than patched one by
+one in a pass that retires. Tests: `known_bugs`, "A41: …" to "A45: …", each
+a tracked Odin run that must still give the program's answer.
+- **A41** a record field overwritten in place (`b.items = [2, 3]`) leaks
+  what it replaced.
+- **A42** a local handed over at its last use has no scope-end drop, so
+  every return before that use leaks it.
+- **A43** a record local rebound through a threading fn
+  (`b = {b: b} add`) is never freed.
+- **A44** a returned local gets no drop, and so neither do its overwrites:
+  `out = {r: r, into: out} encode` leaks one buffer per iteration
+  (`toUtf16`, one per rune).
+- **A45** an owning temporary is never freed: a list literal a `for`
+  iterates, a call's result handed to a parameter that only reads it, or a
+  call's result copied at a binding (the original). `str` temporaries are
+  named and freed by `lowering_strtemps`; nothing does it for a Seq.
 
 **A27–A37 — constructs that do not cross a module boundary (R11 scan,
 2026-09-28).** A25, A26, A28, A30, A31, A33, A35 and A36 are fixed; their pins are

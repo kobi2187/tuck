@@ -427,8 +427,14 @@ place is `exkAppend`, a copy where the target's assignment would alias is
 the top of a moved twin) or an assignment's `dropsOld`. No emitter imports
 the copy marks or `analysis_ownership`. `tuck dump --stage:lowering --odin`
 shows every ownership decision as tree, and a test can assert on it. That
-tree is also what the ownership rules' elaborator will be checked against
-(`thoughts/shared/plans/2026-10-05-ownership-rules-proposal.md`).
+tree is also what the ownership rules are checked against
+(`thoughts/shared/plans/2026-10-05-ownership-rules-proposal.md`):
+- the elaborator (`ownership_elab`) computes the same decisions from the
+  rules, and `ownership_shadow` prints where they differ;
+- rule V (`ownership_check`) walks the tree and confirms that every owned
+  value is moved or dropped exactly once on every path, and that nothing is
+  read after it moved. It reads only the nodes, so it checks whichever pass
+  wrote them.
 
 ---
 
