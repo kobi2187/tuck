@@ -18,7 +18,8 @@
 #      first. The copying wrapper is never called.
 #   S  every sink is decided: a binding, a construction's field, a list's
 #      element, a `return`, a value appended, an argument to a consuming
-#      parameter or to the runtime's `push`/`setAt`. A read of a place the
+#      parameter (a callee with no body by its signature's contract). A
+#      read of a place the
 #      body owns moves at its final use and copies otherwise; a read of a
 #      place it borrows, or of an element, always copies; a temporary moves.
 #      The take, `st = {b: st} apply` (an actor's field handed over and
@@ -137,7 +138,7 @@ proc walkAssign(w: var Writer, n: Expr) =
 proc walk(w: var Writer, e: Expr, use: Use, arg: ArgOf) =
   ## Every operand under `e`, each decided where it is put.
   if e == nil or w.res.isPlaceRead(e): return
-  if e.kind != exkCall and w.res.hasCall(e):
+  if e.kind notin ByOwnKind and w.res.hasCall(e):
     w.walk(w.res.call(e), use, arg)      # the call printed in e's place
     return
   if e.kind == exkAssign:
@@ -188,9 +189,9 @@ proc bindHere(res: Resolution, n: Expr): Expr =
 proc isTemporary(w: Writer, n: Expr): bool =
   ## A value no place holds: a call's result, a construction, a list. An
   ## element read is its container's.
-  let c = if n.kind != exkCall and w.res.hasCall(n): w.res.call(n) else: n
+  let c = if n.kind notin ByOwnKind and w.res.hasCall(n): w.res.call(n) else: n
   c != nil and c.kind in {exkCall, exkList, exkFill} and
-    not w.res.isPlaceRead(n) and not w.res.readsElement(n) and
+    not w.res.isPlaceRead(n) and not w.res.readsElement(w.m, n) and
     w.seqOwning(w.res.typeFor(n))
 
 proc copiedRecord(w: Writer, n: Expr): bool =
@@ -207,7 +208,7 @@ proc pure(w: Writer, n: Expr): bool =
   ## A call that can run earlier without anyone seeing: a fn with a body
   ## that declares no effect (`[io]`, `[may_block]`, ... are checked) and
   ## sends nothing. Anything else, the runtime's included, has an effect.
-  let c = if n.kind != exkCall and w.res.hasCall(n): w.res.call(n) else: n
+  let c = if n.kind notin ByOwnKind and w.res.hasCall(n): w.res.call(n) else: n
   if c == nil or c.kind != exkCall: return false
   let d = w.res.calleeOf(w.m, c)
   if d == nil or d.fnBody == nil or d.fnEffects.len > 0: return false
@@ -246,7 +247,7 @@ proc lift(w: var Writer, n: Expr, use: Use, arg: ArgOf, L: var Lift,
     return
   let before = L.effects
   if not w.res.isPlaceRead(n):
-    let c = if n.kind != exkCall and w.res.hasCall(n): w.res.call(n) else: n
+    let c = if n.kind notin ByOwnKind and w.res.hasCall(n): w.res.call(n) else: n
     for o in w.operands(c, use, arg): w.lift(o.child, o.use, o.arg, L)
   if not own: w.liftSelf(n, use, arg, L, before)
 

@@ -22,9 +22,10 @@
 # first parameter. A call hands its first argument over when `twin_calls`
 # marked it for the twin, or when its assignment threads a container through
 # it (`x = f(x, ...)`, printed `x = f_moved(x, ...)`). Every other parameter
-# borrows. The runtime's `push` and `setAt` keep
-# what they store (`ownership_elab`'s table). After the switch to rule P the
-# convention is P's answer, and `owns` and `consumed` are what change.
+# borrows. A callee with no Tuck body keeps the contract its signature
+# states (`ownership_elab`, "What a body-less callee does"). Under rule P
+# (TUCK_OWN=rules) the convention is P's answer: that is what `consumed`
+# and the owned parameters read.
 #
 # THE STATE of an owned slot (what Odin frees: a Seq or a str itself, or a
 # record's Seq fields) is the SET of what it may hold on the paths reaching
@@ -127,19 +128,15 @@ proc spanOf(c: Check, k: string): Span =
 
 proc consumed(c: var Check, a: ArgOf): bool =
   ## Does the call take this argument over? Under rule P (TUCK_OWN=rules),
-  ## P's answer, for anything but a `str` (rule G). Today, the runtime's
-  ## table, else the moved twin's first parameter when the call was marked
-  ## for the twin.
+  ## P's answer. Today: a callee with no Tuck body by the contract its
+  ## signature states (ownership_elab), else the moved twin's first
+  ## parameter when the call was marked for the twin.
   if a.call == nil: return false
   if c.rules: return c.res.argConsumesWhy(c.m, a, c.memo).len > 0
   let t = c.res.argTarget(c.m, a)
-  case t.runtime
-  of kKeeps: true
-  of kBorrows: false
-  of kUnknown:
-    t.callee != nil and t.param.len > 0 and
-      t.param == movedFnParam(c.res, c.m, t.callee) and
-      (a.call == c.threaded or callsTwin(a.call))
+  if t.bodyless: return c.res.bodylessKeeps(c.m, a.call, a.index)
+  t.param == movedFnParam(c.res, c.m, t.callee) and
+    (a.call == c.threaded or callsTwin(a.call))
 
 proc sinks(c: var Check, pu: PlaceUse): bool =
   ## Is this read put where it is handed to a new owner? (Under rule P a
@@ -207,8 +204,9 @@ proc isTemporary(c: Check, e: Expr): bool =
   ## A value no place holds: a call's result, a construction, a list. An
   ## element read is its container's, not a new value; a `str` waits on G.
   e != nil and e.kind in {exkCall, exkList, exkFill} and
-    not c.res.isPlaceRead(e) and not c.res.readsElement(e) and
-    ownsHeap(c.m, c.res.typeFor(e)) and not isStr(c.res.typeFor(e))
+    not c.res.isPlaceRead(e) and not c.res.readsElement(c.m, e) and
+    not isStr(c.res.typeFor(e)) and
+    slotsOf(c.res, c.m, c.res.typeFor(e)).len > 0   # Seq slots; str is G's
 
 proc fieldCopyLeaks(c: var Check, e: Expr) =
   ## A copy of a record's Seq fields (`cpFields`) replaces each listed field
@@ -216,7 +214,7 @@ proc fieldCopyLeaks(c: var Check, e: Expr) =
   ## before is never dropped. That leaks it when it was fresh: the fields of
   ## a call's result, or a temporary a construction's field was given.
   let v = e.copied
-  if v == nil or v.kind != exkCall or c.res.readsElement(v): return
+  if v == nil or v.kind != exkCall or c.res.readsElement(c.m, v): return
   if not c.res.constructs(v):
     c.report("temp-leak", {cLive}, "fields", v.span)
     return

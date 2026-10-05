@@ -1049,6 +1049,31 @@ Run-gated 42 on every backend.
 
 ---
 
+### What an extern does with what it is given
+
+The compiler cannot read an extern's body, so every extern keeps one
+**ownership contract**, read off its signature at each call (the types the
+checker recorded there, so a generic extern is judged per use):
+
+- It **takes** an owning argument (a `Seq`, a `str`, a record holding one)
+  whose type is a part of its result, so it is stored there. When the result
+  cannot hold it at all, it also takes an argument whose type is a part of
+  another argument, because it is stored into that one. It keeps what it
+  takes, or frees it. The caller hands it over: it moves a value it no
+  longer needs and copies one it still reads.
+- It only **reads** every other argument, including one whose type *is* the
+  result's type: that result is a new value.
+- An owning **result** whose type is a part of an argument it only reads is
+  a **view** of that argument, which the caller copies wherever it keeps
+  it. Any other owning result is **fresh**, and the caller drops it.
+
+So `push({items: Seq[T], value: T}) -> Seq[T]` reads `items` (it returns a
+new Seq) and takes `value`. `setAt` takes the value it stores, and `at`
+returns a view of the element. Nothing in the compiler names a runtime
+function: a new extern, in the runtime or in a program, keeps the contract
+or it is wrong. (`compiler/ownership_elab.nim`, "What a body-less callee
+does".)
+
 ## 14. Composition helpers
 
 ```tuck

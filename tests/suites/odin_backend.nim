@@ -105,8 +105,10 @@ proc projFor(base: string, tracked = false, rules = false): string =
     (if rules: "_rules" else: "")
 
 proc rulesEmitDir(base: string): string =
-  ## Where the rules' tree of an example is emitted (TUCK_OWN=rules).
-  outDir / "rules_emit" / base.replace("-", "_")
+  ## Where the rules' tree of an example is emitted (TUCK_OWN=rules). At the
+  ## same depth as the package it is staged into: an `[impl: odin "./shim"]`
+  ## path is rebased relative to the output dir.
+  outDir / "rules_emit_" & base.replace("-", "_")
 
 proc stage(base: string, tracked = false, rules = false) =
   ## Assemble a self-contained Odin package: the emitted main.odin, the Tuck

@@ -184,10 +184,12 @@ fn main() -> int:
             "PARAM bytesOf t today-only\n"
   t.dumpHas p, "P: one handed to a consuming parameter is consumed",
             "PARAM viaKeep xs same (keepIt keeps it at 17:15)"
-  t.dumpHas p, "P: a callee with no body is taken to keep it (the safe " &
-               "default)", "PARAM viaOpaque t same (opaque has no body"
-  t.dumpHas p, "P: push only reads its items (it returns a new Seq on " &
-               "every backend): borrowed, where today's `sink` says kept",
+  t.dumpHas p, "P: a `pending:` fn with no body is read by its " &
+               "signature: a `str` in, a new `str` out, so it only reads it",
+            "PARAM viaOpaque t today-only\n"
+  t.dumpHas p, "P: a callee with no body is read by its signature: push's " &
+               "result has its items' own type, a new Seq, so push only " &
+               "reads them (today's `sink` says kept)",
             "PARAM grow xs today-only\n"
   t.dumpHas p, "P: a recursive reader borrows (the least fixed point)",
             "PARAM walk xs same\n"

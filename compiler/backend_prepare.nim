@@ -239,6 +239,7 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     # calls. Asserted here, after the last pass that can, so no emitter is
     # ever handed a call with a hole to fill in its own way.
     assertCallsComplete(semLayer, lm.m, result.real)
+    typeResolvedCalls(semLayer, lm.m)          # a resolved call has a type
     dumpUses(semLayer, lm.m)                   # TUCK_DEBUG_OWN=uses (rule U)
     planDrops(semLayer, lm.m)                  # TUCK_DEBUG_OWN=drops (D, M)
     planCopies(semLayer, lm.m)                 # TUCK_DEBUG_OWN=copies (S)
