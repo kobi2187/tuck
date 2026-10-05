@@ -119,6 +119,7 @@ import ast, tables, sets, os, strutils, options
 import resolution
 import ast_query
 import twin_shape
+from lowering import getFieldsForType
 import buffer_check
 import ownership_str
 import ownership_escape
@@ -227,8 +228,31 @@ proc fieldFedByLocal(m: Module, v: Expr, f: string): bool =
     if fi.name == f: return pathOf(fi.value) != ""
   false
 
+proc elementsHoldSlots(s: Scan, t: Type): bool =
+  ## Can an ELEMENT of this Seq (or of one of this record's Seq fields) hold
+  ## a slot this pass tracks — a Seq buffer, or a record carrying one? Then a
+  ## local's buffer can sit inside the value as an element, below the
+  ## granularity the copy marks describe. (A `str` element cannot: a str is
+  ## not a heap slot here, and the outer buffer's free never frees it.)
+  let e = seqElem(t)
+  if e != nil: return holdsHeapSlots(s.res, s.m, e)
+  for f in getFieldsForType(s.res, s.m, t):
+    let fe = seqElem(f.typ)
+    if fe != nil and holdsHeapSlots(s.res, s.m, fe): return true
+  false
+
 proc takesNothingOf(s: Scan, v: Expr): bool =
   ## Is every heap slot this binding holds either copied or exclusive?
+  ##
+  ## NOT WHEN ITS ELEMENTS CAN HOLD A SLOT (A40). A call can store its arguments as
+  ## elements of the Seq it returns — `out = {items: out, value: piece} push`
+  ## — and the result's own buffer being fresh says nothing about them; a
+  ## copy is no better, since a Seq's copy is shallow on Odin. Counting it as
+  ## taking nothing exempted the binding from the escape question, so
+  ## `piece` was freed at the end of its loop while `out` still held it:
+  ## Odin returned garbage where Nim and D returned 7. "Takes something" is
+  ## the safe answer — a leak at worst (A39's class, waiting on deep drops),
+  ## never a free of a buffer still referenced.
   ##
   ## Exclusive means two things, and only one of them takes nothing. A
   ## CALL's result left uncopied is fresh — the callee built it (#77's
@@ -237,6 +261,7 @@ proc takesNothingOf(s: Scan, v: Expr): bool =
   ## to nb. Counting that as "takes nothing" left x2 un-escaped, so x2 and
   ## nb.items were both freed — one buffer, two frees, a segfault (#96).
   let t = s.res.typeFor(v)
+  if s.elementsHoldSlots(t): return false
   if seqElem(t) != nil:
     return needsDup(s.res, v) or decidedExclusive(v, "")
   if v.kind notin {exkCall, exkChain}: return false

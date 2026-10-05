@@ -348,6 +348,18 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   type; lowering constructs the named type now (`constructRecordArgs`,
   `constructRecordFields`, to any depth). Fixed 2026-10-04. `known_bugs`.
 
+- **A40 — (Odin) a Seq pushed as an element of another was freed while
+  held.** `out = {items: out, value: piece} push` in a loop, then
+  `defer delete(piece)` at the end of the iteration: `out` held freed
+  buffers, and Odin returned garbage where Nim and D returned 7. The binding
+  was exempted from the escape question as "taking nothing of its
+  arguments", judged on the result's own buffer, which is fresh, while its
+  elements (below the pass's slot granularity) held `piece`.
+  `analysis_ownership.takesNothingOf` answers no for a Seq whose elements
+  can hold a tracked slot (a Seq, or a record carrying one). The inner Seqs leak on Odin now instead (A39's class, waiting
+  on deep drops). Found by the ownership rules' shadow elaborator. Fixed
+  2026-10-05. `known_bugs`, "A40: …".
+
 - **A38 — (Odin) a local's Seq field handed to a moved twin was freed
   twice.** `let r = {ns: l.nodes, d: ..} grow` inside `grow_moved` hands
   `l.nodes` to the twin, which keeps the buffer and returns it in `r.nodes`;

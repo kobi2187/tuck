@@ -2817,6 +2817,41 @@ fn main() -> int:
   t.quietly: t.hostRuns("a Seq field handed to a moved twin is freed once, on every backend", 15)
   t.bugFixed "a Seq field handed to a moved twin is freed once, on every backend"
 
+  # A40 (found 2026-10-05 by the ownership rules' shadow elaborator: rule P's
+  # runtime table says `push` keeps its value, so `piece` is MOVED into
+  # `out`, while today's pass freed it). A local Seq pushed as an ELEMENT of
+  # another Seq was freed at the end of its scope on Odin, though the outer
+  # Seq still held it: `defer delete(piece)` after `append(&out, piece)`.
+  # Nim and D answer 7; Odin read freed memory (160, 169, 54 on three runs).
+  # The binding's result was exempted from the escape question as "taking
+  # nothing of its arguments" because its own buffer was fresh — but its
+  # elements are below the pass's slot granularity. Fixed 2026-10-05:
+  # analysis_ownership.takesNothingOf answers no for a Seq whose elements can
+  # hold a tracked slot (a Seq, or a record carrying one). (The inner Seqs now leak on Odin rather than being freed early —
+  # A39's class, which deep drops under rule G will close.)
+  t.src """
+import seq
+
+fn chunk({items: Seq[int], size: int}) -> Seq[Seq[int]]:
+  var out: Seq[Seq[int]] = []
+  var i = 0
+  for i < items.len:
+    var piece: Seq[int] = []
+    var j = i
+    for j < items.len and j < i + size:
+      piece = {items: piece, value: items[j]} push
+      j = j + 1
+    out = {items: out, value: piece} push
+    i = i + size
+  return out
+
+fn main() -> int:
+  let c = {items: [1, 2, 3, 4, 5], size: 2} chunk
+  return c[0][1] + c[2][0]
+"""
+  t.quietly: t.hostRuns("A40: a Seq pushed as an element is not freed while held, on every backend", 7)
+  t.bugFixed "A40: a Seq pushed as an element is not freed while held, on every backend"
+
   # #96, first half (found 2026-10-04, building the slab). A local Seq moved
   # into a record at its last read — `let nb = {items: x2, tag: 9} Bag` — was
   # freed as x2 AND as nb.items on Odin: one buffer, two frees, a segfault
