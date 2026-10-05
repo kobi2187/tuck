@@ -193,23 +193,46 @@ proc isPlaceRead(res: Resolution, e: Expr): bool =
   e.kind in {exkVar, exkField} and pathOf(e).len > 0 and
     not (e.kind == exkField and res.hasCall(e))
 
-type PlaceUse* = tuple[read: Expr, path: string, use: Use]
+type
+  ArgOf* = tuple[call: Expr, index: int, name: string]
+    ## The call an argument is given to, and the parameter it feeds: by
+    ## `name` for a record-style payload, else by position `index`.
+  PlaceUse* = tuple[read: Expr, path: string, use: Use, arg: ArgOf]
+    ## A read of a place, and the use it is put to; `arg` is set when the
+    ## use is `uArg`.
+  Ctx = tuple[use: Use, arg: ArgOf]
 
-proc placeUses(res: Resolution, e: Expr, ctx: Use, acc: var seq[PlaceUse]) =
+let NoArg: ArgOf = (nil, -1, "")
+
+proc argOf(call: Expr, k: int): ArgOf =
+  ## The parameter a call's `k`-th argument feeds (callUses' order).
+  let payload = payloadOf(call)
+  if payload != nil and k < payload.fields.len:
+    (call, k, payload.fields[k].name)
+  else: (call, k, "")
+
+proc placeUses(res: Resolution, e: Expr, ctx: Ctx, acc: var seq[PlaceUse]) =
   ## Every read of a place under `e`, with the use it is put to once every
   ## pass-through above it is resolved. A path is one read: `b.items` is a
   ## read of `b.items`, not also of `b` (the SSA mirror stamps it the same).
   if e == nil: return
   if res.isPlaceRead(e):
-    acc.add (e, pathOf(e), ctx)
-    if e.kind == exkField: res.placeUses(e.dotArg, uArg, acc)
+    acc.add (e, pathOf(e), ctx.use, ctx.arg)
+    if e.kind == exkField: res.placeUses(e.dotArg, (uArg, NoArg), acc)
     return
-  for (c, u) in res.uses(e): res.placeUses(c, effective(ctx, u), acc)
+  var argNo = 0
+  for (c, u) in res.uses(e):
+    var a = NoArg
+    if u in {uThrough, uProject}: a = ctx.arg
+    elif u == uArg and e.kind == exkCall:
+      a = argOf(e, argNo)
+      inc argNo
+    res.placeUses(c, (effective(ctx.use, u), a), acc)
 
 proc placeUsesOf*(res: Resolution, body: Expr): seq[PlaceUse] =
   ## A body's place reads with their uses. The body's own value is the fn's
   ## result, so it is a sink.
-  res.placeUses(body, uSink, result)
+  res.placeUses(body, (uSink, NoArg), result)
 
 let DebugUses = getEnv("TUCK_DEBUG_OWN") == "uses"
   ## Read once at module init.
@@ -220,7 +243,7 @@ proc dumpUses*(res: Resolution, m: Module) =
   if not DebugUses: return
   for d in m.allFns:
     if d == nil or d.fnBody == nil: continue
-    for (read, path, use) in res.placeUsesOf(d.fnBody):
+    for (read, path, use, _) in res.placeUsesOf(d.fnBody):
       if not ownsHeap(m, res.typeFor(read)): continue
       let final = if res.isLastUse(read): " final" else: ""
       echo "USE ", d.name, " ", path, " ", ($use)[1 .. ^1].toLowerAscii,

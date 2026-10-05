@@ -337,7 +337,28 @@ examples byte-identical, or explains each line that changes.
    §5's step 0: rule U's classifier is `compiler/ownership_rules.nim`, a
    flat `case` over every node kind with no `else`, and the suite
    `ownership_rules` pins what it answers through `TUCK_DEBUG_OWN=uses`.
-   Rule P (a call's argument: consuming or borrowing) is the next piece. It writes the same nodes
+   Rule P followed the same day (`compiler/ownership_elab.nim`): a
+   parameter consumes iff some final read of it is a sink, or feeds a
+   consuming parameter (the least fixed point), and the runtime's own
+   answer comes from a table. Only `push` (items, value) and `setAt`
+   (value) keep an argument. An extern the table does not know is taken to
+   consume, the safe default. Its shadow differential
+   (`TUCK_DEBUG_OWN=params`, `compiler/ownership_shadow.nim`) over every
+   `.tuck` in the tree:
+   - **Against Nim's `sink`:** 213 parameters agree, and 17 are
+     `sink` today but borrowed by P. All 17 are one kind: a final read
+     handed to a runtime extern that only reads it (`byteAt`, `joinStr`,
+     `at`, ...). Today's analysis takes any body-less callee to keep its
+     argument, so it marks the parameter `sink` and every caller holding a
+     live value copies it for nothing.
+   - **Against the Odin/D twins:** 193 agree. 17 are consumed by P with no
+     twin: each is either a real keep (a sink, `push` keeping it, or a
+     consuming callee), or a call to a `pending:` fn with no body (the
+     default). 20 are twins whose body never keeps the parameter (`clear`,
+     `remove`, `insertAt`): today the twin frees it itself, and under P the
+     caller keeps and drops it. Both are sound, and P is the rule.
+   - None is unexplained. The suite `ownership_rules` pins one case of each
+     kind. Next: drops (D, M) and copies (S) in shadow. It writes the same nodes
    from the rules. A differential against step 1's nodes runs over the
    corpus, both apps, Savina and the stdlib, and every difference is
    explained.

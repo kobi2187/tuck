@@ -13,8 +13,8 @@
 ##
 ##   USE tuckˑfnˑboth tuckˑvˑxs sink 18:11
 ##
-## `arg` is a call's argument, settled by rule P from the callee; that half
-## is Stage D's next step, so it is pinned as `arg` here.
+## `arg` is a call's argument, settled by rule P from the callee — pinned
+## below through `TUCK_DEBUG_OWN=params`, beside today's Nim `sink`.
 import std/[os, strutils]
 import ../harness
 
@@ -24,7 +24,12 @@ proc usesDump(t: var T): int =
   t.needCmd(@["env", "TUCK_DEBUG_OWN=uses", "./tuck", "c",
               t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "out"], vEmit)
 
-proc classifies(t: var T, idx: int, name, line: string) =
+proc paramsDump(t: var T): int =
+  ## Rule P beside today's Nim `sink`, for the current snippet.
+  t.needCmd(@["env", "TUCK_DEBUG_OWN=params", "./tuck", "c",
+              t.curDir / "t.tuck", "-o:" & t.curDir / "outp"], vEmit)
+
+proc dumpHas(t: var T, idx: int, name, line: string) =
   ## The dump has `line` (with the `tuckˑfnˑ` / `tuckˑvˑ` prefixes dropped).
   if t.phase != pReport: return
   if t.skippedCmd(idx):
@@ -32,12 +37,16 @@ proc classifies(t: var T, idx: int, name, line: string) =
     return
   let (rc, outp) = t.resultOf(idx)
   let plain = outp.replace("tuckˑfnˑ", "").replace("tuckˑvˑ", "")
-  if rc == 0 and ("USE " & line) in plain: t.ok name
+  if rc == 0 and line in plain: t.ok name
   elif rc != 0: t.no name, "the compile failed: " & outp.splitLines()[^1]
-  else: t.no name, "want `USE " & line & "` in:\n" & plain
+  else: t.no name, "want `" & line & "` in:\n" & plain
+
+proc classifies(t: var T, idx: int, name, line: string) =
+  ## A rule U classification line.
+  t.dumpHas(idx, name, "USE " & line)
 
 proc run*(t: var T) =
-  ## Registers the rule U classification assertions.
+  ## Registers the rule U classification and rule P assertions.
   t.src """
 import seq
 
@@ -89,3 +98,59 @@ fn main() -> int:
   t.classifies d, "a match subject is a borrow", "which s borrow final 25:9"
   t.classifies d, "an argument is `arg`, for rule P to settle",
                "main a arg final 31:16"
+
+  # --- rule P: a parameter consumes iff some final read of it is a sink ----
+  #
+  # Beside today's Nim `sink` (codegen_common.paramIsMovable), with the
+  # reason P gives. Over every .tuck in the tree P and `sink` agree on 213
+  # owning parameters and differ on 17, all of one kind — pinned below as
+  # `bytesOf`: a final read handed to a runtime extern that only reads it,
+  # which today's analysis takes to keep anything it cannot see into.
+  t.src """
+import seq
+import str
+
+pending:
+  fn opaque({text: str}) -> str
+
+fn keepIt({xs: Seq[int]}) -> Seq[int]:
+  return xs
+
+fn lenOf({xs: Seq[int]}) -> int:
+  return xs.len
+
+fn bytesOf({t: str}) -> int:
+  return {t: t} byteCount
+
+fn viaKeep({xs: Seq[int]}) -> Seq[int]:
+  return {xs: xs} keepIt
+
+fn viaOpaque({t: str}) -> str:
+  return {text: t} opaque
+
+fn grow({xs: Seq[int]}) -> Seq[int]:
+  return {items: xs, value: 1} push
+
+fn walk({xs: Seq[int], n: int}) -> int:
+  if n == 0:
+    return xs.len
+  return {xs: xs, n: n - 1} walk
+
+fn main() -> int:
+  return 0
+"""
+  let p = t.paramsDump()
+  t.dumpHas p, "P: a parameter returned is consumed (a sink)",
+            "PARAM keepIt xs same (a sink at 8:10)"
+  t.dumpHas p, "P: one only measured is borrowed", "PARAM lenOf xs same\n"
+  t.dumpHas p, "P: one handed to a runtime reader is borrowed (today " &
+               "over-approximates it as kept: the one kind of difference)",
+            "PARAM bytesOf t today-only\n"
+  t.dumpHas p, "P: one handed to a consuming parameter is consumed",
+            "PARAM viaKeep xs same (keepIt keeps it at 17:15)"
+  t.dumpHas p, "P: a callee with no body is taken to keep it (the safe " &
+               "default)", "PARAM viaOpaque t same (opaque has no body"
+  t.dumpHas p, "P: the runtime table says push keeps its items",
+            "PARAM grow xs same (the runtime's push keeps it at 23:18)"
+  t.dumpHas p, "P: a recursive reader borrows (the least fixed point)",
+            "PARAM walk xs same\n"

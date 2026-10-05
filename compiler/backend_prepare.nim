@@ -78,6 +78,7 @@ import twin_calls
 import call_args
 import ownership_nodes
 import ownership_rules
+import ownership_shadow
 import pipeline
 import verbose
 
@@ -241,6 +242,7 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
       materializeCopies(semLayer, lm.m, ownsStrs = backend == bkOdin)
     if backend == bkOdin:
       materializeDrops(semLayer, lm.m)
+    diffParams(semLayer, lm.m, nim = backend == bkNim)  # TUCK_DEBUG_OWN=params
     vSub(lm.name, ts)
   vEnd(psLowering, t0)
 
