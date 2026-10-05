@@ -29,7 +29,7 @@ fn main() -> int:
   return 9
 """
   t.okCheck "impl: nim parses and checks"
-  t.emits    "the impl module is imported",    "import std/strutils"
+  t.emits    "the impl module is imported",    "import \"std/strutils\""
   # Nim exports by MODULE NAME, not by path: `export std/strutils` is a syntax
   # error, so the basename is what gets re-exported.
   t.emits    "and re-exported by basename",    "export strutils"
@@ -47,7 +47,7 @@ extern [impl: nim "std/strutils", odin "core:strings"]:
 fn main() -> int:
   return 0
 """
-  t.emits     "nim module name passes through",  "import std/strutils"
+  t.emits     "nim module name passes through",  "import \"std/strutils\""
   t.emitsOdin "odin module name passes through", "import strings \"core:strings\""
 
   # --- Odin gets a forwarder, because it has no unqualified import ---------
@@ -107,6 +107,21 @@ extern [impl: nim "./nowhere/mod"]:
 fn main() -> int:
   return 0
 """
-  t.emits "a ./ path is rebased off the output dir", "import \\.\\..*nowhere/mod"
+  t.emits "a ./ path is rebased off the output dir", "import \"\\.\\..*nowhere/mod\""
+
+  # An import is a PATH, and Nim reads an unquoted one as expressions: a shim
+  # under `my-shims/` was imported as `my - shims`, and failed to open. The
+  # same broke every Nim build from a checkout under such a directory — the
+  # runtime import is a path too. Both are quoted now.
+  t.src """
+extern [impl: nim "./my-shims/helper"]:
+  fn seven() -> int
+
+fn main() -> int:
+  return {} seven
+"""
+  t.addFile "my-shims/helper.nim", "proc seven*(): int = 7\n"
+  t.emits "a path import is quoted", "import \".*my-shims/helper\""
+  t.runs  "a shim under a directory with a dash in its name builds and runs", 7
 
   t.finish()

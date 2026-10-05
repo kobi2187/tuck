@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 export tuck_rt
 
 proc tuckˑfnˑms*(value: uint32): tuckˑtypeˑMilliseconds

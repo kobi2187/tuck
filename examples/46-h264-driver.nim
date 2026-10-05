@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 import scheduler
 
 proc tuckˑdecisionˑroute*(nal: tuckˑtypeˑNalKind, configured: bool, midFrame: bool): tuckˑtypeˑAction

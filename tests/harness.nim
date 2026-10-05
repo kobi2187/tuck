@@ -188,7 +188,7 @@ proc addFile*(t: var T, fname, code: string) =
   ## Write an extra file beside the current snippet, without starting a new
   ## case. For multi-module tests.
   if t.phase == pCollect:
-    createDir(t.cur.parentDir / t.cur.lastPathPart)
+    createDir((t.cur / fname).parentDir)      # `fname` may name a subdir
     writeFile(t.cur / fname, code)
 
 proc curDir*(t: T): string =
@@ -557,7 +557,7 @@ proc frozen*(t: var T, name: string) =
   let raw = t.emittedNim(i)
   var keep: seq[string]
   for line in raw.split('\n'):
-    if line.startsWith("import ") and line.endsWith("compiler/tuck_rt"): continue
+    if line.startsWith("import ") and line.endsWith("compiler/tuck_rt\""): continue
     keep.add line
   t.compareGolden(name, "nim", keep.join("\n"))
 

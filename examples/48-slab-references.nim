@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 
 proc tuckˑfnˑemptyList*(): SlabRef
 proc tuckˑfnˑafter*(n: SlabRef): SlabRef

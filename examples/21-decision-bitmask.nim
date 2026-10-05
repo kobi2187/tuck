@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 
 proc tuckˑdecisionˑroute*(urgency: tuckˑtypeˑPriority, encrypted: bool): int
 

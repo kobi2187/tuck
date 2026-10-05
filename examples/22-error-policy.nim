@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 
 proc tuckˑfnˑreadSensor*(port: uint8): TuckResult[tuple[value: uint16]]
 proc tuckˑfnˑpoll*(port: uint8): int

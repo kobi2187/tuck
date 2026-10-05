@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 import sys
 
 proc tuckˑfnˑplus*(a: int, b: int): int

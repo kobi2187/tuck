@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 
 proc tuckˑfnˑms*(value: uint32): tuckˑtypeˑMilliseconds
 proc tuckˑfnˑdelay*(ms: tuckˑtypeˑMilliseconds): tuple[done: bool]

@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 import scheduler
 
 proc tuckˑdecisionˑnextPhase*(current: tuckˑtypeˑPhase, demand: tuckˑtypeˑDemand, preempt: bool): tuckˑtypeˑPhase
