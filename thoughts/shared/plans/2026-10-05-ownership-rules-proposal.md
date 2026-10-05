@@ -224,3 +224,78 @@ old one, explain every difference, then switch.
 | Q5 | `str` follows `Seq`: owned, cloned into a sink from a literal; a literal is static and never dropped | yes; refcounted sharing only if a measurement asks |
 | Q6 | Migration through shadow mode and a corpus differential (§5) before anything switches | yes |
 | Q7 | A39 waits for phase 6, not a separate fix first | yes: a fix outside the model would be a twenty-first rule |
+
+**RULED 2026-10-05 (owner): yes to all.** "Work on this. If it helps to
+finish stages C and D first, do so. Look in a large overview way, to see how
+all parts integrate and support each other well to achieve the compiler
+goals."
+
+## 7. The whole pipeline, after
+
+README states the goals this work answers to:
+- remove whole classes of bugs, not just make them less likely;
+- predictable memory for embedded use;
+- identical behaviour on all three backends;
+- short iteration.
+
+COMPILER-TOUR states the principle the ownership machinery breaks most:
+**a backend prints; it does not decide.** Today the emitters still decide
+four things:
+- copies, from the marks (`needsDup`, `recordDupFields`);
+- frees, from Odin's free lists (`scopeFrees`);
+- twin routing (`callsTwin`, `threadedCall`);
+- in-place append and concatenation (`selfAppendValue`, `selfConcatValue`).
+
+The pipeline this proposal leads to has one owner per question:
+
+```
+parse → rewrite → typecheck → semantics → mangle
+  → lowering                 shrink the language (desugar, explode payloads)
+  → SSA mirror (ssLowered)   WHEN: each value's uses, and its final one
+  → ownership elaboration    WHAT: rules U S P D M E A T write explicit
+                             exkCopy / exkAppend / exkDrop / reset nodes
+                             and the consuming-parameter set
+  → check (rule V)           every owned value moved or dropped exactly
+                             once on every path; under --verify-stages
+  → emit                     print the nodes, using the type glue (rule G)
+```
+
+How the parts hold each other up:
+- **Lowering** makes the elaborator's job a closed list. Every construct it removes is a node kind rule U never has to classify.
+- **The mirror** is the only source of "final use". The elaborator never re-derives liveness, and `analysis_liveness` stays as the mirror's oracle.
+- **The elaborator** is the only source of copy, move and drop. No emitter, analysis or second walk re-asks.
+- **Explicit nodes** make the decisions inspectable: `tuck d --stage:lowering` shows every copy and every drop. They are also testable, with `emits` over the node, and they cannot be missed at a syntactic position, because the emitter has none left to decide at.
+- **Type glue** makes the decision independent of the type's shape. A new kind of type gets correct ownership by getting glue, not by every pass learning a slot list.
+- **The checker and the gates** (rule V; the tracked `odin_backend` run; the peak-RSS pins; `containers_bench`) catch a wrong decision at compile time where they can and at run time where they must. `TUCK_TRACK` is the instrument that proved each of this week's fixes.
+
+## 8. Execution order
+
+Stage C first, as the owner allowed, because it changes **where** decisions
+live without changing any decision. Every step below keeps the emitted
+examples byte-identical, or explains each line that changes.
+
+1. **Stage C: decisions become nodes, written from today's decisions.** A
+   last step of `backend_prepare` turns what the passes decided into tree
+   nodes, and each emitter's query becomes a print:
+   1. the in-place append and concatenation (`exkAppend`);
+   2. copies (`exkCopy`, with today's field list, which is interim until
+      rule G);
+   3. frees: a scope-end drop as a `defer` of an `exkDrop`, an overwrite
+      drop before its assignment, and the twin's parameter frees.
+
+   No analysis changes. The lowered SSA graph is dropped from the cache
+   once the tree is rewritten, since nothing after this step may read it.
+2. **Glue (rule G)** for Odin and D, per owning type, tested under
+   `TUCK_TRACK`.
+3. **Stage D: the elaborator, in shadow mode.** It writes the same nodes
+   from the rules. A differential against step 1's nodes runs over the
+   corpus, both apps, Savina and the stdlib, and every difference is
+   explained.
+4. **Switch backend by backend**, Odin first, since it is where frees exist:
+   1. frees (D, M), retiring `analysis_ownership`, `ownership_escape`,
+      `ownership_str` and `buffer_check`;
+   2. copies (S), retiring `lowering_seqcopy` and `analysis_provenance`;
+   3. consuming parameters (P), retiring the twins and making Nim's `sink`
+      read the same set.
+5. **What falls out:** A39, the local-field take (`slab_thread` linear on
+   Odin and D), and the tracked list's one exception.
