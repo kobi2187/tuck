@@ -967,7 +967,13 @@ proc genList(ctx: var OdinCodegenCtx, e: Expr): string =
 proc genFor(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## Odin's range-for yields the index natively, so `for idx, item in xs:`
   ## needs no counter to maintain.
-  let iterStr = ctx.genOdinExpr(e.iterable)
+  ##
+  ## An iterable holding a compound literal is parenthesized. In a `for`
+  ## header Odin, like Go, reads the literal's `{` as the loop body's start:
+  ## `for r in [dynamic]int{1, 2, 3} {` was a syntax error, so `for r in
+  ## [1, 2, 3]:` built on Nim and D and not on Odin.
+  var iterStr = ctx.genOdinExpr(e.iterable)
+  if '{' in iterStr: iterStr = "(" & iterStr & ")"
   let vars = if e.iter != nil and e.iter.kind == pkTuple and e.iter.elems.len == 2:
                genPatternStr(e.iter.elems[1]) & ", " &
                  genPatternStr(e.iter.elems[0])

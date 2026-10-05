@@ -3170,4 +3170,38 @@ fn main() -> int:
   t.quietly: t.hostPeakRss("A39: building recursive values in a loop does not accumulate them", 32768)
   t.bugOpen "A39: building recursive values in a loop does not accumulate them"
 
+  # A46 (found 2026-10-05, writing A45's pin): `for r in [1, 2, 3]:` built
+  # on Nim and D and not on Odin. In a `for` header Odin, like Go, reads a
+  # compound literal's `{` as the start of the loop body, so
+  # `for r in [dynamic]int{1, 2, 3} {` was a syntax error. Fixed 2026-10-05:
+  # an iterable holding a literal is parenthesized (codegen_odin.genFor).
+  t.src """
+fn main() -> int:
+  var n = 0
+  for r in [1, 2, 3]:
+    n = n + r
+  return n
+"""
+  t.quietly: t.hostRuns("A46: a list literal is iterable on every backend", 6)
+  t.bugFixed "A46: a list literal is iterable on every backend"
+
+  # TUCK_TRACK's blind spot (found 2026-10-05 with A41): the Odin entry point
+  # installed the allocation tracker only in a program that used the
+  # runtime, on the reasoning that without one there is nothing to track.
+  # A41's program calls nothing in the runtime and leaks all the same, and
+  # tracked it exited 2, clean. Fixed 2026-10-05: a program that allocates
+  # (`[dynamic]`, `delete(`) imports the runtime and is tracked.
+  t.src """
+import seq
+
+type Bag:
+  items: Seq[int]
+
+fn main() -> int:
+  var b = {items: [1]} Bag
+  return b.items.len
+"""
+  t.quietly: t.emitsOdin("TUCK_TRACK reaches a program that allocates without calling the runtime", "context\\.allocator = rt\\.tuckTrackAllocator\\(\\)")
+  t.bugFixed "TUCK_TRACK reaches a program that allocates without calling the runtime"
+
   t.finish()

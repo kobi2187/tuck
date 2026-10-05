@@ -262,6 +262,21 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **A46 — a list literal could not be iterated on Odin.** `for r in [1, 2,
+  3]:` built on Nim and D. On Odin, `for r in [dynamic]int{1, 2, 3} {` was
+  a syntax error: in a `for` header Odin, like Go, reads a compound
+  literal's `{` as the loop body's start. An iterable holding a literal is
+  parenthesized now (`codegen_odin.genFor`). Found writing A45's pin. Fixed
+  2026-10-05. `known_bugs`, "A46: …".
+
+- **`TUCK_TRACK` did not track a program that never calls the runtime.**
+  The Odin entry point installed the tracker only where the runtime was
+  imported, on the reasoning that without it there is nothing to track. But
+  a program allocates without it (`[dynamic]` literals, `append`), and A41's
+  program leaked while its tracked build exited clean. A program that
+  allocates now imports the runtime and is tracked. Fixed 2026-10-05.
+  `known_bugs`, "TUCK_TRACK reaches a program that allocates…".
+
 - **Odin leaked one runtime allocation per task call and per `waitUntil`,
   and `TUCK_TRACK` flagged every actor program.** Once tracking covered every
   program that imports the runtime (`dd3211e`), a sweep of every runnable

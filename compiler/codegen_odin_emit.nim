@@ -123,6 +123,19 @@ proc shouldImportRt(m: Module, body, mains: string): bool =
   runtimeUsers(m, actorNames, hasTasks)
   actorNames.len > 0 or hasTasks or "rt." in body or "rt." in mains
 
+proc allocates(body: string): bool =
+  ## The program builds Seqs (`[dynamic]`) or frees heap values of its own.
+  ## Such a program is tracked under TUCK_TRACK even when it calls nothing in
+  ## the runtime: `b.items = [2, 3]` leaks the `[1]` it overwrote all the
+  ## same, and the tracker is the runtime's (A41 was invisible to it).
+  "[dynamic]" in body or "delete(" in body
+
+proc tracksAllocations(m: Module, body, mains: string): bool =
+  ## Does the entry point install the allocation tracker? Whenever the
+  ## program uses the runtime or allocates at all. The header imports the
+  ## runtime under the same condition, and the tracker line uses it.
+  shouldImportRt(m, body, mains) or allocates(body)
+
 proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
                  realModules: Table[string, Module]): seq[string] =
   ## Only import what the emitted body actually uses — Odin rejects unused
@@ -138,7 +151,7 @@ proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
   # The entry point's slab reports and releases name the runtime and each
   # slab's package, though the body may name neither (genEntryPoint).
   let slabPkgs = slabPackages(m, realModules)
-  if shouldImportRt(m, body, mains) or slabPkgs.len > 0:
+  if tracksAllocations(m, body, mains) or slabPkgs.len > 0:
     result.add("import rt \"./tuckrt\"")
   # Imported Tuck modules are sibling packages (mod_<name>/), referenced
   # qualified as `<name>.fn` — import each one the body actually calls. The
@@ -220,19 +233,20 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string
   ## reactor, start every actor's drain coroutine, run main, then drive the
   ## loop so spawned tasks and actors get to finish.
   result = "main :: proc() {\n"
-  # Allocation tracking, ONLY for a program that already uses the runtime.
+  # Allocation tracking, for a program that uses the runtime or allocates.
   #
   # Odin rejects an unused import, so the header carries `rt` only when the
   # body needed it — and emitting these two lines unconditionally forced that
   # dependency on every program, breaking 107 assertions over programs that
-  # touch no runtime at all. It is also the right rule on its own terms: with
-  # no runtime there is no `tuckSeqCopy`, so there is nothing to track.
+  # touch no runtime at all. A program that allocates needs it, though, with
+  # or without a runtime call: a Seq literal it overwrites leaks all the
+  # same, and was untracked until 2026-10-05 (A41, found by rule V).
   #
   # The SAME condition as the header's `import rt`. This read the entry text
   # alone, so a program whose runtime calls all sit in its fns — every
   # `tuckSeqCopy` in a body, every twin — imported the runtime and was never
   # tracked: `-define:TUCK_TRACK=true` reported nothing, leak or bad free.
-  let tracks = shouldImportRt(m, body, mains) or
+  let tracks = tracksAllocations(m, body, mains) or
                slabPackages(m, ctx.realModules).len > 0
   if tracks:
     result.add("\tcontext.allocator = rt.tuckTrackAllocator()\n")
