@@ -54,4 +54,6 @@ tuckˑfnˑhandleUart :: proc () {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
+	rt.tuckTrackCheck()
 }

@@ -76,6 +76,7 @@ proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string
 # The bigger genExpr arms live as their own procs so the dispatch `case` reads
 # as a routing table; each takes the ctx + node and recomputes its own indent.
 proc genExprAssign(ctx: var CodegenCtx, e: Expr): string
+proc genAppend(ctx: var CodegenCtx, e: Expr): string
 proc genExprMatch(ctx: var CodegenCtx, e: Expr): string
 proc genExprSend(ctx: var CodegenCtx, e: Expr): string
 proc genExprSelect(ctx: var CodegenCtx, e: Expr): string
@@ -328,6 +329,11 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   if ctx.isRecordConstruction(e): return ctx.genRecordCtor(e)
   let variant = ctx.asSumVariantCall(e)
   if variant != "": return variant
+  let actorMember = actorMemberCallee(ctx.res, e)
+  if actorMember != "":
+    # The actor's own member fn (A24): `self` is the state this handler or
+    # member already holds.
+    return actorMember & "(" & (@["self"] & ctx.genCallArgs(e)).join(", ") & ")"
   var calleeStr = ctx.genExpr(e.callee)
   # A member call emits QUALIFIED, matching the declaration. Derived from the
   # RECEIVER's type rather than the callee's name, because the name alone
@@ -511,6 +517,20 @@ proc genPoolOp(ctx: var CodegenCtx, e: Expr): string =
   for a in e.poolOperands: args.add ctx.genExpr(a)
   poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
 
+proc genSlabOp(ctx: var CodegenCtx, e: Expr): string =
+  ## A slab operation (slab proposal, section 3) on the runtime's slab procs.
+  ## `get` and `set` reach the value through the checked cell, as a field
+  ## access through a reference does (exkSlabCell).
+  let arg = if e.slabArg != nil: ctx.genExpr(e.slabArg) else: ""
+  let value = if e.slabValue != nil: ctx.genExpr(e.slabValue) else: ""
+  let slab = declAnywhere(ctx.module, ctx.realModules, e.slabRef.refName, dkSlab)
+  let arena = arenaOfSlab(ctx.module, ctx.realModules, slab)
+  if e.slabOp == soNew and arena != nil and arena.arenaSize > 0:
+    # An arena's budget pays for the cell first (tuckArenaNew).
+    return "tuckArenaNew(" & e.slabRef.refName & ", " & arena.name & ", " &
+           $slab.slabCost & ", " & value & ")"
+  slabOpCall(e.slabOp, e.slabRef.refName, arg, value)
+
 proc genIfaceCall(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## A call through an interface value, lowered (lowering_iface): a `case` on
   ## the tag, each arm binding a mutable copy of the payload — a member takes
@@ -518,12 +538,24 @@ proc genIfaceCall(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## member call the lowering built. A case EXPRESSION, so it composes
   ## anywhere a value is expected.
   let recv = ctx.genExpr(e.dispatchRecv)
+  let t = ctx.res.typeFor(e)
+  let isVoid = t == nil or (t.kind == tkNamed and t.name == "void")
   var arms: seq[string]
   for arm in e.dispatchArms:
+    let payload = recv & "." & arm.satisfier & "Val"
+    var body = ind & "    var " & arm.bindName & " = " & payload & "\n"
+    if not arm.writesBack:
+      body.add(ind & "    " & ctx.genExpr(arm.call))
+    elif isVoid:
+      # The member changed the copy; the interface value takes it back.
+      body.add(ind & "    " & ctx.genExpr(arm.call) & "\n" &
+               ind & "    " & payload & " = " & arm.bindName)
+    else:
+      body.add(ind & "    let tuckResult = " & ctx.genExpr(arm.call) & "\n" &
+               ind & "    " & payload & " = " & arm.bindName & "\n" &
+               ind & "    tuckResult")
     arms.add(ind & "  of " & e.dispatchIface & "_is_" & arm.satisfier & ":\n" &
-             ind & "    var " & arm.bindName & " = " & recv & "." &
-             arm.satisfier & "Val\n" &
-             ind & "    " & ctx.genExpr(arm.call))
+             body)
   if arms.len == 0: return ""
   "(block:\n" & ind & "  case " & recv & ".tag\n" & arms.join("\n") & ")"
 
@@ -579,6 +611,14 @@ proc genStruct(ctx: var CodegenCtx, e: Expr): string =
   var parts: seq[string]
   for f in e.fields: parts.add(f.name & ": " & ctx.genExpr(f.value))
   "(" & parts.join(", ") & ")"
+
+proc genFill(ctx: var CodegenCtx, e: Expr): string =
+  ## `[v; N]` (R8): a zero fill is `default(array[N, T])`, the zeroed
+  ## storage; any other value goes through `tuckFill`.
+  let n = ctx.genExpr(e.fillCount)
+  let t = genType(fillElemType(ctx.res, e))
+  if isZeroFill(e): "default(array[" & n & ", " & t & "])"
+  else: "tuckFill[" & n & ", " & t & "](" & t & "(" & ctx.genExpr(e.fillValue) & "))"
 
 proc genList(ctx: var CodegenCtx, e: Expr): string =
   ## `@[a, b]` for a `Seq[T]` (Nim's dynamic seq), bare `[a, b]` for an
@@ -825,7 +865,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   case e.kind
   of exkLit: ctx.genLit(e)
   of exkVar: ctx.genVar(e)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     e.refName
   of exkField: ctx.genFieldAccess(e, ind)
   of exkQualified: genQualified(ctx, e)
@@ -833,6 +873,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkCombinator: ctx.genCombinator(e)
   of exkStruct: ctx.genStruct(e)
   of exkList: ctx.genList(e)
+  of exkFill: ctx.genFill(e)
   of exkBracket, exkBracketAssign: ctx.genCallResolved(e)
   of exkFor: ctx.genFor(e, ind)
   of exkWhile: ctx.genWhile(e, ind)
@@ -843,6 +884,12 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkBlock: ctx.genBlock(e, ind)
   of exkIf: ctx.genIf(e, ind)
   of exkAssign: ctx.genExprAssign(e)
+  of exkAppend: ctx.genAppend(e)
+  # Nim's `seq` and `string` assignment already copies, so prepare never
+  # makes an `exkCopy` on this backend; if one arrives, the value IS its copy.
+  of exkCopy: ctx.genExpr(e.copied)
+  of exkDrop:
+    raiseAssert "nim: ARC frees; prepare makes an exkDrop for Odin only"
   of exkMatch: ctx.genExprMatch(e)
   of exkReturn: ctx.genReturn(e)
   of exkRaise: ctx.genRaise(e)
@@ -872,7 +919,23 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkOrdinal: "ord(" & ctx.genExpr(e.ordinalOf) & ")"   # enum and bool alike
   of exkValidate: "validate(" & ctx.genExpr(e.validated) & ")"
   of exkIfaceCall: ctx.genIfaceCall(e, ind)
+  of exkIfaceIs:
+    # `| Flac f ->`'s test: the interface value's tag (lowering_iface).
+    "(" & ctx.genExpr(e.tagSubject) & ".tag == " & e.tagIface & "_is_" &
+      e.tagObject & ")"
+  of exkIfacePayload: ctx.genExpr(e.tagSubject) & "." & e.tagObject & "Val"
+  of exkWrapOk:
+    # A plain value into a `?T` place (lowering_optional). The object
+    # constructor, not `tok[T](v)`, for the bracket ambiguity genReturn notes.
+    "TuckResult[" & genType(e.optInner) & "](status: tsOk, value: " &
+      ctx.genExpr(e.optValue) & ")"
+  of exkAbsent: "TuckResult[" & genType(e.optInner) & "](status: tsAbsent)"
   of exkPoolOp: ctx.genPoolOp(e)
+  of exkSlabOp: ctx.genSlabOp(e)
+  of exkArenaReset: arenaResetProc(e.arenaRef.refName) & "()"
+  of exkSlabCell:
+    # The value in the cell a reference names (lowering_slab), checked.
+    slabCellValue(e.cellSlab.refName, ctx.genExpr(e.cellRef))
 
 proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
   ## Emitting an assignment TARGET. A bracket index must address the element
@@ -916,32 +979,22 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
     return "var " & e.target.name & " = " & spawn
   ctx.genExpr(e.target) & " = " & spawn
 
-proc genSelfConcatAssignment(ctx: var CodegenCtx, e: Expr): string =
-  ## `s = s + v` on a str appends in place. Nim's `string` is mutable and
-  ## carries spare capacity, so `add` is amortised where `tuckConcat` builds
-  ## a whole new string every time — the difference between an O(n) loop and
-  ## an O(n^2) one.
-  let appended = selfConcatValue(ctx.res, e)
-  if appended == nil: return ""
-  let tgt = if ctx.res.isOwnerField(e.target): "self." & e.target.name
-            else: e.target.name
-  tgt & ".add(" & ctx.genExpr(appended) & ")"
-
-proc genSelfAppendAssignment(ctx: var CodegenCtx, e: Expr): string =
-  ## Self-append: `xs = {items: xs, ...} push` appends in place.
+proc genAppend(ctx: var CodegenCtx, e: Expr): string =
+  ## `xs += v` — an append, or a str concat, grown in place. ownership_nodes
+  ## made the decision (`xs = {items: xs, value: v} push` and `s = s + t`,
+  ## each assigned back over its own argument); this prints it. Nim's `seq`
+  ## and `string` both carry spare capacity, so `add` is amortised where
+  ## `push` / `tuckConcat` build a whole new value every time — the
+  ## difference between an O(n) loop and an O(n^2) one.
   ##
-  ## The target is qualified here rather than taken as a bare `e.target.name`:
-  ## this path bypasses genAssign's field handling, and the appended VALUE is
-  ## built by the ordinary expression emitter, which does add the `self.`. An
-  ## actor handler therefore emitted `xs.add(self.xs[...])` — bare on the
-  ## left, qualified on the right — and Nim rejected it as an undeclared
-  ## identifier. The other two backends have the same two fast paths and had
-  ## the same hole. EV-9.
-  let appended = selfAppendValue(ctx.res, e)
-  if appended == nil: return ""
-  let tgt = if ctx.res.isOwnerField(e.target): "self." & e.target.name
-            else: e.target.name
-  tgt & ".add(" & ctx.genExpr(appended) & ")"
+  ## The target is qualified here rather than taken as a bare name: the
+  ## appended VALUE is built by the ordinary expression emitter, which does
+  ## add the `self.`. An actor handler therefore emitted `xs.add(self.xs[...])`
+  ## — bare on the left, qualified on the right — and Nim rejected it as an
+  ## undeclared identifier. The other two backends had the same hole. EV-9.
+  let t = e.appendTarget
+  let tgt = if ctx.res.isOwnerField(t): "self." & t.name else: t.name
+  tgt & ".add(" & ctx.genExpr(e.appendValue) & ")"
 
 proc genVarDeclaration(ctx: var CodegenCtx, e: Expr, targetStr, valStr: string): string =
   ## Variable declaration with optional stated type.
@@ -983,14 +1036,10 @@ proc genFieldWrite(ctx: var CodegenCtx, e: Expr,
 
 proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
   ## An assignment or binding, trying the special forms first: a task result
-  ## slot, `xs = xs + [v]` as an append, `s = s + t` as an in-place concat, a
-  ## declaration; else a plain field or variable write.
+  ## slot, a declaration; else a plain field or variable write. (An append
+  ## grown in place is no longer one of them: it reaches here as `exkAppend`.)
   let taskResult = ctx.genTaskAssignment(e)
   if taskResult != "": return taskResult
-  let appendResult = ctx.genSelfAppendAssignment(e)
-  if appendResult != "": return appendResult
-  let concatResult = ctx.genSelfConcatAssignment(e)
-  if concatResult != "": return concatResult
   let targetStr = ctx.genAssignTarget(e.target)
   let valStr = ctx.genExpr(e.assignVal)
   if e.target.kind == exkVar:
@@ -1098,8 +1147,21 @@ proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
   # had to take a global lock and signal every actor in the program to reach
   # the one that owned this mailbox — O(actors) per send, on a line shared by
   # every sender. The slot global is right here at the send site.
-  "discard enqueue(" & singleton & ".mailbox, " & msgType & "(" & ctorArgs &
-    "))\n" & ind & "tuckNotifySend(" & actorSlotName(e.sendActor) & ")"
+  #
+  # The enqueue is the actor's `on_full` (R6): the message is built once and
+  # handed to the wrapper, which waits, stops or — `drop` — is the bare
+  # enqueue every send used to be.
+  let mb = singleton & ".mailbox"
+  let msg = msgType & "(" & ctorArgs & ")"
+  let target = actorDeclNamed(ctx.module, ctx.realModules, e.sendActor)
+  let actor = actorLabel(target, e.sendActor)
+  let enqueue =
+    case actorOnFull(target)
+    of ofDrop: "discard enqueue(" & mb & ", " & msg & ")"
+    of ofWait: "sendWaiting(" & mb & ", " & msg & ", " &
+               actorSlotName(e.sendActor) & ", " & escape(actor) & ")"
+    of ofAssert: "sendAsserting(" & mb & ", " & msg & ", " & escape(actor) & ")"
+  enqueue & "\n" & ind & "tuckNotifySend(" & actorSlotName(e.sendActor) & ")"
 
 proc selectTimeoutMs(ctx: var CodegenCtx, arm: SelectArm): string =
   ## The `timeout` arm's deadline as a plain int of milliseconds.

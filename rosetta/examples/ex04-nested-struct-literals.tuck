@@ -1,5 +1,5 @@
 # Nested struct literals, 4 levels deep, long field lists
-import io
+import console
 
 type Address:
   street: str

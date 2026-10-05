@@ -190,7 +190,8 @@ iterator childSlots*(e: Expr): var Expr =
   if e != nil:
     case e.kind
     of exkLit, exkVar, exkQualified, exkImport, exkBreak, exkContinue,
-       exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+       exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
+       exkSlabRef, exkArenaRef:
       discard
     of exkField:
       yield e.receiver
@@ -199,6 +200,9 @@ iterator childSlots*(e: Expr): var Expr =
       for f in e.fields.mitems: yield f.value
     of exkList:
       for it in e.items.mitems: yield it
+    of exkFill:
+      yield e.fillValue
+      yield e.fillCount
     of exkBracket:
       yield e.brReceiver
       for a in e.brArgs.mitems: yield a
@@ -229,7 +233,6 @@ iterator childSlots*(e: Expr): var Expr =
     of exkMatch:
       yield e.subject
       for arm in e.arms.mitems:
-        yield arm.guard
         yield arm.body
     of exkFor:
       yield e.iterable
@@ -257,10 +260,25 @@ iterator childSlots*(e: Expr): var Expr =
     of exkIfaceCall:
       yield e.dispatchRecv
       for arm in e.dispatchArms.mitems: yield arm.call
+    of exkIfaceIs, exkIfacePayload: yield e.tagSubject
+    of exkWrapOk, exkAbsent: yield e.optValue
     of exkPoolOp:
       yield e.poolRef
       yield e.poolHandle
       yield e.poolValue
+    of exkSlabOp:
+      yield e.slabRef
+      yield e.slabArg
+      yield e.slabValue
+    of exkSlabCell:
+      yield e.cellSlab
+      yield e.cellRef
+    of exkArenaReset: yield e.arenaRef
+    of exkAppend:
+      yield e.appendTarget
+      yield e.appendValue
+    of exkCopy: yield e.copied
+    of exkDrop: yield e.dropped
 
 proc poolOperands*(e: Expr): seq[Expr] =
   ## A pool op's operands in call order — the handle, then the value — for
@@ -316,7 +334,7 @@ iterator childDecls*(d: Decl): Decl =
       # nothing.
       yield d.errHandler
     of dkFn, dkTask, dkConst, dkExpr, dkStaticAssert, dkSelect, dkRegistry,
-       dkPool, dkRegister, dkImport, dkFnSig, dkSatisfies, dkResources:
+       dkPool, dkSlab, dkArena, dkRegister, dkImport, dkFnSig, dkSatisfies, dkResources:
       discard
 
 iterator ownTypes*(d: Decl): Type =
@@ -346,6 +364,7 @@ iterator ownTypes*(d: Decl): Type =
     of dkActor:
       for f in d.actorFields: yield f.typ
     of dkPool: yield d.poolElem
+    of dkSlab: yield d.slabElem
     of dkRegistry:
       for v in d.variants:
         for f in v.fields: yield f.typ
@@ -354,8 +373,9 @@ iterator ownTypes*(d: Decl): Type =
     # types the expression walk reaches; dkErrors a policy name; dkImport a
     # module path; dkSelect arm bodies; dkSatisfies interface NAMES, resolved
     # by conformance. dkMixin/dkExtern/dkPending/dkInterface/dkWhen hold only
-    # members — childDecls reaches those.
-    of dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
+    # members — childDecls reaches those. dkArena names no type: its slabs,
+    # one per element type, are dkSlabs of their own.
+    of dkArena, dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
        dkSelect, dkSatisfies, dkMixin, dkExtern, dkPending, dkInterface,
        dkGroup, dkWhen, dkPublic, dkResources:
       discard
@@ -390,7 +410,7 @@ iterator ownExprSlots*(d: Decl): var Expr =
       for f in d.actorFields.mitems:
         if f.default != nil: yield f.default
     of dkType, dkObject, dkMixin, dkExtern, dkPending, dkWhen, dkInterface,
-       dkGroup, dkRegistry, dkPool, dkRegister, dkErrors, dkImport,
+       dkGroup, dkRegistry, dkPool, dkSlab, dkArena, dkRegister, dkErrors, dkImport,
        dkFnSig, dkSatisfies, dkPublic, dkResources:
       discard
 
@@ -568,6 +588,15 @@ proc clearIds*(m: var Module) =
   ## Clears the ids of every declaration in the module, so a later
   ## `assignIds` numbers the whole tree afresh.
   for d in m.decls: clearIds(d)
+
+proc freshIds*(d: Decl) =
+  ## Renumber a COPIED declaration throughout — itself, its members, every
+  ## expression — so it can live beside its original in one program. An
+  ## importer's copy of an imported declaration (modules.importedCopy) that
+  ## shared its original's nodes became two objects under one id once each
+  ## backend took its own copy, and cross-wired the semantic layer (A31).
+  clearIds(d)
+  assignIds(d, globalNodeCounter)
 
 proc newNodeId*(): NodeId =
   ## For nodes minted AFTER parsing (the checker synthesizes calls). Keeps

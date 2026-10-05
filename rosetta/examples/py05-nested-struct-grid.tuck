@@ -1,5 +1,5 @@
 # deeply nested struct literals; chained indexing grid[i][j]
-import io
+import console
 import seq
 
 type Cell:

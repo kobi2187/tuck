@@ -1,4 +1,4 @@
-import io
+import console
 
 fn main() -> int:
   {text: "hi"} printLine

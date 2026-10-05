@@ -34,6 +34,7 @@
 import ast, ast_ops, ast_query
 import resolution
 import tables
+from lowering_match_binds import replaceFreeIn
 
 const PayloadBind* = "tmp"
   ## what each arm's call names the payload; declared by the emitter's arm
@@ -87,7 +88,8 @@ proc dispatchArm(res: Resolution, e: Expr, s: Decl,
   # own type instead (covariant): that result enters the interface here.
   if returnsItself(mem, s) and returnsInterface(res, e, iface):
     res.markWrap(call, s.name, iface)
-  DispatchArm(satisfier: s.name, bindName: PayloadBind, call: call)
+  DispatchArm(satisfier: s.name, bindName: PayloadBind, call: call,
+              writesBack: writesSelf(res, mem))
 
 proc lowerOne(res: Resolution, m: Module, real: Table[string, Module],
               e: Expr) =
@@ -121,3 +123,122 @@ proc lowerIfaceCalls*(res: Resolution, m: Module,
   ## `real` is the rest of the program: an object in another module that
   ## satisfies the interface is an arm too.
   for e in m.bodies: lowerIn(res, m, real, e)
+
+# --- `match v: | Flac f -> ...` on an interface value (ruled 2026-09-28) ------
+#
+#     match v:                    if v is Flac:
+#       | Flac f -> A      ->       A   (each `f` read as `v as Flac`)
+#       | Mp3 m -> B              else: if v is Mp3:
+#       | _ -> C                    B   (each `m` read as `v as Mp3`)
+#                                 else:
+#                                   C
+#
+# An `if` chain, because every backend already prints `if` in both statement
+# and value position — Odin's value-position `match` is a ternary chain that
+# can declare nothing, so `f` is not a local but the payload read in place.
+# lowering_match_binds has already made the subject a place, read twice
+# safely (a snapshot temp when it was not), and turned a catch-all binding
+# into `_`. With no `_`, the checker proved every satisfier has an arm, so
+# the last arm needs no test.
+
+proc ifaceTag(res: Resolution, kind: ExprKind, subject: Expr,
+              iface, obj: string, t: Type): Expr =
+  ## An `exkIfaceIs` or `exkIfacePayload` on its own copy of `subject`.
+  var e = Expr(span: subject.span, kind: kind)
+  e.tagSubject = res.freshCopy(subject)
+  e.tagIface = iface
+  e.tagObject = obj
+  res.typed(e, t)
+
+proc asStatement(res: Resolution, body: Expr): Expr =
+  ## An arm body as a statement branch: an `if` whose branches are blocks
+  ## prints as a statement in every backend (ast_query.isValueIf), one whose
+  ## branches are not prints as a value.
+  if body == nil or body.kind == exkBlock: return body
+  res.typed(Expr(span: body.span, kind: exkBlock, stmts: @[body]),
+            res.typeFor(body))
+
+proc armChain(res: Resolution, e: Expr, iface: string, stmt: bool): Expr =
+  ## The match's arms as an `if` chain, built from the last arm up —
+  ## statement branches when the match was a statement, values otherwise.
+  let boolT = Type(span: e.span, kind: tkNamed, name: "bool")
+  for i in countdown(e.arms.high, 0):
+    var arm = e.arms[i]
+    let p = arm.pattern
+    if stmt: arm.body = res.asStatement(arm.body)
+    if p == nil or p.kind != pkTypeTest:
+      result = arm.body        # `_`: everything the arms above did not take
+      continue
+    let objT = Type(span: p.span, kind: tkNamed, name: p.testType)
+    let payload = res.ifaceTag(exkIfacePayload, e.subject, iface,
+                               p.testType, objT)
+    replaceFreeIn(res, arm.body, p.bindAs, payload)
+    if result == nil:
+      result = arm.body        # the last arm, when every satisfier has one
+    else:
+      result = res.typed(Expr(span: arm.span, kind: exkIf,
+                              cond: res.ifaceTag(exkIfaceIs, e.subject, iface,
+                                                 p.testType, boolT),
+                              thenBranch: arm.body, elseBranch: result),
+                         res.typeFor(e))
+
+proc isIfaceMatch(e: Expr): bool =
+  ## A match with a type-test arm — only ever on an interface value (the
+  ## checker refuses one anywhere else).
+  if e.kind != exkMatch: return false
+  for arm in e.arms:
+    if arm.pattern != nil and arm.pattern.kind == pkTypeTest: return true
+  false
+
+proc lowerOneMatch(res: Resolution, e: Expr, stmt: bool) =
+  ## Replace interface match `e` IN PLACE by its `if` chain, so every parent
+  ## keeps its pointer.
+  let t = res.typeFor(e.subject)
+  let chain = res.armChain(e, if t != nil: t.name else: "", stmt)
+  let id = e.id
+  e[] = chain[]
+  e.id = id
+  res.setType(e, res.typeFor(chain))
+
+proc lowerMatchesIn(res: Resolution, e: Expr) =
+  ## Every interface match under `e`, outermost first: its arms' bodies are
+  ## walked after, so a nested one is lowered in the arm that holds it. One
+  ## that is a statement of a block becomes a statement; any other is in
+  ## value position.
+  if e == nil: return
+  if e.kind == exkBlock:
+    var stmts: seq[Expr]
+    for s in e.stmts:
+      if s != nil and isIfaceMatch(s):
+        res.lowerOneMatch(s, stmt = true)
+        # One arm for the only satisfier: no test, just that arm's block —
+        # spliced in, so a `return` in it is the block's last statement
+        # (Odin refuses its fallback `return {}` after one).
+        if s.kind == exkBlock:
+          stmts.add s.stmts
+          continue
+      stmts.add s
+    e.stmts = stmts
+  elif isIfaceMatch(e):
+    res.lowerOneMatch(e, stmt = false)
+  for ch in e.children: lowerMatchesIn(res, ch)
+
+proc returnTailMatch(res: Resolution, d: Decl) =
+  ## A fn whose body ENDS in a value-armed match returns that value —
+  ## lowering.lowerTailReturns adds the `return` for a tail `match`, but runs
+  ## last, when this pass has made the match an `if`, which is not a tail
+  ## value. So it is said here.
+  if d == nil or d.kind != dkFn or d.fnReturnType == nil: return
+  let body = d.fnBody
+  if body == nil or body.kind != exkBlock or body.stmts.len == 0: return
+  let last = body.stmts[^1]
+  if last == nil or not isIfaceMatch(last) or matchArmsReturn(last): return
+  body.stmts[^1] = res.typed(Expr(span: last.span, kind: exkReturn,
+                                  returnVal: last), res.typeFor(last))
+
+proc lowerIfaceMatches*(res: Resolution, m: Module) =
+  ## Every `match` on an interface value in the module's bodies. After
+  ## lowering_match_binds (which made each subject a place) and before
+  ## lowerIfaceCalls (which then lowers the calls inside the arms).
+  for d in m.allDecls: res.returnTailMatch(d)
+  for e in m.bodies: lowerMatchesIn(res, e)

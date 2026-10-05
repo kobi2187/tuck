@@ -1,5 +1,5 @@
 # Match with a catch-all arm
-import io
+import console
 
 fn main() -> void [io]:
   let day = 3

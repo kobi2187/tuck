@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 import scheduler
 
 proc tuckˑdecisionˑnextPhase*(current: tuckˑtypeˑPhase, demand: tuckˑtypeˑDemand, preempt: bool): tuckˑtypeˑPhase
@@ -103,17 +103,17 @@ proc tuckˑdecisionˑnextPhase*(current: tuckˑtypeˑPhase, demand: tuckˑtypeˑ
   else:
     return tuckˑtypeˑPhase.EwClearing)
 
-proc tuckˑobjectˑLoopDetectorˑhealthy*(self: var tuckˑobjectˑLoopDetector): bool =
+proc tuckˑobjectˑLoopDetectorˑhealthy*(self: tuckˑobjectˑLoopDetector): bool =
   return true
 
-proc tuckˑobjectˑLoopDetectorˑreads*(self: var tuckˑobjectˑLoopDetector): int =
+proc tuckˑobjectˑLoopDetectorˑreads*(self: tuckˑobjectˑLoopDetector): int =
   return self.lane
 
 
-proc tuckˑobjectˑCameraDetectorˑhealthy*(self: var tuckˑobjectˑCameraDetector): bool =
+proc tuckˑobjectˑCameraDetectorˑhealthy*(self: tuckˑobjectˑCameraDetector): bool =
   return true
 
-proc tuckˑobjectˑCameraDetectorˑreads*(self: var tuckˑobjectˑCameraDetector): int =
+proc tuckˑobjectˑCameraDetectorˑreads*(self: tuckˑobjectˑCameraDetector): int =
   if (self.confidence > 80):
     if true:
       return 3
@@ -203,7 +203,7 @@ proc tuckˑfnˑsettled*(): bool =
 
 proc tuckˑfnˑreport*(d: Detector): void =
   var tuckˑvˑdemand = tuckˑfnˑpoll(d)
-  discard enqueue(tuckˑactorˑSignalsSingleton.mailbox, tuckˑactorˑSignalsMsg(tuckTag: msgSense, demand: tuckˑvˑdemand, preempt: false))
+  sendWaiting(tuckˑactorˑSignalsSingleton.mailbox, tuckˑactorˑSignalsMsg(tuckTag: msgSense, demand: tuckˑvˑdemand, preempt: false), tuckˑactorˑSignalsSlot, "Signals")
   tuckNotifySend(tuckˑactorˑSignalsSlot)
   return
 
@@ -211,7 +211,7 @@ proc tuckˑfnˑdrive*(): void =
   var tuckˑvˑloops = tuckˑobjectˑLoopDetector(lane: 1)
   var tuckˑvˑcamera = tuckˑobjectˑCameraDetector(confidence: 91'u8)
   tuckˑfnˑreport(Detector(tag: Detector_is_tuckˑobjectˑCameraDetector, tuckˑobjectˑCameraDetectorVal: tuckˑvˑcamera))
-  discard enqueue(tuckˑactorˑSignalsSingleton.mailbox, tuckˑactorˑSignalsMsg(tuckTag: msgSense, demand: tuckˑtypeˑDemand.quiet, preempt: false))
+  sendWaiting(tuckˑactorˑSignalsSingleton.mailbox, tuckˑactorˑSignalsMsg(tuckTag: msgSense, demand: tuckˑtypeˑDemand.quiet, preempt: false), tuckˑactorˑSignalsSlot, "Signals")
   tuckNotifySend(tuckˑactorˑSignalsSlot)
   tuckˑfnˑreport(Detector(tag: Detector_is_tuckˑobjectˑLoopDetector, tuckˑobjectˑLoopDetectorVal: tuckˑvˑloops))
   return

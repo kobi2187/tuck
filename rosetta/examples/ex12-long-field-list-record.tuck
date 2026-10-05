@@ -1,5 +1,5 @@
 # Long field list on one struct, exercised via multiple accessors
-import io
+import console
 
 type Order:
   id: int

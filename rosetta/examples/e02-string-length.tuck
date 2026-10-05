@@ -1,5 +1,5 @@
 # Length of a string
-import io
+import console
 
 fn main() -> void [io]:
   let s = "hello, tuck"

@@ -6,7 +6,7 @@
 # tree for its target without carrying (or losing) semantic residue: ids
 # survive the copy, so these lookups still resolve.
 
-import tables, sets, strutils, options
+import tables, sets, strutils, options, algorithm
 import ast
 import ssa_ir
 import name_prefix
@@ -48,6 +48,8 @@ type
     registerNames*: Table[string, Decl]
     registryNames*: Table[string, Decl]
     poolNames*: Table[string, Decl]
+    slabNames*: Table[string, Decl]
+    arenaNames*: Table[string, Decl]
     mixinNames*: Table[string, Decl]
     # Consts are whole-program too, but NOT on the same terms as the five
     # above. Those name singletons, so a repeat is a real error; two modules
@@ -66,6 +68,28 @@ type
     # these instead of re-deriving the mapping, which misses by-type matches.
     argFields*: Table[NodeId, seq[string]]
     callParams*: Table[NodeId, seq[string]]
+    slabDerefs*: Table[NodeId, Decl]
+      ## A field read or written THROUGH a slab reference (`r.data`), keyed by
+      ## the field access, holding the slab. lowering_slab routes each one
+      ## through the checked cell.
+    optWraps*: Table[NodeId, Type]
+      ## A plain `T` the checker accepted into a `T?` place it has no other
+      ## way to reach — a payload field, a construction field, a positional
+      ## argument — keyed by the value, holding the `?T` it goes into.
+      ## lowering_optional wraps each one; assignments and returns it wraps
+      ## on its own.
+    actorMemberCalls*: Table[NodeId, (string, string)]
+                    ## A call to an actor's member `fn`, by the call's id, to
+                    ## (the actor, the member), both as written (A24). The
+                    ## emitters print it as the actor's member proc with
+                    ## `self` passed on.
+    selfWriters*: HashSet[NodeId]
+                    ## The object members that change `self` — directly, or
+                    ## by calling such a member on `self` or on one of its
+                    ## fields — by the member Decl's id (typecheck.
+                    ## checkSelfWrites, ruled 2026-09-28). A member NOT here
+                    ## only reads, so every backend takes its `self` by value
+                    ## and it may be called on a parameter or a `let`.
     ifaceInstances*: Table[NodeId, seq[Type]]
                     ## A call to a fn with a type param bounded by an
                     ## INTERFACE (`fn join[T: AudioSource]`): what each of the
@@ -126,6 +150,11 @@ proc poolHandleName*(pool: string): string =
   ## one place so the checker and every backend spell it alike.
   pool & "Handle"
 
+proc slabRefName*(slab: string): string =
+  ## The reference type a `slab` declaration introduces: `<Slab>Ref`. Named in
+  ## one place so the checker and every backend spell it alike.
+  slab & "Ref"
+
 proc isPoolHandleType*(m: Module, name: string): bool =
   ## Is this the handle type of some pool declared in this module?
   ##
@@ -144,6 +173,12 @@ proc isPoolHandleType*(m: Module, name: string): bool =
     # teaching mangle about a type that does not exist in the tree.
     if d.name == pool or d.name == prefixed(pool, nkPool): return true
   return false
+
+proc isImportedPoolHandle*(m: Module, real: Table[string, Module],
+                           name: string): bool =
+  ## The handle type of a pool some OTHER module declares (R11, A36).
+  for other in real.values:
+    if other != m and isPoolHandleType(other, name): return true
 
 proc resourceHandleName*(kind: string): string =
   ## The per-kind handle type's name (spec §7.4). Capitalized, because it IS a
@@ -173,6 +208,24 @@ proc declaresResources*(m: Module): bool =
   for d in m.decls:
     if d != nil and d.kind == dkResources and d.resKinds.len > 0: return true
   false
+
+proc reportedSlabs*(m: Module, real: Table[string, Module]):
+    seq[tuple[origin, name: string]] =
+  ## The slabs whose unfreed cells the exit reports (slab proposal Q3): every
+  ## one the program declares, as emitted, but those marked `[leaks: ok]` —
+  ## with the module declaring it, "" for the entry module's own, which Odin
+  ## and D qualify by (R11). The entry points call `tuckSlabReport` on each,
+  ## after main and whatever runs after it, before the process exits.
+  for d in m.decls:
+    if d != nil and d.kind == dkSlab and not d.slabLeaksOk:
+      result.add ("", d.name)
+  var imported: seq[tuple[origin, name: string]]
+  for modName, other in real:
+    if other == m: continue
+    for d in other.decls:
+      if d != nil and d.kind == dkSlab and not d.slabLeaksOk:
+        imported.add (modName, d.name)
+  result.add imported.sorted   # the table's order is its hashing's
 
 proc acquireSite*(e: Expr, moduleName: string): string =
   ## Where an acquire happened, as the OPEN RESOURCES report prints it —
@@ -231,6 +284,8 @@ proc copyMeaning(r: Resolution, src, dst: NodeId) =
   if src in r.declOf: r.declOf[dst] = r.declOf[src]
   if src in r.argFields: r.argFields[dst] = r.argFields[src]
   if src in r.callParams: r.callParams[dst] = r.callParams[src]
+  if src in r.optWraps: r.optWraps[dst] = r.optWraps[src]
+  if src in r.slabDerefs: r.slabDerefs[dst] = r.slabDerefs[src]
   if src in r.callTypeArgs: r.callTypeArgs[dst] = r.callTypeArgs[src]
   if src in r.wraps: r.wraps[dst] = r.wraps[src]
   if src in r.ifaceCalls: r.ifaceCalls[dst] = r.ifaceCalls[src]
@@ -263,7 +318,7 @@ proc freshCopy*(r: Resolution, e: Expr): Expr =
 
 proc freshStep*(r: Resolution, s: ChainStep): ChainStep =
   ## The same, for a chain step, which carries an id of its own.
-  result = ChainStep(op: s.op, span: s.span, id: newNodeId(),
+  result = ChainStep(span: s.span, id: newNodeId(),
                      target: r.freshCopy(s.target), arg: r.freshCopy(s.arg))
   if s.id.isSet: r.copyMeaning(s.id, result.id)
 
@@ -337,6 +392,8 @@ proc newResolution*(): Resolution =
              declOf: initTable[NodeId, NodeId](),
              argFields: initTable[NodeId, seq[string]](),
              callParams: initTable[NodeId, seq[string]](),
+             optWraps: initTable[NodeId, Type](),
+             slabDerefs: initTable[NodeId, Decl](),
              callTypeArgs: initTable[NodeId, seq[Type]](),
              wraps: initTable[NodeId, tuple[objName, iface: string]](),
              ifacePairs: initHashSet[tuple[objName, iface: string]](),
@@ -390,6 +447,8 @@ proc resetResolution*() =
   let registerNames = semLayer.registerNames
   let registryNames = semLayer.registryNames
   let poolNames = semLayer.poolNames
+  let slabNames = semLayer.slabNames
+  let arenaNames = semLayer.arenaNames
   let mixinNames = semLayer.mixinNames
   let constNames = semLayer.constNames
   let ambiguousConsts = semLayer.ambiguousConsts
@@ -398,9 +457,73 @@ proc resetResolution*() =
   semLayer.registerNames = registerNames
   semLayer.registryNames = registryNames
   semLayer.poolNames = poolNames
+  semLayer.slabNames = slabNames
+  semLayer.arenaNames = arenaNames
   semLayer.mixinNames = mixinNames
   semLayer.constNames = constNames
   semLayer.ambiguousConsts = ambiguousConsts
+
+proc placeArenaSlabs*(m: var Module) =
+  ## Each slab the checker made for an arena (one per element type its
+  ## `new`s and references name), into the arena's module just after the
+  ## arena, in name order — so mangling, ownership and every emitter find it
+  ## as they find a declared slab. Called once the program is checked; a
+  ## slab already placed (the checker may run again) is not placed twice.
+  var made: seq[Decl]
+  for _, d in semLayer.slabNames:
+    if d.slabArena != "": made.add d
+  made.sort(proc (a, b: Decl): int = cmp(a.name, b.name))
+  var decls: seq[Decl]
+  for d in m.decls:
+    if d != nil and d.kind == dkSlab and d.slabArena != "": continue
+    decls.add d
+    if d == nil or d.kind != dkArena: continue
+    for s in made:
+      if s.slabArena == d.name: decls.add s
+  m.decls = decls
+
+proc arenaRefName*(arena: string): string =
+  ## The reference type an arena's `new` hands out: `<Arena>Ref[T]`, applied
+  ## to the element type (`FrameRef[Header]`).
+  arena & "Ref"
+
+proc arenaOfRefType*(t: Type): Decl =
+  ## The arena whose reference type `t` is (`FrameRef[Header]` -> Frame), or
+  ## nil. Named as written, like a slab's: the checker synthesises it.
+  if t == nil or t.kind != tkApp or t.base == nil or t.base.kind != tkNamed or
+     t.args.len != 1 or not t.base.name.endsWith("Ref"):
+    return nil
+  semLayer.arenaNames.getOrDefault(t.base.name[0 ..< t.base.name.len - 3], nil)
+
+proc elemName(t: Type): string =
+  ## A type's written shape, for naming the slab that holds it.
+  if t == nil: return "T"
+  case t.kind
+  of tkNamed: t.name
+  of tkApp:
+    var parts = @[elemName(t.base)]
+    for a in t.args: parts.add elemName(a)
+    parts.join("_")
+  of tkTuple, tkFunc, tkRecord, tkSum, tkUnion, tkEffect, tkRename:
+    "T" & $t.kind
+
+proc arenaSlabName*(arena: string, elem: Type): string =
+  ## The slab an arena keeps for one element type: `Frame_Header`,
+  ## `Frame_Array_128_u8`. Each run of characters that cannot be in an
+  ## identifier is one `_`, never two and never last — Nim forbids both.
+  result = arena
+  for c in "_" & elemName(elem):
+    if c.isAlphaNumeric: result.add c
+    elif result[^1] != '_': result.add '_'
+  result.removeSuffix('_')
+
+proc slabOfRefType*(name: string): Decl =
+  ## The slab whose reference type is `name` (`NodesRef` -> Nodes), or nil.
+  ## Keyed by the name as WRITTEN: the checker synthesises the reference
+  ## type, so mangling never renames it. Whole-program, so an imported slab's
+  ## references map the same way on every backend.
+  if name.len > 3 and name.endsWith("Ref"):
+    result = semLayer.slabNames.getOrDefault(name[0 ..< name.len - 3], nil)
 
 proc setStepCall*(r: Resolution, s: ChainStep, call: Expr) =
   ## Records the call a chain step resolved to, keyed by the step's own id.
@@ -498,6 +621,28 @@ proc setArgFields*(r: Resolution, e: Expr, fields: seq[string]) =
   if e == nil: return
   ensureId(e)
   r.argFields[e.id] = fields
+
+proc markSlabDeref*(r: Resolution, e: Expr, slab: Decl) =
+  ## `e` (`r.data`) reads or writes a field of the cell a reference names.
+  if e == nil: return
+  ensureId(e)
+  r.slabDerefs[e.id] = slab
+
+proc slabDerefOf*(r: Resolution, e: Expr): Decl =
+  ## The slab whose cell the field access `e` goes through, or nil.
+  if e == nil or not e.id.isSet: return nil
+  r.slabDerefs.getOrDefault(e.id, nil)
+
+proc markOptWrap*(r: Resolution, e: Expr, place: Type) =
+  ## `e`, a plain `T`, goes into the `?T` place `place` (see optWraps).
+  if e == nil: return
+  ensureId(e)
+  r.optWraps[e.id] = place
+
+proc optWrapOf*(r: Resolution, e: Expr): Type =
+  ## The `?T` place `e` was accepted into as a plain `T`, or nil.
+  if e == nil or not e.id.isSet: return nil
+  r.optWraps.getOrDefault(e.id, nil)
 
 proc argFieldsFor*(r: Resolution, e: Expr): seq[string] =
   ## Empty when the checker recorded no mapping — callers fall back to
@@ -628,3 +773,9 @@ proc escapeStringLit*(v: string): string =
     of '\0': result.add("\\x00")
     else: result.add(c)
 
+
+proc actorMemberOf*(res: Resolution, e: Expr): (string, string) =
+  ## The (actor, member) a call to an actor member `fn` names, as written, or
+  ## ("", "") for any other call.
+  if e != nil and res.actorMemberCalls.hasKey(e.id): res.actorMemberCalls[e.id]
+  else: ("", "")

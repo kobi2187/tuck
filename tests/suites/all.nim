@@ -12,6 +12,7 @@ import auto_alias
 import bare_variant
 import cli_smoke
 import complexity
+import containers_bench
 import cross_module
 import d_backend
 import decision_tables
@@ -35,6 +36,7 @@ import interfaces
 import invariants
 import known_bugs
 import loop_var_type
+import mailbox_full
 import mangle
 import member_names
 import memory
@@ -42,11 +44,13 @@ import object_composition
 import odin_backend
 import optimize
 import owner_fields
+import ownership_rules
 import pointer_containment
 import pools
 import recursive_types
 import resources
 import resources_rt
+import slabs
 import ssa
 import ssa_golden
 import syntax_ceilings
@@ -71,6 +75,7 @@ let registry: seq[Entry] = @[
   ("bare_variant",        SuiteProc(bare_variant.run),        true),
   ("cli_smoke",           SuiteProc(cli_smoke.run),           false),
   ("complexity",          SuiteProc(complexity.run),          true),
+  ("containers_bench",    SuiteProc(containers_bench.run),    false),
   ("cross_module",        SuiteProc(cross_module.run),        false),
   ("d_backend",           SuiteProc(d_backend.run),           false),
   ("decision_tables",     SuiteProc(decision_tables.run),     false),
@@ -94,6 +99,7 @@ let registry: seq[Entry] = @[
   ("invariants",          SuiteProc(invariants.run),          false),
   ("known_bugs",          SuiteProc(known_bugs.run),          false),
   ("loop_var_type",       SuiteProc(loop_var_type.run),       false),
+  ("mailbox_full",        SuiteProc(mailbox_full.run),        false),
   ("mangle",              SuiteProc(mangle.run),              true),
   ("member_names",        SuiteProc(member_names.run),        true),
   ("memory",              SuiteProc(memory.run),              false),
@@ -101,11 +107,13 @@ let registry: seq[Entry] = @[
   ("odin_backend",        SuiteProc(odin_backend.run),        false),
   ("optimize",            SuiteProc(optimize.run),            false),
   ("owner_fields",        SuiteProc(owner_fields.run),        false),
+  ("ownership_rules",     SuiteProc(ownership_rules.run),     false),
   ("pointer_containment", SuiteProc(pointer_containment.run), true),
   ("pools",               SuiteProc(pools.run),               false),
   ("recursive_types",     SuiteProc(recursive_types.run),     false),
   ("resources",           SuiteProc(resources.run),           false),
   ("resources_rt",        SuiteProc(resources_rt.run),        false),
+  ("slabs",               SuiteProc(slabs.run),               false),
   ("ssa",                 SuiteProc(ssa.run),                 false),
   ("ssa_golden",          SuiteProc(ssa_golden.run),          false),
   ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     true),

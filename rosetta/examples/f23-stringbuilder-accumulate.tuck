@@ -1,5 +1,5 @@
 # StringBuilder-style accumulation: build up a report string across a loop
-import io
+import console
 import seq
 
 fn main() -> void [io]:

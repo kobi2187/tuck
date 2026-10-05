@@ -42,7 +42,7 @@ proc parseBraceParams*(p: var Parser, pSp: Span, params: var seq[Param]) =
   discard p.advance()
   while p.current().kind != tkRBrace and p.current().kind != tkEOF:
     let nameSp = p.getSpan()
-    let paramName = p.expectBindingName("Expected parameter name").value
+    let paramName = p.expectName("Expected parameter name").value
     p.failIfHostKeyword(paramName, nameSp)
     discard p.expect(tkColon)
     let paramType = p.parseType()
@@ -55,7 +55,7 @@ proc parseBareParam*(p: var Parser, pSp: Span): Param =
   ## Parses one `name: Type` param. A bare `self` (no `: Type` follows) is
   ## the implicit-Self special case: it types itself as `Self`.
   let nameSp = p.getSpan()
-  let paramName = p.expectBindingName("Expected parameter name").value
+  let paramName = p.expectName("Expected parameter name").value
   p.failIfHostKeyword(paramName, nameSp)
   if paramName == "self" and p.current().kind != tkColon:
     return Param(name: paramName, typ: Type(span: pSp, kind: tkNamed, name: "Self"), span: pSp)
@@ -160,7 +160,7 @@ proc parseObjectField*(p: var Parser): FieldDef =
   ## started at 0 on every backend while `tuck ch` said OK (#87). Whether a
   ## field may have one is the checker's call (TK-TY30).
   let fSp = p.getSpan()
-  let fName = p.expectMemberName("Expected field or member name in object").value
+  let fName = p.expectName("Expected field or member name in object").value
   p.failIfHostKeyword(fName, fSp, "field")
   discard p.expect(tkColon)
   let fType = p.parseType()
@@ -189,7 +189,7 @@ proc parseDecisionBody*(p: var Parser): Expr =
       rowPats.add(p.parsePattern())
     discard p.expect(tkArrow)
     let bodyExpr = p.parseExpr()
-    let rowArm = MatchArm(pattern: Pattern(span: sp, kind: pkTuple, elems: rowPats), guard: nil, body: bodyExpr, span: sp)
+    let rowArm = MatchArm(pattern: Pattern(span: sp, kind: pkTuple, elems: rowPats), body: bodyExpr, span: sp)
     let rowExpr = Expr(span: sp, kind: exkMatch, subject: nil, arms: @[rowArm])
     stmts.add(rowExpr)
     if p.current().kind == tkNewline:
@@ -200,21 +200,21 @@ proc parseDecisionBody*(p: var Parser): Expr =
 proc parseErrorTypes*(p: var Parser, errTypes: var seq[string]) =
   ## `[error: E]` or `[error: E | F]` — the enums this fn may raise.
   discard p.expect(tkColon)
-  errTypes.add(p.expectMemberName("Expected error enum name after 'error:'").value)
+  errTypes.add(p.expectName("Expected error enum name after 'error:'").value)
   while p.current().kind == tkPipe:
     discard p.advance()
-    errTypes.add(p.expectMemberName("Expected error enum name after '|'").value)
+    errTypes.add(p.expectName("Expected error enum name after '|'").value)
 
 proc parseSigName*(p: var Parser, what: string): string =
   ## The declared name, possibly a module-qualified sketch stub
   ## (`fn http::get(...)`).
   ##
-  ## `expectBindingName`: a fn name is read bare at every call site, so an
+  ## `expectName`: a fn name is read bare at every call site, so an
   ## attribute word is refused here with TK-PA08 (ruled 2026-09-27, R4). It
   ## used to be accepted — `fn error(...)` in a `pending:` block, for the log
   ## level's verb (FRICTIONS #5b) — but no call to such a fn could be
   ## written: `{msg: m} error` cannot parse the attribute word as a callee.
-  result = p.expectBindingName(
+  result = p.expectName(
                     "Expected function name in " & what & " declaration").value
   if p.current().kind != tkColonColon: return
   discard p.advance()
@@ -237,7 +237,7 @@ proc parseBraceFields*(p: var Parser): seq[FieldDef] =
   discard p.expect(tkLBrace)
   while p.current().kind notin {tkRBrace, tkEOF}:
     let fSp = p.getSpan()
-    let fName = p.expectMemberName("Expected variant field name").value
+    let fName = p.expectName("Expected variant field name").value
     p.failIfHostKeyword(fName, fSp, "field")
     discard p.expect(tkColon)
     result.add(FieldDef(name: fName, typ: p.parseType(), attrs: @[], span: fSp))
@@ -283,7 +283,7 @@ proc parseTypeField*(p: var Parser): FieldDef =
   ## body. The initialiser is KEPT (#87, as in parseObjectField); only an
   ## actor field may have one, which the checker enforces (TK-TY30).
   let fSp = p.getSpan()
-  let fName = p.expectMemberName("Expected field or variant in type").value
+  let fName = p.expectName("Expected field or variant in type").value
   p.failIfHostKeyword(fName, fSp, "field")
   discard p.expect(tkColon)
   let fType = p.parseType()
@@ -320,10 +320,10 @@ proc parseSelectBinding*(p: var Parser, armSp: Span): seq[Param] =
 
 proc parseQualifiedName*(p: var Parser): string =
   ## `name` or `Type.member` — a fn may be declared as a member.
-  result = p.expectBindingName("Expected function or event name").value
+  result = p.expectName("Expected function or event name").value
   while p.current().kind == tkDot:
     discard p.advance()
-    result.add("." & p.expectBindingName(
+    result.add("." & p.expectName(
                        "Expected qualified name component").value)
 
 proc parseBracketedNames*(p: var Parser, what: string): (seq[string], seq[seq[Type]]) =
@@ -458,7 +458,7 @@ proc withoutAttr*(t: Type, name: string): Type =
 proc parseImportDecl*(p: var Parser, sp: Span): Decl =
   ## `import name` — one module per line, resolved later by the loader.
   discard p.advance()
-  let modName = p.expectMemberName("Expected module name after 'import'").value
+  let modName = p.expectName("Expected module name after 'import'").value
   Decl(span: sp, kind: dkImport, name: modName)
 
 proc siftSatisfies*(members: seq[Decl], sats: var seq[string],
@@ -526,14 +526,14 @@ proc parseSatisfyTargets*(p: var Parser,
 
 const TopLevelKeywords = "fn, type, object, actor, task, interface, group, " &
   "mixin, fnsig, registry, decision, pending, distinct, const, import, " &
-  "extern, errors, resources, register, pool, arena, satisfies, " &
+  "extern, errors, resources, register, pool, slab, arena, satisfies, " &
   "static_assert, when, and `on Registry.Event` for a registry handler"
   ## Everything parseDecl accepts to OPEN a declaration — the tokenized
   ## keywords plus the contextual ones recognised in parser.nim's
   ## contextualDecl.
 
 const ContextualOpeners = ["extern", "errors", "resources", "register",
-                           "pool", "arena", "satisfies"]
+                           "pool", "slab", "arena", "satisfies"]
   ## Declaration openers the lexer does not tokenize — recognised by NAME in
   ## parser.nim's contextualDecl. Kept beside opensDeclaration below (which
   ## contextualDecl calls first): a new one added to contextualDecl must be
@@ -624,7 +624,7 @@ proc parseEffectList*(p: var Parser, effects: var seq[EffectMarker],
       emit = p.expect(tkStrLit, "Expected proc name string after 'emit:'").value
     elif effName == "resource":
       discard p.expect(tkColon)
-      resources.add(p.expectMemberName(
+      resources.add(p.expectName(
         "Expected a resource kind name after 'resource:'").value)
     else:
       var marker: EffectMarker
@@ -640,7 +640,7 @@ proc parseVariant*(p: var Parser, what: string): VariantDef =
   ## the diagnostic. The parens around the payload are optional.
   discard p.expect(tkPipe)
   let vSp = p.getSpan()
-  let vName = p.expectMemberName("Expected variant name" & what).value
+  let vName = p.expectName("Expected variant name" & what).value
   let hasParens = p.current().kind == tkLParen
   if hasParens: discard p.advance()
   var vFields: seq[FieldDef]
@@ -743,6 +743,67 @@ proc parsePoolDecl*(p: var Parser, sp: Span): Decl =
        poolElem: elem.withoutAttr("count"), poolCount: count,
        poolCountText: countText)
 
+proc parseSlabDecl*(p: var Parser, sp: Span): Decl =
+  ## `slab Name = ElemType [attrs]` (slab proposal, section 3): cells of one
+  ## type, handed out as references. The `X = <type> [attrs]` shape a pool
+  ## uses; the attributes are the SLAB's knobs, read here and stripped from
+  ## the element type:
+  ##   count: N              a fixed array of N cells (a literal or a const)
+  ##   storage: contiguous   one growable array instead of chunks
+  ##   leaks: ok             no report of cells never freed
+  discard p.advance() # eat "slab"
+  let name = p.expectTypeName("slab").value
+  if p.current().kind != tkAssign:
+    p.reportError("A slab declares its element type: `slab " & name &
+                  " = <ElementType>`")
+  discard p.advance() # eat "="
+  let elem = p.parseType()
+  result = Decl(span: sp, kind: dkSlab, name: name, slabStorage: ssChunked)
+  var kept: seq[TypeAttr]
+  for a in elem.attrs:
+    case a.name
+    of "count":
+      result.slabStorage = ssFixed
+      try: result.slabCount = parseInt(a.value.replace("_", ""))
+      except ValueError: result.slabCountText = a.value
+    of "storage":
+      if a.value == "contiguous": result.slabStorage = ssContiguous
+      elif a.value != "chunked":
+        p.reportError("slab '" & name & "': storage is `chunked` (the " &
+                      "default) or `contiguous`, got '" & a.value & "'")
+    of "leaks":
+      if a.value == "ok": result.slabLeaksOk = true
+      else: p.reportError("slab '" & name & "': the one leaks setting is " &
+                          "`leaks: ok`, got '" & a.value & "'")
+    else: kept.add a
+  var bare = elem
+  bare.attrs = kept
+  result.slabElem = bare
+  if p.current().kind == tkNewline: discard p.advance()
+
+proc parseArenaDecl*(p: var Parser, sp: Span): Decl =
+  ## `arena Name [size: N]` (slab proposal §9, ruled Q5): a LIFETIME, not a
+  ## block — one slab per element type its `new`s name, all reset together,
+  ## used wherever the program needs it. `[size: N]` is a byte budget.
+  discard p.advance() # eat "arena"
+  let name = p.expectTypeName("arena").value
+  var attrs: seq[TypeAttr]
+  p.parseDeclAttrs(attrs)
+  if p.current().kind == tkColon:
+    p.reportError("An arena is a declaration, not a block (ruled " &
+      "2026-09-29): `arena " & name & " [size: N]`, then `" & name &
+      ".new {value: v}` and `" & name & ".reset` wherever they are needed",
+      dc = dcPaArenaBlock)
+  result = Decl(span: sp, kind: dkArena, name: name, arenaSize: -1)
+  for a in attrs:
+    if a.name != "size":
+      p.reportError("arena '" & name & "': its one attribute is `size: N`, " &
+                    "a byte budget; got '" & a.name & "'", a.span.line,
+                    a.span.col)
+    try: result.arenaSize = parseInt(a.value.replace("_", ""))
+    except ValueError: result.arenaSizeText = a.value
+  if p.current().kind == tkNewline: discard p.advance()
+
 proc resourcePolicyFromName*(name: string, dest: var ResourcePolicy): bool =
   ## The three §7.4 policies, by their source spelling. A bool-returning
   ## lookup rather than a `parse` that raises, so the caller decides what an
@@ -761,9 +822,9 @@ proc parseResourceAttrs(p: var Parser, attrs: var seq[TypeAttr]) =
   ## `parseExpr`. These values are a CLOSED VOCABULARY — a count or one word
   ## from a named set — and several of those words (`error`, `exit`) are
   ## reserved attribute names that no expression may contain, so
-  ## `[on_full: error]` died at "Expected an expression here". Reading a name
-  ## where only a name can appear is what `expectMemberName` is for, and it is
-  ## also the more honest grammar: nothing here is ever computed.
+  ## `[on_full: error]` died at "Expected an expression here". A word from a
+  ## closed set is what `expectVocabWord` reads, and it is also the more
+  ## honest grammar: nothing here is ever computed.
   ##
   ## `none` needs the same exemption for the same reason, one level further
   ## down: it lexes as tkNone, a keyword rather than an attribute name, so it
@@ -779,7 +840,7 @@ proc parseResourceAttrs(p: var Parser, attrs: var seq[TypeAttr]) =
     if p.current().kind == tkColon:
       discard p.advance()
       val = if p.current().kind in {tkIntLit, tkNone}: p.advance().value
-            else: p.expectMemberName("Expected a value after '" & name & ":'").value
+            else: p.expectVocabWord("Expected a value after '" & name & ":'").value
     attrs.add(TypeAttr(name: name, value: val, span: sp))
     if p.current().kind == tkComma: discard p.advance()
   discard p.expect(tkRBracket)
@@ -862,7 +923,7 @@ proc parseResourceKind(p: var Parser, dflt: ResourcePolicy): ResourceKindDef =
   ## other declaration already uses, so there is no second attribute grammar
   ## to learn or to keep in step.
   let sp = p.getSpan()
-  result = ResourceKindDef(name: p.expectMemberName("Expected a resource kind name").value,
+  result = ResourceKindDef(name: p.expectName("Expected a resource kind name").value,
                            policy: dflt, span: sp)
   var attrs: seq[TypeAttr]
   p.parseResourceAttrs(attrs)
@@ -1142,6 +1203,7 @@ proc parseFnDecl*(p: var Parser, sp: Span): Decl =
   ## parseSelectDecl. A body-less fn is a signature (extern, pending).
   if p.current().kind == tkOn and p.peek(1).kind == tkSelect:
     return p.parseSelectDecl(sp)
+  let fromOn = p.current().kind == tkOn
   discard p.advance()
   # `fn inline name(...)` — codegen-attribute keyword slot after fn
   var isInline = false
@@ -1159,7 +1221,7 @@ proc parseFnDecl*(p: var Parser, sp: Span): Decl =
        fnGenericBounds: genericBounds,
        fnParams: params, fnReturnType: retType, fnEffects: sig.effects,
        fnBody: body, fnErrorTypes: sig.errTypes, isInline: isInline,
-       fnResourceKinds: sig.resources)
+       fnResourceKinds: sig.resources, isOnHandler: fromOn)
   # `fn f(...) -> T:` whose whole body is `...` IS a pending signature that
   # happens to be written inline, so it becomes one rather than growing a
   # second, quieter way to mean the same thing.

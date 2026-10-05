@@ -1,5 +1,5 @@
 # Nested loops: print a small multiplication grid
-import io
+import console
 
 fn main() -> void [io]:
   for i in 1 .. 3:

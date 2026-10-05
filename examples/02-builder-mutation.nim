@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 
 proc tuckˑfnˑwithDefaults*(self: tuckˑtypeˑServerConfig): tuckˑtypeˑServerConfig
 proc tuckˑfnˑstart*(self: tuckˑtypeˑServerConfig): bool

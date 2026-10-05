@@ -193,17 +193,17 @@ bool drain_tuckˑactorˑDecoder() {
 }
 
 void sendPlay_tuckˑactorˑDecoder(ref tuckˑactorˑDecoder self, tuckˑtypeˑHz rate) {
-    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑDecoderMsg(tuckTag: tuckˑactorˑDecoderMsgKind.msgPlay, rate: rate));
+    rt.sendWaiting(self.mailbox, tuckˑactorˑDecoderMsg(tuckTag: tuckˑactorˑDecoderMsgKind.msgPlay, rate: rate), tuckˑactorˑDecoderSlot, "Decoder");
     rt.tuckNotifySend(tuckˑactorˑDecoderSlot);
 }
 
 void sendPause_tuckˑactorˑDecoder(ref tuckˑactorˑDecoder self) {
-    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑDecoderMsg(tuckTag: tuckˑactorˑDecoderMsgKind.msgPause));
+    rt.sendWaiting(self.mailbox, tuckˑactorˑDecoderMsg(tuckTag: tuckˑactorˑDecoderMsgKind.msgPause), tuckˑactorˑDecoderSlot, "Decoder");
     rt.tuckNotifySend(tuckˑactorˑDecoderSlot);
 }
 
 void sendStop_tuckˑactorˑDecoder(ref tuckˑactorˑDecoder self) {
-    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑDecoderMsg(tuckTag: tuckˑactorˑDecoderMsgKind.msgStop));
+    rt.sendWaiting(self.mailbox, tuckˑactorˑDecoderMsg(tuckTag: tuckˑactorˑDecoderMsgKind.msgStop), tuckˑactorˑDecoderSlot, "Decoder");
     rt.tuckNotifySend(tuckˑactorˑDecoderSlot);
 }
 

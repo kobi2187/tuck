@@ -466,7 +466,6 @@ proc genDTaskDecl*(ctx: var DCodegenCtx, d: Decl): string =
     else:
       let inner = ctx.dType(payload)
       if inner == "void": "rt.TuckUnit" else: inner
-  injectTailReturn(d.taskBody, retStr)
   result = retStr & " " & d.name & "(" & ctx.genDParams(d.taskParams) & ") {\n"
   ctx.indent = 1
   ctx.definedVars.clear()
@@ -574,10 +573,19 @@ proc genDSendHelper*(ctx: var DCodegenCtx, d: Decl,
           copies.add("    " & p.name & "." & f & " = " & p.name & "." & f &
                      ".dup;\n")
   let sep = if params.len > 0: ", " else: ""
+  # The enqueue is the actor's `on_full` (R6): wait for room (the default),
+  # stop the program, or drop — the bare enqueue every send used to be.
+  let msg = d.name & "Msg(" & ctorArgs & ")"
+  let actor = "\"" & actorLabel(d, d.name) & "\""
+  let enqueue =
+    case actorOnFull(d)
+    of ofDrop: "cast(void) rt.enqueue(self.mailbox, " & msg & ")"
+    of ofWait: "rt.sendWaiting(self.mailbox, " & msg & ", " &
+               actorSlotName(d.name) & ", " & actor & ")"
+    of ofAssert: "rt.sendAsserting(self.mailbox, " & msg & ", " & actor & ")"
   "void send" & h.name.capitalize() & "_" & d.name & "(ref " & d.name &
     " self" & sep & params.join(", ") & ") {\n" & copies &
-    "    cast(void) rt.enqueue(self.mailbox, " & d.name & "Msg(" &
-    ctorArgs & "));\n    rt.tuckNotifySend(" & actorSlotName(d.name) &
+    "    " & enqueue & ";\n    rt.tuckNotifySend(" & actorSlotName(d.name) &
     ");\n}\n\n"
 
 proc genDActorState*(ctx: var DCodegenCtx, d: Decl,
@@ -689,6 +697,9 @@ proc genDActorInits(ctx: var DCodegenCtx, d: Decl): string =
   if sets.len == 0: return ""
   "shared static this() {\n" & sets.join("") & "}\n\n"
 
+proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
+                refSelf = false): string
+
 proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
   ## An actor is a SINGLETON SERVICE (spec 9.1): one instance per declared
   ## type, no construction, alive for the whole program. It emits its message
@@ -709,6 +720,14 @@ proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
              ";\n\n")
   result.add(ctx.genDActorInits(d))
   if not hasMessages: return
+  for m in actorMemberFns(d):
+    # An actor's member `fn` (A24): `ref T self`, as the dispatch takes it.
+    let copy = Decl(span: m.span, kind: dkFn, id: m.id, name: m.name,
+                    fnParams: @[actorSelfParam(d.name, m)] & m.fnParams,
+                    fnReturnType: m.fnReturnType, fnBody: m.fnBody,
+                    fnEffects: m.fnEffects)
+    result.add(ctx.genDFnDecl(copy, memberProcName(d.name, m.name),
+                              refSelf = true) & "\n")
   result.add(ctx.genDDispatch(d, handlers, shutdownBody, hasShutdown))
   result.add(genDDrain(d, hasShutdown))
   for h in handlers:
@@ -794,7 +813,6 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   # ast_query's shared version, not a private port — the Odin backend kept
   # its own copy and it has since drifted (no matchArmsReturn guard, so a
   # tail match whose arms return gets wrapped in a value-position case).
-  injectTailReturn(d.fnBody, retStr)
   # A generic fn is a D TEMPLATE: `T smaller(T)(T a, T b)`. D infers the
   # template argument from the call, so the call site is unchanged — which is
   # what the runtime's own `T[] push(T)(T[] items, T value)` relies on.
@@ -851,8 +869,10 @@ proc genDObjectDecl*(ctx: var DCodegenCtx, d: Decl): string =
   for mem in d.objMembers:
     if mem == nil: continue
     if mem.kind == dkFn:
+      # `ref` only for a member that changes its object; a reading member
+      # takes `self` by value, so an rvalue receiver binds too.
       result.add(ctx.genDFnDecl(mem, memberProcName(d.name, mem.name),
-                                refSelf = true) & "\n")
+                                refSelf = writesSelf(ctx.res, mem)) & "\n")
     elif isCompositionEntry(mem):
       return dUnsupported("object composition (+Type) in " & d.name)
 
@@ -960,7 +980,7 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   if d == nil: return ""
   # Imported type decls are injected for checking only; the origin module
   # emits them (mirrors codegen.nim:1756 / codegen_odin.nim:2234).
-  if d.kind == dkType and d.span.file.startsWith(ImportedTypeMarker):
+  if d.kind in {dkType, dkObject, dkInterface} and d.span.file.startsWith(ImportedTypeMarker):
     return ""
   case d.kind
   of dkType: ctx.genDTypeDecl(d)
@@ -972,6 +992,25 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
     # RtByPointer list, which routes it as rt.acquire(&Pool).
     "__gshared rt.ObjectPool!(" & ctx.dType(d.poolElem) & ", " &
       $d.poolCount & ") " & d.name & ";\n"
+  of dkSlab:
+    # A slab: one module-level instance of the storage its attributes
+    # chose, zero but for its written name (for the stale-reference message).
+    let elem = ctx.dType(d.slabElem)
+    let store = case d.slabStorage
+                of ssChunked: "rt.SlabChunked!(" & elem & ")"
+                of ssFixed: "rt.SlabFixed!(" & elem & ", " & $d.slabCount & ")"
+                of ssContiguous: "rt.SlabSeq!(" & elem & ")"
+    "__gshared " & store & " " & d.name & " = " & store & "(" &
+      escape(slabLabel(d)) & ");\n"
+  of dkArena:
+    # An arena (slab proposal §9): its budget, and its reset — every slab
+    # the checker made for it, then the budget, emptied.
+    var reset = "void " & arenaResetProc(d.name) & "()\n{\n"
+    for s in slabsOfArena(ctx.module, d):
+      reset.add "    rt.tuckSlabReset(" & s.name & ");\n"
+    reset.add "    " & d.name & ".used = 0;\n}\n"
+    "__gshared rt.ArenaBudget " & d.name & " = rt.ArenaBudget(" &
+      $d.arenaSize & ", 0);\n" & reset
   of dkFn:
     if d.isExtern: ""                  # bare extern fn: emitted via the block
     elif d.isPending: ctx.genDPendingStub(d)

@@ -1,5 +1,5 @@
 # 99 bottles of beer (shortened to 3 for a small demo)
-import io
+import console
 
 fn main() -> void [io]:
   var bottles = 3

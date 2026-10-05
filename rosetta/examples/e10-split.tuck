@@ -1,5 +1,5 @@
 # Split a string on a delimiter
-import io
+import console
 
 pending:
   fn split({text: str, sep: str}) -> Seq[str]

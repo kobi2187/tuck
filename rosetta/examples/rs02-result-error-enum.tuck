@@ -3,7 +3,7 @@
 # NEW FINDING: any `!T [error: E]` fn must ALSO be marked [io] — the checker
 # treats fallibility itself as an effect, even for pure logic (see rs09).
 # Not in DISCOVERIES yet.
-import io
+import console
 
 type ParseError:
   | Empty

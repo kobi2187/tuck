@@ -100,7 +100,7 @@ proc isManglable(d: Decl): bool =
   # so it keeps its name for the same reason extern fns do — the Nim backend
   # emits it as the importc name, which must match the header.
   of dkType: d.typeExternHeader == ""
-  of dkObject, dkActor, dkTask, dkConst, dkPool, dkRegistry,
+  of dkObject, dkActor, dkTask, dkConst, dkPool, dkSlab, dkArena, dkRegistry,
      dkRegister, dkFnSig: true
   else: false
 
@@ -220,6 +220,13 @@ proc mangleMatch(res: Resolution, e: Expr, names: MangleNames,
     if p != nil and p.kind == pkBind:
       inner.incl(p.name)
       p.name = mangleName(p.name, nkLocal)
+    elif p != nil and p.kind == pkTypeTest:
+      # `| Flac f ->`: `f` is a local of the arm, and `Flac` names the
+      # object's declaration, renamed with it.
+      inner.incl(p.bindAs)
+      p.bindAs = mangleName(p.bindAs, nkLocal)
+      if p.testType in names and names[p.testType] == nkObject:
+        p.testType = mangleName(p.testType, nkObject)
     elif p != nil and p.kind == pkVar and p.name in names and
          names[p.name] == nkConst and not isVariantOf(res, e.subject, p.name):
       p.name = mangleName(p.name, nkConst)
@@ -270,10 +277,12 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
   # locals set, in no particular order. Everything with a scoping rule of its
   # own — exkFor, exkAssign, exkMatch — is spelled out below instead, because
   # for those it matters WHICH children are visited and in what order.
-  of exkField, exkStruct, exkList, exkBracket, exkBracketAssign, exkCall,
+  of exkField, exkStruct, exkList, exkFill, exkBracket, exkBracketAssign, exkCall,
      exkCombinator, exkChain, exkBinary, exkUnary, exkBlock, exkIf, exkWhile,
      exkReturn, exkRaise, exkDiscard, exkDefer, exkFinish, exkAcquire,
-     exkOrdinal, exkValidate, exkIfaceCall, exkPoolOp:
+     exkOrdinal, exkValidate, exkIfaceCall, exkIfaceIs, exkIfacePayload,
+     exkWrapOk, exkAbsent, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset,
+     exkAppend, exkCopy, exkDrop:
     for c in e.children: mangleExpr(res, c, names, locals, fields)
   of exkMatch: mangleMatch(res, e, names, locals, fields)
   of exkFor: mangleFor(res, e, names, locals, fields)
@@ -286,7 +295,7 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
     for arm in e.selArms:
       mangleExpr(res, arm.arg, names, locals, fields)
       mangleExpr(res, arm.body, names, locals, fields)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     mangleRefName(e, names)
   # Nothing to rename, and spelled out rather than left to `else: discard`.
   # The `else` that used to close this case swallowed exkCombinator when it
@@ -367,7 +376,7 @@ proc mangleMember(res: Resolution, mem: Decl, names: MangleNames,
   # Exhaustive, so a new DeclKind has to be decided here (CLAUDE.md). None
   # of these holds code a member walk reaches: a top-level one is walked by
   # mangleDeclRefs, and `ownExprs` reaches its expressions.
-  of dkActor, dkTask, dkConst, dkStaticAssert, dkRegistry, dkPool,
+  of dkActor, dkTask, dkConst, dkStaticAssert, dkRegistry, dkPool, dkSlab, dkArena,
      dkRegister, dkErrors, dkResources, dkImport, dkFnSig, dkSatisfies,
      dkInterface, dkGroup, dkPublic, dkWhen:
     discard

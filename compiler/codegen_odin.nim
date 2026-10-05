@@ -16,14 +16,8 @@ import resolution
 import ast_query
 import codegen_common
 import twin_calls  # which calls take the moved twin — decided in prepare
-from lowering_seqcopy import needsDup, recordDupFields
+from twin_shape import seqFieldNames
 from ast_ops import pathOf
-from os import getEnv
-
-let DebugInPlace = not defined(release) and getEnv("TUCK_DEBUG_INPLACE").len > 0
-  ## Read ONCE at module init. `genAssign` runs per assignment in the
-  ## program, and an environment lookup there is a syscall-shaped cost on
-  ## the hot path of every build.
 
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
@@ -180,7 +174,7 @@ proc renderShape(ctx: var OdinCodegenCtx, s: RecordShape): string =
     return ctx.recStructName(s.declFields) & "{" & parts.join(", ") & "}"
   let ctor = s.typeName & "{" & parts.join(", ") & "}"
   # a rebuilt record is a production site too: its invariants must hold
-  if s.invariantsOwed: return "__validated_" & s.typeName & "(" & ctor & ")"
+  if s.invariantsOwed: return ctx.validatorName(s.typeName) & "(" & ctor & ")"
   ctor
 
 
@@ -218,7 +212,7 @@ proc genRecordCtor(ctx: var OdinCodegenCtx, e: Expr): string =
   let ctor = ctx.genericCtorName(e, e.callee.name) & "{" & parts.join(", ") & "}"
   if ctx.index.hasInvariants(e.callee.name):
     # production site: construction — validate before the value flows on
-    return "__validated_" & e.callee.name & "(" & ctor & ")"
+    return ctx.validatorName(e.callee.name) & "(" & ctor & ")"
   ctor
 
 proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
@@ -311,11 +305,12 @@ proc genCallWithArgs(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string,
   ## The emission forms, once the arguments are built.
   let satT = ctx.index.saturatingType(calleeStr)
   if satT != nil and args.len == 1:
-    return ctx.genSaturatingCtor(satT, calleeStr, args[0])
+    # An imported saturating type is named through its package (R11, A35).
+    return ctx.genSaturatingCtor(satT, ctx.importedTypeQualifier(calleeStr), args[0])
   let invRet = ctx.index.externInvRet(calleeStr)
   if invRet != "":
     # extern boundary: the returned value validates on entry
-    return "__validated_" & invRet & "(" & calleeStr & "(" &
+    return ctx.validatorName(invRet) & "(" & calleeStr & "(" &
            args.join(", ") & "))"
   if calleeStr == "echo": return "fmt.println(" & args.join(", ") & ")"
   let rt = genRtCall(calleeStr, args)
@@ -369,9 +364,17 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   if waitOn != "": return waitOn
   let variant = ctx.asSumVariantCall(e)
   if variant != "": return variant
+  let actorMember = actorMemberCallee(ctx.res, e)
+  if actorMember != "":
+    # The actor's own member fn (A24): `self` is already the `^T` the
+    # dispatch holds, so it is passed as is.
+    return actorMember & "(" & (@["self"] & ctx.genCallArgs(e)).join(", ") & ")"
   var calleeStr = ctx.genOdinExpr(e.callee)
   let member = memberCallee(ctx.res, ctx.module, e)
-  if member != "": calleeStr = member
+  if member != "":
+    # An imported object's member lives in its own package (R11, A25).
+    let origin = memberCalleeModule(ctx.res, ctx.module, e)
+    calleeStr = (if origin != "": origin.replace("-", "_") & "." else: "") & member
   let combinator = ctx.asCombinatorCall(e, calleeStr)
   if combinator != "": return combinator
   var args = ctx.genCallArgs(e)
@@ -385,7 +388,8 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   # PASSING member call so far reached its receiver through the chain
   # emitter instead, which threads an existing pointer through, never
   # needing to take one here.
-  if member != "" and args.len > 0: args[0] = "&" & args[0]
+  if member != "" and args.len > 0 and callWritesSelf(ctx.res, ctx.module, e):
+    args[0] = "&" & args[0]
   let emitted = ctx.genCallWithArgs(e, calleeStr, args)
   if emitted != "": return emitted
   if ctx.index.isTaskName(calleeStr) and args.len == 0:
@@ -489,7 +493,7 @@ proc genOdinReturn(ctx: var OdinCodegenCtx, e: Expr): string =
     # production site: return value of an invariant-carrying type.
     # `validatesItself` keeps a construction from being wrapped twice — it
     # already validated at the construction site, on this same value.
-    return "return __validated_" & ctx.retInvName & "(" &
+    return "return " & ctx.validatorName(ctx.retInvName) & "(" &
            ctx.genOdinExpr(e.returnVal) & ")"
   else: return "return " & ctx.genOdinExpr(e.returnVal)
 
@@ -642,9 +646,13 @@ proc genInterfaceWrap(ctx: var OdinCodegenCtx, e: Expr,
   ## A variable, or a call — an interface dispatch arm whose member returns
   ## its own object type where the call's type is the interface.
   let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
-  let inner = if e.kind == exkCall: ctx.genOdinCall(e) else: e.name
-  ifaceName & "{tag = ." & ifaceName & "_is_" & objName & ", " &
-    objName & "Val = " & inner & "}"
+  let inner = case e.kind
+              of exkCall: ctx.genOdinCall(e)
+              of exkIfacePayload:
+                ctx.genOdinExpr(e.tagSubject) & "." & e.tagObject & "Val"
+              else: e.name
+  ctx.importPrefix(ifaceName) & ifaceName & "{tag = ." & ifaceName & "_is_" &
+    objName & ", " & objName & "Val = " & inner & "}"
 
 proc genLit(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A literal in Odin syntax. A number in an inferred position spells the
@@ -701,13 +709,67 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
       if v.name == e.name: return "." & e.name
   let foreign = ctx.qualifiedForeignFn(e.name)
   if foreign != "": return foreign
+  let co = constOrigin(ctx.module, ctx.realModules, e.name)
+  if co != "": return co.replace("-", "_") & "." & e.name   # R11, A33
   e.name
 
 proc genOdinPoolOp(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A pool operation: `codegen_common.poolOpProc`, the pool by pointer.
-  var args = @["&" & e.poolRef.refName]
+  let origin = declOrigin(ctx.module, ctx.realModules, e.poolRef.refName, {dkPool})
+  let pre = if origin == "": "" else: origin.replace("-", "_") & "."   # R11, A36
+  var args = @["&" & pre & e.poolRef.refName]
   for a in e.poolOperands: args.add ctx.genOdinExpr(a)
   "rt." & poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
+
+proc odinSlabPkg(ctx: OdinCodegenCtx, name: string): string =
+  ## The package a slab is reached through when another module declares it,
+  ## "" for this module's own (R11, A36 — as a pool is).
+  let origin = declOrigin(ctx.module, ctx.realModules, name, {dkSlab})
+  if origin == "": "" else: origin.replace("-", "_") & "."
+
+proc odinArenaPkg(ctx: OdinCodegenCtx, name: string): string =
+  ## The package an arena is reached through, "" for this module's own.
+  let origin = declOrigin(ctx.module, ctx.realModules, name, {dkArena})
+  if origin == "": "" else: origin.replace("-", "_") & "."
+
+proc odinSlab(ctx: var OdinCodegenCtx, name: string): string =
+  ## A slab by pointer, as the runtime takes it.
+  "&" & ctx.odinSlabPkg(name) & name
+
+proc odinSlabOwns*(ctx: OdinCodegenCtx, d: Decl): seq[string] =
+  ## What a slab's element owns on the heap, as Odin's ownership pass counts
+  ## it — the element's Seq fields, or "" for an element that IS a Seq. Odin
+  ## has no destructors, so a cell's value going (`free`, `set`, `reset`)
+  ## must delete these, which the slab's own procs do (genOdinSlab). Asked of
+  ## the slab's own module, so its declaration and every use agree.
+  let origin = declOrigin(ctx.module, ctx.realModules, d.name, {dkSlab})
+  let home = if origin == "": ctx.module else: ctx.realModules[origin]
+  if seqElem(d.slabElem) != nil: @[""]
+  else: seqFieldNames(ctx.res, home, d.slabElem)
+
+proc genOdinSlabOp(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A slab operation (slab proposal, section 3). A fixed slab's `new` is its
+  ## own proc: it answers `?Ref`, there being no room once every cell holds.
+  let d = declAnywhere(ctx.module, ctx.realModules, e.slabRef.refName, dkSlab)
+  let fixed = d != nil and d.slabStorage == ssFixed
+  let arg = if e.slabArg != nil: ctx.genOdinExpr(e.slabArg) else: ""
+  let value = if e.slabValue != nil: ctx.genOdinExpr(e.slabValue) else: ""
+  if d != nil and e.slabOp in {soFree, soSet, soReset} and
+     ctx.odinSlabOwns(d).len > 0:
+    # A value that owns heap goes through the slab's own procs, which delete
+    # what it owns first (genOdinSlab).
+    let p = ctx.odinSlabPkg(d.name) & d.name & "_"
+    if e.slabOp == soFree: return p & "free(" & arg & ")"
+    if e.slabOp == soSet: return p & "set(" & arg & ", " & value & ")"
+    return p & "reset()"
+  let arena = arenaOfSlab(ctx.module, ctx.realModules, d)
+  if e.slabOp == soNew and arena != nil and arena.arenaSize > 0:
+    # An arena's budget pays for the cell first (tuckArenaNew).
+    return "rt.tuckArenaNew(" & ctx.odinSlab(e.slabRef.refName) & ", &" &
+           ctx.odinArenaPkg(arena.name) & arena.name & ", " & $d.slabCost &
+           ", " & value & ")"
+  slabOpCall(e.slabOp, ctx.odinSlab(e.slabRef.refName), arg, value, "rt.",
+             if fixed: "tuckSlabNewFixed" else: "tuckSlabNew")
 
 const DispatchArg = "tuckArg"
   ## The dispatch closure's parameter for each argument past the receiver.
@@ -730,6 +792,21 @@ proc armCallOnParams(ctx: var OdinCodegenCtx, call: Expr): Expr =
       Expr(span: call.span, kind: exkVar, name: DispatchArg & $(i - 1)),
       ctx.res.typeFor(call.args[i]))
 
+proc dispatchArmBody(ctx: var OdinCodegenCtx, arm: DispatchArm,
+                     isVoid: bool): string =
+  ## One arm: the payload copied out, the member called on it, and — when
+  ## the member changes its object — the copy stored back through `v`.
+  let payload = "v." & arm.satisfier & "Val"
+  let call = ctx.genOdinExpr(ctx.armCallOnParams(arm.call))
+  result = "\t\t\t" & arm.bindName & " := " & payload & "\n"
+  if not arm.writesBack:
+    result.add("\t\t\t" & (if isVoid: "" else: "return ") & call)
+  elif isVoid:
+    result.add("\t\t\t" & call & "\n\t\t\t" & payload & " = " & arm.bindName)
+  else:
+    result.add("\t\t\ttuckResult := " & call & "\n\t\t\t" & payload & " = " &
+               arm.bindName & "\n\t\t\treturn tuckResult")
+
 proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A call through an interface value, lowered (lowering_iface): switch on
   ## the tag and print each arm's member call. An immediately-called closure,
@@ -746,8 +823,13 @@ proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   let recv = ctx.genOdinExpr(e.dispatchRecv)
   let t = ctx.res.typeFor(e)
   let isVoid = t == nil or (t.kind == tkNamed and t.name == "void")
-  var params = @["v: " & e.dispatchIface]
-  var values = @[recv]
+  # An arm that changes the object stores it back into the value, so the
+  # closure takes the value by pointer (the checker allows it on a `var`).
+  var writesBack = false
+  for arm in e.dispatchArms: writesBack = writesBack or arm.writesBack
+  var params = @["v: " & (if writesBack: "^" else: "") &
+                 ctx.importPrefix(e.dispatchIface) & e.dispatchIface]
+  var values = @[(if writesBack: "&" else: "") & recv]
   let first = e.dispatchArms[0].call
   for i in 1 ..< first.args.len:
     params.add(DispatchArg & $(i - 1) & ": " & ctx.dispatchArgType(first.args[i]))
@@ -755,9 +837,7 @@ proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   var arms: seq[string]
   for arm in e.dispatchArms:
     arms.add("\t\tcase ." & e.dispatchIface & "_is_" & arm.satisfier & ":\n" &
-             "\t\t\t" & arm.bindName & " := v." & arm.satisfier & "Val\n" &
-             "\t\t\t" & (if isVoid: "" else: "return ") &
-             ctx.genOdinExpr(ctx.armCallOnParams(arm.call)))
+             ctx.dispatchArmBody(arm, isVoid))
   let sig = if isVoid: "" else: " -> " & ctx.odinType(t)
   # The tag is always one of the arms; the panic is what Odin's "missing
   # return" asks for, and what a corrupt value deserves.
@@ -861,6 +941,14 @@ proc genCallResolved(ctx: var OdinCodegenCtx, e: Expr): string =
   ## codegen, so an unresolved bracket emits nothing.
   if ctx.res.hasCall(e): ctx.genOdinExpr(ctx.res.call(e)) else: ""
 
+proc genFill(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `[v; N]` (R8): `[N]T{}` is the zeroed storage; any other value is a
+  ## range literal, `[N]T{0..<N = v}`.
+  let n = ctx.genOdinExpr(e.fillCount)
+  let arr = "[" & n & "]" & ctx.odinType(fillElemType(ctx.res, e))
+  if isZeroFill(e): arr & "{}"
+  else: arr & "{0..<" & n & " = " & ctx.genOdinExpr(e.fillValue) & "}"
+
 proc genList(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `[dynamic]T{a, b}` — the element type SPELLED OUT, not inferred.
   ##
@@ -879,7 +967,13 @@ proc genList(ctx: var OdinCodegenCtx, e: Expr): string =
 proc genFor(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## Odin's range-for yields the index natively, so `for idx, item in xs:`
   ## needs no counter to maintain.
-  let iterStr = ctx.genOdinExpr(e.iterable)
+  ##
+  ## An iterable holding a compound literal is parenthesized. In a `for`
+  ## header Odin, like Go, reads the literal's `{` as the loop body's start:
+  ## `for r in [dynamic]int{1, 2, 3} {` was a syntax error, so `for r in
+  ## [1, 2, 3]:` built on Nim and D and not on Odin.
+  var iterStr = ctx.genOdinExpr(e.iterable)
+  if '{' in iterStr: iterStr = "(" & iterStr & ")"
   let vars = if e.iter != nil and e.iter.kind == pkTuple and e.iter.elems.len == 2:
                genPatternStr(e.iter.elems[1]) & ", " &
                  genPatternStr(e.iter.elems[0])
@@ -1092,11 +1186,20 @@ proc genBlock(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ctx.indent = saved
   lines.join("\n")
 
+proc genDrop(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## Release what a place owns (ownership_nodes decided which, and where).
+  ## The place prints as its path: a local or parameter is never an owner
+  ## field or a register, so there is nothing for a lookup to add.
+  "delete(" & pathOf(e.dropped) & ")"
+
 proc genDefer(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## `defer:` (spec §7.4). Odin has `defer` natively, with the same scope-exit
   ## LIFO order, and its block form takes braces — so the body is emitted as a
   ## brace-delimited block rather than genBlock's braceless run of statements.
+  ## A scope-end drop is one statement, and prints on one line.
   if e.deferBody == nil or e.deferBody.kind != exkBlock: return ""
+  if e.deferBody.stmts.len == 1 and e.deferBody.stmts[0].kind == exkDrop:
+    return ind & "defer " & ctx.genDrop(e.deferBody.stmts[0])
   let body = ctx.genBlock(e.deferBody, ind)
   if body.len == 0: return ""
   ind & "defer {\n" & body & "\n" & ind & "}"
@@ -1159,15 +1262,29 @@ proc movedAssignTarget(ctx: OdinCodegenCtx, t: Expr): string =
   if ctx.res.isOwnerField(t): "self." & t.name
   else: t.name
 
-proc copyIfSeq(ctx: var OdinCodegenCtx, valStr: string, e: Expr): string =
-  ## A bare Seq being bound to a name. `[dynamic]T` assignment copies the
-  ## HEADER, so both names then view one buffer — where a Tuck `Seq`
-  ## assignment copies. lowering_seqcopy decides which sites need a real copy
-  ## (the same analysis the D backend uses for its `.dup`); this prints Odin's.
-  # No exception for a read through a MOVED twin's parameter — see the D
-  # emitter's copy of this note (codegen_d.nim, `dupIfSeq`).
-  if needsDup(ctx.res, e): "rt.tuckSeqCopy(" & valStr & ")"
-  else: valStr
+proc genOdinCopy(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A whole value copied (ownership_nodes decided which; this prints it).
+  ##
+  ##   cpSeq     `[dynamic]T` assignment copies the HEADER, so both names
+  ##             would view one buffer, where a Tuck `Seq` assignment copies.
+  ##   cpStatic  a `str` literal is static storage, and the local it is bound
+  ##             to frees each value it holds (ownership step 5).
+  ##
+  ## No exception for a read through a MOVED twin's parameter — see the D
+  ## emitter's note on `genDCopy`.
+  let inner = ctx.genOdinExpr(e.copied)
+  case e.copyKind
+  of cpSeq: "rt.tuckSeqCopy(" & inner & ")"
+  of cpStatic: "rt.tuckStrOwned(" & inner & ")"
+  of cpFields:
+    raiseAssert "odin: a record's field copies are statements after its " &
+                "binding (genAssign prints them), never an expression"
+
+proc boundOdinValue(v: Expr): Expr =
+  ## The value a binding prints: under a record's field copies, which Odin
+  ## prints as statements after the binding (`seqFieldFixups`).
+  if v != nil and v.kind == exkCopy and v.copyKind == cpFields: v.copied
+  else: v
 
 proc seqFieldFixups(ctx: var OdinCodegenCtx, target: string, e: Expr): string =
   ## A RECORD carrying Seq fields: the struct copy is field-for-field, so each
@@ -1175,7 +1292,8 @@ proc seqFieldFixups(ctx: var OdinCodegenCtx, target: string, e: Expr): string =
   ## AFTER the assignment rather than around the value: Odin's procedure
   ## literal does not capture locals, so the expression form D uses
   ## (`(){ ... }()`) reports `Undeclared name` for the very value it wraps.
-  for f in recordDupFields(ctx.res, e):
+  if e == nil or e.kind != exkCopy or e.copyKind != cpFields: return
+  for f in e.copyFields:
     result.add("; " & target & "." & f & " = rt.tuckSeqCopy(" &
                target & "." & f & ")")
 
@@ -1206,63 +1324,21 @@ proc withAssignValidate(ctx: var OdinCodegenCtx, e: Expr,
     result.add("\n" & "  ".repeat(ctx.indent) & "validate_" & owner & "(" &
                ctx.genOdinExpr(e.target.receiver) & ")")
 
-proc ownedCopy(ctx: OdinCodegenCtx, valStr: string, val: Expr): string =
-  ## A `str` literal the ownership pass decided this body must OWN, printed
-  ## as a heap copy: the local it is assigned to frees each old value at
-  ## its overwrite, and a literal is static storage (`copyToOwn`, step 5).
-  if val == nil or not val.id.isSet or val.id notin ctx.owned.copyToOwn:
-    return valStr
-  doAssert val.kind == exkLit and val.litKind == lkStr,
-    "ownership marked a non-literal to copy: " & $val.kind
-  "rt.tuckStrOwned(" & valStr & ")"
-
-proc scopeFrees(ctx: OdinCodegenCtx, name: string): string =
-  ## The `defer delete`s a declaration of `name` carries.
-  ##
-  ## SHARED, because there are two paths that declare a local and only one of
-  ## them used to run this. `genAssign`'s threaded-call branch returns early
-  ## with `x := f_moved(y)` and never reaches `genOdinVarDecl`, which is
-  ## exactly the shape `relight`'s intermediates have — so the frees were
-  ## computed, correct, and emitted nowhere.
-  let ind = "  ".repeat(ctx.indent)
-  if name in ctx.owned.freeAtScopeExit:
-    for slot in ctx.owned.freeAtScopeExit[name]:
-      let path = if slot.len == 0: name else: name & "." & slot
-      result.add("\n" & ind & "defer delete(" & path & ")")
-
 proc genOdinVarDecl(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   ## The first assignment to a name, which DECLARES it.
   ctx.definedVars.incl(e.target.name)
   # A STATED type wins over both `:=` inference and the union-naming case:
   # the author wrote it precisely because the value cannot say what it is.
   let stated = if e.declType != nil: ctx.odinType(e.declType) else: ""
-  let ut = if stated != "": stated else: ctx.unionDeclType(e.assignVal)
+  let ut = if stated != "": stated
+           else: ctx.unionDeclType(copiedValue(e.assignVal))
   let decl = if ut == "": e.target.name & " := " & valStr
              else: e.target.name & ": " & ut & " = " & valStr
-  let fixups = ctx.seqFieldFixups(e.target.name, e.assignVal)
-  # A local the ownership pass frees at scope exit — a heap slot, or a `str`
-  # this body allocated (ownership_str) — gets its `defer` here. `defer`
+  # A local the ownership pass frees at scope exit is followed by its
+  # `defer` drops, as statements of their own (ownership_nodes). `defer`
   # rather than a free at the last use, because a defer needs no POSITION:
   # Odin runs it on every path out of the block. See EV-20.
-  decl & ctx.scopeFrees(e.target.name) & fixups
-
-proc reportInPlaceBypass(ctx: var OdinCodegenCtx, e: Expr, appended: Expr) =
-  ## ITEM 4, MEASURED — see thoughts/ssa-mirror-design.md, Stage C.
-  when not defined(release):
-    # ITEM 4, MEASURED. `markSeqCopies` marks this binding as needing a copy
-    # — it is a call, and a call is not `exclusivelyOwned` — and then the
-    # fast paths below bypass `copyIfSeq` entirely and never look at the
-    # mark. So `afterBinding`'s "it was not exclusive, therefore the binding
-    # copied it, therefore it is fresh" is unbacked at exactly these sites.
-    # Twelve of them across the corpus and both applications; see
-    # thoughts/ssa-mirror-design.md, Stage C.
-    if DebugInPlace:
-      let threadedDbg = threadedCall(e)
-      if (appended != nil or threadedDbg != nil) and
-         (needsDup(ctx.res, e.assignVal) or
-          recordDupFields(ctx.res, e.assignVal).len > 0):
-        echo "INPLACE-BYPASS ", pathOf(e.target), " at ",
-             e.span.line, ":", e.span.col
+  decl & ctx.seqFieldFixups(e.target.name, e.assignVal)
 
 proc genThreadedAssign(ctx: var OdinCodegenCtx, e, threaded: Expr): string =
   ## `x = f(x)` calling the MOVED twin, with no fix-up copies after it.
@@ -1274,8 +1350,7 @@ proc genThreadedAssign(ctx: var OdinCodegenCtx, e, threaded: Expr): string =
               not ctx.res.isOwnerField(e.target)
   if isNew: ctx.definedVars.incl(e.target.name)
   ctx.movedAssignTarget(e.target) & (if isNew: " := " else: " = ") &
-    movedName(base) & "(" & ctx.genCallArgs(threaded).join(", ") & ")" &
-    (if isNew: ctx.scopeFrees(e.target.name) else: "")
+    movedName(base) & "(" & ctx.genCallArgs(threaded).join(", ") & ")"
 
 proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   ## An assignment to something that already exists.
@@ -1295,7 +1370,7 @@ proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   # exists can never free the new one.
   var pre = ""
   var value = valStr
-  if e.target.kind == exkVar and e.target.name in ctx.owned.freeBeforeOverwrite:
+  if e.dropsOld:
     let next = ctx.freshName("tuckNext")
     let ind = "  ".repeat(ctx.indent)
     pre = next & " := " & valStr & "\n" & ind & "delete(" & tgt & ")\n" & ind
@@ -1303,22 +1378,23 @@ proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   ctx.withAssignValidate(e, pre & tgt & " = " & value &
                             ctx.seqFieldFixups(tgt, e.assignVal))
 
+proc genAppend(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `xs += v` — an append assigned back over its own argument, grown in place
+  ## by Odin's amortised `append`. ownership_nodes made the decision; this
+  ## prints it. (A str concat is never one here: Odin's strings do not grow,
+  ## so `s = s + t` stays a `tuckConcat` and a free of the old value.)
+  "append(&" & ctx.movedAssignTarget(e.appendTarget) & ", " &
+    ctx.genOdinExpr(e.appendValue) & ")"
+
 proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
   if ctx.isTaskArgsBind(e):
     return ctx.genOdinTaskArgsBind(e, "  ".repeat(ctx.indent))
-  # An append assigned back to its own argument is an in-place append.
-  let appended = selfAppendValue(ctx.res, e)
-  reportInPlaceBypass(ctx, e, appended)
-  if appended != nil:
-    return "append(&" & ctx.movedAssignTarget(e.target) & ", " &
-           ctx.genOdinExpr(appended) & ")"
   # Same fact one level up: a threaded-container call assigned back over its
   # own argument calls the MOVED twin, and needs no fix-up copies after it.
   let threaded = threadedCall(e)
   if threaded != nil: return ctx.genThreadedAssign(e, threaded)
-  let valStr = ctx.ownedCopy(ctx.copyIfSeq(ctx.genOdinExpr(e.assignVal),
-                                          e.assignVal), e.assignVal)
+  let valStr = ctx.genOdinExpr(boundOdinValue(e.assignVal))
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
      not ctx.res.isOwnerField(e.target):
     return ctx.genOdinVarDecl(e, valStr)
@@ -1403,12 +1479,13 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   if e == nil: return ""
   let ind = "  ".repeat(ctx.indent)
   let w = ctx.res.wrapOf(e)
-  if w.objName != "" and e.kind in {exkVar, exkCall}:
+  if w.objName != "" and e.kind in {exkVar, exkCall, exkIfacePayload}:
     return ctx.genInterfaceWrap(e, w)
   case e.kind
   of exkLit: ctx.genLit(e)
   of exkVar: ctx.genVar(e)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
+     exkMixinRef:
     e.refName
   of exkField: ctx.genFieldAccess(e, ind)
   of exkQualified: genQualified(ctx, e)
@@ -1416,6 +1493,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkCombinator: ctx.genOdinCombinator(e)
   of exkStruct: ctx.genStructLit(e)
   of exkList: ctx.genList(e)
+  of exkFill: ctx.genFill(e)
   of exkBracket, exkBracketAssign: ctx.genCallResolved(e)
   of exkFor: ctx.genFor(e, ind)
   of exkWhile: ctx.genWhile(e, ind)
@@ -1426,6 +1504,9 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkBlock: ctx.genBlock(e, ind)
   of exkIf: ctx.genIf(e, ind)
   of exkAssign: ctx.genAssign(e)
+  of exkAppend: ctx.genAppend(e)
+  of exkCopy: ctx.genOdinCopy(e)
+  of exkDrop: ctx.genDrop(e)
   of exkMatch: (if e.subject != nil: ctx.genMatchExpr(e) else: "")
   of exkReturn: ctx.genReturnStmt(e)
   of exkRaise: ctx.genRaise(e)
@@ -1451,7 +1532,25 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkImport: ""  # imports are declarations, never expression position
   of exkOrdinal: ctx.genOrdinal(e)
   of exkIfaceCall: ctx.genIfaceCall(e)
+  of exkIfaceIs:
+    # `| Flac f ->`'s test: the interface value's tag (lowering_iface).
+    "(" & ctx.genOdinExpr(e.tagSubject) & ".tag == ." & e.tagIface & "_is_" &
+      e.tagObject & ")"
+  of exkIfacePayload:
+    ctx.genOdinExpr(e.tagSubject) & "." & e.tagObject & "Val"
+  of exkWrapOk:
+    # A plain value into a `?T` place (lowering_optional). Typed, so an
+    # untyped literal takes T rather than `int`.
+    "rt.TuckResult(" & ctx.odinType(e.optInner) & "){status = .Ok, value = " &
+      ctx.genOdinExpr(e.optValue) & "}"
+  of exkAbsent: "rt.tnone(" & ctx.odinType(e.optInner) & ")"
   of exkPoolOp: ctx.genOdinPoolOp(e)
+  of exkSlabOp: ctx.genOdinSlabOp(e)
+  of exkArenaReset:
+    ctx.odinArenaPkg(e.arenaRef.refName) & arenaResetProc(e.arenaRef.refName) & "()"
+  of exkSlabCell:
+    # The value in the cell a reference names (lowering_slab), checked.
+    slabCellValue(ctx.odinSlab(e.cellSlab.refName), ctx.genOdinExpr(e.cellRef), "rt.")
   of exkValidate:
     "validate_" & ctx.res.typeFor(e.validated).name & "(" &
       ctx.genOdinExpr(e.validated) & ")"

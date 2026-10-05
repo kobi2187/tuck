@@ -1,5 +1,5 @@
 # Build a small formatted report via string interpolation-style concat
-import io
+import console
 
 type LineItem:
   name: str

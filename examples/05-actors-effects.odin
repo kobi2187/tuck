@@ -53,12 +53,12 @@ drain_tuckˑactorˑCounter :: proc() -> bool {
 }
 
 sendIncrement_tuckˑactorˑCounter :: proc(self: ^tuckˑactorˑCounter, n: int) {
-	_ = rt.enqueue(&self.mailbox, tuckˑactorˑCounterMsg{tuckTag = .msgIncrement, n = n})
+	rt.sendWaiting(&self.mailbox, tuckˑactorˑCounterMsg{tuckTag = .msgIncrement, n = n}, tuckˑactorˑCounterSlot, "Counter")
 	rt.tuckNotifySend(tuckˑactorˑCounterSlot)
 }
 
 sendReset_tuckˑactorˑCounter :: proc(self: ^tuckˑactorˑCounter) {
-	_ = rt.enqueue(&self.mailbox, tuckˑactorˑCounterMsg{tuckTag = .msgReset})
+	rt.sendWaiting(&self.mailbox, tuckˑactorˑCounterMsg{tuckTag = .msgReset}, tuckˑactorˑCounterSlot, "Counter")
 	rt.tuckNotifySend(tuckˑactorˑCounterSlot)
 }
 

@@ -10,7 +10,6 @@ import resolution
 import ast_query
 import codegen_common
 import codegen_odin_ctx
-import analysis_ownership   ## decides the frees; this file only prints them
 import ./codegen_odin
 
 const DefaultMailboxSize = "8"
@@ -65,9 +64,13 @@ proc genOdinMemberFn*(ctx: var OdinCodegenCtx, m: Decl, objName: string): string
   # and rewrite.bindSelf resolved `Self` to the object. What is left is the
   # ODIN spelling: self is a pointer, `^T`, so a mutation reaches the
   # caller's value.
+  # Only a member that changes its object takes a pointer; one that reads
+  # takes `self: T` by value, so it may be called on a parameter, which Odin
+  # cannot take the address of (typecheck.checkSelfWrites).
+  let byPointer = writesSelf(ctx.res, m)
   var params = m.fnParams
   for i in 0 ..< params.len:
-    if params[i].name == "self":
+    if params[i].name == "self" and byPointer:
       params[i].typ = Type(span: m.span, kind: tkNamed, name: "^" & objName)
   # THE MEMBER'S OWN ID: this is the same fn — same body, same decisions —
   # printed with Odin's `self` convention, and every side table (ownership,
@@ -79,9 +82,21 @@ proc genOdinMemberFn*(ctx: var OdinCodegenCtx, m: Decl, objName: string): string
   # `self` is a POINTER here, so every mention in the body needs a deref —
   # `self^` reads the value and `self^ = x` writes through to the caller.
   let oldPtrSelf = ctx.ptrSelf
-  ctx.ptrSelf = true
+  ctx.ptrSelf = byPointer
   result = ctx.genOdinDecl(copy)
   ctx.ptrSelf = oldPtrSelf
+
+proc genOdinActorMemberFn*(ctx: var OdinCodegenCtx, m: Decl,
+                           actorName: string): string =
+  ## An actor's member `fn` (A24): `self: ^T`, as the dispatch takes it, so a
+  ## field write reaches the singleton. `ptrSelf` stays off: a bare `self` is
+  ## only ever handed on to another member, which wants the pointer itself.
+  let copy = Decl(span: m.span, kind: dkFn, id: m.id,
+                  name: memberProcName(actorName, m.name),
+                  fnParams: @[actorSelfParam("^" & actorName, m)] & m.fnParams,
+                  fnReturnType: m.fnReturnType, fnBody: m.fnBody,
+                  fnEffects: m.fnEffects)
+  ctx.genOdinDecl(copy)
 
 proc genPendingStub*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## Pending stub: logs on invocation, returns the zero value.
@@ -238,7 +253,6 @@ proc genFnBody*(ctx: var OdinCodegenCtx, d: Decl, retTypeStr, ind: string): stri
   ## becomes one `return` line, and a block body gets a trailing return when
   ## the fn owes a value.
   let savedIndent = ctx.indent
-  injectTailReturn(d.fnBody, retTypeStr)
   result = ctx.genOdinExpr(d.fnBody)
   if d.fnBody != nil and d.fnBody.kind != exkBlock:
     # single-expression body: `header {` is already open, so just the line
@@ -276,11 +290,8 @@ proc genMovedTwin(ctx: var OdinCodegenCtx, d: Decl, header, bodyStr,
   ## Switched after both were computed side by side across the corpus, both
   ## applications, the Savina ports and the stdlib with no difference, and
   ## after `TUCK_TRACK` confirmed no double free.
-  ## Step 6 of the ownership pass, printed.
-  var frees = ""
-  for slot in ownershipFor(d).twinFreesParam:
-    let path = if slot.len == 0: movedP else: movedP & "." & slot
-    frees.add(ind & "\tdefer delete(" & path & ")\n")
+  ## Step 6 of the ownership pass, now `defer` drops at the top of the
+  ## body (ownership_nodes), printed with it.
   let twinName = movedName(d.name.replace(".", "_"))
   var argNames: seq[string]
   for p in d.fnParams: argNames.add(p.name)
@@ -297,7 +308,7 @@ proc genMovedTwin(ctx: var OdinCodegenCtx, d: Decl, header, bodyStr,
   wrap.add(ind & "}\n\n")
   let twinHeader = header.replace(d.name.replace(".", "_") & " :: proc",
                                   twinName & " :: proc")
-  wrap & twinHeader & "\n" & frees & bodyStr & "\n" & ind & "}\n"
+  wrap & twinHeader & "\n" & bodyStr & "\n" & ind & "}\n"
 
 proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## An ordinary fn. A pending fn is a stub, and leaves before any of this
@@ -306,9 +317,9 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ctx.currentParams = @[]
   for p in d.fnParams:
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
-  # THE OWNERSHIP PASS DECIDES; this emitter prints. See
-  # compiler/analysis_ownership.nim for the six steps.
-  ctx.owned = ownershipFor(d)
+  # THE OWNERSHIP PASS DECIDES; this emitter prints. Its frees reach here
+  # as `exkDrop` nodes and `dropsOld` assignments (ownership_nodes), so
+  # nothing about ownership is looked up while printing.
   let ind = "  ".repeat(ctx.indent)
   let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType)
                    else: "void"
@@ -323,18 +334,7 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   let movedP = movedFnParam(ctx.res, ctx.module, d)
   let savedMoved = ctx.movedParam
   ctx.movedParam = movedP
-  var bodyStr = ctx.genFnBody(d, retTypeStr, ind)
-  # A param a member call takes as `self: ^T` is shadowed first — an Odin
-  # parameter cannot be addressed (codegen_common.paramsCalledAsReceiver).
-  let brace = bodyStr.find('\n')
-  let rest = if bodyStr.startsWith("{") and brace >= 0: bodyStr[brace + 1 .. ^1]
-             else: bodyStr
-  var shadows = ""
-  for p in paramsCalledAsReceiver(ctx.res, ctx.module, d):
-    shadows.add(leadingIndent(rest) & p & " := " & p & "\n")
-  if shadows != "":
-    bodyStr = if rest.len < bodyStr.len: bodyStr[0 .. brace] & shadows & rest
-              else: shadows & bodyStr
+  let bodyStr = ctx.genFnBody(d, retTypeStr, ind)
   ctx.movedParam = savedMoved
   ctx.leaveReturnContext()
   ctx.definedVars = savedVars
@@ -706,9 +706,20 @@ proc genDrain*(d: Decl, hasShutdown: bool, ind: string): string =
     ind & "\t}\n" &
     ind & "\treturn didWork\n" & ind & "}\n"
 
+proc odinEnqueue(d: Decl, msg: string): string =
+  ## A send helper's enqueue of `msg` under the actor's `on_full` (R6): wait
+  ## for room (the default), stop the program, or drop — the bare enqueue
+  ## every send used to be.
+  let actor = "\"" & actorLabel(d, d.name) & "\""
+  case actorOnFull(d)
+  of ofDrop: "_ = rt.enqueue(&self.mailbox, " & msg & ")"
+  of ofWait: "rt.sendWaiting(&self.mailbox, " & msg & ", " &
+             actorSlotName(d.name) & ", " & actor & ")"
+  of ofAssert: "rt.sendAsserting(&self.mailbox, " & msg & ", " & actor & ")"
+
 proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
                    ind: string): string =
-  ## Enqueue an envelope; a full ring drops (spec §9.1).
+  ## Enqueue an envelope under the actor's `on_full` (R6, `odinEnqueue`).
   ##
   ## A CONTAINER PAYLOAD IS COPIED IN. `[dynamic]T` assignment copies the
   ## header, so `Msg{xs = xs}` handed the actor the sender's own buffer: the
@@ -739,8 +750,7 @@ proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
   let sep = if params.len > 0: ", " else: ""
   "\n" & ind & "send" & h.name.capitalize() & "_" & d.name & " :: proc(self: ^" &
     d.name & sep & params.join(", ") & ") {\n" & copies &
-    ind & "\t_ = rt.enqueue(&self.mailbox, " & d.name & "Msg{" & ctorArgs &
-    "})\n" &
+    ind & "\t" & odinEnqueue(d, d.name & "Msg{" & ctorArgs & "}") & "\n" &
     # The send NOTIFIES. It never did: the actor parks on a condvar when its
     # mailbox comes up empty, so a send to a parked Odin actor was a lost
     # wakeup — the message sat in the ring and nothing arrived to drain it
@@ -752,8 +762,8 @@ proc genShutdownSender*(d: Decl, ind: string): string =
   ## `sendShutdown_<Actor>`: enqueues the shutdown message and wakes the
   ## actor's scheduler slot, like any other send helper.
   "\n" & ind & "sendShutdown_" & d.name & " :: proc(self: ^" & d.name &
-    ") {\n" & ind & "\t_ = rt.enqueue(&self.mailbox, " & d.name &
-    "Msg{" & TagField & " = .msgShutdown})\n" &
+    ") {\n" & ind & "\t" &
+    odinEnqueue(d, d.name & "Msg{" & TagField & " = .msgShutdown}") & "\n" &
     ind & "\trt.tuckNotifySend(" & actorSlotName(d.name) & ")\n" & ind & "}\n"
 
 proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =
@@ -780,6 +790,7 @@ proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =
   # One instance per declared actor (spec §9.1); sends and field reads target
   # it, so `Counter.total` means `counterSingleton.total`.
   result.add(ind & actorSingletonName(d.name) & ": " & d.name & "\n\n")
+  for m in actorMemberFns(d): result.add(ctx.genOdinActorMemberFn(m, d.name) & "\n")
   result.add(ctx.genDispatch(d, handlers, shutdownBody, hasShutdown, ind))
   result.add(genDrain(d, hasShutdown, ind))
   for h in handlers:
@@ -977,7 +988,6 @@ proc genTaskDecl*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   (ctx.retWrapped, ctx.retInnerOdin, ctx.retInnerT) =
     ctx.odinBangInfo(d.taskReturnType)
   ctx.retAbsentCapable = absentCapable(d.taskReturnType)
-  injectTailReturn(d.taskBody, retTypeStr)
   var bodyStr = ctx.genOdinExpr(d.taskBody)
   if d.taskBody != nil and d.taskBody.kind != exkBlock:
     let kw = if retTypeStr != "void": "return " else: ""
@@ -1184,6 +1194,67 @@ proc genOdinPool(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ind & d.name & ": rt.ObjectPool(" & ctx.odinType(d.poolElem) & ", " &
     $d.poolCount & ")\n"
 
+proc genOdinSlabDrops(d: Decl, elem: string, owns: seq[string],
+                      ind: string): string =
+  ## The slab's `free`, `set` and `reset` for an element that owns heap:
+  ## Odin has no destructors, so each deletes what a value it ends owns
+  ## before the runtime's own step. Nim's runtime resets the value and D's
+  ## collector reclaims it; here it is spelt per slab, by its Seq fields.
+  let s = d.name
+  proc drops(c, ind: string): string =
+    for f in owns:
+      result.add ind & "delete(" & c & ".value" & (if f == "": "" else: "." & f) & ")\n"
+  result = ind & s & "_free :: proc(r: rt.SlabRef) {\n" &
+    ind & "\tc := rt.tuckSlabCell(&" & s & ", r)\n" & drops("c", ind & "\t") &
+    ind & "\trt.tuckSlabFree(&" & s & ", r)\n" & ind & "}\n"
+  result.add ind & s & "_set :: proc(r: rt.SlabRef, v: " & elem & ") {\n" &
+    ind & "\tc := rt.tuckSlabCell(&" & s & ", r)\n" & drops("c", ind & "\t") &
+    ind & "\tc.value = v\n" & ind & "}\n"
+  # A reset ends every live cell's value at once: each one's heap goes here.
+  result.add ind & s & "_reset :: proc() {\n" &
+    ind & "\tfor i in 0 ..< " & s & ".len {\n" &
+    ind & "\t\tc := rt.tuckSlabCellAt(&" & s & ", i)\n" &
+    ind & "\t\tif c.link == rt.SLAB_LIVE {\n" & drops("c", ind & "\t\t\t") &
+    ind & "\t\t}\n" & ind & "\t}\n" &
+    ind & "\trt.tuckSlabReset(&" & s & ")\n" & ind & "}\n"
+
+proc genOdinArena(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## An arena (slab proposal §9): its budget, and its reset — every slab the
+  ## checker made for it, through the slab's own reset when its values own
+  ## heap (genOdinSlabDrops), then the budget, emptied.
+  result = ind & d.name & " := rt.ArenaBudget{size = " & $d.arenaSize & "}\n" &
+           ind & arenaResetProc(d.name) & " :: proc() {\n"
+  for s in slabsOfArena(ctx.module, d):
+    if ctx.odinSlabOwns(s).len > 0:
+      result.add ind & "\t" & s.name & "_reset()\n"
+    else:
+      result.add ind & "\trt.tuckSlabReset(&" & s.name & ")\n"
+  result.add ind & "\t" & d.name & ".used = 0\n" & ind & "}\n"
+
+proc genOdinSlabsRelease*(ctx: var OdinCodegenCtx, m: Module): string =
+  ## Every slab this module declares, handed back at exit under TUCK_TRACK
+  ## (live values first, through the slab's own `reset` when they own heap),
+  ## so the tracker names what the program leaked. Public and called by the
+  ## entry point unconditionally, which keeps this package's import used.
+  result = SlabsReleaseProc & " :: proc() {\n\twhen rt.TUCK_TRACK {\n"
+  for d in m.decls(dkSlab):
+    if ctx.odinSlabOwns(d).len > 0: result.add "\t\t" & d.name & "_reset()\n"
+    result.add "\t\trt.tuckSlabRelease(&" & d.name & ")\n"
+  result.add "\t}\n}\n"
+
+proc genOdinSlab(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## A slab: one package-level instance of the storage its attributes chose,
+  ## zero but for its written name (the stale-reference messages carry it).
+  let elem = ctx.odinType(d.slabElem)
+  let store = case d.slabStorage
+              of ssChunked: "rt.SlabChunked(" & elem & ")"
+              of ssFixed: "rt.SlabFixed(" & elem & ", " & $d.slabCount & ")"
+              of ssContiguous: "rt.SlabSeq(" & elem & ")"
+  result = ind & d.name & " := " & store & "{name = " &
+           escape(slabLabel(d)) & "}\n"
+  let owns = ctx.odinSlabOwns(d)
+  if owns.len > 0: result.add genOdinSlabDrops(d, elem, owns, ind)
+
 proc collectStaticAssert(ctx: var OdinCodegenCtx, d: Decl): string =
   ## Odin's `#assert` does not reach a runtime value, so the entry point
   ## asserts these; nothing is emitted in place.
@@ -1237,7 +1308,7 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## One top-level declaration. Every DeclKind is named, so a new one fails
   ## to compile here until it is decided (CLAUDE.md).
   if d == nil: return ""
-  if d.kind == dkType and d.span.file.startsWith(ImportedTypeMarker):
+  if d.kind in {dkType, dkObject, dkInterface} and d.span.file.startsWith(ImportedTypeMarker):
     return ""  # defined in its own module; that module's Odin file has it
   let ind = "  ".repeat(ctx.indent)
   case d.kind
@@ -1255,6 +1326,8 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   of dkResources: genOdinResourceTables(d, ind)
   of dkMixin, dkExtern, dkPending: ctx.genMixinBlock(d)
   of dkPool: ctx.genOdinPool(d, ind)
+  of dkSlab: ctx.genOdinSlab(d, ind)
+  of dkArena: ctx.genOdinArena(d, ind)
   of dkFnSig: ctx.genOdinFnSig(d, ind)
   of dkInterface: ctx.genOdinInterface(d, ind)
   of dkImport: ""     # same project, same namespace: no import line

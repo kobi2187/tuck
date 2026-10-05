@@ -1,5 +1,5 @@
 # Average of a fixed-size list of numbers
-import io
+import console
 
 pending:
   fn average({items: Seq[int]}) -> float

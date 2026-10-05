@@ -1,5 +1,5 @@
 # Take the first N and skip the first N elements of a list
-import io
+import console
 import seq
 
 pending:

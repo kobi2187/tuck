@@ -1,5 +1,5 @@
 # Set operations: union, intersect, distinct over two lists
-import io
+import console
 import seq
 
 pending:

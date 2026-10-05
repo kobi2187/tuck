@@ -1,5 +1,5 @@
 # Elixir-pipe-shaped pipeline: filter |> map |> sum, 3-deep postfix chain
-import io
+import console
 import seq
 
 pending:

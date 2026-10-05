@@ -26,6 +26,7 @@ import ast, sets, tables
 import typecheck_state
 import ast_query
 import typecheck_util
+from resolution import arenaOfRefType, arenaSlabName
 
 proc compatible*(tc: TypeChecker, actual, expected: Type): bool
   ## Forward-declared: nominalCompatible/fnRefCompatible/recordCompatible/
@@ -104,6 +105,16 @@ proc recordCompatible*(tc: TypeChecker, a: Type, eFields: seq[FieldDef]): bool =
     if not found: return false
   true
 
+proc sameArenaRef(a, e: Type): bool =
+  ## Two arena references: the same arena, and the same element type BY
+  ## NAME. The element picks the slab a reference's cell is in, so the
+  ## structural match records get would let a `FrameRef[A]` read a cell of
+  ## `B`'s slab whenever A and B have the same fields.
+  let ra = arenaOfRefType(a)
+  let re = arenaOfRefType(e)
+  ra != nil and ra == re and
+    arenaSlabName(ra.name, a.args[0]) == arenaSlabName(re.name, e.args[0])
+
 proc appCompatible*(tc: TypeChecker, a, e: Type): bool =
   ## Two type applications: same base, and pairwise-compatible arguments.
   if not tc.compatible(a.base, e.base): return false
@@ -175,6 +186,15 @@ proc fnRefVerdict(tc: TypeChecker, a, e: Type): FnRefVerdict =
   if a.result == nil or e.result == nil: return vYes
   if tc.compatible(a.result, e.result): vYes else: vNo
 
+proc refVerdict(tc: TypeChecker, a, e: Type): FnRefVerdict =
+  ## The two values that stand for something else: an arena reference
+  ## (`FrameRef[T]`, by arena and element name — sameArenaRef) and a fn
+  ## reference (`:touch`). Undecided for every other pair.
+  if arenaOfRefType(a) != nil or arenaOfRefType(e) != nil:
+    return if sameArenaRef(a, e): vYes else: vNo
+  if a.kind == tkFunc: return tc.fnRefVerdict(a, e)
+  vUndecided
+
 proc compatible*(tc: TypeChecker, actual, expected: Type): bool =
   ## May a value of `actual` flow where `expected` is wanted?
   var a, e: Type
@@ -187,9 +207,8 @@ proc compatible*(tc: TypeChecker, actual, expected: Type): bool =
   if isFlexible(a) or isFlexible(e): return true
   if a.kind == tkNamed and e.kind == tkNamed:
     return tc.nominalCompatible(a, e)
-  if a.kind == tkFunc:
-    let verdict = tc.fnRefVerdict(a, e)
-    if verdict != vUndecided: return verdict == vYes
+  let verdict = tc.refVerdict(a, e)
+  if verdict != vUndecided: return verdict == vYes
   let eFields = if e.kind == tkRecord: e.fields else: tc.fieldsOf(e)
   if eFields.len > 0 or e.kind == tkRecord:
     return tc.recordCompatible(a, eFields)

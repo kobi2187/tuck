@@ -1,5 +1,5 @@
 # Random numbers: a random int in a range
-import io
+import console
 
 pending:
   fn randomInt({low: int, high: int}) -> int [io]

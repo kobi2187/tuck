@@ -21,6 +21,154 @@ to be the thing most of the queue depends on:
 
 ---
 
+## The queue, re-validated 2026-09-28
+
+Checked against the compiler at `1d94eae`, not carried over from below. M1,
+M2 (its exit), M3 and M4 except 4.3 are done; the spine's remainder is M2.1
+and M4.3. Open bugs pinned `bugOpen`: A14, A16, A18, A24 — the four
+MISSING-FEATURES §A counts.
+
+**Ruled 2026-09-28, later the same day:** R3 (a) — support a one-line `if`
+with statement branches; R7 — one sender's FIFO order stays a promise; R8 —
+an Array takes a fill form `[v; N]`, a zero fill being the host's zeroed
+storage, not a loop; R12 — diagnostic codes per rule, and **arena is to be
+finished** (no longer deferred).
+
+**Waiting on the owner:**
+- R10 — actor arms only, or a task's too (§9.3 keeps a block so an arm can
+  `return`); and whether a bare `return` stays an arm.
+- R12 — `benches/bench_phases`: rework or delete.
+- ~~Arena — what `alloc` returns~~ ruled 2026-09-29 with the slab proposal,
+  built 2026-10-04 (item 9).
+- ~~The ownership rules~~ ruled 2026-10-05, "yes to all" (Q1–Q7); now
+  item 2b.
+- **Generic code over slabs** (2026-10-04):
+  `thoughts/shared/plans/2026-10-04-generic-slabs-proposal.md`, Q1–Q6.
+
+**1. Memory and the SSA spine** (the higher priority)
+1. ~~`benches/transpile/dispatch.tuck` crashes the compiler~~ **DONE
+   2026-09-28.** The ORACLE was wrong, not the graph: `analysis_liveness`
+   read `Shape.Circle {r: i}` as a path and skipped its argument, so it
+   proved an earlier read of `i` final. `benches/transpile` joins the ssa
+   suite's corpus; `TUCK_DEBUG_SSA=diff` now names the sites.
+2. ~~M2.1~~ **moved below tier 2, 2026-09-28.** `exclusivelyOwned` only
+   decides whether a value may SKIP a defensive copy, and a shape the
+   provenance walk does not model answers "copy". Moving its origin half
+   onto the mirror consolidates an analysis and may drop redundant copies;
+   no leak and no wrong answer depends on it. Now after item 17.
+2b. **The ownership rules — ruled 2026-10-05 ("yes to all"), in progress
+   in the proposal's §8 order.** Step 1.1 DONE 2026-10-05: an append grown
+   in place is an `exkAppend` node made by `ownership_nodes` (step 9 of
+   `prepare`) and printed by all three emitters, which no longer recognise
+   the shape themselves; 1026 emissions (every `.tuck` in the tree, three
+   backends) byte-identical. Step 1.2 DONE the same day: every copy a
+   binding makes on Odin and D is an `exkCopy` node (a Seq, a record's Seq
+   fields, or a static str made owned), and the emitters no longer read the
+   copy marks; byte-identical again. Step 1.3 DONE the same day: Odin's
+   frees are `exkDrop` nodes (a `defer` after a declaration, or at the top
+   of a moved twin) and an assignment's `dropsOld`; the Odin emitter no
+   longer imports `analysis_ownership`. Stage C is complete. Stage D, in
+   shadow, the same day: rule U's classifier (`ownership_rules`), and
+   rules P, D/M and S computed from the rules (`ownership_elab`) and
+   compared with today's answers (`ownership_shadow`, `TUCK_DEBUG_OWN`).
+   Every difference is explained in the proposal's §8, and one is a real
+   bug, A40, fixed. Rule V (`ownership_check`) checks the tree itself and
+   found A41–A45, owned values the Odin tree never drops, each confirmed by
+   `TUCK_TRACK`. They close with the switch to rule D. Next: the
+   elaborator writes its own tree behind a flag, V and the tracked runs
+   gate it, then glue (G) and the switch. Owner: "we need a more generalized mechanism to consolidate all
+   the bug fixes. I thought SSA was the solution but the rules may need more
+   formalization." Ten rules (borrow vs sink, move at a final use, consuming
+   parameters, drop once at scope end with reset on move, type-derived copy
+   and drop glue, written evaluation order, alias within one call, send as
+   sink, a total checker). Each of the twenty ownership bugs on record maps
+   to one of them, and they replace about 3 100 lines spread over eight
+   passes with one elaborator. It supersedes M2.1 and the mirror design's
+   Stages C and D. A39, and the Odin/D take that makes `slab_thread` linear,
+   wait on it.
+
+**2. Finish partial features, and the rulings already made**
+3. ~~A24 — an actor member `fn` is emitted by no backend~~ **DONE
+   2026-09-28**: a member is a proc taking the actor's state as `self`;
+   TK-AC03/04/05 refuse a handler called, a member called from outside, a
+   send naming a member.
+4. R10 — an `on select` arm is one call to a fn that carries the bracket.
+5. ~~R3~~ **DONE 2026-09-28**: statement branches make a one-line `if` the
+   statement form (`ast_query.isValueIf`), and so does a void one
+   (`lowering.blockVoidIf`); both built on no backend before.
+6. ~~R8 fill form~~ **DONE 2026-09-28**: `[v; N]` (exkFill; TK-TY36/37),
+   a zero fill the host's zeroed storage; spec §9.1's `txBuf` and example 16
+   take it.
+7. R6 (#7) — RULED 2026-09-28: the program picks, per actor, what the send
+   that finds the mailbox full does — `[on_full: drop | wait | assert]`,
+   `wait` when unwritten (the check measured free, benches/SCORES.md "R6").
+   A self-send cannot wait, so under `wait` it asserts. Build it on all three
+   backends and all three actor modes.
+8. R11 — cross-module parity. SCANNED 2026-09-28: 24 constructs declared in
+   one module and used from another, on all three backends, each against a
+   one-module control. Eleven cross (types, generic fns and records, sums,
+   decision tables, `?T`, tasks, transitions, fnsigs, record composition,
+   and the rest of `cross_module`); A25–A37 do not, each pinned `bugOpen`
+   (MISSING-FEATURES §A). Fix those, then A18 and A14.
+9. Arena (spec §7.3) — finish it. **It depends on a slab allocator (owner,
+   2026-09-28)**, so the slab comes first: one owned region of homogeneous
+   slots plus integer indices (Experimental §2 below), then the arena over
+   it. **Proposal written 2026-09-29:
+   `thoughts/shared/plans/2026-09-29-slab-proposal.md`** — a `slab`
+   declaration with a typed reference per slab, chunked storage by default
+   (measured, SCORES.md "Slab storage"), per-cell free + tenancy + reset,
+   the arena as a lifetime over slabs. **Ruled 2026-09-29** (its §10: Q4 →
+   `none`, Q8 → two-level storage). **Built:** P0 `none` (`4a5d2c0`), P1
+   the runtimes (`03d3310`), P2 the declaration on all three backends plus
+   `examples/48-slab-references.tuck` (`800bd12`), P3 the ownership checks
+   (`ea2f5c0`), P4 the arena (`cca53e3`; spec §7.3 rewritten; example 13
+   run-gated), P5 the docs (`463c82e`).
+   **Then, owner 2026-10-04: "when the feature is done, it's time for bug
+   fixes and handling discovered gaps"** — #96 (`ff38e29`), A38
+   (`12289c4`), #97 (`f8c9d33`) and #98 (`7640082`) are fixed. The gaps
+   are in the proposal's §12, first among them **generic code over slabs**:
+   a list algorithm written once cannot run over two slabs, each having its
+   own reference type and its own `Slab.op`s. Owner: "since Slab is a
+   single shaped data type, it should be easy to pass a type as generic."
+   **Proposal written 2026-10-04, awaiting a ruling:
+   `thoughts/shared/plans/2026-10-04-generic-slabs-proposal.md`** — the
+   slab as a type parameter (`fn length[S: slab]({head: Ref[S]?})`),
+   copied once per slab the way an interface bound is; a cell type may
+   name the slab it lives in (`type Cell[T, S: slab]`).
+10. M4.3 — actor dispatch lowered (`genActorDispatch` / `genDispatch` /
+    `genDDispatch` still build it); needs the message envelope in Tuck first.
+11. A16 / #55 — a fired `timeout` bounds latency.
+12. #15 — typed select sources, the task form; unblocks example 16 (meets R10).
+13. #30 — D reads and writes a register through a plain `*ptr`, not
+    `volatileLoad`/`volatileStore` (checked on example 11).
+14. #64 — wire `[no_alloc]` and `[irq_safe]`.
+15. #22 / #23 — `callParamsFor` gaps; quadratic emit.
+16. S3.3 — D runtime networking: `42-net-echo` cannot link `listen`/`accept`. L.
+17. S3.5 — runtime speed parity; the causes are unmeasured.
+17b. M2.1 — `exclusivelyOwned`'s origin half onto the mirror (moved here from
+    item 2; see there). A differential over the corpus first: which copies
+    the mirror would skip that provenance keeps.
+
+**3. Records and hygiene** (small; alongside the above)
+18. Stale docs, each checked wrong on 2026-09-28: spec Appendix A calls
+    generic-record construction a "checker error" (`{value: 5} Box` returns 5
+    on all three); MISSING-FEATURES §D says the registry emits invalid Nim and
+    example 20 builds on no backend (it builds on all three); LANGUAGE-OVERVIEW
+    §0 row 4 says D passes a record parameter as `ref` (all three pass it by
+    value), and §18 lists three bugs that are not the four open.
+19. `invariants`' "a violation reads the same on every backend" failed 2 of 5
+    full runs on 2026-09-27 — find the cause.
+20. R12 — a `TK-` code per rule for the 134 uncoded `fail(...)` sites, each
+    appended at the end of its category, each with a `tuck explain` text.
+21. The seven mechanical refactors listed under the rulings report's Observations.
+
+**Deferred — completely missing, not scheduled:** #10 · #11 · #12 ·
+#16 · #17 · #32 · #33 · #57 · #62 (const evaluator) · #65–#71 · #74 · #91 ·
+DNS · a growable `str` on Odin/D (#80's stage 4, #93) · message priority
+(below).
+
+---
+
 ## The shape of the remaining work
 
 The first version of this queue listed work by priority tier. Doing it showed
@@ -173,7 +321,7 @@ closure no longer exist in any `codegen_*.nim`.
 | — | **#72** | **FIXED 2026-09-26** — the checker takes an `Array`'s element from its second argument and lowers `a[i]` to the runtimes' existing `tuckArrayAt`/`tuckArraySetAt` | — | — |
 | — | **#45** | **FIXED 2026-09-26** — `Pool.read {h}` / `Pool.write {h, value}` through the handle, and `Pool.addr {h}` (a `Buf`) for an extern only (TK-TY08). Pool ops are their own node, `exkPoolOp`; a pool is no longer capped at 64 cells. `tests/suites/pools.nim` | — | — |
 | — | **#42** | **FIXED 2026-09-26** (ruled: a cell starts ABSENT) — `read` is a `?T`, so zeroed storage is never read as a value; a written value is a validated construction; `addr` on an invariant-carrying element is TK-TY31 | — | — |
-| S2.4 | **#85** | extend `<uninit>` to actor fields | S | S1.1 |
+| S2.4 | **#85** | ~~extend `<uninit>` to actor fields~~ **DONE 2026-09-28** (R8 = a): every actor field has an initialiser or is `T?` (TK-TY35); a `T?` field starts absent and takes a plain `T` (`lowering_optional`) | S | S1.1 |
 | S2.5 | **#55** | a fired `timeout` answers right at 100× the deadline | M | — |
 | S2.6 | **#15** | typed select sources, task form; unblocks `examples/16` | M | — |
 | — | **#20** | **FIXED 2026-09-26** — a member call's payload (`b.grow {...}`, and a mutator's `s.withPort {...}`) binds by the same subset / name / type passes as any call; the method form had its own by-name loop (`typecheck.bindPayloadFields`, `tests/suites/auto_alias.nim`) | — | — |
@@ -184,7 +332,7 @@ closure no longer exist in any `codegen_*.nim`.
 
 | # | issue | | size |
 |---|---|---|---|
-| S3.1 | **#43** | ~~Odin invariant guard~~ **DONE 2026-09-26**: guarded by `tuckNoInvariants` (`#config`), a runtime call not `assert` (which `-disable-assert` stripped), the same message and exit 1 on all three (D aborted, 134). **Open, needs a ruling:** how `tuck build` reaches the define on Odin and D — `--odin:`/`--dmd:` passthrough, or a Tuck-level `--no-invariants` | M |
+| S3.1 | **#43** | ~~Odin invariant guard~~ **DONE 2026-09-26**: guarded by `tuckNoInvariants` (`#config`), a runtime call not `assert` (which `-disable-assert` stripped), the same message and exit 1 on all three (D aborted, 134). **DONE 2026-09-28** (R9 = b): `tuck build --no-invariants` sets the define on each backend (Nim `-d:`, Odin `-define:`, D `-version=`); `cli_smoke` runs it on all three | M |
 | S3.2 | **#30** | D: volatile registers, `[saturating]`, `tuckConcat` | M |
 | S3.3 | — | the D runtime has no networking; `42-net-echo` cannot link | L |
 | S3.4 | **#31** | the flake is Odin's own LLVM verifier; pin the Odin version | S |
@@ -240,14 +388,20 @@ diff, so that diff is reviewable as "renames only".
 
 ### S6 — Rulings (your decision; the code is small)
 
-Open: **#84** an initialisation barrier between two senders · **#7**
-full-mailbox policy · the rest of
-`thoughts/shared/audits/2026-09-27-rulings-needed.md` (R3, R6–R12).
+RULED 2026-09-28: **#84** (R7) no order is promised between two senders and
+nothing orders them — documented in spec §9.1. R8's TK-TY35 makes the author
+say how such a field starts; only `T?` makes a read before `start` a compile
+error to handle. A constant initialiser (what the benches took) still reaches
+#84's bounds failure when an `edit` beats `start` — now from a value the
+author wrote. **#7** (R6)
+block the sender only if it costs nothing, else drop and let the sender check
+— measuring. Still open in the report: R3, R10 (asked), R11, R12.
 
 RULED 2026-09-27, and implemented:
 - **#4** attribute words are reserved words — refused as any name read bare
-  (parameter, decision column, local, fn, member, handler) with TK-PA08; a
-  field may still use one.
+  (parameter, decision column, local, fn, member, handler) with TK-PA08; since
+  2026-09-28 a field too, and a keyword field (`pending: Seq[int]`) names the
+  word instead of blaming the type.
 - **#5** omitting `->` means exactly `-> void`.
 - **R1** `and`/`or`/`xor` mixed without parentheses is TK-PA16.
 - **R2** a `T?` is not a boolean: presence is `.ok` (`if a.ok and b.ok:`).
@@ -261,21 +415,37 @@ RULED 2026-09-27, and implemented:
   only; TK-TY33 through an interface value), and an interface as a generic
   fn's bound, `fn join[T: AudioSource]` (one clone per object type,
   `iface_generics`). Not yet: calling such a fn from another module.
+- **Type test on an interface value** (2026-09-28): `match v: | Flac f ->`,
+  complete with an arm per satisfier or `| _ ->`; TK-TY34.
+- **A parameter is immutable, like `let`** (2026-09-28): a member that
+  changes `self` is refused on a parameter or `let`; a reading member takes
+  `self` by value.
 
 ### Deferred — completely missing, not scheduled
 
-`arena` (parses and discards its body; since 2026-09-27 it no longer checks
-clean — TK-ME02, a warning so `examples/13-arena-mem.tuck` still compiles) · #12 hashing · #11 recursive types ·
+#12 hashing · #11 recursive types ·
 #10 correlation tokens · #16 numeric sigils · #17 · #32 · #33 · #57 ·
 #66/#68/#69/#70 · #71 · #74 · DNS. (**#18 generic actors** is done and
 closed: one singleton per instantiation, expanded before typecheck.)
+
+**Message priority** (owner, 2026-09-28). An actor taking an urgent message
+ahead of the ones already waiting — a `reset` or `cancel` stuck behind a
+backlog of `send`s. It belongs on the HANDLER, not the actor
+(`on reset() [urgent]:`), because `[priority: high]` on an actor reads as
+"this actor before other actors", which the OS schedules in thread mode. Two
+levels, normal and urgent: numbered levels invite priority inversion. What it
+costs: a second mailbox per actor that has an urgent handler (with its own
+`on_full`), one more check per drain pass, and R7's promise narrows to "one
+sender's messages are handled in order WITHIN a level" — that is the point of
+it. Until then an actor takes `queue` and `on_full` only (TK-AC07), and
+example 15's `priority: high`, read by nothing, is gone.
 
 ---
 
 ## How to work on this without wasting the day
 
-- **The full suite is slow (~6 min). Do not run it per change.**
-  `./quick-test.sh` (~13s) for the inner loop, `./tests/run <suite>` for what
+- **The full suite is slow (~3.5 min on 2026-09-28). Do not run it per change.**
+  `./quick-test.sh` (~5s) for the inner loop, `./tests/run <suite>` for what
   a change touches (`ssa`, `known_bugs`, `value_semantics` for memory work),
   and the full run before a PR goes up.
 - **Test first, the normal way.** Write the assertion, see it fail for the
@@ -351,10 +521,9 @@ document is behind the tree — fix these when passing, and do not plan from the
   or use the harness's own `hostPeakRss`.
 - **The toolchains are not on PATH by default** in a fresh shell:
   `export PATH=/opt/nim/bin:/opt/dmd112/dmd2/linux/bin64:/opt/odin-cur:$PATH`.
-- **A reserved word as a field name misreports.** `pending: Seq[int]` in an
-  `actor` or `object` body says "Expected the end of the line here, found
-  `Seq`" — blaming the TYPE. The `type` parser correctly names the reserved
-  word. This is why #52 read as a parser bug for its whole life. Recorded on #4.
+- ~~**A reserved word as a field name misreports.**~~ FIXED 2026-09-28
+  (`9fbc90b`): `pending: Seq[int]` in an `actor` or `object` body blamed the
+  type `Seq`; it now names `pending` (TK-PA08).
 - **`benches/apps/world_server.tuck` no longer reproduces #84.** The app now
   boots its shards through the Gateway, so `start` and `edit` share a sender.
   Restore the two-sender shape to see the bug; the one-line `sed` is on #84.
@@ -845,7 +1014,7 @@ and those must stay green.
 | Tasks | 9.2 | DONE 2026-08-05 — but STACKFUL coroutines, not the state-machine transform this row assumed. `[io]` calls are yield points; binding a task's result awaits it. Ceiling: on Odin a task WITH ARGUMENTS still emits a direct call (proc literals cannot capture), so its body runs off-coroutine |
 | bake | 3.5 | v1 DONE 2026-07-13 (Factor-fry: :name refs, fn→auto generic lowering, slot.invoke; ex 03 green+runtime-verified). Beef bake = delegate-type ceiling. True Tuck-IR inlining later if ever needed |
 | alias restructuring | 2.5 | DONE 2026-07-13 (typed renamed record, both backends; ex 18 green). Non-exkVar payload args still not exploded (double-eval; bind-to-temp later) |
-| pool / arena | 7.2/7.3 | acquire/release bitmask, reset, scope analysis, size verification |
+| pool / slab / arena | 7.2/7.3 | pool DONE (acquire/release, read/write/addr). Slab and arena DONE 2026-10-04 (slab proposal P0–P4): references by index with a tenancy per cell, chunked storage that never copies, ownership checks (TK-AC08/09), the arena as a lifetime over a slab per element type with a byte budget — run-gated on all three (examples 13, 48; `slabs` suite). Open: generic code over slabs (proposal §12); the arena's "cannot outlive" is a run-time check, a static one later |
 | Resource registry | 7.4 | 2026-09-14: `resources:` declaration (per-kind cap/policy/on_full/on_finish/sweep_batch, block-level policy default), `[resource: k]` marker validated (TK-RS01/02) and propagated through the effect machinery (TK-RS03, cross-module), the registry table in all three runtimes (strict/lazy/exit, inline ~75% watermark sweep, LIFO close-all, stale-handle generation catch — 19 rules pinned per runtime by `tests/suites/resources_rt.nim`), per-kind `<Kind>Handle` type, and the `OPEN RESOURCES` report + close-all at exit. `defer` landed with it as a GENERAL statement on all three backends. Release is `finish <handle>, <kind>` (ruled 2026-09-14): the kind is redundant against the handle's type and CHECKED (TK-RS04), so finishing into the wrong registry is a compile error. `on_full` and `on_finish` reach the table as closed vocabularies, the latter as real syscalls. The registry surface is a symmetric pair, `acquire <raw>, <kind>` / `finish <handle>, <kind>`, one parser building both (TK-RS04/05); the raw fd exists between the extern's return and the acquire and nowhere else, and the acquire site is filled from the span so the leak report can name it. A kind may also NAME a PROTOCOL — `db [cap: 4096, states: DbState]`, where DbState is a sealed sum type with `transitions:` (ruled 2026-09-14, decoupled: a `resources:` block is a deployment decision, the protocol of an OS service is the library's). The library writes only the states, never the handle; initial and terminal are DERIVED, and the machine is checked for what a resource needs (TK-RS06..10, including "the closing state is reachable from every state"). The registry is untouched: handle and table unchanged. Protocols are validated, NOT yet tracked — narrowing a handle through the machine needs a surface for a library op to name the edge it walks, a further ruling. A kind is declared ONCE by the library that owns it and apps import it — verified end-to-end, after fixing two bugs an import exposed: `main`'s blanket kind budget was its own module's kinds rather than the program's, and it REPLACED main's declared marker instead of unioning it, so the one workaround was a no-op too. A kind may be declared by MORE THAN ONE site, one knob each (ruled 2026-09-14): the library declares the protocol and on_finish, the app declares cap/policy/sweep_batch. Per knob, with a later site OVERRIDING an earlier one — a library ships a default, the app deploying it gets the last word. Not file order: modules are dep-first, so the importer overrides the imported. `states` is the exception and refuses a second setting (TK-RS02), since a protocol is what the service does rather than a default. Coherence moved out of the parser to the merged kind (TK-RS11) — a library's `on_full` is incoherent alone and correct once an app adds a cap. The table emits at the first site in dependency order, which is where a library's own acquire site can reach it; re-opens emit nothing, so no backend learns about re-opening. Also: `on_finish: none` now parses (it lexes as a keyword, so it was reserved even where only a name can appear). MISSING: §7.4's static acquire-must-finish check — writable now that both halves have a shape, but its escape arm is already sound by construction. DEFERRED by ruling: single-owner handles (affine types), a language-wide feature rather than a resource one — and not a prerequisite for protocol tracking, which stays sound under copy because a stale `finish` is a missed error the generation check catches, not a false rejection |
 | Interfaces | 5.2/5.3 | DONE. `satisfies` is checked at compile time; an interface value is a TAGGED VARIANT THAT COPIES, not a fat pointer — dispatch is a switch on the tag calling the concrete member fn, so there is no table, no thunk, and no lifetime question (escape analysis was deleted with the pointer design). Both backends |
 | Type composition `+` | 4.5 | conflict detection unverified |
@@ -955,6 +1124,17 @@ returning the wrong answer on D. The lesson is in the ratio.
   which is why the boxing lives in a pass rather than in the emitters. The
   arena form was built and run by hand first (all three backends, correct)
   before the boxed one was chosen for being a tenth the machinery.
+
+**2026-09-28: the arena (spec §7.3) is built on this** (owner). Queue item 9.
+
+**BUILT 2026-10-04** (`thoughts/shared/plans/2026-09-29-slab-proposal.md`,
+phases P0–P4; spec §7.3). The two questions below were answered by it: it
+needed language support — a `slab` declaration, because a reference has to be
+a TYPE per slab for a mismatch to be caught, which a library over `Seq` cannot
+make — and a mismatch IS caught: `NodesRef` is not `EdgesRef`, and an arena's
+`FrameRef[A]` is not `FrameRef[B]` even when A and B have the same fields.
+A stale reference stops the program. What stays open is §12 of the proposal,
+generic code over slabs first.
 
 **The idea:** a slab — one owned arena of homogeneous slots plus integer
 indices into it. Indices are ordinary values, so nothing about the

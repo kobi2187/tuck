@@ -1,5 +1,5 @@
 # Reverse the decimal digits of a number
-import io
+import console
 
 fn main() -> void [io]:
   var n = 12345

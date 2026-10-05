@@ -5,7 +5,7 @@
 # flags/entry point into one Odin source file. The public entry points
 # (`emitOdin`/`emitOdinModule`) sit above genOdinDecl/genOdinExpr in the
 # import order, same shape as codegen_emit.nim for the Nim backend.
-import ast, strutils, tables
+import ast, strutils, tables, algorithm
 import resolution
 import ast_query
 import codegen_common
@@ -22,6 +22,10 @@ const odinFeatures = "#+feature dynamic-literals\n"
 
 import ./codegen_odin_decl
 import ./codegen_odin
+
+proc declaresSlab(m: Module): bool =
+  for d in m.decls:
+    if d != nil and d.kind == dkSlab: return true
 
 proc emitBody*(ctx: var OdinCodegenCtx, m: Module): tuple[types, mains: string] =
   ## Splits a module into its declarations and its top-level statements (the
@@ -44,6 +48,7 @@ proc emitBody*(ctx: var OdinCodegenCtx, m: Module): tuple[types, mains: string] 
       let code = ctx.genOdinDecl(d)
       if code != "":
         body.add(code & "\n")
+  if declaresSlab(m): body.add(ctx.genOdinSlabsRelease(m) & "\n")
   (body, mainStmts.join("\n"))
 
 proc runtimeUsers*(m: Module, actorNames: var seq[string],
@@ -101,16 +106,15 @@ proc shouldImportOs(m: Module, body: string): bool =
   let mainFn = mainDecl(m)
   (mainFn != nil and mainFn.returnsValue) or "os." in body
 
-proc usesRuntime*(m: Module, mains: string): bool =
-  ## Does this program touch the runtime at all? Asked by the entry point
-  ## before it emits anything `rt.`-qualified, for the same reason
-  ## `shouldImportRt` asks it of the body: an import Odin does not see used
-  ## is a compile error, and a program with no actors, no tasks and no
-  ## runtime call needs no `tuckrt` at all.
-  var actorNames: seq[string]
-  var hasTasks = false
-  runtimeUsers(m, actorNames, hasTasks)
-  actorNames.len > 0 or hasTasks or "rt." in mains
+proc slabPackages(m: Module, real: Table[string, Module]): seq[string] =
+  ## The modules declaring slabs, "" for the entry module's own. The entry
+  ## point reports their slabs and calls each one's `tuckSlabsRelease`, so it
+  ## imports each — and `rt` — though its body may name neither.
+  if declaresSlab(m): result.add ""
+  var imported: seq[string]
+  for modName, other in real:
+    if other != m and declaresSlab(other): imported.add modName
+  result.add imported.sorted
 
 proc shouldImportRt(m: Module, body, mains: string): bool =
   ## Check if runtime import is needed.
@@ -118,6 +122,19 @@ proc shouldImportRt(m: Module, body, mains: string): bool =
   var hasTasks = false
   runtimeUsers(m, actorNames, hasTasks)
   actorNames.len > 0 or hasTasks or "rt." in body or "rt." in mains
+
+proc allocates(body: string): bool =
+  ## The program builds Seqs (`[dynamic]`) or frees heap values of its own.
+  ## Such a program is tracked under TUCK_TRACK even when it calls nothing in
+  ## the runtime: `b.items = [2, 3]` leaks the `[1]` it overwrote all the
+  ## same, and the tracker is the runtime's (A41 was invisible to it).
+  "[dynamic]" in body or "delete(" in body
+
+proc tracksAllocations(m: Module, body, mains: string): bool =
+  ## Does the entry point install the allocation tracker? Whenever the
+  ## program uses the runtime or allocates at all. The header imports the
+  ## runtime under the same condition, and the tracker line uses it.
+  shouldImportRt(m, body, mains) or allocates(body)
 
 proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
                  realModules: Table[string, Module]): seq[string] =
@@ -131,7 +148,10 @@ proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
     result.add("import \"core:fmt\"")
   if shouldImportOs(m, body):
     result.add("import \"core:os\"")
-  if shouldImportRt(m, body, mains):
+  # The entry point's slab reports and releases name the runtime and each
+  # slab's package, though the body may name neither (genEntryPoint).
+  let slabPkgs = slabPackages(m, realModules)
+  if tracksAllocations(m, body, mains) or slabPkgs.len > 0:
     result.add("import rt \"./tuckrt\"")
   # Imported Tuck modules are sibling packages (mod_<name>/), referenced
   # qualified as `<name>.fn` — import each one the body actually calls. The
@@ -139,7 +159,7 @@ proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
   # module called `io` is fine as long as core:io isn't also imported).
   for modName in realModules.keys:
     let pkg = modName.replace("-", "_")
-    if (pkg & ".") in body or (pkg & ".") in mains:
+    if (pkg & ".") in body or (pkg & ".") in mains or modName in slabPkgs:
       result.add("import " & pkg & " \"./mod_" & pkg & "\"")
   # C libraries bound by extern blocks — see emitOdinModule for why these are
   # hoisted here rather than emitted beside the `foreign` block.
@@ -156,7 +176,55 @@ proc actorInitLines(ctx: OdinCodegenCtx): string =
   ## contextless.
   for s in ctx.actorInits: result.add("\t" & s & "\n")
 
-proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
+proc actorFieldReleases(ctx: OdinCodegenCtx, m: Module): string =
+  ## Every actor's heap fields, handed back at exit under TUCK_TRACK the way
+  ## the slabs are: an actor is a daemon whose state lives until exit by
+  ## design, and reported as a leak it hid the program's real ones (every
+  ## shard of world_server "leaked" its three Seqs). A Seq field, or each Seq
+  ## field of a record field — what its handlers own and thread. A `str` field
+  ## stays: it may hold a literal, and deleting that is a bad free.
+  for d in m.decls(dkActor):
+    let owner = actorSingletonName(d.name)
+    for f in d.actorFields:
+      if seqElem(f.typ) != nil:
+        result.add "		delete(" & owner & "." & f.name & ")\n"
+        continue
+      for slot in seqFieldNames(ctx.res, m, f.typ):
+        result.add "		delete(" & owner & "." & f.name & "." & slot & ")\n"
+
+proc exitLines(ctx: OdinCodegenCtx, m: Module, tracks: bool): string =
+  ## What the entry point runs after main and the drain, before `os.exit`
+  ## (`_exit`, which runs no defers and no finalizers): the resource tables
+  ## closed, the slabs reported and handed back, the actors' state handed
+  ## back, and the allocation report — in that order, and each by hand.
+  # §7.4's close-all, AFTER the loop is driven so anything a task acquired is
+  # still registered when the tables close, and BEFORE os.exit — which is
+  # `_exit` and runs no finalizer, so an `@(fini)` hook would never fire. The
+  # entry point already owns the lifecycle (it boots the scheduler); this is
+  # the other end of it.
+  if declaresResources(m): result.add("\t" & ResourceShutdownProc & "()\n")
+  # The slab proposal's exit report (Q3): cells never freed, per slab.
+  for s in reportedSlabs(m, ctx.realModules):
+    let pre = if s.origin == "": "" else: s.origin.replace("-", "_") & "."
+    result.add("\trt.tuckSlabReport(&" & pre & s.name & ")\n")
+  # The allocation report, EXPLICITLY and last. `os.exit` below is `_exit`:
+  # it runs no defers and no finalizers, which is the same reason the
+  # resource registry closes its tables by hand right above. The exit lives
+  # INSIDE tuckTrackCheck so this line need not mention `os`, which the
+  # header may not have imported. With tracking off it is a no-op call.
+  # Every slab's values and storage go back before the allocation report (a
+  # no-op unless TUCK_TRACK), so it names what the program leaked rather
+  # than the slabs, which live until exit by design.
+  for p in slabPackages(m, ctx.realModules):
+    result.add("\t" & (if p == "": "" else: p.replace("-", "_") & ".") &
+               SlabsReleaseProc & "()\n")
+  # ...and every actor's state, after the drain above left them idle.
+  let fieldDrops = ctx.actorFieldReleases(m)
+  if tracks and fieldDrops.len > 0:
+    result.add("\twhen rt.TUCK_TRACK {\n" & fieldDrops & "\t}\n")
+  if tracks: result.add("\trt.tuckTrackCheck()\n")
+
+proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string =
   ## Tuck's `fn main` is a plain proc; Odin's entry point calls it. Static
   ## asserts fold into the same entry (Odin has #assert for compile-time, but
   ## these are runtime-checked, as on the other backends).
@@ -165,14 +233,21 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   ## reactor, start every actor's drain coroutine, run main, then drive the
   ## loop so spawned tasks and actors get to finish.
   result = "main :: proc() {\n"
-  # Allocation tracking, ONLY for a program that already uses the runtime.
+  # Allocation tracking, for a program that uses the runtime or allocates.
   #
   # Odin rejects an unused import, so the header carries `rt` only when the
   # body needed it — and emitting these two lines unconditionally forced that
   # dependency on every program, breaking 107 assertions over programs that
-  # touch no runtime at all. It is also the right rule on its own terms: with
-  # no runtime there is no `tuckSeqCopy`, so there is nothing to track.
-  let tracks = usesRuntime(m, mains)
+  # touch no runtime at all. A program that allocates needs it, though, with
+  # or without a runtime call: a Seq literal it overwrites leaks all the
+  # same, and was untracked until 2026-10-05 (A41, found by rule V).
+  #
+  # The SAME condition as the header's `import rt`. This read the entry text
+  # alone, so a program whose runtime calls all sit in its fns — every
+  # `tuckSeqCopy` in a body, every twin — imported the runtime and was never
+  # tracked: `-define:TUCK_TRACK=true` reported nothing, leak or bad free.
+  let tracks = tracksAllocations(m, body, mains) or
+               slabPackages(m, ctx.realModules).len > 0
   if tracks:
     result.add("\tcontext.allocator = rt.tuckTrackAllocator()\n")
   for a in ctx.staticAsserts:
@@ -202,18 +277,7 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   # Wait for every actor to empty its mailbox before exiting: an actor thread
   # is detached, so without this a `send` races the process teardown.
   if actorNames.len > 0: result.add("\trt.tuckDrainActors()\n")
-  # §7.4's close-all, AFTER the loop is driven so anything a task acquired is
-  # still registered when the tables close, and BEFORE os.exit — which is
-  # `_exit` and runs no finalizer, so an `@(fini)` hook would never fire. The
-  # entry point already owns the lifecycle (it boots the scheduler); this is
-  # the other end of it.
-  if declaresResources(m): result.add("\t" & ResourceShutdownProc & "()\n")
-  # The allocation report, EXPLICITLY and last. `os.exit` below is `_exit`:
-  # it runs no defers and no finalizers, which is the same reason the
-  # resource registry closes its tables by hand right above. The exit lives
-  # INSIDE tuckTrackCheck so this line need not mention `os`, which the
-  # header may not have imported. With tracking off it is a no-op call.
-  if tracks: result.add("\trt.tuckTrackCheck()\n")
+  result.add(ctx.exitLines(m, tracks))
   if mainReturns: result.add("\tos.exit(mainRc)\n")
   result.add("}\n")
 
@@ -240,4 +304,4 @@ proc emitOdin*(m: Module, res: Resolution,
   for h in ctx.hoisted:
     result.add(h & "\n\n")
   result.add(body)
-  result.add(ctx.genEntryPoint(m, mains))
+  result.add(ctx.genEntryPoint(m, body, mains))

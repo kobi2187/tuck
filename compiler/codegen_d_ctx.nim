@@ -136,6 +136,19 @@ proc importedTypeQualifierD*(ctx: DCodegenCtx, name: string): string =
     dAlias(origin) & "." & name
   else: name
 
+proc importPrefixD*(ctx: DCodegenCtx, name: string): string =
+  ## `alias.` when another module declares the type, object or interface
+  ## `name` (R11), else "" — for the names derived from it (`<I>Tag`,
+  ## `__validated_<T>`) that `importedTypeQualifierD` cannot look up.
+  let origin = moduleDeclaringType(ctx.module, name)
+  if origin != "" and dAlias(origin) != dAlias(ctx.moduleName): dAlias(origin) & "."
+  else: ""
+
+proc validatorNameD*(ctx: DCodegenCtx, typeName: string): string =
+  ## The function that validates an invariant-carrying type, qualified with
+  ## its module when the type is imported (R11, A31).
+  ctx.importPrefixD(typeName) & "__validated_" & typeName
+
 proc declaredGenericD*(ctx: DCodegenCtx, name: string): bool =
   ## Is `name` a type this module declares (or imports) WITH type parameters?
   ## That is what makes `Name[args]` a template instantiation rather than an
@@ -282,6 +295,11 @@ proc dInlineSum*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
     ctx.hoisted.add("enum " & name & " { " & tags.join(", ") & " }")
   name
 
+proc dRefOrAppType(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
+  ## A type application — or an arena's `FrameRef[T]`, which is the runtime's
+  ## one SlabRef, as a slab's reference is.
+  if arenaOfRefType(t) != nil: "rt.SlabRef" else: ctx.dAppType(t, mode)
+
 proc dTypeIn*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   ## The one type walk. It was two near-identical copies — dType (dies) and
   ## dDeclType (returns "") — which is a shape that drifts: a mapping added
@@ -304,9 +322,14 @@ proc dTypeIn*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
       # `Seq[Entry[K, V]]` inside a generic fn had no statable type.
       t.name[NamedTypeParamPrefix.len .. ^2]
     elif t.name.startsWith("<"): giveUp("type sentinel " & t.name)
-    elif isPoolHandleType(ctx.module, t.name): "rt.PoolHandle"
+    elif isPoolHandleType(ctx.module, t.name) or
+         isImportedPoolHandle(ctx.module, ctx.realModules, t.name): "rt.PoolHandle"
+    elif slabOfRefType(t.name) != nil: "rt.SlabRef"
+    elif constOrigin(ctx.module, ctx.realModules, t.name) != "":
+      # An Array size naming an imported const (R11, A33).
+      dAlias(constOrigin(ctx.module, ctx.realModules, t.name)) & "." & t.name
     else: ctx.importedTypeQualifierD(t.name)
-  of tkApp: ctx.dAppType(t, mode)
+  of tkApp: ctx.dRefOrAppType(t, mode)
   of tkTuple: giveUp("tuple type")
   of tkFunc: ctx.dFuncType(t)
   of tkRecord:

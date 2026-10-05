@@ -1,5 +1,5 @@
 # Uppercase / lowercase a string
-import io
+import console
 
 pending:
   fn upper({text: str}) -> str

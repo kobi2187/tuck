@@ -38,7 +38,7 @@ drain_tuckˑactorˑCounter :: proc() -> bool {
 }
 
 sendAdd_tuckˑactorˑCounter :: proc(self: ^tuckˑactorˑCounter, n: int) {
-	_ = rt.enqueue(&self.mailbox, tuckˑactorˑCounterMsg{tuckTag = .msgAdd, n = n})
+	rt.sendWaiting(&self.mailbox, tuckˑactorˑCounterMsg{tuckTag = .msgAdd, n = n}, tuckˑactorˑCounterSlot, "Counter")
 	rt.tuckNotifySend(tuckˑactorˑCounterSlot)
 }
 

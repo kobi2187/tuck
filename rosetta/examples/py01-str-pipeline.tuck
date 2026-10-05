@@ -1,5 +1,5 @@
 # str parity: split/join/trim/case chained as multi-step postfix calls
-import io
+import console
 
 pending:
   fn split({text: str, sep: str}) -> Seq[str]

@@ -47,6 +47,7 @@ import compiler/parser
 import compiler/validate   # the spec-side grammar, for `tuck validate`
 import compiler/resolution   # the semantic layer, handed to each emit stage
 import compiler/semantics
+import compiler/slab_owner  # who may touch a slab (TK-AC08/09), after typecheck
 import compiler/ssa_liveness
 import compiler/ssa_query, compiler/ssa_cache, compiler/ssa_ir
 import compiler/complexity
@@ -129,6 +130,8 @@ Takes every `tuck compile` flag, plus:
   --nim:FLAGS  extra flags passed through to `nim c`, e.g.
                --nim:"--os:standalone --cpu:arm"
   --release    promote the size-budget report to a build failure
+  --no-invariants  drop the runtime `invariant:` checks (they survive
+               --release otherwise), on every backend
 
 Run `tuck help compile` for the rest of the shared flags.""",
   "dump": """tuck dump file.tuck [--stage:X] [--format:X] [options]
@@ -226,6 +229,8 @@ options:
                 was rewritten. See compiler/optimize.nim for what each does
                 and what it refuses to touch.
   --nim:FLAGS   (build) extra nim flags, e.g. --nim:"--os:standalone --cpu:arm"
+  --no-invariants (build) drop the runtime `invariant:` checks on every
+                backend. They survive --release; this is the only way off.
   --max-complexity:N  size budget: max independent paths through a fn
                 (any command; default 6, `:0` disables). A match/select costs
                 nothing for the construct — only what its arms do is counted.
@@ -256,6 +261,33 @@ proc die(msg: string) =
   ## user-facing error.
   stderr.writeLine msg
   quit(1)
+
+proc ensureMinicoro(): string =
+  ## compiler/tuckrt/minicoro.a, the coroutine engine the Odin and D runtimes
+  ## link, built from the vendored header when it is missing.
+  ##
+  ## It is a build product, so git does not track it — and nothing built it:
+  ## a fresh clone had none, and every Odin and D program with a task or an
+  ## actor failed to link (`undefined reference to mco_create`). CI found it,
+  ## on its first full run. Built with the defines the Nim backend's own copy
+  ## uses (compiler/tuck_coro.nim: the VMEM stack allocator), beside its
+  ## final path under a name of its own and then moved into place, so two
+  ## compiles racing to build it never link half an archive.
+  result = getAppDir() / "compiler" / "tuckrt" / "minicoro.a"
+  if fileExists(result): return
+  let vendor = getAppDir() / "compiler" / "vendor" / "minicoro"
+  let work = result.parentDir / ("minicoro-build-" & $getCurrentProcessId())
+  createDir(work)
+  writeFile(work / "minicoro.c", "#define MCO_USE_VMEM_ALLOCATOR\n" &
+            "#define MINICORO_IMPL\n#include \"minicoro.h\"\n")
+  let obj = work / "minicoro.o"
+  if execShellCmd("cc -O2 -fPIC -c -I" & quoteShell(vendor) & " " &
+                  quoteShell(work / "minicoro.c") & " -o " & quoteShell(obj)) != 0 or
+     execShellCmd("ar rcs " & quoteShell(work / "minicoro.a") & " " &
+                  quoteShell(obj)) != 0:
+    die("tuck: could not build the coroutine runtime from " & vendor)
+  moveFile(work / "minicoro.a", result)
+  removeDir(work)
 
 proc dieSyntax(err: ref SyntaxError) {.noreturn.} =
   ## Print a front-end rejection the way the lexer and parser used to print it
@@ -465,6 +497,10 @@ proc checkOrDie(path: string, loaded: var seq[LoadedModule],
   ## backend prepared in the same process would read the first one's
   ## decisions. `backend_prepare.prepare` asserts it runs once.
   result = typecheckOnly(path, loaded, sigOnly)
+  # The slabs the checker made for arenas (one per element type) join their
+  # arena's module now, before anything that walks declarations: liveness,
+  # ownership, mangling and the emitters all find them as declared slabs.
+  for lm in loaded.mitems: placeArenaSlabs(lm.m)
   # Last-use facts, whole-program and ONCE. After typecheck because that
   # resets the semantic layer (same constraint the effect pass below has);
   # before the per-backend deepCopies because the answer is about the
@@ -487,6 +523,10 @@ proc checkOrDie(path: string, loaded: var seq[LoadedModule],
       let ts = epochTime()
       verifyModuleEffects(lm.m, imported, importedRes, programKinds)
       vSub(lm.name, ts)
+    # Who may touch a slab (TK-AC08/09): whole-program, after typecheck
+    # because it reads the checker's stamps (slab ops, slab derefs, callee
+    # decls), which typecheckProgram resets on entry.
+    checkSlabOwnership(loaded)
     if verifyStages: verifyEffectsAssertions(loaded)
   except SemanticError as err:
     dieSemanticError(path, err)
@@ -1027,8 +1067,7 @@ when isMainModule:
         # archive it links against.
         for f in walkFiles(rtSrc / "*.odin"):
           copyFile(f, rtDst / extractFilename(f))
-        if fileExists(rtSrc / "minicoro.a"):
-          copyFile(rtSrc / "minicoro.a", rtDst / "minicoro.a")
+        copyFile(ensureMinicoro(), rtDst / "minicoro.a")
       # C sources an extern block binds with `lib: "path/to.c"`. Nim takes the
       # .c directly via {.compile.}; Odin cannot compile C, so it links the
       # object — build it here, next to where the emitted `foreign import`
@@ -1092,9 +1131,7 @@ when isMainModule:
       # backends drive (compiler/vendor/minicoro), prebuilt as minicoro.a —
       # that is what keeps concurrency semantics and performance shape from
       # depending on which backend built the program.
-      let mcoSrc = getAppDir() / "compiler" / "tuckrt" / "minicoro.a"
-      if fileExists(mcoSrc):
-        copyFile(mcoSrc, outDir / "minicoro.a")
+      copyFile(ensureMinicoro(), outDir / "minicoro.a")
     let m = prog[^1].m
     if cmd in ["build", "b"]:
       # entry point: `fn main` runs when the binary starts. No main =
@@ -1132,6 +1169,11 @@ when isMainModule:
       # here (backend-agnostic, needed by all three build arms below) rather
       # than computed once per backend.
       let wantRelease = "--release" in opts
+      # `--no-invariants` (R9, ruled 2026-09-28): one flag, and each backend
+      # sets the define its emitted checks already test — Nim `-d:`, Odin
+      # `#config` via `-define:`, D `version`. Independent of `--release`:
+      # invariants survive a release build and go only when asked.
+      let noInvariants = "--no-invariants" in opts
       var binBase = base.replace("-", "_")
       if binBase.len > 0 and binBase[0] in {'0' .. '9'}: binBase = "m_" & binBase
       case backend
@@ -1167,8 +1209,11 @@ when isMainModule:
         # table. It has to run BEFORE the process exits, which is why a
         # value-returning main binds its result first rather than exiting
         # inline — `quit(tuck_main())` leaves nowhere to put this.
-        let resShutdown =
+        var resShutdown =
           if declaresResources(m): "\n  " & ResourceShutdownProc & "()" else: ""
+        # The slab proposal's exit report (Q3): cells never freed, per slab.
+        for s in reportedSlabs(m, realModules):
+          resShutdown.add "\n  tuckSlabReport(" & s.name & ")"
         # Wait for every actor to empty its mailbox before the process exits.
         # An actor runs on its own DETACHED thread, so without this a `send`
         # is a coin flip against `quit`: the message is in the ring and the
@@ -1247,8 +1292,9 @@ when isMainModule:
         # `--actors:MODE` reaches the runtime as a define: tuck_async and
         # tuck_rt are compiled INTO the program, so this is how the mode
         # becomes a compile-time fact there rather than a branch at run time.
+        let invFlag = if noInvariants: " -d:tuckNoInvariants " else: ""
         let nimCmd = "nim c --hints:off --warnings:off " & nimFlags & asyncFlags &
-                     nimDefinesFor(actorPolicy) &
+                     nimDefinesFor(actorPolicy) & invFlag &
                      speedFlags & " --nimcache:" & quoteShell(nimCache) &
                      " -o:" & quoteShell(binPath) & " " &
                      quoteShell(binNim)
@@ -1275,6 +1321,7 @@ when isMainModule:
           # and then (tests/harness.nim, OdinThreads).
           let odinCmd = quoteShell(odinExe) & " build " & quoteShell(outDir) &
                         " " & odinOpt & " -out:" & quoteShell(odinBin) &
+                        (if noInvariants: " -define:tuckNoInvariants=true" else: "") &
                         " " & getEnv("TUCK_ODIN_EXTRA")
           let odT0 = epochTime()
           let odRc = execShellCmd(odinCmd)
@@ -1345,7 +1392,8 @@ when isMainModule:
                 implDirs.incl(parentDir(path) / module.parentDir())
           var implIArgs = ""
           for dir in implDirs: implIArgs.add(" -I" & quoteShell(dir))
-          let dCmd = quoteShell(dmdExe) & " -i" & dOpt &
+          let dInv = if noInvariants: " -version=tuckNoInvariants" else: ""
+          let dCmd = quoteShell(dmdExe) & " -i" & dOpt & dInv &
                      " -I" & quoteShell(outDir) & implIArgs &
                      " -of=" & quoteShell(dBin) & " " &
                      quoteShell(outDir / (base & ".d")) & cObjs & mcoArg

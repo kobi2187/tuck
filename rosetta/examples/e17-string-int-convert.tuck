@@ -1,5 +1,5 @@
 # Convert string to int and back
-import io
+import console
 
 pending:
   fn parseInt({text: str}) -> !int [io]

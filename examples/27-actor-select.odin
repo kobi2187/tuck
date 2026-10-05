@@ -46,17 +46,17 @@ drain_tuckˑactorˑAccumulator :: proc() -> bool {
 }
 
 sendAdd_tuckˑactorˑAccumulator :: proc(self: ^tuckˑactorˑAccumulator, n: int) {
-	_ = rt.enqueue(&self.mailbox, tuckˑactorˑAccumulatorMsg{tuckTag = .msgAdd, n = n})
+	rt.sendWaiting(&self.mailbox, tuckˑactorˑAccumulatorMsg{tuckTag = .msgAdd, n = n}, tuckˑactorˑAccumulatorSlot, "Accumulator")
 	rt.tuckNotifySend(tuckˑactorˑAccumulatorSlot)
 }
 
 sendFinish_tuckˑactorˑAccumulator :: proc(self: ^tuckˑactorˑAccumulator) {
-	_ = rt.enqueue(&self.mailbox, tuckˑactorˑAccumulatorMsg{tuckTag = .msgFinish})
+	rt.sendWaiting(&self.mailbox, tuckˑactorˑAccumulatorMsg{tuckTag = .msgFinish}, tuckˑactorˑAccumulatorSlot, "Accumulator")
 	rt.tuckNotifySend(tuckˑactorˑAccumulatorSlot)
 }
 
 sendShutdown_tuckˑactorˑAccumulator :: proc(self: ^tuckˑactorˑAccumulator) {
-	_ = rt.enqueue(&self.mailbox, tuckˑactorˑAccumulatorMsg{tuckTag = .msgShutdown})
+	rt.sendWaiting(&self.mailbox, tuckˑactorˑAccumulatorMsg{tuckTag = .msgShutdown}, tuckˑactorˑAccumulatorSlot, "Accumulator")
 	rt.tuckNotifySend(tuckˑactorˑAccumulatorSlot)
 }
 

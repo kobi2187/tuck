@@ -1,5 +1,5 @@
 # Primality test by trial division
-import io
+import console
 
 fn main() -> void [io]:
   let n = 29

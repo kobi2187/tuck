@@ -27,7 +27,7 @@ proc collectFnSig*(tc: var TypeChecker, d: Decl, top: bool) =
   # evicting the first is what made `b.hash` on a Blob check against Commit's
   # signature.
   tc.addFnSig(d.name, (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects,
-                       d.fnResourceKinds))
+                       d.fnResourceKinds, d.fnErrorTypes))
   for b in d.fnGenericBounds:
     if b.len > 0:
       tc.groupBoundsOf[d.name] = d.fnGenericBounds
@@ -57,7 +57,8 @@ proc collectFnSigType*(tc: var TypeChecker, d: Decl) =
   ## A signature TYPE declares no effects of its own — what gets baked into
   ## the slot carries them.
   tc.setFnSig(d.name, (d.sigParams, d.sigReturn,
-                       newSeq[string](), newSeq[EffectMarker](), newSeq[string]()))
+                       newSeq[string](), newSeq[EffectMarker](), newSeq[string](),
+                       newSeq[string]()))
   tc.fnSigNames.incl(d.name)
   if d.sigGenerics.len > 0: tc.fnSigGenerics[d.name] = d.sigGenerics
 
@@ -83,7 +84,7 @@ proc collectPoolSigs*(tc: var TypeChecker, d: Decl) =
                        base: Type(span: d.span, kind: tkNamed, name: "?"))
   tc.setFnSig(d.name & ".acquire", (newSeq[Param](), optHandle,
                                     newSeq[string](), newSeq[EffectMarker](),
-                                    newSeq[string]()))
+                                    newSeq[string](), newSeq[string]()))
   let void = Type(span: d.span, kind: tkNamed, name: "void")
   let h = Param(name: "h", typ: handle, span: d.span)
   let optElem = Type(span: d.span, kind: tkApp, args: @[d.poolElem],
@@ -96,7 +97,8 @@ proc collectPoolSigs*(tc: var TypeChecker, d: Decl) =
       # extern may take (typecheck_pointers).
       ("addr", @[h], Type(span: d.span, kind: tkNamed, name: "Buf"))]:
     tc.setFnSig(d.name & "." & op, (params, ret, newSeq[string](),
-                                    newSeq[EffectMarker](), newSeq[string]()))
+                                    newSeq[EffectMarker](), newSeq[string](),
+                                    newSeq[string]()))
   # Opaque: a record with no fields. Nothing to read, nothing to do
   # arithmetic on, and `{} <Pool>Handle` yields a zeroed handle whose tenancy
   # is 0 — which no live slot ever has, so a forged one is refused at release
@@ -108,6 +110,42 @@ proc collectPoolSigs*(tc: var TypeChecker, d: Decl) =
   # `B.release {aHandle}` type-checked. `distinctNames` is exactly the rule a
   # handle wants — "no widening, no resolving through to the base type".
   tc.distinctNames.incl(poolHandleName(d.name))
+
+proc collectSlabSigs*(tc: var TypeChecker, d: Decl) =
+  ## A slab (thoughts/shared/plans/2026-09-29-slab-proposal.md, section 3):
+  ## its reference type, and the signatures of the operations that take a
+  ## reference. `new` has none: its payload is the ELEMENT's construction,
+  ## which asSlabOp checks as one.
+  ##
+  ## The reference type is PER SLAB — a `NodesRef` is not an `EdgesRef` — so
+  ## handing one slab's reference to another is a type error, made nominal by
+  ## `distinctNames` exactly as a pool handle's is.
+  let rref = tc.namedType(slabRefName(d.name), d.span)
+  let void = Type(span: d.span, kind: tkNamed, name: "void")
+  let r = Param(name: "r", typ: rref, span: d.span)
+  for (op, params, ret) in [
+      ("free", @[r], void),
+      ("live", @[r], Type(span: d.span, kind: tkNamed, name: "bool")),
+      ("get", @[r], d.slabElem),
+      ("set", @[r, Param(name: "value", typ: d.slabElem, span: d.span)], void),
+      ("reset", newSeq[Param](), void),
+      ("count", newSeq[Param](), Type(span: d.span, kind: tkNamed, name: "int"))]:
+    tc.setFnSig(d.name & "." & op, (params, ret, newSeq[string](),
+                                    newSeq[EffectMarker](), newSeq[string](),
+                                    newSeq[string]()))
+  tc.typeDecls[slabRefName(d.name)] = Type(span: d.span, kind: tkRecord, fields: @[])
+  tc.distinctNames.incl(slabRefName(d.name))
+
+proc collectArenaRefType*(tc: var TypeChecker, d: Decl) =
+  ## An arena's reference type, `<Arena>Ref[T]` (slab proposal §9): generic
+  ## over the element type, so a `FrameRef[Header]` is not a
+  ## `FrameRef[Body]`, nor any other arena's or slab's reference. An empty
+  ## record with one type parameter; two applications compare by their
+  ## argument (typecheck_compat.appCompatible).
+  let name = arenaRefName(d.name)
+  tc.typeDecls[name] = Type(span: d.span, kind: tkRecord, fields: @[])
+  tc.typeGenerics[name] = @["T"]
+  tc.distinctNames.incl(name)
 
 proc collectResourceHandles*(tc: var TypeChecker, d: Decl) =
   ## spec §7.4: each declared kind gets its own handle TYPE, registered
@@ -185,9 +223,11 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
       tc.taskNames.incl(d.name)
       tc.setFnSig(d.name, (d.taskParams, d.taskReturnType,
                            newSeq[string](), d.taskEffects,
-                           d.taskResourceKinds))
+                           d.taskResourceKinds, d.taskErrorTypes))
     of dkFnSig: tc.collectFnSigType(d)
     of dkPool: tc.collectPoolSigs(d)
+    of dkSlab: tc.collectSlabSigs(d)
+    of dkArena: tc.collectArenaRefType(d)
     of dkType: tc.collectTypeDecl(d)
     of dkObject: tc.collectObjectDecl(d)
     of dkInterface:
@@ -202,6 +242,10 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
     of dkMixin, dkExtern, dkPending: tc.collectSigs(d.mixinMembers, top = false)
     of dkActor:
       tc.collectSigs(d.handlers)
+      for h in d.handlers:
+        if h == nil or h.kind != dkFn: continue
+        if h.isOnHandler: tc.actorHandlerOwner[h.name] = d.name
+        else: tc.actorMemberOwner[h.name] = d.name
       # `<Actor>.waitUntil {pred: :p}` — a static member call, registered the
       # same way `Pool.acquire` is. A plain signature in the flat table, so the
       # call resolves through the ordinary path: the compiler does NOT special-
@@ -221,7 +265,7 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
                            paramNames: @[]),
                  span: d.span)],
          Type(span: d.span, kind: tkNamed, name: "void"),
-         newSeq[string](), @[emIo], newSeq[string]()))
+         newSeq[string](), @[emIo], newSeq[string](), newSeq[string]()))
     of dkErrors: tc.collectErrPolicy(d)
     of dkResources: tc.collectResourceHandles(d)
     else: discard

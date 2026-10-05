@@ -150,13 +150,7 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     ctx.definedVars.incl(p.name)
   let oldIndent = ctx.indent
   ctx.enterReturnContext(d.fnReturnType)
-  injectTailReturn(d.fnBody, retTypeStr)
-  var bodyStr = ctx.genFnBody(d.fnBody, "  ".repeat(ctx.indent))
-  # A param a member call takes as `self: var T` is shadowed mutable first
-  # (codegen_common.paramsCalledAsReceiver).
-  let pad = leadingIndent(bodyStr)
-  for p in paramsCalledAsReceiver(ctx.res, ctx.module, d):
-    bodyStr = pad & "var " & p & " = " & p & "\n" & bodyStr
+  let bodyStr = ctx.genFnBody(d.fnBody, "  ".repeat(ctx.indent))
   ctx.indent = oldIndent
   ctx.leaveReturnContext()
   ctx.definedVars = oldVars
@@ -165,11 +159,13 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
 proc genMemberFn*(ctx: var CodegenCtx, m: Decl, objName: string): string =
   ## lowering.normalizeSelf has already given the member its `self`
   ## parameter, and rewrite.bindSelf resolved `Self` to the object. What is
-  ## left here is the one thing that is a NIM question: self is mutable,
-  ## spelled `var T`, so a mutation reaches the caller's value.
+  ## left here is the one thing that is a NIM question: a member that
+  ## changes its object takes `self: var T`, so the change reaches the
+  ## caller's value; one that only reads takes `self: T`, so it may be called
+  ## on a parameter or a `let` (typecheck.checkSelfWrites, ruled 2026-09-28).
   var params = m.fnParams
   for i in 0 ..< params.len:
-    if params[i].name == "self":
+    if params[i].name == "self" and writesSelf(ctx.res, m):
       params[i].typ = Type(span: m.span, kind: tkNamed,
                            name: "var " & objName)
   # QUALIFIED, like Odin and D. Nim overloads on the self parameter's type so
@@ -181,6 +177,17 @@ proc genMemberFn*(ctx: var CodegenCtx, m: Decl, objName: string): string =
                   name: memberProcName(objName, m.name), fnParams: params,
                   fnReturnType: m.fnReturnType, fnBody: m.fnBody,
                   fnEffects: m.fnEffects, fnGenerics: m.fnGenerics)
+  ctx.genFnDecl(copy)
+
+proc genActorMemberFn*(ctx: var CodegenCtx, m: Decl, actorName: string): string =
+  ## An actor's member `fn` (A24). Its state rides as `self`, the ref object
+  ## `handleMsg` holds, so a field write reaches the singleton; a bare field
+  ## name prints as `self.<name>` (isOwnerField) as it does in a handler.
+  let copy = Decl(span: m.span, kind: dkFn, id: m.id,
+                  name: memberProcName(actorName, m.name),
+                  fnParams: @[actorSelfParam(actorName, m)] & m.fnParams,
+                  fnReturnType: m.fnReturnType, fnBody: m.fnBody,
+                  fnEffects: m.fnEffects)
   ctx.genFnDecl(copy)
 
 proc genTransitionProcs*(d: Decl, kindName: string, hasPayload: bool): string =
@@ -477,6 +484,8 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
   let singletonStr = "let " & singleton & "* = " & d.name & "(" &
                      inits.join(", ") & ")\n"
   let drainStr = genActorDrain(drainName, singleton, hasShutdown)
+  var memberStr = ""
+  for m in actorMemberFns(d): memberStr.add ctx.genActorMemberFn(m, d.name) & "\n"
   # auto-registration hook: main's prologue calls registerActors()
   # The slot is KEPT, not discarded: `Actor.waitUntil {pred: :p}` names the
   # actor at the call site, so the emitted call needs a handle to hand the
@@ -486,8 +495,8 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
                     "proc registerActor" & d.name & "*() =\n" &
                     "  " & slotName & " = tuckStartActor(" & drainName & ")\n"
 
-  msgTypes & "\n" & stateStr & "\n" & singletonStr & "\n" & dispatchStr & "\n" &
-    drainStr & "\n" & registerStr
+  msgTypes & "\n" & stateStr & "\n" & singletonStr & "\n" & memberStr &
+    dispatchStr & "\n" & drainStr & "\n" & registerStr
 
 proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
   ## An event registry as Nim: a kind enum, a ref-object event holding every
@@ -582,7 +591,6 @@ proc genTaskDecl*(ctx: var CodegenCtx, d: Decl): string =
   let oldInTask = ctx.inTask
   (ctx.retWrapped, ctx.retInnerNim, ctx.retInnerT) = bangInfo(d.taskReturnType)
   ctx.retAbsentCapable = absentCapable(d.taskReturnType)
-  injectTailReturn(d.taskBody, retTypeStr)
   ctx.inTask = true
   # A task lowers to a proc, so its body needs no scope of its own either.
   let bodyStr = ctx.genFnBody(d.taskBody, "  ".repeat(ctx.indent))
@@ -798,6 +806,28 @@ proc genPoolDecl(d: Decl): string =
   "var " & d.name & "* = ObjectPool[" & genType(d.poolElem) & ", " &
     $d.poolCount & "]()"
 
+proc genSlabDecl(d: Decl): string =
+  ## A slab (slab proposal, section 5): one global of the runtime storage its
+  ## attributes chose, starting empty and carrying only its written name, for
+  ## the messages a stale reference stops with. No reference type is emitted:
+  ## every `<Slab>Ref` is the runtime's one `SlabRef` (codegen_type), the
+  ## checker having kept two slabs' references apart.
+  let elem = genType(d.slabElem)
+  let store = case d.slabStorage
+              of ssChunked: "SlabChunked[" & elem & "]"
+              of ssFixed: "SlabFixed[" & elem & ", " & $d.slabCount & "]"
+              of ssContiguous: "SlabSeq[" & elem & "]"
+  "var " & d.name & "* = " & store & "(name: " & escape(slabLabel(d)) & ")"
+
+proc genArenaDecl(ctx: CodegenCtx, d: Decl): string =
+  ## An arena (slab proposal §9): its budget, and its reset — every slab the
+  ## checker made for it (one per element type), then the budget, emptied.
+  result = "var " & d.name & "* = ArenaBudget(size: " & $d.arenaSize & ")\n" &
+           "proc " & arenaResetProc(d.name) & "*() =\n"
+  for s in slabsOfArena(ctx.module, d):
+    result.add "  tuckSlabReset(" & s.name & ")\n"
+  result.add "  " & d.name & ".used = 0"
+
 proc genFnSigType(d: Decl): string =
   ## `fnsig NAME = {params} -> ret` → a Nim closure proc type. Named delegate
   ## for slots/callbacks; call shape already checked by the type checker.
@@ -854,7 +884,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   ## One top-level declaration. Every DeclKind is named, so a new one fails
   ## to compile here until it is decided (CLAUDE.md).
   if d == nil: return ""
-  if d.kind == dkType and d.span.file.startsWith(ImportedTypeMarker):
+  if d.kind in {dkType, dkObject, dkInterface} and d.span.file.startsWith(ImportedTypeMarker):
     return ""  # defined in its own module; the Nim import brings it in
   case d.kind
   of dkFn: ctx.genFnDecl(d)
@@ -865,10 +895,15 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   of dkExpr: ctx.genExpr(d.expr)
   # explicit static block: the backend evaluates the initializer at compile
   # time (pure computation — the checker already enforced purity)
-  of dkConst: "const " & d.name & " = static:\n  " & ctx.genExpr(d.constVal)
+  of dkConst:
+    # Exported like a fn, so an importer can name it (R11, A33).
+    "const " & d.name & (if isExportedDecl(ctx.module, d): "*" else: "") &
+      " = static:\n  " & ctx.genExpr(d.constVal)
   of dkRegister: genRegister(d)
   of dkRegistry: ctx.genRegistry(d)
   of dkPool: genPoolDecl(d)
+  of dkSlab: genSlabDecl(d)
+  of dkArena: ctx.genArenaDecl(d)
   of dkStaticAssert: "static: assert(" & ctx.genExpr(d.assertExpr) & ")"
   of dkErrors: ctx.genErrHandler(d)
   of dkResources: genResourceTables(d)

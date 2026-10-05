@@ -76,6 +76,7 @@ proc constCheck*(tc: TypeChecker, m: Module, cname: string, e: Expr, sp: Span) =
     for f in e.fields: constCheck(tc, m, cname, f.value, sp)
   of exkList:
     for it in e.items: constCheck(tc, m, cname, it, sp)
+  of exkFill: constCheck(tc, m, cname, e.fillValue, sp)
   of exkUnary: constCheck(tc, m, cname, e.operand, sp)
   of exkBinary:
     constCheck(tc, m, cname, e.left, sp)
@@ -256,7 +257,7 @@ proc failIfDuplicateMembers*(m: Module) =
       # this per-module walk cannot see. The check lives with the
       # program-wide table instead (typecheck_collect.collectResourceKinds).
       discard
-    of dkRegistry, dkPool, dkMixin, dkExtern, dkPending, dkExpr, dkConst,
+    of dkRegistry, dkPool, dkSlab, dkArena, dkMixin, dkExtern, dkPending, dkExpr, dkConst,
        dkRegister, dkStaticAssert, dkErrors, dkImport, dkInterface,
        dkGroup, dkSelect, dkFnSig, dkSatisfies:
       discard  # no field/param set of their own to check

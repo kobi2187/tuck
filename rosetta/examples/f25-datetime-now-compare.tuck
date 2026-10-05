@@ -1,5 +1,5 @@
 # DateTime.Now-style: current date, add hours, compare two points in time
-import io
+import console
 import time
 
 type Date:

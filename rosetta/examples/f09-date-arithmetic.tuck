@@ -1,5 +1,5 @@
 # Date arithmetic: add days, difference between two dates
-import io
+import console
 
 type Date:
   year: int

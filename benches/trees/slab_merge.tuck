@@ -1,0 +1,54 @@
+# One tree, built to depth DEPTH, evaluated ROUNDS times. See run.sh.
+import seq
+
+type Node:
+  kind: int
+  value: int
+  left: int
+  right: int
+
+# One tree value = its own node array + the root's slot, as a lowering of
+# `Expr.Add {left: l, right: r}` over two INDEPENDENT subtrees would have it.
+type Tree:
+  nodes: Seq[Node]
+  root: int
+
+fn leaf({v: int}) -> Tree:
+  let n = {kind: 0, value: v, left: 0, right: 0} Node
+  return {nodes: [n], root: 0} Tree
+
+# l's nodes stay where they are; r's are appended with every index shifted.
+fn add({l: Tree, r: Tree}) -> Tree:
+  var out = l.nodes
+  let base = out.len
+  for i in 0 .. r.nodes.len - 1:
+    let n = r.nodes[i]
+    let sl = if n.kind == 1: n.left + base else: 0
+    let sr = if n.kind == 1: n.right + base else: 0
+    let m = {kind: n.kind, value: n.value, left: sl, right: sr} Node
+    out = {items: out, value: m} push
+  let top = {kind: 1, value: 0, left: l.root, right: r.root + base} Node
+  out = {items: out, value: top} push
+  return {nodes: out, root: out.len - 1} Tree
+
+fn build({d: int}) -> Tree:
+  if d == 0:
+    return {v: 1} leaf
+  let l = {d: d - 1} build
+  let r = {d: d - 1} build
+  return {l: l, r: r} add
+
+fn eval({ns: Seq[Node], i: int}) -> int:
+  let n = ns[i]
+  if n.kind == 0:
+    return n.value
+  return {ns: ns, i: n.left} eval + {ns: ns, i: n.right} eval
+
+fn main() -> int:
+  let t = {d: DEPTH} build
+  var total = 0
+  for i in 1 .. ROUNDS:
+    total = total + {ns: t.nodes, i: t.root} eval
+  if total != ROUNDS * LEAVES:
+    return 1
+  return 0

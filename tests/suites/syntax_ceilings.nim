@@ -159,4 +159,56 @@ fn main() -> int:
 """
   t.okCheck "a `...` placeholder body still ends its line"
 
+  # R3, ruled 2026-09-28: a one-line `if c: s1 else: s2` whose branches are
+  # STATEMENTS is the statement `if`. It checked and built on no backend — a
+  # bare expression at column 0 on Nim, a ternary of assignments on Odin and
+  # D. An assignment, a `return` and an `elif` chain; the value form beside
+  # them still a value. step 3 -> 4, step 10 -> 0, sign -> 1, band -> 2,
+  # pick -> 4: 4 + 0*50 + 1*10 + 2*20 + 4*30.
+  t.src """
+fn step({n: int}) -> int:
+  var m = n
+  if m > 9: m = 0 else: m = m + 1
+  return m
+
+fn sign({n: int}) -> int:
+  if n < 0: return 1 else: return 2
+
+fn band({n: int}) -> int:
+  var b = 0
+  if n < 10: b = 1 elif n < 100: b = 2 else: b = 3
+  return b
+
+fn pick({n: int}) -> int:
+  let k = if n > 9: 0 else: n + 1
+  return k
+
+fn main() -> int:
+  let a = {n: 3} step
+  let b = {n: 10} step
+  let c = {n: -4} sign
+  let d = {n: 50} band
+  let e = {n: 3} pick
+  return a + b * 50 + c * 10 + d * 20 + e * 30
+"""
+  t.hostRuns "a one-line if with statement branches is the statement if (R3)", 174
+
+  # ...and one whose branches are VOID CALLS: syntactically expressions, so
+  # the type says it (lowering.blockVoidIf).
+  t.src """
+import console
+
+fn hi() [io]:
+  {text: "hi"} printLine
+
+fn lo() [io]:
+  {text: "lo"} printLine
+
+fn main() -> int [io]:
+  let n = 3
+  if n > 2: {} hi else: {} lo
+  return 0
+"""
+  t.hostRuns "a one-line if over void calls is a statement, on every backend", 0, "hi"
+
   t.finish()

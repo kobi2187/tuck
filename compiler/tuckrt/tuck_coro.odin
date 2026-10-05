@@ -198,6 +198,7 @@ globalScheduler: Scheduler   // per thread — see activeCoroutine above
 
 @(private)
 initScheduler :: proc() {
+	context.allocator = tuckRuntimeAllocator()   // lives as long as the program
 	if !globalScheduler.inited {
 		queue.init(&globalScheduler.readyQueue)
 		globalScheduler.inited = true
@@ -297,7 +298,8 @@ initLoop :: proc() {
 		panic("tuck: epoll_create1 failed")
 	}
 	gLoop.epfd = fd
-	gLoop.waiters = make(map[linux.Fd]IoWaiter)
+	// The table lives as long as the program; it keeps this allocator as it grows.
+	gLoop.waiters = make(map[linux.Fd]IoWaiter, allocator = tuckRuntimeAllocator())
 	gLoop.inited = true
 }
 
@@ -637,6 +639,10 @@ checkWaiters :: proc(slot: ^ActorSlot) {
 		b: byte = 1
 		linux.write(w.doneFd, ([^]byte)(&b)[:1])
 		linux.close(w.doneFd)
+		// Nothing holds it now: the waiter reads only its own end of the
+		// pipe, and it left `slot.waiters` above. Kept, it was one leak per
+		// `waitUntil`.
+		free(w)
 	}
 }
 
@@ -709,7 +715,9 @@ actorMain :: proc(t: ^thread.Thread) {
 
 tuckStartActor :: proc(drain: DrainProc) -> rawptr {
 	// Detached by design: actors are daemons with no termination condition, so
-	// there is nothing to join. The process exits and they go with it.
+	// there is nothing to join. The process exits and they go with it — and
+	// so do their slot and thread, which is why they are the runtime's.
+	context.allocator = tuckRuntimeAllocator()
 	slot := new(ActorSlot)
 	slot.drain = drain
 	slot.pending = true      // drain once before the first wait: a send may
@@ -798,6 +806,29 @@ tuckNotifySend :: proc(handle: rawptr) {
 	slot.pending = true
 	sync.cond_signal(&slot.cond)
 	sync.unlock(&slot.lock)
+}
+
+// One step of a send waiting for room in `actor`'s full mailbox — its
+// `on_full: wait`, the default (R6). Reached only once a send has found the
+// mailbox full. The Nim twin (tuck_async.tuckAwaitRoom) carries the reasoning:
+// wake the receiver, give up the CPU the way the caller can, and stop rather
+// than hang when an actor waits on its OWN mailbox.
+tuckAwaitRoom :: proc(handle: rawptr, actor: string) {
+	if handle == nil {
+		tuckMailboxFull(actor, "the actor was never started, so nothing drains it")
+	}
+	slot := (^ActorSlot)(handle)
+	if gMySlot == slot {
+		tuckMailboxFull(actor, "it sent to itself, and the actor that would make room is the one waiting. Declare `on_full: drop` or a larger `queue`")
+	}
+	tuckNotifySend(handle)
+	if inCoroutine() {
+		coroYield()   // re-queues the caller before it suspends
+	} else if hasPending() {
+		runNext()
+	} else {
+		intrinsics.cpu_relax()
+	}
 }
 
 // Run THIS thread's coroutines until `pred` holds. Named to match
@@ -920,5 +951,10 @@ awaitResult :: proc(slot: ^TuckAsyncResult($T)) -> T {
 			if !runNext() do runOnce(1)
 		}
 	}
-	return slot.value
+	// The task's last touch of the slot is `done = true` (its wrapper then
+	// frees only its env and returns), and each slot is awaited once. Kept,
+	// it was one leak per task call.
+	value := slot.value
+	free(slot)
+	return value
 }

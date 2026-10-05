@@ -149,7 +149,10 @@ const
   # 13 -> 12 (2026-09-27): complexity.walk (Tuck's own TK-CX walker) became a
   # fork counter over ast.children instead of hand-recursing into every
   # ExprKind's operands.
-  HEAVY = 12
+  #
+  # 12 -> 11 (2026-10-05): genEntryPoint (Odin, cc 20) handed its exit
+  # sequence to exitLines when the actors' state joined it, and fell to 14.
+  HEAVY = 11
   CC = "tools/cyc"
 
 proc run*(t: var T) =

@@ -28,14 +28,6 @@ import ast, resolution
 import ast_query
 from lowering import getFieldsForType
 
-proc seqFieldNames*(res: Resolution, m: Module, t: Type): seq[string] =
-  ## Names of `t`'s fields whose own type is `Seq[T]` — a D struct copies by
-  ## value field-for-field, but a `T[]` field's copy is only the slice
-  ## HEADER, so any Seq field aliases across the copy exactly the way a bare
-  ## Seq assignment does. "" (never nil) when `t` is not a record at all.
-  for f in getFieldsForType(res, m, t):
-    if seqElem(f.typ) != nil: result.add(f.name)
-
 proc genericBaseBody*(m: Module, t: Type): Type =
   ## A GENERIC application's declared body — `Set[T]` -> `Set`'s record.
   ## getFieldsForType answers @[] for every tkApp on purpose (most are `Seq`
@@ -47,6 +39,21 @@ proc genericBaseBody*(m: Module, t: Type): Type =
     if d != nil and d.kind == dkType and d.name == t.base.name:
       return d.typeBody
   nil
+
+proc seqFieldNames*(res: Resolution, m: Module, t: Type): seq[string] =
+  ## Names of `t`'s fields whose own type is `Seq[T]` — a D struct copies by
+  ## value field-for-field, but a `T[]` field's copy is only the slice
+  ## HEADER, so any Seq field aliases across the copy exactly the way a bare
+  ## Seq assignment does. "" (never nil) when `t` is not a record at all.
+  ##
+  ## A generic application answers for its declared body: `Box[T]` has
+  ## `items`. It used to answer nothing, and the escape analysis, which asks
+  ## here, then read `return {items: xs} Box` as carrying no buffer out —
+  ## Odin deleted `xs` on the way out and the caller read freed memory
+  ## (benches/containers generic_box, a segfault).
+  let body = if t != nil and t.kind == tkApp: genericBaseBody(m, t) else: t
+  for f in getFieldsForType(res, m, body):
+    if seqElem(f.typ) != nil: result.add(f.name)
 
 
 proc twinnableFn*(d: Decl): bool =
@@ -96,9 +103,7 @@ proc movedCopyFields*(res: Resolution, m: Module, t: Type): seq[string] =
   ## and by both backends' wrappers — they disagreed once, and the wrapper
   ## then emitted `s = s.dup` for a `Set[T]`, which dmd answers with "none of
   ## the overloads of template `object.dup` are callable".
-  result = seqFieldNames(res, m, t)
-  if result.len == 0:
-    result = seqFieldNames(res, m, genericBaseBody(m, t))
+  seqFieldNames(res, m, t)
 
 proc copyableContainer*(res: Resolution, m: Module, t: Type): bool =
   ## Can the wrapper actually spell the copy it owes — a Seq, or a record

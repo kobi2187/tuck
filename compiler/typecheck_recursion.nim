@@ -32,6 +32,7 @@
 # Nothing synthesizes an expression type.
 import ast, tables, sets, strutils
 import typecheck_util
+from resolution import arenaOfRefType
 
 const HandleContainers = ["Seq"]
   ## Containers that hold their elements BEHIND a handle, so a type reaching
@@ -77,7 +78,10 @@ iterator reachedTypeNames(t: Type, throughHandles: bool): string =
     case cur.kind
     of tkNamed: yield cur.name
     of tkApp:
-      if not throughHandles and cur.base != nil and cur.base.kind == tkNamed and
+      if arenaOfRefType(cur) != nil:
+        discard              # `FrameRef[Item]`: a reference, 8 bytes — not
+                             # a value of Item, inline or as a tree's edge
+      elif not throughHandles and cur.base != nil and cur.base.kind == tkNamed and
          cur.base.name in HandleContainers:
         discard              # behind a handle: contributes no inline size
       else:

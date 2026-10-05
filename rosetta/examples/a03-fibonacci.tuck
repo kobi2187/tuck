@@ -1,5 +1,5 @@
 # Fibonacci sequence, first 10 terms, iterative
-import io
+import console
 
 fn main() -> void [io]:
   var a = 0

@@ -1,5 +1,5 @@
 # An enum-like sum type for Color, matched to a name
-import io
+import console
 
 type Color:
   | Red({})

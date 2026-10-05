@@ -42,7 +42,7 @@ bool drain_tuckˑactorˑCounter() {
 }
 
 void sendAdd_tuckˑactorˑCounter(ref tuckˑactorˑCounter self, long n) {
-    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑCounterMsg(tuckTag: tuckˑactorˑCounterMsgKind.msgAdd, n: n));
+    rt.sendWaiting(self.mailbox, tuckˑactorˑCounterMsg(tuckTag: tuckˑactorˑCounterMsgKind.msgAdd, n: n), tuckˑactorˑCounterSlot, "Counter");
     rt.tuckNotifySend(tuckˑactorˑCounterSlot);
 }
 

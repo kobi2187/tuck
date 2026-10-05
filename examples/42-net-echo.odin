@@ -42,7 +42,7 @@ drain_tuckˑactorˑResult :: proc() -> bool {
 }
 
 sendPut_tuckˑactorˑResult :: proc(self: ^tuckˑactorˑResult, c: int) {
-	_ = rt.enqueue(&self.mailbox, tuckˑactorˑResultMsg{tuckTag = .msgPut, c = c})
+	rt.sendWaiting(&self.mailbox, tuckˑactorˑResultMsg{tuckTag = .msgPut, c = c}, tuckˑactorˑResultSlot, "Result")
 	rt.tuckNotifySend(tuckˑactorˑResultSlot)
 }
 

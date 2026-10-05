@@ -51,7 +51,7 @@ proc genImplImports*(m: Module): string =
     for (backend, module) in mem.externImpl:
       if backend != "nim" or module in seen: continue
       seen.add(module)
-      result.add("import " & module & "\nexport " &
+      result.add("import \"" & module & "\"\nexport " &
                  module.rsplit('/', 1)[^1] & "\n")
 
 proc linkPragma*(lib: string): string =
@@ -117,7 +117,11 @@ proc emitNim*(m: Module, res: Resolution,
   # ponytail: one pragma instead of merging 11 emit sites into a single block;
   # do that if codeReordering ever bites.
   result = "{.experimental: \"codeReordering\".}\n"
-  result.add("import " & rtImport & "\n")
+  # QUOTED: an import is a path, and an unquoted one is parsed as Nim
+  # expressions — a checkout under `my-projects/` imported `my - projects`,
+  # and one under a directory starting with a digit read it as a number.
+  # Every Nim build from such a checkout failed. Nim takes a string literal.
+  result.add("import \"" & rtImport & "\"\n")
   result.add(genRtExport(m))
   result.add(genImplImports(m))
   result.add(genLinkFlags(m))

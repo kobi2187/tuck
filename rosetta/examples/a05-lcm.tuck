@@ -1,5 +1,5 @@
 # Least common multiple, built on gcd
-import io
+import console
 
 pending:
   fn gcd({a: int, b: int}) -> int

@@ -9,8 +9,8 @@
 ## Bundled C lives in compiler/vendor/minicoro (MIT, Eduardo Bart), built with
 ## MCO_USE_VMEM_ALLOCATOR so a coroutine stack is an mmap reservation and only
 ## touched pages cost RAM — what tuck_async's 1MB TuckStackSize relies on.
-## libaco is deliberately NOT vendored: arsenal hardcodes cbMinicoro, so the
-## libaco branch was always dead code here.
+## Arsenal's dispatcher also carried a libaco backend. It was never vendored
+## or selected here, and its dead branches were removed 2026-09-28.
 ##
 ## Upstream: github.com/kobi2187/arsenal — keep edits minimal so this stays
 ## diffable against it.
@@ -188,17 +188,8 @@ template mcoYield*() =
 
 
 # =============================================================================
-# Backend Selection
+# Stack sizes
 # =============================================================================
-
-type
-  CoroutineBackendKind* = enum
-    ## The context-switch engines this dispatcher was written for. Only
-    ## minicoro is vendored and selected (`SelectedBackend`).
-    cbLibaco
-    cbMinicoro
-
-const SelectedBackend* = cbMinicoro
 
 const
   # Stack sizes
@@ -212,132 +203,73 @@ const
 
 type
   UnifiedBackend* = object
-    ## Wraps the selected backend implementation
-    when SelectedBackend == cbLibaco:
-      handle*: ptr AcoHandle
-      stack*: ptr AcoShareStack
-    else:
-      handle*: ptr McoCoro
-      desc*: McoDesc
+    ## A minicoro coroutine: its handle and the descriptor it was made from.
+    ## (Arsenal's dispatcher also had a libaco arm; it was never vendored or
+    ## selected here, and was removed 2026-09-28.)
+    handle*: ptr McoCoro
+    desc*: McoDesc
 
 # =============================================================================
 # Global State
 # =============================================================================
 
 var
-  mainCo {.threadvar.}: UnifiedBackend
   backendInitialized {.threadvar.}: bool
-  # libaco's shared stack is gone with the backend — only minicoro is vendored.
 
 # =============================================================================
 # Backend Operations
 # =============================================================================
 
 proc initBackend*() =
-  ## Initialize coroutine backend for current thread.
+  ## Initialize coroutine backend for current thread. minicoro needs no
+  ## per-thread setup; this only records that it ran.
   if backendInitialized: return
-  
-  when SelectedBackend == cbLibaco:
-    aco_thread_init(nil)
-    mainCo.handle = aco_create(nil, nil, 0, nil, nil)
-    # mainCo.stack is nil for main coroutine
-    # Create the shared stack once per thread
-    libacoSharedStack = aco_share_stack_new(DefaultStackSize.csize_t)
-    
-  else:
-    # minicoro doesn't need explicit thread init, but we can set up main context if needed
-    discard
-  
   backendInitialized = true
 
 proc createBackend*(fn: pointer, stackSize: int, userData: pointer): UnifiedBackend =
   ## Create a new coroutine backend
   if not backendInitialized:
     initBackend()
-
-  when SelectedBackend == cbLibaco:
-    if mainCo.handle == nil:
-      stderr.writeLine("FATAL: mainCo.handle is nil in createBackend")
-      quit(1)
-      
-    # Use the thread-local shared stack
-    # Note: We ignore stackSize argument for now and use default shared stack size
-    # If custom stack size is needed, we'd need multiple shared stacks or a pool
-    result.stack = libacoSharedStack
-    
-    # Create coroutine
-    # Note: fn must be AcoFuncPtr compatible
-    result.handle = aco_create(
-      mainCo.handle,
-      result.stack,
-      0,
-      cast[AcoFuncPtr](fn),
-      userData
-    )
-  else:
-    var desc = mco_desc_init(cast[McoFunc](fn), stackSize.csize_t)
-    desc.user_data = userData
-    
-    let res = mco_create(addr result.handle, addr desc)
-    if res != MCO_SUCCESS:
-      raise newException(ValueError, "Failed to create minicoro coroutine: " & $res)
+  var desc = mco_desc_init(cast[McoFunc](fn), stackSize.csize_t)
+  desc.user_data = userData
+  let res = mco_create(addr result.handle, addr desc)
+  if res != MCO_SUCCESS:
+    raise newException(ValueError, "Failed to create minicoro coroutine: " & $res)
 
 proc resume*(backend: UnifiedBackend) {.raises: [].} =
   ## Switches into the coroutine until it yields or finishes. A failed switch
   ## means a corrupt coroutine or stack and quits the process.
-  when SelectedBackend == cbLibaco:
-    aco_resume(backend.handle)
-  else:
-    let res = mco_resume(backend.handle)
-    if res != MCO_SUCCESS:
-      # A failed switch means the coroutine or its stack is corrupt; there is
-      # nothing to recover to. Trapping keeps this proc non-raising, which is
-      # what stops Nim threading an error flag through every switch.
-      quit("tuck: failed to resume coroutine (minicoro error " & $res & ")")
+  let res = mco_resume(backend.handle)
+  if res != MCO_SUCCESS:
+    # A failed switch means the coroutine or its stack is corrupt; there is
+    # nothing to recover to. Trapping keeps this proc non-raising, which is
+    # what stops Nim threading an error flag through every switch.
+    quit("tuck: failed to resume coroutine (minicoro error " & $res & ")")
 
 proc yieldBackend*() =
   ## Switches from the running coroutine back to whoever resumed it.
-  when SelectedBackend == cbLibaco:
-    aco_yield()
-  else:
-    mcoYield()
+  mcoYield()
 
 proc exitBackend*() =
-  ## Exit the current coroutine (called when function finishes)
-  when SelectedBackend == cbLibaco:
-    aco_exit()
-  else:
-    # minicoro doesn't need explicit exit, just return
-    discard
+  ## Exit the current coroutine. minicoro needs nothing: the entry function
+  ## returning is the exit.
+  discard
 
 proc destroy*(backend: var UnifiedBackend) =
-  ## Frees the backend coroutine (not the shared stack, on libaco) and clears
-  ## the handle, so a second destroy is a no-op.
-  when SelectedBackend == cbLibaco:
-    if backend.handle != nil and backend.handle != mainCo.handle:
-      aco_destroy(backend.handle)
-      backend.handle = nil
-    # Do NOT destroy shared stack here, it is reused
-    backend.stack = nil
-  else:
-    if backend.handle != nil:
-      discard mco_destroy(backend.handle)
-      backend.handle = nil
+  ## Frees the backend coroutine and clears the handle, so a second destroy
+  ## is a no-op.
+  if backend.handle != nil:
+    discard mco_destroy(backend.handle)
+    backend.handle = nil
 
 proc isFinished*(backend: UnifiedBackend): bool {.inline.} =
   ## Has the backend coroutine run to the end of its entry function?
-  when SelectedBackend == cbLibaco:
-    isEnded(backend.handle)
-  else:
-    isDead(backend.handle)
+  isDead(backend.handle)
 
 proc getUserData*(backend: UnifiedBackend): pointer {.inline.} =
   ## The pointer given to the backend coroutine at creation — the `Coroutine`
   ## object it belongs to.
-  when SelectedBackend == cbLibaco:
-    getArg(backend.handle)
-  else:
-    mco_get_user_data(backend.handle)
+  mco_get_user_data(backend.handle)
 
 # ===========================================================================
 # from arsenal/coroutine.nim
@@ -352,10 +284,7 @@ proc getUserData*(backend: UnifiedBackend): pointer {.inline.} =
 ## - Don't require kernel involvement
 ## - Must explicitly yield control
 ##
-## Arsenal provides multiple backends:
-## - libaco: Best performance on x86_64/ARM64 (Unix)
-## - minicoro: Portable fallback for Windows and others
-## - (Future) Pure Nim implementation using inline ASM
+## The context switch is minicoro's (vendored; see the top of this file).
 ##
 ## Usage:
 ## ```nim
@@ -474,34 +403,18 @@ proc inCoroutine*(): bool =
 # Trampoline (C -> Nim bridge)
 # =============================================================================
 
-when SelectedBackend == cbLibaco:
-  proc trampoline() {.cdecl, stackTrace: off.} =
-    ## Trampoline for libaco (no args, get arg from context)
-    let co = aco_get_co()
-    let arg = getArg(co)
-    let coro = cast[ptr CoroutineObj](arg)
-    
-    try:
-      coro[].entryPoint()
-    except CatchableError as e:
-      stderr.writeLine("Error in coroutine: " & e.msg)
-    finally:
-      coro[].state = csFinished
-      exitBackend()
-
-else:
-  proc trampoline(co: ptr McoCoro) {.cdecl, stackTrace: off.} =
-    ## Trampoline for minicoro (takes coroutine pointer)
-    let arg = mco_get_user_data(co)
-    let coro = cast[ptr CoroutineObj](arg)
-    
-    try:
-      coro[].entryPoint()
-    except CatchableError as e:
-      stderr.writeLine("Error in coroutine: " & e.msg)
-    finally:
-      coro[].state = csFinished
-      # minicoro just returns
+proc trampoline(co: ptr McoCoro) {.cdecl, stackTrace: off.} =
+  ## Trampoline for minicoro (takes coroutine pointer)
+  let arg = mco_get_user_data(co)
+  let coro = cast[ptr CoroutineObj](arg)
+  
+  try:
+    coro[].entryPoint()
+  except CatchableError as e:
+    stderr.writeLine("Error in coroutine: " & e.msg)
+  finally:
+    coro[].state = csFinished
+    # minicoro just returns
 
 # =============================================================================
 # Coroutine Creation

@@ -1,5 +1,5 @@
 # generic type args on invented fns; chained indexing grid[i][j]
-import io
+import console
 import seq
 
 pending:

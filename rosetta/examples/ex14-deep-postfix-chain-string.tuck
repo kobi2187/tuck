@@ -1,5 +1,5 @@
 # 5-deep postfix chain over strings, Elixir-pipe-shaped text pipeline
-import io
+import console
 
 pending:
   fn trim({text: str}) -> str

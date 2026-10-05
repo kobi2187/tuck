@@ -7,7 +7,6 @@
 import ast, tables, sets, strutils
 import ast_query
 import resolution
-import analysis_ownership
 import decl_index
 export decl_index
 
@@ -33,10 +32,6 @@ type
     retInnerT*: Type       # payload Tuck type (typed struct-literal emission)
     retInvName*: string    # fn returns an invariant-carrying type: validate at return
     tmpCounter*: int
-    owned*: Ownership
-      ## What analysis_ownership decided for the fn being emitted: which
-      ## locals die at scope exit, which die at an overwrite, and what the
-      ## MOVED twin frees. The emitter prints it; it decides nothing.
     movedParam*: string    # while emitting a fn's MOVED twin: the param it
                            # takes destructively. NOT a reason to skip a
                            # copy — what is copied is the copy pass's call
@@ -135,6 +130,19 @@ proc importedTypeQualifier*(ctx: OdinCodegenCtx, name: string): string =
   if origin != "" and pkg != ctx.moduleName.replace("-", "_"): pkg & "." & name
   else: name
 
+proc importPrefix*(ctx: OdinCodegenCtx, name: string): string =
+  ## `pkg.` when another module declares the type, object or interface
+  ## `name` (R11), else "" — for the names derived from it (`<I>Tag`,
+  ## `__validated_<T>`) that `importedTypeQualifier` cannot look up.
+  let origin = moduleDeclaringType(ctx.module, name)
+  let pkg = origin.replace("-", "_")
+  if origin != "" and pkg != ctx.moduleName.replace("-", "_"): pkg & "." else: ""
+
+proc validatorName*(ctx: OdinCodegenCtx, typeName: string): string =
+  ## The proc that validates an invariant-carrying type, qualified with its
+  ## module when the type is imported (R11, A31).
+  ctx.importPrefix(typeName) & "__validated_" & typeName
+
 proc qualifyEnumOwner*(ctx: OdinCodegenCtx, owner: string): string =
   ## An enum owner reached through its module when the TYPE it belongs to was
   ## imported. `importedTypeQualifier` above already does this for a type in
@@ -156,7 +164,11 @@ proc odinNamedFallback*(ctx: OdinCodegenCtx, t: Type): string =
   ## A name the primitive table did not cover.
   if isOddBitWidth(t.name): roundedIntType(t.name)
 
-  else: ctx.importedTypeQualifier(t.name)
+  else:
+    # An Array size naming an imported const (R11, A33).
+    let co = constOrigin(ctx.module, ctx.realModules, t.name)
+    if co != "": co.replace("-", "_") & "." & t.name
+    else: ctx.importedTypeQualifier(t.name)
 
 proc odinTupleType*(ctx: var OdinCodegenCtx, t: Type): string =
   ## A tuple as Odin: a one-element tuple is just its element, anything wider
@@ -261,6 +273,7 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
       return t.name[NamedTypeParamPrefix.len .. ^2]
     let builtin = odinNamedBuiltin(ctx, t.name)
     if builtin != "": return builtin
+    if slabOfRefType(t.name) != nil: return "rt.SlabRef"
     ctx.odinNamedFallback(t)
   of tkTuple: ctx.odinTupleType(t)
   of tkApp:
@@ -269,6 +282,7 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
     # parametric. See codegen_common.fnSigInstance.
     let sigInst = fnSigInstance(ctx.module, t)
     if sigInst != nil: ctx.odinFuncType(sigInst)
+    elif arenaOfRefType(t) != nil: "rt.SlabRef"   # an arena's FrameRef[T]
     else: ctx.odinAppType(t)
   of tkFunc: ctx.odinFuncType(t)
   of tkRecord:

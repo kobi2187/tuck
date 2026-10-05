@@ -193,9 +193,13 @@ fixed pools and bump arenas — O(1), zero fragmentation, sizes checked at
 compile time:
 
 ```tuck
-arena ScratchSpace [size: 2048]:
-  let buf = ScratchSpace.alloc Array[128, u8]
-  ScratchSpace.reset          # entire arena freed in one assignment
+arena ScratchSpace [size: 2048]
+
+fn scratch() -> int:
+  let buf: Array[128, u8] = [0; 128]
+  let r = ScratchSpace.new {value: buf}   # ?ScratchSpaceRef[...]: absent once spent
+  ScratchSpace.reset          # everything in it freed at once
+  return 0
 ```
 
 Unit types are distinct types plus ordinary functions — no compiler magic:

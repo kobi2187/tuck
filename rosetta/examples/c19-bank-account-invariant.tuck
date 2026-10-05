@@ -1,5 +1,5 @@
 # Bank account balance with a non-negative invariant
-import io
+import console
 
 type Account:
   balance: int

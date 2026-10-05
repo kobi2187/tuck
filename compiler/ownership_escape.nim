@@ -27,6 +27,8 @@
 #   a `return` / `raise`      when what it hands back could hold ours
 #   a call                    when its result could hold ours — unless the
 #                             rule exempts it (below)
+#   a slab's `new` / `set`    always: the cell outlives the body, and the
+#                             slab's own free, set and reset delete it
 #
 # and one EDGE carries out, the right-hand side of a binding to ANOTHER name:
 #
@@ -259,6 +261,7 @@ proc carriesOut(ix: BodyIndex, rule: SealRule, n: Expr): bool =
     v == nil or ix.holds(rule, ix.res.typeFor(v))
   of exkCall:
     n.id notin rule.exemptCalls and ix.holds(rule, ix.res.typeFor(n))
+  of exkSlabOp: n.slabOp in {soNew, soSet}
   else: false
 
 proc bindsElsewhere(ix: BodyIndex, rule: SealRule, parent, child: Expr,
@@ -333,8 +336,11 @@ proc escapes*(ix: BodyIndex, rule: SealRule, name, slot: string,
       # A MOVED ARGUMENT IS GONE, unconditionally: the callee's twin consumes
       # it. Relaxing this to "gone only if the twin really frees it" once
       # needed a second copy of the twin's own rule, which drifted into a
-      # double free.
-      if v.place == name and n.kind == exkVar and isMovedArg(ix.res, n) and
+      # double free. The local itself (`l`, every slot), or ONE slot of it
+      # (`l.nodes`, that slot only): a field handed to a twin was freed by
+      # the caller beside the twin's result that kept it (A38).
+      if (v.place == name or v.place == name & "." & slot) and
+         n.kind in {exkVar, exkField} and isMovedArg(ix.res, n) and
          not (threading and ix.threadsBack(n, name)):
         return true
       if ix.underCarrier(rule, n, name, memo): return true

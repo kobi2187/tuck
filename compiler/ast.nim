@@ -253,6 +253,9 @@ type
     pkRecord
     pkTuple
     pkOr
+    pkTypeTest  # `| Flac f ->` on an INTERFACE value: the arm runs when the
+                # value holds a Flac, with `f` bound to it (ruled 2026-09-28).
+                # Lowered to an `if` chain (lowering_iface.lowerIfaceMatches)
 
   Pattern* = ref object
     ## One match pattern, one case branch per PatternKind. Or-patterns nest as
@@ -272,6 +275,9 @@ type
       elems*: seq[Pattern]
     of pkOr:
       left*, right*: Pattern
+    of pkTypeTest:
+      testType*: string  # the object the value must hold (`Flac`)
+      bindAs*: string    # the name it is bound to in the arm (`f`)
 
   DispatchArm* = object
     ## One satisfier's arm of an `exkIfaceCall`: the receiver's payload, taken
@@ -279,12 +285,14 @@ type
     satisfier*: string   # the object's (mangled) declared name
     bindName*: string    # what `call` names the payload
     call*: Expr          # an ordinary member call; its args[0] reads bindName
+    writesBack*: bool    # the member changes its object: the changed payload
+                         # is stored back into the interface value, which
+                         # the checker allows only when that is a `var`
 
   MatchArm* = object
-    ## One arm of a `match`: pattern, optional guard (never produced by the
-    ## parser today) and body.
+    ## One arm of a `match`: pattern and body. (An arm guard field, never
+    ## produced by the parser, was removed 2026-09-28.)
     pattern*: Pattern
-    guard*: Expr
     body*: Expr
     span*: Span
 
@@ -335,12 +343,6 @@ type
     uoComposition  # `+ Type` in an object/type body — a MEMBER, sifted out
                    # before any expression is emitted (ast_query.composedName)
 
-  ChainOp* = enum
-    ## How a chain step attaches. Only `..` (coDotDot) is produced; a plain `.`
-    ## is a field access, not a chain step.
-    coDot
-    coDotDot
-
   NodeId* = distinct uint32
     ## Identity for the semantic layer. Assigned once, right after parsing, and
     ## carried through every later pass — including a per-target clone — so the
@@ -349,8 +351,9 @@ type
 
   ChainStep* = object
     ## One `..step {arg}` of a builder chain: the step's name or call target, its
-    ## payload, and its own id (a step resolves to a call).
-    op*: ChainOp
+    ## payload, and its own id (a step resolves to a call). Every step is a
+    ## `..` step: a plain `.` is a field access, never a chain step (the
+    ## unused `ChainOp` enum that said so was removed 2026-09-28).
     target*: Expr
     arg*: Expr
     span*: Span
@@ -366,6 +369,8 @@ type
     exkQualified
     exkStruct
     exkList
+    exkFill         # `[v; N]` — an Array of N copies of a scalar v (R8,
+                    # ruled 2026-09-28); its own node, not a list of N items
     exkBracket
     exkBracketAssign
     exkCall
@@ -442,11 +447,85 @@ type
                     # node rather than a `match`: it sits in VALUE position,
                     # where Odin's match is a ternary chain that can bind no
                     # payload and would evaluate the receiver once per arm.
+    exkIfaceIs      # lowered only (lowering_iface): does interface value
+                    # `tagSubject` hold a `tagObject`? A `| Flac f ->` arm's
+                    # test. Every backend prints a comparison of the tag.
+    exkIfacePayload # lowered only: the `tagObject` inside interface value
+                    # `tagSubject` — what `f` of `| Flac f ->` reads. Every
+                    # backend prints the variant's `<object>Val` field.
+    exkWrapOk       # lowered only (lowering_optional): `optValue`, a plain
+                    # `T`, held in a `?T` — an assignment into a `?T` place.
+                    # Every backend prints its result carrier's typed
+                    # constructor with status Ok.
+    exkAbsent       # an absent `?T`. Written `none` (ruled 2026-09-29): the
+                    # parser leaves `optInner` nil and the checker fills it
+                    # from the `?T` the place expects (synthNone). Also built
+                    # by lowering_optional for a `T?` actor field with no
+                    # initialiser. The carrier's zero value is status OK (the
+                    # enum's first member), not absent — so it is never left
+                    # to a zero.
     exkPoolOp       # `Cells.acquire`, `Cells.read {h}`, ... — an operation on a
                     # pool (spec §7.2). Its own node, stamped by the checker:
                     # it used to be a call whose callee was the bare member
                     # name, so a program's own `fn read` was mangled into it,
                     # and backends found pool calls by name lists.
+    exkSlabRef      # a bare slab name (`Nodes` in `Nodes.new {...}`)
+    exkSlabOp       # `Nodes.new {...}`, `Nodes.free {r}`, ... — an operation on
+                    # a slab, stamped by the checker as a pool op is
+    exkArenaRef     # a bare arena name (`Frame` in `Frame.new {value: v}`)
+    exkArenaReset   # `Frame.reset` — every slab of an arena reset at once
+                    # (slab proposal §9); stamped by the checker, as a slab
+                    # op is. `new`, `live`, `get` and `set` are slab ops on
+                    # the arena's slab for the element type
+    exkSlabCell     # lowered only (lowering_slab): the value in the cell a
+                    # reference names, checked — what `r.field` reads and
+                    # writes through. `r.data` becomes a field of this node,
+                    # so every backend prints it with its ordinary field
+                    # access, for a read and an assignment target alike.
+    exkAppend       # prepared only (ownership_nodes): `xs = {items: xs,
+                    # value: v} push`, or `s = s + t` on a backend whose
+                    # strings grow, made the in-place growth it always was
+                    # when printed. Its own node so the decision is in the
+                    # tree, where every pass sees it, instead of re-derived by
+                    # each emitter from the assignment's shape (ownership
+                    # proposal §8, Stage C).
+    exkCopy         # prepared only (ownership_nodes): the value a binding
+                    # copies where the backend's own assignment would alias
+                    # it (Odin, D), or a static `str` made heap-owned (Odin).
+                    # Made from lowering_seqcopy's marks and the ownership
+                    # pass's `copyToOwn`, which each emitter used to look up
+                    # while printing (proposal §8, Stage C, step 1.2).
+    exkDrop         # prepared only (ownership_nodes): release the storage the
+                    # place `dropped` owns (rule D). Sits in a `defer` after
+                    # the declaration it ends, or at the top of a moved twin
+                    # for the parameter it consumed. Odin only: the other two
+                    # backends' memory is ARC's and the collector's (step 1.3).
+
+  CopyKind* = enum
+    ## What an `exkCopy` copies (rule S: a sink copies when it is not the
+    ## value's final use; rule G: what a copy of a type means).
+    cpSeq       ## a `Seq`'s buffer: the native assignment copies only a header
+    cpFields    ## a record's `Seq` fields (`copyFields`), each copied — the
+                ## record's own struct copy carries their headers along
+    cpStatic    ## a `str` literal, copied to the heap so the local holding it
+                ## can free each value it is given (Odin, `copyToOwn`)
+
+  SlabOpKind* = enum
+    ## What a slab operation does (thoughts/shared/plans/
+    ## 2026-09-29-slab-proposal.md, section 3).
+    soNew     ## a cell holding a value: `<Slab>Ref`, or `<Slab>Ref?` if counted
+    soFree    ## the cell is reusable; its references are stale
+    soLive    ## `bool` — does the reference still name a live cell?
+    soReset   ## every cell free, every reference stale
+    soCount   ## `int` — cells holding a value
+    soGet     ## the whole value, copied out
+    soSet     ## the whole value, stored
+
+  SlabStorage* = enum
+    ## What a slab keeps its cells in (proposal section 5).
+    ssChunked     ## the default: two levels, never copied
+    ssFixed       ## `[count: N]`: a static array
+    ssContiguous  ## `[storage: contiguous]`: one growable array
 
   PoolOpKind* = enum
     ## What a pool operation does. Its operands are fixed per kind: none for
@@ -495,6 +574,9 @@ type
       fields*: seq[FieldInit]
     of exkList:
       items*: seq[Expr]
+    of exkFill:
+      fillValue*: Expr   # `[v; N]`'s v — a literal or a name, read once
+      fillCount*: Expr   # N — a literal or a const, as an Array size is
     of exkBracket:
       # `recv[a, b, ...]`. The receiver decides the meaning, not the argument
       # count: a declared type is a type application, a value is an index.
@@ -511,6 +593,12 @@ type
       # The payload-to-param mapping the checker decides for this call lives
       # in the semantic layer (resolution.argFieldsFor / callParamsFor), not
       # here — it is derived, not syntax.
+      argsExploded*: bool
+        ## lowering.explodePayload made `args` the callee's params in order.
+        ## A call to a one-param fn whose argument is a record literal —
+        ## `{b: {tag: 9}} take` becomes `take({tag: 9})` — otherwise LOOKS
+        ## unexploded (one exkStruct argument), and the next pass exploded
+        ## it again, finding no `b` (#97).
     of exkChain:
       base*: Expr
       steps*: seq[ChainStep]
@@ -538,6 +626,10 @@ type
     of exkAssign:
       target*, assignVal*: Expr
       isDecl*: bool     # true for `let x = ...` / `var x = ...`
+      dropsOld*: bool   # prepared only (ownership_nodes): the target's old
+                        # value is released after the new one is built and
+                        # before it is stored — drop-and-replace (rules D and
+                        # E). Odin only; never on a declaration.
       isMutable*: bool  # true only for `var`
       inChain*: bool    # a step of a lowered `..` chain: NOT re-validated on
                         # its own — the chain validates once, at its end
@@ -578,10 +670,45 @@ type
       poolRef*: Expr               # the `exkPoolRef`
       poolHandle*: Expr            # the handle; nil for acquire
       poolValue*: Expr             # the value; write only, else nil
+    of exkSlabOp:
+      slabOp*: SlabOpKind
+      slabRef*: Expr               # the `exkSlabRef`
+      slabArg*: Expr               # the reference operated on; nil for new,
+                                   # reset and count
+      slabValue*: Expr             # new's construction, set's value; else nil
+    of exkArenaReset:
+      arenaRef*: Expr              # the `exkArenaRef`
+    of exkSlabCell:
+      cellSlab*: Expr              # the `exkSlabRef`
+      cellRef*: Expr               # the reference whose cell this is
+    of exkAppend:
+      appendTarget*: Expr          # the place that grows, a bare name: the
+                                   # READ of it the source wrote, so its stamps
+                                   # (final use, owner field) stay attached
+      appendValue*: Expr           # what is added at the end
+      appendsElement*: bool        # true: `appendValue` becomes the Seq's new
+                                   # last element (a SINK — the container
+                                   # keeps it). false: a str's bytes copied
+                                   # onto the end (a BORROW — nothing kept)
+    of exkCopy:
+      copied*: Expr                # the value copied; it keeps its own id, so
+                                   # every fact about it stays attached
+      copyKind*: CopyKind
+      copyFields*: seq[string]     # cpFields: the Seq fields that are copied
+    of exkDrop:
+      dropped*: Expr               # the place: a local or parameter, or a
+                                   # path into one (`b.ask`)
     of exkIfaceCall:
       dispatchRecv*: Expr          # the interface value, evaluated once
       dispatchIface*: string       # the interface's (mangled) type name
       dispatchArms*: seq[DispatchArm]
+    of exkWrapOk, exkAbsent:
+      optValue*: Expr              # the value held (exkWrapOk); nil if absent
+      optInner*: Type              # T, the type inside the `?T`
+    of exkIfaceIs, exkIfacePayload:
+      tagSubject*: Expr            # the interface value (a place: read twice)
+      tagIface*: string            # the interface's (mangled) type name
+      tagObject*: string           # the object's (mangled) declared name
     of exkValidate:
       validated*: Expr  # the value to re-check; its TYPE names the invariants
     of exkAcquire:
@@ -594,22 +721,22 @@ type
       comb*: CombKind
       combRecv*: Expr   # the receiver; for ckMerge, the struct OF members
       combArg*: Expr    # the payload struct; nil for ckMerge
-    of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+    of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
+       exkSlabRef, exkArenaRef:
       refName*: string  # the resolved name; the Decl itself is one
                         # declFor(semLayer, e) away (resolution.nim) once
                         # resolveDeclRefs links it — not stored here, so
                         # this node stays small and deepCopy/JSON-safe
 
   LitKind* = enum
-    ## The literal kinds. `lkUnit` is the `none` keyword: the one value of
-    ## the unit type.
-    lkInt, lkFloat, lkStr, lkBool, lkUnit
+    ## The literal kinds. `none` is not one: it is an absent `?T`
+    ## (exkAbsent), typed by where it is written.
+    lkInt, lkFloat, lkStr, lkBool
 
   # Imported type decls are injected into the importer for checking and
   # lowering, marked with this span.file so codegen skips re-emitting them.
 const ImportedTypeMarker* = "<imported>"
 
-const ArenaMarker* = "<arena>"
   ## The attribute `parseArenaDecl` puts on the record an `arena` parses into,
   ## so the checker can tell an arena from a type. Not spellable in source —
   ## an attribute name is a word, and `<` begins none.
@@ -674,6 +801,8 @@ type
                                  # cached signature that dropped them would make
                                  # an imported acquirer look non-acquiring, which
                                  # is the bug effects themselves once had
+    errTypes*: seq[string]       # [error: FsError] — `match r.err` on a call
+                                 # names its arms from these (R11, A30)
     isPending*: bool
     line*: int
 
@@ -684,6 +813,9 @@ type
     dkObject
     dkRegistry
     dkPool
+    dkSlab    # `slab Nodes = Node [attrs]` — cells addressed by reference
+    dkArena   # `arena Frame [size: N]` — one lifetime over a slab per element
+              # type its `new`s name (slab proposal §9)
     dkFn
     dkMixin   # `mixin Name:` — fns materialised onto a composing object
     # `extern:` and `pending:` blocks parse into their own kinds rather than
@@ -791,6 +923,26 @@ type
       poolCountText*: string  ## the source spelling when `[count: N]` names a
                               ## const; resolved by the checker, which unlike
                               ## the parser can see the whole module.
+    of dkSlab:
+      # thoughts/shared/plans/2026-09-29-slab-proposal.md: cells of one type,
+      # handed out as references (`<Slab>Ref`).
+      slabElem*: Type
+      slabStorage*: SlabStorage
+      slabCount*: int          ## ssFixed only: the number of cells
+      slabCountText*: string   ## `[count: N]` as written, when N names a const
+      slabLeaksOk*: bool       ## `[leaks: ok]`: no report of unfreed cells
+      slabOwner*: string       ## the actor declaring it, "" for the module —
+                               ## main's thread (slab proposal §7; slab_owner)
+      slabArena*: string       ## the arena this is the slab of, for one element
+                               ## type; "" for a declared slab (typecheck)
+      slabCost*: int           ## an arena's slab: what one `new` charges the
+                               ## arena's `[size: N]`, in bytes (type_size)
+    of dkArena:
+      # slab proposal §9: a lifetime shared by one slab per element type its
+      # `new`s name — made by the checker (`slabArena`), reset together.
+      arenaSize*: int          ## `[size: N]`: a byte budget; 0 = unbounded
+      arenaSizeText*: string   ## `[size: N]` as written, when N names a const
+      arenaOwner*: string      ## the actor declaring it, "" for the module
     of dkFn:
       fnGenerics*: seq[string]
       fnGenericBounds*: seq[seq[Type]]   # parallel to fnGenerics; bounds[i] =
@@ -841,6 +993,9 @@ type
                             # stays a string. A seq, not a Table: it holds one
                             # or two entries and rides the msgpack AST cache.
       isInline*: bool   # `fn inline name(...)` — codegen hint ({.inline.} / [Inline])
+      isOnHandler*: bool # spelled `on name(...)`: in an actor, a MESSAGE
+                         # handler; a `fn` there is a member the actor's own
+                         # code calls (A24). Both parse to dkFn.
       fnErrorTypes*: seq[string]  # [error: FsError | NetError] — declared error enums
     of dkMixin, dkExtern, dkPending:
       mixinMembers*: seq[Decl]

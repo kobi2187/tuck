@@ -22,11 +22,66 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (3)
+## A. Open bugs (14)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
+
+**A39 — a recursive sum type's boxes are never freed on Odin.** Each edge of
+`type Expr: | Add({left: Expr, right: Expr}) ...` is a one-element Seq
+(lowering_recursive), and the ownership pass follows the Seq slots of
+records; a sum value is neither, so no box is ever deleted. Every tree built
+leaks all its boxes: 200 000 small trees peak at 111 MB on Odin, 10 MB on
+Nim and D. Freeing a value's own boxes alone would be wrong two ways — a
+child is a SHALLOW copy shared by every parent that took it (`sum` sits in
+both `whole` and `neg` in example 44), and a tree returned from a fn is
+reachable only through its root. The fix is deep ownership, which Nim and D
+already have: a copy of a value used again is a deep copy, a last use a
+move, and a drop proc frees a tree recursively. Found 2026-10-05 by
+`TUCK_TRACK` on example 44. Test: `known_bugs`, "A39: …". Waits on the
+ownership-rules proposal (`thoughts/shared/plans/2026-10-05-ownership-rules-
+proposal.md`), where it falls out of the type-derived glue (rule G) rather
+than becoming a fix outside the model.
+
+**A41–A45 — (Odin) owned values the tree never drops.** Found 2026-10-05 by
+rule V, the ownership checker, reading today's Odin tree
+(`compiler/ownership_check.nim`, `TUCK_DEBUG_OWN=verify`). Every one is
+confirmed at run time by `TUCK_TRACK`. Over the corpus they are 11 places
+and 25 temporaries, all in the stdlib modules' own code and the two bench
+apps; the stdlib's Set, List, Vec and Array checks leak under tracking.
+Rule D drops every owned place and temporary by construction. So they are
+left for the switch to it (proposal §8 step 4.1) rather than patched one by
+one in a pass that retires. Tests: `known_bugs`, "A41: …" to "A45: …", each
+a tracked Odin run that must still give the program's answer.
+- **A41** a record field overwritten in place (`b.items = [2, 3]`) leaks
+  what it replaced.
+- **A42** a local handed over at its last use has no scope-end drop, so
+  every return before that use leaks it.
+- **A43** a record local rebound through a threading fn
+  (`b = {b: b} add`) is never freed.
+- **A44** a returned local gets no drop, and so neither do its overwrites:
+  `out = {r: r, into: out} encode` leaks one buffer per iteration
+  (`toUtf16`, one per rune).
+- **A45** an owning temporary is never freed: a list literal a `for`
+  iterates, a call's result handed to a parameter that only reads it, or a
+  call's result copied at a binding (the original). `str` temporaries are
+  named and freed by `lowering_strtemps`; nothing does it for a Seq.
+
+**A27–A37 — constructs that do not cross a module boundary (R11 scan,
+2026-09-28).** A25, A26, A28, A30, A31, A33, A35 and A36 are fixed; their pins are
+`bugFixed` in `cross_module`. Ruled: importing anything should work as well as the same
+module. Each construct was built declared in `lib` and used from the
+importer on Nim, Odin and D, against a one-module control that passes; these
+failed. Tests: `cross_module`, each named "R11: …".
+- **A27** an object in the importer cannot `satisfies` an imported interface.
+- **A29** `+ Mixin` from another module: `Self` is not bound (R11's origin).
+- **A32** an imported actor's fields and handlers are invisible to the
+  importer ("no field 'total' on type Acc", #73). Distinct from A18, which is
+  an imported actor never STARTED on Odin/D.
+- **A34** (Odin, D) a group bound whose provider is in another module — the
+  bounded fn's module cannot name it. A14's sibling.
+- **A37** (Odin, D) an imported registry's `raise` is unqualified.
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism
@@ -73,9 +128,10 @@ though TK-PA08's own text promised "only inside brackets") was RULED on
 2026-09-27 rather than fixed: the compiler was right. A name that is read
 bare can land in brackets, where an attribute word reads as an attribute
 (`xs[stack]` dropped its index when the words were let through). Attribute
-words are reserved words; a FIELD may still use one, since it is only read
-through `.`. TK-PA08's text now says so. Test: `known_bugs`, "an attribute
-word is refused as a fn name" and "...and as a parameter name".
+words are reserved words, fields included since 2026-09-28 (a field was the
+one exception for a day). TK-PA08's text now says so. Test: `known_bugs`,
+"an attribute word is refused as a fn name", "...and as a parameter name"
+and "...as a field name too".
 
 A2 (a fn with no declared return type accepted `return x`, and `tuck c`
 wrote `proc tuck_f*(x: int): void = return x`, which nim refuses) was fixed
@@ -211,23 +267,6 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   This is the sharp form of §F's "gate lists are the real coverage": a
   feature can be listed, emitted, and entirely unexercised.
 
-- **`arena` parses and does nothing** (spec §7.3, now marked "not
-  implemented" there). There is no `dkArena` kind and no backend support:
-  `parseArenaDecl` reads the body and discards it, returning a `type` of the
-  arena's name with an empty record body. A file using an arena therefore
-  checked clean while allocating nothing and resetting nothing, and its block
-  is absent from the tree. Since 2026-09-27 it no longer checks clean: every
-  arena gets a TK-ME02 WARNING saying its body is discarded (a warning, so the
-  specimen below still compiles). `examples/13-arena-mem.tuck` is a syntax specimen
-  (no `fn main`), so the corpus is not claiming otherwise — but nothing
-  before this said so out loud. Found by `tuck validate`, which is what that
-  tool is for.
-  Its siblings are in three different states. §7.2 `pool` WORKS — verified
-  behaviourally: `count: 2` hands out two, reports absence on the third, and
-  recycles after a release, identically on all three backends. §8.1
-  `register` now works on all three (fixed 2026-09-12: the Nim backend's
-  `registerMMIO` macro was dropped for ordinary emitted code, matching Odin
-  and D).
 - **Three token kinds are dead.** `tkArena`, `tkPool` and `tkRegister` are
   declared in `TokenKind` and referenced nowhere else — the lexer emits none
   of them, so `arena`/`pool`/`register` (and `extern`, `errors`, `resource`)
@@ -247,13 +286,239 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **A46 — a list literal could not be iterated on Odin.** `for r in [1, 2,
+  3]:` built on Nim and D. On Odin, `for r in [dynamic]int{1, 2, 3} {` was
+  a syntax error: in a `for` header Odin, like Go, reads a compound
+  literal's `{` as the loop body's start. An iterable holding a literal is
+  parenthesized now (`codegen_odin.genFor`). Found writing A45's pin. Fixed
+  2026-10-05. `known_bugs`, "A46: …".
+
+- **`TUCK_TRACK` did not track a program that never calls the runtime.**
+  The Odin entry point installed the tracker only where the runtime was
+  imported, on the reasoning that without it there is nothing to track. But
+  a program allocates without it (`[dynamic]` literals, `append`), and A41's
+  program leaked while its tracked build exited clean. A program that
+  allocates now imports the runtime and is tracked. Fixed 2026-10-05.
+  `known_bugs`, "TUCK_TRACK reaches a program that allocates…".
+
+- **Odin leaked one runtime allocation per task call and per `waitUntil`,
+  and `TUCK_TRACK` flagged every actor program.** Once tracking covered every
+  program that imports the runtime (`dd3211e`), a sweep of every runnable
+  example and bench app found leaks in most of them, and its report now names
+  each site. Two were real and grew with use: a task's result slot
+  (`newAsyncResult`), which `awaitResult` now frees, and a `waitUntil`
+  waiter, which the actor now frees once it has woken it. The rest lived as
+  long as the program by design: the scheduler's queue, the event loop's
+  table, an actor's slot and thread (the runtime's, from
+  `tuckRuntimeAllocator`, untracked), and an actor's heap fields (handed back
+  at exit under tracking, like the slabs). The sweep now reports only example
+  44, which is A39. Fixed 2026-10-05. `odin_backend` now builds every
+  run-gated example a second time with tracking and requires the same answer,
+  so a new leak or bad free fails the suite instead of waiting for a sweep.
+
+- **A threading fn's result was copied again at its binding, and the
+  original dropped (Odin).** A fn that threads its first parameter, called
+  with an argument still read later, reaches its WRAPPER, which copies that
+  argument; the result is that private copy. Two things made provenance call
+  it aliased: the self-append `out = {items: out, value: v} push` joined the
+  call's own result into `out`, losing `out`'s link to the parameter; and
+  joining "fresh" with "parameter `ns`" forgot `ns`. So the caller's binding
+  copied the copy and dropped it — one buffer per call (483 MB against 10
+  MB, `known_bugs`). A self-append now leaves the name's provenance alone
+  (`ast_query.selfAppendValue`, moved down from codegen so both can ask),
+  fresh joined with a parameter slot keeps the slot, and once the moved
+  argument stamps are final, a call whose argument is not moved is known to
+  reach the wrapper. Found 2026-10-05 by `TUCK_TRACK`, the first time it
+  tracked such a program (`dd3211e`). A sweep of every runnable example and
+  bench app under tracking reads the same before and after.
+
+- **No parameter read through a field was `sink` on Nim**, so every
+  record-threading container copied itself on each call: benches/containers
+  `rec_thread`, `two_fields`, `generic_box` and `str_builder` were quadratic.
+  The SSA mirror stamps a final read on the path (`b.items`). The pass it
+  replaced also stamped the root `b`, and `sink` (`codegen_common.keptAt`)
+  read only that. It reads the path's stamp now. A path that reads a
+  scalar (`b.items.len`) keeps nothing, so a reader still borrows. Fixed
+  2026-10-04. `ssa`, "the threader keeps its sink, read through a field";
+  `containers_bench` holds the whole bench to its ledger.
+
+- **Odin freed the `Seq` a generic record was returned with.** `return
+  {items: xs} Box` in a `-> Box[T]` fn emitted `defer delete(xs)`, a segfault
+  (benches/containers `generic_box`). `seqFieldNames` answered nothing for a
+  generic application, so the escape analysis saw no buffer leave. Fixed
+  2026-10-04 (`1e79b46`). `known_bugs`, "a generic record returned with a
+  moved Seq keeps it".
+
+- **A slab of a generic record could not `new`, and a generic record's
+  `T?` field took no plain value.** `slab Ints = Link[int, IntsRef]` read
+  the element as having no fields, so `Ints.new {value: 1, next: none}` was
+  refused, and `set`'s record literal could not find its type arguments;
+  they come from the slab's declared element now. Beside it, on every
+  backend and with no slab: a generic construction never noted a plain `T`
+  given to a `T?` field (`{v: 1, n: two} Box`), so it was emitted bare and
+  built nowhere; the wrap is judged once every type argument is known. And
+  `none` as the only thing naming R bound R to itself, typing the
+  construction `Link[int, R]`; it is "cannot infer generic parameter 'R'"
+  now. Found 2026-10-04 probing generic code over slabs; fixed the same day.
+  `slabs`, "a slab of a generic record…"; `known_bugs`, two guards.
+
+- **A plain `T` given to a binding stated as `T?` built on no backend.**
+  `let x: int? = five` and `var h: NodesRef? = a` were emitted bare, and
+  each host refused a plain value where its result carrier was expected.
+  R8's `lowering_optional` wrapped a store into a `?T` field, but took the
+  place's type from the target, which a new binding's name does not carry;
+  it reads the stated type first now. Found 2026-10-04 probing generic code
+  over slabs; fixed the same day. `known_bugs`, "a plain T into a stated
+  `T?` binding is wrapped".
+
+- **#98 — `for x.ok:` did not narrow x in the loop body**, so a chain of `?`
+  links could only be walked by recursion. It narrows now
+  (`typecheck.synthWhile`). Closing it first closed a soundness hole beside
+  it: a narrowed name given a `?T` again was still read as present (`if
+  x.ok: x = none; x.value` checked clean); such an assignment ends the
+  narrowing now (`synthReassign`). Fixed 2026-10-04. `known_bugs`.
+
+- **#97 — a record literal where a named record is wanted built on no
+  backend** — the form TK-PA13's message calls fine. `{b: {tag: 9}} take`
+  crashed the compiler: the exploded `take({tag: 9})` looked unexploded and
+  was exploded again (`exkCall.argsExploded` now says it was). With more
+  fields, and inside a construction (`{point: {x: 1, y: 2}} Thing`), every
+  backend emitted an anonymous record its host would not pass as the named
+  type; lowering constructs the named type now (`constructRecordArgs`,
+  `constructRecordFields`, to any depth). Fixed 2026-10-04. `known_bugs`.
+
+- **A40 — (Odin) a Seq pushed as an element of another was freed while
+  held.** `out = {items: out, value: piece} push` in a loop, then
+  `defer delete(piece)` at the end of the iteration: `out` held freed
+  buffers, and Odin returned garbage where Nim and D returned 7. The binding
+  was exempted from the escape question as "taking nothing of its
+  arguments", judged on the result's own buffer, which is fresh, while its
+  elements (below the pass's slot granularity) held `piece`.
+  `analysis_ownership.takesNothingOf` answers no for a Seq whose elements
+  can hold a tracked slot (a Seq, or a record carrying one). The inner Seqs leak on Odin now instead (A39's class, waiting
+  on deep drops). Found by the ownership rules' shadow elaborator. Fixed
+  2026-10-05. `known_bugs`, "A40: …".
+
+- **A38 — (Odin) a local's Seq field handed to a moved twin was freed
+  twice.** `let r = {ns: l.nodes, d: ..} grow` inside `grow_moved` hands
+  `l.nodes` to the twin, which keeps the buffer and returns it in `r.nodes`;
+  the caller still freed `l.nodes`. The escape question treated a moved bare
+  name as gone but not a moved field; `ownership_escape.escapes` does both
+  now, slot by slot. Fixed 2026-10-04. `known_bugs`, "a Seq field handed to
+  a moved twin…".
+
+- **#96 — (Odin) a Seq that moved was still freed.** Two shapes, one cause
+  each. A local moved into a record at its last read (`let nb = {items: x2}
+  Bag`) was freed as x2 and as nb.items — the ownership pass read the copy
+  decision's "left uncopied, the local is dead" as "nothing taken"
+  (`analysis_ownership.takesNothingOf`). And a fn ending in the Seq it
+  returns deleted it after the return value was taken, because the tail
+  became a `return` only at emit time, after ownership had decided; lowering
+  makes it now (`lowering.lowerTailReturns`). Fixed 2026-10-04.
+  `known_bugs`, "a Seq moved into a record…" and "…tail value…".
+
+- **`arena` parsed and did nothing.** It parsed into a `type` of the arena's
+  name with an empty record and discarded its body; since 2026-09-27 a TK-ME02
+  warning said so. Built 2026-10-04 over slabs (slab proposal §9, phase 4):
+  `arena X [size: N]` is a declaration and a lifetime (the block form is
+  TK-PA18, TK-ME02 is retired), `X.new {value: v}` hands out a `XRef[T]`, and
+  `X.reset` ends everything at once. `examples/13-arena-mem.tuck` is a program
+  now, run-gated at 55 on all three; `tests/suites/slabs.nim`.
+
+- **A36 — an imported pool, on Odin and D.** A pool is not injected into an
+  importer, and Odin and D named it bare — `&tuckˑpoolˑCells`, which only
+  `lib` declares — so the importer did not even import `lib`. Each pool
+  operation now qualifies a pool another module declares
+  (`ast_query.declOrigin`), and D maps an imported pool's handle type to
+  `rt.PoolHandle` as it does its own (`resolution.isImportedPoolHandle`).
+  Fixed 2026-09-28. `cross_module`, "R11: …".
+
+- **A30 — `match r.err` on an imported fallible fn.** A binding remembered
+  its producer's `[error: E]` enums only when the producer was declared in
+  the same module, so an imported fn's arms were never qualified and printed
+  as defaults ("multiple default clauses" on Nim, `else` on Odin and D). The
+  error enums now ride in the signature (`FnSig.errTypes`, and
+  `SigInfo.errTypes` for one served from the index), and `rememberErrTypes`
+  falls back to it. Fixed 2026-09-28. `cross_module`, "R11: …".
+
+- **A33, A35 — an imported const and an imported saturating type.** A
+  const is not injected (an importer's own const may shadow it), so Nim now
+  exports it (`const Cap* = …`) and Odin and D qualify each reference to it,
+  as a value and as an Array size (`ast_query.constOrigin`). An imported
+  saturating type's constructor is qualified on Odin and D. Fixed
+  2026-09-28. `cross_module`, "R11: …".
+
+- **A26, A28, A31 — imported interfaces and invariant types.** A call
+  through an imported interface value resolved to one satisfier's member,
+  a type test on one was refused, and an imported invariant type crashed
+  the compiler ("id … is held by two nodes"). Interfaces are now injected
+  like types and objects; every injected copy is a deep copy under fresh
+  ids (`ast_ops.freshIds` — a copy that SHARED its original's nodes became
+  two objects under one id once each backend took its own copy); a copied
+  object skips conformance, which its own module checked; and Odin and D
+  qualify an imported interface's variant, tag enum and `__validated_*`
+  proc (`importPrefix`, `validatorName`). Fixed 2026-09-28. `cross_module`.
+
+- **A25 — an imported `object` could not be constructed**, so none of its
+  members could be called: `injectImportedTypes` copied only `type`s into an
+  importer. An object's copy is now its shape (fields, `satisfies`, members
+  as body-less signatures); Odin and D qualify its type and member procs,
+  and a changing member keeps its by-reference `self` on the importer's
+  side. Fixed 2026-09-28. `cross_module`, "R11: …".
+
+- **A24 — an actor member `fn` was emitted by no backend.** `fn` and `on`
+  both parsed to a dkFn, and every backend made each one a MESSAGE (a
+  `handleMsg` arm, a `sendAddIt_…` helper), while a direct call printed a
+  bare `addIt(n)` that named nothing. `on` now marks a handler; a `fn` is
+  a member emitted as a proc taking the actor's state as `self`, and a call
+  passes `self` on. Also refused, where all of it used to check clean and
+  build on no backend: an `on` handler called like a fn (TK-AC03), a
+  member called from outside its actor (TK-AC04), a `send` naming a member
+  (TK-AC05). Found and fixed 2026-09-28. `known_bugs`.
+
+- **`benches/transpile/dispatch.tuck` crashed every `tuck c`** in
+  assertSsaWellFormed ("the mirror misses 1 final use"). A variant
+  construction bound inside an `if` (`let c = Shape.Circle {r: i}`) was
+  enough. The liveness oracle the graph is checked against skipped a
+  `.name {args}`'s argument, missed the read of `i`, and proved the earlier
+  `if i == 0` read final; the graph was right. Unseen since 2026-09-22
+  because the ssa suite's corpus left out `benches/transpile`. `ssa`,
+  "a variant construction's argument is a read, on every backend".
+
+- **A `T?` actor field read as present before anything wrote it, and a
+  plain `T` could not be stored into one.** The result carrier's zero status
+  is Ok, so `last: int?` started present holding 0, on all three backends;
+  `last = v` stored a bare `int` where the carrier was expected and failed
+  to build on all three. Found 2026-09-28 making R8's `T?` escape usable;
+  `lowering_optional` emits an absent start and a wrapped store.
+  `known_bugs`, "a `T?` actor field starts absent…".
+
+- **A23 — one object as a changing member's `self` and as its argument
+  keeps value semantics.** `k.absorb {other: k}` (or `k ..absorb {other:
+  k}`): `self` is passed by reference, and Nim and Odin passed the large
+  by-value `other` as a hidden pointer to the same `k`, so it read the
+  change (101 instead of 1). Such an argument is now copied into a `let`
+  before the statement (`lowering_alias`, 2026-09-28); a statement that
+  also changes that variable earlier is refused rather than guessed at.
+  `known_bugs`, `value_semantics`.
+
+- **Three member-call gaps, found 2026-09-28 working through "a member that
+  changes its object on a parameter".** (1) A member with no `->` called as
+  `d.turn {step: 2}`, or through an interface value as `t.bump`, was
+  "not declared" or resolved to the wrong object's member: the call's type
+  was nil where R5 says `void`. (2) `var t: Tally = Counter{...}` was
+  refused ("expects Tally but got Counter"). (3) A changing member called
+  through a `var` interface value changed a copy and the change was lost;
+  the dispatch now stores it back. `tests/suites/value_semantics.nim`,
+  `tests/suites/typecheck.nim`.
+
 - **An object member called on a fn parameter builds on Nim and Odin.**
   Every backend passes a member's `self` mutably (Nim `var T`, Odin `^T`,
   D `ref T`); a Nim parameter is immutable and an Odin one unaddressable, so
-  `fn rate({a: Flac}) = a.sampleRate` built only on D. Such a parameter is
-  now shadowed by a mutable copy at the top of the body — the value a D
-  parameter already is (2026-09-27). `known_bugs` "a member called on a fn
-  parameter builds, on all three".
+  `fn rate({a: Flac}) = a.sampleRate` built only on D (fixed 2026-09-27).
+  Since 2026-09-28 a member that only reads takes `self` by value, and one
+  that changes its object may not be called on a parameter. `known_bugs` "a
+  member called on a fn parameter builds, on all three".
 
 - **A22 — on Odin, an interface call whose payload holds a variable
   builds.** Odin's dispatch is an immediately-called proc literal, which

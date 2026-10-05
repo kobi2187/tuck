@@ -1,5 +1,5 @@
 # decision table dispatching over a sum-type-derived priority + a bool
-import io
+import console
 
 type Priority:
   | High({})

@@ -1,5 +1,5 @@
 # Loop over a range and print each value
-import io
+import console
 
 fn main() -> void [io]:
   for i in 1 .. 5:

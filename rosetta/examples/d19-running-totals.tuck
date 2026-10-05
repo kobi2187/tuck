@@ -1,5 +1,5 @@
 # Running totals (prefix sums) of a fixed-size list
-import io
+import console
 import seq
 
 fn main() -> void [io]:

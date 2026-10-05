@@ -1,5 +1,5 @@
 # Leap year check
-import io
+import console
 
 fn main() -> void [io]:
   let year = 2024

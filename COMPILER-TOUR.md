@@ -226,6 +226,17 @@ This is a recurring theme in compilers — passes share state, and the ordering
 constraints between them are real but invisible. When you find one, write it
 down. (In this codebase it's written on `checkOrDie` in `tuck.nim`.)
 
+Beside it, under the same constraint, runs **slab ownership**
+(`compiler/slab_owner.nim`): a slab belongs to main's thread or to the actor
+that declares it, and this pass walks the whole program's call graph to refuse
+an owner reaching another's slab (TK-AC08) or a reference crossing an actor
+boundary (TK-AC09). It reads what the checker stamped — which field is a slab
+operation, which access goes through a reference, which declaration a call
+names — rather than re-deriving any of it. Just before both, the driver puts
+the slabs the checker MADE for arenas (one per element type) into their
+arena's module (`resolution.placeArenaSlabs`), so everything after typecheck
+finds them as declared slabs.
+
 ---
 
 ## Stage 6 — Mangling: making names safe
@@ -287,7 +298,16 @@ codegen has fewer shapes to handle. Two concrete jobs in this compiler:
   and rewrites the call into positional arguments, so codegen just emits
   arguments in order.
 
-Notice the shape of both: something friendly at the source level becomes
+- **Slab references become checked cell accesses** (`lowering_slab.nim`).
+  `r.data` through a `NodesRef` becomes a field of `tuckSlabCell(Nodes, r)` —
+  the runtime's checked lookup — for a read and a write alike, so every
+  backend emits it with its ordinary field code. A slab or arena operation
+  is rebuilt here from this backend's own copy of its operands: the checker's
+  op node lives in the shared side-table, and a backend pass that rewrote the
+  copy (wrapping `prev: a` into a `?`) never reached it — codegen printed the
+  unwrapped original until the op joined the tree.
+
+Notice the shape of all three: something friendly at the source level becomes
 something boring before it reaches the emitter. That's the whole idea.
 
 Every backend lowers its **own deep copy** of the tree, because lowering
@@ -398,6 +418,23 @@ call complete after lowering (`backend_prepare` step 8), because the backends
 used to spell a missing argument three different ways. And each backend used
 to decide "is this name a field?" by looking it up in a set of field names,
 which cannot see a param that shadows one.
+
+Ownership goes one step further: its decisions are not handed over as
+tables at all, but written into the tree as nodes the emitters print
+(`ownership_nodes`, the last step of `backend_prepare`). An append grown in
+place is `exkAppend`, a copy where the target's assignment would alias is
+`exkCopy`, and a free is `exkDrop` (in a `defer` after a declaration, or at
+the top of a moved twin) or an assignment's `dropsOld`. No emitter imports
+the copy marks or `analysis_ownership`. `tuck dump --stage:lowering --odin`
+shows every ownership decision as tree, and a test can assert on it. That
+tree is also what the ownership rules are checked against
+(`thoughts/shared/plans/2026-10-05-ownership-rules-proposal.md`):
+- the elaborator (`ownership_elab`) computes the same decisions from the
+  rules, and `ownership_shadow` prints where they differ;
+- rule V (`ownership_check`) walks the tree and confirms that every owned
+  value is moved or dropped exactly once on every path, and that nothing is
+  read after it moved. It reads only the nodes, so it checks whichever pass
+  wrote them.
 
 ---
 

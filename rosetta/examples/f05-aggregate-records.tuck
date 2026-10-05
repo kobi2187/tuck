@@ -1,5 +1,5 @@
 # Aggregate over records: sum/average/count of amount
-import io
+import console
 import seq
 
 type Sale:

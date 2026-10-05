@@ -1,5 +1,5 @@
 # Repository: update a record in place by id (add/find/update/remove family)
-import io
+import console
 import seq
 
 type Account:

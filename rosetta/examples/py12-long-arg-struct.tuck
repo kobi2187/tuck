@@ -1,5 +1,5 @@
 # long argument structs, many named fields, nested if/else
-import io
+import console
 
 type Config:
   width: int

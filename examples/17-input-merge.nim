@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 
 proc tuckˑfnˑdescribe*(title: sink string, volume: int): string
 proc tuckˑfnˑheader*(episode: tuckˑtypeˑEpisode, n: int): string

@@ -1,5 +1,5 @@
 # Smallest and largest element of a list
-import io
+import console
 import seq
 
 pending:

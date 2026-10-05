@@ -1,0 +1,25 @@
+# One tree, built to depth DEPTH, evaluated ROUNDS times. See run.sh.
+type Expr:
+  | Num({value: int})
+  | Add({left: Expr, right: Expr})
+
+fn build({d: int}) -> Expr:
+  if d == 0:
+    return Expr.Num {value: 1}
+  let l = {d: d - 1} build
+  let r = {d: d - 1} build
+  return Expr.Add {left: l, right: r}
+
+fn eval({e: Expr}) -> int:
+  match e:
+    Num: return e.value
+    Add: return {e: e.left} eval + {e: e.right} eval
+
+fn main() -> int:
+  let t = {d: DEPTH} build
+  var total = 0
+  for i in 1 .. ROUNDS:
+    total = total + {e: t} eval
+  if total != ROUNDS * LEAVES:
+    return 1
+  return 0

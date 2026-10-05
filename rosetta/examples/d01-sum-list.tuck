@@ -1,5 +1,5 @@
 # Sum a fixed-size list of ints
-import io
+import console
 import seq
 
 pending:

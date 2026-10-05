@@ -1,5 +1,5 @@
 # alias() field rename, merge flatten, input — reshaping data
-import io
+import console
 
 type Raw:
   userId: int

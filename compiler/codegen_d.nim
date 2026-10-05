@@ -29,7 +29,6 @@ import lowering                # getFieldsForType
 # appears they should move to a backend-neutral module.
 from codegen_odin_util import enumTagOwner
 from mangle import mangleName
-from lowering_seqcopy import needsDup, recordDupFields
 import ./codegen_d_ctx
 
 # Type emission, the ctx type, and dPrims (the D primitive-name table) now
@@ -91,7 +90,6 @@ proc genDLit(e: Expr): string =
       e.litValue & "UL"
     else: e.litValue & "L"
   of lkFloat, lkBool: e.litValue
-  of lkUnit: ""
 
 const dNarrowNames = ["i8", "i16", "i32", "u8", "u16", "u32", "u64", "f32"]
   ## The Tuck numeric types narrower than (or unsigned against) D's `long`
@@ -170,15 +168,15 @@ proc genDRecordCtor(ctx: var DCodegenCtx, e: Expr): string =
   # instantiation: `Pair!(string, long)(...)`. The arguments come from the
   # type the checker stamped on this very call — D cannot infer them from a
   # named-argument literal.
-  var name = e.callee.name
-  if ctx.declaredGenericD(name):
+  var name = ctx.importedTypeQualifierD(e.callee.name)
+  if ctx.declaredGenericD(e.callee.name):
     let t = ctx.res.typeFor(e)
     if t != nil and t.kind == tkApp:
       let inst = ctx.dDeclType(t)
       if inst != "": name = inst
   let ctor = name & "(" & parts.join(", ") & ")"
   if ctx.index.hasInvariants(e.callee.name):
-    return "__validated_" & e.callee.name & "(" & ctor & ")"
+    return ctx.validatorNameD(e.callee.name) & "(" & ctor & ")"
   ctor
 
 proc renderShape(ctx: var DCodegenCtx, s: RecordShape): string =
@@ -203,7 +201,7 @@ proc renderShape(ctx: var DCodegenCtx, s: RecordShape): string =
     return ctx.recStructNameD(s.declFields) & "(" & parts.join(", ") & ")"
   let ctor = s.typeName & "(" & parts.join(", ") & ")"
   # a rebuilt record is a production site too: its invariants must hold
-  if s.invariantsOwed: return "__validated_" & s.typeName & "(" & ctor & ")"
+  if s.invariantsOwed: return ctx.validatorNameD(s.typeName) & "(" & ctor & ")"
   ctor
 
 
@@ -366,12 +364,30 @@ proc genDActorWaitOn(ctx: var DCodegenCtx, e: Expr): string =
   "rt.tuckWaitOn(" & actorSlotName(e.args[0].refName) & ", " &
     ctx.genDExpr(e.args[1]) & ")"
 
+proc dMemberCallee(ctx: DCodegenCtx, e: Expr): string =
+  ## `memberCallee`, qualified with its module when the receiver's object is
+  ## imported (R11, A25); "" when `e` is not a member call.
+  let member = memberCallee(ctx.res, ctx.module, e)
+  if member == "": return ""
+  let origin = memberCalleeModule(ctx.res, ctx.module, e)
+  (if origin != "": dAlias(origin) & "." else: "") & member
+
+proc genDActorCall(ctx: var DCodegenCtx, e: Expr): string =
+  ## The two actor-shaped calls, or "": `Actor.waitOn`, and a call to the
+  ## actor's own member fn (A24), where `self` is already the `ref` the
+  ## dispatch holds.
+  let waitOn = ctx.genDActorWaitOn(e)
+  if waitOn != "": return waitOn
+  let actorMember = actorMemberCallee(ctx.res, e)
+  if actorMember != "":
+    return actorMember & "(" & (@["self"] & ctx.genDCallArgs(e)).join(", ") & ")"
+
 proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   ## A call in D, trying the special shapes first: `waitOn`, a sum variant, a
   ## primitive conversion, a task spawn, a member or combinator call. What is
   ## left is a plain call with its arguments in parameter order.
-  let waitOn = ctx.genDActorWaitOn(e)
-  if waitOn != "": return waitOn
+  let actorCall = ctx.genDActorCall(e)
+  if actorCall != "": return actorCall
   let variant = ctx.asDSumVariantCall(e)
   if variant != "": return variant
   var calleeStr = ctx.resolveDCallee(e)
@@ -388,7 +404,7 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
     let args = ctx.genDCallArgs(e)
     return "rt.tuckSpawn({ cast(void) " & calleeStr &
            "(" & args.join(", ") & "); })"
-  let member = memberCallee(ctx.res, ctx.module, e)
+  let member = ctx.dMemberCallee(e)
   if member != "": calleeStr = member
   let combinator = ctx.asCombinatorCallD(e, calleeStr)
   if combinator != "": return combinator
@@ -398,7 +414,8 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
     return "writeln(" & args.join(", ") & ")"
   let satT = ctx.index.saturatingType(calleeStr)
   if satT != nil and args.len == 1:
-    return ctx.genDSaturatingCtor(satT, calleeStr, args[0])
+    # An imported saturating type is named through its module (R11, A35).
+    return ctx.genDSaturatingCtor(satT, ctx.importedTypeQualifierD(calleeStr), args[0])
   let rt = genDRtCall(calleeStr, args)
   if rt != "": return rt
   # A type param mentioned by no parameter cannot be deduced from the call, so
@@ -472,7 +489,7 @@ proc genDReturn(ctx: var DCodegenCtx, e: Expr): string =
   # already validated at the construction site, on this same value.
   if rt != nil and rt.kind == tkNamed and ctx.index.hasInvariants(rt.name) and
      not validatesItself(ctx.module, e.returnVal):
-    return "return __validated_" & rt.name & "(" & v & ")"
+    return "return " & ctx.validatorNameD(rt.name) & "(" & v & ")"
   "return " & v
 
 proc indD(ctx: DCodegenCtx): string =
@@ -531,15 +548,47 @@ proc genDInterfaceWrap(ctx: var DCodegenCtx, e: Expr,
   ## A variable, or a call — an interface dispatch arm whose member returns
   ## its own object type where the call's type is the interface.
   let (ifaceName, objName) = resolveWrapNames(ctx.module, w.iface, w.objName)
-  let inner = if e.kind == exkCall: ctx.genDCall(e) else: e.name
-  ifaceName & "(" & ifaceName & "Tag." & ifaceName & "_is_" & objName &
-    ", " & objName & "Val: " & inner & ")"
+  let inner = case e.kind
+              of exkCall: ctx.genDCall(e)
+              of exkIfacePayload:
+                ctx.genDExpr(e.tagSubject) & "." & e.tagObject & "Val"
+              else: e.name
+  let pre = ctx.importPrefixD(ifaceName)
+  pre & ifaceName & "(" & pre & ifaceName & "Tag." & ifaceName & "_is_" &
+    objName & ", " & objName & "Val: " & inner & ")"
 
 proc genDPoolOp(ctx: var DCodegenCtx, e: Expr): string =
   ## A pool operation: `codegen_common.poolOpProc`, the pool by `ref`.
-  var args = @[e.poolRef.refName]
+  let origin = declOrigin(ctx.module, ctx.realModules, e.poolRef.refName, {dkPool})
+  let pre = if origin == "": "" else: dAlias(origin) & "."   # R11, A36
+  var args = @[pre & e.poolRef.refName]
   for a in e.poolOperands: args.add ctx.genDExpr(a)
   "rt." & poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
+
+proc dSlab(ctx: var DCodegenCtx, name: string): string =
+  ## A slab, qualified by its module's alias when another module declares it
+  ## (R11, A36 — as a pool is). The runtime takes it by `ref`.
+  let origin = declOrigin(ctx.module, ctx.realModules, name, {dkSlab})
+  (if origin == "": "" else: dAlias(origin) & ".") & name
+
+proc dArena(ctx: var DCodegenCtx, name: string): string =
+  ## An arena, qualified by its module's alias when another module declares
+  ## it (R11, as a slab is).
+  let origin = declOrigin(ctx.module, ctx.realModules, name, {dkArena})
+  (if origin == "": "" else: dAlias(origin) & ".") & name
+
+proc genDSlabOp(ctx: var DCodegenCtx, e: Expr): string =
+  ## A slab operation (slab proposal, section 3); D overloads `tuckSlabNew`
+  ## on the storage, a fixed slab's answering `?Ref`.
+  let arg = if e.slabArg != nil: ctx.genDExpr(e.slabArg) else: ""
+  let value = if e.slabValue != nil: ctx.genDExpr(e.slabValue) else: ""
+  let slab = declAnywhere(ctx.module, ctx.realModules, e.slabRef.refName, dkSlab)
+  let arena = arenaOfSlab(ctx.module, ctx.realModules, slab)
+  if e.slabOp == soNew and arena != nil and arena.arenaSize > 0:
+    # An arena's budget pays for the cell first (tuckArenaNew).
+    return "rt.tuckArenaNew(" & ctx.dSlab(e.slabRef.refName) & ", " &
+           ctx.dArena(arena.name) & ", " & $slab.slabCost & ", " & value & ")"
+  slabOpCall(e.slabOp, ctx.dSlab(e.slabRef.refName), arg, value, "rt.")
 
 proc genDIfaceCall(ctx: var DCodegenCtx, e: Expr): string =
   ## A call through an interface value, lowered (lowering_iface): switch on
@@ -548,15 +597,31 @@ proc genDIfaceCall(ctx: var DCodegenCtx, e: Expr): string =
   ## return type is inferred. A plain `switch` rather than `final switch`:
   ## the satisfier set can be empty and an unreachable default is cheap.
   let recv = ctx.genDExpr(e.dispatchRecv)
+  let pre = ctx.importPrefixD(e.dispatchIface)   # an imported interface (R11)
+  let t = ctx.res.typeFor(e)
+  let isVoid = t == nil or (t.kind == tkNamed and t.name == "void")
+  # An arm that changes the object stores it back into the value, so the
+  # lambda takes the value by `ref` (the checker allows it on a `var`).
+  var writesBack = false
   var arms: seq[string]
   for arm in e.dispatchArms:
-    arms.add("        case " & e.dispatchIface & "Tag." & e.dispatchIface &
-             "_is_" & arm.satisfier & ":\n" &
-             "            auto " & arm.bindName & " = v." & arm.satisfier &
-             "Val;\n" &
-             "            return " & ctx.genDExpr(arm.call) & ";")
+    writesBack = writesBack or arm.writesBack
+    let payload = "v." & arm.satisfier & "Val"
+    let call = ctx.genDExpr(arm.call)
+    var body = "            auto " & arm.bindName & " = " & payload & ";\n"
+    if not arm.writesBack:
+      body.add("            return " & call & ";")
+    elif isVoid:
+      body.add("            " & call & ";\n            " & payload & " = " &
+               arm.bindName & ";\n            return;")
+    else:
+      body.add("            auto tuckResult = " & call & ";\n            " &
+               payload & " = " & arm.bindName & ";\n            return tuckResult;")
+    arms.add("        case " & pre & e.dispatchIface & "Tag." & e.dispatchIface &
+             "_is_" & arm.satisfier & ":\n" & body)
   if arms.len == 0: return ""
-  "((" & e.dispatchIface & " v) {\n    switch (v.tag) {\n" & arms.join("\n") &
+  "((" & (if writesBack: "ref " else: "") & pre & e.dispatchIface &
+    " v) {\n    switch (v.tag) {\n" & arms.join("\n") &
     "\n        default: assert(0, \"unreachable interface tag\");\n" &
     "    }\n})(" & recv & ")"
 
@@ -693,34 +758,41 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
   if e.name notin ctx.definedVars:
     let tag = ctx.qualifyEnumTag(e.name)
     if tag != "": return tag
+    let co = constOrigin(ctx.module, ctx.realModules, e.name)
+    if co != "": return dAlias(co) & "." & e.name   # R11, A33
   e.name
 
-proc dupIfSeq(ctx: var DCodegenCtx, valStr: string, e: Expr): string =
-  ## Wrap in `.dup` (a bare Seq), or reconstruct with per-field `.dup`s (a
-  ## record holding one or more Seq fields), if THIS BACKEND'S LOWERING
-  ## marked the node.
+proc genDCopy(ctx: var DCodegenCtx, e: Expr): string =
+  ## `.dup` (a bare Seq), or the record rebuilt with per-field `.dup`s (a
+  ## record holding one or more Seq fields): an `exkCopy` ownership_nodes
+  ## made from lowering_seqcopy's marks.
   ##
   ## The decision — a D slice aliases where a Tuck Seq copies, and a D
   ## struct's bitwise field-for-field copy carries that aliasing one level
-  ## down into any Seq-typed FIELD — is made in lowering_d, not here; this
-  ## reads the mark and prints. That split is the point of the seam: the
-  ## reasoning is inspectable and testable as a tree pass, and the emitter
-  ## stays a printer.
+  ## down into any Seq-typed FIELD — is made before emission, not here; this
+  ## prints the node. That split is the point of the seam: the reasoning is
+  ## inspectable and testable as a tree pass, and the emitter stays a
+  ## printer.
   # NO EXCEPTION for a read through a MOVED twin's parameter. There used to
   # be one ("the param belongs to this call, so no defensive copy"), and it
   # was a copy decision made here, invisible to the ownership pass reading
   # the copy marks: `var t = xs; t[0] = 99; return xs` returned 99, and on
   # Odin `t`'s free was a second free of `xs`. What is copied is decided in
   # lowering_seqcopy, once, and printed here.
-  if needsDup(ctx.res, e): return "(" & valStr & ").dup"
-  let fields = recordDupFields(ctx.res, e)
-  if fields.len == 0: return valStr
+  let valStr = ctx.genDExpr(e.copied)
+  case e.copyKind
+  of cpSeq: return "(" & valStr & ").dup"
+  of cpStatic:
+    raiseAssert "d: a static str is never copied to own — the collector " &
+                "frees, so prepare makes cpStatic for Odin only"
+  of cpFields: discard
   # A D struct has no `.dup` of its own (only a slice does), so the record
   # is rebuilt: take the value once into a temp (never re-evaluate `valStr`
   # — it may be a call), then `.dup` just the fields that need it.
   let tmp = ctx.freshName("tuckRecDup")
   var fixups = ""
-  for f in fields: fixups.add(tmp & "." & f & " = " & tmp & "." & f & ".dup; ")
+  for f in e.copyFields:
+    fixups.add(tmp & "." & f & " = " & tmp & "." & f & ".dup; ")
   "(() { auto " & tmp & " = " & valStr & "; " & fixups & "return " & tmp &
     "; })()"
 
@@ -751,7 +823,7 @@ proc ctorDeclType(ctx: var DCodegenCtx, val: Expr): string =
   if ctx.declaredGenericD(val.callee.name):
     let inst = ctx.dDeclType(ctx.res.typeFor(val))
     if inst != "": return inst
-  val.callee.name
+  ctx.importedTypeQualifierD(val.callee.name)
 
 proc declTypeForValue(ctx: var DCodegenCtx, target, val: Expr): string =
   ## The declared D type for `let x = <val>`, naming a foreign record shape
@@ -874,34 +946,32 @@ proc genDLocalDecl(ctx: var DCodegenCtx, e: Expr, valStr: string): string =
   ## an author's annotation is exactly the fact it wants.
   let stated = if e.declType != nil: ctx.dDeclType(e.declType) else: ""
   let declT = if stated != "": stated
-              else: ctx.declTypeForValue(e.target, e.assignVal)
+              else: ctx.declTypeForValue(e.target, copiedValue(e.assignVal))
   if declT == "":
     return dUnsupported("a declaration of '" & e.target.name &
                         "' whose type the checker did not settle")
   declT & " " & e.target.name & " = " & valStr
 
+proc genDAppend(ctx: var DCodegenCtx, e: Expr): string =
+  ## `xs += v` — an append, or a str concat, grown in place. ownership_nodes
+  ## made the decision; this prints it. D's `~=` on an array grows through
+  ## the GC's capacity, so it is amortised where `a ~ b` builds a whole new
+  ## array each time — an O(n) loop against an O(n^2) one.
+  ctx.movedAssignTarget(e.appendTarget) & " ~= " & ctx.genDExpr(e.appendValue)
+
 proc genDInPlaceAssign(ctx: var DCodegenCtx, e: Expr): string =
   ## An assignment that updates its target IN PLACE rather than rebinding
-  ## it, or "" when this is not one.
-  # An append assigned back to its own argument is an in-place append.
-  let appended = selfAppendValue(ctx.res, e)
-  if appended != nil:
-    return ctx.movedAssignTarget(e.target) & " ~= " & ctx.genDExpr(appended)
-  # `s = s + v` on a str is the same fact one type over. D's `~=` on an array
-  # grows through the GC's capacity, so it is amortised where `a ~ b` builds a
-  # whole new string each time — an O(n) loop against an O(n^2) one.
-  let concatenated = selfConcatValue(ctx.res, e)
-  if concatenated != nil:
-    return ctx.movedAssignTarget(e.target) & " ~= " & ctx.genDExpr(concatenated)
-  # Same fact one level up: a threaded-container call assigned back over its
-  # own argument may take it destructively, so it calls the MOVED twin — and
-  # the result needs no defensive dup either, since it IS the moved value.
+  ## it, or "" when this is not one. (An append grown in place is no longer
+  ## one of them: it reaches the emitter as `exkAppend`.)
+  # A threaded-container call assigned back over its own argument may take
+  # it destructively, so it calls the MOVED twin — and the result needs no
+  # defensive dup either, since it IS the moved value.
   ctx.genDMovedCall(e)
 
 proc genDRebind(ctx: var DCodegenCtx, e: Expr): string =
   ## The ordinary assignment: a field of the actor, a new local, a register
   ## field's setter, or a plain store — re-validating a field's invariants.
-  let valStr = ctx.dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
+  let valStr = ctx.genDExpr(e.assignVal)
   # A FIELD is never a new local: inside an actor handler `total += n`
   # assigns the singleton's field, so it must not be declared here.
   if ctx.res.isOwnerField(e.target):
@@ -1100,6 +1170,13 @@ proc genDFor(ctx: var DCodegenCtx, e: Expr): string =
   ctx.indD & "foreach (" & dForVars(e) & "; " & iterStr & ") {\n" &
     ctx.genDNested(e.body) & ctx.indD & "}"
 
+proc genDFill(ctx: var DCodegenCtx, e: Expr): string =
+  ## `[v; N]` (R8): `rt.tuckFill`, whose `T[N] r = v` is D's block
+  ## initialisation — for a zero, the zeroed storage.
+  let t = ctx.dType(fillElemType(ctx.res, e))
+  "rt.tuckFill!(" & t & ", " & ctx.genDExpr(e.fillCount) & ")(cast(" & t &
+    ")(" & ctx.genDExpr(e.fillValue) & "))"
+
 proc genDList(ctx: var DCodegenCtx, e: Expr): string =
   ## A list literal as a D array literal.
   var parts: seq[string]
@@ -1147,8 +1224,6 @@ proc genDMatchArm(ctx: var DCodegenCtx, arm: MatchArm, narrowKey = ""): string =
   ## D switch cases fall through by default where Tuck's arms never do, so
   ## the break is the semantics, not decoration. (A body ending in `return`
   ## makes it unreachable, so it is omitted there.)
-  if arm.guard != nil:
-    return dUnsupported("a guarded match arm (M4b)")
   let label = ctx.dPatternStr(arm.pattern)
   let isWild = arm.pattern != nil and arm.pattern.kind == pkWild
   let head = if isWild: ctx.indD & "default:\n"
@@ -1217,9 +1292,6 @@ proc genDMatchExpr(ctx: var DCodegenCtx, e: Expr): string =
   ctx.indent = 1
   var arms = ""
   for arm in e.arms:
-    if arm.guard != nil:
-      ctx.indent = saved
-      return dUnsupported("a guarded match arm (M4b)")
     let label = ctx.dPatternStr(arm.pattern)
     let isWild = arm.pattern != nil and arm.pattern.kind == pkWild
     let head = if isWild: ctx.indD & "default: "
@@ -1297,7 +1369,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   # A concrete value entering an interface slot is copied into the variant
   # at THIS site — the checker marked it (spec 5.3).
   let w = ctx.res.wrapOf(e)
-  if w.objName != "" and e.kind in {exkVar, exkCall}:
+  if w.objName != "" and e.kind in {exkVar, exkCall, exkIfacePayload}:
     return ctx.genDInterfaceWrap(e, w)
   # A fn used as a VALUE needs `&` in D, whichever way it was written —
   # checked here, where exkVar and exkQualified both pass through.
@@ -1307,12 +1379,14 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   case e.kind
   of exkLit: genDLit(e)
   of exkVar: ctx.genDVarName(e)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
+     exkMixinRef:
     e.refName
   of exkField: ctx.genDField(e)
   of exkQualified: ctx.genDQualified(e)
   of exkStruct: ctx.genDStructLit(e)
   of exkList: ctx.genDList(e)
+  of exkFill: ctx.genDFill(e)
   of exkBracket, exkBracketAssign:
     # Indexing resolved to an at()/setAt() call by the checker; a type
     # application never reaches codegen (mirrors both other backends).
@@ -1333,6 +1407,10 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkBreak: "break"
   of exkContinue: "continue"
   of exkAssign: ctx.genDAssign(e)
+  of exkAppend: ctx.genDAppend(e)
+  of exkCopy: ctx.genDCopy(e)
+  of exkDrop:
+    raiseAssert "d: the collector frees; prepare makes an exkDrop for Odin only"
   of exkReturn: ctx.genDReturn(e)
   of exkRaise: ctx.genDRaise(e)
   of exkDiscard:
@@ -1343,7 +1421,26 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkTripleDot: ""   # `...` outside a fn body: a no-op statement
   of exkImport: ""   # imports are assembled by dImports from realModules
   of exkIfaceCall: ctx.genDIfaceCall(e)
+  of exkIfaceIs:
+    # `| Flac f ->`'s test: the interface value's tag (lowering_iface).
+    "(" & ctx.genDExpr(e.tagSubject) & ".tag == " & ctx.importPrefixD(e.tagIface) &
+      e.tagIface & "Tag." &
+      e.tagIface & "_is_" & e.tagObject & ")"
+  of exkIfacePayload:
+    ctx.genDExpr(e.tagSubject) & "." & e.tagObject & "Val"
+  of exkWrapOk:
+    # A plain value into a `?T` place (lowering_optional), instantiated
+    # explicitly so a literal takes T rather than its own default type.
+    "rt.tok!(" & ctx.dType(e.optInner) & ")(" & ctx.genDExpr(e.optValue) & ")"
+  of exkAbsent: "rt.tnone!(" & ctx.dType(e.optInner) & ")()"
   of exkPoolOp: ctx.genDPoolOp(e)
+  of exkSlabOp: ctx.genDSlabOp(e)
+  of exkArenaReset:
+    let q = ctx.dArena(e.arenaRef.refName)
+    q[0 ..< q.len - e.arenaRef.refName.len] & arenaResetProc(e.arenaRef.refName) & "()"
+  of exkSlabCell:
+    # The value in the cell a reference names (lowering_slab), checked.
+    slabCellValue(ctx.dSlab(e.cellSlab.refName), ctx.genDExpr(e.cellRef), "rt.")
   of exkOrdinal:
     # A cast, for an enum and a bool alike: D converts both to their ordinal.
     "cast(long)(" & ctx.genDExpr(e.ordinalOf) & ")"

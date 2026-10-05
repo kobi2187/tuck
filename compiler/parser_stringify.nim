@@ -76,6 +76,14 @@ proc poolOpToString(e: Expr): string =
   result = e.poolRef.toString() & "." & ($e.poolOp)[2 .. ^1].toLowerAscii()
   if args.len > 0: result.add " {" & args.join(", ") & "}"
 
+proc slabOpToString(e: Expr): string =
+  ## Checker-stamped: `Slab.op {operands}`, as it was written.
+  var args: seq[string]
+  if e.slabArg != nil: args.add e.slabArg.toString()
+  if e.slabValue != nil: args.add e.slabValue.toString()
+  result = e.slabRef.toString() & "." & ($e.slabOp)[2 .. ^1].toLowerAscii()
+  if args.len > 0: result.add " {" & args.join(", ") & "}"
+
 proc toString*(e: Expr): string =
   ## A one-line, source-like rendering of `e` for messages and dumps. Lossy on
   ## purpose: control flow prints only its keyword (`if`, `match`, `block`), so
@@ -92,6 +100,7 @@ proc toString*(e: Expr): string =
   of exkBracketAssign:
     return e.brTarget.toString() & " = " & e.brValue.toString()
   of exkList: return listToString(e.items, "[", "]")
+  of exkFill: return "[" & e.fillValue.toString() & "; " & e.fillCount.toString() & "]"
   of exkCall:
     if e.args.len == 0: return e.callee.toString()
     return e.callee.toString() & listToString(e.args, "(", ")")
@@ -146,15 +155,44 @@ proc toString*(e: Expr): string =
     return "validate(" & e.validated.toString() & ")"   # lowering-built too
   of exkPoolOp:
     return poolOpToString(e)
+  of exkSlabOp:
+    return slabOpToString(e)
+  of exkSlabCell:
+    # Lowering-built: the cell a reference names.
+    return "cell(" & e.cellRef.toString() & ")"
+  of exkArenaReset:
+    return e.arenaRef.toString() & ".reset"
+  of exkAppend:
+    # Prepare-built: an append in place.
+    return e.appendTarget.toString() & " += " & e.appendValue.toString()
+  of exkCopy:
+    # Prepare-built: a copy where the backend's assignment would alias.
+    let what = if e.copyKind == cpFields: "copy[" & e.copyFields.join(", ") & "]"
+               else: "copy"
+    return what & "(" & e.copied.toString() & ")"
+  of exkDrop:
+    # Prepare-built: a release of the storage a place owns.
+    return "drop(" & e.dropped.toString() & ")"
   of exkIfaceCall:
     # Lowering-built: one arm per satisfying object, shown by name.
     var sats: seq[string]
     for arm in e.dispatchArms: sats.add arm.satisfier
     return e.dispatchRecv.toString() & " dispatch<" & e.dispatchIface & ": " &
            sats.join(" | ") & ">"
+  of exkIfaceIs:
+    # Lowering-built, from a `| Flac f ->` arm.
+    return e.tagSubject.toString() & " is " & e.tagObject
+  of exkIfacePayload:
+    return e.tagSubject.toString() & " as " & e.tagObject
+  of exkWrapOk:
+    # Lowering-built: a plain value stored into a `?T` place.
+    return "some(" & e.optValue.toString() & ")"
+  of exkAbsent:
+    return "none"
   of exkAcquire:
     return "acquire " & optToString(e.acquireRef) & ", " & e.acquireKind
   of exkFinish:
     return "finish " & optToString(e.finishHandle) & ", " & e.finishKind
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef:
+  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
+     exkSlabRef, exkArenaRef:
     return e.refName

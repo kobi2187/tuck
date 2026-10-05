@@ -205,6 +205,20 @@ tuckTrackAllocator :: proc() -> mem.Allocator {
 	}
 }
 
+// The allocator for the runtime's OWN structures that live as long as the
+// program: the scheduler's queue, the event loop's table, an actor's slot and
+// thread. They are never handed back, because an actor is a daemon nothing
+// joins, so under TUCK_TRACK every actor program "leaked" them and a real
+// leak hid behind the noise. They come from the allocator tracking wraps,
+// and the report names only what the program itself lost. Without tracking
+// this is the context's own allocator.
+tuckRuntimeAllocator :: proc() -> mem.Allocator {
+	when TUCK_TRACK {
+		if gTrackReady { return gTrack.backing }
+	}
+	return context.allocator
+}
+
 tuckTrackCheck :: proc() {
 	// EXITS here rather than handing a count back for the entry point to act
 	// on. The emitted call must not mention `os`: Odin errors on an unused
@@ -225,6 +239,19 @@ tuckTrackReport :: proc() -> int {
 			fmt.eprintf("TUCK-ALLOC leaked %v allocation(s), %v bytes (peak %v)\n",
 			            len(gTrack.allocation_map), total,
 			            gTrack.peak_memory_allocated)
+			// WHERE, not only how much: a count says a leak exists, and
+			// triaging one by bisecting the program is the slow way to learn
+			// what the allocator already recorded. Capped, so a loop that
+			// leaks a million cells still prints a readable report.
+			shown := 0
+			for _, entry in gTrack.allocation_map {
+				if shown == 20 {
+					fmt.eprintf("  ...\n")
+					break
+				}
+				fmt.eprintf("  %v bytes at %v\n", entry.size, entry.location)
+				shown += 1
+			}
 			faults += len(gTrack.allocation_map)
 		}
 		// A bad free is the failure mode that matters: it means an emitted
@@ -770,6 +797,253 @@ tuckPoolAddr :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle) -> [^]u8 {
 	return cast([^]u8)&pool.storage[i]
 }
 
+// ---------------------------------------------------------------------------
+// The slab (thoughts/shared/plans/2026-09-29-slab-proposal.md). The Nim twin
+// (compiler/tuck_rt.nim) carries the reasoning; this mirrors it exactly —
+// three storages under one set of operations, a cell of {tenancy, link,
+// value}, the free list in the dead cells, and every slab ZERO at the start,
+// so `SlabChunked(T){name = "..."}` is a package-level constant initialiser.
+
+SlabRef :: struct {
+	slot: u32,
+	gen:  u32,
+}
+
+SlabCell :: struct($T: typeid) {
+	gen:   u32,
+	link:  i32, // SLAB_LIVE while it holds a value; else next free + 1 (0 = end)
+	value: T,
+}
+
+SLAB_LIVE :: i32(-1)
+SLAB_PAGE_SHIFT :: 10
+SLAB_PAGE_N :: 1 << SLAB_PAGE_SHIFT
+SLAB_TOP_N :: 64
+SLAB_CHUNK_BYTES :: 65536
+
+tuckSlabMisuse :: proc(name: string, what: string) {
+	fmt.eprintln("TUCK SLAB [", name, "]: ", what, sep = "")
+	os.exit(1)
+}
+
+// log2 of the cells per chunk: the most that fit in SLAB_CHUNK_BYTES, >= 1.
+slab_chunk_shift :: proc "contextless" ($T: typeid) -> u32 {
+	s: u32 = 0
+	for (2 << s) * size_of(SlabCell(T)) <= SLAB_CHUNK_BYTES do s += 1
+	return s
+}
+
+SlabChunked :: struct($T: typeid) {
+	name:      string,
+	top:       [SLAB_TOP_N]^[SLAB_PAGE_N][^]SlabCell(T),
+	len:       u32,
+	free_head: i32,
+	live:      int,
+}
+
+SlabFixed :: struct($T: typeid, $N: int) {
+	name:      string,
+	cells:     [N]SlabCell(T),
+	len:       u32,
+	free_head: i32,
+	live:      int,
+}
+
+SlabSeq :: struct($T: typeid) {
+	name:      string,
+	cells:     [dynamic]SlabCell(T),
+	len:       u32,
+	free_head: i32,
+	live:      int,
+}
+
+@(private)
+slab_cell_chunked :: #force_inline proc(s: ^SlabChunked($T), i: u32) -> ^SlabCell(T) #no_bounds_check {
+	cs := slab_chunk_shift(T)
+	return &s.top[i >> (cs + SLAB_PAGE_SHIFT)][(i >> cs) & (SLAB_PAGE_N - 1)][i & ((1 << cs) - 1)]
+}
+@(private)
+slab_cell_fixed :: #force_inline proc(s: ^SlabFixed($T, $N), i: u32) -> ^SlabCell(T) #no_bounds_check {
+	return &s.cells[i]
+}
+@(private)
+slab_cell_seq :: #force_inline proc(s: ^SlabSeq($T), i: u32) -> ^SlabCell(T) #no_bounds_check {
+	return &s.cells[i]
+}
+@(private)
+slab_cell_at :: proc{slab_cell_chunked, slab_cell_fixed, slab_cell_seq}
+
+// The cell at `i` (< len), unchecked: a slab's own generated `reset` walks
+// these to delete what each live value owns (codegen_odin_decl).
+tuckSlabCellAt :: proc{slab_cell_chunked, slab_cell_fixed, slab_cell_seq}
+
+@(private)
+slab_grow_chunked :: proc(s: ^SlabChunked($T)) -> u32 {
+	cs := slab_chunk_shift(T)
+	i := s.len
+	if i & ((1 << cs) - 1) == 0 {
+		pi := i >> (cs + SLAB_PAGE_SHIFT)
+		if pi >= SLAB_TOP_N do tuckSlabMisuse(s.name, fmt.tprintf("full (%d cells)", i))
+		if s.top[pi] == nil do s.top[pi] = new([SLAB_PAGE_N][^]SlabCell(T))
+		ci := (i >> cs) & (SLAB_PAGE_N - 1)
+		if s.top[pi][ci] == nil do s.top[pi][ci] = raw_data(make([]SlabCell(T), 1 << cs))
+	}
+	s.len += 1
+	return i
+}
+@(private)
+slab_grow_seq :: proc(s: ^SlabSeq($T)) -> u32 {
+	if int(s.len) == len(s.cells) do append(&s.cells, SlabCell(T){})
+	s.len += 1
+	return s.len - 1
+}
+@(private)
+slab_grow_fixed :: proc(s: ^SlabFixed($T, $N)) -> u32 {
+	s.len += 1
+	return s.len - 1
+}
+@(private)
+slab_grow :: proc{slab_grow_chunked, slab_grow_seq, slab_grow_fixed}
+
+@(private)
+slab_take :: proc(s: ^$S) -> u32 {
+	if s.free_head != 0 {
+		i := u32(s.free_head - 1)
+		s.free_head = slab_cell_at(s, i).link
+		return i
+	}
+	return slab_grow(s)
+}
+
+@(private)
+slab_fill :: proc(s: ^$S, i: u32, v: $T) -> SlabRef {
+	c := slab_cell_at(s, i)
+	c.gen += 1
+	c.link = SLAB_LIVE
+	c.value = v
+	s.live += 1
+	return SlabRef{slot = i, gen = c.gen}
+}
+
+@(private)
+slab_new_chunked :: proc(s: ^SlabChunked($T), v: T) -> SlabRef { return slab_fill(s, slab_take(s), v) }
+@(private)
+slab_new_seq :: proc(s: ^SlabSeq($T), v: T) -> SlabRef { return slab_fill(s, slab_take(s), v) }
+// A growable slab never runs out.
+tuckSlabNew :: proc{slab_new_chunked, slab_new_seq}
+
+// `[count: N]`: absent when every cell holds a value.
+tuckSlabNewFixed :: proc(s: ^SlabFixed($T, $N), v: T) -> TuckResult(SlabRef) {
+	if s.free_head == 0 && int(s.len) >= N do return tnone(SlabRef)
+	return tok(slab_fill(s, slab_take(s), v))
+}
+
+@(private)
+slab_checked :: #force_inline proc(s: ^$S, r: SlabRef) -> u32 {
+	// The index a reference names, if it is one this slab handed out; the
+	// tenancy is checked by the caller, on the cell it then has in hand.
+	if r.slot >= s.len do tuckSlabMisuse(s.name, fmt.tprintf("stale reference to cell %d", r.slot))
+	return r.slot
+}
+
+@(private)
+slab_check_tenancy :: #force_inline proc(name: string, link: i32, gen: u32, r: SlabRef) {
+	if link != SLAB_LIVE || gen != r.gen do tuckSlabMisuse(name, fmt.tprintf("stale reference to cell %d", r.slot))
+}
+@(private)
+slab_ref_chunked :: #force_inline proc(s: ^SlabChunked($T), r: SlabRef) -> ^SlabCell(T) {
+	c := slab_cell_chunked(s, slab_checked(s, r))
+	slab_check_tenancy(s.name, c.link, c.gen, r)
+	return c
+}
+@(private)
+slab_ref_fixed :: #force_inline proc(s: ^SlabFixed($T, $N), r: SlabRef) -> ^SlabCell(T) {
+	c := slab_cell_fixed(s, slab_checked(s, r))
+	slab_check_tenancy(s.name, c.link, c.gen, r)
+	return c
+}
+@(private)
+slab_ref_seq :: #force_inline proc(s: ^SlabSeq($T), r: SlabRef) -> ^SlabCell(T) {
+	c := slab_cell_seq(s, slab_checked(s, r))
+	slab_check_tenancy(s.name, c.link, c.gen, r)
+	return c
+}
+// The cell `r` names, if it still holds the value `r` was made for.
+tuckSlabCell :: proc{slab_ref_chunked, slab_ref_fixed, slab_ref_seq}
+
+// Does `r` still name a live cell? The question to ask before using one.
+tuckSlabLive :: proc(s: ^$S, r: SlabRef) -> bool {
+	if r.slot >= s.len do return false
+	c := slab_cell_at(s, r.slot)
+	return c.link == SLAB_LIVE && c.gen == r.gen
+}
+
+// The cell is free; every reference to it is stale from here on.
+tuckSlabFree :: proc(s: ^$S, r: SlabRef) {
+	c := tuckSlabCell(s, r)
+	c.link = s.free_head
+	s.free_head = i32(r.slot) + 1
+	s.live -= 1
+}
+
+// Every cell free and every reference stale, in O(1).
+tuckSlabReset :: proc(s: ^$S) {
+	s.len = 0
+	s.free_head = 0
+	s.live = 0
+}
+
+tuckSlabCount :: proc(s: ^$S) -> int { return s.live }
+
+// An arena's `[size: N]` (slab proposal §9): the bytes its slabs may hold
+// between resets, charged per `new` by a size the COMPILER computed from the
+// Tuck type, so a budget runs out at the same `new` on every backend.
+ArenaBudget :: struct {
+	size: int,
+	used: int,
+}
+
+// A cell of an arena's slab holding `v`, or absent when the budget cannot
+// cover it. The arena's reset gives the whole budget back.
+tuckArenaNew :: proc(s: ^SlabChunked($T), b: ^ArenaBudget, cost: int, v: T) -> TuckResult(SlabRef) {
+	if b.used + cost > b.size do return tnone(SlabRef)
+	b.used += cost
+	return tok(tuckSlabNew(s, v))
+}
+
+// At exit: say how many cells were never freed (slab proposal Q3).
+tuckSlabReport :: proc(s: ^$S) {
+	if s.live > 0 do fmt.eprintln("TUCK SLAB [", s.name, "]: ", s.live, " cell(s) never freed", sep = "")
+}
+
+// At exit, under TUCK_TRACK only: hand the slab's own storage back, so the
+// tracker reports what the PROGRAM leaked rather than the slab, which lives
+// until exit by design. Without tracking there is nothing to gain from
+// freeing at exit, and this is a no-op.
+@(private)
+slab_release_chunked :: proc(s: ^SlabChunked($T)) {
+	when TUCK_TRACK {
+		for page in s.top {
+			if page == nil do continue
+			for chunk in page^ {
+				if chunk != nil do free(rawptr(chunk))
+			}
+			free(page)
+		}
+		s.top = {}
+	}
+}
+@(private)
+slab_release_fixed :: proc(s: ^SlabFixed($T, $N)) {}
+@(private)
+slab_release_seq :: proc(s: ^SlabSeq($T)) {
+	when TUCK_TRACK {
+		delete(s.cells)
+		s.cells = nil
+	}
+}
+tuckSlabRelease :: proc{slab_release_chunked, slab_release_fixed, slab_release_seq}
+
 // A spinlock for the mailbox. NOT decoration: this runtime spawns one OS
 // thread per actor (tuck_coro.odin's tuckStartActor), so a send from main and
 // a drain on the actor's thread genuinely race. The mailbox carried NO
@@ -819,12 +1093,34 @@ enqueue :: proc(mb: ^Mailbox($T, $Cap), msg: T) -> bool {
 	c := mb.cur
 	if mb.fill[c] >= Cap {
 		mbUnlock(&mb.lock)
-		return false // full: sendX drops (spec §9.1)
+		return false // full: the actor's on_full decides (R6)
 	}
 	mb.buf[c][mb.fill[c]] = msg
 	mb.fill[c] += 1
 	mbUnlock(&mb.lock)
 	return true
+}
+
+// The send that found `actor`'s mailbox full cannot go on (R6): the actor
+// declares `on_full: assert`, or it waits and never could. Exit 1, as a
+// registry misuse does, on every backend.
+tuckMailboxFull :: proc(actor: string, why: string) {
+	fmt.eprintln("TUCK ACTOR [", actor, "]: mailbox full — ", why, sep = "")
+	os.exit(1)
+}
+
+// A send to an actor declaring `on_full: wait`, the default (R6): when the
+// mailbox is full, wait for room. `msg` is built once, by the caller.
+sendWaiting :: proc(mb: ^Mailbox($T, $Cap), msg: T, handle: rawptr, actor: string) {
+	for !enqueue(mb, msg) do tuckAwaitRoom(handle, actor)
+}
+
+// A send to an actor declaring `on_full: assert` (R6): a full mailbox stops
+// the program.
+sendAsserting :: proc(mb: ^Mailbox($T, $Cap), msg: T, actor: string) {
+	if !enqueue(mb, msg) {
+		tuckMailboxFull(actor, fmt.tprintf("the actor declares `on_full: assert` (queue: %d)", Cap))
+	}
 }
 
 // Take everything waiting. The swap happens once, under the lock; the caller
@@ -847,8 +1143,8 @@ takeBatch :: proc(mb: ^Mailbox($T, $Cap)) -> (batch: []T, n: int) {
 	return mb.buf[c][:], n
 }
 
-// Sender's opt-in backpressure check. sendX drops silently on a full mailbox
-// (fast, non-blocking, spec §9.1) — the sender may check first if it cares.
+// Is there room for one more message? A full mailbox is handled by the
+// actor's `on_full` (R6: sendWaiting, sendAsserting, or a dropped enqueue).
 hasRoom :: proc(mb: ^Mailbox($T, $Cap)) -> bool {
 	mbLock(&mb.lock)
 	r := mb.fill[mb.cur] < Cap

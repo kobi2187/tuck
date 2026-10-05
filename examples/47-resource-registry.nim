@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 
 proc tuckˑfnˑopenUdp*(port: uint16): TuckResult[UdpHandle]
 proc tuckˑfnˑwithScratch*(n: int): int

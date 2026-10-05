@@ -1,5 +1,5 @@
 # Count words in a sentence
-import io
+import console
 
 pending:
   fn split({text: str, sep: str}) -> Seq[str]

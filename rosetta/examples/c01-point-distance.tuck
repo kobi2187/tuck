@@ -1,5 +1,5 @@
 # Point struct: construct two points and compute the distance between them
-import io
+import console
 
 type Point:
   x: int

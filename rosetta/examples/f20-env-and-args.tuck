@@ -1,5 +1,5 @@
 # Environment and command-line argument access
-import io
+import console
 import sys
 
 fn main() -> void [io]:

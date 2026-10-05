@@ -55,12 +55,12 @@ bool drain_tuckˑactorˑCounter() {
 }
 
 void sendIncrement_tuckˑactorˑCounter(ref tuckˑactorˑCounter self, long n) {
-    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑCounterMsg(tuckTag: tuckˑactorˑCounterMsgKind.msgIncrement, n: n));
+    rt.sendWaiting(self.mailbox, tuckˑactorˑCounterMsg(tuckTag: tuckˑactorˑCounterMsgKind.msgIncrement, n: n), tuckˑactorˑCounterSlot, "Counter");
     rt.tuckNotifySend(tuckˑactorˑCounterSlot);
 }
 
 void sendReset_tuckˑactorˑCounter(ref tuckˑactorˑCounter self) {
-    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑCounterMsg(tuckTag: tuckˑactorˑCounterMsgKind.msgReset));
+    rt.sendWaiting(self.mailbox, tuckˑactorˑCounterMsg(tuckTag: tuckˑactorˑCounterMsgKind.msgReset), tuckˑactorˑCounterSlot, "Counter");
     rt.tuckNotifySend(tuckˑactorˑCounterSlot);
 }
 

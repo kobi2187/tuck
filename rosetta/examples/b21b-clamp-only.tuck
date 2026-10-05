@@ -1,5 +1,5 @@
 # Isolated repro: does the `clamp` pending stub genuinely execute?
-import io
+import console
 
 pending:
   fn clamp({value: int, low: int, high: int}) -> int

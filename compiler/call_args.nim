@@ -51,9 +51,10 @@ proc knownParams*(res: Resolution, m: Module, real: Table[string, Module],
   if d == nil: none(seq[string]) else: some(d.paramNames())
 
 proc isPayloadCall*(e: Expr): bool =
-  ## `{fields} f` — one argument, and it is a payload literal.
-  e != nil and e.kind == exkCall and e.args.len == 1 and e.args[0] != nil and
-    e.args[0].kind == exkStruct
+  ## `{fields} f` — one argument, and it is a payload literal — and not
+  ## already exploded into the callee's params (`argsExploded`).
+  e != nil and e.kind == exkCall and not e.argsExploded and e.args.len == 1 and
+    e.args[0] != nil and e.args[0].kind == exkStruct
 
 proc fieldFor*(res: Resolution, e: Expr, i: int, param: string): string =
   ## The payload field that feeds param `i`.

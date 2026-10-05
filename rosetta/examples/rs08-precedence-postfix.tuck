@@ -1,6 +1,6 @@
 # rs08 — operator precedence edges: postfix binds tighter than operators.
 # Stresses: `x + y fn` parses as `x + (y fn)`; parens to override.
-import io
+import console
 
 fn double({value: int}) -> int:
   value * 2

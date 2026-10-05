@@ -49,7 +49,7 @@
 import tables
 import ast
 import ../lexer
-from diagnostics import DiagCode, dcCoUnknownRename, code
+from diagnostics import DiagCode, dcCoUnknownRename, dcMeSlabInValue, code
 from ast_query import isCompositionEntry, compositionTargetName
 from ast_ops import clearIds, nodes
 
@@ -115,16 +115,21 @@ proc bindSelf(mem: Decl, owner: Type) =
     mem.fnParams[i].typ = boundSelf(mem.fnParams[i].typ, owner)
   mem.fnReturnType = boundSelf(mem.fnReturnType, owner)
 
-proc failComposition(dc: DiagCode, msg: string, sp: Span) =
-  ## A `+ Name {…}` entry the language cannot honour. A SyntaxError because
-  ## this stage runs inside parseSource, whose one error type that is;
+proc failRewrite(dc: DiagCode, msg: string, sp: Span,
+                 stage = "Composition Error") =
+  ## A declaration the language cannot honour. A SyntaxError because this
+  ## stage runs inside parseSource, whose one error type that is;
   ## parseSource fills in the source line for the caret.
   var err = newException(SyntaxError, msg)
   err.line = sp.line
   err.col = sp.col
-  err.stage = "Composition Error"
+  err.stage = stage
   err.code = code(dc)
   raise err
+
+proc failComposition(dc: DiagCode, msg: string, sp: Span) =
+  ## A `+ Name {…}` entry the language cannot honour.
+  failRewrite(dc, msg, sp)
 
 proc checkRenamesExist(entry: Decl, target: string, names: seq[string]) =
   ## Every `{old -> new}` on a `+ target` entry must rename one of `names`:
@@ -217,10 +222,59 @@ proc composeMixins(m: Module) =
     let owner = Type(span: d.span, kind: tkNamed, name: d.name)
     for mem in d.objMembers: bindSelf(mem, owner)
 
-proc rewriteModule*(m: Module) =
+proc failSlabInValue(owner: Decl, slab: Decl) =
+  failRewrite(dcMeSlabInValue, (if slab.kind == dkArena: "arena '" else: "slab '") &
+              slab.name & "' is declared inside " &
+              (if owner.kind == dkMixin: "mixin '" else: "object '") &
+              owner.name & "'. A slab belongs to the module or to an " &
+              "actor; an object is a value, and each copy would need a slab " &
+              "of its own. Declare it at top level, and keep references to " &
+              "its cells in the object's fields", slab.span, "Memory Error")
+
+proc liftActorSlabs(a: Decl, decls: var seq[Decl]) =
+  ## An actor's slabs and arenas, out of its body and onto `decls`, owned by
+  ## it.
+  var kept: seq[Decl]
+  for mem in a.handlers:
+    if mem != nil and mem.kind == dkSlab:
+      mem.slabOwner = a.name
+      decls.add mem
+    elif mem != nil and mem.kind == dkArena:
+      mem.arenaOwner = a.name
+      decls.add mem
+    else: kept.add mem
+  a.handlers = kept
+
+proc refuseSlabsIn(owner: Decl, members: seq[Decl]) =
+  for mem in members:
+    if mem != nil and mem.kind in {dkSlab, dkArena}: failSlabInValue(owner, mem)
+
+proc hoistSlabs(m: var Module) =
+  ## A slab declared inside an actor belongs to that actor (slab proposal
+  ## §7): lifted to the module's top level, just before the actor, carrying
+  ## its owner — so every later stage sees one kind of slab, and slab_owner
+  ## refuses any other owner reaching it. Inside an object or a mixin it is
+  ## refused (TK-ME03).
+  var decls: seq[Decl]
+  for d in m.decls:
+    if d != nil:
+      case d.kind
+      of dkActor: liftActorSlabs(d, decls)
+      of dkObject: refuseSlabsIn(d, d.objMembers)
+      of dkMixin: refuseSlabsIn(d, d.mixinMembers)
+      of dkType, dkFn, dkTask, dkInterface, dkGroup, dkRegistry, dkPool,
+         dkSlab, dkArena, dkExpr, dkConst, dkRegister, dkStaticAssert, dkErrors,
+         dkImport, dkSelect, dkFnSig, dkSatisfies, dkWhen, dkPublic,
+         dkResources, dkExtern, dkPending:
+        discard
+    decls.add d
+  m.decls = decls
+
+proc rewriteModule*(m: var Module) =
   ## Normalize a module in place, over EVERY body (`ast_ops.bodies`) — a
   ## hand-rolled walk over decl kinds is how dkActor, and later task bodies,
   ## came to be silently skipped. Mixins compose first, so the bodies they
   ## copy into objects are walked like any other.
+  hoistSlabs(m)
   composeMixins(m)
   for e in m.bodies: rewriteExpr(e)

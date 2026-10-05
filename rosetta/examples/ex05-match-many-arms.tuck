@@ -1,5 +1,5 @@
 # match with many arm shapes over a sum type (Elixir-cond-like exhaustive match)
-import io
+import console
 
 type HttpStatus:
   | Ok({})

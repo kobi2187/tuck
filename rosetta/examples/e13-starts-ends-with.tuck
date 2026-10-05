@@ -1,5 +1,5 @@
 # Check string prefix and suffix
-import io
+import console
 
 pending:
   fn startsWith({text: str, prefix: str}) -> bool

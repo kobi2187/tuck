@@ -1,5 +1,5 @@
 # Count occurrences of a character in a string
-import io
+import console
 
 pending:
   fn countOccurrences({text: str, needle: str}) -> int

@@ -146,21 +146,28 @@ fn main() -> int:
 """
   t.okCheck "a Capitalized, unreserved type argument is accepted"
 
-  # A reserved word is still a legal FIELD name (ruled 2026-09-27, R4): a
-  # field is only ever read through `.` or written as a record key, never
-  # bare, so no bracket can mistake it for an attribute. Every name that IS
-  # read bare — parameter, local, fn, handler — refuses the word (TK-PA08).
-  # (This snippet used a decision COLUMN named `priority`; a column is a
-  # parameter, which the ruling refuses.)
+  # A reserved word is not a FIELD name either (R4, made total 2026-09-28).
+  # A field was the one exception on 2026-09-27 — it is read through `.`,
+  # never bare — but one rule with no exception is simpler to state and to
+  # check, so the parser refuses the word for every name (TK-PA08).
   t.src """
 type Job:
   priority: int
 
 fn main() -> int:
-  let j = Job{priority: 3}
-  return j.priority
+  return 0
 """
-  t.frozen "a reserved word is still a legal field name"
+  t.badCheck "an attribute word is refused as a field name too", "TK-PA08"
+
+  # #4's second part: a KEYWORD as a field of an object or actor. `pending:`
+  # opened a `pending:` block and the error blamed the type (`Seq`); the
+  # parser now sees a keyword, a `:` and more on the line as a field and
+  # names the word.
+  for kind in ["object", "actor"]:
+    t.src "import seq\n\n" & kind & " Box:\n  pending: Seq[int]\n\n" &
+          "fn main() -> int:\n  return 0\n"
+    t.badCheck "a keyword field in an " & kind & " names the word (" & kind & ")",
+               "`pending` is a reserved word"
 
   # And the attribute reading still wins where it must, in the same file shape
   # the corpus uses everywhere.
@@ -261,7 +268,7 @@ fn main() -> int:
   # undeclared callee is a clean checker error, not a silent field read.
   t.src """
 actor Driver [queue: 8]:
-  buf: Seq[u8]
+  buf: Seq[u8] = []
 
   on send({data: Seq[u8]}) -> void:
     buf.copyFrom {data}
@@ -940,8 +947,8 @@ fn main() -> int:
   # compiler was right: a name read bare can land in brackets, and
   # `xs[stack]` then parsed as an attribute and dropped the index. RULED
   # (R4, 2026-09-27): attribute words are reserved words — refused as a
-  # parameter, local, fn, member or handler name with TK-PA08; a FIELD may
-  # still use one. The text of TK-PA08 now says so.
+  # parameter, local, fn, member or handler name with TK-PA08, and since
+  # 2026-09-28 as a field too. The text of TK-PA08 now says so.
   t.src """
 fn priority({x: int}) -> int:
   return x
@@ -1182,7 +1189,7 @@ type NalKind:
   | sps
 
 actor Pipe:
-  seen: int
+  seen: int = 0
   on nal({kind: NalKind}):
     self.seen = self.seen + 1
 
@@ -1209,7 +1216,7 @@ type Level:
   | high
 
 actor Sink:
-  seen: int
+  seen: int = 0
 
   on setLevel({lvl: Level}):
     self.seen = self.seen + 1
@@ -1428,8 +1435,8 @@ fn applyBuy({b: BookState, px: int}) -> BookState:
   return {fills: f, total: b.total + px} BookState
 
 actor Book [queue: 8]:
-  st: BookState
-  xs: Seq[int]
+  st: BookState = {fills: [], total: 0} BookState
+  xs: Seq[int] = []
   n: int = 0
 
   on buy({px: int}):
@@ -1933,6 +1940,121 @@ type R:
   x: int = 3
 """
   t.badCheck "...not a record field either", "TK-TY30"
+
+  # #85 (R8, ruled 2026-09-28): every actor field has an initialiser or is
+  # `T?`. A field with neither started at the host's zero value, and a
+  # handler reading it before anything wrote it read that zero as data.
+  t.src """
+actor A:
+  x: int
+  on go({n: int}):
+    x += n
+"""
+  t.badCheck "an actor field with no initialiser is refused (#85)", "TK-TY35"
+  # The `T?` half, which no backend could build or started correctly: the
+  # result carrier's zero value is status OK, so an unwritten `last: int?`
+  # read as PRESENT (1 on all three before lowering_optional), and `seed:
+  # int? = 5` stored a bare int where the carrier was expected.
+  t.src """
+actor Box [queue: 4]:
+  last: int?
+  seed: int? = 5
+
+  on put({v: int}):
+    last = v
+
+fn main() -> int:
+  let a = Box.last
+  let b = Box.seed
+  var r = 0
+  if not a.ok:
+    r = r + 1
+  if b.ok:
+    r = r + b.value * 10
+  return r
+"""
+  t.hostRuns "a `T?` actor field starts absent, an initialised one present, on every backend", 51
+
+  # The Array fill form `[v; N]` (R8, ruled 2026-09-28): an Array field had
+  # no practical initialiser, since a literal lists all N elements. A zero
+  # fill is the host's zeroed storage (`default(array…)`, `[N]T{}`); a named
+  # const count, a negative value and an enum element all fill. 0 non-zero
+  # bytes, 7*8 - 3*4 = 44, 3 greens.
+  t.src """
+const Cap = 8
+
+type Color:
+  | Red
+  | Green
+  | Blue
+
+fn zeros() -> int:
+  let z: Array[256, u8] = [0; 256]
+  var nz = 0
+  for i in 0 ..< 256:
+    if z[i] != 0:
+      nz = nz + 1
+  return nz
+
+fn sevens() -> int:
+  let s: Array[Cap, int] = [7; Cap]
+  let neg = [-3; 4]
+  var total = 0
+  for i in 0 ..< Cap:
+    total = total + s[i]
+  for i in 0 ..< 4:
+    total = total + neg[i]
+  return total
+
+fn greens() -> int:
+  let cs: Array[3, Color] = [Green; 3]
+  var g = 0
+  for i in 0 ..< 3:
+    if cs[i] == Green:
+      g = g + 1
+  return g
+
+fn main() -> int:
+  return {} zeros * 100 + {} sevens + {} greens * 50
+"""
+  t.hostRuns "an Array fill `[v; N]` builds and reads back, on every backend", 194
+  t.emits "...a zero fill is the zeroed storage, not a loop (Nim)",
+          r"default\(array\[256, uint8\]\)"
+  t.emitsOdin "...and on Odin", r"\[256\]u8\{\}"
+
+  # What an actor field needed it for.
+  t.src """
+import scheduler
+
+actor Uart [queue: 8]:
+  txBuf: Array[64, u8] = [0; 64]
+  sent: int = 0
+
+  on put({at: int}):
+    txBuf[at] = 9
+    sent = sent + 1
+
+fn done() -> bool:
+  return Uart.sent > 0
+
+fn main() -> int:
+  Uart send put {at: 5}
+  Uart.waitUntil {pred: :done}
+  let b = Uart.txBuf
+  if b[5] == 9 and b[4] == 0:
+    return 1
+  return 0
+"""
+  t.hostRuns "an actor's Array field starts from a fill, on every backend", 1
+
+  for (what, body, code) in [
+      ("a count that is a local, not a const", "let n = 4\n  let a = [0; n]", "TK-TY36"),
+      ("a count that is not the Array's size", "let a: Array[8, int] = [0; 4]", "TK-TY36"),
+      ("a value that is a call", "let a = [{} f; 4]", "TK-TY37"),
+      ("an element that is not a scalar", "let a = [\"x\"; 4]", "TK-TY37")]:
+    t.src "fn f() -> int:\n  return 1\n\nfn main() -> int:\n  " & body &
+          "\n  return 0\n"
+    t.badCheck "an Array fill is refused: " & what, code
 
   # An `on select` arm's body was never type-checked nor mangled: `checkDecl`
   # and `mangleMember` ended in `else: discard`, and dkSelect fell into it.
@@ -2470,10 +2592,11 @@ fn main() -> int:
   # An object member called on a fn PARAMETER built only on D. Every backend
   # passes a member's `self` mutably — Nim `var T`, Odin `^T`, D `ref T` —
   # and a Nim parameter is immutable, an Odin one unaddressable: "type
-  # mismatch" and "Cannot take the pointer address of 'a'". Such a param is
-  # now shadowed by a mutable copy at the top of the body, the value a D
-  # parameter already is. Found and fixed 2026-09-27: every clone of an
-  # interface-bounded generic fn calls members on its parameters.
+  # mismatch" and "Cannot take the pointer address of 'a'". Found and fixed
+  # 2026-09-27 (every clone of an interface-bounded generic fn calls members
+  # on its parameters). Since 2026-09-28 a member that only reads, like
+  # this one, takes `self` by value in every backend, and one that changes
+  # its object may not be called on a parameter at all (value_semantics).
   t.src """
 object Flac:
   bits: int
@@ -2489,5 +2612,721 @@ fn main() -> int:
 """
   t.quietly: t.hostRuns("a member call on a parameter runs", 96)
   t.bugFixed "a member called on a fn parameter builds, on all three"
+
+  # A23. Value semantics break when one object reaches a changing member
+  # twice: as `self` (by reference, so the change lands in the caller's
+  # `var`) and as a by-value argument. `k.absorb {other: k}` must see `other`
+  # as `k` was at the call — 1 — but Nim and Odin pass a large by-value
+  # argument as a hidden pointer to the same `k`, so `other.a` reads the
+  # change made through `self`: 101. D copies and answers 1. Found
+  # 2026-09-28 checking where the backends use references; fixed the same
+  # day: such an argument is copied into a `let` before the statement
+  # (lowering_alias).
+  t.src """
+object Big:
+  a: int
+  b: int
+  c: int
+  d: int
+  e: int
+  fn absorb({self: Big, other: Big}) -> int:
+    self.a = self.a + 100
+    return other.a
+
+fn main() -> int:
+  var k = Big{a: 1, b: 2, c: 3, d: 4, e: 5}
+  return k.absorb {other: k}
+"""
+  t.quietly: t.hostRuns("an argument is the object as it was at the call", 1)
+  t.bugFixed "one object as a changing member's self and its argument keeps value semantics"
+
+  # A24 — an actor member `fn` is accepted by the checker and emitted by no
+  # backend: every call to it is "undeclared" on Nim, Odin and D. Found
+  # 2026-09-28 working on R10, which moves an `on select` arm's work into a
+  # fn — for an actor, a member fn, since only it can write the fields.
+  t.src """
+import scheduler
+
+actor Acc [queue: 8]:
+  total: int = 0
+  done: bool = false
+
+  fn addIt({n: int}):
+    total += n
+
+  on add({n: int}):
+    {n: n} addIt
+    done = true
+
+fn ready() -> bool:
+  return Acc.done
+
+fn main() -> int:
+  Acc send add {n: 5}
+  Acc.waitUntil {pred: :ready}
+  return Acc.total
+"""
+  t.quietly: t.hostRuns("an actor member fn can be called from its handler", 5)
+  t.bugFixed "an actor member fn can be called from its handler"
+  # FIXED 2026-09-28: `fn` and `on` both parsed to a dkFn and every backend
+  # made each one a MESSAGE (`sendAddIt_…`, a `handleMsg` arm), while the
+  # direct call printed a bare `addIt(n)`. `on` now marks a handler
+  # (Decl.isOnHandler); a `fn` is a member emitted as a proc taking the
+  # actor's state as `self`, the way its dispatch does, and a call passes
+  # `self` on (res.actorMemberCalls, codegen_common.actorMemberCallee).
+
+  # A member returns a value, calls another member, and grows a Seq field.
+  t.src """
+import scheduler
+import seq
+
+actor Acc [queue: 8]:
+  total: int = 0
+  log: Seq[int] = []
+  done: bool = false
+
+  fn record({n: int}):
+    log = {items: log, value: n} push
+
+  fn addIt({n: int}) -> int:
+    total += n
+    {n: n} record
+    return total
+
+  on add({n: int}):
+    let t = {n: n} addIt
+    if t > 10:
+      done = true
+
+fn ready() -> bool:
+  return Acc.done
+
+fn main() -> int:
+  Acc send add {n: 5}
+  Acc send add {n: 7}
+  Acc.waitUntil {pred: :ready}
+  return Acc.total * 10 + Acc.log.len
+"""
+  t.hostRuns "an actor member returns a value and calls another member, on every backend", 122
+
+  # From `on select` arms, in the payload form and the bare-name form.
+  t.src """
+import scheduler
+
+actor Acc [queue: 8]:
+  total: int = 0
+  done: bool = false
+
+  fn addIt({n: int}):
+    total += n
+
+  fn finishIt():
+    done = true
+
+  on select:
+    | add -> {n: int}:  {n: n} addIt
+    | finish -> {}:     finishIt
+
+fn ready() -> bool:
+  return Acc.done
+
+fn main() -> int:
+  Acc send add {n: 5}
+  Acc send finish {}
+  Acc.waitUntil {pred: :ready}
+  return Acc.total
+"""
+  t.hostRuns "an `on select` arm calls an actor member, on every backend", 5
+
+  # What stays refused: a handler is a message, and a member is the actor's.
+  t.src """
+actor Acc [queue: 8]:
+  total: int = 0
+
+  on add({n: int}):
+    total += n
+
+fn main() -> int:
+  {n: 5} add
+  return 0
+"""
+  t.badCheck "a message handler called like a fn is refused", "TK-AC03"
+  t.src """
+actor Acc [queue: 8]:
+  total: int = 0
+
+  fn addIt({n: int}):
+    total += n
+
+  on add({n: int}):
+    {n: n} addIt
+
+fn main() -> int:
+  {n: 5} addIt
+  return 0
+"""
+  t.badCheck "an actor member called from outside the actor is refused", "TK-AC04"
+  t.src """
+actor Acc [queue: 8]:
+  total: int = 0
+
+  fn addIt({n: int}):
+    total += n
+
+  on add({n: int}):
+    {n: n} addIt
+
+fn main() -> int:
+  Acc send addIt {n: 5}
+  return 0
+"""
+  t.badCheck "a send naming an actor member, not a handler, is refused", "TK-AC05"
+
+  # A38 (found 2026-09-29, by benches/trees/slab_thread.tuck). A local's Seq
+  # FIELD handed on to a threaded fn's moved twin is freed twice on Odin.
+  # `{ns: l.nodes, d: ..} grow` inside `grow_moved` passes `l.nodes` to
+  # `grow_moved`, which keeps the buffer and returns it in `r.nodes` — and the
+  # ownership pass still schedules `defer delete(l.nodes)` beside
+  # `defer delete(r.nodes)`. A slot moved into a call is the caller's no
+  # longer (the twin's own parameter already follows that rule); a local's
+  # field did not. Nim and D answer 15; Odin segfaulted. Fixed 2026-10-04:
+  # ownership_escape.escapes treats a moved FIELD argument as consuming that
+  # slot, as it did a moved bare name.
+  t.src """
+import seq
+
+type Built:
+  nodes: Seq[int]
+  slot: int
+
+fn grow({ns: Seq[int], d: int}) -> Built:
+  if d == 0:
+    var out = ns
+    out = {items: out, value: 1} push
+    return {nodes: out, slot: out.len - 1} Built
+  let l = {ns: ns, d: d - 1} grow
+  let r = {ns: l.nodes, d: d - 1} grow
+  var out = r.nodes
+  out = {items: out, value: l.slot} push
+  return {nodes: out, slot: out.len - 1} Built
+
+fn main() -> int:
+  let t = {ns: [], d: 3} grow
+  return t.nodes.len
+"""
+  t.quietly: t.hostRuns("a Seq field handed to a moved twin is freed once, on every backend", 15)
+  t.bugFixed "a Seq field handed to a moved twin is freed once, on every backend"
+
+  # A40 (found 2026-10-05 by the ownership rules' shadow elaborator: rule P's
+  # runtime table says `push` keeps its value, so `piece` is MOVED into
+  # `out`, while today's pass freed it). A local Seq pushed as an ELEMENT of
+  # another Seq was freed at the end of its scope on Odin, though the outer
+  # Seq still held it: `defer delete(piece)` after `append(&out, piece)`.
+  # Nim and D answer 7; Odin read freed memory (160, 169, 54 on three runs).
+  # The binding's result was exempted from the escape question as "taking
+  # nothing of its arguments" because its own buffer was fresh — but its
+  # elements are below the pass's slot granularity. Fixed 2026-10-05:
+  # analysis_ownership.takesNothingOf answers no for a Seq whose elements can
+  # hold a tracked slot (a Seq, or a record carrying one). (The inner Seqs now leak on Odin rather than being freed early —
+  # A39's class, which deep drops under rule G will close.)
+  t.src """
+import seq
+
+fn chunk({items: Seq[int], size: int}) -> Seq[Seq[int]]:
+  var out: Seq[Seq[int]] = []
+  var i = 0
+  for i < items.len:
+    var piece: Seq[int] = []
+    var j = i
+    for j < items.len and j < i + size:
+      piece = {items: piece, value: items[j]} push
+      j = j + 1
+    out = {items: out, value: piece} push
+    i = i + size
+  return out
+
+fn main() -> int:
+  let c = {items: [1, 2, 3, 4, 5], size: 2} chunk
+  return c[0][1] + c[2][0]
+"""
+  t.quietly: t.hostRuns("A40: a Seq pushed as an element is not freed while held, on every backend", 7)
+  t.bugFixed "A40: a Seq pushed as an element is not freed while held, on every backend"
+
+  # #96, first half (found 2026-10-04, building the slab). A local Seq moved
+  # into a record at its last read — `let nb = {items: x2, tag: 9} Bag` — was
+  # freed as x2 AND as nb.items on Odin: one buffer, two frees, a segfault
+  # where Nim and D answer 10. The copy decision leaves that slot uncopied
+  # because x2 is dead after it, and the ownership pass read "uncopied" as
+  # "nothing of x2 was taken" (analysis_ownership.takesNothingOf). A
+  # construction's uncopied field IS the local that fed it.
+  t.src """
+import seq
+
+type Bag:
+  items: Seq[int]
+  tag: int
+
+fn main() -> int:
+  var x2: Seq[int] = []
+  x2 = {items: x2, value: 1} push
+  let nb = {items: x2, tag: 9} Bag
+  nb.tag + nb.items.len
+"""
+  t.quietly: t.hostRuns("a Seq moved into a record is freed once, on every backend", 10)
+  t.bugFixed "a Seq moved into a record is freed once, on every backend"
+
+  # #96, second half. A fn whose body ENDS in the Seq it returns — `xs` as the
+  # tail value, not `return xs` — deleted it on Odin too: `defer delete(xs)`
+  # ran after the return value was taken, so the caller copied freed memory.
+  # The tail became a `return` only at emit time, after ownership had read it
+  # as a dead local; lowering makes it now (lowering.lowerTailReturns).
+  t.src """
+import seq
+
+fn fill({n: int}) -> Seq[int]:
+  var xs: Seq[int] = []
+  for i in 0 .. n:
+    xs = {items: xs, value: i} push
+  xs
+
+fn main() -> int:
+  let a = {n: 4} fill
+  a.len
+"""
+  t.quietly: t.omitsOdin("a Seq a fn returns as its tail value is not freed by it",
+                         "defer delete\\(tuckˑvˑxs\\)")
+  t.bugFixed "a Seq a fn returns as its tail value is not freed by it"
+
+  # #97 (found 2026-10-04). A record LITERAL where a named record is wanted —
+  # what TK-PA13's own message calls fine — built on no backend. Three shapes:
+  #   `{b: {tag: 9}} take`  crashed the compiler: exploded to `take({tag:9})`,
+  #                         the call LOOKED unexploded (one struct argument)
+  #                         and the next pass exploded it again (argsExploded);
+  #   `{b: {..}, n: 1} take` and `{point: {x: 1, y: 2}, w: 3} Thing` emitted
+  #                         an anonymous record no host passes as a Bag or a
+  #                         Point. Lowering constructs the named type now
+  #                         (lowering.constructRecordArgs / ...Fields).
+  t.src """
+type Bag:
+  tag: int
+
+fn take({b: Bag}) -> int:
+  b.tag
+
+fn main() -> int:
+  {b: {tag: 9}} take
+"""
+  t.quietly: t.hostRuns("a record literal is a one-param fn's argument, on every backend", 9)
+  t.bugFixed "a record literal is a one-param fn's argument, on every backend"
+
+  t.src """
+type Inner:
+  v: int
+
+type Point:
+  x: int
+  inner: Inner
+
+type Thing:
+  point: Point
+  w: int
+
+fn take({t: Thing, n: int}) -> int:
+  t.point.inner.v + t.w + n
+
+fn main() -> int:
+  let t = {point: {x: 1, inner: {v: 5}}, w: 3} Thing
+  let a = {t: {point: {x: 2, inner: {v: 7}}, w: 1}, n: 0} take
+  t.point.x + t.point.inner.v + t.w + a
+"""
+  t.quietly: t.hostRuns("record literals nest in constructions and arguments, on every backend", 17)
+  t.bugFixed "record literals nest in constructions and arguments, on every backend"
+
+  # #98 (found 2026-10-04, writing examples/48). `for up.ok:` did not narrow
+  # `up` in the body, so walking a chain of `?` links — the parent pointers a
+  # slab exists for — needed recursion. The loop narrows now, as `if` does
+  # its branch; a `?T` assigned to the narrowed name ends it.
+  t.src """
+type Dir:
+  bytes: int
+  parent: DirsRef?
+
+slab Dirs = Dir [leaks: ok]
+
+fn total({dir: DirsRef}) -> int:
+  var sum = 0
+  var up = dir.parent
+  for up.ok:
+    sum = sum + up.value.bytes
+    up = up.value.parent
+  sum
+
+fn main() -> int:
+  let root = Dirs.new {bytes: 1, parent: none}
+  let src = Dirs.new {bytes: 2, parent: root}
+  let lib = Dirs.new {bytes: 4, parent: src}
+  {dir: lib} total
+"""
+  t.quietly: t.hostRuns("`for x.ok:` narrows x in the loop body", 3)
+  t.bugFixed "`for x.ok:` narrows x in the loop body"
+
+  # ...and the hole that fix had to close first: a narrowed name given a `?T`
+  # again was still read as present. `if x.ok: x = none; x.value` checked
+  # clean.
+  t.src """
+fn get() -> int?:
+  return 3
+
+fn main() -> int:
+  var x = {} get
+  if x.ok:
+    x = none
+    return x.value
+  return 0
+"""
+  t.quietly: t.badCheck("a ?T assigned to a narrowed name un-narrows it", "unhandled \\?int")
+  t.bugFixed "a ?T assigned to a narrowed name un-narrows it"
+
+  # Found 2026-10-04, probing generic code over slabs. A plain `T` given to
+  # a binding whose stated type is `T?` was emitted bare, and each host
+  # refused it where its result carrier was expected — on all three
+  # backends. R8 (lowering_optional) wrapped a store into a `?T` field but
+  # read the place's type from the target alone, which a new binding's
+  # name does not carry.
+  t.src """
+type Node:
+  data: int
+
+slab Nodes = Node [leaks: ok]
+
+fn main() -> int:
+  let five = 5
+  let x: int? = five
+  var h: NodesRef? = Nodes.new {data: 1}
+  var t = 0
+  if x.ok:
+    t = t + x.value
+  if h.ok:
+    t = t + h.value.data
+  return t
+"""
+  t.quietly: t.hostRuns("a plain T into a stated `T?` binding is wrapped", 6)
+  t.bugFixed "a plain T into a stated `T?` binding is wrapped"
+
+  # Found the same day, beside it: a GENERIC construction never noted a
+  # plain `T` given to a `T?` field, so `{v: 1, n: two} Box` with `n: T?`
+  # built on no backend. The wrap is judged once every type argument is
+  # known (typecheck.inferConstructionArgs).
+  t.src """
+type Box[T]:
+  v: T
+  n: T?
+
+fn main() -> int:
+  let two = 2
+  let b = {v: 1, n: two} Box
+  let n = b.n
+  if n.ok:
+    return b.v + n.value
+  return 0
+"""
+  t.quietly: t.hostRuns("a plain T into a generic record's `T?` field is wrapped", 3)
+  t.bugFixed "a plain T into a generic record's `T?` field is wrapped"
+
+  # ...and `none` there, with nothing else naming R, bound R to itself: the
+  # construction was typed `Link[int, R]`, and the error landed later as a
+  # mismatch against that, instead of saying R cannot be inferred.
+  t.src """
+type Link[T, R]:
+  value: T
+  next: R?
+
+fn main() -> int:
+  let l = {value: 1, next: none} Link
+  return l.value
+"""
+  t.quietly: t.badCheck("`none` alone cannot infer a generic param",
+                        "cannot infer generic parameter 'R' of 'Link'")
+  t.bugFixed "`none` alone cannot infer a generic param"
+
+  # #96's first shape, generic (found 2026-10-04 by benches/containers
+  # generic_box, which segfaulted on Odin). `seqFieldNames` answered nothing
+  # for a generic application, so the escape analysis read `return {items:
+  # xs} Box` as carrying no buffer out, and Odin deleted `xs` on the way out
+  # of the very fn returning it.
+  t.src """
+import seq
+
+type Box[T]:
+  items: Seq[T]
+
+fn add[T]({b: Box[T], value: T}) -> Box[T]:
+  var xs = b.items
+  xs = {items: xs, value: value} push
+  return {items: xs} Box
+
+fn main() -> int:
+  var b: Box[int] = {items: []} Box
+  for i in 0 .. 99:
+    b = {b: b, value: i} add
+  return b.items.len + b.items[99] - 100
+"""
+  t.quietly: t.hostRuns("a generic record returned with a moved Seq keeps it", 99)
+  t.bugFixed "a generic record returned with a moved Seq keeps it"
+
+  # Found 2026-10-05 by TUCK_TRACK, the first time it tracked a program whose
+  # runtime calls all sit in its fns. A fn that threads its first parameter,
+  # called with an argument still read later, reaches the WRAPPER, which
+  # copies that argument; the result is that private copy. Provenance joined
+  # it with the argument anyway (and lost track of `ns` through the
+  # self-append `out = push(out, v)`), so the caller's binding copied the
+  # copy and dropped it: one buffer per call on Odin. 20 000 calls on a
+  # 1024-element array are ~160 MB of dropped copies, three times over here
+  # (483 MB peak before the fix, 10 MB after). `wrap` passes its own
+  # PARAMETER, the case only the final moved-argument stamps can settle.
+  t.src """
+import seq
+
+type Built:
+  nodes: Seq[int]
+  slot: int
+
+fn zeroed({levels: int}) -> Seq[int]:
+  var out = [0]
+  var i = 1
+  for i < levels:
+    out = {items: out, value: 0} push
+    i = i + 1
+  return out
+
+fn grow({ns: Seq[int], v: int}) -> Seq[int]:
+  var out = ns
+  out = {items: out, value: v} push
+  return out
+
+fn build({ns: Seq[int], v: int}) -> Built:
+  var out = ns
+  out = {items: out, value: v} push
+  return {nodes: out, slot: v} Built
+
+fn wrap({xs: Seq[int]}) -> int:
+  let g = {ns: xs, v: 3} grow
+  return g.len - xs.len
+
+fn main() -> int:
+  let base = {levels: 1024} zeroed
+  var total = 0
+  var i = 0
+  for i < 20000:
+    let g = {ns: base, v: 1} grow
+    let b = {ns: base, v: 2} build
+    total = total + g.len + b.nodes.len - 2050 + {xs: base} wrap - 1
+    i = i + 1
+  if total != 0:
+    return 1
+  return 0
+"""
+  t.quietly: t.hostPeakRss("a threading fn's result is not copied again and dropped", 65536)
+  t.bugFixed "a threading fn's result is not copied again and dropped"
+
+  # A39 (found 2026-10-05 by TUCK_TRACK on example 44). A recursive sum
+  # type's edges are boxed (lowering_recursive: a one-element Seq per edge),
+  # and Odin never frees a box: the ownership pass follows Seq slots of
+  # records, and a sum value is neither. Each tree built leaks every box it
+  # has — 200 000 small trees peak at 111 MB on Odin against 10 MB on Nim
+  # and D. Freeing only a value's own boxes is not enough (a child is a
+  # shallow copy, shared between parents, and a returned tree is reachable
+  # only through its root); the fix is deep ownership — a copy of a value
+  # used twice is a deep copy, a last use a move, and a drop proc frees a
+  # tree recursively — which is what Nim and D already give.
+  t.src """
+type Expr:
+  | Num({value: int})
+  | Neg({operand: Expr})
+  | Add({left: Expr, right: Expr})
+
+fn eval({e: Expr}) -> int:
+  match e:
+    Num: return e.value
+    Neg: return 0 - {e: e.operand} eval
+    Add: return {e: e.left} eval + {e: e.right} eval
+
+fn once({k: int}) -> int:
+  let three = Expr.Num {value: k}
+  let four = Expr.Num {value: 4}
+  let sum = Expr.Add {left: three, right: four}
+  let neg = Expr.Neg {operand: sum}
+  let whole = Expr.Add {left: sum, right: neg}
+  return {e: whole} eval
+
+fn main() -> int:
+  var total = 0
+  var i = 0
+  for i < 200000:
+    total = total + {k: 3} once
+    i = i + 1
+  return total
+"""
+  t.quietly: t.hostPeakRss("A39: building recursive values in a loop does not accumulate them", 32768)
+  t.bugOpen "A39: building recursive values in a loop does not accumulate them"
+
+  # A41-A45 (found 2026-10-05 by rule V, the ownership checker, reading
+  # today's Odin tree: compiler/ownership_check.nim, TUCK_DEBUG_OWN=verify).
+  # Each is an owned value the tree never drops, a leak, confirmed at run
+  # time by TUCK_TRACK. They are not patched in today's passes: rule D drops
+  # every owned place and temporary by construction, and the switch to it
+  # (ownership-rules proposal §8 step 4.1) is where they close. Each pin
+  # builds the program tracked, so it must answer what it answers untracked.
+  #
+  # A41: a record field overwritten in place leaks the value it replaced.
+  # The scope-end `defer delete(b.items)` frees only the last one.
+  t.src """
+import seq
+
+type Bag:
+  items: Seq[int]
+
+fn main() -> int:
+  var b = {items: [1]} Bag
+  b.items = [2, 3]
+  return b.items.len
+"""
+  t.quietly: t.odinTracked("A41: a record field overwritten in place frees what it replaced", 2)
+  t.bugOpen "A41: a record field overwritten in place frees what it replaced"
+
+  # A42: a local handed over at its last use (here to `shrink`'s moved twin)
+  # has no scope-end drop, so every return before that use leaks it.
+  t.src """
+import seq
+
+fn shrink({items: Seq[int]}) -> Seq[int]:
+  var out: Seq[int] = []
+  for x in items:
+    if x > 1:
+      out = {items: out, value: x} push
+  return out
+
+fn early({n: int}) -> int:
+  let xs = [1, 2, 3]
+  if n > 5:
+    return 1
+  let ys = {items: xs} shrink
+  return ys.len
+
+fn main() -> int:
+  return {n: 9} early + {n: 0} early
+"""
+  t.quietly: t.odinTracked("A42: a local handed over at its last use is freed on an earlier return", 3)
+  t.bugOpen "A42: a local handed over at its last use is freed on an earlier return"
+
+  # A43: a record local rebound through a threading fn (`b = {b: b} add`,
+  # printed `b = add_moved(b)`) is never freed at all. The stdlib's Set and
+  # List checks leak this way (TUCK_TRACK: 6 and 11 allocations).
+  t.src """
+import seq
+
+type Bag:
+  items: Seq[int]
+
+fn add({b: Bag, value: int}) -> Bag:
+  var xs = b.items
+  xs = {items: xs, value: value} push
+  return {items: xs} Bag
+
+fn main() -> int:
+  var b = {items: []} Bag
+  b = {b: b, value: 1} add
+  b = {b: b, value: 2} add
+  return b.items.len
+"""
+  t.quietly: t.odinTracked("A43: a record local rebound through a threading fn is freed", 2)
+  t.bugOpen "A43: a record local rebound through a threading fn is freed"
+
+  # A44: a local that is returned gets no drop, and so neither do its
+  # overwrites: `out = {r: r, into: out} encode` (a call that does not
+  # consume `out`) leaks the buffer it replaces, once per iteration. The
+  # stdlib's `toUtf16` leaks one buffer per rune this way.
+  t.src """
+import seq
+
+fn encode({r: int, into: Seq[int]}) -> Seq[int]:
+  var out = into
+  out = {items: out, value: r} push
+  return out
+
+fn build() -> Seq[int]:
+  var out: Seq[int] = []
+  for r in 1 .. 3:
+    out = {r: r, into: out} encode
+  return out
+
+fn main() -> int:
+  let b = {} build
+  return b.len
+"""
+  t.quietly: t.odinTracked("A44: a returned local frees what each overwrite replaces", 3)
+  t.bugOpen "A44: a returned local frees what each overwrite replaces"
+
+  # A45: an owning TEMPORARY, a value no place holds, is never freed: a list
+  # literal a `for` iterates, and a call's result handed to a parameter that
+  # only reads it. Rule D drops a temporary where its statement ends; the
+  # tree has no node that does. (`str` temporaries are named and freed by
+  # lowering_strtemps; nothing does it for a Seq.) Over the corpus V finds
+  # 25 such sites, among them a call's result copied at a binding, whose
+  # original is never freed.
+  t.src """
+import seq
+
+fn three() -> Seq[int]:
+  return [1, 2, 3]
+
+fn total({xs: Seq[int]}) -> int:
+  var n = 0
+  for x in xs:
+    n = n + x
+  return n
+
+fn main() -> int:
+  var n = 0
+  for r in [1, 2, 3]:
+    n = n + r
+  return n + {xs: three} total
+"""
+  t.quietly: t.odinTracked("A45: an owning temporary is freed where its statement ends", 12)
+  t.bugOpen "A45: an owning temporary is freed where its statement ends"
+
+  # A46 (found 2026-10-05, writing A45's pin): `for r in [1, 2, 3]:` built
+  # on Nim and D and not on Odin. In a `for` header Odin, like Go, reads a
+  # compound literal's `{` as the start of the loop body, so
+  # `for r in [dynamic]int{1, 2, 3} {` was a syntax error. Fixed 2026-10-05:
+  # an iterable holding a literal is parenthesized (codegen_odin.genFor).
+  t.src """
+fn main() -> int:
+  var n = 0
+  for r in [1, 2, 3]:
+    n = n + r
+  return n
+"""
+  t.quietly: t.hostRuns("A46: a list literal is iterable on every backend", 6)
+  t.bugFixed "A46: a list literal is iterable on every backend"
+
+  # TUCK_TRACK's blind spot (found 2026-10-05 with A41): the Odin entry point
+  # installed the allocation tracker only in a program that used the
+  # runtime, on the reasoning that without one there is nothing to track.
+  # A41's program calls nothing in the runtime and leaks all the same, and
+  # tracked it exited 2, clean. Fixed 2026-10-05: a program that allocates
+  # (`[dynamic]`, `delete(`) imports the runtime and is tracked.
+  t.src """
+import seq
+
+type Bag:
+  items: Seq[int]
+
+fn main() -> int:
+  var b = {items: [1]} Bag
+  return b.items.len
+"""
+  t.quietly: t.emitsOdin("TUCK_TRACK reaches a program that allocates without calling the runtime", "context\\.allocator = rt\\.tuckTrackAllocator\\(\\)")
+  t.bugFixed "TUCK_TRACK reaches a program that allocates without calling the runtime"
 
   t.finish()

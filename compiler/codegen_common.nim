@@ -99,6 +99,30 @@ proc poolOpProc*(op: PoolOpKind): string =
   of poWrite: "tuckPoolWrite"
   of poAddr: "tuckPoolAddr"
 
+proc slabCellValue*(slab, r: string, rt = ""): string =
+  ## The value in the cell `r` names, through the runtime's checked
+  ## `tuckSlabCell` — a read and a write alike (lowering_slab, `get`, `set`).
+  rt & "tuckSlabCell(" & slab & ", " & r & ").value"
+
+proc slabOpCall*(op: SlabOpKind, slab, arg, value: string, rt = "",
+                 newProc = "tuckSlabNew"): string =
+  ## A slab operation on the runtime's `tuckSlab*` procs, one family in all
+  ## three runtimes. `slab` is the storage as the backend passes it (`Nodes`,
+  ## `&Nodes`), `rt` the runtime's qualifier, `newProc` the proc that fills
+  ## a cell (Odin's fixed slab has its own: its `new` may find no room).
+  case op
+  of soNew: rt & newProc & "(" & slab & ", " & value & ")"
+  of soFree: rt & "tuckSlabFree(" & slab & ", " & arg & ")"
+  of soLive: rt & "tuckSlabLive(" & slab & ", " & arg & ")"
+  of soReset: rt & "tuckSlabReset(" & slab & ")"
+  of soCount: rt & "tuckSlabCount(" & slab & ")"
+  of soGet: slabCellValue(slab, arg, rt)
+  of soSet: slabCellValue(slab, arg, rt) & " = " & value
+
+const SlabsReleaseProc* = "tuckSlabsRelease"
+  ## Odin: each module's proc that hands its slabs back at exit under
+  ## TUCK_TRACK (codegen_odin_decl.genOdinSlabsRelease).
+
 const UnhandledHandlerName* = "tuck_unhandled"
   ## The generated proc every dropped fallible result reports through (spec
   ## 4.9), and the one each backend declares. A compiler-made name, so it
@@ -123,7 +147,7 @@ proc collectHandlers*(d: Decl):
   ## binding. Walking only dkFn — which the Odin backend did at five separate
   ## sites — made every `on select` actor look like an actor with NO handlers.
   for h in d.handlers:
-    if h.kind == dkFn:
+    if h.kind == dkFn and h.isOnHandler:
       result.handlers.add(ActorMsgHandler(name: h.name, params: h.fnParams,
                                           body: h.fnBody))
     elif h.kind == dkSelect:
@@ -178,6 +202,65 @@ proc actorQueueSize*(m: Module, d: Decl): string =
     if attr.name != "queue": continue
     let n = constIntOf(m, attr.value)
     return if n.isSome: $n.get else: attr.value
+
+type
+  OnFull* = enum
+    ## What the send that finds an actor's mailbox full does (R6, ruled
+    ## 2026-09-28): the program picks, per actor, `[on_full: ...]`.
+    ofWait = "wait"       ## wait for room — the default
+    ofDrop = "drop"       ## lose the message, as every send once did
+    ofAssert = "assert"   ## stop the program, naming the actor
+
+proc actorOnFull*(d: Decl): OnFull =
+  ## The actor's `[on_full: ...]`, or `wait` when it names none. The checker
+  ## has refused any other word (TK-AC06), so the fallback is reached only
+  ## for an unchecked tree.
+  result = ofWait
+  if d == nil: return
+  for attr in d.attrs:
+    if attr.name != "on_full": continue
+    for p in OnFull:
+      if $p == attr.value: return p
+
+proc actorLabel*(d: Decl, fallback: string): string =
+  ## The actor's name as its author wrote it, for a runtime message.
+  if d == nil: fallback else: writtenName(d)
+
+proc slabLabel*(d: Decl): string =
+  ## A slab's name in the runtime's messages: as written, or for an arena's
+  ## slab, the arena's (`TUCK SLAB [Frame]: stale reference ...`).
+  if d.slabArena != "": d.slabArena else: actorLabel(d, d.name)
+
+proc arenaOfSlab*(m: Module, real: Table[string, Module], slab: Decl): Decl =
+  ## The arena `slab` is the slab of for one element type, or nil.
+  if slab == nil or slab.slabArena == "": return nil
+  for d in m.decls(dkArena):
+    if writtenName(d) == slab.slabArena: return d
+  for _, other in real:
+    for d in other.decls(dkArena):
+      if writtenName(d) == slab.slabArena: return d
+  nil
+
+proc slabsOfArena*(m: Module, arena: Decl): seq[Decl] =
+  ## An arena's slabs, one per element type its `new`s name — the checker
+  ## made them and the driver put them in the arena's module.
+  for d in m.decls(dkSlab):
+    if d.slabArena == writtenName(arena): result.add d
+
+proc arenaResetProc*(arena: string): string =
+  ## Each arena's generated reset: every slab of it, and its budget.
+  arena & "_reset"
+
+proc actorDeclNamed*(m: Module, real: Table[string, Module], name: string): Decl =
+  ## The actor a send names, declared in this module or one it imports.
+  for d in m.decls:
+    if d != nil and d.kind == dkActor and (d.name == name or writtenName(d) == name):
+      return d
+  for other in real.values:
+    if other == m: continue
+    for d in other.decls:
+      if d != nil and d.kind == dkActor and (d.name == name or writtenName(d) == name):
+        return d
 
 proc isDistinctAlias*(body: Type): bool =
   ## Does this alias declare a type the compiler must keep SEPARATE from its
@@ -450,85 +533,6 @@ proc isResultCarrierType*(t: Type): bool =
   t != nil and t.kind == tkApp and t.base != nil and
     t.base.kind == tkNamed and t.base.name in ["!", "?", "!?"]
 
-proc plainVarAssign(e: Expr): bool =
-  ## `x = <value>` where x is a bare name and this is not its declaration.
-  e != nil and e.kind == exkAssign and not e.isDecl and
-    e.target != nil and e.target.kind == exkVar
-
-proc isRtPushCall(call: Expr): bool =
-  ## A runtime `push` with its payload still a struct literal. Matched on the
-  ## UNMANGLED name: mangling runs before codegen, so a user's own `fn push`
-  ## is `tuck_push` here and only the runtime's is `push`.
-  call != nil and call.kind == exkCall and call.args.len == 1 and
-    call.callee != nil and call.callee.kind == exkVar and
-    call.callee.name == "push" and
-    call.args[0] != nil and call.args[0].kind == exkStruct
-
-proc pushCallOf(res: Resolution, e: Expr): Expr =
-  ## The runtime `push` call this plain assignment's value is, or nil.
-  if not plainVarAssign(e): return nil
-  var call = e.assignVal
-  if call != nil and res.hasCall(call): call = res.call(call)
-  if not isRtPushCall(call): return nil
-  call
-
-proc selfAppendValue*(res: Resolution, e: Expr): Expr =
-  ## `xs = {items: xs, value: v} push` — an append whose result is assigned
-  ## back to its own argument. Returns `v`, or nil when the statement is not
-  ## that shape.
-  ##
-  ## WHY THIS IS A SPECIAL CASE AND NOT AN OPTIMISATION PASS. The runtime's
-  ## `push` returns a NEW seq, because value semantics forbid writing through
-  ## a parameter — so every append copies the whole sequence and a build loop
-  ## is O(n^2). Measured: 50k/100k appends took 1.29s/5.24s in release, a
-  ## ratio of 4.06 on a doubled input.
-  ##
-  ## But `xs = push(xs, v)` is provably a MOVE: the old value of `xs` is dead
-  ## the instant the new one is assigned, so nothing can observe the
-  ## difference between copying it and appending in place. Every backend's
-  ## host already has an amortised append (`add` / `append` / `~=`), so this
-  ## needs no new runtime — only for the emitters to recognise the shape.
-  ##
-  let call = pushCallOf(res, e)
-  if call == nil: return nil
-  # The payload is still a STRUCT at this point — the positional explosion
-  # happens in the emitters — so the two arguments are read by the names
-  # std/seq declares them with.
-  var items, value: Expr
-  for f in call.args[0].fields:
-    if f.name == "items": items = f.value
-    elif f.name == "value": value = f.value
-  if items == nil or value == nil: return nil
-  if items.kind != exkVar or items.name != e.target.name: return nil
-  value
-
-
-proc selfConcatValue*(res: Resolution, e: Expr): Expr =
-  ## `s = s + <expr>` on a `str` — a concatenation assigned back over its own
-  ## LEFT operand. Returns `<expr>`, or nil when the statement is not that
-  ## shape.
-  ##
-  ## The twin of selfAppendValue above, and the same argument: the old `s` is
-  ## dead the instant the new one lands, so growing it in place is
-  ## unobservable. Syntactic, so there is no liveness to get wrong.
-  ##
-  ## IT IS WORTH MORE THAN IT LOOKS. `s = s + t` in a loop is O(n^2) on every
-  ## backend, because each concatenation copies the whole string — measured at
-  ## 100k/200k/400k iterations, Nim took 117/461/1859 ms, a clean 4x per
-  ## doubling. Emitting the host's amortised append instead took the 200k case
-  ## from 460 ms to 2 ms and turned the loop linear.
-  ##
-  ## LEFT OPERAND ONLY, and the right must not name the target:
-  ##   `s = t + s`  is a PREPEND, and appending would silently reverse it
-  ##   `s = s + s`  would grow a string while reading it
-  if not plainVarAssign(e): return nil
-  let v = e.assignVal
-  if v == nil or v.kind != exkBinary or not isStringConcat(v): return nil
-  if v.left == nil or v.left.kind != exkVar or v.left.name != e.target.name:
-    return nil
-  if mentionsName(v.right, e.target.name): return nil
-  v.right
-
 proc hasLastUse(res: Resolution, e: Expr, name: string): bool =
   ## Does the liveness pass mark some read of `name` inside `e` as its final
   ## use? That stamp is what licenses moving from a parameter.
@@ -538,15 +542,162 @@ proc hasLastUse(res: Resolution, e: Expr, name: string): bool =
     if hasLastUse(res, c, name): return true
   false
 
+# --- which final reads of a parameter KEEP it ------------------------------
+#
+# `sink` tells Nim the callee may keep the argument: a caller then MOVES an
+# argument that dies at the call and COPIES one that is still live. So a
+# parameter the callee only READS must not be `sink` — and marking one anyway
+# is not merely wasted. Every call whose argument is still needed pays a full
+# copy, and a recursive reader (`eval(ns, n.left) + eval(ns, n.right)`) pays
+# one per call: 87 s against 0.037 s on a 2^15-leaf tree held as a node array,
+# and 0.25 s against 0.011 s for the boxed tree lowering_recursive emits
+# (benches/SCORES.md, "Trees"). Leaving `sink` off is always sound — it only
+# gives up a move — so every unrecognised case below answers "kept", which is
+# what every final read was taken to mean before.
+
+type ConsumeMemo = object
+  known: Table[string, bool]  ## "fn\0param" -> does the fn keep that param
+  busy: HashSet[string]       ## being answered: a recursive call reads as not kept
+
+proc fnNamed(m: Module, name: string): Decl =
+  ## The one top-level fn called `name`, or nil — none, or several, when the
+  ## call cannot say which and the answer has to be the safe one.
+  for d in m.decls:
+    if d != nil and d.kind == dkFn and d.name == name:
+      if result != nil: return nil
+      result = d
+
+proc paramKept(res: Resolution, m: Module, fnD: Decl, pname: string,
+               memo: var ConsumeMemo): bool
+
+proc calleeKeeps(res: Resolution, m: Module, call: Expr, pname: string,
+                 idx: int, memo: var ConsumeMemo): bool =
+  ## Does the callee keep the argument bound to its parameter `pname` (by
+  ## name, for a record-style call) or at position `idx`? A fn declared in
+  ## this module answers from its own body; a construction, an extern or an
+  ## import is taken to keep it.
+  if call.callee == nil or call.callee.kind != exkVar: return true
+  let d = fnNamed(m, call.callee.name)
+  if d == nil or d.fnBody == nil: return true
+  if pname != "":
+    for p in d.fnParams:
+      if p.name == pname: return paramKept(res, m, d, pname, memo)
+    return true
+  if idx < 0 or idx >= d.fnParams.len: return true
+  paramKept(res, m, d, d.fnParams[idx].name, memo)
+
+proc keptAt(res: Resolution, m: Module, stack: seq[Expr], k: int,
+            memo: var ConsumeMemo): bool
+
+proc fieldKept(res: Resolution, m: Module, stack: seq[Expr], k: int,
+               memo: var ConsumeMemo): bool =
+  ## stack[k] is a field VALUE of the record literal stack[k-1]. A literal
+  ## that is a call's payload hands each field to the parameter of that name;
+  ## any other literal holds what it is given.
+  let s = stack[k - 1]
+  if k >= 2 and stack[k - 2].kind == exkCall and s in stack[k - 2].args:
+    for f in s.fields:
+      if f.value == stack[k]:
+        return calleeKeeps(res, m, stack[k - 2], f.name, -1, memo)
+  true
+
+proc carriesAlong(res: Resolution, m: Module, read: Expr): bool =
+  ## Can the field read `read` carry its receiver's storage outward? Not when
+  ## what it reads is a scalar: `return b.items.len` keeps nothing of `b`,
+  ## and a `sink` there makes every caller still holding `b` copy it. An
+  ## unknown type answers yes, the answer every unrecognised case gives.
+  let t = res.typeFor(read)
+  t == nil or ownsHeap(m, t)
+
+proc throughField(res: Resolution, m: Module, stack: seq[Expr], k: int,
+                  memo: var ConsumeMemo): bool =
+  ## stack[k] sits under the field read stack[k-1]: a `.name {args}` call
+  ## keeps it; a plain read passes it outward only when what it reads can
+  ## carry the storage along, and that read is itself kept.
+  let p = stack[k - 1]
+  p.dotArg != nil or
+    (stack[k] == p.receiver and carriesAlong(res, m, p) and
+     keptAt(res, m, stack, k - 1, memo))
+
+proc keptAt(res: Resolution, m: Module, stack: seq[Expr], k: int,
+            memo: var ConsumeMemo): bool =
+  ## Is the value stack[k] kept by where it sits — bound, stored, returned,
+  ## sent, or handed to a parameter that keeps it? Walks outward while the
+  ## value only passes through (a branch, a block's last value, a field read).
+  if k == 0: return true   # the body's own value is the fn's result
+  let n = stack[k]
+  let p = stack[k - 1]
+  case p.kind
+  of exkReturn, exkList, exkFill, exkSend, exkChain: true
+  of exkAssign: n == p.assignVal
+  of exkBracketAssign: n == p.brValue
+  # `xs += v`: the target's buffer lives on in the grown value, so its read
+  # keeps it; an element is stored into the Seq, while a str's bytes are only
+  # copied onto the end.
+  of exkAppend: n == p.appendTarget or p.appendsElement
+  of exkStruct: fieldKept(res, m, stack, k, memo)
+  of exkCall: n != p.callee and calleeKeeps(res, m, p, "", p.args.find(n), memo)
+  of exkField: throughField(res, m, stack, k, memo)
+  of exkIf: n != p.cond and keptAt(res, m, stack, k - 1, memo)
+  of exkMatch: n != p.subject and keptAt(res, m, stack, k - 1, memo)
+  of exkBlock:
+    p.stmts.len > 0 and n == p.stmts[^1] and keptAt(res, m, stack, k - 1, memo)
+  else: false   # an operand, an index, a condition, a loop's iterable: read
+
+proc finalReadOf(res: Resolution, e: Expr, name: string): bool =
+  ## Is `e` a final read of `name` — the name itself, or a path through it
+  ## (`b.items`)? The SSA mirror stamps a path's final read on the PATH,
+  ## never on its root. The pass it replaced stamped the root as well, and
+  ## that root stamp is what this predicate read — so from the switch on, no
+  ## parameter read through a field was ever `sink`, and every
+  ## record-threading container copied itself on each call on Nim
+  ## (benches/containers: rec_thread, two_fields, generic_box, str_builder).
+  if not res.isLastUse(e): return false
+  if e.kind == exkField and res.hasCall(e): return false   # `a.total`: a call
+  let p = pathOf(e)
+  p == name or p.startsWith(name & ".")
+
+proc keptLastUse(res: Resolution, m: Module, e: Expr, name: string,
+                 stack: var seq[Expr], memo: var ConsumeMemo): bool =
+  ## Is some read of `name` under `e` both its final use and a keeping one?
+  if e == nil: return false
+  stack.add e
+  if e.kind in {exkVar, exkField} and finalReadOf(res, e, name) and
+     (e.kind == exkVar or carriesAlong(res, m, e)):
+    result = keptAt(res, m, stack, stack.high, memo)
+  if not result:
+    for c in e.children:
+      if keptLastUse(res, m, c, name, stack, memo):
+        result = true
+        break
+  discard stack.pop()
+
+proc paramKept(res: Resolution, m: Module, fnD: Decl, pname: string,
+               memo: var ConsumeMemo): bool =
+  ## Does `fnD` keep its parameter `pname`? The least fixed point over the
+  ## module's fns: a call back into one still being answered reads as "only
+  ## read", which is what a recursive reader is.
+  let key = fnD.name & "\0" & pname
+  if memo.known.hasKey(key): return memo.known[key]
+  if key in memo.busy: return false
+  memo.busy.incl key
+  var stack: seq[Expr]
+  result = keptLastUse(res, m, fnD.fnBody, pname, stack, memo)
+  memo.busy.excl key
+  memo.known[key] = result
+
 proc paramIsMovable*(res: Resolution, m: Module, body: Expr, p: Param): bool =
-  ## May this parameter be taken destructively? True when the analysis proved
-  ## the body's final read of it — so the caller's copy is unobservable from
-  ## that point — AND the type owns storage worth not copying.
+  ## May this parameter be taken destructively (`sink`)? True when the type
+  ## owns storage worth not copying AND the body's final read of it KEEPS it
+  ## (keptAt). A parameter the body only reads — indexes, measures, walks,
+  ## passes on to another reader — is borrowed instead.
   ##
   ## A parameter the body never reads has no stamped use and stays as it was,
   ## which is the safe answer for anything the analysis did not reach.
   if not ownsHeap(m, p.typ): return false
-  hasLastUse(res, body, p.name)
+  var memo: ConsumeMemo
+  var stack: seq[Expr]
+  keptLastUse(res, m, body, p.name, stack, memo)
 
 # --- the MOVED twin ---------------------------------------------------------
 #
@@ -596,38 +747,35 @@ proc handlerProcName*(handler: Decl): string =
   ## identifier — the dot becomes an underscore, as its declaration does.
   handler.name.replace(".", "_")
 
-proc memberReceiverVar(res: Resolution, m: Module, n: Expr): string =
-  ## The variable node `n` calls a member on — `a` in `a.sampleRate`, as the
-  ## call itself or as the checker resolved it — or "".
-  let c = if n.kind == exkCall: n else: res.call(n)
-  if c == nil or c.kind != exkCall or c.args.len == 0: return ""
-  let r = c.args[0]
-  if r == nil or r.kind != exkVar or memberCallee(res, m, c) == "": return ""
-  r.name
+iterator actorMemberFns*(d: Decl): Decl =
+  ## An actor's member `fn`s — the ones spelled `fn`, not `on` (A24). Each is
+  ## printed as a proc taking the actor's state as `self`, the way its message
+  ## dispatch takes it, and a call to one passes that `self` on.
+  for h in d.handlers:
+    if h != nil and h.kind == dkFn and not h.isOnHandler: yield h
 
-proc paramsCalledAsReceiver*(res: Resolution, m: Module, fn: Decl): seq[string] =
-  ## The params of `fn` (never `self`) that a member call in its body takes
-  ## as the receiver. Every backend passes a member's `self` mutably — Nim
-  ## `var T`, Odin `^T`, D `ref T` — and a Nim or Odin parameter is neither
-  ## mutable nor addressable, so a member call on one did not compile
-  ## (found 2026-09-27). Such a param is shadowed by a mutable copy at the top
-  ## of the body: the value a D parameter already is, so a member writing
-  ## `self` writes the copy on every backend alike.
-  if fn == nil or fn.fnBody == nil: return
-  var names: seq[string]
-  for p in fn.fnParams:
-    if p.name != "self": names.add(p.name)
-  if names.len == 0: return
-  for n in nodes(fn.fnBody):
-    let r = memberReceiverVar(res, m, n)
-    if r in names and r notin result: result.add(r)
+proc actorMemberCallee*(res: Resolution, e: Expr): string =
+  ## The proc a call to an actor's member `fn` prints as (A24) — the name the
+  ## member is declared under, `memberProcName` over the mangled actor — or
+  ## "" for any other call. The checker only records a call made from the
+  ## actor's own code, where `self` is its state.
+  let (owner, member) = res.actorMemberOf(e)
+  if member == "": "" else: memberProcName(prefixed(owner, nkActor), member)
 
-proc leadingIndent*(body: string): string =
-  ## The indentation of `body`'s first non-blank line — where a line put in
-  ## front of an emitted body has to start.
-  for line in body.splitLines:
-    if line.strip.len == 0: continue
-    for ch in line:
-      if ch in {' ', '\t'}: result.add(ch)
-      else: return
-  ""
+proc actorSelfParam*(actorType: string, m: Decl): Param =
+  ## `self`, the state an actor member `fn` works on, typed as `actorType`
+  ## — each backend's spelling of what its message dispatch takes.
+  Param(name: "self", typ: Type(span: m.span, kind: tkNamed, name: actorType),
+        span: m.span)
+
+proc isZeroFill*(e: Expr): bool =
+  ## `[0; N]`, `[0.0; N]`, `[false; N]` — a fill each host can give as its
+  ## zero-initialised storage rather than a loop (R8, the owner's note).
+  let v = e.fillValue
+  v != nil and v.kind == exkLit and v.litValue.len > 0 and
+    (v.litValue == "false" or v.litValue.allCharsInSet({'0', '.', '_'}))
+
+proc fillElemType*(res: Resolution, e: Expr): Type =
+  ## `[v; N]`'s element type, as the checker settled it (synthFill).
+  let t = res.typeFor(e)
+  if t != nil and t.kind == tkApp and t.args.len == 2: t.args[1] else: nil

@@ -1,5 +1,5 @@
 # Join two collections on a key (customers with their orders)
-import io
+import console
 import seq
 
 type Customer:

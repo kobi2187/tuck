@@ -1,5 +1,5 @@
 # Logical operations: and, or, not
-import io
+import console
 
 fn main() -> void [io]:
   let a = true

@@ -1,10 +1,10 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 
 proc `==`*(a, b: tuckˑtypeˑExpr): bool {.noSideEffect.}
 
-proc tuckˑfnˑeval*(e: sink tuckˑtypeˑExpr): int
-proc tuckˑfnˑdepth*(e: sink tuckˑtypeˑExpr): int
+proc tuckˑfnˑeval*(e: tuckˑtypeˑExpr): int
+proc tuckˑfnˑdepth*(e: tuckˑtypeˑExpr): int
 proc tuckˑfnˑmain*(): int
 
 type tuckˑtypeˑExprKind* = enum Num, Neg, Add
@@ -21,7 +21,7 @@ proc `==`*(a, b: tuckˑtypeˑExpr): bool {.noSideEffect.} =
   of Neg: a.tuckˑvariantˑneg == b.tuckˑvariantˑneg
   of Add: a.tuckˑvariantˑadd == b.tuckˑvariantˑadd
 
-proc tuckˑfnˑeval*(e: sink tuckˑtypeˑExpr): int =
+proc tuckˑfnˑeval*(e: tuckˑtypeˑExpr): int =
   (case e.kind
   of Num:
     return e.tuckˑvariantˑnum.value
@@ -30,7 +30,7 @@ proc tuckˑfnˑeval*(e: sink tuckˑtypeˑExpr): int =
   of Add:
     return (tuckˑfnˑeval(tuck_rt.tuckAt(e.tuckˑvariantˑadd.left, 0)) + tuckˑfnˑeval(tuck_rt.tuckAt(e.tuckˑvariantˑadd.right, 0))))
 
-proc tuckˑfnˑdepth*(e: sink tuckˑtypeˑExpr): int =
+proc tuckˑfnˑdepth*(e: tuckˑtypeˑExpr): int =
   (case e.kind
   of Num:
     return 1

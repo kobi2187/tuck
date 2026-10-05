@@ -30,14 +30,17 @@
 ## those are the part with no prior art in this tree to copy: every other
 ## pass here is a single walk, and this is the first one that has to say what
 ## a value IS after two arms disagreed about it.
-import std/[os, strutils]
+import std/[os, strutils, re]
 import ../harness
 
 proc corpusFiles(): seq[string] =
   ## Every Tuck source the mirror is exercised on: the examples, the bench
-  ## apps, the Savina ports and the stdlib.
+  ## apps, the Savina ports, the transpile kernels and the stdlib.
+  ## (`benches/transpile` was missing, and dispatch.tuck crashed this very
+  ## assertion unseen from 2026-09-22 to 2026-09-28.)
   for pat in ["examples/*.tuck", "benches/apps/*.tuck",
-              "benches/savina/*.tuck", "std/*.tuck"]:
+              "benches/savina/*.tuck", "benches/transpile/*.tuck",
+              "std/*.tuck"]:
     for f in walkFiles(pat): result.add f
 
 # 16-actor-tasks-unified-syntax does not typecheck AT ALL — it calls an
@@ -220,12 +223,15 @@ fn main() -> int:
   # `analysis_liveness` never stamped a read in a `for`'s ITERABLE at all —
   # its `exkFor` arm walks the body and then folds the iterable into the live
   # set without ever calling `stampSites` on it. So a parameter iterated once
-  # and never touched again was not a final use, and Nim got `seq[T]` where
-  # `sink seq[T]` is correct.
+  # and never touched again was not a final use.
   #
   # Guarded here by INTENT rather than only by the eight goldens the switch
   # rewrote, because a golden records what the compiler did and this records
-  # what it is supposed to do.
+  # what it is supposed to do. Read off `tuck ssa` itself: this used to be
+  # read off Nim's `sink`, until 2026-09-29, when `sink` stopped following
+  # every final read and started following the final reads that KEEP the
+  # value (codegen_common.keptAt). An iterated parameter is only read, so it
+  # is borrowed — a `sink` there made every caller still holding it copy it.
   t.src """
 import seq
 
@@ -239,10 +245,126 @@ fn main() -> int:
   return {xs: [1, 2, 3]} total
 """
   t.okCheck "a parameter iterated once checks"
-  t.emits "...and its only read is final, so Nim gets sink",
-          r"proc tuckˑfnˑtotal\*\(xs: sink seq\[int\]\)"
+  let iterSsa = t.needCmd(@["./tuck", "ssa", t.curDir / "t.tuck",
+                            "--root:" & t.root])
+  if t.phase == pReport:
+    let (rc, outp) = t.resultOf(iterSsa)
+    if rc == 0 and find(outp, re"xs\.0 += entry .* reads 5:12 FINAL") >= 0:
+      t.ok "...and its read as the loop's iterable is its final use"
+    else:
+      t.no "...and its read as the loop's iterable is its final use",
+           "exit " & $rc & ": " & outp
+  t.emits "...which only reads it, so Nim borrows it rather than sinking it",
+          r"proc tuckˑfnˑtotal\*\(xs: seq\[int\]\)"
   t.runs "...and it still computes what it did", 6
   t.hostRuns("...on every backend", 6)
+
+  # --- `sink` follows the final read that KEEPS the value -------------------
+  #
+  # A recursive reader passes its Seq on twice; `sink` there made the first
+  # call copy the whole array, every call — 87 s against 0.037 s on a 2^15-leaf
+  # tree held as a node array (benches/SCORES.md, "Trees"). The call back into
+  # the fn being asked about reads as "only read" (the least fixed point), and
+  # an index is a read. A parameter bound to a `var` and grown is KEPT, and
+  # keeps its `sink` — that is the move the container verbs rest on.
+  t.src """
+import seq
+
+fn walk({ns: Seq[int], i: int}) -> int:
+  if i < 0:
+    return 0
+  return ns[i] + {ns: ns, i: i - 1} walk
+
+fn grow({xs: Seq[int]}) -> Seq[int]:
+  var out = xs
+  out = {items: out, value: 1} push
+  return out
+
+fn main() -> int:
+  let a = {ns: [1, 2, 3], i: 2} walk
+  let b = {xs: [1]} grow
+  return a + b.len
+"""
+  t.okCheck "a recursive reader and a grower check"
+  t.emits "...the reader borrows its Seq",
+          r"proc tuckˑfnˑwalk\*\(ns: seq\[int\], i: int\)"
+  t.emits "...the grower keeps its sink",
+          r"proc tuckˑfnˑgrow\*\(xs: sink seq\[int\]\)"
+  t.hostRuns("...and both compute what they did, on every backend", 8)
+
+  # The same through a FIELD. The mirror stamps `b.items`'s final read on the
+  # path, never on the root `b`; the pass before it stamped the root too, and
+  # `sink` read only that. So from the switch until 2026-10-04 no parameter
+  # read through a field was `sink`, and every record-threading container
+  # copied itself on each call on Nim — benches/containers rec_thread,
+  # two_fields, generic_box and str_builder all quadratic. A field only
+  # measured stays borrowed.
+  t.src """
+import seq
+
+type Bag:
+  items: Seq[int]
+
+fn addTo({b: Bag, value: int}) -> Bag:
+  var xs = b.items
+  xs = {items: xs, value: value} push
+  return {items: xs} Bag
+
+fn size({b: Bag}) -> int:
+  return b.items.len
+
+fn main() -> int:
+  var bag: Bag = {items: []} Bag
+  for i in 0 .. 9:
+    bag = {b: bag, value: i} addTo
+  return {b: bag} size
+"""
+  t.okCheck "a container threaded through a record field checks"
+  t.emits "...the threader keeps its sink, read through a field",
+          r"proc tuckˑfnˑaddTo\*\(b: sink tuckˑtypeˑBag, value: int\)"
+  t.emits "...the measurer borrows it",
+          r"proc tuckˑfnˑsize\*\(b: tuckˑtypeˑBag\)"
+  t.hostRuns("...and it computes what it did, on every backend", 10)
+
+  # A construction that hands a container on and reads it again: Nim
+  # evaluates an object constructor's fields as written and moves only at a
+  # last read, so `{nodes: out, slot: out.len - 1}` copied the whole array
+  # into the record on every return — benches/trees slab_thread, 0.44 s at
+  # depth 13 against 0.009 s with the read of `out` last
+  # (lowering_field_order). A field that does not read it again keeps its
+  # written place.
+  t.src """
+import seq
+
+type Built:
+  nodes: Seq[int]
+  slot: int
+
+type Tagged:
+  nodes: Seq[int]
+  tag: int
+
+fn grow({ns: Seq[int], v: int}) -> Built:
+  var out = ns
+  out = {items: out, value: v} push
+  return {nodes: out, slot: out.len - 1} Built
+
+fn tagged({ns: Seq[int]}) -> Tagged:
+  var out = ns
+  out = {items: out, value: 7} push
+  return {nodes: out, tag: 3} Tagged
+
+fn main() -> int:
+  let b = {ns: [5, 6], v: 9} grow
+  let t = {ns: b.nodes} tagged
+  return b.slot + t.nodes.len + t.tag
+"""
+  t.okCheck "a construction reading its container twice checks"
+  t.emits "...and Nim takes the container last, where it moves",
+          r"tuckˑtypeˑBuilt\(slot: .*, nodes: tuckˑvˑout\)"
+  t.emits "...while a field that does not read it again stays as written",
+          r"tuckˑtypeˑTagged\(nodes: tuckˑvˑout, tag: 3\)"
+  t.hostRuns("...and it computes what it did, on every backend", 9)
 
   # --- an ACTOR FIELD is not this body's to give away ----------------------
   #
@@ -276,7 +398,7 @@ fn grow({b: Bag}) -> Bag:
   return {xs: it, n: b.n + 1} Bag
 
 actor Keeper [queue: 16]:
-  st: Bag
+  st: Bag = {xs: [], n: 0} Bag
   ready: bool = false
 
   on init({n: int}):
@@ -302,6 +424,36 @@ fn main() -> int:
   # 7 + 0. A twin that took the field destructively would free it, and the
   # read after the wait would answer with whatever was left.
   t.hostRuns("...so the actor's own buffer survives", 7)
+
+  # A variant construction reads its argument. `Shape.Circle {r: i}` is a
+  # `.name {args}` the checker does not make a call, and the liveness oracle
+  # read it as a path and skipped the argument: it missed `i` there, proved
+  # the earlier `if i == 0` read final, and every build of this shape died in
+  # assertSsaWellFormed (benches/transpile/dispatch.tuck). The graph was
+  # right; the oracle it is checked against was not.
+  t.src """
+type Shape:
+  | Circle({r: int})
+  | Rect({w: int, h: int})
+
+fn area({s: Shape}) -> int:
+  match s:
+    Circle: return s.r
+    Rect: return s.w * s.h
+
+fn one({i: int}) -> int:
+  if i == 0:
+    let c = Shape.Circle {r: i + 5}
+    return {s: c} area
+  let r = Shape.Rect {w: i, h: 3}
+  return {s: r} area
+
+fn main() -> int:
+  let a = {i: 0} one
+  let b = {i: 4} one
+  return a + b
+"""
+  t.hostRuns "a variant construction's argument is a read, on every backend", 17
 
   t.finish()
 

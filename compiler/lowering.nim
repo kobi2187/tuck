@@ -33,9 +33,12 @@ import ast
 import resolution
 import ast_query
 import lowering_recursive   # recursive sum edges get a Seq handle
+import lowering_slab        # a field through a slab reference reads the checked cell
 import lowering_decisions   # a decision table becomes a match or an if chain
 import lowering_chains      # a `..` chain becomes statements
 import lowering_iface       # a call through an interface becomes a dispatch
+import lowering_alias       # an argument aliasing a by-reference receiver is copied
+import lowering_optional    # a plain T into a ?T place is wrapped; T? fields start absent
 import lowering_match_binds # a binding match arm becomes a catch-all
 import call_args           # which payload field feeds which param
 import options
@@ -206,7 +209,59 @@ proc flattenMemberCallPayload(res: Resolution, e: Expr, m: Module) =
   e.callee = inner.callee
   e.args = merged
 
-proc explodePayload(res: Resolution, e: Expr) =
+proc namedConstruction(res: Resolution, a: Expr, t: Type): Expr
+
+proc declaredFields(m: Module, name: string): seq[FieldDef] =
+  ## A record type's or an object's fields, from its declaration.
+  let d = m.findDecl(dkType, name)
+  if d != nil and d.typeBody != nil and d.typeBody.kind == tkRecord:
+    return d.typeBody.fields
+  let o = m.findDecl(dkObject, name)
+  if o != nil: return composedFields(m, o)
+
+proc constructRecordFields(res: Resolution, m: Module, e: Expr) =
+  ## Inside a construction — `{point: {x: 1, y: 2}, w: 3} Thing` — each field
+  ## given a record literal for a named record type is that type's
+  ## construction too, to any depth. The case TK-PA13's own message calls
+  ## fine; it built on no backend, for the reason constructRecordArgs gives.
+  if not isRecordConstruction(m, e): return
+  let fields = declaredFields(m, e.callee.name)
+  for i in 0 ..< e.args[0].fields.len:
+    let v = e.args[0].fields[i].value
+    if v == nil or v.kind != exkStruct: continue
+    for f in fields:
+      if f.name == e.args[0].fields[i].name and f.typ != nil and
+         f.typ.kind == tkNamed and isRecordType(m, f.typ.name):
+        let ctor = res.namedConstruction(v, f.typ)
+        e.args[0].fields[i].value = ctor
+        res.constructRecordFields(m, ctor)
+
+proc namedConstruction(res: Resolution, a: Expr, t: Type): Expr =
+  ## `{...}` as `{...} T`.
+  result = Expr(span: a.span, kind: exkCall, args: @[a],
+                callee: Expr(span: a.span, kind: exkVar, name: t.name))
+  res.setType(result, t)
+
+proc constructRecordArgs(res: Resolution, m: Module, e: Expr) =
+  ## A record LITERAL passed for a parameter of a named record or object
+  ## type — `{b: {tag: 9}} take` — becomes that type's construction,
+  ## `{tag: 9} Bag`, which every backend prints as one. Left a bare literal,
+  ## each printed an anonymous record (a Nim tuple, an Odin `TRec_tag`) that
+  ## no host would pass as a `Bag` (#97). The checker accepted it by shape;
+  ## the callee's declaration says the name.
+  var callee = res.declFor(e)
+  if callee == nil: callee = memberCallDecl(res, m, e)
+  if callee == nil or callee.kind != dkFn: return
+  for i in 0 ..< min(e.args.len, callee.fnParams.len):
+    let a = e.args[i]
+    let pt = callee.fnParams[i].typ
+    if a == nil or a.kind != exkStruct or pt == nil or pt.kind != tkNamed or
+       not isRecordType(m, pt.name):
+      continue
+    e.args[i] = res.namedConstruction(a, pt)
+    res.constructRecordFields(m, e.args[i])
+
+proc explodePayload(res: Resolution, m: Module, e: Expr) =
   ## `{a: 1, b: 2} f` -> `f(1, 2)`. One arg per declared param, in order.
   ##
   ## The checker recorded the callee's params when it resolved the call —
@@ -235,6 +290,24 @@ proc explodePayload(res: Resolution, e: Expr) =
   let known = res.knownCallParams(e)
   if known.isNone: return
   e.args = argsFor(res, e, known.get)
+  e.argsExploded = true
+  res.constructRecordArgs(m, e)
+
+proc blockVoidIf(res: Resolution, e: Expr) =
+  ## A one-line `if` that yields NOTHING — `if n > 2: {} hi else: {} lo`,
+  ## void calls on both sides — is a statement (R3, ruled 2026-09-28): each
+  ## branch becomes a one-statement block, so every backend prints the
+  ## statement form. `isValueIf` is syntax, and a void call is syntactically
+  ## an expression; only the type says there is no value. Printed as a
+  ## value, Odin's ternary and D's `?:` refused the void operands and Nim put
+  ## it at column 0. (Statement BRANCHES are `isValueIf`'s own rule.)
+  if not isValueIf(e): return
+  let t = res.typeFor(e)
+  if t == nil or t.kind != tkNamed or t.name notin ["void", "unit"]: return
+  e.thenBranch = Expr(span: e.thenBranch.span, kind: exkBlock,
+                      stmts: @[e.thenBranch])
+  e.elseBranch = Expr(span: e.elseBranch.span, kind: exkBlock,
+                      stmts: @[e.elseBranch])
 
 proc lowerExpr(res: Resolution, e: Expr, m: Module) =
   ## Rewrite one expression and everything under it.
@@ -252,14 +325,15 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
     return
   # Every other kind walks its children generically. Listed rather than
   # `else: discard` so adding an ExprKind forces a decision here.
-  of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkCall,
+  of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill, exkCall,
      exkChain, exkBinary, exkUnary, exkBlock, exkIf, exkMatch, exkFor,
      exkWhile, exkBreak, exkContinue, exkAssign, exkReturn, exkRaise,
      exkDiscard, exkTripleDot, exkImport, exkSend, exkSelect, exkCombinator,
      exkActorRef,
-     exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef, exkDefer,
+     exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef, exkDefer,
      exkFinish, exkAcquire, exkOrdinal, exkValidate, exkIfaceCall,
-     exkPoolOp:
+     exkIfaceIs, exkIfacePayload, exkWrapOk, exkAbsent, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset,
+     exkAppend, exkCopy, exkDrop:
     discard
 
   # flattenRegistryRaise runs BEFORE the recursive descent, not after: a
@@ -278,7 +352,10 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
 
   if e.kind == exkCall:
     flattenMemberCallPayload(res, e, m)
-    explodePayload(res, e)
+    explodePayload(res, m, e)
+    res.constructRecordFields(m, e)
+  elif e.kind == exkIf:
+    blockVoidIf(res, e)
 
 # Entry point for the pass. Two phases, in this order: type bodies are
 # flattened first so the call-rewriting phase can look up a type's fields and
@@ -354,6 +431,19 @@ proc normalizeSelf(d: Decl) =
       mem.fnParams = @[Param(name: "self", typ: objType, span: mem.span)] &
                      mem.fnParams
 
+proc returnsValue(t: Type): bool =
+  ## Does a fn declared `-> t` hand a value back? Every emitter reads `void`,
+  ## or no type at all, as "no".
+  t != nil and not (t.kind == tkNamed and t.name == "void")
+
+proc lowerTailReturns(m: Module) =
+  ## Each value-returning fn's and task's trailing value, made a `return`.
+  for d in m.allDecls:
+    if d.kind == dkFn and d.fnBody != nil and returnsValue(d.fnReturnType):
+      injectTailReturn(d.fnBody)
+    elif d.kind == dkTask and d.taskBody != nil and returnsValue(d.taskReturnType):
+      injectTailReturn(d.taskBody)
+
 proc lowerModule*(res: Resolution, m: Module, real: Table[string, Module]) =
   ## Rewrite a module in place into the simpler form the backends expect.
   ## `real` is the rest of the program — an object in another module that
@@ -362,6 +452,7 @@ proc lowerModule*(res: Resolution, m: Module, real: Table[string, Module]) =
   # before anything tries to emit one. First, because the phases below read
   # field types.
   boxRecursiveEdges(res, m)
+  lowerSlabDerefs(res, m)
   # A decision table becomes an ordinary body — a `match` over a packed key,
   # or an `if` chain — before anything below walks fn bodies, so the calls
   # in its rows are lowered like any other.
@@ -387,11 +478,30 @@ proc lowerModule*(res: Resolution, m: Module, real: Table[string, Module]) =
   # A binding arm (`other: other + 1`) becomes a catch-all reading the
   # subject, or a snapshot of it (lowering_match_binds).
   lowerMatchBinds(res, m)
+  # `match v: | Flac f ->` on an interface value becomes an `if` chain over
+  # v's tag, `f` read as v's Flac payload (lowering_iface). After the line
+  # above, which made each such subject a place that can be read twice.
+  lowerIfaceMatches(res, m)
   # Every `..` chain becomes the statements it means (lowering_chains).
   # After lowerExpr, as the chain-fed-call hoisting it absorbed always ran:
   # a step's call is the checker's, already in the shape the emitters print.
   lowerChains(res, m)
+  # An argument that reads the variable a changing member is called on is
+  # copied into a `let` before the statement (lowering_alias, A23): after
+  # the line above, which turned `..` steps into calls; before interface
+  # calls, whose dispatch copies the payload itself.
+  lowerAliasedArgs(res, m)
+  # A plain `T` stored into a `?T` place is wrapped, and a `T?` actor field
+  # with no initialiser starts absent (lowering_optional, R8). After the
+  # chains above, whose steps become assignments.
+  lowerOptionals(res, m)
   # Every call through an interface value becomes a dispatch over the
-  # objects that satisfy it (lowering_iface). Last: an interface call may sit
-  # in a chain step's payload, and a chain's steps are copied above.
+  # objects that satisfy it (lowering_iface). An interface call may sit in a
+  # chain step's payload, and a chain's steps are copied above.
   lowerIfaceCalls(res, m, real)
+  # Last: a value-returning body's tail becomes an explicit `return`, on the
+  # tree every pass above has finished with — the tree the emitters used to
+  # add it to at print time. Made here, BEFORE backend_prepare decides
+  # ownership, which read a tail `xs` as a dead local and freed the Seq the
+  # fn was returning (#96).
+  lowerTailReturns(m)

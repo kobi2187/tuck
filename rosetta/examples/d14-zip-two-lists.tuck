@@ -1,5 +1,5 @@
 # Zip two lists into pairwise sums (fixed-size, equal length)
-import io
+import console
 import seq
 
 fn main() -> void [io]:

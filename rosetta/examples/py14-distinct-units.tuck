@@ -1,5 +1,5 @@
 # distinct unit types, postfix unit application (5.ms style), fmt tier
-import io
+import console
 import time
 
 distinct Meters = int

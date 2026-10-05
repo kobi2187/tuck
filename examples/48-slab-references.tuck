@@ -1,0 +1,211 @@
+# Slabs — pointer-shaped data structures, without pointers.
+#
+# Everything else in Tuck is a VALUE: assigning a record copies it, and a
+# child inside a parent belongs to that parent alone (see 44-recursive-tree).
+# That rules out three things every pointer language takes for granted:
+#
+#   IDENTITY  two names for ONE node — a cursor, a "current" item
+#   SHARING   one node reached from two places — a DAG, a parent pointer
+#   CYCLES    a node reached from itself — a ring, a graph
+#
+# A slab gives exactly those three back. `slab Nodes = Node` is a table of
+# cells holding Nodes; `Nodes.new {...}` puts one in a cell and returns a
+# REFERENCE, a `NodesRef`: 8 bytes, a 32-bit cell number and a 32-bit
+# tenancy. A reference is an ordinary value — it copies, compares, sits in a
+# field — and `r.field` reads and writes the cell it names.
+#
+# How the usual tools map:
+#
+#   C                          Rust                          Tuck slab
+#   ------------------------   ---------------------------   ----------------------------
+#   Node *n = malloc(..)       Rc::new(RefCell::new(..))     let n = Nodes.new {...}
+#   n->next = m                n.borrow_mut().next = ..      n.next = m
+#   NULL                       Option<Rc<..>> = None         none (a NodesRef? field)
+#   parent pointer             Weak<RefCell<..>>, upgrade()  a NodesRef? field, like any other
+#   free(n)                    drop the last Rc              Nodes.free {r: n}
+#   use after free: undefined  refused at compile time       stops: "TUCK SLAB [Nodes]:
+#                                                              stale reference to cell N"
+#   a cycle                    leaks, unless one edge Weak   fine: freeing is explicit
+#   free everything            walk it, free each node       Nodes.reset — O(1)
+#
+# What it costs: a reference is a pointer's size, and each use checks the
+# tenancy (one compare) — that is what turns a dangling pointer into a
+# stopped program with a message instead of a corrupted heap. What it saves:
+# no allocation per node (cells come 64 KiB at a time, and a cell never
+# moves, so growth never copies or pauses — benches/SCORES.md, "Slab
+# storage"), neighbours share cache lines, and a whole structure is freed
+# by one `reset`.
+#
+# Freed cells are reused, each with a new tenancy, so an old reference to a
+# reused cell is still caught. Cells never freed are reported at exit unless
+# the slab says `[leaks: ok]`.
+
+# --- 1. A doubly linked list ---------------------------------------------------
+#
+# A ring with a SENTINEL: the empty list is one node whose prev and next are
+# itself, so inserting and removing never special-case either end (the trick
+# the Linux kernel's list_head uses). Every operation is O(1) — four link
+# writes, nothing moves.
+
+type Node:
+  data: int
+  prev: NodesRef?
+  next: NodesRef?
+
+slab Nodes = Node                 # chunked: grows, cells never move
+
+fn emptyList() -> NodesRef:
+  let s = Nodes.new {data: 0, prev: none, next: none}   # none: no link yet
+  s.prev = s                      # a cycle: the sentinel points at itself
+  s.next = s
+  s
+
+fn after({n: NodesRef}) -> NodesRef:
+  # In a ring every link is set; a `?` still has to be opened to be read.
+  let x = n.next
+  if x.ok:
+    return x.value
+  return n
+
+fn before({n: NodesRef}) -> NodesRef:
+  let x = n.prev
+  if x.ok:
+    return x.value
+  return n
+
+fn pushBack({list: NodesRef, data: int}) -> NodesRef:
+  let last = {n: list} before
+  let n = Nodes.new {data: data, prev: last, next: list}
+  last.next = n                   # C: last->next = n
+  list.prev = n
+  n
+
+fn remove({n: NodesRef}) -> void:
+  # O(1) given the node — the reason a list keeps `prev` at all. A Seq would
+  # shift everything after it; a singly linked list would search for `p`.
+  let p = {n: n} before
+  let q = {n: n} after
+  p.next = q
+  q.prev = p
+  Nodes.free {r: n}               # C: free(n) — every copy of `n` is now stale
+
+fn sumForward({list: NodesRef}) -> int:
+  var total = 0
+  var cur = {n: list} after
+  for cur != list:                # identity: the same cell, not an equal value
+    total = total + cur.data
+    cur = {n: cur} after
+  total
+
+fn sumBackward({list: NodesRef}) -> int:
+  var total = 0
+  var cur = {n: list} before
+  for cur != list:
+    total = total + cur.data
+    cur = {n: cur} before
+  total
+
+# --- 2. A tree with parent links -------------------------------------------------
+#
+# A value tree (example 44) cannot point UP: a child is a value inside its
+# parent, so "my parent" is not something it can hold. In Rust this is the
+# Rc-down, Weak-up pattern. Here the parent is one more field, and adding a
+# file's size to every enclosing directory is a walk up the links, changing
+# each directory in place.
+
+type Dir:
+  bytes: int
+  parent: DirsRef?
+
+slab Dirs = Dir [leaks: ok]        # lives as long as the program; not reported
+
+fn addFile({dir: DirsRef, bytes: int}) -> void:
+  dir.bytes += bytes              # this directory, in place...
+  let up = dir.parent
+  if up.ok:
+    {dir: up.value, bytes: bytes} addFile   # ...and every one above it
+
+fn depth({dir: DirsRef}) -> int:
+  let up = dir.parent
+  if not up.ok:
+    return 0                      # the root: no parent
+  1 + {dir: up.value} depth
+
+# --- 3. A graph with a cycle, and the arena pattern ----------------------------------
+#
+# A bus loop: each stop names the next, and the last names the first.
+# Reference counting (Rust's Rc, Swift, CPython) never frees such a cycle on
+# its own; a tracing GC frees it whenever it next runs. A slab does neither:
+# freeing is what the program says. `reset` frees every cell at once, in
+# O(1), and makes every outstanding reference stale — a whole structure
+# with one lifetime, the way an arena does it.
+
+type Stop:
+  minutes: int
+  next: StopsRef?
+
+slab Stops = Stop
+
+fn lapFrom({at: StopsRef, start: StopsRef}) -> int:
+  # The rest of the loop from `at`, until we are back at the SAME stop —
+  # identity again: another stop with the same minutes is not `start`.
+  if at == start:
+    return 0
+  let next = at.next
+  if not next.ok:
+    return at.minutes             # an open line, not a loop: stop at its end
+  at.minutes + {at: next.value, start: start} lapFrom
+
+fn lapMinutes({start: StopsRef}) -> int:
+  let next = start.next
+  if not next.ok:
+    return start.minutes
+  start.minutes + {at: next.value, start: start} lapFrom
+
+fn main() -> int:
+  # 1. 10 20 30 40, then drop 20 from the middle.
+  let list = {} emptyList
+  let a = {list: list, data: 10} pushBack
+  let b = {list: list, data: 20} pushBack
+  let c = {list: list, data: 30} pushBack
+  let d = {list: list, data: 40} pushBack
+  {n: b} remove
+  if {list: list} sumForward != 80:
+    return 1
+  if {list: list} sumBackward != 80:
+    return 2
+  if Nodes.live {r: b}:           # `b` was freed: the slab knows it is stale
+    return 3
+  if not Nodes.live {r: c}:
+    return 4
+
+  # 2. /           (root)
+  #    /src        3 + 4 bytes in two files under /src/lib
+  #    /src/lib
+  let root = Dirs.new {bytes: 0, parent: none}
+  let src = Dirs.new {bytes: 0, parent: root}
+  let lib = Dirs.new {bytes: 0, parent: src}
+  {dir: lib, bytes: 3} addFile
+  {dir: lib, bytes: 4} addFile
+  if root.bytes != 7 or src.bytes != 7 or lib.bytes != 7:
+    return 5
+  if {dir: lib} depth != 2:
+    return 6
+
+  # 3. Three stops in a loop: 5 + 7 + 9 minutes around.
+  let s1 = Stops.new {minutes: 5, next: none}
+  let s2 = Stops.new {minutes: 7, next: s1}
+  let s3 = Stops.new {minutes: 9, next: s2}
+  s1.next = s3                    # closes the cycle
+  if {start: s1} lapMinutes != 21:
+    return 7
+  Stops.reset                     # the whole loop, gone in O(1)
+  if Stops.live {r: s1}:
+    return 8
+
+  # The list goes the same way: every node, the sentinel too, in one step.
+  # Nothing is left in `Nodes`, so the exit report has nothing to say.
+  Nodes.reset
+  if Nodes.live {r: a} or Nodes.live {r: d}:
+    return 9
+  return 0

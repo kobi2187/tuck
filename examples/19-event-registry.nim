@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 
 proc tuckˑfnˑtriggerEvent*(): void
 proc tuckˑfnˑAppEvents_SensorFailure*(port: uint8, reason: sink string): void

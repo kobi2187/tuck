@@ -1,6 +1,6 @@
 # Actor — implicit infinite loop, persistent state
 actor UartDriver [queue: 8]:
-  txBuf: Array[256, u8]          # persistent state
+  txBuf: Array[256, u8] = [0; 256]   # persistent state, zero-filled
 
   on send({data: Seq[u8]}) -> void:     # handles one message, loops back
     txBuf.copyFrom {data}

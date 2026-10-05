@@ -1,5 +1,5 @@
 # FizzBuzz-style branch driven by a value parsed from a string
-import io
+import console
 
 pending:
   fn parseInt({text: str}) -> int

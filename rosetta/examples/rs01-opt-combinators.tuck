@@ -5,7 +5,7 @@
 # function or propagate") — a NEW finding, not in DISCOVERIES yet. Passing
 # the ?T as an explicit payload field (as below) is accepted; only the
 # implicit self-postfix form on ?T triggers it. Keep as evidence.
-import io
+import console
 
 pending:
   fn findUser({id: int}) -> ?int

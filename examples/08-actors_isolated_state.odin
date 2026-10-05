@@ -37,7 +37,7 @@ drain_tuckˑactorˑTrafficLight :: proc() -> bool {
 }
 
 sendNext_tuckˑactorˑTrafficLight :: proc(self: ^tuckˑactorˑTrafficLight) {
-	_ = rt.enqueue(&self.mailbox, tuckˑactorˑTrafficLightMsg{tuckTag = .msgNext})
+	rt.sendWaiting(&self.mailbox, tuckˑactorˑTrafficLightMsg{tuckTag = .msgNext}, tuckˑactorˑTrafficLightSlot, "TrafficLight")
 	rt.tuckNotifySend(tuckˑactorˑTrafficLightSlot)
 }
 

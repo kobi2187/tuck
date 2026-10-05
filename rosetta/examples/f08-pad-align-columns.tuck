@@ -1,5 +1,5 @@
 # Pad and align text into fixed-width columns
-import io
+import console
 
 pending:
   fn padRight({text: str, width: int}) -> str

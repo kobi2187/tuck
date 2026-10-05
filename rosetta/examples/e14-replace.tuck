@@ -1,5 +1,5 @@
 # Replace all occurrences of a substring
-import io
+import console
 
 pending:
   fn replace({text: str, target: str, replacement: str}) -> str

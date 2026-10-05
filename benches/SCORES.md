@@ -758,3 +758,206 @@ own assignment and never reached the twin routing, and `generic_box` was
 quadratic on NIM because its `sink` predicate had not learned that a generic
 application owns whatever its declared body owns. Both are fixed above; the
 row that remains is the honest one.
+
+**Re-measured 2026-10-04: it had rotted, three ways, unseen.** The bench is
+timed by hand and nothing ran it for three weeks. At N=8000, before the
+fixes:
+- `seq_setat` and `read_only` built on no backend: each wrote a call in a
+  payload, which TK-PA13 refused after they were written. They bind first now.
+- `generic_box` segfaulted on Odin. A generic record's Seq field was
+  invisible to the escape analysis (`seqFieldNames`), so `return {items: xs}
+  Box` deleted `xs` on the way out.
+- `rec_thread`, `two_fields`, `generic_box` and `str_builder` were
+  quadratic on Nim (3.5–4.1). No parameter read through a field was `sink`
+  any more. The SSA mirror stamps a final read on the path (`b.items`), and
+  `sink` read only the root stamp the pass before it also made.
+
+After the fixes, at N=20000 vs 40000, every pattern is linear or below the
+timer on every backend again, except the one above: `str_concat` on Odin,
+3.8, on purpose. `tests/suites/containers_bench.nim` now holds the bench to
+this table without timing it. It generates the patterns with this
+directory's `gen.sh`, requires each to check, and requires the `sink` in each
+threading fn's Nim signature, plus its absence from `read_only`'s reader.
+
+## R6: what checking a send's result costs — 2026-09-28
+
+The ruling (R6, #7): block a sender at a full mailbox if that adds no
+overhead, otherwise keep dropping and let the sender check the result. The
+overhead in question is on the FAST path — a send into a mailbox with room.
+Today every send site is `discard enqueue(mb, msg)`; a blocking send is
+`if not enqueue(mb, msg): <wait>`, the bool `enqueue` already computes plus a
+branch into a cold, non-inlined wait path.
+
+Measured on those two lines alone: one emitted Nim program, 1,000,000 sends
+from `main` into an actor whose mailbox holds 1,100,000 (so it never fills and
+the branch is never taken), `--release`, the variant built from the same
+emitted file with only the send line changed. Interleaved runs, 4 cores.
+
+| mode | runs | `discard` median | branch median | ratio | IQR, discard / branch |
+|---|---|---|---|---|---|
+| `--actors:single` | 15 | 36.3 ms | 36.5 ms | 1.003 | — |
+| `--actors:thread` | 41 | 122.5 ms | 127.9 ms | 1.044 | 81–172 / 94–146 ms |
+
+Single mode: no difference. Thread mode: the two distributions overlap
+entirely (the branch variant's fastest run, 36 ms, beats the baseline's, 50
+ms); the spread is the OS scheduling the actor thread, not the branch. The
+fast-path check costs nothing measurable.
+
+When the mailbox DOES fill, the two are not comparable: dropping finishes
+sooner because it does less work. The cost of blocking is semantic — a
+sender that waits on a mailbox nothing will drain waits forever (an actor
+sending to itself; two actors whose full mailboxes wait on each other) —
+and is a design question, not a measurement.
+
+## Trees — 2026-09-29
+
+`bash benches/trees/run.sh [DEPTH] [ROUNDS]` builds a balanced `Expr` tree to
+depth D and evaluates it ROUNDS times, at D and D+1, on all three backends.
+The question was the owner's: should `lowering_recursive`, which boxes every
+recursive edge in a one-element `Seq`, become a slab — one node array per
+tree, children as indices — if that is faster?
+
+**The representation, alone** (`benches/trees/repr.nim`, hand-written Nim,
+`-d:release --mm:orc`, 10 rounds, ms):
+
+| depth 20 (2.1M nodes) | build | eval ×10 | copy + eval ×10 |
+|---|---|---|---|
+| boxed edges | **81** | 173 | 1424 |
+| one node array per tree | 791 | 170 | **152** |
+
+(Depth 18: 27 / 24 / 277 against 117 / 24 / 39 — the same shape.)
+
+**Not a clear win, so not switched.** A node array copies ~9x faster (one
+array copy instead of an allocation per node) and reads the same, but BUILDS
+4–10x slower: `Expr.Add {left: l, right: r}` over two independent subtrees
+has to merge two arrays (the smaller appended into the larger, so any shape
+is O(n log n), never O(n²)). Which one wins turns on whether a program builds
+trees or copies them. What would win at all three is a node array SHARED by
+every tree of a type, with nodes never changed in place (so a copy is the
+root index): build is one append, copy is O(1), eval unchanged. It needs its
+nodes reclaimed — reference counts, or an arena's lifetime — which is the
+open freeing question of the `slab` keyword itself (ROADMAP item 9).
+
+**What the bench found instead: two Nim emission bugs, one catastrophic.**
+Tuck-emitted code, `--release`, seconds, depth 14 → 15:
+
+| variant | Nim before | Nim after | Odin | D |
+|---|---|---|---|---|
+| boxed | 0.143 → 0.287 | **0.009 → 0.014** | 0.012 → 0.028 | 0.013 → 0.027 |
+| slab_merge | 17.8 → 87.3 | **0.019 → 0.043** | 0.033 → 0.084 | 0.042 → 0.067 |
+| slab_thread | 20.0 → 97.3 | 1.88 → 11.7 | segfault (A38) | 0.85 → 3.80 |
+
+(2026-10-04: A38 fixed — `slab_thread` runs on Odin now: depth 12 → 13,
+0.266 → 0.860 s, ratio 3.2, against Nim 4.0 and D 3.9 at the same depths.
+Still a copy per step on all three; the threading cost below is unchanged.)
+
+1. **`sink` on a parameter the fn only READS.** `paramIsMovable` marked a
+   parameter `sink` whenever the body had a final read of it, never asking
+   whether that read keeps it. A caller then COPIES a still-live argument
+   into a `sink` parameter — so `eval(ns, n.left) + eval(ns, n.right)` copied
+   the whole node array on every call. It now follows the final read that
+   KEEPS the value (bound, stored, returned, sent, or handed to a parameter
+   that keeps it — the least fixed point over the module's fns;
+   `codegen_common.keptAt`). Leaving `sink` off only ever gives up a move.
+2. **`tuckAt` returned the element BY VALUE.** A boxed edge is read as
+   `tuckAt(e.left, 0)`, and the element is the whole subtree, so a walk
+   copied every subtree it passed through. `tuckAt` now returns `lent T` (a
+   borrow); a caller that keeps the element still gets its own copy.
+
+Each fix alone moves boxed almost nothing (0.248 → 0.222 s without `sink`,
+0.251 s with `lent`), because each copy hides the other; together, 0.011 s.
+`benches/containers/run.sh` reads the same before and after, so no move the
+container verbs rest on was lost. It does NOT read what "Container copying"
+recorded on 2026-09-11, and the difference predates this change: at N=8000,
+five patterns now scale 3–5x per doubling on Nim (`rec_thread`, `chain_form`,
+`generic_box`, `two_fields`, `str_builder`), `seq_setat` and `read_only`
+build on no backend, and `generic_box` does not build on Odin. A regression
+to bisect; the bench is not in any gate, which is how it went unseen.
+
+`slab_thread` stays quadratic on Nim and D for a third reason, the
+container-threaded-through-a-record shape: `{ns: l.nodes, ..} build` passes
+`l.nodes` on while `l.slot` is still read, so the field cannot be moved out
+and is copied. On Odin the same shape is a double free (A38).
+
+**2026-10-04, re-measured; that reason was half right.** On Nim the copy was
+not `l.nodes`, which Nim moves (its last-read analysis follows paths). It was
+the record built on every return, `{nodes: out, slot: out.len - 1}`. Nim
+evaluates an object constructor's fields as written, and `out.len` follows
+`nodes: out`, so that read is not the last one and the whole array was
+copied. `lowering_field_order` (Nim only) now evaluates a field that takes a
+container after the fields that read it again, when those cannot change
+anything. Depth 14 → 15, `--release`:
+
+| variant | Nim | Odin | D |
+|---|---|---|---|
+| slab_thread | **0.010 → 0.016** | 4.11 → 18.2 | 0.88 → 6.04 |
+
+Odin and D copy at `var out = r.nodes` instead. Their copy decision
+(`lowering_seqcopy`) copies every field read, because a local's field taken
+without a copy has to be withdrawn from the local's own frees, or Odin frees
+it twice.
+
+**Tried 2026-10-04 and shelved, with what it taught.** The take itself is
+easy to decide. The SSA graph (lowered stage) shows `r.nodes` at its final
+read, with `r` bound from a call, a construction or a literal. Nothing may
+be read out of the field afterwards: `r.nodes.len` is filed under its own
+place, and the graph does not count it as a read of `r.nodes`. Taking it
+removed the copy, and `slab_thread` turned linear. Withdrawing the slot
+from `r`'s frees is the hard part.
+- Marking it ESCAPED (never freed) is per name, not per path. A take in
+  one branch leaked `r.nodes` on the other; a tracked run proved it.
+- The sound form is a RESET: `r.nodes = []` written into the tree right
+  after the take, with `r`'s ordinary free kept on every path. On the taken
+  path it frees an empty array; elsewhere, the real one. The lowered SSA
+  graph is cached and fingerprinted, so the insertion must drop that
+  cache entry.
+
+Turning `TUCK_TRACK` on for real (`dd3211e`) first showed this bench's `main`
+leaking the tree it built: its binding copied a result the wrapper had
+already made private. That is fixed (MISSING-FEATURES §E), so a tracked
+`slab_thread` now reports nothing on Odin.
+
+### Slab storage: doubling vs chunks — 2026-09-29
+
+`benches/trees/storage.nim`: one node array SHARED by every tree (so a
+construction is one append, no merge), grown to 2^(D+1)-1 nodes, then walked
+as a tree ×10 and read once in a scrambled order. `-d:release --mm:orc`, ms.
+
+| 8.4M nodes | build | worst append | peak RSS | walk ×10 | scattered |
+|---|---|---|---|---|---|
+| Seq, doubling, Nim's allocator | 2870 | 1178 | 373 MB | 856 | 156 |
+| Seq, doubling, `-d:useMalloc` | 370 | 0.23 | 130 MB | 784 | 134 |
+| chunks of 4096 cells | ~120 | 0.3 | 130–138 MB | 709–890 | 189 |
+
+(2.1M nodes: the same shape — chunks 25 ms to build against 272 / 44.)
+
+- **Contiguous growth is only as good as the allocator's realloc.** glibc
+  remaps a large block's pages (`mremap`) instead of copying them, which is
+  why doubling looks free under `-d:useMalloc`; Nim's allocator copies, and
+  one append at 8.4M nodes stalled 1.2 s with a 2.7x memory peak. Neither
+  Odin's nor D's allocator was measured here, and a target without virtual
+  memory has no remap to fall back on.
+- **Chunks give the same answer everywhere:** no copy on growth, no pause,
+  the lowest peak, and cells that never move — so a cell's ADDRESS is stable,
+  which an extern (DMA, `Pool.addr`) needs and contiguous growth cannot give.
+- **What chunks cost:** one extra dependent load per access. A tree walk
+  sits inside the run-to-run noise; a read with no locality at all is
+  ~20–40% slower. A chunk-by-chunk loop pays nothing.
+
+**Two levels (ruled 2026-09-29, slab proposal Q8).** `storage.nim dir2`: a
+FIXED top of 64 directory pages, each 1024 chunk pointers, each chunk 4096
+cells — 256M cells before anything is copied, every allocation one of two
+fixed sizes, made when first needed. 8.4M nodes, three runs each:
+
+| | build | worst append | walk ×10 | scattered |
+|---|---|---|---|---|
+| one level, `-d:release` | 105–264 | 0.07–0.56 | 789–821 | 149–172 |
+| two levels, `-d:release` | 102–107 | **0.03–0.05** | 1081–1175 | 142–191 |
+| one level, `-d:danger` | 106–197 | 0.06–0.16 | 840–884 | — |
+| two levels, `-d:danger` | 114–127 | 0.06–0.14 | **805–822** | — |
+
+The two levels' 40% on the walk under `-d:release` is BOUNDS CHECKS on the
+two fixed arrays, not the extra load: with them off it is as fast or faster.
+Those indices are in range by construction (a shift and a mask of an index
+the slab has already checked against its length), so the runtime's accessor
+skips them and the second level costs nothing measurable.

@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 import scheduler
 
 proc tuckˑdecisionˑroute*(nal: tuckˑtypeˑNalKind, configured: bool, midFrame: bool): tuckˑtypeˑAction
@@ -191,7 +191,7 @@ proc tuckˑfnˑVideo_DecodeError*(code: uint8): void =
   tuckˑregisterˑVI_CTRL_ENABLE_set(false)
 
 proc tuckˑfnˑfeed*(nal: tuckˑtypeˑNalKind, midFrame: bool): void =
-  discard enqueue(tuckˑactorˑPipelineSingleton.mailbox, tuckˑactorˑPipelineMsg(tuckTag: msgNal, nal: nal, midFrame: midFrame))
+  sendWaiting(tuckˑactorˑPipelineSingleton.mailbox, tuckˑactorˑPipelineMsg(tuckTag: msgNal, nal: nal, midFrame: midFrame), tuckˑactorˑPipelineSlot, "Pipeline")
   tuckNotifySend(tuckˑactorˑPipelineSlot)
   return
 

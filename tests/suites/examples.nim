@@ -55,6 +55,7 @@ const gated = """
 33-ffi-zlib 34-ffi-cstring 35-ffi-struct 36-ffi-enum-callback
 38-division 39-if-match-expr 40-saturating 41-tostr-concat 44-recursive-tree 42-net-echo
 43-literal-payload 45-intersection 46-h264-driver 47-resource-registry
+48-slab-references
 http
 """
 

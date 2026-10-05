@@ -15,7 +15,7 @@ import ../harness
 
 const src = """
 actor Counter:
-  total: int
+  total: int = 0
   on add(n: int):
     self.total = self.total + n
 

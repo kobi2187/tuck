@@ -492,8 +492,7 @@ fn main() -> int:
   t.badCheck "a pool over an undeclared element type is rejected", "TK-TY03"
 
   t.src """
-arena A [size: 0]:
-  discard
+arena A [size: 0]
 
 fn main() -> int:
   return 0
@@ -522,18 +521,24 @@ fn main() -> int:
   t.okCheck "a pool over a primitive array is accepted"
 
   t.src """
+arena A [size: 2048]
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "an arena with a real size is accepted"
+  # The block form is gone (slab proposal Q5): an arena is a declaration and a
+  # lifetime. TK-ME02, which warned that the block did nothing, is retired;
+  # the arena itself is tested in tests/suites/slabs.nim.
+  t.src """
 arena A [size: 2048]:
   discard
 
 fn main() -> int:
   return 0
 """
-  t.okCheck "an arena with a real size is accepted"
-  # ...but not as though it did anything: arenas are not implemented, and the
-  # body is discarded. It checked clean until 2026-09-27; a warning keeps the
-  # specimen (examples/13-arena-mem.tuck) compiling and stops the silence.
-  t.checkSays "...and warns that it is not implemented (TK-ME02)",
-              "Memory Warning \\[TK-ME02\\]: arena 'A' is not implemented"
+  t.badCheck "the old block form is refused, naming the declaration form",
+             "(?s)TK-PA18.*An arena is a declaration, not a block"
 
   # --- a type may not contain itself by value -------------------------------
   #
@@ -735,7 +740,7 @@ fn main() -> int:
   # Until it is, this is refused rather than dropped.
   t.src """
 actor Box[T] [queue: 4]:
-  last: T
+  last: T?
 
   on put({v: T}):
     last = v
@@ -753,7 +758,7 @@ import scheduler
 import console
 
 actor Box[T] [queue: 4]:
-  last: T
+  last: T?
   hits: int = 0
 
   on put({v: T}):
@@ -766,13 +771,20 @@ fn intDone() -> bool:
 fn strDone() -> bool:
   return Box[str].hits > 0
 
+fn say({s: str?}) [io]:
+  if s.ok:
+    {text: s.value} printLine
+
 fn main() -> int [io]:
   Box[int] send put {v: 7}
   Box[str] send put {v: "hi"}
   Box[int].waitUntil {pred: :intDone}
   Box[str].waitUntil {pred: :strDone}
-  {text: Box[str].last} printLine
-  return Box[int].last
+  {s: Box[str].last} say
+  let n = Box[int].last
+  if not n.ok:
+    return 0
+  return n.value
 """
   t.okCheck "one generic actor, two instantiations"
   t.emits "...expands to a SEPARATE singleton per instantiation",
@@ -790,7 +802,7 @@ fn main() -> int [io]:
 import seq
 
 actor Box[T] [queue: 4]:
-  items: Seq[T]
+  items: Seq[T] = []
 
   on put({v: T}):
     items = {items: items, value: v} push
@@ -810,7 +822,7 @@ fn main() -> int:
   # author's mistake into a host compiler error in code they never wrote.
   t.src """
 actor Box[T] [queue: 4]:
-  last: T
+  last: T?
 
   on put({v: T}):
     last = v
@@ -879,7 +891,7 @@ public:
   Box[T]
 
 actor Box[T] [queue: 4]:
-  last: T
+  last: T?
 
   on put({v: T}):
     last = v
@@ -899,21 +911,24 @@ public:
   Box[T]
 
 actor Box[T] [queue: 4]:
-  last: T
+  last: T?
 
   on put({v: T}):
     last = v
 
 fn arrived() -> bool:
-  return Box[int].last > 0
+  return Box[int].last.ok
 
 fn main() -> int [io]:
   Box[int] send put {v: 4}
   Box[int].waitUntil {pred: :arrived}
-  return Box[int].last
+  let n = Box[int].last
+  if not n.ok:
+    return 0
+  return n.value
 """
   t.okCheck "an exported template is still instantiable in its own module"
-  t.omits "...and the template itself is NOT emitted", "last\\*: T"
+  t.omits "...and the template itself is NOT emitted", "last\\*: TuckResult\\[T\\]"
   t.runs "...while its instantiation runs", 4
   t.hostRuns "...on every backend", 4
 

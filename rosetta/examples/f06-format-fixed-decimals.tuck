@@ -1,5 +1,5 @@
 # Format a float to a fixed number of decimal places
-import io
+import console
 
 pending:
   fn toFixed({value: float, decimals: int}) -> str

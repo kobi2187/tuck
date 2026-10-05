@@ -41,5 +41,7 @@ tuckˑfnˑmain :: proc () {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	tuckˑfnˑmain()
+	rt.tuckTrackCheck()
 }

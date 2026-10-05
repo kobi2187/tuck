@@ -1,6 +1,6 @@
 {.experimental: "codeReordering".}
 
-proc tuckˑfnˑcount*(xs: sink seq[tuckˑobjectˑDog]): int
+proc tuckˑfnˑcount*(xs: seq[tuckˑobjectˑDog]): int
 proc tuckˑfnˑmain*(): int
 
 type tuckˑobjectˑDog* = object
@@ -16,15 +16,15 @@ type Animal* = object
   of Animal_is_tuckˑobjectˑCat: tuckˑobjectˑCatVal*: tuckˑobjectˑCat
   of Animal_is_tuckˑobjectˑDog: tuckˑobjectˑDogVal*: tuckˑobjectˑDog
 
-proc tuckˑobjectˑDogˑnoise*(self: var tuckˑobjectˑDog): int =
+proc tuckˑobjectˑDogˑnoise*(self: tuckˑobjectˑDog): int =
   return 1
 
 
-proc tuckˑobjectˑCatˑnoise*(self: var tuckˑobjectˑCat): int =
+proc tuckˑobjectˑCatˑnoise*(self: tuckˑobjectˑCat): int =
   return 41
 
 
-proc tuckˑfnˑcount*(xs: sink seq[tuckˑobjectˑDog]): int =
+proc tuckˑfnˑcount*(xs: seq[tuckˑobjectˑDog]): int =
   var tuckˑvˑs = 0
   for tuckˑvˑd in xs:
     if true:

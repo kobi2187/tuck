@@ -1,5 +1,5 @@
 # Validate input with a result type instead of throwing
-import io
+import console
 
 type ValidationError:
   | TooShort

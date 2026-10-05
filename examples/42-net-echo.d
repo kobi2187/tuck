@@ -47,7 +47,7 @@ bool drain_tuckˑactorˑResult() {
 }
 
 void sendPut_tuckˑactorˑResult(ref tuckˑactorˑResult self, long c) {
-    cast(void) rt.enqueue(self.mailbox, tuckˑactorˑResultMsg(tuckTag: tuckˑactorˑResultMsgKind.msgPut, c: c));
+    rt.sendWaiting(self.mailbox, tuckˑactorˑResultMsg(tuckTag: tuckˑactorˑResultMsgKind.msgPut, c: c), tuckˑactorˑResultSlot, "Result");
     rt.tuckNotifySend(tuckˑactorˑResultSlot);
 }
 

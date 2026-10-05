@@ -127,7 +127,7 @@ A lot of Tuck's safety comes from things you simply can't write:
 
 Tuck has **no references**. Everything is a value. Behind the scenes, records are passed by pointer so it stays fast, but the checker guarantees nobody can write through them. You get cheap passing without aliasing surprises.
 
-This is a deliberate experiment: *how far can we push value semantics before we genuinely need references?* So far, further than you might expect. Composed objects, actors, interface collections and even recursive trees (`Add({left: Expr, right: Expr})`) all work without a single user-visible pointer. The next frontier is shared and cyclic structures, where a slab (an owned arena plus indices) looks like the answer.
+This is a deliberate experiment: *how far can we push value semantics before we genuinely need references?* So far, further than you might expect. Composed objects, actors, interface collections and even recursive trees (`Add({left: Expr, right: Expr})`) all work without a single user-visible pointer. Shared and cyclic structures — a doubly linked list, a parent pointer, a graph — are where values run out, and `slab` is the answer: a reference is an index and a tenancy, an ordinary 8-byte value, checked on every use (`examples/48-slab-references.tuck`).
 
 There's a nice side effect for the compiler, too. No aliasing, declared effects, closed sets of interface types and explicit state graphs are exactly the facts optimizers usually have to work hard to prove. In Tuck you've already stated them. Seeing how much speed that buys is part of the fun.
 

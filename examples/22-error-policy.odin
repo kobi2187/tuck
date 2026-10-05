@@ -25,4 +25,6 @@ tuckˑfnˑpoll :: proc (port: u8) -> int {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
+	rt.tuckTrackCheck()
 }

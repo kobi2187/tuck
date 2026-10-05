@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 import net
 import scheduler
 
@@ -58,13 +58,13 @@ proc tuckˑtaskˑclient*(port: int): void =
         if true:
           if (tuckˑvˑr.value.data == "pong"):
             if true:
-              discard enqueue(tuckˑactorˑResultSingleton.mailbox, tuckˑactorˑResultMsg(tuckTag: msgPut, c: 42))
+              sendWaiting(tuckˑactorˑResultSingleton.mailbox, tuckˑactorˑResultMsg(tuckTag: msgPut, c: 42), tuckˑactorˑResultSlot, "Result")
               tuckNotifySend(tuckˑactorˑResultSlot)
               return
-      discard enqueue(tuckˑactorˑResultSingleton.mailbox, tuckˑactorˑResultMsg(tuckTag: msgPut, c: 3))
+      sendWaiting(tuckˑactorˑResultSingleton.mailbox, tuckˑactorˑResultMsg(tuckTag: msgPut, c: 3), tuckˑactorˑResultSlot, "Result")
       tuckNotifySend(tuckˑactorˑResultSlot)
       return
-  discard enqueue(tuckˑactorˑResultSingleton.mailbox, tuckˑactorˑResultMsg(tuckTag: msgPut, c: 4))
+  sendWaiting(tuckˑactorˑResultSingleton.mailbox, tuckˑactorˑResultMsg(tuckTag: msgPut, c: 4), tuckˑactorˑResultSlot, "Result")
   tuckNotifySend(tuckˑactorˑResultSlot)
   return
 

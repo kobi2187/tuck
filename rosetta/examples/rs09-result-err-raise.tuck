@@ -2,7 +2,7 @@
 # Stresses: err keyword, error enum, effect marker, if r.ok in caller.
 # NEW FINDING: fallible `!T [error: E]` fns must be marked [io] even though
 # safeDiv does no I/O — the checker ties fallibility to the io effect.
-import io
+import console
 
 type DivError:
   | DivByZero

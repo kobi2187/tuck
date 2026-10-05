@@ -1,5 +1,5 @@
 # decision table feeding a match, plus nested struct + mutation chain combo
-import io
+import console
 
 type Tier:
   | Bronze({})

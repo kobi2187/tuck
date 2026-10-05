@@ -1,5 +1,5 @@
 # While-style loop using Tuck's `for cond:` form
-import io
+import console
 
 fn main() -> void [io]:
   var n = 100

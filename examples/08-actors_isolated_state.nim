@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import ../compiler/tuck_rt
+import "../compiler/tuck_rt"
 
 type tuckˑactorˑTrafficLightStateKind* = enum Red, Yellow, Green
 

@@ -1,5 +1,5 @@
 # Boolean values and printing them
-import io
+import console
 
 fn main() -> void [io]:
   let isReady = true
