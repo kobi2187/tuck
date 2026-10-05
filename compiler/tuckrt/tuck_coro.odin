@@ -198,6 +198,7 @@ globalScheduler: Scheduler   // per thread — see activeCoroutine above
 
 @(private)
 initScheduler :: proc() {
+	context.allocator = tuckRuntimeAllocator()   // lives as long as the program
 	if !globalScheduler.inited {
 		queue.init(&globalScheduler.readyQueue)
 		globalScheduler.inited = true
@@ -297,7 +298,8 @@ initLoop :: proc() {
 		panic("tuck: epoll_create1 failed")
 	}
 	gLoop.epfd = fd
-	gLoop.waiters = make(map[linux.Fd]IoWaiter)
+	// The table lives as long as the program; it keeps this allocator as it grows.
+	gLoop.waiters = make(map[linux.Fd]IoWaiter, allocator = tuckRuntimeAllocator())
 	gLoop.inited = true
 }
 
@@ -637,6 +639,10 @@ checkWaiters :: proc(slot: ^ActorSlot) {
 		b: byte = 1
 		linux.write(w.doneFd, ([^]byte)(&b)[:1])
 		linux.close(w.doneFd)
+		// Nothing holds it now: the waiter reads only its own end of the
+		// pipe, and it left `slot.waiters` above. Kept, it was one leak per
+		// `waitUntil`.
+		free(w)
 	}
 }
 
@@ -709,7 +715,9 @@ actorMain :: proc(t: ^thread.Thread) {
 
 tuckStartActor :: proc(drain: DrainProc) -> rawptr {
 	// Detached by design: actors are daemons with no termination condition, so
-	// there is nothing to join. The process exits and they go with it.
+	// there is nothing to join. The process exits and they go with it — and
+	// so do their slot and thread, which is why they are the runtime's.
+	context.allocator = tuckRuntimeAllocator()
 	slot := new(ActorSlot)
 	slot.drain = drain
 	slot.pending = true      // drain once before the first wait: a send may
@@ -943,5 +951,10 @@ awaitResult :: proc(slot: ^TuckAsyncResult($T)) -> T {
 			if !runNext() do runOnce(1)
 		}
 	}
-	return slot.value
+	// The task's last touch of the slot is `done = true` (its wrapper then
+	// frees only its env and returns), and each slot is awaited once. Kept,
+	// it was one leak per task call.
+	value := slot.value
+	free(slot)
+	return value
 }

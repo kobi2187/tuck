@@ -163,6 +163,54 @@ proc actorInitLines(ctx: OdinCodegenCtx): string =
   ## contextless.
   for s in ctx.actorInits: result.add("\t" & s & "\n")
 
+proc actorFieldReleases(ctx: OdinCodegenCtx, m: Module): string =
+  ## Every actor's heap fields, handed back at exit under TUCK_TRACK the way
+  ## the slabs are: an actor is a daemon whose state lives until exit by
+  ## design, and reported as a leak it hid the program's real ones (every
+  ## shard of world_server "leaked" its three Seqs). A Seq field, or each Seq
+  ## field of a record field — what its handlers own and thread. A `str` field
+  ## stays: it may hold a literal, and deleting that is a bad free.
+  for d in m.decls(dkActor):
+    let owner = actorSingletonName(d.name)
+    for f in d.actorFields:
+      if seqElem(f.typ) != nil:
+        result.add "		delete(" & owner & "." & f.name & ")\n"
+        continue
+      for slot in seqFieldNames(ctx.res, m, f.typ):
+        result.add "		delete(" & owner & "." & f.name & "." & slot & ")\n"
+
+proc exitLines(ctx: OdinCodegenCtx, m: Module, tracks: bool): string =
+  ## What the entry point runs after main and the drain, before `os.exit`
+  ## (`_exit`, which runs no defers and no finalizers): the resource tables
+  ## closed, the slabs reported and handed back, the actors' state handed
+  ## back, and the allocation report — in that order, and each by hand.
+  # §7.4's close-all, AFTER the loop is driven so anything a task acquired is
+  # still registered when the tables close, and BEFORE os.exit — which is
+  # `_exit` and runs no finalizer, so an `@(fini)` hook would never fire. The
+  # entry point already owns the lifecycle (it boots the scheduler); this is
+  # the other end of it.
+  if declaresResources(m): result.add("\t" & ResourceShutdownProc & "()\n")
+  # The slab proposal's exit report (Q3): cells never freed, per slab.
+  for s in reportedSlabs(m, ctx.realModules):
+    let pre = if s.origin == "": "" else: s.origin.replace("-", "_") & "."
+    result.add("\trt.tuckSlabReport(&" & pre & s.name & ")\n")
+  # The allocation report, EXPLICITLY and last. `os.exit` below is `_exit`:
+  # it runs no defers and no finalizers, which is the same reason the
+  # resource registry closes its tables by hand right above. The exit lives
+  # INSIDE tuckTrackCheck so this line need not mention `os`, which the
+  # header may not have imported. With tracking off it is a no-op call.
+  # Every slab's values and storage go back before the allocation report (a
+  # no-op unless TUCK_TRACK), so it names what the program leaked rather
+  # than the slabs, which live until exit by design.
+  for p in slabPackages(m, ctx.realModules):
+    result.add("\t" & (if p == "": "" else: p.replace("-", "_") & ".") &
+               SlabsReleaseProc & "()\n")
+  # ...and every actor's state, after the drain above left them idle.
+  let fieldDrops = ctx.actorFieldReleases(m)
+  if tracks and fieldDrops.len > 0:
+    result.add("\twhen rt.TUCK_TRACK {\n" & fieldDrops & "\t}\n")
+  if tracks: result.add("\trt.tuckTrackCheck()\n")
+
 proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string =
   ## Tuck's `fn main` is a plain proc; Odin's entry point calls it. Static
   ## asserts fold into the same entry (Odin has #assert for compile-time, but
@@ -215,28 +263,7 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string
   # Wait for every actor to empty its mailbox before exiting: an actor thread
   # is detached, so without this a `send` races the process teardown.
   if actorNames.len > 0: result.add("\trt.tuckDrainActors()\n")
-  # §7.4's close-all, AFTER the loop is driven so anything a task acquired is
-  # still registered when the tables close, and BEFORE os.exit — which is
-  # `_exit` and runs no finalizer, so an `@(fini)` hook would never fire. The
-  # entry point already owns the lifecycle (it boots the scheduler); this is
-  # the other end of it.
-  if declaresResources(m): result.add("\t" & ResourceShutdownProc & "()\n")
-  # The slab proposal's exit report (Q3): cells never freed, per slab.
-  for s in reportedSlabs(m, ctx.realModules):
-    let pre = if s.origin == "": "" else: s.origin.replace("-", "_") & "."
-    result.add("\trt.tuckSlabReport(&" & pre & s.name & ")\n")
-  # The allocation report, EXPLICITLY and last. `os.exit` below is `_exit`:
-  # it runs no defers and no finalizers, which is the same reason the
-  # resource registry closes its tables by hand right above. The exit lives
-  # INSIDE tuckTrackCheck so this line need not mention `os`, which the
-  # header may not have imported. With tracking off it is a no-op call.
-  # Every slab's values and storage go back before the allocation report (a
-  # no-op unless TUCK_TRACK), so it names what the program leaked rather
-  # than the slabs, which live until exit by design.
-  for p in slabPackages(m, ctx.realModules):
-    result.add("\t" & (if p == "": "" else: p.replace("-", "_") & ".") &
-               SlabsReleaseProc & "()\n")
-  if tracks: result.add("\trt.tuckTrackCheck()\n")
+  result.add(ctx.exitLines(m, tracks))
   if mainReturns: result.add("\tos.exit(mainRc)\n")
   result.add("}\n")
 

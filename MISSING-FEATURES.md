@@ -259,6 +259,19 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **Odin leaked one runtime allocation per task call and per `waitUntil`,
+  and `TUCK_TRACK` flagged every actor program.** Once tracking covered every
+  program that imports the runtime (`dd3211e`), a sweep of every runnable
+  example and bench app found leaks in most of them, and its report now names
+  each site. Two were real and grew with use: a task's result slot
+  (`newAsyncResult`), which `awaitResult` now frees, and a `waitUntil`
+  waiter, which the actor now frees once it has woken it. The rest lived as
+  long as the program by design: the scheduler's queue, the event loop's
+  table, an actor's slot and thread (the runtime's, from
+  `tuckRuntimeAllocator`, untracked), and an actor's heap fields (handed back
+  at exit under tracking, like the slabs). The sweep now reports only example
+  44, which is A39. Fixed 2026-10-05.
+
 - **A threading fn's result was copied again at its binding, and the
   original dropped (Odin).** A fn that threads its first parameter, called
   with an argument still read later, reaches its WRAPPER, which copies that
@@ -530,17 +543,6 @@ Verified fixed earlier on 2026-08-05:
 - std fs/io no longer block the scheduler — they run on the offload worker.
 
 ## F. Watch-outs the test suite does not cover
-
-- **`TUCK_TRACK` reports small leaks at exit in most Odin programs that use
-  actors, tasks or the runtime's tables** — since 2026-10-05, when it began
-  tracking every program that imports the runtime (`dd3211e`); before, it
-  tracked almost none. A sweep of every runnable example and bench app: the
-  actor examples (26, 27, 45, 46) 6 allocations / 688 bytes each, the task
-  examples (28–30) 2–3, 20 and 44 five, `matching_engine` 8 (17 KB),
-  `world_server` 33 (28 KB). Constant at exit, not growing — the runtime's
-  own structures (an actor's thread and mailbox, the scheduler) not handed
-  back — but each one now makes a tracked run exit 90, so a NEW leak in such
-  a program hides behind them. Untriaged; no suite runs with tracking.
 
 - **An intermittent `Bad file descriptor` reading a child's output.** Seen
   twice in full runs (once aborting cli_smoke with a stack trace, once as

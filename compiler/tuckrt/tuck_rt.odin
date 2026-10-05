@@ -205,6 +205,20 @@ tuckTrackAllocator :: proc() -> mem.Allocator {
 	}
 }
 
+// The allocator for the runtime's OWN structures that live as long as the
+// program: the scheduler's queue, the event loop's table, an actor's slot and
+// thread. They are never handed back, because an actor is a daemon nothing
+// joins, so under TUCK_TRACK every actor program "leaked" them and a real
+// leak hid behind the noise. They come from the allocator tracking wraps,
+// and the report names only what the program itself lost. Without tracking
+// this is the context's own allocator.
+tuckRuntimeAllocator :: proc() -> mem.Allocator {
+	when TUCK_TRACK {
+		if gTrackReady { return gTrack.backing }
+	}
+	return context.allocator
+}
+
 tuckTrackCheck :: proc() {
 	// EXITS here rather than handing a count back for the entry point to act
 	// on. The emitted call must not mention `os`: Odin errors on an unused
