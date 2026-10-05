@@ -9,6 +9,9 @@
 #   Odin  b2354a04   dev-2026-09, built from source against LLVM 18 (as the
 #                    reference container's is)
 #   dmd   2.112.0    2.109 lacks `pipe2` and cannot build the D runtime
+#
+# and the Nim packages the compiler imports: jsony 1.1.6 (the AST as JSON),
+# msgpack4nim 0.4.4 (the module cache), npeg 1.3.0 (`validate`).
 name: tests
 
 on:
@@ -46,7 +49,8 @@ jobs:
           path: |
             ~/toolchains/nim
             ~/toolchains/odin
-          key: toolchains-${{ runner.os }}-nim-${{ env.NIM_VERSION }}-odin-${{ env.ODIN_COMMIT }}-v1
+            ~/.nimble
+          key: toolchains-${{ runner.os }}-nim-${{ env.NIM_VERSION }}-odin-${{ env.ODIN_COMMIT }}-v2
 
       - name: Nim
         run: |
@@ -57,6 +61,9 @@ jobs:
             mv ~/toolchains/nim-${NIM_VERSION} ~/toolchains/nim
           fi
           echo "$HOME/toolchains/nim/bin" >> "$GITHUB_PATH"
+
+      - name: Nim packages
+        run: nimble install -y jsony@1.1.6 msgpack4nim@0.4.4 npeg@1.3.0
 
       - name: Odin
         run: |
