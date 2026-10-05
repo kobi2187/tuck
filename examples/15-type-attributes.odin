@@ -42,4 +42,6 @@ tuckˑfnˑreadSensor :: proc(payload: $T) -> rt.TuckResult(TRec_value(u16)) {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
+	rt.tuckTrackCheck()
 }

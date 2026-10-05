@@ -19,4 +19,6 @@ __validated_tuckˑtypeˑTemperature :: proc(v: tuckˑtypeˑTemperature) -> tuck�
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
+	rt.tuckTrackCheck()
 }

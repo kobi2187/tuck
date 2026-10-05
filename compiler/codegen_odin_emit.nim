@@ -106,17 +106,6 @@ proc shouldImportOs(m: Module, body: string): bool =
   let mainFn = mainDecl(m)
   (mainFn != nil and mainFn.returnsValue) or "os." in body
 
-proc usesRuntime*(m: Module, mains: string): bool =
-  ## Does this program touch the runtime at all? Asked by the entry point
-  ## before it emits anything `rt.`-qualified, for the same reason
-  ## `shouldImportRt` asks it of the body: an import Odin does not see used
-  ## is a compile error, and a program with no actors, no tasks and no
-  ## runtime call needs no `tuckrt` at all.
-  var actorNames: seq[string]
-  var hasTasks = false
-  runtimeUsers(m, actorNames, hasTasks)
-  actorNames.len > 0 or hasTasks or "rt." in mains
-
 proc slabPackages(m: Module, real: Table[string, Module]): seq[string] =
   ## The modules declaring slabs, "" for the entry module's own. The entry
   ## point reports their slabs and calls each one's `tuckSlabsRelease`, so it
@@ -174,7 +163,7 @@ proc actorInitLines(ctx: OdinCodegenCtx): string =
   ## contextless.
   for s in ctx.actorInits: result.add("\t" & s & "\n")
 
-proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
+proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string =
   ## Tuck's `fn main` is a plain proc; Odin's entry point calls it. Static
   ## asserts fold into the same entry (Odin has #assert for compile-time, but
   ## these are runtime-checked, as on the other backends).
@@ -190,7 +179,12 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, mains: string): string =
   # dependency on every program, breaking 107 assertions over programs that
   # touch no runtime at all. It is also the right rule on its own terms: with
   # no runtime there is no `tuckSeqCopy`, so there is nothing to track.
-  let tracks = usesRuntime(m, mains) or
+  #
+  # The SAME condition as the header's `import rt`. This read the entry text
+  # alone, so a program whose runtime calls all sit in its fns — every
+  # `tuckSeqCopy` in a body, every twin — imported the runtime and was never
+  # tracked: `-define:TUCK_TRACK=true` reported nothing, leak or bad free.
+  let tracks = shouldImportRt(m, body, mains) or
                slabPackages(m, ctx.realModules).len > 0
   if tracks:
     result.add("\tcontext.allocator = rt.tuckTrackAllocator()\n")
@@ -269,4 +263,4 @@ proc emitOdin*(m: Module, res: Resolution,
   for h in ctx.hoisted:
     result.add(h & "\n\n")
   result.add(body)
-  result.add(ctx.genEntryPoint(m, mains))
+  result.add(ctx.genEntryPoint(m, body, mains))

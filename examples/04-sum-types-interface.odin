@@ -114,4 +114,6 @@ tuckˑobjectˑPodcastAppˑplay :: proc (self: ^tuckˑobjectˑPodcastApp, episode
 
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
+	rt.tuckTrackCheck()
 }

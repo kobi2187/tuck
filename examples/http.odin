@@ -17,4 +17,6 @@ tuckˑfnˑget :: proc(payload: $T) -> rt.TuckResult(TRec_body(string)) {
 
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
+	rt.tuckTrackCheck()
 }

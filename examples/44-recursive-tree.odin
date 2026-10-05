@@ -90,6 +90,8 @@ tuckˑfnˑmain :: proc () -> int {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	mainRc := tuckˑfnˑmain()
+	rt.tuckTrackCheck()
 	os.exit(mainRc)
 }
