@@ -1,0 +1,90 @@
+# The full suite, on every push to main and every pull request.
+#
+# The same gate a contributor runs locally (CLAUDE.md, "Build and test"):
+# every suite, every assertion, with Odin REQUIRED rather than skipped, and
+# the D backend built and run. Toolchains are pinned to the versions the suite
+# is kept green on, and cached once built.
+#
+#   Nim   2.2.4      the compiler's own language, and the Nim backend
+#   Odin  b2354a04   dev-2026-09, built from source against LLVM 18 (as the
+#                    reference container's is)
+#   dmd   2.112.0    2.109 lacks `pipe2` and cannot build the D runtime
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      NIM_VERSION: 2.2.4
+      ODIN_COMMIT: b2354a04b98cd1fe9aa592fc4396373f33bcdf2b
+      TUCK_REQUIRE_ODIN: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: LLVM 18 (Odin's code generator and linker)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q llvm-18-dev clang-18
+
+      - name: Cache the built toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/toolchains/nim
+            ~/toolchains/odin
+          key: toolchains-${{ runner.os }}-nim-${{ env.NIM_VERSION }}-odin-${{ env.ODIN_COMMIT }}-v1
+
+      - name: Nim
+        run: |
+          if [ ! -x ~/toolchains/nim/bin/nim ]; then
+            mkdir -p ~/toolchains
+            curl -sSfL "https://nim-lang.org/download/nim-${NIM_VERSION}-linux_x64.tar.xz" \
+              | tar -xJ -C ~/toolchains
+            mv ~/toolchains/nim-${NIM_VERSION} ~/toolchains/nim
+          fi
+          echo "$HOME/toolchains/nim/bin" >> "$GITHUB_PATH"
+
+      - name: Odin
+        run: |
+          if [ ! -x ~/toolchains/odin/odin ]; then
+            git clone --filter=blob:none https://github.com/odin-lang/Odin ~/toolchains/odin
+            git -C ~/toolchains/odin checkout --quiet "$ODIN_COMMIT"
+            (cd ~/toolchains/odin && LLVM_CONFIG=llvm-config-18 CXX=clang++-18 ./build_odin.sh release)
+          fi
+          echo "$HOME/toolchains/odin" >> "$GITHUB_PATH"
+
+      - name: dmd
+        uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: dmd-2.112.0
+
+      - name: Toolchain versions
+        run: |
+          nim --version | head -1
+          odin version
+          dmd --version | head -1
+
+      - name: Build the compiler and the tools the suites call
+        run: |
+          nim c --hints:off -o:tuck tuck.nim
+          nim c --hints:off -o:tools/doc_snippets tools/doc_snippets.nim
+          # cyc parses Nim with the Nim compiler's own modules (complexity.nim).
+          nim c --hints:off --path:"$(dirname "$(dirname "$(readlink -f "$(command -v nim)")")")" \
+            -o:tools/cyc tools/cyc.nim
+
+      - name: Every suite (Odin required)
+        run: ./tests/run

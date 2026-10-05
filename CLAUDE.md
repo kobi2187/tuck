@@ -41,7 +41,10 @@ TUCK_REQUIRE_ODIN=1 ./tests/run      # fail rather than SKIP if Odin is absent
 ```
 
 `run-all-tests.sh` is a thin wrapper over `tests/run`; both are the pre-commit
-gate. `tests/run` is a **script** that conditionally rebuilds `tests/.runner-bin`
+gate. CI (`.github/workflows/tests.yml`) runs the same full suite on every pull
+request and every push to `main`: Odin required, D built and run, toolchains
+pinned (Nim 2.2.4, Odin `b2354a04` against LLVM 18, dmd 2.112.0). When a
+toolchain moves, move its pin with it. `tests/run` is a **script** that conditionally rebuilds `tests/.runner-bin`
 from `tests/runner.nim`, `tests/harness.nim` and `tests/suites/*.nim`, then
 rebuilds `tuck` at stage 1 — so the suite always runs the current tree. Never
 invoke `tests/.runner-bin` directly: a stale binary once made an unverified fix
