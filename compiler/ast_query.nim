@@ -457,7 +457,7 @@ proc implicitTailValue*(body: Expr): Expr =
      exkCombinator, exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
      exkMixinRef, exkDefer, exkFinish, exkAcquire, exkOrdinal, exkValidate,
      exkIfaceCall, exkIfaceIs, exkIfacePayload, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset, exkWrapOk,
-     exkAbsent:
+     exkAbsent, exkCopy:
     lastS
 
 proc injectTailReturn*(body: Expr) =
@@ -1180,6 +1180,12 @@ proc selfAppendParts*(res: Resolution, e: Expr): tuple[read, value: Expr] =
   if items == nil or value == nil: return
   if items.kind != exkVar or items.name != e.target.name: return
   (items, value)
+
+proc copiedValue*(e: Expr): Expr =
+  ## The value under an `exkCopy` (ownership_nodes), or `e` itself. For an
+  ## emitter asking what a binding DECLARES — its type, whether it is a
+  ## record construction, which module built it: a copy changes none of it.
+  if e != nil and e.kind == exkCopy: e.copied else: e
 
 proc selfAppendValue*(res: Resolution, e: Expr): Expr =
   ## The `v` of `xs = {items: xs, value: v} push`, or nil (selfAppendParts).

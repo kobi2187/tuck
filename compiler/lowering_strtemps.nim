@@ -110,7 +110,7 @@ proc visit(h: var Hoist, n: Expr, own: bool) =
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill, exkBracket,
      exkCall, exkBreak, exkContinue, exkTripleDot, exkImport, exkActorRef,
      exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef, exkOrdinal,
-     exkIfaceIs, exkIfacePayload, exkWrapOk, exkAbsent:
+     exkIfaceIs, exkIfacePayload, exkWrapOk, exkAbsent, exkCopy:
     for ch in n.children: h.visit(ch, false)
   if h.settled: return
   if not own and isStr(h.res.typeFor(n)) and ownedStrCall(h.res, h.procs, n):

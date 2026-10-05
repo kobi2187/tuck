@@ -489,6 +489,21 @@ type
                     # tree, where every pass sees it, instead of re-derived by
                     # each emitter from the assignment's shape (ownership
                     # proposal §8, Stage C).
+    exkCopy         # prepared only (ownership_nodes): the value a binding
+                    # copies where the backend's own assignment would alias
+                    # it (Odin, D), or a static `str` made heap-owned (Odin).
+                    # Made from lowering_seqcopy's marks and the ownership
+                    # pass's `copyToOwn`, which each emitter used to look up
+                    # while printing (proposal §8, Stage C, step 1.2).
+
+  CopyKind* = enum
+    ## What an `exkCopy` copies (rule S: a sink copies when it is not the
+    ## value's final use; rule G: what a copy of a type means).
+    cpSeq       ## a `Seq`'s buffer: the native assignment copies only a header
+    cpFields    ## a record's `Seq` fields (`copyFields`), each copied — the
+                ## record's own struct copy carries their headers along
+    cpStatic    ## a `str` literal, copied to the heap so the local holding it
+                ## can free each value it is given (Odin, `copyToOwn`)
 
   SlabOpKind* = enum
     ## What a slab operation does (thoughts/shared/plans/
@@ -666,6 +681,11 @@ type
                                    # last element (a SINK — the container
                                    # keeps it). false: a str's bytes copied
                                    # onto the end (a BORROW — nothing kept)
+    of exkCopy:
+      copied*: Expr                # the value copied; it keeps its own id, so
+                                   # every fact about it stays attached
+      copyKind*: CopyKind
+      copyFields*: seq[string]     # cpFields: the Seq fields that are copied
     of exkIfaceCall:
       dispatchRecv*: Expr          # the interface value, evaluated once
       dispatchIface*: string       # the interface's (mangled) type name

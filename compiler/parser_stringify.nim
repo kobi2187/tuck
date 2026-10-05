@@ -165,6 +165,11 @@ proc toString*(e: Expr): string =
   of exkAppend:
     # Prepare-built: an append in place.
     return e.appendTarget.toString() & " += " & e.appendValue.toString()
+  of exkCopy:
+    # Prepare-built: a copy where the backend's assignment would alias.
+    let what = if e.copyKind == cpFields: "copy[" & e.copyFields.join(", ") & "]"
+               else: "copy"
+    return what & "(" & e.copied.toString() & ")"
   of exkIfaceCall:
     # Lowering-built: one arm per satisfying object, shown by name.
     var sats: seq[string]

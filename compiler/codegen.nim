@@ -885,6 +885,9 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkIf: ctx.genIf(e, ind)
   of exkAssign: ctx.genExprAssign(e)
   of exkAppend: ctx.genAppend(e)
+  # Nim's `seq` and `string` assignment already copies, so prepare never
+  # makes an `exkCopy` on this backend; if one arrives, the value IS its copy.
+  of exkCopy: ctx.genExpr(e.copied)
   of exkMatch: ctx.genExprMatch(e)
   of exkReturn: ctx.genReturn(e)
   of exkRaise: ctx.genRaise(e)

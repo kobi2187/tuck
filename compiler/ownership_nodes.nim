@@ -33,15 +33,55 @@
 # marks. The node keeps the assignment's id, so every fact recorded against
 # the statement — its type (void), a shortcut site — stays attached.
 #
+# SECOND NODE: `exkCopy` — the value a binding copies (step 1.2).
+#
+#   cpSeq     a `Seq` bound where Odin's `[dynamic]T` / D's `T[]` would share
+#             the buffer (lowering_seqcopy's `needsDup`)
+#   cpFields  a record whose `Seq` fields would be shared the same way, one
+#             level down (`recordDupFields`)
+#   cpStatic  a `str` literal the ownership pass decided its local must own,
+#             so the free at its overwrite never frees static storage
+#             (`copyToOwn`, Odin only)
+#
+# Made exactly where the emitters printed them: on an assignment's value,
+# except a task's awaited result and a call threaded through a moved twin —
+# both already the binder's alone. (The copy MARKS can sit on those two too:
+# lowering_seqcopy marks every non-exclusive binding, and the ownership pass
+# still reads the mark there as "copied". That disagreement is real and is
+# what Stage D's differential is for; here it is carried over unchanged.)
+# The aliasing backends only: Nim's assignment copies by itself.
+#
 # IT SAYS SO. The SSA cache asserts a body's shape has not changed since its
 # lowered graph was built; a pass that rewrites a body after that must drop
 # the graph, or the next fetch fails as "a pass rewrote it without saying
 # so". No consumer fetches the lowered graph after this pass today; dropping
 # it keeps that true by construction rather than by luck.
-import tables
+import tables, sets, os
 import ast, ast_ops, ast_query
 import resolution
 import ssa_ir
+import lowering_seqcopy
+import analysis_ownership
+import twin_calls
+
+let DebugUnbacked = not defined(release) and
+                    getEnv("TUCK_DEBUG_INPLACE").len > 0
+  ## Read once at module init, not per assignment.
+
+proc reportUnbacked(res: Resolution, n: Expr, why: string) =
+  ## ITEM 4, MEASURED (thoughts/ssa-mirror-design.md, Stage C): a binding
+  ## `markSeqCopies` marked as copied — a call is not `exclusivelyOwned` —
+  ## that gets no copy here, because it is an append grown in place, a call
+  ## threaded through a moved twin, or a task's awaited result. The ownership
+  ## pass reads the mark as "copied, so fresh" (`afterBinding`), and at
+  ## exactly these sites nothing backs the claim. Moved here from the Odin
+  ## emitter, which could see only the twin case, and only on Odin.
+  when not defined(release):
+    if DebugUnbacked and n.assignVal != nil and
+       (needsDup(res, n.assignVal) or
+        recordDupFields(res, n.assignVal).len > 0):
+      echo "INPLACE-BYPASS ", pathOf(n.target), " at ", n.span.line, ":",
+           n.span.col, " (", why, ")"
 
 proc materializeAppend(n: Expr, parts: tuple[read, value: Expr],
                        element: bool) =
@@ -63,11 +103,13 @@ proc materialize(res: Resolution, n: Expr, strGrows: bool): bool =
   ## Rewrites `n` if it is an append assigned back over its own argument.
   let pushed = selfAppendParts(res, n)
   if pushed.value != nil:
+    reportUnbacked(res, n, "append")
     materializeAppend(n, pushed, element = true)
     return true
   if not strGrows: return false
   let concatenated = selfConcatParts(res, n)
   if concatenated.value == nil: return false
+  reportUnbacked(res, n, "append")
   materializeAppend(n, concatenated, element = false)
   true
 
@@ -85,3 +127,51 @@ proc materializeAppends*(res: Resolution, m: Module, strGrows: bool) =
           changed = true
     if changed and d.id.isSet:
       res.ssaGraphs.del((d.id, ssLowered))
+
+proc copyOf(res: Resolution, v: Expr, ownedStrs: HashSet[NodeId]):
+    tuple[kind: CopyKind, fields: seq[string], any: bool] =
+  ## What copy the binding of `v` makes, from the marks the passes recorded.
+  if needsDup(res, v): return (cpSeq, @[], true)
+  let fields = recordDupFields(res, v)
+  if fields.len > 0: return (cpFields, fields, true)
+  if v.id.isSet and v.id in ownedStrs:
+    doAssert v.kind == exkLit and v.litKind == lkStr,
+      "ownership marked a non-literal to copy: " & $v.kind
+    return (cpStatic, @[], true)
+
+proc bindsTask(tasks: HashSet[string], e: Expr): bool =
+  ## `let r = {args} someTask`: the value is the task's awaited result.
+  let v = e.assignVal
+  v != nil and v.kind == exkCall and v.callee != nil and
+    v.callee.kind == exkVar and v.callee.name in tasks
+
+proc materializeCopy(res: Resolution, n: Expr, ownedStrs: HashSet[NodeId]) =
+  ## Wraps the value `n` binds in the copy it makes, if any. The value keeps
+  ## its node and id; the copy is new, and typed as its value.
+  let v = n.assignVal
+  if v == nil: return
+  let (kind, fields, any) = copyOf(res, v, ownedStrs)
+  if not any: return
+  n.assignVal = res.typed(Expr(span: v.span, kind: exkCopy, copied: v,
+                               copyKind: kind, copyFields: fields),
+                          res.typeFor(v))
+
+proc materializeCopies*(res: Resolution, m: Module, ownsStrs: bool) =
+  ## Every copy a binding makes becomes `exkCopy`. On the aliasing backends
+  ## only; `ownsStrs`: this backend frees `str` (Odin), so a literal its
+  ## local must own is copied to the heap.
+  var tasks: HashSet[string]
+  for d in m.decls:
+    if d != nil and d.kind == dkTask: tasks.incl d.name
+  var fns: HashSet[NodeId]
+  for d in m.allFns: fns.incl d.id
+  for d in m.allDecls:
+    let ownedStrs = if ownsStrs and d.id in fns: ownershipFor(d).copyToOwn
+                    else: initHashSet[NodeId]()
+    for body in d.ownExprs:
+      if body == nil: continue
+      for n in body.nodes:
+        if n.kind != exkAssign: continue
+        if bindsTask(tasks, n): reportUnbacked(res, n, "task")
+        elif threadedCall(n) != nil: reportUnbacked(res, n, "threaded")
+        else: materializeCopy(res, n, ownedStrs)

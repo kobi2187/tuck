@@ -347,7 +347,11 @@ that never consults the mark — the exact set where `afterBinding`'s claim is
 unbacked (`TUCK_DEBUG_INPLACE=1`). None of them reaches a consumer that
 misuses the claim, for the two reasons under item 4 above. That is what
 "latent" means here: twelve known sites, none live, and a named reason for
-each.
+each. (Re-measured 2026-10-05, after the ownership rules' Stage C moved the
+report into `ownership_nodes`, where it sees every case on both aliasing
+backends: 7 sites on the examples and both apps, on Odin and on D alike,
+every one a call threaded through a moved twin; 21 across every `.tuck` in
+the tree. No append and no task bind carries an unbacked mark.)
 
 **D. Free insertion falls out.**
 EV-14 becomes: a value that `owns` and has no live use is freed after its

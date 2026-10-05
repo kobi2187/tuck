@@ -29,7 +29,6 @@ import lowering                # getFieldsForType
 # appears they should move to a backend-neutral module.
 from codegen_odin_util import enumTagOwner
 from mangle import mangleName
-from lowering_seqcopy import needsDup, recordDupFields
 import ./codegen_d_ctx
 
 # Type emission, the ctx type, and dPrims (the D primitive-name table) now
@@ -763,32 +762,37 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
     if co != "": return dAlias(co) & "." & e.name   # R11, A33
   e.name
 
-proc dupIfSeq(ctx: var DCodegenCtx, valStr: string, e: Expr): string =
-  ## Wrap in `.dup` (a bare Seq), or reconstruct with per-field `.dup`s (a
-  ## record holding one or more Seq fields), if THIS BACKEND'S LOWERING
-  ## marked the node.
+proc genDCopy(ctx: var DCodegenCtx, e: Expr): string =
+  ## `.dup` (a bare Seq), or the record rebuilt with per-field `.dup`s (a
+  ## record holding one or more Seq fields): an `exkCopy` ownership_nodes
+  ## made from lowering_seqcopy's marks.
   ##
   ## The decision — a D slice aliases where a Tuck Seq copies, and a D
   ## struct's bitwise field-for-field copy carries that aliasing one level
-  ## down into any Seq-typed FIELD — is made in lowering_d, not here; this
-  ## reads the mark and prints. That split is the point of the seam: the
-  ## reasoning is inspectable and testable as a tree pass, and the emitter
-  ## stays a printer.
+  ## down into any Seq-typed FIELD — is made before emission, not here; this
+  ## prints the node. That split is the point of the seam: the reasoning is
+  ## inspectable and testable as a tree pass, and the emitter stays a
+  ## printer.
   # NO EXCEPTION for a read through a MOVED twin's parameter. There used to
   # be one ("the param belongs to this call, so no defensive copy"), and it
   # was a copy decision made here, invisible to the ownership pass reading
   # the copy marks: `var t = xs; t[0] = 99; return xs` returned 99, and on
   # Odin `t`'s free was a second free of `xs`. What is copied is decided in
   # lowering_seqcopy, once, and printed here.
-  if needsDup(ctx.res, e): return "(" & valStr & ").dup"
-  let fields = recordDupFields(ctx.res, e)
-  if fields.len == 0: return valStr
+  let valStr = ctx.genDExpr(e.copied)
+  case e.copyKind
+  of cpSeq: return "(" & valStr & ").dup"
+  of cpStatic:
+    raiseAssert "d: a static str is never copied to own — the collector " &
+                "frees, so prepare makes cpStatic for Odin only"
+  of cpFields: discard
   # A D struct has no `.dup` of its own (only a slice does), so the record
   # is rebuilt: take the value once into a temp (never re-evaluate `valStr`
   # — it may be a call), then `.dup` just the fields that need it.
   let tmp = ctx.freshName("tuckRecDup")
   var fixups = ""
-  for f in fields: fixups.add(tmp & "." & f & " = " & tmp & "." & f & ".dup; ")
+  for f in e.copyFields:
+    fixups.add(tmp & "." & f & " = " & tmp & "." & f & ".dup; ")
   "(() { auto " & tmp & " = " & valStr & "; " & fixups & "return " & tmp &
     "; })()"
 
@@ -942,7 +946,7 @@ proc genDLocalDecl(ctx: var DCodegenCtx, e: Expr, valStr: string): string =
   ## an author's annotation is exactly the fact it wants.
   let stated = if e.declType != nil: ctx.dDeclType(e.declType) else: ""
   let declT = if stated != "": stated
-              else: ctx.declTypeForValue(e.target, e.assignVal)
+              else: ctx.declTypeForValue(e.target, copiedValue(e.assignVal))
   if declT == "":
     return dUnsupported("a declaration of '" & e.target.name &
                         "' whose type the checker did not settle")
@@ -967,7 +971,7 @@ proc genDInPlaceAssign(ctx: var DCodegenCtx, e: Expr): string =
 proc genDRebind(ctx: var DCodegenCtx, e: Expr): string =
   ## The ordinary assignment: a field of the actor, a new local, a register
   ## field's setter, or a plain store — re-validating a field's invariants.
-  let valStr = ctx.dupIfSeq(ctx.genDExpr(e.assignVal), e.assignVal)
+  let valStr = ctx.genDExpr(e.assignVal)
   # A FIELD is never a new local: inside an actor handler `total += n`
   # assigns the singleton's field, so it must not be declared here.
   if ctx.res.isOwnerField(e.target):
@@ -1404,6 +1408,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkContinue: "continue"
   of exkAssign: ctx.genDAssign(e)
   of exkAppend: ctx.genDAppend(e)
+  of exkCopy: ctx.genDCopy(e)
   of exkReturn: ctx.genDReturn(e)
   of exkRaise: ctx.genDRaise(e)
   of exkDiscard:

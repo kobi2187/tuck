@@ -41,9 +41,10 @@
 #      The emitters used to fill a hole three ways (`nil`, `{}`, a refusal).
 #   9. MAKE THE DECISIONS NODES (`ownership_nodes`): an append assigned back
 #      over its own argument becomes `exkAppend`, which every emitter prints
-#      as its host's amortised append. The first of the ownership rules'
-#      Stage C nodes; the emitters used to recognise the shape as they
-#      printed, five times over.
+#      as its host's amortised append; on the aliasing backends, each copy a
+#      binding makes (steps 4 and 6 decided them) becomes `exkCopy`. The
+#      ownership rules' Stage C nodes: the emitters used to recognise the
+#      append's shape and look the copy marks up as they printed.
 #
 # WHY NOT BEFORE THE CLONE (ROADMAP M3.1 as first written). Two of
 # ownership's inputs are made by lowering, so it cannot precede lowering —
@@ -231,6 +232,8 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     # every pass above reads the statements it replaces; an emitter then
     # prints the node instead of re-deciding from a predicate.
     materializeAppends(semLayer, lm.m, strGrows = backend != bkOdin)
+    if backend.aliasesOnAssign:
+      materializeCopies(semLayer, lm.m, ownsStrs = backend == bkOdin)
     vSub(lm.name, ts)
   vEnd(psLowering, t0)
 

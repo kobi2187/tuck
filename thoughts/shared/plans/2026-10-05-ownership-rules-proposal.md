@@ -290,7 +290,21 @@ examples byte-identical, or explains each line that changes.
       appends: a Seq element is a sink (kept), while a str's bytes are only
       copied (a borrow). That is rule U, now written on the node.
    2. copies (`exkCopy`, with today's field list, which is interim until
-      rule G);
+      rule G). **DONE 2026-10-05.** Three kinds on one node: `cpSeq` (a
+      Seq's buffer), `cpFields` (a record's Seq fields), and `cpStatic` (a
+      `str` literal its local must own, Odin's `copyToOwn`). They are made
+      on an assignment's value exactly where the emitters printed them,
+      which excludes a task's awaited result and a call threaded through a
+      moved twin. Byte-identical over the same 1026 emissions; the corpus
+      prints 111 Seq copies, 25 field fix-ups and 2 owned statics on Odin,
+      and 19 `.dup`s and 86 record dups on D. The copied value keeps its
+      node, so every fact about it stays attached, and an emitter asking
+      what a binding declares sees through the copy (`copiedValue`). The
+      `INPLACE-BYPASS` report (a copy mark with no copy behind it, which
+      the ownership pass still reads as "copied, so fresh") moved here
+      from the Odin emitter. It now covers both aliasing backends: 7 sites
+      on the examples and apps, all threaded calls. Stage D's differential
+      decides them.
    3. frees: a scope-end drop as a `defer` of an `exkDrop`, an overwrite
       drop before its assignment, and the twin's parameter frees.
 

@@ -61,8 +61,10 @@ finished** (no longer deferred).
    in place is an `exkAppend` node made by `ownership_nodes` (step 9 of
    `prepare`) and printed by all three emitters, which no longer recognise
    the shape themselves; 1026 emissions (every `.tuck` in the tree, three
-   backends) byte-identical. Next: 1.2 copies (`exkCopy`), 1.3 frees
-   (`exkDrop`). Owner: "we need a more generalized mechanism to consolidate all
+   backends) byte-identical. Step 1.2 DONE the same day: every copy a
+   binding makes on Odin and D is an `exkCopy` node (a Seq, a record's Seq
+   fields, or a static str made owned), and the emitters no longer read the
+   copy marks; byte-identical again. Next: 1.3 frees (`exkDrop`). Owner: "we need a more generalized mechanism to consolidate all
    the bug fixes. I thought SSA was the solution but the rules may need more
    formalization." Ten rules (borrow vs sink, move at a final use, consuming
    parameters, drop once at scope end with reset on move, type-derived copy
