@@ -306,7 +306,26 @@ examples byte-identical, or explains each line that changes.
       on the examples and apps, all threaded calls. Stage D's differential
       decides them.
    3. frees: a scope-end drop as a `defer` of an `exkDrop`, an overwrite
-      drop before its assignment, and the twin's parameter frees.
+      drop before its assignment, and the twin's parameter frees. **DONE
+      2026-10-05**, in two commits so each could be checked byte for byte.
+      The first is layout only: twin frees at the body's indentation, and
+      a declaration's field fix-ups before its `defer`s. Its 9 changed
+      files (all Odin) are reproduced exactly by a script applying those
+      two rules. The second materializes the frees, byte-identical over
+      the 1026 emissions. The overwrite drop is the assignment's own
+      `dropsOld` (drop-and-replace, as MIR once had), not a separate
+      statement. The old value dies after the new one is built and before
+      it is stored, and a separate statement would have to mint a
+      temporary. "The statement that declares x" is found by following the
+      Odin emitter's own scoping (`for`/`while` bodies and `if` branches
+      restore the defined names), and the corpus confirms it at every site.
+      The Odin emitter no longer imports `analysis_ownership`, and since
+      1.2 no emitter reads the copy marks.
+
+   **Stage C is complete.** Every ownership decision an emitter used to
+   look up while printing is now a node in the prepared tree. That gives
+   Stage D its target: the elaborator must write the same nodes from the
+   rules, and the differential compares trees, not text.
 
    No analysis changes. The lowered SSA graph is dropped from the cache
    once the tree is rewritten, since nothing after this step may read it.

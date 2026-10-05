@@ -7,7 +7,6 @@
 import ast, tables, sets, strutils
 import ast_query
 import resolution
-import analysis_ownership
 import decl_index
 export decl_index
 
@@ -33,10 +32,6 @@ type
     retInnerT*: Type       # payload Tuck type (typed struct-literal emission)
     retInvName*: string    # fn returns an invariant-carrying type: validate at return
     tmpCounter*: int
-    owned*: Ownership
-      ## What analysis_ownership decided for the fn being emitted: which
-      ## locals die at scope exit, which die at an overwrite, and what the
-      ## MOVED twin frees. The emitter prints it; it decides nothing.
     movedParam*: string    # while emitting a fn's MOVED twin: the param it
                            # takes destructively. NOT a reason to skip a
                            # copy — what is copied is the copy pass's call

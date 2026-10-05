@@ -51,6 +51,23 @@
 # what Stage D's differential is for; here it is carried over unchanged.)
 # The aliasing backends only: Nim's assignment copies by itself.
 #
+# THIRD NODE: `exkDrop` — release what a place owns (step 1.3, Odin only).
+#
+#   scope end    `defer drop(x.slot)` as the statements after the one that
+#                DECLARES `x` (the ownership pass's `freeAtScopeExit`)
+#   overwrite    the assignment's own `dropsOld`: drop-and-replace, because
+#                the old value dies after the new one is built and before it
+#                is stored, and there is no statement position between the
+#                two without minting a temporary (`freeBeforeOverwrite`)
+#   moved twin   `defer drop(p.slot)` at the top of a twin's body, for the
+#                parameter slots it consumed (`twinFreesParam`)
+#
+# "The one that declares x" is the statement the Odin emitter prints with
+# `:=`: the first assignment to the name in its scope, where `for`/`while`
+# bodies and `if` branches are scopes (genIndented restores the defined
+# names after each) and the fn's parameters are defined already. The walk
+# below follows the same rule, so a drop lands where it was printed.
+#
 # IT SAYS SO. The SSA cache asserts a body's shape has not changed since its
 # lowered graph was built; a pass that rewrites a body after that must drop
 # the graph, or the next fetch fails as "a pass rewrote it without saying
@@ -63,6 +80,7 @@ import ssa_ir
 import lowering_seqcopy
 import analysis_ownership
 import twin_calls
+import twin_shape
 
 let DebugUnbacked = not defined(release) and
                     getEnv("TUCK_DEBUG_INPLACE").len > 0
@@ -175,3 +193,119 @@ proc materializeCopies*(res: Resolution, m: Module, ownsStrs: bool) =
         if bindsTask(tasks, n): reportUnbacked(res, n, "task")
         elif threadedCall(n) != nil: reportUnbacked(res, n, "threaded")
         else: materializeCopy(res, n, ownedStrs)
+
+proc dropOf(name, slot: string, span: Span): Expr =
+  ## `defer drop(name.slot)` — the place as a path ("" slot: the whole value).
+  var place = Expr(span: span, kind: exkVar, name: name)
+  if slot.len > 0:
+    place = Expr(span: span, kind: exkField, receiver: place, fieldName: slot)
+  let drop = Expr(span: span, kind: exkDrop, dropped: place)
+  result = Expr(span: span, kind: exkDefer,
+                deferBody: Expr(span: span, kind: exkBlock, stmts: @[drop]))
+  fillIdsIn(result)     # every node after prepare has one (assertTreeIds)
+
+type DropWalk = object
+  res: Resolution
+  own: Ownership
+  tasks: HashSet[string]
+
+proc bindsTaskArgs(w: DropWalk, n: Expr): bool =
+  ## `let r = {args} someTask` — printed by its own path, which frees nothing.
+  let v = n.assignVal
+  v != nil and v.kind == exkCall and v.callee != nil and
+    v.callee.kind == exkVar and v.callee.name in w.tasks and v.args.len > 0
+
+proc dropsAfter(w: DropWalk, n: Expr, defined: var HashSet[string]): seq[Expr] =
+  ## The drops that follow the assignment `n`, and its own `dropsOld` — as
+  ## the emitter printed them. A declaration (`:=`, the first assignment to
+  ## the name in its scope) is followed by its scope-end drops; any other
+  ## plain assignment to a name freed at each overwrite drops the old value.
+  ## Marks a declared name defined, as the emitter does.
+  if n.target == nil or n.target.kind != exkVar: return
+  let name = n.target.name
+  let taskArgs = w.bindsTaskArgs(n)
+  let threaded = not taskArgs and threadedCall(n) != nil
+  let fresh = name notin defined and not w.res.isOwnerField(n.target)
+  # A threaded call declares only a declaration (`genThreadedAssign`).
+  if fresh and (n.isDecl or not threaded):
+    defined.incl name
+    if taskArgs: return
+    for slot in w.own.freeAtScopeExit.getOrDefault(name):
+      result.add dropOf(name, slot, n.span)
+  elif not fresh and not taskArgs and not threaded and
+       name in w.own.freeBeforeOverwrite:
+    n.dropsOld = true
+
+proc walkDrops(w: DropWalk, e: Expr, defined: var HashSet[string])
+
+proc walkScope(w: DropWalk, e: Expr, defined: HashSet[string]) =
+  ## A nested body: what it declares is gone after it (genIndented).
+  var inner = defined
+  w.walkDrops(e, inner)
+
+proc walkBlock(w: DropWalk, b: Expr, defined: var HashSet[string]) =
+  ## A block's statements in order, each declaration followed by its drops.
+  var i = 0
+  while i < b.stmts.len:
+    let s = b.stmts[i]
+    inc i
+    if s != nil and s.kind == exkAssign:
+      w.walkDrops(s.assignVal, defined)
+      for drop in w.dropsAfter(s, defined):
+        b.stmts.insert(drop, i)
+        inc i
+      continue
+    w.walkDrops(s, defined)
+
+proc walkDrops(w: DropWalk, e: Expr, defined: var HashSet[string]) =
+  ## Every statement under `e`, in the order the emitter prints it.
+  if e == nil: return
+  case e.kind
+  of exkBlock: w.walkBlock(e, defined)
+  of exkIf:
+    w.walkDrops(e.cond, defined)
+    w.walkScope(e.thenBranch, defined)
+    w.walkScope(e.elseBranch, defined)
+  of exkFor:
+    w.walkDrops(e.iterable, defined)
+    w.walkScope(e.body, defined)
+  of exkWhile:
+    w.walkDrops(e.whileCond, defined)
+    w.walkScope(e.whileBody, defined)
+  of exkAssign:
+    # Not a block's statement (a one-line branch): a declaration here would
+    # need its drops after it, and there is no statement list to put them in.
+    w.walkDrops(e.assignVal, defined)
+    let drops = w.dropsAfter(e, defined)
+    doAssert drops.len == 0,
+      "ownership_nodes: " & e.target.name & " is declared outside a block " &
+      "and freed at its scope's exit"
+  else:
+    for c in e.children: w.walkDrops(c, defined)
+
+proc materializeTwinDrops(res: Resolution, m: Module, d: Decl,
+                          own: Ownership) =
+  ## The slots a moved twin consumed, dropped at its every exit.
+  if own.twinFreesParam.len == 0: return
+  let p = movedFnParam(res, m, d)
+  if p == "": return
+  doAssert d.fnBody != nil and d.fnBody.kind == exkBlock,
+    "ownership_nodes: moved twin " & d.name & " frees its parameter but " &
+    "has no block body to put the drops in"
+  var drops: seq[Expr]
+  for slot in own.twinFreesParam: drops.add dropOf(p, slot, d.fnBody.span)
+  d.fnBody.stmts = drops & d.fnBody.stmts
+
+proc materializeDrops*(res: Resolution, m: Module) =
+  ## Every free the ownership pass decided becomes a drop. Odin only.
+  var tasks: HashSet[string]
+  for d in m.decls:
+    if d != nil and d.kind == dkTask: tasks.incl d.name
+  for d in m.allFns:
+    if d == nil or d.fnBody == nil: continue
+    let own = ownershipFor(d)
+    var defined: HashSet[string]
+    for p in d.fnParams: defined.incl p.name
+    DropWalk(res: res, own: own, tasks: tasks).walkDrops(d.fnBody, defined)
+    materializeTwinDrops(res, m, d, own)
+    res.ssaGraphs.del((d.id, ssLowered))

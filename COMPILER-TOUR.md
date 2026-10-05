@@ -411,14 +411,24 @@ The rule behind that, at its strictest: **a backend prints; it does not
 decide.** A decision every backend needs is made once, from the tree, and
 handed to the three as data — which argument feeds each parameter
 (`call_args`), who frees a buffer (`analysis_ownership`), which call takes a
-moved twin (`twin_calls`), which assignment grows its target in place
-(`ownership_nodes`, as an `exkAppend` node), which bare name is the owner's field
+moved twin (`twin_calls`), which bare name is the owner's field
 (`Resolution.ownerFields`, recorded by the checker's scopes). When a backend
 has to fill a gap its own way, the gap is the bug: `call_args` asserts every
 call complete after lowering (`backend_prepare` step 8), because the backends
 used to spell a missing argument three different ways. And each backend used
 to decide "is this name a field?" by looking it up in a set of field names,
 which cannot see a param that shadows one.
+
+Ownership goes one step further: its decisions are not handed over as
+tables at all, but written into the tree as nodes the emitters print
+(`ownership_nodes`, the last step of `backend_prepare`). An append grown in
+place is `exkAppend`, a copy where the target's assignment would alias is
+`exkCopy`, and a free is `exkDrop` (in a `defer` after a declaration, or at
+the top of a moved twin) or an assignment's `dropsOld`. No emitter imports
+the copy marks or `analysis_ownership`. `tuck dump --stage:lowering --odin`
+shows every ownership decision as tree, and a test can assert on it. That
+tree is also what the ownership rules' elaborator will be checked against
+(`thoughts/shared/plans/2026-10-05-ownership-rules-proposal.md`).
 
 ---
 

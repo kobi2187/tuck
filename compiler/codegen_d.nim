@@ -1409,6 +1409,8 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkAssign: ctx.genDAssign(e)
   of exkAppend: ctx.genDAppend(e)
   of exkCopy: ctx.genDCopy(e)
+  of exkDrop:
+    raiseAssert "d: the collector frees; prepare makes an exkDrop for Odin only"
   of exkReturn: ctx.genDReturn(e)
   of exkRaise: ctx.genDRaise(e)
   of exkDiscard:

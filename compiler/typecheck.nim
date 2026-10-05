@@ -5056,6 +5056,9 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkCopy:
     # Built after the checker (ownership_nodes): a copy is its value's type.
     semLayer.typeFor(e.copied)
+  of exkDrop:
+    # Built after the checker (ownership_nodes): a statement.
+    tc.namedType("void", e.span)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum
     # variant (synthBareVariant), named after the declaration itself. Field

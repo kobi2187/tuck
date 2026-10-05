@@ -495,6 +495,11 @@ type
                     # Made from lowering_seqcopy's marks and the ownership
                     # pass's `copyToOwn`, which each emitter used to look up
                     # while printing (proposal §8, Stage C, step 1.2).
+    exkDrop         # prepared only (ownership_nodes): release the storage the
+                    # place `dropped` owns (rule D). Sits in a `defer` after
+                    # the declaration it ends, or at the top of a moved twin
+                    # for the parameter it consumed. Odin only: the other two
+                    # backends' memory is ARC's and the collector's (step 1.3).
 
   CopyKind* = enum
     ## What an `exkCopy` copies (rule S: a sink copies when it is not the
@@ -621,6 +626,10 @@ type
     of exkAssign:
       target*, assignVal*: Expr
       isDecl*: bool     # true for `let x = ...` / `var x = ...`
+      dropsOld*: bool   # prepared only (ownership_nodes): the target's old
+                        # value is released after the new one is built and
+                        # before it is stored — drop-and-replace (rules D and
+                        # E). Odin only; never on a declaration.
       isMutable*: bool  # true only for `var`
       inChain*: bool    # a step of a lowered `..` chain: NOT re-validated on
                         # its own — the chain validates once, at its end
@@ -686,6 +695,9 @@ type
                                    # every fact about it stays attached
       copyKind*: CopyKind
       copyFields*: seq[string]     # cpFields: the Seq fields that are copied
+    of exkDrop:
+      dropped*: Expr               # the place: a local or parameter, or a
+                                   # path into one (`b.ask`)
     of exkIfaceCall:
       dispatchRecv*: Expr          # the interface value, evaluated once
       dispatchIface*: string       # the interface's (mangled) type name

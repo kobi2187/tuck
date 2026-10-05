@@ -10,7 +10,6 @@ import resolution
 import ast_query
 import codegen_common
 import codegen_odin_ctx
-import analysis_ownership   ## decides the frees; this file only prints them
 import ./codegen_odin
 
 const DefaultMailboxSize = "8"
@@ -291,11 +290,8 @@ proc genMovedTwin(ctx: var OdinCodegenCtx, d: Decl, header, bodyStr,
   ## Switched after both were computed side by side across the corpus, both
   ## applications, the Savina ports and the stdlib with no difference, and
   ## after `TUCK_TRACK` confirmed no double free.
-  ## Step 6 of the ownership pass, printed.
-  var frees = ""
-  for slot in ownershipFor(d).twinFreesParam:
-    let path = if slot.len == 0: movedP else: movedP & "." & slot
-    frees.add(ind & "  defer delete(" & path & ")\n")
+  ## Step 6 of the ownership pass, now `defer` drops at the top of the
+  ## body (ownership_nodes), printed with it.
   let twinName = movedName(d.name.replace(".", "_"))
   var argNames: seq[string]
   for p in d.fnParams: argNames.add(p.name)
@@ -312,7 +308,7 @@ proc genMovedTwin(ctx: var OdinCodegenCtx, d: Decl, header, bodyStr,
   wrap.add(ind & "}\n\n")
   let twinHeader = header.replace(d.name.replace(".", "_") & " :: proc",
                                   twinName & " :: proc")
-  wrap & twinHeader & "\n" & frees & bodyStr & "\n" & ind & "}\n"
+  wrap & twinHeader & "\n" & bodyStr & "\n" & ind & "}\n"
 
 proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## An ordinary fn. A pending fn is a stub, and leaves before any of this
@@ -321,9 +317,9 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ctx.currentParams = @[]
   for p in d.fnParams:
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
-  # THE OWNERSHIP PASS DECIDES; this emitter prints. See
-  # compiler/analysis_ownership.nim for the six steps.
-  ctx.owned = ownershipFor(d)
+  # THE OWNERSHIP PASS DECIDES; this emitter prints. Its frees reach here
+  # as `exkDrop` nodes and `dropsOld` assignments (ownership_nodes), so
+  # nothing about ownership is looked up while printing.
   let ind = "  ".repeat(ctx.indent)
   let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType)
                    else: "void"

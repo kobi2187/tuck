@@ -648,10 +648,12 @@ proc ownershipOf*(res: Resolution, m: Module, d: Decl,
 # the Odin emitter as it printed each fn — twice per fn, once for the body's
 # frees and once for the twin's — which made the decision a side effect of
 # printing. `backend_prepare` now runs `decideOwnership` as a step of its
-# own, after lowering and the copy marks it depends on, and the emitter asks
-# `ownershipFor`. The decision is inspectable before any text exists, and
-# the assertions in `ownershipOf` (checkInvariants, buffer_check) run at a
-# named stage rather than whenever emission reaches a fn.
+# own, after lowering and the copy marks it depends on, and `ownership_nodes`
+# asks `ownershipFor` and writes the answer into the tree as drops (Stage C
+# of the ownership rules); no emitter reads this table. The decision is
+# inspectable before any text exists, and the assertions in `ownershipOf`
+# (checkInvariants, buffer_check) run at a named stage rather than whenever
+# emission reaches a fn.
 
 var decided: Table[NodeId, Ownership]
 

@@ -170,6 +170,9 @@ proc toString*(e: Expr): string =
     let what = if e.copyKind == cpFields: "copy[" & e.copyFields.join(", ") & "]"
                else: "copy"
     return what & "(" & e.copied.toString() & ")"
+  of exkDrop:
+    # Prepare-built: a release of the storage a place owns.
+    return "drop(" & e.dropped.toString() & ")"
   of exkIfaceCall:
     # Lowering-built: one arm per satisfying object, shown by name.
     var sats: seq[string]

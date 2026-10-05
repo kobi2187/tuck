@@ -888,6 +888,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   # Nim's `seq` and `string` assignment already copies, so prepare never
   # makes an `exkCopy` on this backend; if one arrives, the value IS its copy.
   of exkCopy: ctx.genExpr(e.copied)
+  of exkDrop:
+    raiseAssert "nim: ARC frees; prepare makes an exkDrop for Odin only"
   of exkMatch: ctx.genExprMatch(e)
   of exkReturn: ctx.genReturn(e)
   of exkRaise: ctx.genRaise(e)

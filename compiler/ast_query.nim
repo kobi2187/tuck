@@ -351,7 +351,7 @@ proc isStatementBranch(b: Expr): bool =
   ## A one-line branch that is a STATEMENT, not a value: an assignment, a
   ## `return`, `raise`, `break`, `continue`, `discard` or `send` — or an `if`
   ## that is itself the statement form (an `elif` chain lands here).
-  b != nil and (b.kind in {exkAssign, exkAppend, exkBracketAssign, exkReturn,
+  b != nil and (b.kind in {exkAssign, exkAppend, exkDrop, exkBracketAssign, exkReturn,
                            exkRaise, exkBreak, exkContinue, exkDiscard,
                            exkSend} or
                 (b.kind == exkIf and not isValueIf(b)))
@@ -449,7 +449,7 @@ proc implicitTailValue*(body: Expr): Expr =
     # table — subject == nil — keeps its per-row returns.)
     if lastS.subject != nil and not matchArmsReturn(lastS): lastS else: nil
   of exkReturn, exkRaise, exkIf, exkFor, exkWhile, exkBreak, exkContinue,
-     exkAssign, exkAppend, exkBlock, exkSelect, exkSend, exkDiscard,
+     exkAssign, exkAppend, exkDrop, exkBlock, exkSelect, exkSend, exkDiscard,
      exkTripleDot:
     nil
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill, exkCall,

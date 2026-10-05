@@ -26,8 +26,8 @@
 #   5. NUMBER what lowering minted (`fillIds`), so nothing it built drops out
 #      of the semantic layer.
 #   6. DECIDE OWNERSHIP (the aliasing backends): who frees each buffer, and
-#      where. It reads steps 4 and 5, so it comes after them; the emitter
-#      prints it, so it comes before any emitter. It used to run INSIDE the
+#      where. It reads steps 4 and 5, so it comes after them; step 9 writes
+#      it into the tree, so it comes before that. It used to run INSIDE the
 #      Odin emitter, twice per fn — a decision made as a side effect of
 #      printing.
 #   7. MARK THE TWIN CALLS (the aliasing backends): which calls hand their
@@ -42,9 +42,12 @@
 #   9. MAKE THE DECISIONS NODES (`ownership_nodes`): an append assigned back
 #      over its own argument becomes `exkAppend`, which every emitter prints
 #      as its host's amortised append; on the aliasing backends, each copy a
-#      binding makes (steps 4 and 6 decided them) becomes `exkCopy`. The
-#      ownership rules' Stage C nodes: the emitters used to recognise the
-#      append's shape and look the copy marks up as they printed.
+#      binding makes (steps 4 and 6 decided them) becomes `exkCopy`; on Odin,
+#      each free step 6 decided becomes an `exkDrop` (in a `defer` after a
+#      declaration, or at the top of a moved twin) or an assignment's
+#      `dropsOld`. The ownership rules' Stage C nodes: the emitters used to
+#      recognise the append's shape and look the copy marks and the frees up
+#      as they printed. Now none of them reads steps 4 or 6.
 #
 # WHY NOT BEFORE THE CLONE (ROADMAP M3.1 as first written). Two of
 # ownership's inputs are made by lowering, so it cannot precede lowering —
@@ -215,10 +218,10 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     # they are what makes the checker's facts reachable from this copy.
     fillIds(lm.m)
     # 6. OWNERSHIP, DECIDED. After the copy marks (it reads them) and after
-    # every node has an id (it keys by them); before any emitter runs, so
-    # the emitter prints a decision instead of making one. Only on the
-    # backends whose containers alias — the same ones that get copy marks;
-    # Odin prints the frees, D's collector does not need them but the
+    # every node has an id (it keys by them); before step 9 writes it into
+    # the tree, so the emitter prints a decision instead of making one. Only
+    # on the backends whose containers alias — the same ones that get copy
+    # marks; Odin prints the frees, D's collector does not need them but the
     # decision's assertions (buffer_check) still run over its tree.
     if backend.aliasesOnAssign:
       decideOwnership(semLayer, lm.m, ownedStrProcs(backend))
@@ -234,6 +237,8 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     materializeAppends(semLayer, lm.m, strGrows = backend != bkOdin)
     if backend.aliasesOnAssign:
       materializeCopies(semLayer, lm.m, ownsStrs = backend == bkOdin)
+    if backend == bkOdin:
+      materializeDrops(semLayer, lm.m)
     vSub(lm.name, ts)
   vEnd(psLowering, t0)
 

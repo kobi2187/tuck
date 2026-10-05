@@ -17,6 +17,7 @@ import ast_query
 import codegen_common
 import twin_calls  # which calls take the moved twin — decided in prepare
 from twin_shape import seqFieldNames
+from ast_ops import pathOf
 
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
@@ -1179,11 +1180,20 @@ proc genBlock(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ctx.indent = saved
   lines.join("\n")
 
+proc genDrop(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## Release what a place owns (ownership_nodes decided which, and where).
+  ## The place prints as its path: a local or parameter is never an owner
+  ## field or a register, so there is nothing for a lookup to add.
+  "delete(" & pathOf(e.dropped) & ")"
+
 proc genDefer(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## `defer:` (spec §7.4). Odin has `defer` natively, with the same scope-exit
   ## LIFO order, and its block form takes braces — so the body is emitted as a
   ## brace-delimited block rather than genBlock's braceless run of statements.
+  ## A scope-end drop is one statement, and prints on one line.
   if e.deferBody == nil or e.deferBody.kind != exkBlock: return ""
+  if e.deferBody.stmts.len == 1 and e.deferBody.stmts[0].kind == exkDrop:
+    return ind & "defer " & ctx.genDrop(e.deferBody.stmts[0])
   let body = ctx.genBlock(e.deferBody, ind)
   if body.len == 0: return ""
   ind & "defer {\n" & body & "\n" & ind & "}"
@@ -1308,20 +1318,6 @@ proc withAssignValidate(ctx: var OdinCodegenCtx, e: Expr,
     result.add("\n" & "  ".repeat(ctx.indent) & "validate_" & owner & "(" &
                ctx.genOdinExpr(e.target.receiver) & ")")
 
-proc scopeFrees(ctx: OdinCodegenCtx, name: string): string =
-  ## The `defer delete`s a declaration of `name` carries.
-  ##
-  ## SHARED, because there are two paths that declare a local and only one of
-  ## them used to run this. `genAssign`'s threaded-call branch returns early
-  ## with `x := f_moved(y)` and never reaches `genOdinVarDecl`, which is
-  ## exactly the shape `relight`'s intermediates have — so the frees were
-  ## computed, correct, and emitted nowhere.
-  let ind = "  ".repeat(ctx.indent)
-  if name in ctx.owned.freeAtScopeExit:
-    for slot in ctx.owned.freeAtScopeExit[name]:
-      let path = if slot.len == 0: name else: name & "." & slot
-      result.add("\n" & ind & "defer delete(" & path & ")")
-
 proc genOdinVarDecl(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   ## The first assignment to a name, which DECLARES it.
   ctx.definedVars.incl(e.target.name)
@@ -1332,12 +1328,11 @@ proc genOdinVarDecl(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
            else: ctx.unionDeclType(copiedValue(e.assignVal))
   let decl = if ut == "": e.target.name & " := " & valStr
              else: e.target.name & ": " & ut & " = " & valStr
-  let fixups = ctx.seqFieldFixups(e.target.name, e.assignVal)
-  # A local the ownership pass frees at scope exit — a heap slot, or a `str`
-  # this body allocated (ownership_str) — gets its `defer` here. `defer`
+  # A local the ownership pass frees at scope exit is followed by its
+  # `defer` drops, as statements of their own (ownership_nodes). `defer`
   # rather than a free at the last use, because a defer needs no POSITION:
   # Odin runs it on every path out of the block. See EV-20.
-  decl & fixups & ctx.scopeFrees(e.target.name)
+  decl & ctx.seqFieldFixups(e.target.name, e.assignVal)
 
 proc genThreadedAssign(ctx: var OdinCodegenCtx, e, threaded: Expr): string =
   ## `x = f(x)` calling the MOVED twin, with no fix-up copies after it.
@@ -1349,8 +1344,7 @@ proc genThreadedAssign(ctx: var OdinCodegenCtx, e, threaded: Expr): string =
               not ctx.res.isOwnerField(e.target)
   if isNew: ctx.definedVars.incl(e.target.name)
   ctx.movedAssignTarget(e.target) & (if isNew: " := " else: " = ") &
-    movedName(base) & "(" & ctx.genCallArgs(threaded).join(", ") & ")" &
-    (if isNew: ctx.scopeFrees(e.target.name) else: "")
+    movedName(base) & "(" & ctx.genCallArgs(threaded).join(", ") & ")"
 
 proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   ## An assignment to something that already exists.
@@ -1370,7 +1364,7 @@ proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   # exists can never free the new one.
   var pre = ""
   var value = valStr
-  if e.target.kind == exkVar and e.target.name in ctx.owned.freeBeforeOverwrite:
+  if e.dropsOld:
     let next = ctx.freshName("tuckNext")
     let ind = "  ".repeat(ctx.indent)
     pre = next & " := " & valStr & "\n" & ind & "delete(" & tgt & ")\n" & ind
@@ -1506,6 +1500,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkAssign: ctx.genAssign(e)
   of exkAppend: ctx.genAppend(e)
   of exkCopy: ctx.genOdinCopy(e)
+  of exkDrop: ctx.genDrop(e)
   of exkMatch: (if e.subject != nil: ctx.genMatchExpr(e) else: "")
   of exkReturn: ctx.genReturnStmt(e)
   of exkRaise: ctx.genRaise(e)
