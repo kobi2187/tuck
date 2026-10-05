@@ -38,10 +38,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: LLVM 18 (Odin's code generator and linker)
+      # LLVM 18 is Odin's code generator and linker. libpcre3 is the PCRE that
+      # Nim's `re` loads at run time (the test harness and doc_snippets use
+      # it), not installed on the runner by default.
+      - name: System packages
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q llvm-18-dev clang-18
+          sudo apt-get install -y -q llvm-18-dev clang-18 libpcre3
 
       - name: Cache the built toolchains
         uses: actions/cache@v4
