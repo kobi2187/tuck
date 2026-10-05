@@ -85,17 +85,24 @@ const
 47-resource-registry:17 20-embedded-mp3-player:0 48-slab-references:0
 13-arena-mem:55"""
 
-proc projFor(base: string): string =
+  # The same programs built with `-define:TUCK_TRACK=true`, which exits 90 on
+  # any leak or bad free. Each must still answer what it answers untracked:
+  # a tracked sweep found leaks in most of them on 2026-10-05, run by hand
+  # because nothing ran it. 44-recursive-tree leaks its boxes (A39) and says
+  # 90 until that is fixed, when this line flips like a bugOpen pin.
+  trackedExpect = "44-recursive-tree:90"
+
+proc projFor(base: string, tracked = false): string =
   ## The scratch package dir an example is staged and built in: its base name
   ## with `-` made `_`, since Odin package names cannot hold dashes.
-  outDir / base.replace("-", "_")
+  outDir / base.replace("-", "_") & (if tracked: "_tracked" else: "")
 
-proc stage(base: string) =
+proc stage(base: string, tracked = false) =
   ## Assemble a self-contained Odin package: the emitted main.odin, the Tuck
   ## runtime, any imported Tuck modules, and the C fixtures an FFI example
   ## binds against. The emitted `foreign import` path is relative to the
   ## package, so the objects must sit at the same relative spot inside the copy.
-  let proj = projFor(base)
+  let proj = projFor(base, tracked)
   removeDir(proj)
   createDir(proj / "tuckrt")
   if fileExists(exampleDir / base & ".odin"):
@@ -140,6 +147,18 @@ proc stagePrep(base: string): proc (dir: string) =
   ## with the same repro through a `makePrep(b): proc() = (proc() = echo
   ## b)` indirection, which printed "a b c" correctly.
   proc (dir: string) = stage(base)
+
+proc trackedPrep(base: string): proc (dir: string) =
+  ## `stagePrep`, for the tracked copy — a parameter for the same reason.
+  proc (dir: string) = stage(base, tracked = true)
+
+proc trackedWant(base: string, want: int): int =
+  ## What the tracked build must answer: the untracked answer, unless the
+  ## program is listed as a known leak (`trackedExpect`).
+  for entry in trackedExpect.split({' ', '\n'}):
+    let parts = entry.split(':')
+    if parts.len == 2 and parts[0] == base: return parseInt(parts[1])
+  want
 
 proc run*(t: var T) =
   ## Registers the Odin backend's end-to-end assertions: gated examples build
@@ -195,6 +214,19 @@ proc run*(t: var T) =
     runIdx.add (base, want, t.needCmdAfter(@[proj / "prog"], dep,
                                            proc (dir: string) = discard, proj))
 
+  # The tracked layer: every run-gated program again, built tracking every
+  # allocation. A leak or a bad free makes it exit 90 instead of its answer.
+  var trackedIdx: seq[tuple[base: string, want: int, idx: int]]
+  for (base, want, _) in runIdx:
+    let proj = projFor(base, tracked = true)
+    let b = t.needCmdAfter(
+      @[odinExe, "build", proj, "-o:none", OdinThreads,
+        "-define:TUCK_TRACK=true", "-out:" & proj / "prog"],
+      -1, trackedPrep(base), proj)
+    trackedIdx.add (base, trackedWant(base, want),
+                    t.needCmdAfter(@[proj / "prog"], b,
+                                   proc (dir: string) = discard, proj))
+
   if t.phase != pReport: return
 
   for (base, i) in buildIdx:
@@ -222,5 +254,20 @@ proc run*(t: var T) =
     let (rc, _) = t.resultOf(i)
     if rc == want: t.ok "run " & base & " -> " & $rc
     else: t.no "run " & base, "exited " & $rc & ", expected " & $want
+
+  for (base, want, i) in trackedIdx:
+    let name = "tracked run " & base
+    if t.skippedCmd(i): t.skip name; continue
+    if not fileExists(projFor(base, tracked = true) / "prog"):
+      t.no name, "no tracked binary to run"
+      continue
+    let (rc, outp) = t.resultOf(i)
+    if rc == want: t.ok name & " -> " & $rc
+    else:
+      var report: seq[string]
+      for l in outp.splitLines():
+        if "TUCK-ALLOC" in l or l.startsWith("  "): report.add l
+        if report.len >= 6: break
+      t.no name, "exited " & $rc & ", expected " & $want & "\n" & report.join("\n")
 
   t.finish()

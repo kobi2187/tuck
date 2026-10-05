@@ -270,7 +270,9 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   table, an actor's slot and thread (the runtime's, from
   `tuckRuntimeAllocator`, untracked), and an actor's heap fields (handed back
   at exit under tracking, like the slabs). The sweep now reports only example
-  44, which is A39. Fixed 2026-10-05.
+  44, which is A39. Fixed 2026-10-05. `odin_backend` now builds every
+  run-gated example a second time with tracking and requires the same answer,
+  so a new leak or bad free fails the suite instead of waiting for a sweep.
 
 - **A threading fn's result was copied again at its binding, and the
   original dropped (Odin).** A fn that threads its first parameter, called
