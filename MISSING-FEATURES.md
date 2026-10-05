@@ -246,6 +246,22 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **A threading fn's result was copied again at its binding, and the
+  original dropped (Odin).** A fn that threads its first parameter, called
+  with an argument still read later, reaches its WRAPPER, which copies that
+  argument; the result is that private copy. Two things made provenance call
+  it aliased: the self-append `out = {items: out, value: v} push` joined the
+  call's own result into `out`, losing `out`'s link to the parameter; and
+  joining "fresh" with "parameter `ns`" forgot `ns`. So the caller's binding
+  copied the copy and dropped it — one buffer per call (483 MB against 10
+  MB, `known_bugs`). A self-append now leaves the name's provenance alone
+  (`ast_query.selfAppendValue`, moved down from codegen so both can ask),
+  fresh joined with a parameter slot keeps the slot, and once the moved
+  argument stamps are final, a call whose argument is not moved is known to
+  reach the wrapper. Found 2026-10-05 by `TUCK_TRACK`, the first time it
+  tracked such a program (`dd3211e`). A sweep of every runnable example and
+  bench app under tracking reads the same before and after.
+
 - **No parameter read through a field was `sink` on Nim**, so every
   record-threading container copied itself on each call: benches/containers
   `rec_thread`, `two_fields`, `generic_box` and `str_builder` were quadratic.
@@ -501,6 +517,17 @@ Verified fixed earlier on 2026-08-05:
 - std fs/io no longer block the scheduler — they run on the offload worker.
 
 ## F. Watch-outs the test suite does not cover
+
+- **`TUCK_TRACK` reports small leaks at exit in most Odin programs that use
+  actors, tasks or the runtime's tables** — since 2026-10-05, when it began
+  tracking every program that imports the runtime (`dd3211e`); before, it
+  tracked almost none. A sweep of every runnable example and bench app: the
+  actor examples (26, 27, 45, 46) 6 allocations / 688 bytes each, the task
+  examples (28–30) 2–3, 20 and 44 five, `matching_engine` 8 (17 KB),
+  `world_server` 33 (28 KB). Constant at exit, not growing — the runtime's
+  own structures (an actor's thread and mailbox, the scheduler) not handed
+  back — but each one now makes a tracked run exit 90, so a NEW leak in such
+  a program hides behind them. Untriaged; no suite runs with tracking.
 
 - **An intermittent `Bad file descriptor` reading a child's output.** Seen
   twice in full runs (once aborting cli_smoke with a stack trace, once as

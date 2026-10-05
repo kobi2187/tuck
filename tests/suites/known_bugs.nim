@@ -3039,4 +3039,59 @@ fn main() -> int:
   t.quietly: t.hostRuns("a generic record returned with a moved Seq keeps it", 99)
   t.bugFixed "a generic record returned with a moved Seq keeps it"
 
+  # Found 2026-10-05 by TUCK_TRACK, the first time it tracked a program whose
+  # runtime calls all sit in its fns. A fn that threads its first parameter,
+  # called with an argument still read later, reaches the WRAPPER, which
+  # copies that argument; the result is that private copy. Provenance joined
+  # it with the argument anyway (and lost track of `ns` through the
+  # self-append `out = push(out, v)`), so the caller's binding copied the
+  # copy and dropped it: one buffer per call on Odin. 20 000 calls on a
+  # 1024-element array are ~160 MB of dropped copies, three times over here
+  # (483 MB peak before the fix, 10 MB after). `wrap` passes its own
+  # PARAMETER, the case only the final moved-argument stamps can settle.
+  t.src """
+import seq
+
+type Built:
+  nodes: Seq[int]
+  slot: int
+
+fn zeroed({levels: int}) -> Seq[int]:
+  var out = [0]
+  var i = 1
+  for i < levels:
+    out = {items: out, value: 0} push
+    i = i + 1
+  return out
+
+fn grow({ns: Seq[int], v: int}) -> Seq[int]:
+  var out = ns
+  out = {items: out, value: v} push
+  return out
+
+fn build({ns: Seq[int], v: int}) -> Built:
+  var out = ns
+  out = {items: out, value: v} push
+  return {nodes: out, slot: v} Built
+
+fn wrap({xs: Seq[int]}) -> int:
+  let g = {ns: xs, v: 3} grow
+  return g.len - xs.len
+
+fn main() -> int:
+  let base = {levels: 1024} zeroed
+  var total = 0
+  var i = 0
+  for i < 20000:
+    let g = {ns: base, v: 1} grow
+    let b = {ns: base, v: 2} build
+    total = total + g.len + b.nodes.len - 2050 + {xs: base} wrap - 1
+    i = i + 1
+  if total != 0:
+    return 1
+  return 0
+"""
+  t.quietly: t.hostPeakRss("a threading fn's result is not copied again and dropped", 65536)
+  t.bugFixed "a threading fn's result is not copied again and dropped"
+
   t.finish()

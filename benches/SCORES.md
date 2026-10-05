@@ -895,7 +895,27 @@ anything. Depth 14 → 15, `--release`:
 Odin and D copy at `var out = r.nodes` instead. Their copy decision
 (`lowering_seqcopy`) copies every field read, because a local's field taken
 without a copy has to be withdrawn from the local's own frees, or Odin frees
-it twice. That is next.
+it twice.
+
+**Tried 2026-10-04 and shelved, with what it taught.** The take itself is
+easy to decide. The SSA graph (lowered stage) shows `r.nodes` at its final
+read, with `r` bound from a call, a construction or a literal. Nothing may
+be read out of the field afterwards: `r.nodes.len` is filed under its own
+place, and the graph does not count it as a read of `r.nodes`. Taking it
+removed the copy, and `slab_thread` turned linear. Withdrawing the slot
+from `r`'s frees is the hard part.
+- Marking it ESCAPED (never freed) is per name, not per path. A take in
+  one branch leaked `r.nodes` on the other; a tracked run proved it.
+- The sound form is a RESET: `r.nodes = []` written into the tree right
+  after the take, with `r`'s ordinary free kept on every path. On the taken
+  path it frees an empty array; elsewhere, the real one. The lowered SSA
+  graph is cached and fingerprinted, so the insertion must drop that
+  cache entry.
+
+Turning `TUCK_TRACK` on for real (`dd3211e`) first showed this bench's `main`
+leaking the tree it built: its binding copied a result the wrapper had
+already made private. That is fixed (MISSING-FEATURES §E), so a tracked
+`slab_thread` now reports nothing on Odin.
 
 ### Slab storage: doubling vs chunks — 2026-09-29
 

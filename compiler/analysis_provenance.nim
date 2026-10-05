@@ -70,11 +70,14 @@ type
                     ## (`return {a: a, b: a}`), which `oFresh` alone cannot
                     ## tell apart from two distinct ones. Only meaningful
                     ## when origin is oFresh.
-    src*: string    ## For oAliased: the PARAMETER this is, directly — the
-    srcField*: string ## param itself ("") or one of its fields. "" in `src`
-                    ## when it is anything less direct (an element, a
-                    ## nested field, a join of two). A call site needs this
-                    ## to know whether the callee's WRAPPER copied it.
+    src*: string    ## For oAliased: the PARAMETER this may be, directly —
+    srcField*: string ## the param itself ("") or one of its fields. ""
+                    ## in `src` when it is anything less direct (an element,
+                    ## a nested field, a join of two parameters). A value
+                    ## that is that slot OR a fresh allocation keeps it:
+                    ## fresh storage aliases nothing the caller holds. A
+                    ## call site needs this to know whether the callee's
+                    ## WRAPPER copied it.
 
   Prov* = object
     ## The provenance of a whole value: one cell for the value and one per field
@@ -129,6 +132,10 @@ proc join(a, b: Cell): Cell =
   elif a.origin == oAliased and b.origin == oAliased and
        a.src == b.src and a.srcField == b.srcField:
     a                        # the same parameter slot on both paths
+  elif a.origin == oFresh and b.origin == oAliased and b.src.len > 0:
+    b                        # that slot, or storage nobody else holds
+  elif b.origin == oFresh and a.origin == oAliased and a.src.len > 0:
+    a
   else:
     Cell(origin: max(a.origin, b.origin), token: noToken())
 
@@ -179,6 +186,8 @@ type Ctx = object
   final: HashSet[NodeId]    ## this body's last reads (the lowered graph),
                             ## for `movedTransfer`; only filled in a twin
   locals: Table[string, Prov]
+  movesKnown: bool          ## the moved-argument stamps are final: this is
+                            ## the copy pass asking, after buildProvenance
 
 proc provOf(c: var Ctx, e: Expr): Prov
 
@@ -222,6 +231,13 @@ proc throughWrapper(c: var Ctx, e: Expr, p: var Prov) =
        ((cell.srcField.len == 0 and bare) or cell.srcField in copied):
       let fresh = Cell(origin: oFresh,
                        token: mixToken(e.id, "\0wrapper:" & cell.srcField))
+      # ONCE THE STAMPS ARE FINAL, WHICH PROC IS KNOWN: an argument not
+      # stamped moved means the wrapper (twin_calls.decideTakesTwin reads the
+      # same stamp), so the slot is the wrapper's copy and nothing of the
+      # argument. Joining it with the argument anyway made the binding copy
+      # the wrapper's copy and drop it: `let t = {ns: e, v: 1} grow` leaked
+      # one buffer per call on Odin.
+      if c.movesKnown and not isMovedArg(c.res, e.args[0]): return fresh
       let arg = provOf(c, e.args[0])
       let given = if cell.srcField.len == 0: arg.whole
                   elif cell.srcField in arg.fields: arg.fields[cell.srcField]
@@ -441,7 +457,14 @@ proc noteAssignments(c: var Ctx, e: Expr) =
   ## That is the safe direction, and it makes loops and branches need no
   ## special handling at all.
   if e == nil: return
-  if e.kind == exkAssign and e.target != nil and e.target.kind == exkVar:
+  # `xs = {items: xs, value: v} push` is an append IN PLACE on every backend
+  # (ast_query.selfAppendValue): `xs` keeps the buffer it held. Joining the
+  # call's own fresh result in instead made a fn that threads `ns` through
+  # `var out = ns` and appends read as "aliased, to nothing known", so its
+  # wrapper's private copy was copied again at every binding and dropped —
+  # one buffer per call, on Odin.
+  if e.kind == exkAssign and e.target != nil and e.target.kind == exkVar and
+     selfAppendValue(c.res, e) == nil:
     let v = afterBinding(c, e.assignVal, provOf(c, e.assignVal))
     let n = e.target.name
     c.locals[n] = if n in c.locals: joinProv(c.locals[n], v) else: v
@@ -766,9 +789,12 @@ proc dumpSummaries() =
       for n, pr in summaries:
         var fs = ""
         for k, v in pr.fields:
-          fs.add(" " & k & "=" & $v.origin & "/" & $uint32(v.token))
+          fs.add(" " & k & "=" & $v.origin & "/" & $uint32(v.token) &
+                 (if v.src.len > 0: "<" & v.src & "." & v.srcField else: ""))
         echo "PROV ", n, " whole=", pr.whole.origin, "/",
-             uint32(pr.whole.token), fs
+             uint32(pr.whole.token),
+             (if pr.whole.src.len > 0: "<" & pr.whole.src & "." & pr.whole.srcField
+              else: ""), fs
 
 proc seedSummaries(m: Module): HashSet[string] =
   ## Every fn at `oFresh`, the optimistic end of the lattice — except a name
@@ -850,7 +876,7 @@ type ProvCtx* = object
 proc provCtxFor*(res: Resolution, m: Module, d: Decl): ProvCtx =
   ## The context for the body of `d` — or an empty one for a top-level
   ## statement, which has no parameters and no locals to know about.
-  result.c = Ctx(res: res, m: m)
+  result.c = Ctx(res: res, m: m, movesKnown: true)
   if d == nil: return
   let body = case d.kind
              of dkFn: d.fnBody
