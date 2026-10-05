@@ -22,11 +22,24 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (8)
+## A. Open bugs (9)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
+
+**A39 — a recursive sum type's boxes are never freed on Odin.** Each edge of
+`type Expr: | Add({left: Expr, right: Expr}) ...` is a one-element Seq
+(lowering_recursive), and the ownership pass follows the Seq slots of
+records; a sum value is neither, so no box is ever deleted. Every tree built
+leaks all its boxes: 200 000 small trees peak at 111 MB on Odin, 10 MB on
+Nim and D. Freeing a value's own boxes alone would be wrong two ways — a
+child is a SHALLOW copy shared by every parent that took it (`sum` sits in
+both `whole` and `neg` in example 44), and a tree returned from a fn is
+reachable only through its root. The fix is deep ownership, which Nim and D
+already have: a copy of a value used again is a deep copy, a last use a
+move, and a drop proc frees a tree recursively. Found 2026-10-05 by
+`TUCK_TRACK` on example 44. Test: `known_bugs`, "A39: …".
 
 **A27–A37 — constructs that do not cross a module boundary (R11 scan,
 2026-09-28).** A25, A26, A28, A30, A31, A33, A35 and A36 are fixed; their pins are

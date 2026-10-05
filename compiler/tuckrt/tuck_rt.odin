@@ -225,6 +225,19 @@ tuckTrackReport :: proc() -> int {
 			fmt.eprintf("TUCK-ALLOC leaked %v allocation(s), %v bytes (peak %v)\n",
 			            len(gTrack.allocation_map), total,
 			            gTrack.peak_memory_allocated)
+			// WHERE, not only how much: a count says a leak exists, and
+			// triaging one by bisecting the program is the slow way to learn
+			// what the allocator already recorded. Capped, so a loop that
+			// leaks a million cells still prints a readable report.
+			shown := 0
+			for _, entry in gTrack.allocation_map {
+				if shown == 20 {
+					fmt.eprintf("  ...\n")
+					break
+				}
+				fmt.eprintf("  %v bytes at %v\n", entry.size, entry.location)
+				shown += 1
+			}
 			faults += len(gTrack.allocation_map)
 		}
 		// A bad free is the failure mode that matters: it means an emitted

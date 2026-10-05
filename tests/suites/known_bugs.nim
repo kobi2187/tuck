@@ -3094,4 +3094,45 @@ fn main() -> int:
   t.quietly: t.hostPeakRss("a threading fn's result is not copied again and dropped", 65536)
   t.bugFixed "a threading fn's result is not copied again and dropped"
 
+  # A39 (found 2026-10-05 by TUCK_TRACK on example 44). A recursive sum
+  # type's edges are boxed (lowering_recursive: a one-element Seq per edge),
+  # and Odin never frees a box: the ownership pass follows Seq slots of
+  # records, and a sum value is neither. Each tree built leaks every box it
+  # has — 200 000 small trees peak at 111 MB on Odin against 10 MB on Nim
+  # and D. Freeing only a value's own boxes is not enough (a child is a
+  # shallow copy, shared between parents, and a returned tree is reachable
+  # only through its root); the fix is deep ownership — a copy of a value
+  # used twice is a deep copy, a last use a move, and a drop proc frees a
+  # tree recursively — which is what Nim and D already give.
+  t.src """
+type Expr:
+  | Num({value: int})
+  | Neg({operand: Expr})
+  | Add({left: Expr, right: Expr})
+
+fn eval({e: Expr}) -> int:
+  match e:
+    Num: return e.value
+    Neg: return 0 - {e: e.operand} eval
+    Add: return {e: e.left} eval + {e: e.right} eval
+
+fn once({k: int}) -> int:
+  let three = Expr.Num {value: k}
+  let four = Expr.Num {value: 4}
+  let sum = Expr.Add {left: three, right: four}
+  let neg = Expr.Neg {operand: sum}
+  let whole = Expr.Add {left: sum, right: neg}
+  return {e: whole} eval
+
+fn main() -> int:
+  var total = 0
+  var i = 0
+  for i < 200000:
+    total = total + {k: 3} once
+    i = i + 1
+  return total
+"""
+  t.quietly: t.hostPeakRss("A39: building recursive values in a loop does not accumulate them", 32768)
+  t.bugOpen "A39: building recursive values in a loop does not accumulate them"
+
   t.finish()
