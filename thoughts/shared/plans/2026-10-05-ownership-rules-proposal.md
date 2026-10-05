@@ -331,7 +331,13 @@ examples byte-identical, or explains each line that changes.
    once the tree is rewritten, since nothing after this step may read it.
 2. **Glue (rule G)** for Odin and D, per owning type, tested under
    `TUCK_TRACK`.
-3. **Stage D: the elaborator, in shadow mode.** It writes the same nodes
+   (Deferred behind step 3 on 2026-10-05, as the owner allowed: shadow mode
+   needs no glue, only the switch in step 4 does.)
+3. **Stage D: the elaborator, in shadow mode.** Started 2026-10-05 with
+   §5's step 0: rule U's classifier is `compiler/ownership_rules.nim`, a
+   flat `case` over every node kind with no `else`, and the suite
+   `ownership_rules` pins what it answers through `TUCK_DEBUG_OWN=uses`.
+   Rule P (a call's argument: consuming or borrowing) is the next piece. It writes the same nodes
    from the rules. A differential against step 1's nodes runs over the
    corpus, both apps, Savina and the stdlib, and every difference is
    explained.

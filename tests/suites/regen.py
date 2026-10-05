@@ -48,6 +48,8 @@ import ../harness
 {imports}
 
 type Entry = tuple[name: string, body: SuiteProc, quick: bool]
+  ## One registered suite: its name, its body, and whether it is check-only
+  ## (part of the `--quick` set).
 
 # `quick` marks the check-only suites — no `tuck build`, no `odin build`. Those
 # are what tests/run --quick runs, the inner-loop gate that quick-test.sh was.
@@ -56,14 +58,18 @@ let registry: seq[Entry] = @[
 ]
 
 proc suiteBody*(name: string): SuiteProc =
+  ## The body of the suite called `name`; an unknown name is an error, not a
+  ## silent no-op.
   for e in registry:
     if e.name == name: return e.body
   raise newException(ValueError, "no such suite: " & name)
 
 proc allSuites*(): seq[string] =
+  ## Every registered suite name, in registration order.
   for e in registry: result.add e.name
 
 proc quickSuites*(): seq[string] =
+  ## The check-only suites — what `tests/run --quick` runs.
   for e in registry:
     if e.quick: result.add e.name
 ''')

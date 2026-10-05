@@ -77,6 +77,7 @@ import analysis_ownership
 import twin_calls
 import call_args
 import ownership_nodes
+import ownership_rules
 import pipeline
 import verbose
 
@@ -231,6 +232,7 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     # calls. Asserted here, after the last pass that can, so no emitter is
     # ever handed a call with a hole to fill in its own way.
     assertCallsComplete(semLayer, lm.m, result.real)
+    dumpUses(semLayer, lm.m)                   # TUCK_DEBUG_OWN=uses (rule U)
     # 9. DECISIONS BECOME NODES (ownership_nodes, Stage C). Last, because
     # every pass above reads the statements it replaces; an emitter then
     # prints the node instead of re-deciding from a predicate.
