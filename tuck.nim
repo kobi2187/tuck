@@ -262,6 +262,33 @@ proc die(msg: string) =
   stderr.writeLine msg
   quit(1)
 
+proc ensureMinicoro(): string =
+  ## compiler/tuckrt/minicoro.a, the coroutine engine the Odin and D runtimes
+  ## link, built from the vendored header when it is missing.
+  ##
+  ## It is a build product, so git does not track it — and nothing built it:
+  ## a fresh clone had none, and every Odin and D program with a task or an
+  ## actor failed to link (`undefined reference to mco_create`). CI found it,
+  ## on its first full run. Built with the defines the Nim backend's own copy
+  ## uses (compiler/tuck_coro.nim: the VMEM stack allocator), beside its
+  ## final path under a name of its own and then moved into place, so two
+  ## compiles racing to build it never link half an archive.
+  result = getAppDir() / "compiler" / "tuckrt" / "minicoro.a"
+  if fileExists(result): return
+  let vendor = getAppDir() / "compiler" / "vendor" / "minicoro"
+  let work = result.parentDir / ("minicoro-build-" & $getCurrentProcessId())
+  createDir(work)
+  writeFile(work / "minicoro.c", "#define MCO_USE_VMEM_ALLOCATOR\n" &
+            "#define MINICORO_IMPL\n#include \"minicoro.h\"\n")
+  let obj = work / "minicoro.o"
+  if execShellCmd("cc -O2 -fPIC -c -I" & quoteShell(vendor) & " " &
+                  quoteShell(work / "minicoro.c") & " -o " & quoteShell(obj)) != 0 or
+     execShellCmd("ar rcs " & quoteShell(work / "minicoro.a") & " " &
+                  quoteShell(obj)) != 0:
+    die("tuck: could not build the coroutine runtime from " & vendor)
+  moveFile(work / "minicoro.a", result)
+  removeDir(work)
+
 proc dieSyntax(err: ref SyntaxError) {.noreturn.} =
   ## Print a front-end rejection the way the lexer and parser used to print it
   ## themselves, before they were changed to raise. The FORMAT is unchanged —
@@ -1040,8 +1067,7 @@ when isMainModule:
         # archive it links against.
         for f in walkFiles(rtSrc / "*.odin"):
           copyFile(f, rtDst / extractFilename(f))
-        if fileExists(rtSrc / "minicoro.a"):
-          copyFile(rtSrc / "minicoro.a", rtDst / "minicoro.a")
+        copyFile(ensureMinicoro(), rtDst / "minicoro.a")
       # C sources an extern block binds with `lib: "path/to.c"`. Nim takes the
       # .c directly via {.compile.}; Odin cannot compile C, so it links the
       # object — build it here, next to where the emitted `foreign import`
@@ -1105,9 +1131,7 @@ when isMainModule:
       # backends drive (compiler/vendor/minicoro), prebuilt as minicoro.a —
       # that is what keeps concurrency semantics and performance shape from
       # depending on which backend built the program.
-      let mcoSrc = getAppDir() / "compiler" / "tuckrt" / "minicoro.a"
-      if fileExists(mcoSrc):
-        copyFile(mcoSrc, outDir / "minicoro.a")
+      copyFile(ensureMinicoro(), outDir / "minicoro.a")
     let m = prog[^1].m
     if cmd in ["build", "b"]:
       # entry point: `fn main` runs when the binary starts. No main =
