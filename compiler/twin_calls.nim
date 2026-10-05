@@ -91,15 +91,19 @@ proc movedCallInto(res: Resolution, m: Module, call: Expr,
     return res.isMovedArg(a) and not otherArgLives(res, m, call)
   false
 
-proc decideTakesTwin(res: Resolution, m: Module, e: Expr): bool =
+proc decideTakesTwin(res: Resolution, m: Module, e: Expr, every: bool): bool =
   ## May this call take its first argument destructively, at ANY position?
   ## The one that matters beyond an assignment is RETURN:
   ## `return {sl: up, c: c} relight` with `up` dead there and owned — no
   ## assignment emitter ever sees that call.
+  ##
+  ## `every` (TUCK_OWN=rules): every call does. The twin is the body itself,
+  ## and the caller copies a live argument or moves a dead one (rule S at a
+  ## consuming parameter), so the copying wrapper is never needed.
   e.kind == exkCall and e.callee != nil and e.callee.kind == exkVar and
     e.args.len > 0 and e.args[0] != nil and
     movedFnParam(res, m, m.findFn(e.callee.name)) != "" and
-    res.isMovedArg(e.args[0]) and memberCallee(res, m, e) == ""
+    (every or res.isMovedArg(e.args[0])) and memberCallee(res, m, e) == ""
 
 proc decideThreaded(res: Resolution, m: Module, e: Expr): Expr =
   ## `x = f(x, ...)`, or `let y = f(b.ask, ...)` with `b.ask` never read
@@ -111,16 +115,16 @@ proc decideThreaded(res: Resolution, m: Module, e: Expr): Expr =
   if call != nil and res.hasCall(call): call = res.call(call)
   if movedCallInto(res, m, call, e.target.name): call else: nil
 
-proc decide(res: Resolution, m: Module, n: Expr) =
+proc decide(res: Resolution, m: Module, n: Expr, every: bool) =
   ## Makes both decisions for one node and marks it visited, so an emitter
   ## asking about a node the pass never reached is caught by `assertVisited`.
   if not n.id.isSet: return
   visited.incl n.id
-  if decideTakesTwin(res, m, n): takesTwin.incl n.id
+  if decideTakesTwin(res, m, n, every): takesTwin.incl n.id
   let c = decideThreaded(res, m, n)
   if c != nil: threaded[n.id] = c
 
-proc markIn(res: Resolution, m: Module, body: Expr) =
+proc markIn(res: Resolution, m: Module, body: Expr, every: bool) =
   ## Every node in a body, and every call a node PRINTS AS — the emitters
   ## print `res.call(n)` in its place, so that is a node they ask about.
   ## The checker builds those calls without ids (`server.start` stamped as
@@ -134,13 +138,19 @@ proc markIn(res: Resolution, m: Module, body: Expr) =
       let c = res.call(n)
       fillIdsIn(c)
       stack.add c
-    decide(res, m, n)
+    decide(res, m, n, every)
 
-proc markTwinCalls*(res: Resolution, m: Module) =
+proc markTwinCalls*(res: Resolution, m: Module, every = false) =
   ## Decide both, for EVERY body of this backend's copy of the module, so an
   ## actor handler, a member fn or a select arm is reached as surely as a
-  ## top-level fn.
-  for e in m.bodies: markIn(res, m, e)
+  ## top-level fn. `every`: every call to a fn with a twin calls it.
+  for e in m.bodies: markIn(res, m, e, every)
+
+proc markBuilt*(e: Expr) =
+  ## Nodes built after this pass by one that knows they take no twin (the
+  ## bindings and resets ownership_write inserts): decided, as "no twin".
+  for n in e.nodes:
+    if n.id.isSet: visited.incl n.id
 
 proc assertVisited(e: Expr, what: string) =
   ## Fails loudly when an emitter asks `what` about a node this pass never

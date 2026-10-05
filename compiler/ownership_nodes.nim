@@ -163,21 +163,25 @@ proc bindsTask(tasks: HashSet[string], e: Expr): bool =
   v != nil and v.kind == exkCall and v.callee != nil and
     v.callee.kind == exkVar and v.callee.name in tasks
 
-proc materializeCopy(res: Resolution, n: Expr, ownedStrs: HashSet[NodeId]) =
+proc materializeCopy(res: Resolution, n: Expr, ownedStrs: HashSet[NodeId],
+                     staticOnly: bool) =
   ## Wraps the value `n` binds in the copy it makes, if any. The value keeps
-  ## its node and id; the copy is new, and typed as its value.
+  ## its node and id; the copy is new, and typed as its value. `staticOnly`:
+  ## only a `str` literal made owned (the rules decide every other copy).
   let v = n.assignVal
   if v == nil: return
   let (kind, fields, any) = copyOf(res, v, ownedStrs)
-  if not any: return
+  if not any or (staticOnly and kind != cpStatic): return
   n.assignVal = res.typed(Expr(span: v.span, kind: exkCopy, copied: v,
                                copyKind: kind, copyFields: fields),
                           res.typeFor(v))
 
-proc materializeCopies*(res: Resolution, m: Module, ownsStrs: bool) =
+proc materializeCopies*(res: Resolution, m: Module, ownsStrs: bool,
+                        staticOnly = false) =
   ## Every copy a binding makes becomes `exkCopy`. On the aliasing backends
   ## only; `ownsStrs`: this backend frees `str` (Odin), so a literal its
-  ## local must own is copied to the heap.
+  ## local must own is copied to the heap. `staticOnly`: only those literals
+  ## (under TUCK_OWN=rules, where the rules decide the rest).
   var tasks: HashSet[string]
   for d in m.decls:
     if d != nil and d.kind == dkTask: tasks.incl d.name
@@ -192,7 +196,7 @@ proc materializeCopies*(res: Resolution, m: Module, ownsStrs: bool) =
         if n.kind != exkAssign: continue
         if bindsTask(tasks, n): reportUnbacked(res, n, "task")
         elif threadedCall(n) != nil: reportUnbacked(res, n, "threaded")
-        else: materializeCopy(res, n, ownedStrs)
+        else: materializeCopy(res, n, ownedStrs, staticOnly)
 
 proc dropOf(name, slot: string, span: Span): Expr =
   ## `defer drop(name.slot)` — the place as a path ("" slot: the whole value).
@@ -204,9 +208,32 @@ proc dropOf(name, slot: string, span: Span): Expr =
                 deferBody: Expr(span: span, kind: exkBlock, stmts: @[drop]))
   fillIdsIn(result)     # every node after prepare has one (assertTreeIds)
 
+type DropSource* = object
+  ## Where one body's drops come from: today's ownership pass, or the rules
+  ## (ownership_write). The placement below is the same for both.
+  atScopeExit*: Table[string, seq[string]]
+    ## owned place -> the slots dropped where its scope ends
+  byAssignment*: bool
+    ## the rules decide each overwrite by the assignment (`overwriteDrops`);
+    ## today's pass decides by the name (`overwriteNames`)
+  overwriteDrops*: HashSet[NodeId]
+  overwriteNames*: HashSet[string]
+  paramDrops*: seq[tuple[param, slot: string]]
+    ## parameter slots the body owns, dropped at its every exit
+
+proc todaysDrops(res: Resolution, m: Module, d: Decl): DropSource =
+  ## Today's ownership pass, as a drop source: its scope-end frees, the names
+  ## freed at each overwrite, and a moved twin's parameter.
+  let own = ownershipFor(d)
+  result.atScopeExit = own.freeAtScopeExit
+  result.overwriteNames = own.freeBeforeOverwrite
+  let p = movedFnParam(res, m, d)
+  if p != "":
+    for slot in own.twinFreesParam: result.paramDrops.add (p, slot)
+
 type DropWalk = object
   res: Resolution
-  own: Ownership
+  src: DropSource
   tasks: HashSet[string]
 
 proc bindsTaskArgs(w: DropWalk, n: Expr): bool =
@@ -215,13 +242,27 @@ proc bindsTaskArgs(w: DropWalk, n: Expr): bool =
   v != nil and v.kind == exkCall and v.callee != nil and
     v.callee.kind == exkVar and v.callee.name in w.tasks and v.args.len > 0
 
+proc fieldDropsOld(w: DropWalk, n: Expr): bool =
+  ## An overwrite of one field (`b.items = v`): only the rules drop there.
+  w.src.byAssignment and n.target.kind == exkField and
+    n.id in w.src.overwriteDrops
+
+proc dropsOldOf(w: DropWalk, n: Expr, threaded: bool): bool =
+  ## Does this overwrite drop the value it replaces? The rules decide by the
+  ## assignment; today's pass by the name, never across a threaded call.
+  if w.src.byAssignment: n.id in w.src.overwriteDrops
+  else: not threaded and n.target.name in w.src.overwriteNames
+
 proc dropsAfter(w: DropWalk, n: Expr, defined: var HashSet[string]): seq[Expr] =
   ## The drops that follow the assignment `n`, and its own `dropsOld` — as
   ## the emitter printed them. A declaration (`:=`, the first assignment to
   ## the name in its scope) is followed by its scope-end drops; any other
   ## plain assignment to a name freed at each overwrite drops the old value.
   ## Marks a declared name defined, as the emitter does.
-  if n.target == nil or n.target.kind != exkVar: return
+  if n.target == nil: return
+  if n.target.kind != exkVar:
+    n.dropsOld = w.fieldDropsOld(n)
+    return
   let name = n.target.name
   let taskArgs = w.bindsTaskArgs(n)
   let threaded = not taskArgs and threadedCall(n) != nil
@@ -230,11 +271,9 @@ proc dropsAfter(w: DropWalk, n: Expr, defined: var HashSet[string]): seq[Expr] =
   if fresh and (n.isDecl or not threaded):
     defined.incl name
     if taskArgs: return
-    for slot in w.own.freeAtScopeExit.getOrDefault(name):
+    for slot in w.src.atScopeExit.getOrDefault(name):
       result.add dropOf(name, slot, n.span)
-  elif not fresh and not taskArgs and not threaded and
-       name in w.own.freeBeforeOverwrite:
-    n.dropsOld = true
+  elif not fresh and not taskArgs: n.dropsOld = w.dropsOldOf(n, threaded)
 
 proc walkDrops(w: DropWalk, e: Expr, defined: var HashSet[string])
 
@@ -283,29 +322,35 @@ proc walkDrops(w: DropWalk, e: Expr, defined: var HashSet[string]) =
   else:
     for c in e.children: w.walkDrops(c, defined)
 
-proc materializeTwinDrops(res: Resolution, m: Module, d: Decl,
-                          own: Ownership) =
-  ## The slots a moved twin consumed, dropped at its every exit.
-  if own.twinFreesParam.len == 0: return
-  let p = movedFnParam(res, m, d)
-  if p == "": return
+proc materializeParamDrops(d: Decl, src: DropSource) =
+  ## The parameter slots the body owns, dropped at its every exit: a moved
+  ## twin's consumed parameter today, a consuming parameter (P) by the rules.
+  if src.paramDrops.len == 0: return
   doAssert d.fnBody != nil and d.fnBody.kind == exkBlock,
-    "ownership_nodes: moved twin " & d.name & " frees its parameter but " &
-    "has no block body to put the drops in"
+    "ownership_nodes: " & d.name & " owns a parameter but has no block " &
+    "body to put its drops in"
   var drops: seq[Expr]
-  for slot in own.twinFreesParam: drops.add dropOf(p, slot, d.fnBody.span)
+  for (p, slot) in src.paramDrops: drops.add dropOf(p, slot, d.fnBody.span)
   d.fnBody.stmts = drops & d.fnBody.stmts
 
-proc materializeDrops*(res: Resolution, m: Module) =
-  ## Every free the ownership pass decided becomes a drop. Odin only.
+type DropsOf* = proc (d: Decl): DropSource
+  ## A body's drop source.
+
+proc materializeDropsFrom*(res: Resolution, m: Module, sourceOf: DropsOf) =
+  ## Every drop `sourceOf` decided becomes a node. Odin only.
   var tasks: HashSet[string]
   for d in m.decls:
     if d != nil and d.kind == dkTask: tasks.incl d.name
   for d in m.allFns:
     if d == nil or d.fnBody == nil: continue
-    let own = ownershipFor(d)
+    let src = sourceOf(d)
     var defined: HashSet[string]
     for p in d.fnParams: defined.incl p.name
-    DropWalk(res: res, own: own, tasks: tasks).walkDrops(d.fnBody, defined)
-    materializeTwinDrops(res, m, d, own)
+    DropWalk(res: res, src: src, tasks: tasks).walkDrops(d.fnBody, defined)
+    materializeParamDrops(d, src)
     res.ssaGraphs.del((d.id, ssLowered))
+
+proc materializeDrops*(res: Resolution, m: Module) =
+  ## Every free the ownership pass decided becomes a drop. Odin only.
+  materializeDropsFrom(res, m, proc (d: Decl): DropSource =
+    todaysDrops(res, m, d))

@@ -92,21 +92,34 @@ const
   # 90 until that is fixed, when this line flips like a bugOpen pin.
   trackedExpect = "44-recursive-tree:90"
 
-proc projFor(base: string, tracked = false): string =
+  # The same programs on the tree the OWNERSHIP RULES write (TUCK_OWN=rules,
+  # compiler/ownership_write.nim), tracked: Stage D's run-time gate, and the
+  # tree the switch makes the default. Known leaks, each waiting on rule G
+  # (glue per type), are listed with what they answer.
+  rulesTrackedExpect = "44-recursive-tree:90"
+
+proc projFor(base: string, tracked = false, rules = false): string =
   ## The scratch package dir an example is staged and built in: its base name
   ## with `-` made `_`, since Odin package names cannot hold dashes.
-  outDir / base.replace("-", "_") & (if tracked: "_tracked" else: "")
+  outDir / base.replace("-", "_") & (if tracked: "_tracked" else: "") &
+    (if rules: "_rules" else: "")
 
-proc stage(base: string, tracked = false) =
+proc rulesEmitDir(base: string): string =
+  ## Where the rules' tree of an example is emitted (TUCK_OWN=rules).
+  outDir / "rules_emit" / base.replace("-", "_")
+
+proc stage(base: string, tracked = false, rules = false) =
   ## Assemble a self-contained Odin package: the emitted main.odin, the Tuck
   ## runtime, any imported Tuck modules, and the C fixtures an FFI example
   ## binds against. The emitted `foreign import` path is relative to the
   ## package, so the objects must sit at the same relative spot inside the copy.
-  let proj = projFor(base, tracked)
+  ## `rules`: the Odin emitted from the rules' tree, not the example's own.
+  let proj = projFor(base, tracked, rules)
+  let emitted = if rules: rulesEmitDir(base) else: exampleDir
   removeDir(proj)
   createDir(proj / "tuckrt")
-  if fileExists(exampleDir / base & ".odin"):
-    copyFile(exampleDir / base & ".odin", proj / "main.odin")
+  if fileExists(emitted / base & ".odin"):
+    copyFile(emitted / base & ".odin", proj / "main.odin")
   for f in walkFiles(rtDir / "*.odin"):
     copyFile(f, proj / "tuckrt" / f.lastPathPart)
   if fileExists(rtDir / "minicoro.a"):
@@ -117,7 +130,7 @@ proc stage(base: string, tracked = false) =
       let o = proj / "cffi" / f.lastPathPart.changeFileExt("o")
       discard execShellCmd("cc -c -fPIC " & quoteShell(f) & " -o " &
                            quoteShell(o) & " 2>/dev/null")
-  for modDir in walkDirs(exampleDir / "mod_*"):
+  for modDir in walkDirs(emitted / "mod_*"):
     let d = proj / modDir.lastPathPart
     createDir(d)
     for f in walkFiles(modDir / "*.odin"):
@@ -148,14 +161,15 @@ proc stagePrep(base: string): proc (dir: string) =
   ## b)` indirection, which printed "a b c" correctly.
   proc (dir: string) = stage(base)
 
-proc trackedPrep(base: string): proc (dir: string) =
+proc trackedPrep(base: string, rules = false): proc (dir: string) =
   ## `stagePrep`, for the tracked copy — a parameter for the same reason.
-  proc (dir: string) = stage(base, tracked = true)
+  proc (dir: string) = stage(base, tracked = true, rules = rules)
 
-proc trackedWant(base: string, want: int): int =
+proc trackedWant(base: string, want: int, rules = false): int =
   ## What the tracked build must answer: the untracked answer, unless the
-  ## program is listed as a known leak (`trackedExpect`).
-  for entry in trackedExpect.split({' ', '\n'}):
+  ## program is listed as a known leak (`trackedExpect`, `rulesTrackedExpect`).
+  let expect = if rules: rulesTrackedExpect else: trackedExpect
+  for entry in expect.split({' ', '\n'}):
     let parts = entry.split(':')
     if parts.len == 2 and parts[0] == base: return parseInt(parts[1])
   want
@@ -227,6 +241,22 @@ proc run*(t: var T) =
                     t.needCmdAfter(@[proj / "prog"], b,
                                    proc (dir: string) = discard, proj))
 
+  # The rules layer: the same programs emitted from the tree the ownership
+  # rules write, built tracked. Stage D's run-time gate.
+  var rulesIdx: seq[tuple[base: string, want: int, idx: int]]
+  for (base, want, _) in runIdx:
+    let proj = projFor(base, tracked = true, rules = true)
+    let e = t.needCmd(@["env", "TUCK_OWN=rules", "./tuck", "c",
+                        exampleDir / base & ".tuck", "--odin",
+                        "-o:" & rulesEmitDir(base)], vEmit)
+    let b = t.needCmdAfter(
+      @[odinExe, "build", proj, "-o:none", OdinThreads,
+        "-define:TUCK_TRACK=true", "-out:" & proj / "prog"],
+      e, trackedPrep(base, rules = true), proj)
+    rulesIdx.add (base, trackedWant(base, want, rules = true),
+                  t.needCmdAfter(@[proj / "prog"], b,
+                                 proc (dir: string) = discard, proj))
+
   if t.phase != pReport: return
 
   for (base, i) in buildIdx:
@@ -260,6 +290,21 @@ proc run*(t: var T) =
     if t.skippedCmd(i): t.skip name; continue
     if not fileExists(projFor(base, tracked = true) / "prog"):
       t.no name, "no tracked binary to run"
+      continue
+    let (rc, outp) = t.resultOf(i)
+    if rc == want: t.ok name & " -> " & $rc
+    else:
+      var report: seq[string]
+      for l in outp.splitLines():
+        if "TUCK-ALLOC" in l or l.startsWith("  "): report.add l
+        if report.len >= 6: break
+      t.no name, "exited " & $rc & ", expected " & $want & "\n" & report.join("\n")
+
+  for (base, want, i) in rulesIdx:
+    let name = "tracked run, rules' tree, " & base
+    if t.skippedCmd(i): t.skip name; continue
+    if not fileExists(projFor(base, tracked = true, rules = true) / "prog"):
+      t.no name, "no binary built from the rules' tree"
       continue
     let (rc, outp) = t.resultOf(i)
     if rc == want: t.ok name & " -> " & $rc

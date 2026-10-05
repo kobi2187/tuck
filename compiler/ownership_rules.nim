@@ -62,7 +62,7 @@ proc constructs*(res: Resolution, call: Expr): bool =
   call.callee != nil and call.callee.kind == exkVar and
     t != nil and t.kind == tkNamed and t.name == call.callee.name
 
-proc payloadOf(call: Expr): Expr =
+proc payloadOf*(call: Expr): Expr =
   ## A record-style call's payload struct, still unexploded, or nil.
   if not call.argsExploded and call.args.len == 1 and call.args[0] != nil and
      call.args[0].kind == exkStruct: call.args[0]
@@ -207,9 +207,9 @@ type
     ## use is `uArg`.
   Ctx = tuple[use: Use, arg: ArgOf]
 
-let NoArg: ArgOf = (nil, -1, "")
+let NoArg*: ArgOf = (nil, -1, "")
 
-proc argOf(call: Expr, k: int): ArgOf =
+proc argOf*(call: Expr, k: int): ArgOf =
   ## The parameter a call's `k`-th argument feeds (callUses' order).
   let payload = payloadOf(call)
   if payload != nil and k < payload.fields.len:

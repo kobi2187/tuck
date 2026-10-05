@@ -21,19 +21,24 @@
 # storage away — a scalar field, `b.count` — is never a sink of it.
 #
 # A CALLEE WITH NO BODY to ask is answered by THE RUNTIME TABLE below when
-# it is the runtime's: only `push` and `setAt` (and the compiler's own
-# `tuckSetAt` / `tuckArraySetAt`) keep an argument; every other runtime
+# it is the runtime's: only `push` and `setAt` keep an argument, the value
+# they store (and so do the compiler's own `tuckSetAt` / `tuckArraySetAt`);
+# every other runtime
 # extern and helper reads its arguments and returns fresh values. An extern
 # the table does not know — foreign code a program links — is taken to
 # consume: that is the safe answer (the caller hands over a value it will
 # not touch again, moving a dead one and copying a live one), and the one
 # `codegen_common.keptAt` gives every body-less callee today.
-import tables, sets, strutils
+import os, tables, sets, strutils
 import ast, ast_ops, ast_query
 import resolution
 import ownership_rules
 from ssa_ir import rootOf
 from twin_shape import ownsHeap, seqFieldNames
+
+let RulesMode* = getEnv("TUCK_OWN") == "rules"
+  ## Read once at module init: the rules write the Odin tree
+  ## (ownership_write), and rule V checks it under rule P's convention.
 
 type ConsumeMemo* = object
   ## Rule P's answers so far, and the questions being answered (a recursive
@@ -41,7 +46,7 @@ type ConsumeMemo* = object
   known: Table[string, bool]
   busy: HashSet[string]
 
-proc calleeOf(res: Resolution, m: Module, call: Expr): Decl =
+proc calleeOf*(res: Resolution, m: Module, call: Expr): Decl =
   ## The fn a call reaches: as the checker resolved it, else by name (calls
   ## that lowering built carry no resolution of their own).
   result = res.declFor(call)
@@ -55,9 +60,12 @@ type Keeps* = enum
   kKeeps    ## the runtime stores it (`push`, `setAt`)
 
 const
-  RuntimeKeeps = [("push", "items"), ("push", "value"), ("setAt", "value")]
-    ## The runtime externs' parameters that KEEP their argument: `push`
-    ## returns `items` grown and stores `value`; `setAt` stores `value`.
+  RuntimeKeeps = [("push", "value"), ("setAt", "value")]
+    ## The runtime externs' parameters that KEEP their argument: `push` and
+    ## `setAt` store `value`. `push` only READS `items`: it returns a new
+    ## Seq on every backend (Nim `result = items` from a non-sink parameter,
+    ## D `items ~ [value]`, Odin a fresh buffer), and `xs = push(xs, v)`,
+    ## the one shape that grows in place, is `exkAppend` before this asks.
   HelperKeeps = [("tuckSetAt", 2), ("tuckArraySetAt", 2)]
     ## The same for the helpers the compiler introduces (positional: no
     ## declaration names their parameters): the stored value.
@@ -107,7 +115,7 @@ proc argTarget*(res: Resolution, m: Module, a: ArgOf): ArgTarget =
 proc consumes*(res: Resolution, m: Module, d: Decl, pname: string,
                memo: var ConsumeMemo): bool
 
-proc argConsumesWhy(res: Resolution, m: Module, a: ArgOf,
+proc argConsumesWhy*(res: Resolution, m: Module, a: ArgOf,
                     memo: var ConsumeMemo): string =
   ## Why the parameter this argument feeds consumes it, or "" if it borrows.
   if a.call == nil: return "an unresolved call"   # `.name {args}` left as is
@@ -183,6 +191,9 @@ type
     strs*: HashSet[string]
       ## the owned places that are a `str`: dropping one on Odin waits on
       ## rule G (a literal is static storage, never to be freed)
+    moves*: Table[string, seq[Expr]]
+      ## slot key -> the reads that move it out: where rule M resets a
+      ## `maybe` place
   State = Table[string, Fate]
   DropWalk = object
     res: Resolution
@@ -237,11 +248,15 @@ proc applyMoves(w: var DropWalk, e: Expr, use: Use) =
     if root notin w.slots or not w.res.isLastUse(pu.read): continue
     if not ownsHeap(w.m, w.res.typeFor(pu.read)) or not w.sinksAway(pu):
       continue
+    var keys: seq[string]
     if pu.path == root:
-      for s in w.slots[root]: w.st[slotKey(root, s)] = fMoved
+      for s in w.slots[root]: keys.add slotKey(root, s)
     else:
       let s = pu.path[root.len + 1 .. ^1].split('.')[0]
-      if s in w.slots[root]: w.st[slotKey(root, s)] = fMoved
+      if s in w.slots[root]: keys.add slotKey(root, s)
+    for k in keys:
+      w.st[k] = fMoved
+      w.plan.moves.mgetOrPut(k, @[]).add pu.read
 
 proc oldFate(w: DropWalk, place: string): Fate =
   ## The fate of what an owned place holds now, over all its slots.
@@ -263,19 +278,35 @@ proc declare(w: var DropWalk, place: string, t: Type) =
 
 proc walkExpr(w: var DropWalk, e: Expr, use: Use)
 
+proc overwriteField(w: var DropWalk, n: Expr, path: string) =
+  ## `b.items = v`: one owned slot of an owned record loses its old value.
+  let root = rootOf(path)
+  if root notin w.slots or path.len <= root.len: return
+  let s = path[root.len + 1 .. ^1].split('.')
+  if s.len != 1 or s[0] notin w.slots[root]: return
+  let k = slotKey(root, s[0])
+  w.plan.overwrite[n.id] = w.st.getOrDefault(k, fOwned)
+  w.st[k] = fOwned
+
 proc walkAssign(w: var DropWalk, n: Expr) =
   ## The value is evaluated (and may move things), then the place is
   ## defined: a new owned place, or an owned place losing its old value.
   w.walkExpr(n.assignVal, uSink)
   let t = n.target
-  if t == nil or t.kind != exkVar or w.res.isOwnerField(t): return
+  if t == nil or w.res.isOwnerField(t): return
+  if t.kind == exkField:
+    w.overwriteField(n, pathOf(t))
+    return
+  if t.kind != exkVar: return
   if t.name in w.slots:
     w.plan.overwrite[n.id] = w.oldFate(t.name)
     for s in w.slots[t.name]: w.st[slotKey(t.name, s)] = fOwned
   else:
-    let ty = if n.declType != nil: n.declType
-             elif w.res.typeFor(t) != nil: w.res.typeFor(t)
-             else: w.res.typeFor(n.assignVal)
+    # The checker's type first: a written annotation (`var b: Builder`) is
+    # a parsed node that need not carry the declaration edge.
+    let ty = if w.res.typeFor(t) != nil: w.res.typeFor(t)
+             elif w.res.typeFor(n.assignVal) != nil: w.res.typeFor(n.assignVal)
+             else: n.declType
     w.declare(t.name, ty)
 
 proc walkBlock(w: var DropWalk, b: Expr, use: Use) =
@@ -384,11 +415,11 @@ proc dropPlan*(res: Resolution, m: Module, d: Decl): DropPlan =
 type CopyAt* = tuple[whole: bool, fields: seq[string]]
   ## What a binding copies: its whole value, or these fields of a record.
 
-type Places = object
+type Places* = object
   ## A body's places: every parameter and local, and the ones it owns.
   all, owned: HashSet[string]
 
-proc placesOf(res: Resolution, m: Module, d: Decl,
+proc placesOf*(res: Resolution, m: Module, d: Decl,
               memo: var ConsumeMemo): Places =
   ## Every parameter and every local a body binds; it owns the locals and
   ## its consuming parameters.
@@ -414,7 +445,7 @@ proc readsElement*(res: Resolution, v: Expr): bool =
     (call != nil and call.callee != nil and call.callee.kind == exkVar and
      call.callee.name in ElementReads)
 
-proc copiesRead(res: Resolution, ps: Places, v: Expr): bool =
+proc copiesRead*(res: Resolution, ps: Places, v: Expr): bool =
   ## Rule S at one sink: does putting `v` there copy it? A read of a PLACE
   ## does unless it is the owned place's final use; so does an element read.
   ## Anything else is a temporary and moves: `Expr.Num {..}`, `State.Ready`
