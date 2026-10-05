@@ -354,3 +354,92 @@ proc dropPlan*(res: Resolution, m: Module, d: Decl): DropPlan =
   if not w.dead:
     for place in w.scopes[0]: w.endScopeOf(place)
   w.plan
+
+# --- RULE S: which bindings copy ----------------------------------------------
+#
+# A sink moves at the final use of an owned place, and copies otherwise. At
+# a binding `x = v` that means: `v` a read of a place this body owns (a
+# local, or a consuming parameter) moves when the read is final and copies
+# when it is not; a read of anything it does not own (a borrowing parameter,
+# an actor's field) always copies; a temporary (a call's result, a literal)
+# is the binding's already and never copies. A construction's fields are
+# sinks of their own, so `{items: xs} Bag` copies `items` exactly when `xs`
+# would be copied bound alone. (A call's result needs no provenance
+# question: if the callee returned a parameter it only borrowed, rule S
+# copied it inside the callee.)
+
+type CopyAt* = tuple[whole: bool, fields: seq[string]]
+  ## What a binding copies: its whole value, or these fields of a record.
+
+type Places = object
+  ## A body's places: every parameter and local, and the ones it owns.
+  all, owned: HashSet[string]
+
+proc placesOf(res: Resolution, m: Module, d: Decl,
+              memo: var ConsumeMemo): Places =
+  ## Every parameter and every local a body binds; it owns the locals and
+  ## its consuming parameters.
+  for p in d.fnParams:
+    result.all.incl p.name
+    if ownsHeap(m, p.typ) and res.consumes(m, d, p.name, memo):
+      result.owned.incl p.name
+  for n in d.fnBody.nodes:
+    if n.kind == exkAssign and n.target != nil and n.target.kind == exkVar and
+       not res.isOwnerField(n.target):
+      result.all.incl n.target.name
+      result.owned.incl n.target.name
+
+const ElementReads = ["at", "tuckAt", "tuckArrayAt"]
+  ## The runtime's element reads: what they return is the container's own
+  ## element, a view and not a fresh value.
+
+proc readsElement(res: Resolution, v: Expr): bool =
+  ## `items[i]` or `{items, index} at`: an element read. Rule U: an element
+  ## is never moved out of its container, so a sink of one copies it.
+  let call = if v.kind == exkCall: v elif res.hasCall(v): res.call(v) else: nil
+  v.kind == exkBracket or
+    (call != nil and call.callee != nil and call.callee.kind == exkVar and
+     call.callee.name in ElementReads)
+
+proc copiesRead(res: Resolution, ps: Places, v: Expr): bool =
+  ## Rule S at one sink: does putting `v` there copy it? A read of a PLACE
+  ## does unless it is the owned place's final use; so does an element read.
+  ## Anything else is a temporary and moves: `Expr.Num {..}`, `State.Ready`
+  ## or a nullary fn look like paths and are values built on the spot.
+  if v != nil and res.readsElement(v): return true
+  if v == nil or v.kind notin {exkVar, exkField} or pathOf(v).len == 0 or
+     res.hasCall(v):
+    return false                                   # a temporary moves
+  if res.isOwnerField(v): return true              # an actor's field
+  let root = rootOf(pathOf(v))
+  if root notin ps.all: return false               # not a place at all
+  root notin ps.owned or not res.isLastUse(v)
+
+proc fieldCopies(res: Resolution, m: Module, ps: Places, v: Expr): seq[string] =
+  ## A construction's Seq fields that copy what they are given.
+  if v.kind != exkCall or v.args.len != 1 or v.args[0] == nil or
+     v.args[0].kind != exkStruct:
+    return
+  let fs = seqFieldNames(res, m, res.typeFor(v))
+  for f in v.args[0].fields:
+    if f.name in fs and res.copiesRead(ps, f.value): result.add f.name
+
+proc copyAt(res: Resolution, m: Module, ps: Places, v: Expr): CopyAt =
+  ## What binding `v` copies: the whole value, or a record's fields. A whole
+  ## record's copy IS the copy of its Seq fields, which is how a record's
+  ## copy is spelled (cpFields).
+  let t = res.typeFor(v)
+  if not res.copiesRead(ps, v): return (false, res.fieldCopies(m, ps, v))
+  let fs = seqFieldNames(res, m, t)
+  if seqElem(t) == nil and fs.len > 0: (false, fs) else: (true, @[])
+
+proc copyPlan*(res: Resolution, m: Module, d: Decl): Table[NodeId, CopyAt] =
+  ## Rule S for every binding in one fn that copies anything.
+  if d.fnBody == nil: return
+  var memo: ConsumeMemo
+  let ps = res.placesOf(m, d, memo)
+  for n in d.fnBody.nodes:
+    if n.kind != exkAssign or n.assignVal == nil: continue
+    if not ownsHeap(m, res.typeFor(n.assignVal)): continue
+    let at = res.copyAt(m, ps, n.assignVal)
+    if at.whole or at.fields.len > 0: result[n.id] = at

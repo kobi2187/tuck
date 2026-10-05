@@ -35,6 +35,12 @@ proc dropsDump(t: var T): int =
   t.needCmd(@["env", "TUCK_DEBUG_OWN=drops", "./tuck", "c",
               t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "outd"], vEmit)
 
+proc copiesDump(t: var T): int =
+  ## Rule S beside the copies Odin makes (Stage C's `exkCopy`), for the
+  ## current snippet.
+  t.needCmd(@["env", "TUCK_DEBUG_OWN=copies", "./tuck", "c",
+              t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "outc"], vEmit)
+
 proc dumpHas(t: var T, idx: int, name, line: string) =
   ## The dump has `line` (with the `tuckˑfnˑ` / `tuckˑvˑ` prefixes dropped).
   if t.phase != pReport: return
@@ -52,7 +58,8 @@ proc classifies(t: var T, idx: int, name, line: string) =
   t.dumpHas(idx, name, "USE " & line)
 
 proc run*(t: var T) =
-  ## Registers the rule U classification, rule P and rules D/M assertions.
+  ## Registers the rule U classification, rule P, rules D/M and rule S
+  ## assertions.
   t.src """
 import seq
 
@@ -200,3 +207,33 @@ fn main() -> int:
   t.dumpHas dd, "D: a local only measured is dropped (today leaks it: its " &
                 "read sits inside a call taken to carry everything out)",
             "DROP pick n - rules-only owned"
+
+  # --- rule S: a sink moves at an owned place's final use, else copies -----
+  #
+  # Beside the copies Odin makes at a binding. Over every .tuck in the tree
+  # no binding is copied by the rules and not today — the rules find no
+  # aliasing today misses. Today copies 37 the rules do not: call results it
+  # cannot prove fresh (a temporary is the binder's: any aliasing is copied
+  # inside the callee), dead values it copies and then frees (which the rules
+  # move), and two `str` literals copied to the heap (rule G's business).
+  t.src """
+import seq
+
+fn take({xs: Seq[int]}) -> Seq[int]:
+  var out = xs
+  out = {items: out, value: 3} push
+  return out
+
+fn main() -> int:
+  let a = [1, 2]
+  let b = a
+  let nested = [[1], [2]]
+  let inner = nested[0]
+  let t = {xs: b} take
+  return a.len + inner.len + t.len + nested.len
+"""
+  let cd = t.copiesDump()
+  t.dumpHas cd, "S: a place still read later is copied where it is bound",
+            "COPY main 10:3 same rules=all today=all"
+  t.dumpHas cd, "S: an element read is copied (it is never moved out of " &
+                "its container)", "COPY main 12:3 same rules=all today=all"

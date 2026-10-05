@@ -188,10 +188,10 @@ proc effective*(parent, child: Use): Use =
   of uBorrow, uSink, uMutBorrow, uArg, uWrite, uDrop, uNone: child
 
 proc isPlaceRead(res: Resolution, e: Expr): bool =
-  ## A name, or a path through one (`b.items`) — not a call written as a
-  ## field (`a.total`), which the checker resolved.
-  e.kind in {exkVar, exkField} and pathOf(e).len > 0 and
-    not (e.kind == exkField and res.hasCall(e))
+  ## A name, or a path through one (`b.items`) — not a call the checker
+  ## resolved in its place: one written as a field (`a.total`), or a nullary
+  ## fn named bare (`emptyChain`).
+  e.kind in {exkVar, exkField} and pathOf(e).len > 0 and not res.hasCall(e)
 
 type
   ArgOf* = tuple[call: Expr, index: int, name: string]

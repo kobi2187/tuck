@@ -27,6 +27,11 @@
 #                           before step 9 (`planDrops`), from the program as
 #                           the rules see it; the nodes are read after it
 #                           (`diffDrops`).
+#   TUCK_DEBUG_OWN=copies   rule S beside the copies the aliasing backends
+#                           make (Stage C's `exkCopy`): `COPY <fn> <line:col>
+#                           <verdict> rules=<what> today=<what>` per binding
+#                           either side copies, where <what> is `-`, `all`,
+#                           or the record fields copied.
 import os, tables, sets, strutils
 import ast, ast_ops, ast_query
 import resolution
@@ -117,3 +122,44 @@ proc diffDrops*(res: Resolution, m: Module) =
     let (scope, old) = todayDrops(d.fnBody)
     echoScopeDrops(d, plans[d.id], scope)
     echoOverwrites(d, plans[d.id], old)
+
+var copyPlans: Table[NodeId, Table[NodeId, CopyAt]]
+  ## planCopies' answers, per fn, until diffCopies reads them.
+
+proc planCopies*(res: Resolution, m: Module) =
+  ## Rule S for every fn, before step 9 makes today's copy nodes.
+  if DebugOwn != "copies": return
+  for d in m.allFns:
+    if d != nil and d.fnBody != nil and d.id.isSet:
+      copyPlans[d.id] = copyPlan(res, m, d)
+
+proc copyText(whole: bool, fields: seq[string]): string =
+  ## A copy decision, printed.
+  if whole: "all" elif fields.len > 0: fields.join(",") else: "-"
+
+proc todayCopy(n: Expr): string =
+  ## The copy Stage C put on a binding's value, printed.
+  let c = n.assignVal
+  if c.kind == exkCopy: copyText(c.copyKind != cpFields, c.copyFields) else: "-"
+
+proc copyVerdict(rules, today: string): string =
+  ## How the two copy decisions compare.
+  if today == rules: "same"
+  elif today == "-": "rules-only"
+  elif rules == "-": "today-only"
+  else: "differ"
+
+proc diffCopies*(res: Resolution, m: Module) =
+  ## The rules' copies against the `exkCopy` nodes Stage C made.
+  if DebugOwn != "copies": return
+  for d in m.allFns:
+    if d == nil or d.fnBody == nil or d.id notin copyPlans: continue
+    let plan = copyPlans[d.id]
+    for n in d.fnBody.nodes:
+      if n.kind != exkAssign or n.assignVal == nil: continue
+      let today = todayCopy(n)
+      let rules = if n.id in plan: copyText(plan[n.id].whole, plan[n.id].fields)
+                  else: "-"
+      if today == "-" and rules == "-": continue
+      echo "COPY ", d.name, " ", n.span.line, ":", n.span.col, " ",
+           copyVerdict(rules, today), " rules=", rules, " today=", today

@@ -390,8 +390,35 @@ examples byte-identical, or explains each line that changes.
      returned garbage where Nim and D returned 7. It is fixed in today's
      pass (`9f6f075`) and pinned in `known_bugs`.
    - Pinned in `ownership_rules`: a moved consuming parameter, an owned
-     local, a `maybe`, and a local today leaks. Next: copies (S) in shadow,
-     then rule V's checker over the elaborated plan. It writes the same nodes
+     local, a `maybe`, and a local today leaks.
+
+   Rule S followed (`copyPlan`, `TUCK_DEBUG_OWN=copies`). At a binding, a
+   read of a place the body owns copies unless the read is its final use; a
+   read of a place it does not own (a borrowing parameter, an actor field)
+   always copies; an element read (`items[i]`, `at`) copies, since an
+   element is never moved out of its container; a temporary moves. The
+   comparison against Odin's `exkCopy` nodes over every `.tuck` in the tree:
+   - **1 agrees and 1 differs:** `relight` moves the dead `sl.light`,
+     which today copies.
+   - **37 are copied today and not by the rules,** in three shapes:
+     - call results today cannot prove fresh. A temporary is the binder's:
+       any aliasing is copied inside the callee, by S at its return or P
+       at its parameter.
+     - dead values today copies and then frees.
+     - two `str` literals copied to the heap, which is rule G's business.
+   - **None is copied by the rules and not today,** so the rules find no
+     aliasing today misses.
+   - Two false readings were fixed on the way:
+     - A variant construction (`Expr.Num {..}`), a bare tag, or a nullary
+       call named bare (`emptyChain`) looked like a path. Only a read of a
+       local, a parameter or an actor field is a place now, in the
+       classifier too.
+     - An element read was taken for a temporary.
+   - Copies at other sinks (a construction field inside a call, a list
+     element) are not compared yet, because today makes none there.
+
+   Next: rule V's checker over the elaborated plan, then glue (G), then the
+   switch. It writes the same nodes
    from the rules. A differential against step 1's nodes runs over the
    corpus, both apps, Savina and the stdlib, and every difference is
    explained.
