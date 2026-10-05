@@ -295,7 +295,7 @@ proc genMovedTwin(ctx: var OdinCodegenCtx, d: Decl, header, bodyStr,
   var frees = ""
   for slot in ownershipFor(d).twinFreesParam:
     let path = if slot.len == 0: movedP else: movedP & "." & slot
-    frees.add(ind & "\tdefer delete(" & path & ")\n")
+    frees.add(ind & "  defer delete(" & path & ")\n")
   let twinName = movedName(d.name.replace(".", "_"))
   var argNames: seq[string]
   for p in d.fnParams: argNames.add(p.name)

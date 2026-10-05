@@ -1337,7 +1337,7 @@ proc genOdinVarDecl(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   # this body allocated (ownership_str) — gets its `defer` here. `defer`
   # rather than a free at the last use, because a defer needs no POSITION:
   # Odin runs it on every path out of the block. See EV-20.
-  decl & ctx.scopeFrees(e.target.name) & fixups
+  decl & fixups & ctx.scopeFrees(e.target.name)
 
 proc genThreadedAssign(ctx: var OdinCodegenCtx, e, threaded: Expr): string =
   ## `x = f(x)` calling the MOVED twin, with no fix-up copies after it.
