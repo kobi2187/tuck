@@ -27,7 +27,7 @@
 ## registered item from every suite in one pool bounded by the core count.
 ## The assertions look identical at the call site; `phase` is what differs.
 
-import std/[os, osproc, strutils, strformat, tables, re, streams, monotimes, times]
+import std/[os, osproc, strutils, strformat, tables, re, streams, monotimes, times, locks]
 
 type
   Verb* = enum
@@ -689,14 +689,36 @@ proc buildsAllowed*(): bool =
   ## `--quick` skip it wholesale rather than pretending to filter it.
   maxVerb >= vBuild
 
+var spawnLock: Lock
+  ## Held while a child is FORKED, not while it runs. cli_smoke's cases call
+  ## `sh` from worker threads, and a fork in one thread while another is
+  ## between making its pipes and forking is the classic way a child comes up
+  ## with a descriptor that is not what its parent set up.
+initLock spawnLock
+
+proc spawn(argv: seq[string]): Process {.gcsafe.} =
+  ## `startProcess`, one thread at a time.
+  {.cast(gcsafe).}:
+    withLock spawnLock:
+      result = startProcess(argv[0], args = argv[1 .. ^1],
+                            options = {poUsePath, poStdErrToStdOut})
+
 proc shOnce(argv: seq[string]): tuple[rc: int, output: string, ebadf: string]
            {.gcsafe.} =
   ## Runs `argv` to completion, capturing stdout and stderr together. A pipe
   ## read that fails (the intermittent EBADF) is returned as `ebadf` rather
-  ## than raised, so `sh` can retry and report it.
+  ## than raised, so `sh` can retry and report it; so is a spawn that fails
+  ## the same way (seen 2026-10-05 in CI, inside `startProcess`, where it
+  ## aborted the whole run: "Could not find command: ... Bad file descriptor"
+  ## for a binary that existed).
   let t0 = getMonoTime()
-  let child = startProcess(argv[0], args = argv[1 .. ^1],
-                           options = {poUsePath, poStdErrToStdOut})
+  var child: Process
+  try:
+    child = spawn(argv)
+  except OSError:
+    let msg = getCurrentExceptionMsg()
+    if "Bad file descriptor" notin msg: raise
+    return (-1, "", msg)
   # Reading a child's pipe has been seen to fail with EBADF ("Bad file
   # descriptor") intermittently during a full run — twice, never on demand,
   # and with the fd limit at 1M so exhaustion is not it. Unhandled it aborts
@@ -750,7 +772,8 @@ proc sh*(argv: seq[string]): tuple[rc: int, output: string] {.gcsafe.} =
   (rc, output, ebadf) = shOnce(argv)
   if ebadf.len == 0: return (rc, output)
   let failRc = if rc == 0: 126 else: rc
-  (failRc, "could not read the output of `" & argv.join(" ") & "` TWICE: " &
+  (failRc, "could not start or read the output of `" & argv.join(" ") &
+           "` TWICE: " &
            ebadf & " (see issue #31)")
 
 const OdinThreads* = "-thread-count:1"
