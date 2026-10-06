@@ -477,10 +477,52 @@ examples byte-identical, or explains each line that changes.
    - **A list literal could not be iterated on Odin** (A46, fixed): a
      `for` header read the literal's `{` as the body's start.
 
-   Next: the elaborator writes its own tree (its copies, drops, resets and
-   consuming parameters) behind a flag, Odin first. V must report nothing
-   on that tree, and the corpus, both apps, Savina and the stdlib must run
-   clean under `TUCK_TRACK`. Then glue (G), and the switch.
+   **The rules write their own tree** (`compiler/ownership_write.nim`,
+   behind `TUCK_OWN=rules`, Odin). Step 9 takes its copies, drops and
+   resets from the rules instead of today's passes:
+   - **P.** Every call to a fn with a moved twin calls the body; the caller
+     copies a live argument to a consuming parameter or moves a dead one.
+   - **S.** At every sink, including the take of an actor's field
+     refilled by the same statement.
+   - **D.** Drops at scope end and at overwrites, record fields included.
+   - **M.** A reset to `{}` after each move of a maybe-moved place (a
+     `return` binds its value first).
+   - **Naming.** A borrowed temporary, and a record copied away from a
+     binding, get a binding first: a rule needs a place to act on.
+   - **`str`** keeps today's decisions until G.
+
+   **No callee is named.** A callee with no Tuck body (the runtime, an FFI
+   extern, a `pending:` stub) keeps a contract read off its signature at
+   the call. It takes an owning argument whose type is a strict part of its
+   result, or, when the result cannot hold it, of another argument. It
+   reads every other argument, including one whose type is the result's.
+   An owning result that is a strict part of an argument it only reads is a
+   view. The runtime keeps the contract as written, so nothing in it
+   changed. LANGUAGE-OVERVIEW §13 states it for anyone writing an extern.
+   Brackets (`xs[i]`, and the box read `lowering_recursive` makes, which is
+   now a bracket too) are classified by their own kind, never through the
+   runtime call behind them: recursive types make the signature ambiguous
+   there.
+
+   **The gate.**
+   - Rule V reports nothing on the rules' tree over every `.tuck` in the
+     tree.
+   - A41–A45 run leak-free on it; `known_bugs` pins each one under the
+     rules' tree.
+   - Every runnable program (51: examples, stdlib modules, both apps,
+     Savina) built tracked gives its answer. Leaks fall from 8 programs to
+     6; `list` and `set` are clean. The 6 left are G's: A39's sum boxes,
+     `str`, a `!T` payload, and Seqs of Seqs (shallow drops).
+   - `odin_backend` runs every run-gated example a third time, tracked,
+     from the rules' tree.
+
+   **Found on the way:**
+   - The printer of a threaded assignment ignored `dropsOld`.
+   - `dropPlan` preferred a written annotation over the checker's type.
+   - A call printed in a node's place had no type; it now has the node's
+     (`typeResolvedCalls`).
+
+   Next: glue (G), then the switch.
 4. **Switch backend by backend**, Odin first, since it is where frees exist:
    1. frees (D, M), retiring `analysis_ownership`, `ownership_escape`,
       `ownership_str` and `buffer_check`;

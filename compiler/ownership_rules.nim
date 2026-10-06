@@ -62,7 +62,7 @@ proc constructs*(res: Resolution, call: Expr): bool =
   call.callee != nil and call.callee.kind == exkVar and
     t != nil and t.kind == tkNamed and t.name == call.callee.name
 
-proc payloadOf(call: Expr): Expr =
+proc payloadOf*(call: Expr): Expr =
   ## A record-style call's payload struct, still unexploded, or nil.
   if not call.argsExploded and call.args.len == 1 and call.args[0] != nil and
      call.args[0].kind == exkStruct: call.args[0]
@@ -176,12 +176,17 @@ proc kindUses(res: Resolution, e: Expr): seq[ChildUse] =
   of exkCopy: @[(e.copied, if e.copyKind == cpFields: uSink else: uBorrow)]
   of exkDrop: @[(e.dropped, uDrop)]
 
+const ByOwnKind* = {exkCall, exkBracket, exkBracketAssign}
+  ## Nodes classified by their own kind even when the checker resolved them
+  ## to a call: a bracket is the language's element read (or write), and the
+  ## runtime call that implements it is not what it means.
+
 proc uses*(res: Resolution, e: Expr): seq[ChildUse] =
   ## Every child of `e` with the use `e` makes of it (rule U). The children
   ## are exactly `ast_ops.childSlots`'s, plus a resolved call in a node's
   ## place and a payload struct's fields in its own.
   if e == nil: @[]
-  elif e.kind != exkCall and res.hasCall(e): @[(res.call(e), uThrough)]
+  elif e.kind notin ByOwnKind and res.hasCall(e): @[(res.call(e), uThrough)]
   else: res.kindUses(e)
 
 proc effective*(parent, child: Use): Use =
@@ -207,9 +212,9 @@ type
     ## use is `uArg`.
   Ctx = tuple[use: Use, arg: ArgOf]
 
-let NoArg: ArgOf = (nil, -1, "")
+let NoArg*: ArgOf = (nil, -1, "")
 
-proc argOf(call: Expr, k: int): ArgOf =
+proc argOf*(call: Expr, k: int): ArgOf =
   ## The parameter a call's `k`-th argument feeds (callUses' order).
   let payload = payloadOf(call)
   if payload != nil and k < payload.fields.len:
@@ -243,6 +248,18 @@ proc placeUsesUnder*(res: Resolution, e: Expr, use: Use): seq[PlaceUse] =
   ## The place reads under `e`, which is itself put to `use` — for a walk
   ## that visits statements one at a time.
   res.placeUses(e, (use, NoArg), result)
+
+proc typeResolvedCalls*(res: Resolution, m: Module) =
+  ## A call the checker resolved in a node's place (`ys.len` is
+  ## `len(ys)`) has the node's type: what the call returns is what the node
+  ## is. The checker records the call before the node's type is known, so
+  ## the call is typed here, before anything asks what a callee returns.
+  for body in m.bodies:
+    for n in body.nodes:
+      if n.kind == exkCall or not res.hasCall(n): continue
+      let c = res.call(n)
+      if c != nil and res.typeFor(c) == nil and res.typeFor(n) != nil:
+        res.setType(c, res.typeFor(n))
 
 let DebugUses = getEnv("TUCK_DEBUG_OWN") == "uses"
   ## Read once at module init.

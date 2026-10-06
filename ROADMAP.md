@@ -74,9 +74,13 @@ finished** (no longer deferred).
    Every difference is explained in the proposal's §8, and one is a real
    bug, A40, fixed. Rule V (`ownership_check`) checks the tree itself and
    found A41–A45, owned values the Odin tree never drops, each confirmed by
-   `TUCK_TRACK`. They close with the switch to rule D. Next: the
-   elaborator writes its own tree behind a flag, V and the tracked runs
-   gate it, then glue (G) and the switch. Owner: "we need a more generalized mechanism to consolidate all
+   `TUCK_TRACK`. They close with the switch to rule D. Stage D is complete:
+   the rules write their own Odin tree behind `TUCK_OWN=rules`
+   (`ownership_write`). V reports nothing on it, A41–A45 run leak-free, and
+   every runnable program gives its answer tracked, with leaks in 6
+   programs against 8, all of them G's. A callee with no body is read by a
+   contract on its signature, with no names (LANGUAGE-OVERVIEW §13). Next:
+   glue (G), then the switch. Owner: "we need a more generalized mechanism to consolidate all
    the bug fixes. I thought SSA was the solution but the rules may need more
    formalization." Ten rules (borrow vs sink, move at a final use, consuming
    parameters, drop once at scope end with reset on move, type-derived copy

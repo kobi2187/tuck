@@ -20,20 +20,21 @@
 # is what a recursive reader is. A read that cannot carry the parameter's
 # storage away — a scalar field, `b.count` — is never a sink of it.
 #
-# A CALLEE WITH NO BODY to ask is answered by THE RUNTIME TABLE below when
-# it is the runtime's: only `push` and `setAt` (and the compiler's own
-# `tuckSetAt` / `tuckArraySetAt`) keep an argument; every other runtime
-# extern and helper reads its arguments and returns fresh values. An extern
-# the table does not know — foreign code a program links — is taken to
-# consume: that is the safe answer (the caller hands over a value it will
-# not touch again, moving a dead one and copying a live one), and the one
-# `codegen_common.keptAt` gives every body-less callee today.
-import tables, sets, strutils
+# A CALLEE WITH NO BODY (the runtime, an FFI extern, a `pending:` stub)
+# cannot be read, so what it does is a CONTRACT, the same for every such
+# callee and named nowhere in the compiler. It is read off the types at the
+# call (see "What a body-less callee does" below), and the runtime is
+# written to keep it.
+import os, tables, sets, strutils
 import ast, ast_ops, ast_query
 import resolution
 import ownership_rules
 from ssa_ir import rootOf
 from twin_shape import ownsHeap, seqFieldNames
+
+let RulesMode* = getEnv("TUCK_OWN") == "rules"
+  ## Read once at module init: the rules write the Odin tree
+  ## (ownership_write), and rule V checks it under rule P's convention.
 
 type ConsumeMemo* = object
   ## Rule P's answers so far, and the questions being answered (a recursive
@@ -41,7 +42,7 @@ type ConsumeMemo* = object
   known: Table[string, bool]
   busy: HashSet[string]
 
-proc calleeOf(res: Resolution, m: Module, call: Expr): Decl =
+proc calleeOf*(res: Resolution, m: Module, call: Expr): Decl =
   ## The fn a call reaches: as the checker resolved it, else by name (calls
   ## that lowering built carry no resolution of their own).
   result = res.declFor(call)
@@ -49,39 +50,136 @@ proc calleeOf(res: Resolution, m: Module, call: Expr): Decl =
     result = m.findFn(call.callee.name)
   if result != nil and result.kind != dkFn: result = nil
 
-type Keeps* = enum
-  kUnknown  ## not the runtime's: a fn with a body to ask, or foreign code
-  kBorrows  ## the runtime reads it and returns fresh values
-  kKeeps    ## the runtime stores it (`push`, `setAt`)
+# --- WHAT A BODY-LESS CALLEE DOES, FROM ITS SIGNATURE --------------------------
+#
+# The contract, for any callee with no Tuck body. "Inside" is STRICT: a
+# part of the type, not the type itself.
+#   - it TAKES an owning argument whose type sits inside its result (it is
+#     stored there), or, when the result cannot hold it at all, inside
+#     another argument (it is stored into that one). It keeps it, or frees
+#     it.
+#   - it only READS every other argument. One whose type IS the result's is
+#     read: the result is a new value of that type.
+#   - an owning RESULT whose type sits inside an argument it only reads is a
+#     VIEW of that argument: the caller copies it where it keeps it and never
+#     drops it. Any other owning result is FRESH: the caller's to drop.
+# The types are the ones the checker recorded at this call, so a generic
+# extern is judged per use. The runtime keeps the contract as written:
+# `push` reads its `items` (it returns a new Seq) and takes the `value` it
+# stores, `setAt` takes the value it stores, `at` returns a view of the
+# element. A new extern keeps it too; nothing here names a callee.
 
-const
-  RuntimeKeeps = [("push", "items"), ("push", "value"), ("setAt", "value")]
-    ## The runtime externs' parameters that KEEP their argument: `push`
-    ## returns `items` grown and stores `value`; `setAt` stores `value`.
-  HelperKeeps = [("tuckSetAt", 2), ("tuckArraySetAt", 2)]
-    ## The same for the helpers the compiler introduces (positional: no
-    ## declaration names their parameters): the stored value.
-  RuntimeNames = ["at", "setAt", "push", "count", "len", "toStr", "charAt",
-                  "containsChar", "splitLines", "ord", "joinStr", "byteAt",
-                  "byteCount", "parseFloat", "fromBytes", "print",
-                  "printLine", "readFile", "writeFile", "appendFile",
-                  "fileExists", "removeFile", "makeDir", "hash", "sqrt",
-                  "pow", "send", "connect", "recv", "getEnv",
-                  "tuckAt", "tuckSetAt", "tuckArrayAt", "tuckArraySetAt",
-                  "tuckConcat", "tuckSat", "tuckSatI", "tuckSeqBounds",
-                  "tuckSeqCopy"]
-    ## Every runtime callee that can be handed an owning value. Unmangled:
-    ## a user fn of the same name is `tuckˑfnˑ…` by the time this runs.
+proc keyOf(t: Type, sub: Table[string, string]): string =
+  ## A type, spelled so two equal types spell the same: names resolved
+  ## through `sub` (a generic's parameters to the call's arguments).
+  if t == nil: return "?"
+  case t.kind
+  of tkNamed: result = sub.getOrDefault(t.name, t.name)
+  of tkApp:
+    result = keyOf(t.base, sub) & "["
+    for i, a in t.args:
+      if i > 0: result.add ","
+      result.add keyOf(a, sub)
+    result.add "]"
+  of tkTuple, tkFunc, tkRecord, tkSum, tkUnion, tkEffect, tkRename:
+    result = $t.kind & "#" & $t.id.uint32
 
-proc runtimeKeeps(callee: string, param: string, index: int): Keeps =
-  ## What the runtime does with an argument, or kUnknown for a callee that
-  ## is not the runtime's.
-  if callee notin RuntimeNames: return kUnknown
-  for (fn, p) in RuntimeKeeps:
-    if fn == callee and p == param: return kKeeps
-  for (fn, i) in HelperKeeps:
-    if fn == callee and i == index: return kKeeps
-  kBorrows
+type Part = tuple[t: Type, sub: Table[string, string]]
+
+proc fieldParts(body: Type, sub: Table[string, string]): seq[Part] =
+  ## The field types of a record or of a sum's variants.
+  if body == nil: return
+  case body.kind
+  of tkRecord:
+    for f in body.fields: result.add (f.typ, sub)
+  of tkSum:
+    for v in body.variants:
+      for f in v.fields: result.add (f.typ, sub)
+  of tkNamed, tkTuple, tkApp, tkFunc, tkUnion, tkEffect, tkRename:
+    result.add (body, sub)
+
+proc declOfType(res: Resolution, m: Module, t: Type): Decl =
+  ## The `type` declaration a named type refers to, or nil.
+  result = res.declForType(t)
+  if result == nil and t.kind == tkNamed: result = m.findDecl(dkType, t.name)
+  if result != nil and result.kind != dkType: result = nil
+
+proc partsOf(res: Resolution, m: Module, p: Part): seq[Part] =
+  ## The types a value of `p.t` is made of, one level down: a Seq's element,
+  ## a `?`/`!` payload, a generic's arguments, a record's or sum's fields
+  ## (a generic one's with its parameters substituted).
+  let t = p.t
+  if t == nil: return
+  case t.kind
+  of tkApp:
+    for a in t.args: result.add (a, p.sub)
+    let d = if t.base != nil: res.declOfType(m, t.base) else: nil
+    if d != nil:
+      var sub = initTable[string, string]()
+      for i, g in d.generics:
+        if i < t.args.len: sub[g] = keyOf(t.args[i], p.sub)
+      result.add fieldParts(d.typeBody, sub)
+  of tkNamed:
+    if t.name notin p.sub:
+      let d = res.declOfType(m, t)
+      if d != nil and d.generics.len == 0: result.add fieldParts(d.typeBody, p.sub)
+  of tkRecord, tkSum: result.add fieldParts(t, p.sub)
+  of tkTuple:
+    for e in t.elems: result.add (e, p.sub)
+  of tkFunc, tkUnion, tkEffect, tkRename: discard
+
+proc holds(res: Resolution, m: Module, outer: Part, inner: string,
+           strict = false, depth = 0): bool =
+  ## Is `inner` (a key) the type `outer`, or a part of it at any depth?
+  ## `strict`: a part only, not `outer` itself.
+  if not strict and keyOf(outer.t, outer.sub) == inner: return true
+  if depth > 6: return false
+  for part in res.partsOf(m, outer):
+    if res.holds(m, part, inner, false, depth + 1): return true
+  false
+
+proc argsOf(call: Expr): seq[Expr] =
+  ## A call's arguments, in the order `uses` gives them (rule U).
+  let payload = payloadOf(call)
+  if payload != nil:
+    for f in payload.fields: result.add f.value
+  else: result = call.args
+
+proc typeAt(res: Resolution, e: Expr): Part =
+  (res.typeFor(e), initTable[string, string]())
+
+proc bodylessKeeps*(res: Resolution, m: Module, call: Expr, index: int): bool =
+  ## The contract: does a body-less callee take its `index`-th argument? It
+  ## does when the argument owns heap and its type can sit inside the result
+  ## or inside another argument. A result whose type is unknown is taken to
+  ## hold it (the caller then hands it over; it never frees it under a
+  ## callee that keeps it).
+  let args = argsOf(call)
+  if index < 0 or index >= args.len or args[index] == nil: return false
+  let t = res.typeFor(args[index])
+  if not ownsHeap(m, t): return false
+  let k = keyOf(t, initTable[string, string]())
+  let r = res.typeFor(call)
+  if r == nil: return true
+  let made = (r, initTable[string, string]())
+  if res.holds(m, made, k, strict = true): return true    # stored in it
+  if res.holds(m, made, k): return false     # the result is a new one of it
+  for j, other in args:
+    if j != index and other != nil and
+       res.holds(m, res.typeAt(other), k, strict = true):
+      return true                            # stored into another argument
+  false
+
+proc resultIsView*(res: Resolution, m: Module, call: Expr, t: Type): bool =
+  ## The contract: is a body-less callee's owning result (of type `t`) a view
+  ## of an argument it only reads?
+  if not ownsHeap(m, t): return false
+  let k = keyOf(t, initTable[string, string]())
+  for i, a in argsOf(call):
+    if a != nil and not res.bodylessKeeps(m, call, i) and
+       res.holds(m, res.typeAt(a), k, strict = true):
+      return true
+  false
 
 proc paramFed(d: Decl, a: ArgOf): string =
   ## The name of the parameter of `d` the argument `a` feeds, or "".
@@ -89,10 +187,10 @@ proc paramFed(d: Decl, a: ArgOf): string =
   if a.index >= 0 and a.index < d.fnParams.len: d.fnParams[a.index].name
   else: ""
 
-type ArgTarget* = tuple[callee: Decl, name, param: string, runtime: Keeps]
+type ArgTarget* = tuple[callee: Decl, name, param: string]
   ## Where an argument goes: the fn it reaches (nil for one with no
-  ## declaration), that fn's name, the parameter it feeds ("" when unknown),
-  ## and what the runtime does with it when the fn is the runtime's.
+  ## declaration), that fn's name, and the parameter it feeds ("" when
+  ## unknown).
 
 proc argTarget*(res: Resolution, m: Module, a: ArgOf): ArgTarget =
   ## Where the argument `a` goes (`a.call` is not nil).
@@ -102,22 +200,24 @@ proc argTarget*(res: Resolution, m: Module, a: ArgOf): ArgTarget =
                a.call.callee.name
              else: ""
   let p = if callee != nil: paramFed(callee, a) else: a.name
-  (callee, name, p, runtimeKeeps(name, p, a.index))
+  (callee, name, p)
+
+proc bodyless*(t: ArgTarget): bool =
+  ## Is the callee one with no Tuck body to read (or no parameter known)?
+  t.callee == nil or t.callee.fnBody == nil or t.param.len == 0
 
 proc consumes*(res: Resolution, m: Module, d: Decl, pname: string,
                memo: var ConsumeMemo): bool
 
-proc argConsumesWhy(res: Resolution, m: Module, a: ArgOf,
+proc argConsumesWhy*(res: Resolution, m: Module, a: ArgOf,
                     memo: var ConsumeMemo): string =
   ## Why the parameter this argument feeds consumes it, or "" if it borrows.
   if a.call == nil: return "an unresolved call"   # `.name {args}` left as is
   let t = res.argTarget(m, a)
-  case t.runtime
-  of kKeeps: return "the runtime's " & t.name & " keeps it"
-  of kBorrows: return ""
-  of kUnknown: discard
-  if t.callee == nil or t.callee.fnBody == nil or t.param.len == 0:
-    return t.name & " has no body to ask"
+  if t.bodyless:
+    if res.bodylessKeeps(m, a.call, a.index):
+      return t.name & " has no body, and its signature lets it keep it"
+    return ""
   if res.consumes(m, t.callee, t.param, memo): t.name & " keeps it" else: ""
 
 proc consumesWhy*(res: Resolution, m: Module, d: Decl, pname: string,
@@ -183,6 +283,9 @@ type
     strs*: HashSet[string]
       ## the owned places that are a `str`: dropping one on Odin waits on
       ## rule G (a literal is static storage, never to be freed)
+    moves*: Table[string, seq[Expr]]
+      ## slot key -> the reads that move it out: where rule M resets a
+      ## `maybe` place
   State = Table[string, Fate]
   DropWalk = object
     res: Resolution
@@ -237,11 +340,15 @@ proc applyMoves(w: var DropWalk, e: Expr, use: Use) =
     if root notin w.slots or not w.res.isLastUse(pu.read): continue
     if not ownsHeap(w.m, w.res.typeFor(pu.read)) or not w.sinksAway(pu):
       continue
+    var keys: seq[string]
     if pu.path == root:
-      for s in w.slots[root]: w.st[slotKey(root, s)] = fMoved
+      for s in w.slots[root]: keys.add slotKey(root, s)
     else:
       let s = pu.path[root.len + 1 .. ^1].split('.')[0]
-      if s in w.slots[root]: w.st[slotKey(root, s)] = fMoved
+      if s in w.slots[root]: keys.add slotKey(root, s)
+    for k in keys:
+      w.st[k] = fMoved
+      w.plan.moves.mgetOrPut(k, @[]).add pu.read
 
 proc oldFate(w: DropWalk, place: string): Fate =
   ## The fate of what an owned place holds now, over all its slots.
@@ -263,19 +370,35 @@ proc declare(w: var DropWalk, place: string, t: Type) =
 
 proc walkExpr(w: var DropWalk, e: Expr, use: Use)
 
+proc overwriteField(w: var DropWalk, n: Expr, path: string) =
+  ## `b.items = v`: one owned slot of an owned record loses its old value.
+  let root = rootOf(path)
+  if root notin w.slots or path.len <= root.len: return
+  let s = path[root.len + 1 .. ^1].split('.')
+  if s.len != 1 or s[0] notin w.slots[root]: return
+  let k = slotKey(root, s[0])
+  w.plan.overwrite[n.id] = w.st.getOrDefault(k, fOwned)
+  w.st[k] = fOwned
+
 proc walkAssign(w: var DropWalk, n: Expr) =
   ## The value is evaluated (and may move things), then the place is
   ## defined: a new owned place, or an owned place losing its old value.
   w.walkExpr(n.assignVal, uSink)
   let t = n.target
-  if t == nil or t.kind != exkVar or w.res.isOwnerField(t): return
+  if t == nil or w.res.isOwnerField(t): return
+  if t.kind == exkField:
+    w.overwriteField(n, pathOf(t))
+    return
+  if t.kind != exkVar: return
   if t.name in w.slots:
     w.plan.overwrite[n.id] = w.oldFate(t.name)
     for s in w.slots[t.name]: w.st[slotKey(t.name, s)] = fOwned
   else:
-    let ty = if n.declType != nil: n.declType
-             elif w.res.typeFor(t) != nil: w.res.typeFor(t)
-             else: w.res.typeFor(n.assignVal)
+    # The checker's type first: a written annotation (`var b: Builder`) is
+    # a parsed node that need not carry the declaration edge.
+    let ty = if w.res.typeFor(t) != nil: w.res.typeFor(t)
+             elif w.res.typeFor(n.assignVal) != nil: w.res.typeFor(n.assignVal)
+             else: n.declType
     w.declare(t.name, ty)
 
 proc walkBlock(w: var DropWalk, b: Expr, use: Use) =
@@ -384,14 +507,16 @@ proc dropPlan*(res: Resolution, m: Module, d: Decl): DropPlan =
 type CopyAt* = tuple[whole: bool, fields: seq[string]]
   ## What a binding copies: its whole value, or these fields of a record.
 
-type Places = object
+type Places* = object
   ## A body's places: every parameter and local, and the ones it owns.
   all, owned: HashSet[string]
+  m: Module
 
-proc placesOf(res: Resolution, m: Module, d: Decl,
+proc placesOf*(res: Resolution, m: Module, d: Decl,
               memo: var ConsumeMemo): Places =
   ## Every parameter and every local a body binds; it owns the locals and
   ## its consuming parameters.
+  result.m = m
   for p in d.fnParams:
     result.all.incl p.name
     if ownsHeap(m, p.typ) and res.consumes(m, d, p.name, memo):
@@ -402,24 +527,23 @@ proc placesOf(res: Resolution, m: Module, d: Decl,
       result.all.incl n.target.name
       result.owned.incl n.target.name
 
-const ElementReads = ["at", "tuckAt", "tuckArrayAt"]
-  ## The runtime's element reads: what they return is the container's own
-  ## element, a view and not a fresh value.
-
-proc readsElement*(res: Resolution, v: Expr): bool =
-  ## `items[i]` or `{items, index} at`: an element read. Rule U: an element
-  ## is never moved out of its container, so a sink of one copies it.
+proc readsElement*(res: Resolution, m: Module, v: Expr): bool =
+  ## A read of something another value holds, not a fresh value: `items[i]`
+  ## (rule U: an element is never moved out of its container), or a call
+  ## to a body-less callee whose result is a view of an argument (the
+  ## contract above). A sink of one copies it.
+  if v.kind == exkBracket: return true
   let call = if v.kind == exkCall: v elif res.hasCall(v): res.call(v) else: nil
-  v.kind == exkBracket or
-    (call != nil and call.callee != nil and call.callee.kind == exkVar and
-     call.callee.name in ElementReads)
+  if call == nil or call.kind != exkCall: return false
+  let d = res.calleeOf(m, call)
+  (d == nil or d.fnBody == nil) and res.resultIsView(m, call, res.typeFor(v))
 
-proc copiesRead(res: Resolution, ps: Places, v: Expr): bool =
+proc copiesRead*(res: Resolution, ps: Places, v: Expr): bool =
   ## Rule S at one sink: does putting `v` there copy it? A read of a PLACE
   ## does unless it is the owned place's final use; so does an element read.
   ## Anything else is a temporary and moves: `Expr.Num {..}`, `State.Ready`
   ## or a nullary fn look like paths and are values built on the spot.
-  if v != nil and res.readsElement(v): return true
+  if v != nil and res.readsElement(ps.m, v): return true
   if v == nil or v.kind notin {exkVar, exkField} or pathOf(v).len == 0 or
      res.hasCall(v):
     return false                                   # a temporary moves

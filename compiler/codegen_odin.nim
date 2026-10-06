@@ -1340,6 +1340,19 @@ proc genOdinVarDecl(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   # Odin runs it on every path out of the block. See EV-20.
   decl & ctx.seqFieldFixups(e.target.name, e.assignVal)
 
+proc dropThenStore(ctx: var OdinCodegenCtx, e: Expr, tgt, valStr: string): string =
+  ## `tgt = valStr`, dropping the old value first when the assignment says
+  ## so (`dropsOld`): the new value is built, the old one freed, then stored.
+  if not e.dropsOld: return tgt & " = " & valStr
+  let next = ctx.freshName("tuckNext")
+  let ind = "  ".repeat(ctx.indent)
+  result = next & " := " & valStr & "\n" & ind
+  # A record owns its Seq fields, so dropping one drops each of them.
+  let fields = seqFieldNames(ctx.res, ctx.module, ctx.res.typeFor(e.target))
+  if fields.len == 0: result.add "delete(" & tgt & ")\n" & ind
+  for f in fields: result.add "delete(" & tgt & "." & f & ")\n" & ind
+  result.add tgt & " = " & next
+
 proc genThreadedAssign(ctx: var OdinCodegenCtx, e, threaded: Expr): string =
   ## `x = f(x)` calling the MOVED twin, with no fix-up copies after it.
   let base = ctx.genOdinExpr(threaded.callee)
@@ -1349,8 +1362,9 @@ proc genThreadedAssign(ctx: var OdinCodegenCtx, e, threaded: Expr): string =
   let isNew = e.isDecl and e.target.name notin ctx.definedVars and
               not ctx.res.isOwnerField(e.target)
   if isNew: ctx.definedVars.incl(e.target.name)
-  ctx.movedAssignTarget(e.target) & (if isNew: " := " else: " = ") &
-    movedName(base) & "(" & ctx.genCallArgs(threaded).join(", ") & ")"
+  let call = movedName(base) & "(" & ctx.genCallArgs(threaded).join(", ") & ")"
+  if isNew: ctx.movedAssignTarget(e.target) & " := " & call
+  else: ctx.dropThenStore(e, ctx.movedAssignTarget(e.target), call)
 
 proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   ## An assignment to something that already exists.
@@ -1368,14 +1382,7 @@ proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   # (57 where Nim and D compute 8). The new value is fresh — step 5 only
   # fires when every value assigned is — so freeing the old one once it
   # exists can never free the new one.
-  var pre = ""
-  var value = valStr
-  if e.dropsOld:
-    let next = ctx.freshName("tuckNext")
-    let ind = "  ".repeat(ctx.indent)
-    pre = next & " := " & valStr & "\n" & ind & "delete(" & tgt & ")\n" & ind
-    value = next
-  ctx.withAssignValidate(e, pre & tgt & " = " & value &
+  ctx.withAssignValidate(e, ctx.dropThenStore(e, tgt, valStr) &
                             ctx.seqFieldFixups(tgt, e.assignVal))
 
 proc genAppend(ctx: var OdinCodegenCtx, e: Expr): string =

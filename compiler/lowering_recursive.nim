@@ -91,10 +91,13 @@ proc wrapValue(res: Resolution, value: Expr, elemT: Type): Expr =
   res.setType(result, seqOf(elemT))
 
 proc unwrapRead(res: Resolution, e: Expr, elemT: Type) =
-  ## `e.edge` -> `tuckAt(e.edge, 0)`, recorded as a RESOLVED CALL on the node
-  ## rather than by rewriting the parent's slot. Every backend's field-access
-  ## emitter already asks `hasCall` first — that is how `xs[i]` reaches
-  ## tuckAt — so this needs no new emitter arm anywhere.
+  ## `e.edge` -> `e.edge[0]`: the language's own element read, a bracket,
+  ## resolved as every bracket is, to `tuckAt(e.edge, 0)`. The node becomes
+  ## the bracket in place, keeping its id (its type, and every fact recorded
+  ## against it), so no parent slot is rewritten; every backend prints a
+  ## bracket through its resolved call, so no emitter arm is new. Ownership
+  ## reads the bracket (rule U: an element is read where it sits), not the
+  ## runtime call behind it.
   ##
   ## The call's first argument is a FRESH copy of the access. Passing `e`
   ## itself would make the emitter find this same resolved call while emitting
@@ -107,6 +110,10 @@ proc unwrapRead(res: Resolution, e: Expr, elemT: Type) =
   let call = Expr(span: e.span, kind: exkCall, args: @[inner, zero],
                   callee: Expr(span: e.span, kind: exkVar, name: "tuckAt"))
   res.setType(call, elemT)
+  let id = e.id
+  e[] = Expr(span: e.span, kind: exkBracket, brReceiver: inner,
+             brArgs: @[zero])[]
+  e.id = id
   res.setCall(e, call)
 
 proc payloadOf(e: Expr): Expr =

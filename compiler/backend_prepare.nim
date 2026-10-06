@@ -80,6 +80,8 @@ import twin_calls
 import call_args
 import ownership_nodes
 import ownership_check
+import ownership_write
+from ownership_elab import RulesMode
 import ownership_rules
 import ownership_shadow
 import pipeline
@@ -230,12 +232,14 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     # decision's assertions (buffer_check) still run over its tree.
     if backend.aliasesOnAssign:
       decideOwnership(semLayer, lm.m, ownedStrProcs(backend))
-      markTwinCalls(semLayer, lm.m)                                # 7. twins
+      markTwinCalls(semLayer, lm.m,                                # 7. twins
+                    every = RulesMode and backend == bkOdin)
     # 8. EVERY CALL IS COMPLETE. The checker rejects a payload missing a
     # param, but it runs before lowering, and lowering builds and rewrites
     # calls. Asserted here, after the last pass that can, so no emitter is
     # ever handed a call with a hole to fill in its own way.
     assertCallsComplete(semLayer, lm.m, result.real)
+    typeResolvedCalls(semLayer, lm.m)          # a resolved call has a type
     dumpUses(semLayer, lm.m)                   # TUCK_DEBUG_OWN=uses (rule U)
     planDrops(semLayer, lm.m)                  # TUCK_DEBUG_OWN=drops (D, M)
     planCopies(semLayer, lm.m)                 # TUCK_DEBUG_OWN=copies (S)
@@ -243,10 +247,14 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     # every pass above reads the statements it replaces; an emitter then
     # prints the node instead of re-deciding from a predicate.
     materializeAppends(semLayer, lm.m, strGrows = backend != bkOdin)
-    if backend.aliasesOnAssign:
-      materializeCopies(semLayer, lm.m, ownsStrs = backend == bkOdin)
+    if RulesMode and backend == bkOdin:
+      writeRules(semLayer, lm.m)               # TUCK_OWN=rules: the rules'
+    else:                                      # own copies and drops
+      if backend.aliasesOnAssign:
+        materializeCopies(semLayer, lm.m, ownsStrs = backend == bkOdin)
+      if backend == bkOdin:
+        materializeDrops(semLayer, lm.m)
     if backend == bkOdin:
-      materializeDrops(semLayer, lm.m)
       verifyTree(semLayer, lm.m)               # TUCK_DEBUG_OWN=verify (V)
     diffParams(semLayer, lm.m, nim = backend == bkNim)  # TUCK_DEBUG_OWN=params
     diffDrops(semLayer, lm.m)

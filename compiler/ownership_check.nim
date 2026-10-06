@@ -22,9 +22,10 @@
 # first parameter. A call hands its first argument over when `twin_calls`
 # marked it for the twin, or when its assignment threads a container through
 # it (`x = f(x, ...)`, printed `x = f_moved(x, ...)`). Every other parameter
-# borrows. The runtime's `push` and `setAt` keep
-# what they store (`ownership_elab`'s table). After the switch to rule P the
-# convention is P's answer, and `owns` and `consumed` are what change.
+# borrows. A callee with no Tuck body keeps the contract its signature
+# states (`ownership_elab`, "What a body-less callee does"). Under rule P
+# (TUCK_OWN=rules) the convention is P's answer: that is what `consumed`
+# and the owned parameters read.
 #
 # THE STATE of an owned slot (what Odin frees: a Seq or a str itself, or a
 # record's Seq fields) is the SET of what it may hold on the paths reaching
@@ -50,7 +51,7 @@
 #   proves it heap, so an alias of one is harmless until one side drops it.
 #   Whether one nobody drops leaks (static or heap) is G's answer.
 # - What a record's non-Seq fields own, and a Seq's elements (glue; A39).
-import os, tables, sets, strutils
+import os, tables, sets, strutils, sequtils
 import ast, ast_ops, ast_query
 import resolution
 import ownership_rules, ownership_elab
@@ -78,6 +79,8 @@ type
     declAt: Table[string, Span]         ## owned place -> where it began
     strs: HashSet[string]               ## the owned places that are a str
     borrowed: HashSet[string]           ## the parameters the body borrows
+    rules: bool                         ## rule P's convention (TUCK_OWN=rules)
+    memo: ConsumeMemo
     threaded: Expr                      ## the call the assignment being
                                         ## walked threads through a twin
     refills: string                     ## the place that assignment defines
@@ -123,23 +126,25 @@ proc spanOf(c: Check, k: string): Span =
 
 # --- the convention -----------------------------------------------------------
 
-proc consumed(c: Check, a: ArgOf): bool =
-  ## Does the call take this argument over? The runtime's table, else the
-  ## moved twin's first parameter when the call was marked for the twin.
+proc consumed(c: var Check, a: ArgOf): bool =
+  ## Does the call take this argument over? Under rule P (TUCK_OWN=rules),
+  ## P's answer. Today: a callee with no Tuck body by the contract its
+  ## signature states (ownership_elab), else the moved twin's first
+  ## parameter when the call was marked for the twin.
   if a.call == nil: return false
+  if c.rules: return c.res.argConsumesWhy(c.m, a, c.memo).len > 0
   let t = c.res.argTarget(c.m, a)
-  case t.runtime
-  of kKeeps: true
-  of kBorrows: false
-  of kUnknown:
-    t.callee != nil and t.param.len > 0 and
-      t.param == movedFnParam(c.res, c.m, t.callee) and
-      (a.call == c.threaded or callsTwin(a.call))
+  if t.bodyless: return c.res.bodylessKeeps(c.m, a.call, a.index)
+  t.param == movedFnParam(c.res, c.m, t.callee) and
+    (a.call == c.threaded or callsTwin(a.call))
 
-proc sinks(c: Check, pu: PlaceUse): bool =
-  ## Is this read put where it is handed to a new owner?
-  ownsHeap(c.m, c.res.typeFor(pu.read)) and
-    (pu.use == uSink or (pu.use == uArg and c.consumed(pu.arg)))
+proc sinks(c: var Check, pu: PlaceUse): bool =
+  ## Is this read put where it is handed to a new owner? (Under rule P a
+  ## `str` argument still borrows: its convention waits on rule G.)
+  let t = c.res.typeFor(pu.read)
+  ownsHeap(c.m, t) and
+    (pu.use == uSink or
+     (pu.use == uArg and not (c.rules and isStr(t)) and c.consumed(pu.arg)))
 
 proc idOf(e: Expr): string = $e.id.uint32
 
@@ -199,8 +204,9 @@ proc isTemporary(c: Check, e: Expr): bool =
   ## A value no place holds: a call's result, a construction, a list. An
   ## element read is its container's, not a new value; a `str` waits on G.
   e != nil and e.kind in {exkCall, exkList, exkFill} and
-    not c.res.isPlaceRead(e) and not c.res.readsElement(e) and
-    ownsHeap(c.m, c.res.typeFor(e)) and not isStr(c.res.typeFor(e))
+    not c.res.isPlaceRead(e) and not c.res.readsElement(c.m, e) and
+    not isStr(c.res.typeFor(e)) and
+    slotsOf(c.res, c.m, c.res.typeFor(e)).len > 0   # Seq slots; str is G's
 
 proc fieldCopyLeaks(c: var Check, e: Expr) =
   ## A copy of a record's Seq fields (`cpFields`) replaces each listed field
@@ -208,7 +214,7 @@ proc fieldCopyLeaks(c: var Check, e: Expr) =
   ## before is never dropped. That leaks it when it was fresh: the fields of
   ## a call's result, or a temporary a construction's field was given.
   let v = e.copied
-  if v == nil or v.kind != exkCall or c.res.readsElement(v): return
+  if v == nil or v.kind != exkCall or c.res.readsElement(c.m, v): return
   if not c.res.constructs(v):
     c.report("temp-leak", {cLive}, "fields", v.span)
     return
@@ -229,9 +235,10 @@ proc temporaries(c: var Check, e: Expr, use: Use, arg: ArgOf) =
   if e.kind == exkCopy and e.copyKind == cpFields: c.fieldCopyLeaks(e)
   var argNo = 0
   for (ch, u) in c.res.uses(e):
-    var a: ArgOf = (nil, -1, "")
-    if u == uArg and e.kind == exkCall:
-      a = (e, argNo, "")
+    var a = NoArg
+    if u in {uThrough, uProject}: a = arg      # e.g. a nullary call named bare
+    elif u == uArg and e.kind == exkCall:
+      a = argOf(e, argNo)
       inc argNo
     c.temporaries(ch, effective(use, u), a)
 
@@ -327,10 +334,11 @@ proc outerOnly(c: Check, depth: int): State =
 proc walkExpr(c: var Check, e: Expr, use: Use)
 
 proc boundType(c: Check, n: Expr): Type =
-  ## The type a binding gives its new place.
-  if n.declType != nil: n.declType
-  elif c.res.typeFor(n.target) != nil: c.res.typeFor(n.target)
-  else: c.res.typeFor(n.assignVal)
+  ## The type a binding gives its new place: the checker's first, since a
+  ## written annotation need not carry the declaration edge.
+  if c.res.typeFor(n.target) != nil: c.res.typeFor(n.target)
+  elif c.res.typeFor(n.assignVal) != nil: c.res.typeFor(n.assignVal)
+  else: n.declType
 
 proc overwrite(c: var Check, n: Expr, keys: seq[string]) =
   ## An owned place or field takes a new value. The old one must have been
@@ -482,13 +490,15 @@ proc walkExpr(c: var Check, e: Expr, use: Use) =
 
 proc checkFn(res: Resolution, m: Module, d: Decl): seq[string] =
   ## Rule V over one fn's body, under the twins' convention.
-  var c = Check(res: res, m: m, fn: d.name)
+  var c = Check(res: res, m: m, fn: d.name, rules: RulesMode)
   c.scopes.add Scope()
-  c.borrowed.incl "self"
-  let owned = movedFnParam(res, m, d)
+  if "self" notin d.fnParams.mapIt(it.name): c.borrowed.incl "self"
+  let moved = movedFnParam(res, m, d)
   for p in d.fnParams:
-    if p.name == owned and ownsHeap(m, p.typ):
-      c.declare(p.name, p.typ, d.fnBody.span)
+    let owns = if c.rules: not isStr(p.typ) and
+                           res.consumes(m, d, p.name, c.memo)
+               else: p.name == moved
+    if owns and ownsHeap(m, p.typ): c.declare(p.name, p.typ, d.fnBody.span)
     else: c.borrowed.incl p.name
   c.walkExpr(d.fnBody, uSink)
   if not c.dead: c.leave(0)

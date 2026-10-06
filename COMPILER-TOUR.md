@@ -434,7 +434,10 @@ tree is also what the ownership rules are checked against
 - rule V (`ownership_check`) walks the tree and confirms that every owned
   value is moved or dropped exactly once on every path, and that nothing is
   read after it moved. It reads only the nodes, so it checks whichever pass
-  wrote them.
+  wrote them;
+- under `TUCK_OWN=rules`, `ownership_write` writes the Odin tree from the
+  rules instead of from today's passes, the tree the switch makes the
+  default.
 
 ---
 

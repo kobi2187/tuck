@@ -47,6 +47,11 @@ proc verifyDump(t: var T): int =
   t.needCmd(@["env", "TUCK_DEBUG_OWN=verify", "./tuck", "c",
               t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "outv"], vEmit)
 
+proc rulesVerifyDump(t: var T): int =
+  ## Rule V over the tree the RULES write (TUCK_OWN=rules, ownership_write).
+  t.needCmd(@["env", "TUCK_OWN=rules", "TUCK_DEBUG_OWN=verify", "./tuck", "c",
+              t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "outr"], vEmit)
+
 proc dumpLacks(t: var T, idx: int, name, needle: string) =
   ## The dump has no line holding `needle` (prefixes dropped as in dumpHas).
   if t.phase != pReport: return
@@ -179,10 +184,13 @@ fn main() -> int:
             "PARAM bytesOf t today-only\n"
   t.dumpHas p, "P: one handed to a consuming parameter is consumed",
             "PARAM viaKeep xs same (keepIt keeps it at 17:15)"
-  t.dumpHas p, "P: a callee with no body is taken to keep it (the safe " &
-               "default)", "PARAM viaOpaque t same (opaque has no body"
-  t.dumpHas p, "P: the runtime table says push keeps its items",
-            "PARAM grow xs same (the runtime's push keeps it at 23:18)"
+  t.dumpHas p, "P: a `pending:` fn with no body is read by its " &
+               "signature: a `str` in, a new `str` out, so it only reads it",
+            "PARAM viaOpaque t today-only\n"
+  t.dumpHas p, "P: a callee with no body is read by its signature: push's " &
+               "result has its items' own type, a new Seq, so push only " &
+               "reads them (today's `sink` says kept)",
+            "PARAM grow xs today-only\n"
   t.dumpHas p, "P: a recursive reader borrows (the least fixed point)",
             "PARAM walk xs same\n"
 
@@ -334,6 +342,10 @@ fn main() -> int:
   t.dumpHas vd, "...and dropped after it moved", "VERIFY nest drop-after-move a 35:3"
   t.dumpHas vd, "V: a temporary only borrowed is never dropped (A45)",
             "VERIFY sumList temp-leak list 42:12"
+  let rv = t.rulesVerifyDump()
+  t.dumpLacks rv, "V: the tree the rules write (TUCK_OWN=rules) has none of " &
+                  "these: every place dropped or moved once, every live " &
+                  "read copied, every temporary named and dropped", "VERIFY"
   let gu = t.usesDump()
   t.classifies gu, "U: a generic record's construction takes its fields " &
                    "(`{items: xs} Box` is typed `Box[T]`)", "boxed xs sink final 17:18"

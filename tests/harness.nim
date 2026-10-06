@@ -904,7 +904,7 @@ proc hostRuns*(t: var T, name: string, code: int, pattern = "") =
   if ran.len == 0: t.skip name
   else: t.ok name & "  [" & ran.join(", ") & "]"
 
-proc odinTracked*(t: var T, name: string, code: int) =
+proc odinTracked*(t: var T, name: string, code: int, rules = false) =
   ## Build on Odin with every allocation tracked (`-define:TUCK_TRACK=true`)
   ## and run, asserting the program still answers `code`. A leak or a bad
   ## free exits 90 instead, and the report names each leak's site.
@@ -913,13 +913,20 @@ proc odinTracked*(t: var T, name: string, code: int) =
   ## ownership decision can be wrong at run time; Nim and D have ARC and a
   ## collector. `hostRuns` cannot see a leak (the answer is right), and
   ## `hostPeakRss` sees one only when it is large. This sees one byte.
+  ##
+  ## `rules`: the tree the ownership rules write (TUCK_OWN=rules,
+  ## ownership_write) instead of today's.
   let odinExe = findOdin()
   if odinExe.len == 0:
     if t.phase == pReport: t.skip name
     return
-  let e = t.needOdin()
-  let proj = t.curDir / "odintracked"
-  let src = t.curDir / "odin" / "t.odin"
+  let dir = if rules: "odinrules" else: "odin"
+  let e = if not rules: t.needOdin()
+          else: t.needCmd(@["env", "TUCK_OWN=rules", "./tuck", "c",
+                            t.curDir / "t.tuck", "--odin",
+                            "-o:" & t.curDir / dir], vEmit)
+  let proj = t.curDir / (if rules: "odinrulestracked" else: "odintracked")
+  let src = t.curDir / dir / "t.odin"
   let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none", OdinThreads,
                            "-define:TUCK_TRACK=true", "-out:" & proj / "prog"],
                          e, proc (dir: string) = stageOdinPkg(dir, src), proj)
