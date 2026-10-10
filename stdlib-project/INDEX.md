@@ -1,5 +1,9 @@
 # Index: Module API Designs, Validated Against Application Scenarios
 
+> **Direction (2026-10-10):** the stdlib is a contract (groups) plus blessed
+> implementations, mixed per group. See `DIRECTION.md`, which wins over older
+> text here.
+
 > **The `API.nim.md` files were deleted on 2026-09-12.** Every module that
 > had a Tuck twin keeps only its `API.tuck.md`; `core/simd` and `sys/ble`
 > still have the Nim-shaped file because they have no Tuck version yet.
