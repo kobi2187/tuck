@@ -1,5 +1,9 @@
 # Missing Features & Gaps — snapshot 2026-09-12
 
+> Partial re-verification, 2026-10-10 on `bab9828`: the registry indentation
+> failure and `[may_block]` warning in §D below are no longer current.
+> This note does not revalidate every claim in the historical snapshot.
+
 Every claim below was re-verified against the compiler on the date in the
 heading. The previous snapshot (2026-08-05) had drifted less than most: its
 "2 open bugs" claim was still accurate on this pass. What changed this time is
@@ -252,18 +256,15 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## D. Design items with a ruling, not yet built
 
-- **The event registry emits invalid Nim.** A registry whose event carries a
-  payload emits a type whose fields are indented inconsistently —
-  `kind*:` at four spaces, `code*:` at two — which nim rejects as "invalid
-  indentation". Reproduces via `examples/20-embedded-mp3-player`.
+- **Registry indentation failure resolved in the tested example.** Verified
+  2026-10-10 on `bab9828`: `examples/20-embedded-mp3-player` builds on Nim,
+  Odin and D. The old "invalid indentation" failure is no longer reproduced.
 - **`tuck build` on a file with no `fn main` never compiles what it emits.**
   That is the documented library-build behaviour (§2.3b), but it is also why
-  both defects above went unseen: every example demonstrating `register`,
-  `arena` or the event registry is main-less, so the gate checks EMISSION and
-  stops. The emitted code is never handed to nim/odin/dmd. The one example
-  using these features that does have a `main`,
-  `examples/20-embedded-mp3-player`, fails to build on ALL THREE backends
-  today while sitting on the gate list.
+  defects in main-less examples can go unseen: the gate may check EMISSION
+  and stop. Successful library emission is not evidence that nim/odin/dmd
+  accepted the generated source. Example 20 now builds on all three; that
+  does not remove the general coverage limitation for library examples.
   This is the sharp form of §F's "gate lists are the real coverage": a
   feature can be listed, emitted, and entirely unexercised.
 
@@ -277,10 +278,8 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 - **Effect propagation is require-declared, not inferred.** The ruling is
   implicit propagation; the checker still makes you declare. `ROADMAP.md:26`.
-- **`[may_block]` has no checker meaning.** It parses and propagates. Its real
-  job is the `[irq_safe]` treatment — an `[irq_safe]` fn calling a
-  `[may_block]` one should be a compile error, exactly as spec §3.7 already
-  specifies for `[irq_safe]` calling `[io]`.
+- **`[may_block]` is checked.** Verified 2026-10-10 on `bab9828`: an
+  `[irq_safe]` fn calling a `[may_block]` fn is rejected with TK-EF01.
 - **Postfix binds tighter than operators** (`x + y sys::exit`) with no
   precedence hint in the error.
 

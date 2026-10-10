@@ -302,10 +302,8 @@ let fresh = MqttSession.Disconnected       # bare
 return Red                                 # bare, unqualified — carries its sum type
 ```
 
-> ⚠️ **OPEN BUG — cross-sum-type assignment is unchecked.** Returning a `Light`
-> variant where `Colour` is declared is currently *accepted*
-> (`tests/suites/bare_variant.nim`). The fix belongs in `compatible`, which does not
-> compare sum types nominally.
+> Verified 2026-10-10 on `bab9828`: returning a `Light` variant where `Colour`
+> is declared is rejected: "expects Colour but got Light".
 
 #### A sum may contain ITSELF
 
@@ -558,10 +556,10 @@ stored in a field (`object Keeper: pet: Animal`), and collected into a
 Run-verified: two objects through one param → 1 + 41 = **42**, a number neither
 implementation reaches alone (`tests/suites/interface_dispatch.nim`).
 
-> ⚠️ **OPEN (Odin)** — a list literal cannot reach a `Seq` parameter:
-> "Compound literals of dynamic types are disabled by default". Affects
-> `Seq[Record]` identically; needs statement hoisting in the Odin emitter
-> (`tests/suites/interface_seq.nim`).
+> Verified 2026-10-10 on `bab9828`: a list literal supplied to a `Seq[int]`
+> parameter builds and runs on Nim, Odin and D. The former warning about
+> dynamic compound literals no longer applies to that case; this check did
+> not independently re-test the `Seq[Record]` case.
 
 ---
 
@@ -808,15 +806,9 @@ Both of the gaps this section used to flag are closed: an undeclared
 assignment target is caught (in actors and plain fns alike), and `result` is
 gone entirely (`tests/suites/actor_result.nim`).
 
-> ⚠️ **OPEN — a generic `fnsig` does not parse.** `fnsig Mapper[T, U] = {x: T} -> U`
-> fails with `Expected 'Assign' here, found '['` — `fnsig` has no
-> type-parameter slot, though `fn`/`type` both do. Writing the params bare
-> (`fnsig Mapper = {x: T} -> U`) *appears* to typecheck, but only because
-> gradual typing reads the unbound `T`/`U` as `Unknown` — it is not real
-> generic binding, and is the trap §0 warns about (sketch code and a broken
-> tree both read `Unknown`). Blocks every higher-order generic API
-> (`map`/`fold`/`keep` over `Seq[T]`), since `bake` needs a `fnsig`-typed
-> field to fill. Same family as the generic-actor gap below.
+> Verified 2026-10-10 on `bab9828`: `fnsig Mapper[T, U] = {x: T} -> U`
+> parses and checks. This resolves the former parser gap; it is not by itself
+> proof that every higher-order generic API works end to end.
 
 > **A generic actor is one actor per instantiation** (ruled 2026-09-17, #18).
 > `actor Box[T] [queue: 4]:` declares it; `Box[int] send put {v: 1}` and
@@ -873,13 +865,13 @@ non-blocking I/O: source at 500ms vs a 30ms deadline → exit 2; source at 5ms v
 
 Working arm sources are `read <fd>` and `timeout {N.ms}`.
 
-> ⚠️ **Task select is Nim-only so far** — examples 29 and 30 are not in the Odin
-> gate. Example 16's *dotted* sources (`resp.ok`, `timer.1s`) parse as opaque
-> strings and do not work at all; that is why 16 is ungated.
+> Task select is run-gated on all three backends. Verified 2026-10-10 on
+> `bab9828`: examples 29 and 30 build and return matching exit codes on Nim,
+> Odin and D. This does not resolve #55's timeout-latency bug or #15's typed
+> sources. Example 16 still fails checking (`copyFrom` is undeclared).
 
-> ⚠️ **OPEN (Odin)** — a task **with arguments** is not spawned as a coroutine.
-> Odin proc literals cannot capture, so the args need a heap context. Nullary
-> tasks are fixed.
+> Tasks with arguments work on Odin. Verified 2026-10-10 on `bab9828`:
+> example 28's `compute({base: int})` returns 42 on Nim, Odin and D.
 
 ### Blocking I/O
 
@@ -1035,17 +1027,10 @@ let r = {a: 40, b: 2} c.add
 
 Run-gated 42 on every backend.
 
-> ⚠️ **OPEN — storing into a `fnsig` slot is not signature-checked.** A
-> plainly mismatched fn reference is accepted: with
-> `fnsig Predicate = {x: int} -> bool`,
-> `type Query = {items: Seq[int], test: Predicate}` and
-> `fn wrongShape({a: str}) -> str`, both `{items: [1,2,3], test: :wrongShape} Query`
-> and `{items: [1,2,3]} bake {test: :wrongShape}` typecheck clean.
-> `tests/suites/typecheck.nim:1805` covers the other direction — a *call
-> through* a fnsig slot checks arity — so the gap is specifically on the
-> store, not on use. `bake`'s intended semantics is that it matches the
-> signature declared on the record's slot, which makes this the check that
-> makes the feature safe.
+> Verified 2026-10-10 on `bab9828`: constructing a `Query` whose `Predicate`
+> slot receives `:wrongShape` is rejected with TK-TY26 ("expects Predicate
+> but got (str) -> str"). The equivalent mismatched `bake` case was not
+> re-tested in this verification; do not infer its status from construction.
 
 ---
 
@@ -1086,8 +1071,9 @@ let t = ext alias(trackId -> id, title -> name)   # explicit rename; PARENS, old
 no boxing, no runtime dispatch. `merge` rejects a field-name collision
 (`collides`) and a non-struct member (`must be a struct`).
 
-> **`bake` is checked and emitted but never run** — example 03 is compile-gated
-> on every backend with no run gate.
+> Verified 2026-10-10 on `bab9828`: example 03 builds and runs on Nim, Odin
+> and D with exit code 0. This was an additional manual run, not a claim
+> that the permanent suite now has a run gate for it.
 
 ---
 
@@ -1508,8 +1494,10 @@ diffable.
 
 Current coverage: **47 compile-gated** examples, 44 Odin compiles, 45 D compiles, 23 Odin runs and 21 D runs pinned to exact exit codes. (Every number here is checked against the suite's own gate lists by `tests/suites/examples.nim`, so they cannot drift silently.)
 
-Nim-only so far: `42-net-echo` and `14-task`. Task select/timeouts (29, 30)
-are no longer on that list — both are run-gated on Odin and D as well.
+Separate manual verification on 2026-10-10 (`bab9828`): `42-net-echo` builds
+on Nim and Odin; D fails because `tuck_rt.listen` is missing (S3.3). This
+does not change the suite's gate lists. `14-task` has no `main`, so a
+successful library build is emission-only, not a runtime test.
 
 > **The gate lists ARE the coverage.** Anything off a list is unchecked — that
 > is how an Odin actor emitting undefined send procs, and a `24-stdlib` whose

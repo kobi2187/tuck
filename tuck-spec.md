@@ -1587,24 +1587,18 @@ are flagged: a fn with a stack budget cannot recurse, since its depth would be
 unbounded. The result is a
 certification-grade guarantee with zero runtime cost.
 
-### 6.3 Complexity Limit — ruled, not yet enforced
+### 6.3 Function Size Budgets
 
-The intent: a cyclomatic complexity limit of ≤ 5 and approximately 10–15
-executable lines per `fn`, as a compile error rather than a linting
-suggestion, so every function reads like pseudocode, fits in your head, and
-is auditable for certification. It forces high-level architecture to remain
-pure wiring diagrams.
+The compiler measures Tuck functions, not just its own Nim source.
+`--max-complexity:N` limits independent paths (default 6), and
+`--max-fn-lines:N` limits source lines (default 8); `:0` disables either
+budget. Match/select constructs do not themselves add complexity, and their
+arm bodies and decision tables do not count toward the line budget.
 
-**Status: not implemented.** `tuck check` measures nothing today and rejects
-no program for being too complex, at any size. The ceiling is real only for
-the *compiler's own Nim source*, where `tools/cc` measures it against a
-budget in the test suite — that tool parses Nim, not Tuck, so it cannot be
-pointed at user code as-is.
-
-Until it lands, treat the limit as a convention the corpus follows rather
-than a guarantee the compiler provides. When it does land it applies to
-`fn` declarations; the ceiling for a `decision` table is its row count, which
-the table's own exhaustiveness/overlap checking (§6.1) already bounds.
+Verified 2026-10-10 on `bab9828`: a 15-line function reports TK-CX02 during
+`tuck check`, which still finishes with OK. A normal build also proceeds;
+a `--release` build stops with OVER BUDGET. Measurement is implemented, but
+these limits are not unconditional errors in development commands.
 
 ---
 
