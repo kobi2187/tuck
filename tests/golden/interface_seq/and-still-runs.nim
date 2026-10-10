@@ -34,5 +34,6 @@ proc tuckˑfnˑcount*(xs: seq[tuckˑobjectˑDog]): int =
 proc tuckˑfnˑmain*(): int =
   var tuckˑvˑa = tuckˑobjectˑDog(name: "rex")
   var tuckˑvˑb = tuckˑobjectˑDog(name: "fido")
-  return tuckˑfnˑcount(@[tuckˑvˑa, tuckˑvˑb])
+  var tuckOwnTmp1 = @[tuckˑvˑa, tuckˑvˑb]
+  return tuckˑfnˑcount(tuckOwnTmp1)
 

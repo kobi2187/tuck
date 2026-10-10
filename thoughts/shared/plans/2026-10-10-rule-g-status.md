@@ -1,95 +1,156 @@
 # Rule G implementation checkpoint
 
 Date: 2026-10-10. Branch: `docs/verified-feature-status-2026-10-10`.
-Direction: finish the approved type glue, then switch ownership mode.
-This checkpoint is not a declaration that G or the switch is complete.
+The Glue integration and default switch are implemented and functionally gated.
+The end-of-session full gate passed all non-complexity suites; the explicitly
+deferred complexity gate remains failing, with its thresholds unchanged.
 
-## Implemented
+## Architecture and default
 
-- `compiler/ownership_glue.nim`: a memoized graph within each derivation,
-  with recursive back edges and least-fixed-point ownership. Handles strings,
-  sequences, arrays, records/objects, sum payloads and result/option payloads.
-  Generic arguments are instantiated in the caller's environment before
-  entering the callee's scope. Alias shapes are resolved after graph construction.
-  The uninitialized-field marker erases to its underlying shape, not a result.
-- `compiler/ownership_glue_odin.nim`: generates concrete copy/drop/reset
-  procedures, memoized by emitted instantiated type in one codegen context.
-  Non-owning sequence elements use bulk copy. Owning elements recurse.
-  Sums visit the active variant; results visit only an Ok payload.
-  Reset drops the owned value and writes an empty value, and is repeatable.
-- `compiler/tuckrt_d/tuck_rt.d`: recursive `tuckCopyG`, preserving native GC.
-  Mutable arrays and struct fields copy recursively; immutable leaves can share.
-  Failure/absence payloads are not traversed. Reference classes and native unions
-  require explicit glue rather than silently pretending to be values.
-- D emission: explicit copy nodes, borrowing twin wrappers and owning mailbox
-  payload copies call `tuckCopyG`. This improves the implementation of existing
-  copy decisions; it does not make those decisions complete.
+The owner's boundary is implemented: ownership runs on the **common lowered
+AST, before backend cloning**. Representation lowering first makes recursive
+edges finite and expands composition. The common pass then records:
 
-Nim's native copy/destruction behavior and D's collector policy are unchanged.
-Odin's production shallow helper is unchanged until the matching copy/drop
-placement migration is ready. The temporary sequence-only Odin prototype was
-removed after the generated glue subsumed its tests.
+- Consuming parameters, inferred to a least fixed point.
+- `exkCopy` with whole-value `cpValue`, and explicit `exkMove`.
+- Typed `exkDrop`, scope-end defers, and drop-before-overwrite metadata.
+- `exkReset` for conditional transfers, with nested owning paths preserved.
+- Owning-element replacement metadata for indexed writes.
 
-## Tests and evidence
+Independent rule V checks this tree before emission and rejects findings in
+default mode. A backend then receives a deep copy. Only target adaptation follows:
+impl paths, native string-growth specialization, and emission/runtime operations.
+The default is rules mode without an environment flag; `TUCK_OWN=rules` still
+selects it explicitly. `TUCK_OWN=legacy` retains the historical compiler path
+for differential tests, not a separately supported runtime profile.
 
-`tests/suites/ownership_glue.nim` includes:
+This fixes a real clone-boundary problem: semantic resolution contains references
+to original declarations and operands, not only node-id lookups. Clone-first
+ownership could inspect stale, unelaborated callees and miss shared operands.
+Three subprocess tests assert that the original common tree contains copy/move
+and typed drops before Nim, Odin or D receives its private clone.
 
-- Shared graph shapes: nested sequences, deep records beyond the old depth
-  cutoff, arrays, generic records, nested generic substitution, phantom type
-  arguments, alias cycles and recursive sum cycles.
-- Native D kernel tests: mutation independence of nested arrays in structs,
-  fixed arrays and Ok results; inactive result payloads and empty sequences.
-- Generated Odin procedures compiled and run with `TUCK_TRACK=true`: nested
-  and triple sequences, sequences of records, owned strings, recursive sums,
-  arrays, generic inline records, empty buffers, active/inactive results,
-  source survival after a copy is dropped, and repeated reset.
-- D emission pins for copy nodes, twin wrappers and mailbox payloads.
-- An end-to-end nested-sequence result pin on the available Nim/Odin/D backends.
+Record update/alias/merge reconstruction and record-as-call-payload projection
+now happen here too, not in target renderers. Ownership sees individual field
+sinks and unused fields remain owned. Computed receivers are named exactly once;
+earlier value operands retain their order, and branch, short-circuit, match and
+loop evaluation remain conditional or repeated as the source requires.
 
-Red tests demonstrated missing D recursive-copy support, incorrect chained
-generic substitution and erased-marker shape, and unwired D emission paths.
-The implementation was added only after those failures.
+## Glue and lifecycle integration
 
-Targeted suites passed: `ownership_glue`, `ownership_rules`, `d_backend`,
-`value_semantics`, and `complexity`. D backend: 185 assertions; value semantics:
-75 assertions. The complexity tool was built locally; its ceiling 20 and heavy
-limit 11 were preserved by splitting the new graph/generator routines.
+- **Type graph:** recursive back edges, alias resolution, fixed-point ownership,
+  strings, sequences, arrays, nested records/objects, sums and result payloads.
+  Generic signatures are canonicalized for ownership without changing their
+  public backend types.
+- **Odin:** generated recursive copy/drop/reset procedures. Concrete shapes use
+  type-derived operations; unresolved polymorphic leaves use a recursive runtime
+  fallback. Active sum variants and Ok result payloads alone are traversed.
+  Static strings are cloned at owning sinks; scoped drops never free literals.
+- **D:** deep array/record copies, with an emitted active-arm copy hook for tagged
+  sums. Inactive result payloads are cleared, not traversed. Native GC remains.
+- **Nim:** native copy/destruction remains. Consuming function parameters use
+  the common convention. Semantic drops do not emit empty defer blocks.
+- **Tasks and messages:** task bodies and both handler syntaxes are included.
+  Task argument/result ownership, local cleanup, mailbox transfer and rejected
+  drop-policy payloads use the same rules. Legacy mailbox helper copies/twins
+  are disabled in default mode.
+- **Singleton state:** owning initializers are elaborated; reads copy at sinks,
+  overwrites deep-drop the replaced value, and teardown deep-drops state.
+- **Slabs/pools:** snapshots are independent values. Replacement, release/reset
+  and rejected fixed-slab operands release nested storage, not just outer headers.
+- **Runtime contracts:** non-self push deep-copies existing nested elements;
+  setAt releases replaced elements. Split-lines returns owned line strings and
+  consumes its input. Read-file/get-env release transferred names. Argument
+  strings are cloned from OS storage. Same-type read arguments certify a fresh
+  result ahead of another argument's containment-based view classification.
 
-An earlier full run exposed obsolete `.dup` emission expectations and the missing
-local complexity tool. Those were corrected and retested with targeted suites.
-The final full gate is recorded after it runs; do not infer a clean full run from
-the targeted results.
+## Test-first evidence
 
-## Remaining G integration, in dependency order
+New failing tests preceded fixes for common-before-clone placement, explicit
+moves, polymorphic copy/drop, consuming generic parameters, task cleanup,
+mailbox payloads, select-state cleanup, runtime imports, split-lines ownership,
+slab/pool deep lifecycle, non-self push aliasing and join-result lifetime.
 
-- **Typed ownership places:** retain the resolved type on scope-end and parameter
-  drop nodes. A path string alone cannot select generated glue. Test local,
-  parameter, record-path and instantiated generic types before changing emission.
-- **Static-string ownership:** clone borrowed/static strings at owning sinks,
-  including record fields, sequence elements and variant/result payloads.
-  A deep drop must never free a literal. Keep these tests allocation-tracked.
-- **Shared slots and partial moves:** replace direct-Seq-field-only slot discovery
-  with the graph's owning paths. Preserve path granularity for a moved field,
-  nested overwrites and reset. Update elaborator and independent checker together.
-- **Atomic Odin activation:** pair generated copy and deep drop at all existing
-  explicit nodes, overwrite sites, wrappers and mailbox transfers in opt-in
-  rules mode. Never activate just one half.
-- **Generalize remaining copy decisions:** nested owning records, arrays,
-  result/sum payloads and generic instances must not disappear from classification.
-  D's new copy operation cannot fix a missing copy node.
-- **Acceptance before default switch:** tracked G regressions including A39,
-  A41-A45; independent verifier; three-backend equivalent results; relevant
-  ownership/container/tree benchmarks; then the end-of-session full test gate.
-  Only then change the default and remove obsolete machinery in verified steps.
+`ownership_glue` includes native D/Odin tests independently of placement,
+generated Odin procedures checked with `TUCK_TRACK=true`, and compiler-level
+tracked runs. It tests empty storage, nested/triple sequences, arrays, records,
+recursive sums, generic substitution, inactive results, repeated reset,
+conditional nested slots, task-result replacement and fixed-slab failure.
+Owning fill remains intentionally rejected by TK-TY37; this work did not change
+the existing scalar-fill language contract.
 
-Imported type identity, anonymous/parameterized payload sums and any checker-side
-types that should have been erased need end-to-end coverage before claiming
-universal glue support. Resource-handle policy and selectable memory reclamation
-remain separate, deferred work.
+The final integration regressions cover computed-receiver evaluation once,
+earlier operand ordering, unchosen branches, short-circuit evaluation, repeated
+loop conditions, and selected value-match arms on all three backends.
+Singleton tests cover both handler reads and explicit any-depth projections.
+The nested snapshot pin requires an explicit common copy, ordinary all-backend
+execution, and tracked Odin execution: the native Odin crash was not exposed
+by allocation tracking alone, so tracking is not the sole acceptance criterion.
 
-## Fast iteration
+After integration fixes, the focused gate passed ownership_glue, ownership_rules,
+value_semantics (76), memory (8), recursive_types (73), slabs (45), pools (14),
+task_select (8) and actor_result (25). The generated example gates passed
+odin_backend (113) and d_backend (185). Additional focused gates passed ssa (31),
+groups (39), with_update (26), interface_dispatch (26), cli_smoke, diagnostics (44),
+mailbox_full (20), interface_seq (26), loop_var_type (17) and end_to_end (22).
 
-Use `./tests/run ownership_glue --quiet --jobs:4` while working on the graph or
-copy kernels. Add `ownership_rules` and `value_semantics` for ownership-tree
-changes, `d_backend` for D emission, and `complexity` for new compiler helpers.
-Use `./tests/run --quiet --jobs:8` only at the end-of-session gate.
+The known-bug default probes passed for **A39 and A41-A45**, and their markers
+are now `bugFixed`. The targeted known_bugs gate passed 184 assertions; the
+independent group-provider bug remained open. The latest known_bugs gate passed
+185 assertions, including an added all-backend runtime check for the changed
+toStr golden. Recursive-tree tracked expectations
+now require exit 0, not the old expected leak exit 90. The two-million-append
+budget still passes; the source-oracle cross-check now distinguishes a replaced
+old value from the next loop iteration's live replacement.
+
+The toStr golden changed because a borrowed owning temporary is now named on
+the common tree. Runtime behavior remains string concatenation. Legacy debug
+fixtures explicitly select legacy mode so their diagnostic comparisons remain
+meaningful rather than depending on an outdated default.
+
+## Final gate
+
+An earlier full run exposed integration failures in record reconstruction,
+singleton-state snapshots, generic exit resets, interface-return temporaries
+and dropped-result error routing, plus stale emission goldens and bug counts.
+These were corrected with focused regressions; the verifier was not disabled.
+
+One gate attempt was stopped after independent review reproduced a missing copy
+on a nested singleton-state snapshot. The new regression failed both emitted-copy
+and ordinary Odin execution checks before the any-depth classification fix.
+The affected ownership/value/SSA/reconstruction suites then passed.
+
+Final command: `./tests/run --quiet --jobs:8`.
+
+- **56 suites ran; all 55 non-complexity suites passed.**
+- **Raw command exit: 1.** The sole failing suite is `complexity`.
+- Complexity remains deferred as explicitly requested. Its thresholds were
+  not raised or disabled: ceiling 20, heavy-routine limit 11. Actual result:
+  2 routines exceed the ceiling; 17 have complexity at least 15.
+- Test execution took 538.5 seconds; total gate time was 539.0 seconds.
+- All 48 gated examples passed. Example 16 remains explicitly ungated because
+  `copyFrom` is undeclared; 48 of 49 sources emit for each backend.
+- Eight existing known-bug pins remain open: six cross-module cases, one
+  receiver-dependent group-provider case, and one task-timeout/loser case.
+  None is relabeled as fixed by this ownership work.
+
+This is functional acceptance of OWN under the owner's complexity deferral,
+not an all-green raw full run, universal runtime conformance, or feature parity.
+
+## Boundaries and follow-up
+
+This is not a replacement collector or a new freeing-policy design. D coroutine
+GC-root registration, record-passing measurements and explicit layout questions
+remain separate roadmap work. No shared C runtime was imposed.
+
+Foreign code is a trusted boundary: an extern must satisfy the stated transfer
+and result contract. Arbitrary native reference classes, pointers and native
+unions do not become Tuck-owned values by inference. New or currently unsupported
+type representations require explicit glue and end-to-end acceptance tests.
+Anonymous/parameterized payload sums and imported composition retain their
+existing checker/backend limits; this checkpoint does not claim universal
+language-feature parity.
+
+Next roadmap item is DGC (collection inside a task): reproduce and pin it before
+choosing supported root registration or scheduling changes. The owner must choose
+the scope of that item before implementation; no unrelated item started here.

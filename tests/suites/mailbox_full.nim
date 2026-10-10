@@ -96,7 +96,8 @@ proc run*(t: var T) =
   t.okCheck "`on_full: drop` checks"
   t.emits "...and its send is the bare enqueue", r"discard enqueue\("
   t.omits "...with no wait behind it", r"sendWaiting\("
-  t.emitsOdin "...on Odin too", r"_ = rt\.enqueue\(&self\.mailbox"
+  t.emitsOdin "...and Odin tests rejection to reclaim owning payloads",
+              r"if !rt\.enqueue\(&self\.mailbox"
 
   # --- `assert` stops the program, naming the actor --------------------------
   #

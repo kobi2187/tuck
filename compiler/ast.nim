@@ -240,6 +240,7 @@ type
     name*: string
     typ*: Type
     span*: Span
+    consumes*: bool  ## Rule P, recorded on the common lowered AST.
 
   PatternKind* = enum
     ## The shapes a match pattern can take.
@@ -500,6 +501,8 @@ type
                     # the declaration it ends, or at the top of a moved twin
                     # for the parameter it consumed. Odin only: the other two
                     # backends' memory is ARC's and the collector's (step 1.3).
+    exkReset        # rule M: forget a moved place without dropping its payload
+    exkMove         # rule S: explicit transfer into an owning sink
 
   CopyKind* = enum
     ## What an `exkCopy` copies (rule S: a sink copies when it is not the
@@ -509,6 +512,7 @@ type
                 ## record's own struct copy carries their headers along
     cpStatic    ## a `str` literal, copied to the heap so the local holding it
                 ## can free each value it is given (Odin, `copyToOwn`)
+    cpValue     ## rule G: recursively copy the whole typed value
 
   SlabOpKind* = enum
     ## What a slab operation does (thoughts/shared/plans/
@@ -587,6 +591,7 @@ type
       # `recv[i] = v` — the checker resolves this to a setAt call
       brTarget*: Expr    # the exkBracket being assigned into
       brValue*: Expr
+      replacedType*: Type  # rule D: old owning element released before store
     of exkCall:
       callee*: Expr
       args*: seq[Expr]
@@ -625,6 +630,9 @@ type
       discard
     of exkAssign:
       target*, assignVal*: Expr
+      ## A prepared declaration may have nil assignVal and a non-nil
+      ## declType: initialize a hidden branch-result slot to its default
+      ## value, without evaluating either branch.
       isDecl*: bool     # true for `let x = ...` / `var x = ...`
       dropsOld*: bool   # prepared only (ownership_nodes): the target's old
                         # value is released after the new one is built and
@@ -698,6 +706,11 @@ type
     of exkDrop:
       dropped*: Expr               # the place: a local or parameter, or a
                                    # path into one (`b.ask`)
+      droppedType*: Type          # resolved before backend cloning
+    of exkReset:
+      resetPlace*: Expr
+    of exkMove:
+      movedValue*: Expr
     of exkIfaceCall:
       dispatchRecv*: Expr          # the interface value, evaluated once
       dispatchIface*: string       # the interface's (mangled) type name
@@ -944,6 +957,7 @@ type
       arenaSizeText*: string   ## `[size: N]` as written, when N names a const
       arenaOwner*: string      ## the actor declaring it, "" for the module
     of dkFn:
+      ownershipElaborated*: bool
       fnGenerics*: seq[string]
       fnGenericBounds*: seq[seq[Type]]   # parallel to fnGenerics; bounds[i] =
                                           # the `group`s required for
@@ -1034,6 +1048,7 @@ type
       actorFields*: seq[FieldDef]
       handlers*: seq[Decl]
     of dkTask:
+      taskOwnershipElaborated*: bool
       taskParams*: seq[Param]
       taskReturnType*: Type
       taskEffects*: seq[EffectMarker]

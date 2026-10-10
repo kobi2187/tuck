@@ -40,5 +40,6 @@ proc tuckˑfnˑtotal*(xs: seq[Animal]): int =
 
 proc tuckˑfnˑmain*(): int =
   var tuckˑvˑd = tuckˑobjectˑDog(name: "rex")
-  return tuckˑfnˑtotal(@[Animal(tag: Animal_is_tuckˑobjectˑDog, tuckˑobjectˑDogVal: tuckˑvˑd)])
+  var tuckOwnTmp1 = @[Animal(tag: Animal_is_tuckˑobjectˑDog, tuckˑobjectˑDogVal: tuckˑvˑd)]
+  return tuckˑfnˑtotal(tuckOwnTmp1)
 

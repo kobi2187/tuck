@@ -190,8 +190,8 @@ fn main() -> int:
   return 0
 """
   t.hostPeakRss "200k cells holding a Seq, each freed, stay in budget", 16384
-  t.emitsOdin "Odin's free deletes what the value owns",
-              "_free :: proc\\(r: rt.SlabRef\\) \\{\\n\\tc := rt.tuckSlabCell\\([^\\n]*\\n\\tdelete\\(c.value.items\\)"
+  t.emitsOdin "Odin's free invokes whole-value deep glue",
+              "_free :: proc\\(r: rt.SlabRef\\) \\{\\n\\tc := rt.tuckSlabCell\\([^\\n]*\\n\\ttuckG_[0-9]+_drop\\(c.value\\)"
 
   # A value handed to `new` or `set` is the slab's: Odin must not also free
   # it at scope exit (a double free once the slab's own free runs).

@@ -35,6 +35,7 @@ import tables, sets
 import ast, ast_ops, ast_query
 import resolution
 import twin_shape
+from ownership_elab import RulesMode
 
 var takesTwin: HashSet[NodeId]
   ## calls that call the moved twin, by the call node's id
@@ -167,10 +168,12 @@ proc assertVisited(e: Expr, what: string) =
 
 proc callsTwin*(e: Expr): bool =
   ## Does this call call the moved twin?
+  if RulesMode: return false
   assertVisited(e, "callsTwin")
   e.id in takesTwin
 
 proc threadedCall*(e: Expr): Expr =
   ## The call this assignment threads through a moved twin, or nil.
+  if RulesMode: return nil
   assertVisited(e, "threadedCall")
   threaded.getOrDefault(e.id, nil)

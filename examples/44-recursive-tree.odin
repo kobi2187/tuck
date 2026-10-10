@@ -4,6 +4,70 @@ package main
 import "core:os"
 import rt "./tuckrt"
 
+tuckG_1_copy :: proc(value: $G) -> G {
+	return value
+}
+tuckG_1_drop :: proc(value: $G) {
+}
+tuckG_1_reset :: proc(value: ^$G) { tuckG_1_drop(value^); value^ = {} }
+
+
+tuckG_3_copy :: proc(value: $G) -> G {
+	out: G
+	resize(&out, len(value))
+	for item, i in value { out[i] = tuckG_0_copy(item) }
+	return out
+}
+tuckG_3_drop :: proc(value: $G) {
+	for item in value { tuckG_0_drop(item) }
+	delete(value)
+}
+tuckG_3_reset :: proc(value: ^$G) { tuckG_3_drop(value^); value^ = {} }
+
+
+tuckG_2_copy :: proc(value: $G) -> G {
+	out := value
+	out.operand = tuckG_3_copy(value.operand)
+	return out
+}
+tuckG_2_drop :: proc(value: $G) {
+	tuckG_3_drop(value.operand)
+}
+tuckG_2_reset :: proc(value: ^$G) { tuckG_2_drop(value^); value^ = {} }
+
+
+tuckG_4_copy :: proc(value: $G) -> G {
+	out := value
+	out.left = tuckG_3_copy(value.left)
+	out.right = tuckG_3_copy(value.right)
+	return out
+}
+tuckG_4_drop :: proc(value: $G) {
+	tuckG_3_drop(value.left)
+	tuckG_3_drop(value.right)
+}
+tuckG_4_reset :: proc(value: ^$G) { tuckG_4_drop(value^); value^ = {} }
+
+
+tuckG_0_copy :: proc(value: $G) -> G {
+	out: G
+	switch payload in value {
+	case tuckˑtypeˑExpr_Num: out = tuckG_1_copy(payload)
+	case tuckˑtypeˑExpr_Neg: out = tuckG_2_copy(payload)
+	case tuckˑtypeˑExpr_Add: out = tuckG_4_copy(payload)
+	}
+	return out
+}
+tuckG_0_drop :: proc(value: $G) {
+	switch payload in value {
+	case tuckˑtypeˑExpr_Num: tuckG_1_drop(payload)
+	case tuckˑtypeˑExpr_Neg: tuckG_2_drop(payload)
+	case tuckˑtypeˑExpr_Add: tuckG_4_drop(payload)
+	}
+}
+tuckG_0_reset :: proc(value: ^$G) { tuckG_0_drop(value^); value^ = {} }
+
+
 tuckˑtypeˑExpr_Num :: struct {
 	value: int,
 }
@@ -57,9 +121,12 @@ tuckˑtypeˑExpr_eq :: proc(a, b: tuckˑtypeˑExpr) -> bool {
 tuckˑfnˑeval :: proc (e: tuckˑtypeˑExpr) -> int {
   switch v in e
   {
-  case tuckˑtypeˑExpr_Num: return v.value;
-  case tuckˑtypeˑExpr_Neg: return (0 - tuckˑfnˑeval(rt.tuckAt(v.operand, 0)));
-  case tuckˑtypeˑExpr_Add: return (tuckˑfnˑeval(rt.tuckAt(v.left, 0)) + tuckˑfnˑeval(rt.tuckAt(v.right, 0)));
+  case tuckˑtypeˑExpr_Num:
+      return v.value
+  case tuckˑtypeˑExpr_Neg:
+      return (0 - tuckˑfnˑeval(rt.tuckAt(v.operand, 0)))
+  case tuckˑtypeˑExpr_Add:
+      return (tuckˑfnˑeval(rt.tuckAt(v.left, 0)) + tuckˑfnˑeval(rt.tuckAt(v.right, 0)))
   }
   return {}
 }
@@ -67,8 +134,10 @@ tuckˑfnˑeval :: proc (e: tuckˑtypeˑExpr) -> int {
 tuckˑfnˑdepth :: proc (e: tuckˑtypeˑExpr) -> int {
   switch v in e
   {
-  case tuckˑtypeˑExpr_Num: return 1;
-  case tuckˑtypeˑExpr_Neg: return (1 + tuckˑfnˑdepth(rt.tuckAt(v.operand, 0)));
+  case tuckˑtypeˑExpr_Num:
+      return 1
+  case tuckˑtypeˑExpr_Neg:
+      return (1 + tuckˑfnˑdepth(rt.tuckAt(v.operand, 0)))
   case tuckˑtypeˑExpr_Add:
       tuckˑvˑl := tuckˑfnˑdepth(rt.tuckAt(v.left, 0))
       tuckˑvˑr := tuckˑfnˑdepth(rt.tuckAt(v.right, 0))
@@ -84,8 +153,9 @@ tuckˑfnˑmain :: proc () -> int {
   tuckˑvˑthree: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Num{value = 3}
   tuckˑvˑfour: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Num{value = 4}
   tuckˑvˑsum: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Add{left = [dynamic]tuckˑtypeˑExpr{tuckˑvˑthree}, right = [dynamic]tuckˑtypeˑExpr{tuckˑvˑfour}}
-  tuckˑvˑneg: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Neg{operand = [dynamic]tuckˑtypeˑExpr{tuckˑvˑsum}}
+  tuckˑvˑneg: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Neg{operand = [dynamic]tuckˑtypeˑExpr{tuckG_0_copy(tuckˑtypeˑExpr(tuckˑvˑsum))}}
   tuckˑvˑwhole: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Add{left = [dynamic]tuckˑtypeˑExpr{tuckˑvˑsum}, right = [dynamic]tuckˑtypeˑExpr{tuckˑvˑneg}}
+  defer tuckG_0_drop(tuckˑvˑwhole)
   return ((tuckˑfnˑeval(tuckˑvˑwhole) + tuckˑfnˑdepth(tuckˑvˑwhole)) - 4)
 }
 

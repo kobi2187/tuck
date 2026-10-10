@@ -19,7 +19,7 @@ TRec_status!(long) tuckˑfnˑfetch(T)(T payload) {
 
 
 void tuckˑfnˑmain() {
-    TRec_url_timeout!(string, long) tuckˑvˑconfig = TRec_url_timeout!(string, long)(url: "https://api.example.com", timeout: 100L);
+    TRec_url_timeout!(string, long) tuckˑvˑconfig = TRec_url_timeout!(string, long)(url: rt.tuckCopyG("https://api.example.com"), timeout: 100L);
     TRec_status!(long) tuckˑvˑresult = tuckˑfnˑfetch(tuckˑvˑconfig);
     return;
 }

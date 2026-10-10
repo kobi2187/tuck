@@ -1,0 +1,4 @@
+fn main() -> int:
+  let xs = [1, 2]
+  let filled = [xs; 2]
+  return filled[0].len + filled[1].len + xs.len

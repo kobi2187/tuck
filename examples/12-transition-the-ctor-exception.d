@@ -45,6 +45,21 @@ struct tuckˑtypeˑPlayerState {
         case tuckˑtypeˑPlayerStateKind.Ready: return tuckˑvariantˑready == o.tuckˑvariantˑready;
         }
     }
+    tuckˑtypeˑPlayerState tuckCopyOwned() {
+        auto outValue = this;
+        final switch (kind) {
+        case tuckˑtypeˑPlayerStateKind.Unloaded:
+            outValue.tuckˑvariantˑunloaded = rt.tuckCopyG(tuckˑvariantˑunloaded);
+            break;
+        case tuckˑtypeˑPlayerStateKind.Loading:
+            outValue.tuckˑvariantˑloading = rt.tuckCopyG(tuckˑvariantˑloading);
+            break;
+        case tuckˑtypeˑPlayerStateKind.Ready:
+            outValue.tuckˑvariantˑready = rt.tuckCopyG(tuckˑvariantˑready);
+            break;
+        }
+        return outValue;
+    }
 }
 
 enum tuckˑtypeˑMqttSessionKind { Disconnected, Connecting, Connected, Subscribing }
@@ -80,11 +95,28 @@ struct tuckˑtypeˑMqttSession {
         case tuckˑtypeˑMqttSessionKind.Subscribing: return tuckˑvariantˑsubscribing == o.tuckˑvariantˑsubscribing;
         }
     }
+    tuckˑtypeˑMqttSession tuckCopyOwned() {
+        auto outValue = this;
+        final switch (kind) {
+        case tuckˑtypeˑMqttSessionKind.Disconnected:
+            break;
+        case tuckˑtypeˑMqttSessionKind.Connecting:
+            outValue.tuckˑvariantˑconnecting = rt.tuckCopyG(tuckˑvariantˑconnecting);
+            break;
+        case tuckˑtypeˑMqttSessionKind.Connected:
+            outValue.tuckˑvariantˑconnected = rt.tuckCopyG(tuckˑvariantˑconnected);
+            break;
+        case tuckˑtypeˑMqttSessionKind.Subscribing:
+            outValue.tuckˑvariantˑsubscribing = rt.tuckCopyG(tuckˑvariantˑsubscribing);
+            break;
+        }
+        return outValue;
+    }
 }
 
 void tuckˑfnˑmain() {
-    tuckˑtypeˑConfig tuckˑvˑconfig = tuckˑtypeˑConfig(url: "https://example.com");
-    tuckˑtypeˑFeed tuckˑvˑfeed = tuckˑtypeˑFeed(title: "Deep Dive");
+    tuckˑtypeˑConfig tuckˑvˑconfig = tuckˑtypeˑConfig(url: rt.tuckCopyG("https://example.com"));
+    tuckˑtypeˑFeed tuckˑvˑfeed = tuckˑtypeˑFeed(title: rt.tuckCopyG("Deep Dive"));
     tuckˑtypeˑPlayerState tuckˑvˑp = tuckˑtypeˑPlayerState(kind: tuckˑtypeˑPlayerStateKind.Ready, tuckˑvariantˑready: tuckˑtypeˑPlayerState_Ready(config: tuckˑvˑconfig, feed: tuckˑvˑfeed));
     tuckˑtypeˑMqttSession tuckˑvˑfresh = tuckˑtypeˑMqttSession(tuckˑtypeˑMqttSessionKind.Disconnected);
     tuckˑtypeˑSocket tuckˑvˑsocket = tuckˑtypeˑSocket(fd: 3L);

@@ -80,10 +80,14 @@ tuckˑtypeˑDemand :: enum { quiet, northSouth, eastWest, both }
 tuckˑdecisionˑnextPhase :: proc (current: tuckˑtypeˑPhase, demand: tuckˑtypeˑDemand, preempt: bool) -> tuckˑtypeˑPhase {
   switch ((((int(current) * 8) + (int(demand) * 2)) + (preempt ? 1 : 0)))
   {
-  case 0, 2, 24, 25, 26, 27, 28, 29, 30, 31: return tuckˑtypeˑPhase.NorthSouth;
-  case 1, 3, 4, 5, 6, 7: return tuckˑtypeˑPhase.NsClearing;
-  case 8, 9, 10, 11, 12, 13, 14, 15, 16, 20: return tuckˑtypeˑPhase.EastWest;
-  case: return tuckˑtypeˑPhase.EwClearing;
+  case 0, 2, 24, 25, 26, 27, 28, 29, 30, 31:
+      return tuckˑtypeˑPhase.NorthSouth
+  case 1, 3, 4, 5, 6, 7:
+      return tuckˑtypeˑPhase.NsClearing
+  case 8, 9, 10, 11, 12, 13, 14, 15, 16, 20:
+      return tuckˑtypeˑPhase.EastWest
+  case:
+      return tuckˑtypeˑPhase.EwClearing
   }
   return {}
 }
@@ -191,10 +195,14 @@ tuckˑfnˑlongEnough :: proc (span: $T, atLeast: int) -> bool {
 tuckˑfnˑphaseIndex :: proc (p: tuckˑtypeˑPhase) -> int {
   switch (p)
   {
-  case tuckˑtypeˑPhase.NorthSouth: return 0;
-  case tuckˑtypeˑPhase.NsClearing: return 1;
-  case tuckˑtypeˑPhase.EastWest: return 2;
-  case tuckˑtypeˑPhase.EwClearing: return 3;
+  case tuckˑtypeˑPhase.NorthSouth:
+      return 0
+  case tuckˑtypeˑPhase.NsClearing:
+      return 1
+  case tuckˑtypeˑPhase.EastWest:
+      return 2
+  case tuckˑtypeˑPhase.EwClearing:
+      return 3
   }
   return {}
 }
@@ -213,10 +221,14 @@ tuckˑfnˑpoll :: proc (d: Detector) -> tuckˑtypeˑDemand {
 })(d)
   switch (tuckˑvˑbits)
   {
-  case 1: return tuckˑtypeˑDemand.northSouth;
-  case 2: return tuckˑtypeˑDemand.eastWest;
-  case 3: return tuckˑtypeˑDemand.both;
-  case: return tuckˑtypeˑDemand.quiet;
+  case 1:
+      return tuckˑtypeˑDemand.northSouth
+  case 2:
+      return tuckˑtypeˑDemand.eastWest
+  case 3:
+      return tuckˑtypeˑDemand.both
+  case:
+      return tuckˑtypeˑDemand.quiet
   }
   return {}
 }

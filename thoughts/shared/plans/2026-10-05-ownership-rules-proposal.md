@@ -522,7 +522,20 @@ examples byte-identical, or explains each line that changes.
    - A call printed in a node's place had no type; it now has the node's
      (`typeResolvedCalls`).
 
-   Next: glue (G), then the switch.
+   Next at that checkpoint: glue (G), then the switch.
+
+### Default integration, 2026-10-10
+
+Implemented on `docs/verified-feature-status-2026-10-10`: the common lowered AST
+is elaborated and independently verified **before** backend cloning. Consuming
+parameters and explicit copy/move/typed-drop/reset operations are shared.
+Nim uses native copy/destruction, Odin emits recursive Glue, and D uses recursive
+copy plus native GC. Legacy twins are absent from default emission.
+
+A39 and A41-A45 passed their default-mode regression probes and are now fixed.
+The detailed scope, runtime contracts, targeted evidence and final full-gate
+result are recorded in `2026-10-10-rule-g-status.md`. Collector replacement,
+selectable freeing policy and complexity-metric cleanup remain deferred.
 4. **Switch backend by backend**, Odin first, since it is where frees exist:
    1. frees (D, M), retiring `analysis_ownership`, `ownership_escape`,
       `ownership_str` and `buffer_check`;

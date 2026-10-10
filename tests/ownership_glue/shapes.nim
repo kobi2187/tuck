@@ -76,3 +76,10 @@ m.decls.add Decl(kind: dkType, name: "Cycle", typeBody: named("Cycle"))
 doAssert not glueFor(m, named("Cycle")).owns
 doAssert not glueFor(m, named("int")).owns
 echo "OK: rule G type graph"
+
+let slots = owningSlots(m, app("Nested", named("int")))
+doAssert slots.len == 1 and slots[0].path == "inside.items"
+doAssert slots[0].typ.kind == tkApp and slots[0].typ.args[0].name == "int"
+let stringSlots = owningSlots(m, record(field("label", named("str")), field("xs", ints)))
+doAssert stringSlots.len == 2
+doAssert stringSlots[0].path == "label" and stringSlots[1].path == "xs"

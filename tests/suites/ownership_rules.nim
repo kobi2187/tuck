@@ -21,30 +21,30 @@ import ../harness
 proc usesDump(t: var T): int =
   ## The classifier's dump for the current snippet, through the Odin prepare
   ## (the tree the elaborator will run over).
-  t.needCmd(@["env", "TUCK_DEBUG_OWN=uses", "./tuck", "c",
+  t.needCmd(@["env", "TUCK_OWN=legacy", "TUCK_DEBUG_OWN=uses", "./tuck", "c",
               t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "out"], vEmit)
 
 proc paramsDump(t: var T): int =
   ## Rule P beside today's Nim `sink`, for the current snippet.
-  t.needCmd(@["env", "TUCK_DEBUG_OWN=params", "./tuck", "c",
+  t.needCmd(@["env", "TUCK_OWN=legacy", "TUCK_DEBUG_OWN=params", "./tuck", "c",
               t.curDir / "t.tuck", "-o:" & t.curDir / "outp"], vEmit)
 
 proc dropsDump(t: var T): int =
   ## Rules D and M beside Odin's frees (the Stage C nodes), for the current
   ## snippet.
-  t.needCmd(@["env", "TUCK_DEBUG_OWN=drops", "./tuck", "c",
+  t.needCmd(@["env", "TUCK_OWN=legacy", "TUCK_DEBUG_OWN=drops", "./tuck", "c",
               t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "outd"], vEmit)
 
 proc copiesDump(t: var T): int =
   ## Rule S beside the copies Odin makes (Stage C's `exkCopy`), for the
   ## current snippet.
-  t.needCmd(@["env", "TUCK_DEBUG_OWN=copies", "./tuck", "c",
+  t.needCmd(@["env", "TUCK_OWN=legacy", "TUCK_DEBUG_OWN=copies", "./tuck", "c",
               t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "outc"], vEmit)
 
 proc verifyDump(t: var T): int =
   ## Rule V over the current snippet's Odin tree (the Stage C nodes today's
   ## passes wrote).
-  t.needCmd(@["env", "TUCK_DEBUG_OWN=verify", "./tuck", "c",
+  t.needCmd(@["env", "TUCK_OWN=legacy", "TUCK_DEBUG_OWN=verify", "./tuck", "c",
               t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "outv"], vEmit)
 
 proc rulesVerifyDump(t: var T): int =

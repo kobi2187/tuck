@@ -62,6 +62,7 @@ fn main() -> int:
 """
   t.okCheck "a real field on a loop variable still checks"
   t.frozen  "and the loop still computes"
+  t.hostRuns "borrowed record list still computes on all backends", 42
 
   # The index of `for idx, item in xs:` is an int, and the element keeps its type
   t.src """
@@ -78,6 +79,7 @@ fn main() -> int:
 """
   t.okCheck "indexed form binds both"
   t.frozen  "index is an int, element keeps its type"
+  t.hostRuns "indexed borrowed record list runs on all backends", 42
 
   # Ranges bind an int, not an element type — must not regress
   t.src """
@@ -106,6 +108,7 @@ fn main() -> int:
 """
   t.okCheck "nested loops keep separate element types"
   t.frozen  "and compute correctly"
+  t.hostRuns "nested borrowed record lists run on all backends", 42
 
   # --- the CONDITIONAL loop ------------------------------------------------
   # `for <cond>:` is Tuck's while, and it had never been built on Odin —

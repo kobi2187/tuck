@@ -32,6 +32,21 @@ struct tuckˑtypeˑExpr {
         case tuckˑtypeˑExprKind.Add: return tuckˑvariantˑadd == o.tuckˑvariantˑadd;
         }
     }
+    tuckˑtypeˑExpr tuckCopyOwned() {
+        auto outValue = this;
+        final switch (kind) {
+        case tuckˑtypeˑExprKind.Num:
+            outValue.tuckˑvariantˑnum = rt.tuckCopyG(tuckˑvariantˑnum);
+            break;
+        case tuckˑtypeˑExprKind.Neg:
+            outValue.tuckˑvariantˑneg = rt.tuckCopyG(tuckˑvariantˑneg);
+            break;
+        case tuckˑtypeˑExprKind.Add:
+            outValue.tuckˑvariantˑadd = rt.tuckCopyG(tuckˑvariantˑadd);
+            break;
+        }
+        return outValue;
+    }
 }
 
 long tuckˑfnˑeval(tuckˑtypeˑExpr e) {
@@ -67,7 +82,7 @@ long tuckˑfnˑmain() {
     tuckˑtypeˑExpr tuckˑvˑthree = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Num, tuckˑvariantˑnum: tuckˑtypeˑExpr_Num(value: 3L));
     tuckˑtypeˑExpr tuckˑvˑfour = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Num, tuckˑvariantˑnum: tuckˑtypeˑExpr_Num(value: 4L));
     tuckˑtypeˑExpr tuckˑvˑsum = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Add, tuckˑvariantˑadd: tuckˑtypeˑExpr_Add(left: [tuckˑvˑthree], right: [tuckˑvˑfour]));
-    tuckˑtypeˑExpr tuckˑvˑneg = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Neg, tuckˑvariantˑneg: tuckˑtypeˑExpr_Neg(operand: [tuckˑvˑsum]));
+    tuckˑtypeˑExpr tuckˑvˑneg = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Neg, tuckˑvariantˑneg: tuckˑtypeˑExpr_Neg(operand: [rt.tuckCopyG(tuckˑvˑsum)]));
     tuckˑtypeˑExpr tuckˑvˑwhole = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Add, tuckˑvariantˑadd: tuckˑtypeˑExpr_Add(left: [tuckˑvˑsum], right: [tuckˑvˑneg]));
     return ((tuckˑfnˑeval(tuckˑvˑwhole) + tuckˑfnˑdepth(tuckˑvˑwhole)) - 4L);
 }

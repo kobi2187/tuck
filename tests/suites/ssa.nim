@@ -419,8 +419,8 @@ fn main() -> int:
   return b.xs[0] + b.n
 """
   t.okCheck "an actor field handed to a threading fn checks"
-  t.emitsOdin "...and reaches the copying wrapper, not the twin",
-              r"tuckˑfnˑgrow\(self\.st\)"
+  t.emitsOdin "...and the common caller copies borrowed singleton state",
+              r"tuckˑfnˑgrow\(tuckG_\d+_copy\(self\.st\)\)"
   # 7 + 0. A twin that took the field destructively would free it, and the
   # read after the wait would answer with whatever was left.
   t.hostRuns("...so the actor's own buffer survives", 7)
@@ -493,4 +493,3 @@ fn main() -> int:
       t.no "a read whose value flows into a join read later is not final",
            "rc=" & $rc & ", " & $n & " final read(s) of b.lo, want 1: " &
            outp.strip.splitLines()[^1]
-

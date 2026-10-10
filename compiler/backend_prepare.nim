@@ -3,7 +3,22 @@
 # GETTING A TREE READY FOR ONE BACKEND — the stage between checking and
 # emitting, in one place.
 #
-# Nine steps, always the same nine, always in this order:
+# DEFAULT PIPELINE (common ownership; TUCK_OWN=legacy retains the historical
+# nine-step differential path documented below):
+#
+#   checked common AST -> representation lowering -> resolved call types
+#   -> consuming conventions -> explicit copy/move/drop/reset operations
+#   -> independent ownership verification -> backend deepCopy -> emission.
+#
+# Ownership MUST precede backend cloning. Resolution holds references to
+# common declarations and resolved operands, not merely their ids. Deciding
+# consumption on a clone made those references point at stale bodies.
+# Lowering MUST precede ownership: recursive edges and composition have
+# become the shapes that own storage. Backends then adapt paths and native
+# string growth, and implement the operations with their existing runtime
+# policies (Nim native destruction, Odin recursive glue, D deep copy + GC).
+#
+# HISTORICAL LEGACY PIPELINE:
 #
 #   1. CLONE. Each backend lowers its own deepCopy, because lowering and the
 #      emitters both mutate the tree in place. Sharing one would hand the
@@ -51,11 +66,8 @@
 #      (`ownership_check`, TUCK_DEBUG_OWN=verify) then checks the Odin tree
 #      these nodes make.
 #
-# WHY NOT BEFORE THE CLONE (ROADMAP M3.1 as first written). Two of
-# ownership's inputs are made by lowering, so it cannot precede lowering —
-# and it need not: `lowerModule` takes no backend, and a build targets one
-# backend, so "once per build, before emission" is the whole of what "once,
-# for every backend" was asking for.
+# The legacy clone-first boundary below is retained only for differential
+# tests. It is not the default architecture.
 #
 # WHY THIS IS A MODULE. It was written out longhand FOUR TIMES in `tuck.nim`
 # — once per backend, plus once more for the stage-dump path — and the four
@@ -75,6 +87,7 @@ import lowering
 import lowering_seqcopy
 import lowering_strtemps
 import lowering_field_order
+import lowering_records
 import analysis_ownership
 import twin_calls
 import call_args
@@ -202,6 +215,36 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     "backend_prepare: a second backend prepared in one process would read " &
     "the first one's copy, ownership and twin decisions (keyed by node id)"
   preparedOnce = true
+  if RulesMode:
+    # Semantic ownership belongs to the COMMON LOWERED AST. Resolution's
+    # declaration/operand references still point here, not into a deepCopy.
+    var real: Table[string, Module]
+    for lm in prog[0 ..< prog.high]: real[lm.name] = lm.m
+    let t0 = vBegin(psLowering)
+    for lm in prog:
+      lowerModule(semLayer, lm.m, real)
+      lowerRecordCombinators(semLayer, lm.m)
+      lowerRecordArguments(semLayer, lm.m, real)
+      orderConstructionFields(semLayer, lm.m)
+      fillIds(lm.m)
+      assertCallsComplete(semLayer, lm.m, real)
+      typeResolvedCalls(semLayer, lm.m)
+      materializeAppends(semLayer, lm.m, strGrows = false)
+    for lm in prog:
+      writeRules(semLayer, lm.m)
+      verifyTree(semLayer, lm.m)
+    vEnd(psLowering, t0)
+    # Only target representation/path adaptation follows semantic elaboration.
+    for lm in prog:
+      result.mods.add LoadedModule(name: lm.name, path: lm.path, m: deepCopy(lm.m))
+    for lm in result.mods[0 ..< result.mods.high]: result.real[lm.name] = lm.m
+    for lm in result.mods:
+      rebaseImplPaths(lm, backend.name, outDir)
+      if backend != bkOdin:
+        # Representation-only specialization: native strings can grow.
+        # Copy/sink/drop decisions are already on the common tree.
+        materializeAppends(semLayer, lm.m, strGrows = true)
+    return
   for lm in prog:                                                   # 1. clone
     result.mods.add LoadedModule(name: lm.name, path: lm.path,
                                  m: deepCopy(lm.m))

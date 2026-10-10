@@ -1,0 +1,12 @@
+type Bag:
+  rows: Seq[Seq[str]]
+slab Bags = Bag
+
+fn main() -> int:
+  let original = {rows: [["one", "two"]]} Bag
+  let cell = Bags.new {rows: original.rows}
+  let snapshot = Bags.get {r: cell}
+  let replacement = {rows: [["replacement"]]} Bag
+  Bags.set {r: cell, value: replacement}
+  Bags.free {r: cell}
+  return snapshot.rows[0].len + original.rows[0].len

@@ -95,13 +95,17 @@ proc raise_tuckˑregistryˑIntersection_Preempted*(source: uint8) =
 proc tuckˑdecisionˑnextPhase*(current: tuckˑtypeˑPhase, demand: tuckˑtypeˑDemand, preempt: bool): tuckˑtypeˑPhase =
   (case (((ord(current) * 8) + (ord(demand) * 2)) + ord(preempt))
   of 0, 2, 24, 25, 26, 27, 28, 29, 30, 31:
-    return tuckˑtypeˑPhase.NorthSouth
+    if true:
+      return tuckˑtypeˑPhase.NorthSouth
   of 1, 3, 4, 5, 6, 7:
-    return tuckˑtypeˑPhase.NsClearing
+    if true:
+      return tuckˑtypeˑPhase.NsClearing
   of 8, 9, 10, 11, 12, 13, 14, 15, 16, 20:
-    return tuckˑtypeˑPhase.EastWest
+    if true:
+      return tuckˑtypeˑPhase.EastWest
   else:
-    return tuckˑtypeˑPhase.EwClearing)
+    if true:
+      return tuckˑtypeˑPhase.EwClearing)
 
 proc tuckˑobjectˑLoopDetectorˑhealthy*(self: tuckˑobjectˑLoopDetector): bool =
   return true
@@ -171,13 +175,17 @@ proc tuckˑfnˑlongEnough*[T](span: T, atLeast: int): bool =
 proc tuckˑfnˑphaseIndex*(p: tuckˑtypeˑPhase): int =
   (case p
   of NorthSouth:
-    return 0
+    if true:
+      return 0
   of NsClearing:
-    return 1
+    if true:
+      return 1
   of EastWest:
-    return 2
+    if true:
+      return 2
   of EwClearing:
-    return 3)
+    if true:
+      return 3)
 
 proc tuckˑfnˑpoll*(d: Detector): tuckˑtypeˑDemand =
   var tuckˑvˑbits = (block:
@@ -190,13 +198,17 @@ proc tuckˑfnˑpoll*(d: Detector): tuckˑtypeˑDemand =
       tuckˑobjectˑLoopDetectorˑreads(tmp))
   (case tuckˑvˑbits
   of 1:
-    return tuckˑtypeˑDemand.northSouth
+    if true:
+      return tuckˑtypeˑDemand.northSouth
   of 2:
-    return tuckˑtypeˑDemand.eastWest
+    if true:
+      return tuckˑtypeˑDemand.eastWest
   of 3:
-    return tuckˑtypeˑDemand.both
+    if true:
+      return tuckˑtypeˑDemand.both
   else:
-    return tuckˑtypeˑDemand.quiet)
+    if true:
+      return tuckˑtypeˑDemand.quiet)
 
 proc tuckˑfnˑsettled*(): bool =
   return (tuckˑactorˑSignalsSingleton.cycles > 2)

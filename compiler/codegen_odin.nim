@@ -18,11 +18,13 @@ import codegen_common
 import twin_calls  # which calls take the moved twin — decided in prepare
 from twin_shape import seqFieldNames
 from ast_ops import pathOf
+from ownership_elab import RulesMode
 
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
 export odinLibSpec
 import ./codegen_odin_ctx
+import ownership_glue_odin, ownership_glue
 
 # Type emission, the ctx type, and the decl-shape fast lookups now live in
 # codegen_odin_ctx.nim, imported above.
@@ -744,6 +746,8 @@ proc odinSlabOwns*(ctx: OdinCodegenCtx, d: Decl): seq[string] =
   ## the slab's own module, so its declaration and every use agree.
   let origin = declOrigin(ctx.module, ctx.realModules, d.name, {dkSlab})
   let home = if origin == "": ctx.module else: ctx.realModules[origin]
+  if RulesMode:
+    return if ownsStorage(home, d.slabElem): @[""] else: @[]
   if seqElem(d.slabElem) != nil: @[""]
   else: seqFieldNames(ctx.res, home, d.slabElem)
 
@@ -1190,7 +1194,9 @@ proc genDrop(ctx: var OdinCodegenCtx, e: Expr): string =
   ## Release what a place owns (ownership_nodes decided which, and where).
   ## The place prints as its path: a local or parameter is never an owner
   ## field or a register, so there is nothing for a lookup to add.
-  "delete(" & pathOf(e.dropped) & ")"
+  if e.droppedType != nil:
+    ctx.odinGlue(e.droppedType).drop & "(" & ctx.genOdinExpr(e.dropped) & ")"
+  else: "delete(" & pathOf(e.dropped) & ")"
 
 proc genDefer(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## `defer:` (spec §7.4). Odin has `defer` natively, with the same scope-exit
@@ -1276,6 +1282,12 @@ proc genOdinCopy(ctx: var OdinCodegenCtx, e: Expr): string =
   case e.copyKind
   of cpSeq: "rt.tuckSeqCopy(" & inner & ")"
   of cpStatic: "rt.tuckStrOwned(" & inner & ")"
+  of cpValue:
+    let typ = ctx.res.typeFor(e)
+    let value = if glueFor(ctx.module, typ).kind == gSum:
+                  ctx.odinType(typ) & "(" & inner & ")"
+                else: inner
+    ctx.odinGlue(typ).copy & "(" & value & ")"
   of cpFields:
     raiseAssert "odin: a record's field copies are statements after its " &
                 "binding (genAssign prints them), never an expression"
@@ -1347,6 +1359,10 @@ proc dropThenStore(ctx: var OdinCodegenCtx, e: Expr, tgt, valStr: string): strin
   let next = ctx.freshName("tuckNext")
   let ind = "  ".repeat(ctx.indent)
   result = next & " := " & valStr & "\n" & ind
+  if RulesMode:
+    let typ = ctx.res.typeFor(e.target)
+    result.add ctx.odinGlue(typ).drop & "(" & tgt & ")\n" & ind & tgt & " = " & next
+    return
   # A record owns its Seq fields, so dropping one drops each of them.
   let fields = seqFieldNames(ctx.res, ctx.module, ctx.res.typeFor(e.target))
   if fields.len == 0: result.add "delete(" & tgt & ")\n" & ind
@@ -1394,6 +1410,9 @@ proc genAppend(ctx: var OdinCodegenCtx, e: Expr): string =
     ctx.genOdinExpr(e.appendValue) & ")"
 
 proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
+  if e.assignVal == nil and e.isDecl and e.declType != nil:
+    ctx.definedVars.incl e.target.name
+    return e.target.name & ": " & ctx.odinType(e.declType)
   ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
   if ctx.isTaskArgsBind(e):
     return ctx.genOdinTaskArgsBind(e, "  ".repeat(ctx.indent))
@@ -1501,7 +1520,15 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkStruct: ctx.genStructLit(e)
   of exkList: ctx.genList(e)
   of exkFill: ctx.genFill(e)
-  of exkBracket, exkBracketAssign: ctx.genCallResolved(e)
+  of exkBracket: ctx.genCallResolved(e)
+  of exkBracketAssign:
+    if e.replacedType != nil:
+      let target = e.brTarget
+      let drop = ctx.odinGlue(e.replacedType).drop
+      "rt.tuckSetAtOwned(" & ctx.genOdinExpr(target.brReceiver) & "[:], " &
+        ctx.genOdinExpr(target.brArgs[0]) & ", " & ctx.genOdinExpr(e.brValue) &
+        ", " & drop & ")"
+    else: ctx.genCallResolved(e)
   of exkFor: ctx.genFor(e, ind)
   of exkWhile: ctx.genWhile(e, ind)
   of exkBreak: "break"
@@ -1513,7 +1540,9 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkAssign: ctx.genAssign(e)
   of exkAppend: ctx.genAppend(e)
   of exkCopy: ctx.genOdinCopy(e)
+  of exkMove: ctx.genOdinExpr(e.movedValue)
   of exkDrop: ctx.genDrop(e)
+  of exkReset: ctx.genOdinExpr(e.resetPlace) & " = {}"
   of exkMatch: (if e.subject != nil: ctx.genMatchExpr(e) else: "")
   of exkReturn: ctx.genReturnStmt(e)
   of exkRaise: ctx.genRaise(e)

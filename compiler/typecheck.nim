@@ -5053,10 +5053,12 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # Built after the checker (ownership_nodes), from an assignment already
     # checked: a statement, typed as one.
     tc.namedType("void", e.span)
+  of exkMove:
+    semLayer.typeFor(e.movedValue)
   of exkCopy:
     # Built after the checker (ownership_nodes): a copy is its value's type.
     semLayer.typeFor(e.copied)
-  of exkDrop:
+  of exkDrop, exkReset:
     # Built after the checker (ownership_nodes): a statement.
     tc.namedType("void", e.span)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:

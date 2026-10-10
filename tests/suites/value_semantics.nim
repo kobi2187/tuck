@@ -517,9 +517,10 @@ fn main() -> int:
   return 0
 """
   t.okCheck "a threaded-container fn checks"
-  t.emitsD "D emits the moved twin", r"tuckˑfnˑaddTo_moved\(tuckˑtypeˑBag b"
-  t.emitsD "...and the wrapper copies before delegating", r"b = rt.tuckCopyG\(b\)"
-  t.emitsOdin "Odin emits it too", r"tuckˑfnˑaddTo_moved :: proc"
+  t.omitsD "D has one consuming implementation, not a moved twin", r"addTo_moved"
+  t.emitsD "D copies live arguments at the common sink", r"rt.tuckCopyG\(tuckˑvˑbag\)"
+  t.omitsOdin "Odin has no legacy wrapper/twin split", r"addTo_moved"
+  t.emitsOdin "Odin prints the common live-argument copy", r"tuckG_[0-9]+_copy\(tuckˑvˑbag\)"
   t.omits "Nim needs no twin — it has sink", r"_moved"
   t.hostBuilds "...and every backend builds them"
   t.runs "a live source still copies; only the self-assign moves", 0
@@ -550,8 +551,8 @@ fn main() -> int:
   return 0
 """
   t.okCheck "the builder form checks"
-  t.emitsD "D routes the builder step to the twin", r"tuckˑfnˑaddTo_moved\("
-  t.emitsOdin "so does Odin", r"tuckˑfnˑaddTo_moved\("
+  t.emitsD "D routes the builder step to the consuming implementation", r"tuckˑfnˑaddTo\("
+  t.emitsOdin "so does Odin", r"tuckˑfnˑaddTo\("
   t.hostBuilds "...and every backend builds it"
   t.runs "...and the chain still appends each step", 0
 
@@ -841,12 +842,12 @@ fn main() -> int:
   return out.xs[1] + out.xs[2] + out.n
 """
   t.okCheck "a chain of threading calls checks"
-  t.emitsOdin "a dead local reaches the twin", r"tuckˑvˑb := tuckˑfnˑstep_moved\(a\)"
+  t.emitsOdin "a dead local transfers without a copy", r"tuckˑvˑb := tuckˑfnˑstep\(a\)"
   # RETURN POSITION, which is the one no emitter used to ask about: the
   # assignment emitters caught their own two shapes and nothing caught this.
   t.emitsOdin "...and so does one in return position",
-              r"return tuckˑfnˑstep_moved\(tuckˑvˑb\)"
-  t.emitsD "the same on D", r"tuckˑfnˑstep_moved\(tuckˑvˑb\)"
+              r"return tuckˑfnˑstep\(tuckˑvˑb\)"
+  t.emitsD "the same on D", r"tuckˑfnˑstep\(tuckˑvˑb\)"
   # 7,1,2 and n=3.
   t.hostRuns("...and the chain still computes what it did", 6)
 

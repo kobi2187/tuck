@@ -1,0 +1,17 @@
+type Bag:
+  rows: Seq[Seq[str]]
+pool Bags = Bag [count: 1]
+
+fn main() -> int:
+  let handle = Bags.acquire
+  if not handle.ok:
+    return 9
+  let original = {rows: [["one", "two"]]} Bag
+  Bags.write {h: handle.value, value: original}
+  let snapshot = Bags.read {h: handle.value}
+  let replacement = {rows: [["replacement"]]} Bag
+  Bags.write {h: handle.value, value: replacement}
+  Bags.release {h: handle.value}
+  if snapshot.ok:
+    return snapshot.value.rows[0].len
+  return 8

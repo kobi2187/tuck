@@ -189,7 +189,7 @@ fn main() -> int:
   # tuckConcat here"; `~=` satisfies it and is also amortised, where
   # `s = (s ~ v)` rebuilt the whole string every time. The non-self form
   # still emits `~`, which `generics` pins from the other side.
-  t.emitsD "M2: string + is D's native append, no runtime call",
+  t.emitsD "M2: common string concat specializes to D's native append",
            r"tuckˑvˑs ~= ""cd"""
   t.emitsD "M2: len is D's native length, cast back to Tuck's signed int",
            r"cast\(long\) tuckˑvˑs\.length"

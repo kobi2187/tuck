@@ -1,0 +1,28 @@
+group Sortable:
+  fn compare({self: Self, other: Self}) -> Order
+
+type Order:
+  | Before
+  | Same
+  | After
+
+type Box:
+  value: int
+
+fn compare({self: Box, other: Box}) -> Order:
+  if self.value < other.value: return Order.Before
+  if self.value > other.value: return Order.After
+  return Order.Same
+
+fn smallerOf[T: Sortable]({a: T, b: T}) -> T:
+  let c = {self: a, other: b} compare
+  match c:
+    Before: return a
+    Same: return a
+    After: return b
+
+fn main() -> int:
+  let a = {value: 2} Box
+  let b = {value: 4} Box
+  let c = {a: a, b: b} smallerOf
+  return c.value

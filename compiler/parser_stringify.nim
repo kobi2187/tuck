@@ -173,6 +173,8 @@ proc toString*(e: Expr): string =
   of exkDrop:
     # Prepare-built: a release of the storage a place owns.
     return "drop(" & e.dropped.toString() & ")"
+  of exkReset: return "reset(" & e.resetPlace.toString() & ")"
+  of exkMove: return "move(" & e.movedValue.toString() & ")"
   of exkIfaceCall:
     # Lowering-built: one arm per satisfying object, shown by name.
     var sats: seq[string]

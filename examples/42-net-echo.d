@@ -55,7 +55,8 @@ void sendPut_tuckˑactorˑResult(ref tuckˑactorˑResult self, long c) {
 void tuckˑtaskˑserve(long lfd) {
     rt.TuckResult!(net.TRec_net_fd!(long)) tuckˑvˑc = net.accept(lfd);
     if ((tuckˑvˑc.status == rt.TuckStatus.Ok)) {
-        net.recv(tuckˑvˑc.value.fd, 256L);
+        rt.TuckResult!(net.TRec_net_data!(string)) tuckOwnTmp1 = net.recv(tuckˑvˑc.value.fd, 256L);
+        tuckOwnTmp1;
         net.send(tuckˑvˑc.value.fd, "pong");
         net.close(tuckˑvˑc.value.fd);
     }

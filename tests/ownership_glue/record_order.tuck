@@ -1,0 +1,18 @@
+import console
+
+type Item:
+  title: str
+  done: bool
+  score: int
+
+fn first() -> int [io]:
+  {text: "first"} console::printLine
+  return 0
+
+fn make() -> Item [io]:
+  {text: "second"} console::printLine
+  return {title: "x", done: false, score: 1} Item
+
+fn main() -> int [io]:
+  let bundle = {n: first, item: make with {done: true}}
+  return bundle.n + bundle.item.score

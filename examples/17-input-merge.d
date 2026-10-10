@@ -26,11 +26,11 @@ string tuckˑfnˑdescribe(string title, long volume) {
 }
 
 string tuckˑfnˑheader(tuckˑtypeˑEpisode episode, long n) {
-    return episode.title;
+    return rt.tuckCopyG(episode.title);
 }
 
 string tuckˑfnˑplay(tuckˑtypeˑEpisode episode, tuckˑtypeˑPlayerPrefs prefs) {
-    TRec_title_duration_playSpeed_volume_speed!(string, uint, double, long, double) tuckˑvˑctx = TRec_title_duration_playSpeed_volume_speed!(string, uint, double, long, double)(title: episode.title, duration: episode.duration, playSpeed: episode.playSpeed, volume: prefs.volume, speed: prefs.speed);
+    TRec_title_duration_playSpeed_volume_speed!(string, uint, double, long, double) tuckˑvˑctx = TRec_title_duration_playSpeed_volume_speed!(string, uint, double, long, double)(title: episode.title, duration: cast(uint)(episode.duration), playSpeed: episode.playSpeed, volume: prefs.volume, speed: prefs.speed);
     return tuckˑfnˑdescribe(tuckˑvˑctx.title, tuckˑvˑctx.volume);
 }
 

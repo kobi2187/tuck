@@ -45,16 +45,14 @@
 # with `(some paths)` after the finding when no path reaching it was certain.
 # A finding about a drop or a leak is placed where the place was declared.
 #
-# NOT YET CHECKED, waiting on rule G:
-# - A `str` is checked only where it is dropped (a drop after a move, a
-#   double drop). On Odin a str is immutable, and freed only where today
-#   proves it heap, so an alias of one is harmless until one side drops it.
-#   Whether one nobody drops leaks (static or heap) is G's answer.
-# - What a record's non-Seq fields own, and a Seq's elements (glue; A39).
+# Rule G supplies owning slots, including strings and nested record paths.
+# Native allocator tests independently check recursive element/payload
+# traversal; this checker validates transfers and lifetimes at those slots.
 import os, tables, sets, strutils, sequtils
 import ast, ast_ops, ast_query
 import resolution
 import ownership_rules, ownership_elab
+import ownership_glue
 from ssa_ir import rootOf
 from twin_shape import ownsHeap, movedFnParam
 from twin_calls import callsTwin, threadedCall
@@ -117,8 +115,9 @@ proc keysOf(c: Check, path: string): seq[string] =
   if path == root:
     for s in c.slots[root]: result.add slotKey(root, s)
   else:
-    let s = path[root.len + 1 .. ^1].split('.')[0]
-    if s in c.slots[root]: result.add slotKey(root, s)
+    let path = path[root.len + 1 .. ^1]
+    for s in c.slots[root]:
+      if s == path or s.startsWith(path & "."): result.add slotKey(root, s)
 
 proc spanOf(c: Check, k: string): Span =
   ## Where the place a slot belongs to was declared.
@@ -144,7 +143,7 @@ proc sinks(c: var Check, pu: PlaceUse): bool =
   let t = c.res.typeFor(pu.read)
   ownsHeap(c.m, t) and
     (pu.use == uSink or
-     (pu.use == uArg and not (c.rules and isStr(t)) and c.consumed(pu.arg)))
+     (pu.use == uArg and c.consumed(pu.arg)))
 
 proc idOf(e: Expr): string = $e.id.uint32
 
@@ -184,7 +183,8 @@ proc sunkSlots(c: Check, pu: PlaceUse, copies: HashSet[string]): seq[string] =
 
 # --- events -------------------------------------------------------------------
 
-proc isStrSlot(c: Check, k: string): bool = k.split('\t')[0] in c.strs
+proc isStrSlot(c: Check, k: string): bool =
+  not c.rules and k.split('\t')[0] in c.strs
 
 proc read(c: var Check, k: string, at: Span) =
   ## A read: what it reads must not have been moved out or dropped.
@@ -205,7 +205,7 @@ proc isTemporary(c: Check, e: Expr): bool =
   ## element read is its container's, not a new value; a `str` waits on G.
   e != nil and e.kind in {exkCall, exkList, exkFill} and
     not c.res.isPlaceRead(e) and not c.res.readsElement(c.m, e) and
-    not isStr(c.res.typeFor(e)) and
+    (c.rules or not isStr(c.res.typeFor(e))) and
     slotsOf(c.res, c.m, c.res.typeFor(e)).len > 0   # Seq slots; str is G's
 
 proc fieldCopyLeaks(c: var Check, e: Expr) =
@@ -247,8 +247,9 @@ proc borrowedSink(c: Check, pu: PlaceUse): bool =
   ## actor's field)? The take, `st = {b: st} apply`, is not: an actor's
   ## field handed over and refilled by the same statement (rule M) is never
   ## seen empty.
-  pu.path != c.refills and
-    (rootOf(pu.path) in c.borrowed or c.res.isOwnerField(pu.read))
+  (isSingletonRead(pu.read) or pu.path != c.refills) and
+    (rootOf(pu.path) in c.borrowed or c.res.isOwnerField(pu.read) or
+     isSingletonRead(pu.read))
 
 proc take(c: var Check, pu: PlaceUse, sunk: seq[string],
           moved: var HashSet[string]) =
@@ -256,7 +257,7 @@ proc take(c: var Check, pu: PlaceUse, sunk: seq[string],
   ## (a whole place's) or the one field read.
   let whole = pu.path == rootOf(pu.path)
   let str = isStr(c.res.typeFor(pu.read))
-  if not str and c.borrowedSink(pu):
+  if (c.rules or not str) and c.borrowedSink(pu):
     c.report("borrowed-sunk", {cLive}, pu.path, pu.read.span)
   for k in c.keysOf(pu.path):
     if whole and k.split('\t')[1] notin sunk: continue
@@ -310,7 +311,7 @@ proc close(c: var Check, i: int) =
   let sc = c.scopes[i]
   for j in countdown(sc.drops.high, 0): c.dropSlot(sc.drops[j])
   for place in sc.places:
-    if place in c.strs: continue        # static or heap: rule G
+    if not c.rules and place in c.strs: continue
     for s in c.slots[place]:
       let k = slotKey(place, s)
       let cans = c.st.getOrDefault(k, {cLive})
@@ -396,15 +397,13 @@ proc walkArms(c: var Check, arms: seq[Expr], use: Use, mayFallThrough: bool) =
   c.dead = not any
 
 proc walkMatch(c: var Check, e: Expr, use: Use) =
-  ## The subject is looked at; one arm runs, or none when no arm is a
-  ## wildcard.
+  ## The subject is borrowed; checked closed-domain matches have no
+  ## fallthrough edge. Open-domain partial matches still have one.
   c.step(e.subject, uBorrow)
   var bodies: seq[Expr]
-  var wild = false
   for arm in e.arms:
     bodies.add arm.body
-    if arm.pattern != nil and arm.pattern.kind == pkWild: wild = true
-  c.walkArms(bodies, use, not wild)
+  c.walkArms(bodies, use, not c.res.checkedMatchIsExhaustive(e))
 
 proc walkSelect(c: var Check, e: Expr) =
   ## `on select`: every arm's source is read; one arm's body runs.
@@ -478,6 +477,8 @@ proc walkExpr(c: var Check, e: Expr, use: Use) =
   of exkReturn, exkRaise: c.walkExit(e)
   of exkBreak, exkContinue: c.walkJump(e)
   of exkDefer: c.deferDrops(e)
+  of exkReset:
+    for k in c.keysOf(pathOf(e.resetPlace)): c.st[k] = {cLive}
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill,
      exkBracket, exkBracketAssign, exkCall, exkChain, exkBinary, exkUnary,
      exkDiscard, exkTripleDot, exkImport, exkSend, exkAcquire, exkFinish,
@@ -485,7 +486,7 @@ proc walkExpr(c: var Check, e: Expr, use: Use) =
      exkSlabRef, exkArenaRef, exkCombinator, exkOrdinal, exkValidate,
      exkIfaceCall, exkIfaceIs, exkIfacePayload, exkWrapOk, exkAbsent,
      exkPoolOp, exkSlabOp, exkSlabCell, exkArenaReset, exkAppend, exkCopy,
-     exkDrop:
+     exkDrop, exkMove:
     c.step(e, use)
 
 proc checkFn(res: Resolution, m: Module, d: Decl): seq[string] =
@@ -495,10 +496,10 @@ proc checkFn(res: Resolution, m: Module, d: Decl): seq[string] =
   if "self" notin d.fnParams.mapIt(it.name): c.borrowed.incl "self"
   let moved = movedFnParam(res, m, d)
   for p in d.fnParams:
-    let owns = if c.rules: not isStr(p.typ) and
-                           res.consumes(m, d, p.name, c.memo)
+    let owns = if c.rules: p.consumes
                else: p.name == moved
-    if owns and ownsHeap(m, p.typ): c.declare(p.name, p.typ, d.fnBody.span)
+    let typ = if c.rules: ownershipParamType(d, p.typ) else: p.typ
+    if owns and ownsHeap(m, typ): c.declare(p.name, typ, d.fnBody.span)
     else: c.borrowed.incl p.name
   c.walkExpr(d.fnBody, uSink)
   if not c.dead: c.leave(0)
@@ -512,8 +513,14 @@ let DebugVerify = getEnv("TUCK_DEBUG_OWN") == "verify"
   ## Read once at module init.
 
 proc verifyTree*(res: Resolution, m: Module) =
-  ## TUCK_DEBUG_OWN=verify: rule V over every fn body of the prepared tree.
-  if not DebugVerify: return
-  for d in m.allFns:
+  ## Independent rule V runs on the common tree before any backend clone.
+  ## Debug mode also prints findings for legacy differential tests.
+  if not RulesMode and not DebugVerify: return
+  for d in m.ownershipFns:
     if d == nil or d.fnBody == nil: continue
-    for line in checkFn(res, m, d): echo line
+    let findings = checkFn(res, m, d)
+    if DebugVerify:
+      for line in findings: echo line
+    if RulesMode:
+      doAssert findings.len == 0,
+        "ownership verification failed before backend emission:\n" & findings.join("\n")

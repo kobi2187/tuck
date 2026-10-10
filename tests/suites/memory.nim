@@ -106,10 +106,12 @@ fn main() -> int:
   return a.items.len + b.items.len + a.n + b.n
 """
   t.okCheck "both twin shapes check"
-  t.emitsOdin "the twin that builds a new value frees its parameter",
-              r"defer delete\(p\.items\)"
-  t.omitsOdin "...and the twin that hands its own back does not",
-              r"defer delete\(q\.items\)"
+  t.emitsOdin "the caller drops the old value after a borrowing rebuild",
+              r"tuckG_[0-9]+_drop\(tuckˑvˑa\)"
+  t.omitsOdin "a borrowing rebuild does not drop its borrowed parameter",
+              r"_drop\(p\.items\)"
+  t.omitsOdin "a consumed slot transferred to the result is not dropped",
+              r"_drop\(q\.items\)"
   # 2 + 3 + 1 + 1, pinned on all three backends.
   t.hostRuns("a freed parameter is never one the caller still reads", 7)
 

@@ -87,7 +87,7 @@ proc visit(h: var Hoist, n: Expr, own: bool) =
   if n == nil: return
   case n.kind
   of exkIf, exkMatch, exkBlock, exkWhile, exkFor, exkDefer, exkSelect,
-     exkChain, exkCombinator, exkAssign, exkAppend, exkDrop, exkBracketAssign,
+     exkChain, exkCombinator, exkAssign, exkAppend, exkDrop, exkReset, exkBracketAssign,
      exkSend, exkReturn, exkRaise, exkAcquire, exkFinish, exkDiscard, exkValidate,
      exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset:
     # Control flow, a scope, or a statement inside an expression: what is in
@@ -110,7 +110,7 @@ proc visit(h: var Hoist, n: Expr, own: bool) =
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill, exkBracket,
      exkCall, exkBreak, exkContinue, exkTripleDot, exkImport, exkActorRef,
      exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef, exkOrdinal,
-     exkIfaceIs, exkIfacePayload, exkWrapOk, exkAbsent, exkCopy:
+     exkIfaceIs, exkIfacePayload, exkWrapOk, exkAbsent, exkCopy, exkMove:
     for ch in n.children: h.visit(ch, false)
   if h.settled: return
   if not own and isStr(h.res.typeFor(n)) and ownedStrCall(h.res, h.procs, n):

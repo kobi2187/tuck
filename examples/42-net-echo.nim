@@ -42,7 +42,8 @@ proc tuckˑtaskˑserve*(lfd: int): void =
   var tuckˑvˑc = net.accept(lfd)
   if tuckˑvˑc.ok:
     if true:
-      discard net.recv(tuckˑvˑc.value.fd, 256)
+      var tuckOwnTmp1 = net.recv(tuckˑvˑc.value.fd, 256)
+      discard tuckOwnTmp1
       discard net.send(tuckˑvˑc.value.fd, "pong")
       net.close(tuckˑvˑc.value.fd)
   return

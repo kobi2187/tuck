@@ -6,6 +6,43 @@ import rt "./tuckrt"
 import scheduler "./mod_scheduler"
 import net "./mod_net"
 
+TRec_data :: struct ($T_data: typeid) {
+	data: T_data,
+}
+
+tuckG_2_copy :: proc(value: $G) -> G {
+	return rt.tuckStrOwned(value)
+}
+tuckG_2_drop :: proc(value: $G) {
+	delete(value)
+}
+tuckG_2_reset :: proc(value: ^$G) { tuckG_2_drop(value^); value^ = {} }
+
+
+tuckG_1_copy :: proc(value: $G) -> G {
+	out := value
+	out.data = tuckG_2_copy(value.data)
+	return out
+}
+tuckG_1_drop :: proc(value: $G) {
+	tuckG_2_drop(value.data)
+}
+tuckG_1_reset :: proc(value: ^$G) { tuckG_1_drop(value^); value^ = {} }
+
+
+tuckG_0_copy :: proc(value: $G) -> G {
+	out := value
+	if value.status == .Ok {
+		out.value = tuckG_1_copy(value.value)
+	} else { out.value = {} }
+	return out
+}
+tuckG_0_drop :: proc(value: $G) {
+	if value.status == .Ok { tuckG_1_drop(value.value) }
+}
+tuckG_0_reset :: proc(value: ^$G) { tuckG_0_drop(value^); value^ = {} }
+
+
 tuckˑactorˑResultMsgKind :: enum { msgPut }
 tuckˑactorˑResultMsg :: struct {
 	tuckTag: tuckˑactorˑResultMsgKind,
@@ -49,7 +86,9 @@ sendPut_tuckˑactorˑResult :: proc(self: ^tuckˑactorˑResult, c: int) {
 tuckˑtaskˑserve :: proc(lfd: int) {
   tuckˑvˑc := net.accept(lfd)
   if (tuckˑvˑc.status == .Ok) {
-      _ = net.recv(tuckˑvˑc.value.fd, 256)
+      tuckOwnTmp1 := net.recv(tuckˑvˑc.value.fd, 256)
+      defer tuckG_0_drop(tuckOwnTmp1)
+      _ = tuckOwnTmp1
       _ = net.send(tuckˑvˑc.value.fd, "pong")
       net.close(tuckˑvˑc.value.fd)
   }
@@ -61,6 +100,7 @@ tuckˑtaskˑclient :: proc(port: int) {
   if (tuckˑvˑc.status == .Ok) {
       _ = net.send(tuckˑvˑc.value.fd, "ping")
       tuckˑvˑr := net.recv(tuckˑvˑc.value.fd, 256)
+      defer tuckG_0_drop(tuckˑvˑr)
       net.close(tuckˑvˑc.value.fd)
       if (tuckˑvˑr.status == .Ok) {
           if (tuckˑvˑr.value.data == "pong") {

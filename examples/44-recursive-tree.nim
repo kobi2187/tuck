@@ -24,18 +24,23 @@ proc `==`*(a, b: tuckˑtypeˑExpr): bool {.noSideEffect.} =
 proc tuckˑfnˑeval*(e: tuckˑtypeˑExpr): int =
   (case e.kind
   of Num:
-    return e.tuckˑvariantˑnum.value
+    if true:
+      return e.tuckˑvariantˑnum.value
   of Neg:
-    return (0 - tuckˑfnˑeval(tuck_rt.tuckAt(e.tuckˑvariantˑneg.operand, 0)))
+    if true:
+      return (0 - tuckˑfnˑeval(tuck_rt.tuckAt(e.tuckˑvariantˑneg.operand, 0)))
   of Add:
-    return (tuckˑfnˑeval(tuck_rt.tuckAt(e.tuckˑvariantˑadd.left, 0)) + tuckˑfnˑeval(tuck_rt.tuckAt(e.tuckˑvariantˑadd.right, 0))))
+    if true:
+      return (tuckˑfnˑeval(tuck_rt.tuckAt(e.tuckˑvariantˑadd.left, 0)) + tuckˑfnˑeval(tuck_rt.tuckAt(e.tuckˑvariantˑadd.right, 0))))
 
 proc tuckˑfnˑdepth*(e: tuckˑtypeˑExpr): int =
   (case e.kind
   of Num:
-    return 1
+    if true:
+      return 1
   of Neg:
-    return (1 + tuckˑfnˑdepth(tuck_rt.tuckAt(e.tuckˑvariantˑneg.operand, 0)))
+    if true:
+      return (1 + tuckˑfnˑdepth(tuck_rt.tuckAt(e.tuckˑvariantˑneg.operand, 0)))
   of Add:
     if true:
       var tuckˑvˑl = tuckˑfnˑdepth(tuck_rt.tuckAt(e.tuckˑvariantˑadd.left, 0))

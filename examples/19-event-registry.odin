@@ -1,6 +1,17 @@
 #+feature dynamic-literals
 package main
 
+import rt "./tuckrt"
+
+tuckG_0_copy :: proc(value: $G) -> G {
+	return rt.tuckStrOwned(value)
+}
+tuckG_0_drop :: proc(value: $G) {
+	delete(value)
+}
+tuckG_0_reset :: proc(value: ^$G) { tuckG_0_drop(value^); value^ = {} }
+
+
 tuckˑregistryˑAppEventsKind :: enum { SensorFailure, LowMemory }
 tuckˑregistryˑAppEvents :: struct {
 	tuckTag: tuckˑregistryˑAppEventsKind,
@@ -27,8 +38,10 @@ tuckˑfnˑtriggerEvent :: proc () {
 }
 
 tuckˑfnˑAppEvents_SensorFailure :: proc (port: u8, reason: string) {
+  reason := reason
   tuckˑvˑx := port
   tuckˑvˑy := reason
+  defer tuckG_0_drop(tuckˑvˑy)
 }
 
 tuckˑfnˑAppEvents_LowMemory :: proc (remaining: u32) {
@@ -36,5 +49,7 @@ tuckˑfnˑAppEvents_LowMemory :: proc (remaining: u32) {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	assert((1 == 1))
+	rt.tuckTrackCheck()
 }

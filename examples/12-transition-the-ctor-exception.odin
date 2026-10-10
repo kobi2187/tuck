@@ -1,6 +1,152 @@
 #+feature dynamic-literals
 package main
 
+import rt "./tuckrt"
+
+tuckG_0_copy :: proc(value: $G) -> G {
+	return rt.tuckStrOwned(value)
+}
+tuckG_0_drop :: proc(value: $G) {
+	delete(value)
+}
+tuckG_0_reset :: proc(value: ^$G) { tuckG_0_drop(value^); value^ = {} }
+
+
+tuckG_3_copy :: proc(value: $G) -> G {
+	out := value
+	out.url = tuckG_0_copy(value.url)
+	return out
+}
+tuckG_3_drop :: proc(value: $G) {
+	tuckG_0_drop(value.url)
+}
+tuckG_3_reset :: proc(value: ^$G) { tuckG_3_drop(value^); value^ = {} }
+
+
+tuckG_2_copy :: proc(value: $G) -> G {
+	out := value
+	out.config = tuckG_3_copy(value.config)
+	return out
+}
+tuckG_2_drop :: proc(value: $G) {
+	tuckG_3_drop(value.config)
+}
+tuckG_2_reset :: proc(value: ^$G) { tuckG_2_drop(value^); value^ = {} }
+
+
+tuckG_4_copy :: proc(value: $G) -> G {
+	out := value
+	out.config = tuckG_3_copy(value.config)
+	return out
+}
+tuckG_4_drop :: proc(value: $G) {
+	tuckG_3_drop(value.config)
+}
+tuckG_4_reset :: proc(value: ^$G) { tuckG_4_drop(value^); value^ = {} }
+
+
+tuckG_6_copy :: proc(value: $G) -> G {
+	out := value
+	out.title = tuckG_0_copy(value.title)
+	return out
+}
+tuckG_6_drop :: proc(value: $G) {
+	tuckG_0_drop(value.title)
+}
+tuckG_6_reset :: proc(value: ^$G) { tuckG_6_drop(value^); value^ = {} }
+
+
+tuckG_5_copy :: proc(value: $G) -> G {
+	out := value
+	out.config = tuckG_3_copy(value.config)
+	out.feed = tuckG_6_copy(value.feed)
+	return out
+}
+tuckG_5_drop :: proc(value: $G) {
+	tuckG_3_drop(value.config)
+	tuckG_6_drop(value.feed)
+}
+tuckG_5_reset :: proc(value: ^$G) { tuckG_5_drop(value^); value^ = {} }
+
+
+tuckG_1_copy :: proc(value: $G) -> G {
+	out: G
+	switch payload in value {
+	case tuckˑtypeˑPlayerState_Unloaded: out = tuckG_2_copy(payload)
+	case tuckˑtypeˑPlayerState_Loading: out = tuckG_4_copy(payload)
+	case tuckˑtypeˑPlayerState_Ready: out = tuckG_5_copy(payload)
+	}
+	return out
+}
+tuckG_1_drop :: proc(value: $G) {
+	switch payload in value {
+	case tuckˑtypeˑPlayerState_Unloaded: tuckG_2_drop(payload)
+	case tuckˑtypeˑPlayerState_Loading: tuckG_4_drop(payload)
+	case tuckˑtypeˑPlayerState_Ready: tuckG_5_drop(payload)
+	}
+}
+tuckG_1_reset :: proc(value: ^$G) { tuckG_1_drop(value^); value^ = {} }
+
+
+tuckG_8_copy :: proc(value: $G) -> G {
+	return value
+}
+tuckG_8_drop :: proc(value: $G) {
+}
+tuckG_8_reset :: proc(value: ^$G) { tuckG_8_drop(value^); value^ = {} }
+
+
+tuckG_9_copy :: proc(value: $G) -> G {
+	out := value
+	out.host = tuckG_0_copy(value.host)
+	return out
+}
+tuckG_9_drop :: proc(value: $G) {
+	tuckG_0_drop(value.host)
+}
+tuckG_9_reset :: proc(value: ^$G) { tuckG_9_drop(value^); value^ = {} }
+
+
+tuckG_10_copy :: proc(value: $G) -> G {
+	return value
+}
+tuckG_10_drop :: proc(value: $G) {
+}
+tuckG_10_reset :: proc(value: ^$G) { tuckG_10_drop(value^); value^ = {} }
+
+
+tuckG_11_copy :: proc(value: $G) -> G {
+	out := value
+	out.topic = tuckG_0_copy(value.topic)
+	return out
+}
+tuckG_11_drop :: proc(value: $G) {
+	tuckG_0_drop(value.topic)
+}
+tuckG_11_reset :: proc(value: ^$G) { tuckG_11_drop(value^); value^ = {} }
+
+
+tuckG_7_copy :: proc(value: $G) -> G {
+	out: G
+	switch payload in value {
+	case tuckˑtypeˑMqttSession_Disconnected: out = tuckG_8_copy(payload)
+	case tuckˑtypeˑMqttSession_Connecting: out = tuckG_9_copy(payload)
+	case tuckˑtypeˑMqttSession_Connected: out = tuckG_10_copy(payload)
+	case tuckˑtypeˑMqttSession_Subscribing: out = tuckG_11_copy(payload)
+	}
+	return out
+}
+tuckG_7_drop :: proc(value: $G) {
+	switch payload in value {
+	case tuckˑtypeˑMqttSession_Disconnected: tuckG_8_drop(payload)
+	case tuckˑtypeˑMqttSession_Connecting: tuckG_9_drop(payload)
+	case tuckˑtypeˑMqttSession_Connected: tuckG_10_drop(payload)
+	case tuckˑtypeˑMqttSession_Subscribing: tuckG_11_drop(payload)
+	}
+}
+tuckG_7_reset :: proc(value: ^$G) { tuckG_7_drop(value^); value^ = {} }
+
+
 tuckˑtypeˑConfig :: struct {
 	url: string,
 }
@@ -154,15 +300,20 @@ transitionTo_tuckˑtypeˑMqttSession :: proc(self: ^tuckˑtypeˑMqttSession, tar
 }
 
 tuckˑfnˑmain :: proc () {
-  tuckˑvˑconfig := tuckˑtypeˑConfig{url = "https://example.com"}
-  tuckˑvˑfeed := tuckˑtypeˑFeed{title = "Deep Dive"}
+  tuckˑvˑconfig := tuckˑtypeˑConfig{url = tuckG_0_copy("https://example.com")}
+  tuckˑvˑfeed := tuckˑtypeˑFeed{title = tuckG_0_copy("Deep Dive")}
   tuckˑvˑp: tuckˑtypeˑPlayerState = tuckˑtypeˑPlayerState_Ready{config = tuckˑvˑconfig, feed = tuckˑvˑfeed}
+  defer tuckG_1_drop(tuckˑvˑp)
   tuckˑvˑfresh: tuckˑtypeˑMqttSession = tuckˑtypeˑMqttSession_Disconnected{}
+  defer tuckG_7_drop(tuckˑvˑfresh)
   tuckˑvˑsocket := tuckˑtypeˑSocket{fd = 3}
   tuckˑvˑsession: tuckˑtypeˑMqttSession = tuckˑtypeˑMqttSession_Connected{socket = tuckˑvˑsocket, keepalive = u16(60)}
+  defer tuckG_7_drop(tuckˑvˑsession)
   return
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	tuckˑfnˑmain()
+	rt.tuckTrackCheck()
 }

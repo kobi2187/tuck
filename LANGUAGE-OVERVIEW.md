@@ -1051,6 +1051,10 @@ checker recorded there, so a generic extern is judged per use):
 - An owning **result** whose type is a part of an argument it only reads is
   a **view** of that argument, which the caller copies wherever it keeps
   it. Any other owning result is **fresh**, and the caller drops it.
+  The same-type argument/result rule takes priority: `joinStr` reads a
+  `str` separator and returns a fresh `str`, even though its other argument
+  is `Seq[str]`. A taking runtime operation must either retain or release
+  the transferred operand, including failure paths.
 
 So `push({items: Seq[T], value: T}) -> Seq[T]` reads `items` (it returns a
 new Seq) and takes `value`. `setAt` takes the value it stores, and `at`

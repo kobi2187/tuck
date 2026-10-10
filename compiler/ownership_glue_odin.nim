@@ -17,7 +17,7 @@ proc sequenceBodies(ctx: var OdinCodegenCtx, g: Glue, typ: string): Bodies =
   if elem.owns: child = ctx.emit(elem, ctx.odinType(elem.typ))
   result.copy = "\tout := value\n"
   if g.kind == gSequence:
-    result.copy = "\tout: " & typ & "\n\tresize(&out, len(value))\n"
+    result.copy = "\tout: G\n\tresize(&out, len(value))\n"
   if elem.owns:
     result.copy.add "\tfor item, i in value { out[i] = " & child.copy & "(item) }\n"
     result.drop.add "\tfor item in value { " & child.drop & "(item) }\n"
@@ -43,7 +43,7 @@ proc resultBodies(ctx: var OdinCodegenCtx, g: Glue): Bodies =
   result.drop = "\tif value.status == .Ok { " & child.drop & "(value.value) }\n"
 
 proc sumBodies(ctx: var OdinCodegenCtx, g: Glue, typ: string): Bodies =
-  result.copy = "\tout: " & typ & "\n\tswitch payload in value {\n"
+  result.copy = "\tout: G\n\tswitch payload in value {\n"
   result.drop = "\tswitch payload in value {\n"
   for variant in g.children:
     let variantType = typ & "_" & variant.name
@@ -62,6 +62,8 @@ proc bodies(ctx: var OdinCodegenCtx, g: Glue, typ: string): Bodies =
   of gResult: ctx.resultBodies(g)
   of gSum: ctx.sumBodies(g, typ)
   of gPlain: ("\treturn value\n", "")
+  of gPolymorphic:
+    ("\treturn rt.tuckCopyValue(value)\n", "\trt.tuckDropValue(value)\n")
 
 proc emit(ctx: var OdinCodegenCtx, g: Glue, typ: string): GlueNames =
   if typ in ctx.glueNames: return ctx.glueNames[typ]
@@ -69,10 +71,10 @@ proc emit(ctx: var OdinCodegenCtx, g: Glue, typ: string): GlueNames =
   result = (prefix & "_copy", prefix & "_drop", prefix & "_reset")
   ctx.glueNames[typ] = result # Before descent: recursive edges reuse this.
   let body = ctx.bodies(g, typ)
-  ctx.hoisted.add result.copy & " :: proc(value: " & typ & ") -> " & typ &
+  ctx.hoisted.add result.copy & " :: proc(value: $G) -> G" &
                   " {\n" & body.copy & "}\n" &
-                  result.drop & " :: proc(value: " & typ & ") {\n" & body.drop & "}\n" &
-                  result.reset & " :: proc(value: ^" & typ &
+                  result.drop & " :: proc(value: $G) {\n" & body.drop & "}\n" &
+                  result.reset & " :: proc(value: ^$G" &
                   ") { " & result.drop & "(value^); value^ = {} }\n"
 
 proc odinGlue*(ctx: var OdinCodegenCtx, t: Type): GlueNames =

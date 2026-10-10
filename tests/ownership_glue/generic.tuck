@@ -1,0 +1,7 @@
+fn twice[T]({value: T}) -> Seq[T]:
+  return [value, value]
+
+fn main() -> int:
+  let xs: Seq[str] = ["one", "two"]
+  let copied = {value: xs} twice
+  return copied[0].len + copied[1].len + xs.len

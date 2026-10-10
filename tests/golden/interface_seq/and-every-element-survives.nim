@@ -45,5 +45,6 @@ proc tuckˑfnˑtotal*(xs: seq[Animal]): int =
   return tuckˑvˑs
 
 proc tuckˑfnˑmain*(): int =
-  return tuckˑfnˑtotal(tuckˑfnˑmakeMany())
+  var tuckOwnTmp1 = tuckˑfnˑmakeMany()
+  return tuckˑfnˑtotal(tuckOwnTmp1)
 

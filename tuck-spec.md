@@ -2056,7 +2056,7 @@ per backend:
 | | Nim | Odin | D |
 |---|---|---|---|
 | a large record passed | by hidden reference | by value; Odin parameters are immutable, so the compiler may pass by pointer | by value, a real copy (a member's `self` is `ref`) |
-| copy | Nim's `=copy` hooks | emitted copy procedures | emitted deep `.dup` |
+| copy | Nim's `=copy` hooks | emitted recursive copy procedures | recursive `tuckCopyG`, active payload only for sums |
 | free | Nim's `=destroy`, at scope end | emitted, via `defer` at the declaration | D's collector: not prompt, so peak memory runs higher |
 
 **Where the rules are written.** The compiler implements this section through
@@ -2068,12 +2068,14 @@ compiler's contract, not the language's. They are checked, not trusted: an
 ownership checker verifies that every owned value is moved or dropped exactly
 once on every path, and `TUCK_TRACK` checks the same at run time.
 
-**State, 2026-10-10.** The deep copy of a nested owning value and the
-drop-on-every-exit rule are the behaviour after the switch to those rules
-(the proposal's §8 step 4.1). Until then the pins A39 and A41-A45
-(`tests/suites/known_bugs.nim`) are open: owned values the Odin tree does not
-free. Open questions — record layout, passing on D, prompt frees on D — are
-tracked in #104.
+**State, 2026-10-10.** These rules are now the default: the common lowered AST
+records consuming parameters and explicit copy/move/drop/reset operations before
+backend cloning. Independent rule V checks that tree before emission. The pins
+A39 and A41-A45 (`tests/suites/known_bugs.nim`) passed their default-mode probes
+and are fixed. Nim and D retain native reclamation; replacing collectors and
+selectable freeing policy are deferred. Remaining layout and D passing questions
+are tracked in #104; the detailed integration/gate record is
+`thoughts/shared/plans/2026-10-10-rule-g-status.md`.
 
 ## Part 8: Hardware
 

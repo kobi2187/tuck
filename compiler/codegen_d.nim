@@ -780,7 +780,7 @@ proc genDCopy(ctx: var DCodegenCtx, e: Expr): string =
   # lowering_seqcopy, once, and printed here.
   let valStr = ctx.genDExpr(e.copied)
   case e.copyKind
-  of cpSeq, cpFields: return "rt.tuckCopyG(" & valStr & ")"
+  of cpSeq, cpFields, cpValue: return "rt.tuckCopyG(" & valStr & ")"
   of cpStatic:
     raiseAssert "d: a static str is never copied to own — the collector " &
                 "frees, so prepare makes cpStatic for Odin only"
@@ -983,6 +983,9 @@ proc genDRebind(ctx: var DCodegenCtx, e: Expr): string =
                ctx.genDExpr(e.target.receiver) & ")")
 
 proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
+  if e.assignVal == nil and e.isDecl and e.declType != nil:
+    ctx.definedVars.incl e.target.name
+    return ctx.dDeclType(e.declType) & " " & e.target.name
   ## First assignment to a name declares it, with the CHECKER'S type stated
   ## explicitly. `auto x = 0` would make x a 32-bit D int while Tuck (and
   ## the Nim backend's inference) makes it 64-bit — a value past 2^31 then
@@ -1128,6 +1131,9 @@ proc genDDefer(ctx: var DCodegenCtx, e: Expr): string =
   ## `scope(success)` and `scope(failure)`; Tuck's defer is the unconditional
   ## one, so `scope(exit)` is the exact match and not an approximation.
   if e.deferBody == nil: return ""
+  if e.deferBody.kind == exkBlock and e.deferBody.stmts.len == 1 and
+     e.deferBody.stmts[0].kind == exkDrop:
+    return "" # Native GC implements this common semantic operation.
   let ind = ctx.indD
   ind & "scope(exit) {\n" & ctx.genDNested(e.deferBody) & ind & "}"
 
@@ -1398,8 +1404,11 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkAssign: ctx.genDAssign(e)
   of exkAppend: ctx.genDAppend(e)
   of exkCopy: ctx.genDCopy(e)
+  of exkMove: ctx.genDExpr(e.movedValue)
   of exkDrop:
-    raiseAssert "d: the collector frees; prepare makes an exkDrop for Odin only"
+    ""
+  of exkReset: ctx.genDExpr(e.resetPlace) & " = typeof(" &
+                 ctx.genDExpr(e.resetPlace) & ").init"
   of exkReturn: ctx.genDReturn(e)
   of exkRaise: ctx.genDRaise(e)
   of exkDiscard:

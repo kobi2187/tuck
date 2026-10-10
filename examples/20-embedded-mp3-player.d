@@ -86,6 +86,19 @@ struct tuckˑtypeˑPlayerState {
         case tuckˑtypeˑPlayerStateKind.Paused: return true;
         }
     }
+    tuckˑtypeˑPlayerState tuckCopyOwned() {
+        auto outValue = this;
+        final switch (kind) {
+        case tuckˑtypeˑPlayerStateKind.Idle:
+            break;
+        case tuckˑtypeˑPlayerStateKind.Decoding:
+            outValue.tuckˑvariantˑdecoding = rt.tuckCopyG(tuckˑvariantˑdecoding);
+            break;
+        case tuckˑtypeˑPlayerStateKind.Paused:
+            break;
+        }
+        return outValue;
+    }
 }
 
 __gshared rt.ObjectPool!(ubyte[512], 4) tuckˑpoolˑBufferPool;

@@ -6,7 +6,7 @@ import ast
 
 type
   GlueKind* = enum
-    gPlain, gString, gSequence, gArray, gRecord, gSum, gResult
+    gPlain, gString, gSequence, gArray, gRecord, gSum, gResult, gPolymorphic
   Glue* = ref object
     kind*: GlueKind
     typ*: Type
@@ -76,6 +76,14 @@ proc typeKey(t: Type, sub: Table[string, Type]): string =
       bindings.add(k & "=" & typeKey(v, initTable[string, Type]()))
     bindings.sort()
     for binding in bindings: result.add(":" & binding)
+
+proc ownershipParamType*(d: Decl, t: Type): Type =
+  ## Parsed generic signatures use `T`; body types use `<typeparam:T>`.
+  ## Canonicalize for ownership only, without rewriting public signatures.
+  var bindings: Table[string, Type]
+  for name in d.fnGenerics:
+    bindings[name] = Type(kind: tkNamed, name: NamedTypeParamPrefix & name & ">")
+  instantiate(t, bindings)
 
 proc build(b: var Builder, t: Type, sub: Table[string, Type]): Glue
 
@@ -147,7 +155,10 @@ proc build(b: var Builder, t: Type, sub: Table[string, Type]): Glue =
   if t == nil: return
   case t.kind
   of tkNamed:
-    if t.name in ["str", "string"]:
+    if t.name == TypeParamName or t.name.startsWith(NamedTypeParamPrefix):
+      result.kind = gPolymorphic
+      result.owns = true # It may own storage at instantiation.
+    elif t.name in ["str", "string"]:
       result.kind = gString
       result.owns = true
     else:
@@ -195,3 +206,28 @@ proc glueFor*(m: Module, t: Type): Glue =
 
 proc ownsStorage*(m: Module, t: Type): bool =
   glueFor(m, t).owns
+
+type OwningSlot* = tuple[path: string, typ: Type]
+
+proc collectSlots(g: Glue, prefix: string, slots: var seq[OwningSlot]) =
+  if not g.owns: return
+  if g.kind == gRecord:
+    for child in g.children:
+      let path = if prefix.len == 0: child.name else: prefix & "." & child.name
+      collectSlots(child.node, path, slots)
+  else:
+    slots.add (prefix, g.typ)
+
+proc owningSlots*(m: Module, t: Type): seq[OwningSlot] =
+  collectSlots(glueFor(m, t), "", result)
+
+proc typeAtPath*(m: Module, t: Type, path: string): Type =
+  if path.len == 0: return t
+  var g = glueFor(m, t)
+  for part in path.split('.'):
+    var next: Glue
+    for child in g.children:
+      if child.name == part: next = child.node
+    if next == nil: return nil
+    g = next
+  g.typ

@@ -12,13 +12,17 @@ struct tuckˑtypeˑJar {
 
 void tuckˑfnˑmain() {
     long tuckˑvˑn = 99L;
-    string tuckˑvˑs = (str.toStr(tuckˑvˑn) ~ " bottles");
+    string tuckOwnTmp1 = str.toStr(tuckˑvˑn);
+    string tuckˑvˑs = (tuckOwnTmp1 ~ " bottles");
     console.printLine(tuckˑvˑs);
-    string tuckˑvˑt = (str.toStr(tuckˑvˑn) ~ " more");
+    string tuckOwnTmp2 = str.toStr(tuckˑvˑn);
+    string tuckˑvˑt = (tuckOwnTmp2 ~ " more");
     console.printLine(tuckˑvˑt);
-    tuckˑtypeˑJar tuckˑvˑj = tuckˑtypeˑJar(count: 7L, label: "jam");
+    tuckˑtypeˑJar tuckˑvˑj = tuckˑtypeˑJar(count: 7L, label: rt.tuckCopyG("jam"));
     long tuckˑvˑc = tuckˑvˑj.count;
-    string tuckˑvˑu = ((tuckˑvˑj.label ~ ": ") ~ str.toStr(tuckˑvˑc));
+    string tuckOwnTmp3 = (tuckˑvˑj.label ~ ": ");
+    string tuckOwnTmp4 = str.toStr(tuckˑvˑc);
+    string tuckˑvˑu = (tuckOwnTmp3 ~ tuckOwnTmp4);
     console.printLine(tuckˑvˑu);
     if ((tuckˑvˑs == "99 bottles")) {
         if ((tuckˑvˑu == "jam: 7")) {

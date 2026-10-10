@@ -3,6 +3,14 @@
 > Partial re-verification, 2026-10-10 on `bab9828`: the registry indentation
 > failure and `[may_block]` warning in §D below are no longer current.
 > This note does not revalidate every claim in the historical snapshot.
+>
+> Ownership update, 2026-10-10: A39 and A41-A45 below are now fixed in
+> default mode and their regression markers are `bugFixed`. Common-AST
+> copy/move/drop/reset and recursive Glue run before backend cloning.
+> Their descriptions below are historical failure evidence, not current
+> open items. See `thoughts/shared/plans/2026-10-10-rule-g-status.md` for gates
+> and remaining boundaries. The open-bug heading is reconciled with the
+> current regression suite; the body retains historical failure descriptions.
 
 Every claim below was re-verified against the compiler on the date in the
 heading. The previous snapshot (2026-08-05) had drifted less than most: its
@@ -26,7 +34,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (14)
+## A. Open bugs (8)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks

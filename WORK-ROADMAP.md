@@ -36,15 +36,24 @@ not new owner rulings.
 2026-10-10: the owner chose **finish glue G, then switch**. Work remains on this
 branch. See [the detailed glue checkpoint](thoughts/shared/plans/2026-10-10-rule-g-status.md).
 
-- A shared recursive ownership type graph and an Odin copy/drop/reset generator
-  are implemented and tested independently of ownership placement.
-- D's existing copy nodes, borrowing twin wrappers and mailbox payload copies
-  now use recursive copy glue; its collector remains in place.
-- Odin's generator is **not yet wired into production ownership emission**.
-  Typed drop nodes, static-string sink ownership and the shared slot/checker
-  integration must land together before activation.
-- The default ownership switch has **not happened**. A39 and A41-A45 remain
-  open in the default-mode regression suite. No unrelated roadmap item has begun.
+- The default ownership pass now elaborates the **common lowered AST before
+  backend cloning**. It records consuming parameters and explicit copy, move,
+  typed drop and reset nodes. Independent rule V gates emission.
+- Odin emits recursive Glue operations at those sites. Strings, nested
+  containers, recursive sums, generic parameters, task bodies, mailbox/select
+  payloads, actor state, slabs and pools have focused allocation-tracked tests.
+- Nim keeps native copy/destruction; D keeps its collector and recursive copy.
+  D's tagged sums copy only the active payload. Legacy twins are absent from
+  default emission; the old path is retained for differential tests.
+- A39 and A41-A45 passed their default-mode probes and are now `bugFixed`.
+  Focused ownership, value, memory-budget, task/message, slab/pool and generated
+  backend suites pass. Common record reconstruction has all-backend checks for
+  effects, evaluation order, lazy branches and repeated loop conditions.
+  Any-depth singleton snapshots are tested with ordinary as well as tracked
+  execution. The final full gate ran 56 suites: all 55 non-complexity suites
+  passed; the explicitly deferred complexity ratchet is the sole failure,
+  with unchanged thresholds. Eight unrelated known-bug pins remain open.
+  See the detailed checkpoint for exact results. No unrelated roadmap item began.
 
 ## Evidence and limits
 
@@ -135,7 +144,7 @@ before migration, but it should not trigger a parallel stdlib redesign now.
 
 | Order | Item | Prerequisites | Recommended direction and completion test |
 |---|---|---|---|
-| 01 | **OWN: approved ownership rules** | Existing ruled proposal, no new memory policy | Finish type-derived copy/drop/reset glue, then the shadow-to-default switch in the [ownership proposal](thoughts/shared/plans/2026-10-05-ownership-rules-proposal.md). Preserve backend memory strategies. Require ownership verification, leak probes and equivalent program results across all backends; revalidate A39 and A41-A45 rather than assuming they close. |
+| 01 | **OWN: approved ownership rules** | Existing ruled proposal, no new memory policy | Completed default common-AST switch and recursive Glue; A39/A41-A45 pins pass. Final full run: 55 non-complexity suites pass, only the owner-deferred complexity ratchet fails. See the [implementation and gate record](thoughts/shared/plans/2026-10-10-rule-g-status.md). Backend collectors remain. |
 | 02 | **DGC: D collection inside a task** | A minimal reproduced crash | Add a known-bug pin first. Investigate supported coroutine-stack/root registration and collection scheduling in the current D runtime. Choose only after proving correctness across yield, resume and teardown. Keep GC; disabling it forever is not the fix. Require allocation-pressure tests that survive actual collections. |
 | 03 | [#100: indexed writes through self](https://github.com/kobi2187/tuck/issues/100) | None | Classify `self.cells[i] = v` as mutation in shared analysis. Require `var` receivers and matching emitted receiver modes. Tests: nested paths, let/parameter refusal and successful mutation on three backends. |
 | 04 | [#101: type name used as a value](https://github.com/kobi2187/tuck/issues/101) | Owner chooses construction semantics | Recommend rejection with `K {}` as the suggested fix, rather than implicit construction. Test fieldless and nonempty types; update doc-convert app after the ruling. |

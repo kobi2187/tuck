@@ -293,6 +293,7 @@ at :: proc{tuckAt_slice, tuckAt_dyn}
 
 tuckSetAt_slice :: proc(items: []$T, index: int, value: T) {
 	assert(index >= 0 && index < len(items), "setAt: index out of bounds")
+	tuckDropValue(items[index])
 	items[index] = value
 }
 
@@ -301,6 +302,14 @@ tuckSetAt_dyn :: proc(items: [dynamic]$T, index: int, value: T) {
 }
 
 tuckSetAt :: proc{tuckSetAt_slice, tuckSetAt_dyn}
+
+// Rule D for an owning element. Arguments are evaluated before entry, so
+// the replacement can read the old element before its storage is released.
+tuckSetAtOwned :: proc(items: []$T, index: int, value: T, drop: proc(T)) {
+	assert(index >= 0 && index < len(items), "setAt: index out of bounds")
+	drop(items[index])
+	items[index] = value
+}
 
 setAt :: proc{tuckSetAt_slice, tuckSetAt_dyn}
 
@@ -355,7 +364,7 @@ joinStr :: proc(parts: [dynamic]string, sep: string) -> string {
 
 push :: proc(items: [dynamic]$T, value: T) -> [dynamic]T {
 	result := make([dynamic]T, len(items))
-	copy(result[:], items[:])
+	for item, i in items { result[i] = tuckCopyValue(item) }
 	append(&result, value)
 	return result
 }
@@ -372,7 +381,9 @@ containsChar :: proc(s: string, ch: string) -> bool {
 splitLines :: proc(s: string) -> [dynamic]string {
 	lines, _ := strings.split_lines(s)
 	result := make([dynamic]string, len(lines))
-	copy(result[:], lines[:])
+	for line, i in lines { result[i] = strings.clone(line) }
+	delete(lines)
+	delete(s)
 	return result
 }
 
@@ -771,21 +782,33 @@ heldCell :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle, what: string) -> 
 }
 
 tuckPoolRelease :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle) {
-	pool.state[heldCell(pool, h, "release")] = .Free
+	i := heldCell(pool, h, "release")
+	if pool.state[i] == .Present { tuckDropValue(pool.storage[i]) }
+	pool.storage[i] = {}
+	pool.state[i] = .Free
 }
 
 tuckPoolRead :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle) -> TuckResult(T) {
 	i := heldCell(pool, h, "read")
 	if pool.state[i] == .Present {
-		return tok(pool.storage[i])
+		return tok(tuckCopyValue(pool.storage[i]))
 	}
 	return tnone(T)
 }
 
 tuckPoolWrite :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle, v: T) {
 	i := heldCell(pool, h, "write")
+	if pool.state[i] == .Present { tuckDropValue(pool.storage[i]) }
 	pool.storage[i] = v
 	pool.state[i] = .Present
+}
+
+tuckPoolReset :: proc(pool: ^ObjectPool($T, $Count)) {
+	for i in 0 ..< Count {
+		if pool.state[i] == .Present { tuckDropValue(pool.storage[i]) }
+		pool.storage[i] = {}
+		pool.state[i] = .Free
+	}
 }
 
 // The cell's bytes, for an extern to fill (DMA). Present from here on: it
@@ -934,7 +957,10 @@ tuckSlabNew :: proc{slab_new_chunked, slab_new_seq}
 
 // `[count: N]`: absent when every cell holds a value.
 tuckSlabNewFixed :: proc(s: ^SlabFixed($T, $N), v: T) -> TuckResult(SlabRef) {
-	if s.free_head == 0 && int(s.len) >= N do return tnone(SlabRef)
+	if s.free_head == 0 && int(s.len) >= N {
+		tuckDropValue(v)
+		return tnone(SlabRef)
+	}
 	return tok(slab_fill(s, slab_take(s), v))
 }
 
@@ -1006,7 +1032,10 @@ ArenaBudget :: struct {
 // A cell of an arena's slab holding `v`, or absent when the budget cannot
 // cover it. The arena's reset gives the whole budget back.
 tuckArenaNew :: proc(s: ^SlabChunked($T), b: ^ArenaBudget, cost: int, v: T) -> TuckResult(SlabRef) {
-	if b.used + cost > b.size do return tnone(SlabRef)
+	if b.used + cost > b.size {
+		tuckDropValue(v)
+		return tnone(SlabRef)
+	}
 	b.used += cost
 	return tok(tuckSlabNew(s, v))
 }
@@ -1300,6 +1329,7 @@ fsErrCode :: proc(s: IoStatus) -> u16 {
 }
 
 readFile :: proc(path: string) -> TuckResult(FsContent) {
+	defer delete(path)
 	r := runFileOp(.Read, path)
 	if r.status != .Ok do return terr(FsContent, fsErrCode(r.status))
 	return tok(FsContent{content = string(r.outData)})
@@ -1581,10 +1611,11 @@ argCount :: proc() -> ArgCount {
 
 argAt :: proc(index: int) -> ArgValue {
 	if index < 0 || index + 1 >= len(os.args) do return ArgValue{arg = ""}
-	return ArgValue{arg = os.args[index + 1]}
+	return ArgValue{arg = strings.clone(os.args[index + 1])}
 }
 
 getEnv :: proc(name: string) -> TuckResult(EnvValue) {
+	defer delete(name)
 	// Absence is ?T, not an error — the caller decides what unset means.
 	value, found := os.lookup_env(name, context.allocator)
 	if !found do return tnone(EnvValue)

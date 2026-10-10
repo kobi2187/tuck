@@ -47,6 +47,7 @@ fn main() -> int:
 """
   t.okCheck "a mixed list reaches a Seq[Animal] parameter"
   t.frozen     "each element dispatches to its own implementation"
+  t.hostRuns "mixed borrowed interface list runs on every backend", 42
   t.emits      "a branch for Dog", "tuckˑobjectˑDogVal"
   t.emits      "a branch for Cat", "tuckˑobjectˑCatVal"
   t.emitsOdin "Odin: both branches", "tuckˑobjectˑ(Dog|Cat)Val"
@@ -110,6 +111,7 @@ fn main() -> int:
 """
   t.okCheck "a one-element list of one concrete type"
   t.frozen     "and it runs"
+  t.hostRuns "single borrowed interface list runs on every backend", 1
   # Order does not matter: the element type comes from the PARAMETER, not from
   # whichever item happens to be first.
   t.src IFACE & """
@@ -126,6 +128,7 @@ fn main() -> int:
 """
   t.okCheck "the first element does not fix the list's type"
   t.frozen     "and the sum is the same either way"
+  t.hostRuns "reordered borrowed interface list runs on every backend", 42
   # --- still rejected -------------------------------------------------------
 
   # An object that does not satisfy cannot ride in the list.
@@ -158,6 +161,7 @@ fn main() -> int:
 """
   t.okCheck "a Seq of a concrete type is untouched"
   t.frozen     "and still runs"
+  t.hostRuns "concrete object list runs on every backend", 2
   # --- what copy semantics unlocked ---------------------------------------
   #
   # All three were compile errors under the borrowing representation: the value
@@ -207,6 +211,7 @@ fn main() -> int:
 """
   t.okCheck "returning a Seq of interface values built from locals"
   t.frozen     "and every element survives"
+  t.hostRuns "returned interface list runs on every backend", 42
   # An INLINE list literal reaching a Seq[Interface] slot wraps each element,
   # same as pre-bound variables did. Was: the wrap was emitted only for
   # exkVar, so `[{n: 1} A, {n: 2} B]` passed its constructions through raw and

@@ -8,9 +8,12 @@ type tuckˑtypeˑPriority* = enum High, Low
 proc tuckˑdecisionˑroute*(urgency: tuckˑtypeˑPriority, encrypted: bool): int =
   (case ((ord(urgency) * 2) + ord(encrypted))
   of 0:
-    return 2
+    if true:
+      return 2
   of 1:
-    return 1
+    if true:
+      return 1
   else:
-    return 3)
+    if true:
+      return 3)
 

@@ -11,6 +11,8 @@ import ast_query
 import codegen_common
 import codegen_odin_ctx
 import ./codegen_odin
+from ownership_elab import RulesMode
+import ownership_glue, ownership_glue_odin
 
 const DefaultMailboxSize = "8"
   ## Messages an actor's ring holds unless `[queue: N]` says otherwise.
@@ -331,10 +333,15 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   # free to read its container param without a defensive copy, and a one-line
   # `f` that copies and delegates. See codegen_common's MOVED twin note — the
   # D backend does the same thing with `.dup`.
-  let movedP = movedFnParam(ctx.res, ctx.module, d)
+  let movedP = if RulesMode: "" else: movedFnParam(ctx.res, ctx.module, d)
   let savedMoved = ctx.movedParam
   ctx.movedParam = movedP
-  let bodyStr = ctx.genFnBody(d, retTypeStr, ind)
+  var bodyStr = ctx.genFnBody(d, retTypeStr, ind)
+  if RulesMode:
+    var shadow = ""
+    for p in d.fnParams:
+      if p.consumes: shadow.add ind & "  " & p.name & " := " & p.name & "\n"
+    bodyStr = shadow & bodyStr
   ctx.movedParam = savedMoved
   ctx.leaveReturnContext()
   ctx.definedVars = savedVars
@@ -632,7 +639,9 @@ proc newHandlerCtx*(ctx: OdinCodegenCtx, d: Decl): OdinCodegenCtx =
   result = OdinCodegenCtx(definedVars: initHashSet[string](),
                           indent: ctx.indent + 1,
                           module: ctx.module, realModules: ctx.realModules,
-                          errPolicy: ctx.errPolicy, res: ctx.res)
+                          errPolicy: ctx.errPolicy, res: ctx.res,
+                          glueNames: ctx.glueNames, recShapes: ctx.recShapes,
+                          modPrefix: ctx.modPrefix)
 
 proc adoptHandlerCtx*(ctx: var OdinCodegenCtx, hctx: OdinCodegenCtx) =
   ## Anything the handler bodies hoisted belongs to the enclosing file.
@@ -640,6 +649,7 @@ proc adoptHandlerCtx*(ctx: var OdinCodegenCtx, hctx: OdinCodegenCtx) =
     if h notin ctx.hoisted: ctx.hoisted.add(h)
   for sig, name in hctx.recShapes:
     if sig notin ctx.recShapes: ctx.recShapes[sig] = name
+  ctx.glueNames = hctx.glueNames
 
 proc genHandlerCase*(hctx: var OdinCodegenCtx, h: ActorMsgHandler, ind: string): string =
   ## One dispatch arm: unpack the envelope's fields, then run the body.
@@ -736,7 +746,7 @@ proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
   for p in h.params:
     params.add(p.name & ": " & ctx.odinType(p.typ))
     ctorArgs.add(", " & p.name & " = " & p.name)
-    if copyableContainer(ctx.res, ctx.module, p.typ):
+    if not RulesMode and copyableContainer(ctx.res, ctx.module, p.typ):
       # Odin parameters are immutable, so shadow before copying — the same
       # two-step the MOVED wrapper uses a few procs up.
       copies.add(ind & "\t" & p.name & " := " & p.name & "\n")
@@ -748,9 +758,16 @@ proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
           copies.add(ind & "\t" & p.name & "." & f & " = rt.tuckSeqCopy(" &
                      p.name & "." & f & ")\n")
   let sep = if params.len > 0: ", " else: ""
+  var enqueue = odinEnqueue(d, d.name & "Msg{" & ctorArgs & "}")
+  if RulesMode and actorOnFull(d) == ofDrop:
+    enqueue = "if !rt.enqueue(&self.mailbox, " & d.name & "Msg{" & ctorArgs & "}) {\n"
+    for p in h.params:
+      if ownsStorage(ctx.module, p.typ):
+        enqueue.add ind & "\t\t" & ctx.odinGlue(p.typ).drop & "(" & p.name & ")\n"
+    enqueue.add ind & "\t}"
   "\n" & ind & "send" & h.name.capitalize() & "_" & d.name & " :: proc(self: ^" &
     d.name & sep & params.join(", ") & ") {\n" & copies &
-    ind & "\t" & odinEnqueue(d, d.name & "Msg{" & ctorArgs & "}") & "\n" &
+    ind & "\t" & enqueue & "\n" &
     # The send NOTIFIES. It never did: the actor parks on a condvar when its
     # mailbox comes up empty, so a send to a parked Odin actor was a lost
     # wakeup — the message sat in the ring and nothing arrived to drain it
@@ -989,6 +1006,11 @@ proc genTaskDecl*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
     ctx.odinBangInfo(d.taskReturnType)
   ctx.retAbsentCapable = absentCapable(d.taskReturnType)
   var bodyStr = ctx.genOdinExpr(d.taskBody)
+  if RulesMode:
+    var shadow = ""
+    for p in d.taskParams:
+      if p.consumes: shadow.add ind & "\t" & p.name & " := " & p.name & "\n"
+    bodyStr = shadow & bodyStr
   if d.taskBody != nil and d.taskBody.kind != exkBlock:
     let kw = if retTypeStr != "void": "return " else: ""
     bodyStr = ind & "\t" & kw & bodyStr
@@ -1194,14 +1216,16 @@ proc genOdinPool(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ind & d.name & ": rt.ObjectPool(" & ctx.odinType(d.poolElem) & ", " &
     $d.poolCount & ")\n"
 
-proc genOdinSlabDrops(d: Decl, elem: string, owns: seq[string],
+proc genOdinSlabDrops(ctx: var OdinCodegenCtx, d: Decl, elem: string, owns: seq[string],
                       ind: string): string =
   ## The slab's `free`, `set` and `reset` for an element that owns heap:
   ## Odin has no destructors, so each deletes what a value it ends owns
   ## before the runtime's own step. Nim's runtime resets the value and D's
   ## collector reclaims it; here it is spelt per slab, by its Seq fields.
   let s = d.name
+  let deepDrop = if RulesMode: ctx.odinGlue(d.slabElem).drop else: ""
   proc drops(c, ind: string): string =
+    if RulesMode: return ind & deepDrop & "(" & c & ".value)\n"
     for f in owns:
       result.add ind & "delete(" & c & ".value" & (if f == "": "" else: "." & f) & ")\n"
   result = ind & s & "_free :: proc(r: rt.SlabRef) {\n" &
@@ -1253,7 +1277,7 @@ proc genOdinSlab(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   result = ind & d.name & " := " & store & "{name = " &
            escape(slabLabel(d)) & "}\n"
   let owns = ctx.odinSlabOwns(d)
-  if owns.len > 0: result.add genOdinSlabDrops(d, elem, owns, ind)
+  if owns.len > 0: result.add ctx.genOdinSlabDrops(d, elem, owns, ind)
 
 proc collectStaticAssert(ctx: var OdinCodegenCtx, d: Decl): string =
   ## Odin's `#assert` does not reach a runtime value, so the entry point

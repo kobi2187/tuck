@@ -52,6 +52,7 @@ fn main() -> int:
 """
   t.quietly: t.frozen "'toStr' result stays a str under '+'"
   t.bugFixed "'toStr' result stays a str under '+'"
+  t.hostRuns "named toStr temporary compiles and runs on every backend", 0
 
   # 3. `if` has no expression form (ruling R2). Nim has a real if-expression;
   # Odin has none and gets its ternary.
@@ -3168,7 +3169,7 @@ fn main() -> int:
   return total
 """
   t.quietly: t.hostPeakRss("A39: building recursive values in a loop does not accumulate them", 32768)
-  t.bugOpen "A39: building recursive values in a loop does not accumulate them"
+  t.bugFixed "A39: building recursive values in a loop does not accumulate them"
 
   # A41-A45 (found 2026-10-05 by rule V, the ownership checker, reading
   # today's Odin tree: compiler/ownership_check.nim, TUCK_DEBUG_OWN=verify).
@@ -3195,7 +3196,7 @@ fn main() -> int:
   return b.items.len
 """
   t.quietly: t.odinTracked("A41: a record field overwritten in place frees what it replaced", 2)
-  t.bugOpen "A41: a record field overwritten in place frees what it replaced"
+  t.bugFixed "A41: a record field overwritten in place frees what it replaced"
   t.odinTracked("A41 under the rules' tree (TUCK_OWN=rules): no leak", 2, rules = true)
 
   # A42: a local handed over at its last use (here to `shrink`'s moved twin)
@@ -3221,7 +3222,7 @@ fn main() -> int:
   return {n: 9} early + {n: 0} early
 """
   t.quietly: t.odinTracked("A42: a local handed over at its last use is freed on an earlier return", 3)
-  t.bugOpen "A42: a local handed over at its last use is freed on an earlier return"
+  t.bugFixed "A42: a local handed over at its last use is freed on an earlier return"
   t.odinTracked("A42 under the rules' tree (TUCK_OWN=rules): no leak", 3, rules = true)
 
   # A43: a record local rebound through a threading fn (`b = {b: b} add`,
@@ -3245,7 +3246,7 @@ fn main() -> int:
   return b.items.len
 """
   t.quietly: t.odinTracked("A43: a record local rebound through a threading fn is freed", 2)
-  t.bugOpen "A43: a record local rebound through a threading fn is freed"
+  t.bugFixed "A43: a record local rebound through a threading fn is freed"
   t.odinTracked("A43 under the rules' tree (TUCK_OWN=rules): no leak", 2, rules = true)
 
   # A44: a local that is returned gets no drop, and so neither do its
@@ -3271,7 +3272,7 @@ fn main() -> int:
   return b.len
 """
   t.quietly: t.odinTracked("A44: a returned local frees what each overwrite replaces", 3)
-  t.bugOpen "A44: a returned local frees what each overwrite replaces"
+  t.bugFixed "A44: a returned local frees what each overwrite replaces"
   t.odinTracked("A44 under the rules' tree (TUCK_OWN=rules): no leak", 3, rules = true)
 
   # A45: an owning TEMPORARY, a value no place holds, is never freed: a list
@@ -3300,7 +3301,7 @@ fn main() -> int:
   return n + {xs: three} total
 """
   t.quietly: t.odinTracked("A45: an owning temporary is freed where its statement ends", 12)
-  t.bugOpen "A45: an owning temporary is freed where its statement ends"
+  t.bugFixed "A45: an owning temporary is freed where its statement ends"
   t.odinTracked("A45 under the rules' tree (TUCK_OWN=rules): no leak", 12, rules = true)
 
   # A46 (found 2026-10-05, writing A45's pin): `for r in [1, 2, 3]:` built

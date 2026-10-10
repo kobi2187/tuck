@@ -1,0 +1,7 @@
+import str
+
+fn main() -> int:
+  let text = "one\ntwo"
+  let lines = {s: text} str::splitLines
+  let copied = lines
+  return copied.len + lines.len

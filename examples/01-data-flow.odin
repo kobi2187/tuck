@@ -2,6 +2,7 @@
 package main
 
 import "core:fmt"
+import rt "./tuckrt"
 import time "./mod_time"
 
 TRec_hasNew_episodes_metadata :: struct ($T_hasNew: typeid, $T_episodes: typeid, $T_metadata: typeid) {
@@ -18,6 +19,15 @@ TRec_url_timeout :: struct ($T_url: typeid, $T_timeout: typeid) {
 	url: T_url,
 	timeout: T_timeout,
 }
+
+tuckG_0_copy :: proc(value: $G) -> G {
+	return rt.tuckStrOwned(value)
+}
+tuckG_0_drop :: proc(value: $G) {
+	delete(value)
+}
+tuckG_0_reset :: proc(value: ^$G) { tuckG_0_drop(value^); value^ = {} }
+
 
 TRec_trackId_title_durationMs :: struct ($T_trackId: typeid, $T_title: typeid, $T_durationMs: typeid) {
 	trackId: T_trackId,
@@ -60,20 +70,27 @@ tuckˑfnˑplayTrack :: proc(payload: $T) {
 
 
 tuckˑfnˑmain :: proc () {
-  tuckˑvˑrequest := TRec_url_timeout(string, time.tuckˑtypeˑMilliseconds){url = "example.com", timeout = time.tuckˑfnˑms(u32(5))}
-  tuckˑvˑresponse := tuckˑfnˑselectEpisodes(tuckˑfnˑparse(tuckˑfnˑfetch(tuckˑvˑrequest)))
-  tuckˑvˑfeed := tuckˑfnˑfetch("https://example.com/feed")
+  tuckˑvˑrequest := TRec_url_timeout(string, time.tuckˑtypeˑMilliseconds){url = tuckG_0_copy("example.com"), timeout = time.tuckˑfnˑms(u32(5))}
+  defer tuckG_0_drop(tuckˑvˑrequest.url)
+  tuckOwnTmp1 := tuckˑfnˑfetch(tuckˑvˑrequest)
+  defer tuckG_0_drop(tuckOwnTmp1.metadata)
+  tuckˑvˑresponse := tuckˑfnˑselectEpisodes(tuckˑfnˑparse(tuckOwnTmp1))
+  tuckˑvˑfeed := tuckˑfnˑfetch(tuckG_0_copy("https://example.com/feed"))
+  defer tuckG_0_drop(tuckˑvˑfeed.metadata)
   if tuckˑvˑfeed.hasNew {
       tuckˑfnˑprocess(tuckˑvˑfeed.episodes)
   } else {
       tuckˑfnˑlog(tuckˑvˑfeed.metadata)
   }
-  tuckˑvˑexternalTrack := TRec_trackId_title_durationMs(int, string, int){trackId = 101, title = "Deep Dive", durationMs = 212000}
+  tuckˑvˑexternalTrack := TRec_trackId_title_durationMs(int, string, int){trackId = 101, title = tuckG_0_copy("Deep Dive"), durationMs = 212000}
   tuckˑvˑnormalizedTrack := TRec_id_name_length(int, string, int){id = tuckˑvˑexternalTrack.trackId, name = tuckˑvˑexternalTrack.title, length = tuckˑvˑexternalTrack.durationMs}
+  defer tuckG_0_drop(tuckˑvˑnormalizedTrack.name)
   tuckˑfnˑplayTrack(tuckˑvˑnormalizedTrack)
   return
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	tuckˑfnˑmain()
+	rt.tuckTrackCheck()
 }

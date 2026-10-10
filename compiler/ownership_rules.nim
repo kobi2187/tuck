@@ -62,6 +62,13 @@ proc constructs*(res: Resolution, call: Expr): bool =
   call.callee != nil and call.callee.kind == exkVar and
     t != nil and t.kind == tkNamed and t.name == call.callee.name
 
+proc variantConstruction(res: Resolution, e: Expr): bool =
+  if e.kind != exkField or e.receiver == nil or e.receiver.kind != exkVar:
+    return false
+  var typ = res.typeFor(e)
+  if typ != nil and typ.kind == tkApp: typ = typ.base
+  typ != nil and typ.kind == tkNamed and typ.name == e.receiver.name
+
 proc payloadOf*(call: Expr): Expr =
   ## A record-style call's payload struct, still unexploded, or nil.
   if not call.argsExploded and call.args.len == 1 and call.args[0] != nil and
@@ -127,7 +134,13 @@ proc kindUses(res: Resolution, e: Expr): seq[ChildUse] =
      exkTripleDot, exkActorRef, exkRegisterRef, exkRegistryRef,
      exkPoolRef, exkMixinRef, exkSlabRef, exkArenaRef: @[]
   # `.name {args}` left unresolved keeps its arguments in `dotArg`.
-  of exkField: @[(e.receiver, uProject), (e.dotArg, uArg)]
+  of exkField:
+    if e.dotArg != nil or res.variantConstruction(e):
+      @[(e.receiver, uNone), (e.dotArg, uSink)]
+    # A place projection is handled as ONE read by placeUses/isPlaceRead.
+    # For a non-place projection (e.g. xs[i].len), computing the field only
+    # borrows its receiver; the parent's sink must not consume the receiver.
+    else: @[(e.receiver, uBorrow)]
   of exkStruct: fieldValues(e.fields, uSink)
   of exkList: all(e.items, uSink)
   # A fill's value is copied into every element.
@@ -175,6 +188,8 @@ proc kindUses(res: Resolution, e: Expr): seq[ChildUse] =
   # binds the value itself and then copies the listed fields in place.
   of exkCopy: @[(e.copied, if e.copyKind == cpFields: uSink else: uBorrow)]
   of exkDrop: @[(e.dropped, uDrop)]
+  of exkReset: @[(e.resetPlace, uWrite)]
+  of exkMove: @[(e.movedValue, uSink)]
 
 const ByOwnKind* = {exkCall, exkBracket, exkBracketAssign}
   ## Nodes classified by their own kind even when the checker resolved them
@@ -197,11 +212,20 @@ proc effective*(parent, child: Use): Use =
   of uThrough, uProject: parent
   of uBorrow, uSink, uMutBorrow, uArg, uWrite, uDrop, uNone: child
 
+proc isSingletonRead*(e: Expr): bool =
+  ## Any-depth projection through singleton state, not merely `A.field`.
+  var base = e
+  while base != nil and base.kind == exkField: base = base.receiver
+  base != nil and base.kind == exkActorRef and e != base
+
 proc isPlaceRead*(res: Resolution, e: Expr): bool =
   ## A name, or a path through one (`b.items`) — not a call the checker
   ## resolved in its place: one written as a field (`a.total`), or a nullary
   ## fn named bare (`emptyChain`).
-  e.kind in {exkVar, exkField} and pathOf(e).len > 0 and not res.hasCall(e)
+  e != nil and e.kind in {exkVar, exkField} and
+    (pathOf(e).len > 0 or isSingletonRead(e)) and
+    not res.hasCall(e) and
+    (e.kind != exkField or (e.dotArg == nil and not res.variantConstruction(e)))
 
 type
   ArgOf* = tuple[call: Expr, index: int, name: string]

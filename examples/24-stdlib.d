@@ -7,7 +7,7 @@ import console = mod_console;
 void tuckˑfnˑmain() {
     rt.TuckResult!(rt.TuckUnit) tuckˑvˑw = fs.writeFile("/tmp/tuck-demo.txt", "hello from tuck");
     if ((tuckˑvˑw.status == rt.TuckStatus.Ok)) {
-        rt.TuckResult!(fs.TRec_fs_content!(string)) tuckˑvˑr = fs.readFile("/tmp/tuck-demo.txt");
+        rt.TuckResult!(fs.TRec_fs_content!(string)) tuckˑvˑr = fs.readFile(rt.tuckCopyG("/tmp/tuck-demo.txt"));
         if ((tuckˑvˑr.status == rt.TuckStatus.Ok)) {
             console.printLine(tuckˑvˑr.value.content);
             return;

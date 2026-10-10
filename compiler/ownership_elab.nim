@@ -31,10 +31,11 @@ import resolution
 import ownership_rules
 from ssa_ir import rootOf
 from twin_shape import ownsHeap, seqFieldNames
+import ownership_glue
 
-let RulesMode* = getEnv("TUCK_OWN") == "rules"
-  ## Read once at module init: the rules write the Odin tree
-  ## (ownership_write), and rule V checks it under rule P's convention.
+let RulesMode* = getEnv("TUCK_OWN") != "legacy"
+  ## Common ownership is the default on every backend. The explicit legacy
+  ## setting exists only for differential regressions and rollback.
 
 type ConsumeMemo* = object
   ## Rule P's answers so far, and the questions being answered (a recursive
@@ -48,7 +49,7 @@ proc calleeOf*(res: Resolution, m: Module, call: Expr): Decl =
   result = res.declFor(call)
   if result == nil and call.callee != nil and call.callee.kind == exkVar:
     result = m.findFn(call.callee.name)
-  if result != nil and result.kind != dkFn: result = nil
+  result = ownershipFunction(result)
 
 # --- WHAT A BODY-LESS CALLEE DOES, FROM ITS SIGNATURE --------------------------
 #
@@ -175,6 +176,12 @@ proc resultIsView*(res: Resolution, m: Module, call: Expr, t: Type): bool =
   ## of an argument it only reads?
   if not ownsHeap(m, t): return false
   let k = keyOf(t, initTable[string, string]())
+  # Equal argument/result types promise a fresh result. This takes priority
+  # over containment in another argument (e.g. joining Seq[str] with str).
+  for i, a in argsOf(call):
+    if a != nil and not res.bodylessKeeps(m, call, i) and
+       keyOf(res.typeFor(a), initTable[string, string]()) == k:
+      return false
   for i, a in argsOf(call):
     if a != nil and not res.bodylessKeeps(m, call, i) and
        res.holds(m, res.typeAt(a), k, strict = true):
@@ -239,6 +246,10 @@ proc consumes*(res: Resolution, m: Module, d: Decl, pname: string,
                memo: var ConsumeMemo): bool =
   ## Rule P: does `d` consume its parameter `pname`? The least fixed point:
   ## a question asked again while it is being answered reads as "borrows".
+  if d.ownershipElaborated:
+    for p in d.fnParams:
+      if p.name == pname: return p.consumes
+    return false
   let key = $d.id.uint32 & "\0" & d.name & "\0" & pname
   if key in memo.known: return memo.known[key]
   if key in memo.busy: return false
@@ -302,6 +313,9 @@ proc slotsOf*(res: Resolution, m: Module, t: Type): seq[string] =
   ## What a value of type `t` owns, slot by slot: "" for a Seq or a str (the
   ## value itself), else a record's Seq fields by name.
   if t == nil: return
+  if RulesMode:
+    for slot in owningSlots(m, t): result.add slot.path
+    return
   if seqElem(t) != nil or isStr(t): return @[""]
   seqFieldNames(res, m, t)
 
@@ -344,8 +358,9 @@ proc applyMoves(w: var DropWalk, e: Expr, use: Use) =
     if pu.path == root:
       for s in w.slots[root]: keys.add slotKey(root, s)
     else:
-      let s = pu.path[root.len + 1 .. ^1].split('.')[0]
-      if s in w.slots[root]: keys.add slotKey(root, s)
+      let path = pu.path[root.len + 1 .. ^1]
+      for s in w.slots[root]:
+        if s == path or s.startsWith(path & "."): keys.add slotKey(root, s)
     for k in keys:
       w.st[k] = fMoved
       w.plan.moves.mgetOrPut(k, @[]).add pu.read
@@ -374,19 +389,36 @@ proc overwriteField(w: var DropWalk, n: Expr, path: string) =
   ## `b.items = v`: one owned slot of an owned record loses its old value.
   let root = rootOf(path)
   if root notin w.slots or path.len <= root.len: return
-  let s = path[root.len + 1 .. ^1].split('.')
-  if s.len != 1 or s[0] notin w.slots[root]: return
-  let k = slotKey(root, s[0])
-  w.plan.overwrite[n.id] = w.st.getOrDefault(k, fOwned)
-  w.st[k] = fOwned
+  let path = path[root.len + 1 .. ^1]
+  var fate = fMoved
+  var any = false
+  for s in w.slots[root]:
+    if s != path and not s.startsWith(path & "."): continue
+    let k = slotKey(root, s)
+    fate = if any: join(fate, w.st.getOrDefault(k, fOwned))
+           else: w.st.getOrDefault(k, fOwned)
+    any = true
+    w.st[k] = fOwned
+  if any: w.plan.overwrite[n.id] = fate
 
 proc walkAssign(w: var DropWalk, n: Expr) =
   ## The value is evaluated (and may move things), then the place is
   ## defined: a new owned place, or an owned place losing its old value.
   w.walkExpr(n.assignVal, uSink)
   let t = n.target
-  if t == nil or w.res.isOwnerField(t): return
+  if t == nil: return
+  if w.res.isOwnerField(t):
+    if RulesMode and ownsStorage(w.m, w.res.typeFor(t)):
+      # Actor reads are copied at sinks, never moved out of singleton state.
+      w.plan.overwrite[n.id] = fOwned
+    return
   if t.kind == exkField:
+    var base = t
+    while base != nil and base.kind == exkField: base = base.receiver
+    if RulesMode and base != nil and base.kind == exkSlabCell and
+       ownsStorage(w.m, w.res.typeFor(t)):
+      w.plan.overwrite[n.id] = fOwned
+      return
     w.overwriteField(n, pathOf(t))
     return
   if t.kind != exkVar: return
@@ -463,11 +495,9 @@ proc walkExpr(w: var DropWalk, e: Expr, use: Use) =
   of exkMatch:
     w.applyMoves(e.subject, uBorrow)
     var bodies: seq[Expr]
-    var wild = false
     for arm in e.arms:
       bodies.add arm.body
-      if arm.pattern != nil and arm.pattern.kind == pkWild: wild = true
-    w.walkArms(bodies, use, not wild)
+    w.walkArms(bodies, use, not w.res.checkedMatchIsExhaustive(e))
   of exkFor: w.walkLoop(e.iterable, e.body)
   of exkWhile: w.walkLoop(e.whileCond, e.whileBody)
   of exkAssign: w.walkAssign(e)
@@ -484,8 +514,9 @@ proc dropPlan*(res: Resolution, m: Module, d: Decl): DropPlan =
   var w = DropWalk(res: res, m: m)
   w.scopes.add @[]
   for p in d.fnParams:
-    if ownsHeap(m, p.typ) and res.consumes(m, d, p.name, w.memo):
-      w.declare(p.name, p.typ)
+    let typ = ownershipParamType(d, p.typ)
+    if ownsHeap(m, typ) and res.consumes(m, d, p.name, w.memo):
+      w.declare(p.name, typ)
   w.walkExpr(d.fnBody, uSink)
   if not w.dead:
     for place in w.scopes[0]: w.endScopeOf(place)
@@ -519,7 +550,7 @@ proc placesOf*(res: Resolution, m: Module, d: Decl,
   result.m = m
   for p in d.fnParams:
     result.all.incl p.name
-    if ownsHeap(m, p.typ) and res.consumes(m, d, p.name, memo):
+    if ownsHeap(m, ownershipParamType(d, p.typ)) and res.consumes(m, d, p.name, memo):
       result.owned.incl p.name
   for n in d.fnBody.nodes:
     if n.kind == exkAssign and n.target != nil and n.target.kind == exkVar and
@@ -533,6 +564,10 @@ proc readsElement*(res: Resolution, m: Module, v: Expr): bool =
   ## to a body-less callee whose result is a view of an argument (the
   ## contract above). A sink of one copies it.
   if v.kind == exkBracket: return true
+  if v.kind == exkSlabOp and v.slabOp == soGet: return true
+  var base = v
+  while base != nil and base.kind == exkField: base = base.receiver
+  if base != nil and base.kind == exkSlabCell: return true
   let call = if v.kind == exkCall: v elif res.hasCall(v): res.call(v) else: nil
   if call == nil or call.kind != exkCall: return false
   let d = res.calleeOf(m, call)
@@ -544,12 +579,12 @@ proc copiesRead*(res: Resolution, ps: Places, v: Expr): bool =
   ## Anything else is a temporary and moves: `Expr.Num {..}`, `State.Ready`
   ## or a nullary fn look like paths and are values built on the spot.
   if v != nil and res.readsElement(ps.m, v): return true
-  if v == nil or v.kind notin {exkVar, exkField} or pathOf(v).len == 0 or
-     res.hasCall(v):
+  if v == nil or not res.isPlaceRead(v):
     return false                                   # a temporary moves
   if res.isOwnerField(v): return true              # an actor's field
+  if isSingletonRead(v): return true
   let root = rootOf(pathOf(v))
-  if root notin ps.all: return false               # not a place at all
+  if root notin ps.all: return RulesMode           # static/global borrowed value
   root notin ps.owned or not res.isLastUse(v)
 
 proc fieldCopies(res: Resolution, m: Module, ps: Places, v: Expr): seq[string] =

@@ -73,7 +73,8 @@
 # the graph, or the next fetch fails as "a pass rewrote it without saying
 # so". No consumer fetches the lowered graph after this pass today; dropping
 # it keeps that true by construction rather than by luck.
-import tables, sets, os
+import tables, sets, os, strutils, sequtils
+from ownership_elab import RulesMode
 import ast, ast_ops, ast_query
 import resolution
 import ssa_ir
@@ -81,6 +82,7 @@ import lowering_seqcopy
 import analysis_ownership
 import twin_calls
 import twin_shape
+import ownership_glue
 
 let DebugUnbacked = not defined(release) and
                     getEnv("TUCK_DEBUG_INPLACE").len > 0
@@ -198,12 +200,17 @@ proc materializeCopies*(res: Resolution, m: Module, ownsStrs: bool,
         elif threadedCall(n) != nil: reportUnbacked(res, n, "threaded")
         else: materializeCopy(res, n, ownedStrs, staticOnly)
 
-proc dropOf(name, slot: string, span: Span): Expr =
+proc dropOf(res: Resolution, m: Module, name, slot: string, typ: Type, span: Span): Expr =
   ## `defer drop(name.slot)` — the place as a path ("" slot: the whole value).
-  var place = Expr(span: span, kind: exkVar, name: name)
+  var place = res.typed(Expr(span: span, kind: exkVar, name: name), typ)
+  var path = ""
   if slot.len > 0:
-    place = Expr(span: span, kind: exkField, receiver: place, fieldName: slot)
-  let drop = Expr(span: span, kind: exkDrop, dropped: place)
+    for field in slot.split('.'):
+      path = if path.len == 0: field else: path & "." & field
+      place = res.typed(Expr(span: span, kind: exkField, receiver: place, fieldName: field),
+                        typeAtPath(m, typ, path))
+  let drop = Expr(span: span, kind: exkDrop, dropped: place,
+                 droppedType: if RulesMode: typeAtPath(m, typ, slot) else: nil)
   result = Expr(span: span, kind: exkDefer,
                 deferBody: Expr(span: span, kind: exkBlock, stmts: @[drop]))
   fillIdsIn(result)     # every node after prepare has one (assertTreeIds)
@@ -233,6 +240,7 @@ proc todaysDrops(res: Resolution, m: Module, d: Decl): DropSource =
 
 type DropWalk = object
   res: Resolution
+  m: Module
   src: DropSource
   tasks: HashSet[string]
 
@@ -270,10 +278,14 @@ proc dropsAfter(w: DropWalk, n: Expr, defined: var HashSet[string]): seq[Expr] =
   # A threaded call declares only a declaration (`genThreadedAssign`).
   if fresh and (n.isDecl or not threaded):
     defined.incl name
-    if taskArgs: return
+    if taskArgs and not RulesMode: return
     for slot in w.src.atScopeExit.getOrDefault(name):
-      result.add dropOf(name, slot, n.span)
-  elif not fresh and not taskArgs: n.dropsOld = w.dropsOldOf(n, threaded)
+      let typ = if w.res.typeFor(n.target) != nil: w.res.typeFor(n.target)
+                elif w.res.typeFor(n.assignVal) != nil: w.res.typeFor(n.assignVal)
+                else: n.declType
+      result.add dropOf(w.res, w.m, name, slot, typ, n.span)
+  elif not fresh and (not taskArgs or RulesMode):
+    n.dropsOld = w.dropsOldOf(n, threaded)
 
 proc walkDrops(w: DropWalk, e: Expr, defined: var HashSet[string])
 
@@ -322,7 +334,7 @@ proc walkDrops(w: DropWalk, e: Expr, defined: var HashSet[string]) =
   else:
     for c in e.children: w.walkDrops(c, defined)
 
-proc materializeParamDrops(d: Decl, src: DropSource) =
+proc materializeParamDrops(res: Resolution, m: Module, d: Decl, src: DropSource) =
   ## The parameter slots the body owns, dropped at its every exit: a moved
   ## twin's consumed parameter today, a consuming parameter (P) by the rules.
   if src.paramDrops.len == 0: return
@@ -330,24 +342,30 @@ proc materializeParamDrops(d: Decl, src: DropSource) =
     "ownership_nodes: " & d.name & " owns a parameter but has no block " &
     "body to put its drops in"
   var drops: seq[Expr]
-  for (p, slot) in src.paramDrops: drops.add dropOf(p, slot, d.fnBody.span)
+  for (p, slot) in src.paramDrops:
+    var typ: Type
+    for param in d.fnParams:
+      if param.name == p:
+        typ = if RulesMode: ownershipParamType(d, param.typ) else: param.typ
+    drops.add dropOf(res, m, p, slot, typ, d.fnBody.span)
   d.fnBody.stmts = drops & d.fnBody.stmts
 
 type DropsOf* = proc (d: Decl): DropSource
   ## A body's drop source.
 
 proc materializeDropsFrom*(res: Resolution, m: Module, sourceOf: DropsOf) =
-  ## Every drop `sourceOf` decided becomes a node. Odin only.
+  ## Every drop `sourceOf` decided becomes a common semantic node.
+  ## Native collectors/destructors may implement it without emitted text.
   var tasks: HashSet[string]
   for d in m.decls:
     if d != nil and d.kind == dkTask: tasks.incl d.name
-  for d in m.allFns:
+  for d in (if RulesMode: toSeq(m.ownershipFns) else: toSeq(m.allFns)):
     if d == nil or d.fnBody == nil: continue
     let src = sourceOf(d)
     var defined: HashSet[string]
     for p in d.fnParams: defined.incl p.name
-    DropWalk(res: res, src: src, tasks: tasks).walkDrops(d.fnBody, defined)
-    materializeParamDrops(d, src)
+    DropWalk(res: res, m: m, src: src, tasks: tasks).walkDrops(d.fnBody, defined)
+    materializeParamDrops(res, m, d, src)
     res.ssaGraphs.del((d.id, ssLowered))
 
 proc materializeDrops*(res: Resolution, m: Module) =

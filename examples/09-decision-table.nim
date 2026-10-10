@@ -12,11 +12,15 @@ type tuckˑtypeˑAction* = enum QueueSecure, QueueFast, QueueImmediate, QueueDef
 proc tuckˑdecisionˑclassifyPacket*(urgency: tuckˑtypeˑPriority, size: tuckˑtypeˑSizeClass, encrypted: bool): tuckˑtypeˑAction =
   (case (((ord(urgency) * 4) + (ord(size) * 2)) + ord(encrypted))
   of 0:
-    return QueueFast
+    if true:
+      return QueueFast
   of 1:
-    return QueueSecure
+    if true:
+      return QueueSecure
   of 2, 3:
-    return QueueImmediate
+    if true:
+      return QueueImmediate
   else:
-    return QueueDefer)
+    if true:
+      return QueueDefer)
 

@@ -10,10 +10,12 @@
 # `analysis_liveness` answered the same question with a backward walk over
 # access paths and a loop fixpoint. It stays, as the ORACLE that
 # `pipeline.assertSsaWellFormed` checks this against under --verify-stages.
-import sets, os
+import sets, os, tables
 import ast
 import resolution
 import ssa_ir, ssa_cache
+import ast_query
+from analysis_liveness import referenceFinalUses
 
 proc echoFinals(fn: SsaFn, final: HashSet[NodeId]) =
   ## `TUCK_DEBUG_SSA=final`: one line per stamped read, in value order —
@@ -43,3 +45,15 @@ proc moduleSsa*(res: Resolution, m: Module): seq[CachedSsa] =
     if d == nil or d.kind notin {dkFn, dkTask}: continue
     let g = ssaOf(res, d, ssChecked)
     if g.fn.values.len > 0: result.add g
+
+proc markLoweredLiveness*(res: Resolution, m: Module) =
+  ## Certify moves on the common lowered tree. The independent path-aware
+  ## walk vetoes a whole-record move while a descendant remains live.
+  ## This is a safety intersection, not a backend ownership decision.
+  for d in m.ownershipFns:
+    if d.fnBody == nil: continue
+    res.ssaGraphs.del((d.id, ssLowered))
+    let graph = ssaOf(res, d, ssLowered)
+    let independent = referenceFinalUses(res, Module(decls: @[d]))
+    for n in graph.final:
+      if n in independent: res.markLastUseId(n)

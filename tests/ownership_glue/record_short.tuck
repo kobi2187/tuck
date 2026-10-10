@@ -1,0 +1,20 @@
+import console
+
+type Item:
+  title: str
+  done: bool
+  score: int
+
+fn make() -> Item [io]:
+  {text: "tick"} console::printLine
+  return {title: "x", done: false, score: 1} Item
+
+fn maybe({enabled: bool}) -> bool [io]:
+  return enabled and (make with {done: true}).done
+
+fn main() -> int [io]:
+  if {enabled: false} maybe: return 9
+  var i = 0
+  for i < 3 and (make with {done: true}).done:
+    i = i + 1
+  return i

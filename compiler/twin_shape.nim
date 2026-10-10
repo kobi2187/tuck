@@ -24,7 +24,8 @@
 # The duplication was structural rather than lazy, so the fix is structural:
 # the predicate moves BELOW both. Nothing here reaches for codegen or for an
 # analysis; it needs the AST, the resolution layer, and the field lookup.
-import ast, resolution
+import ast, resolution, os
+from ownership_glue import ownsStorage
 import ast_query
 from lowering import getFieldsForType
 
@@ -186,6 +187,7 @@ proc ownsHeap*(m: Module, t: Type, depth = 0): bool =
   ## pair, so marking it movable buys nothing and only adds noise to the
   ## emitted output — every golden in the corpus moved for it before this
   ## guard went in.
+  if getEnv("TUCK_OWN") != "legacy": return ownsStorage(m, t)
   if t == nil or depth > 4: return false
   case t.kind
   of tkNamed: namedOwnsHeap(m, t.name, depth + 1)
@@ -202,4 +204,3 @@ proc ownsHeap*(m: Module, t: Type, depth = 0): bool =
   of tkRecord: fieldsOwnHeap(m, t.fields, depth + 1)
   of tkSum: sumOwnsHeap(m, t, depth + 1)
   else: false
-

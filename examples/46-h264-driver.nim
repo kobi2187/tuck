@@ -85,13 +85,17 @@ var tuckˑpoolˑFrameBuffers* = ObjectPool[array[4096, uint8], 4]()
 proc tuckˑdecisionˑroute*(nal: tuckˑtypeˑNalKind, configured: bool, midFrame: bool): tuckˑtypeˑAction =
   (case (((ord(nal) * 4) + (ord(configured) * 2)) + ord(midFrame))
   of 0, 1, 16, 17, 18, 19:
-    return tuckˑtypeˑAction.skip
+    if true:
+      return tuckˑtypeˑAction.skip
   of 2, 3, 4, 6:
-    return tuckˑtypeˑAction.decode
+    if true:
+      return tuckˑtypeˑAction.decode
   of 5, 7:
-    return tuckˑtypeˑAction.flushThenDecode
+    if true:
+      return tuckˑtypeˑAction.flushThenDecode
   else:
-    return tuckˑtypeˑAction.configure)
+    if true:
+      return tuckˑtypeˑAction.configure)
 
 type tuckˑregistryˑVideoKind* = enum FrameReady, Overrun, DecodeError
 type tuckˑregistryˑVideo* = ref object

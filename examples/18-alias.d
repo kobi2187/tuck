@@ -20,7 +20,7 @@ void tuckˑfnˑplayTrack(T)(T payload) {
 }
 
 void tuckˑfnˑmain() {
-    TRec_trackId_title_durationMs!(long, string, long) tuckˑvˑexternalTrack = TRec_trackId_title_durationMs!(long, string, long)(trackId: 42L, title: "Slow Jam", durationMs: 215000L);
+    TRec_trackId_title_durationMs!(long, string, long) tuckˑvˑexternalTrack = TRec_trackId_title_durationMs!(long, string, long)(trackId: 42L, title: rt.tuckCopyG("Slow Jam"), durationMs: 215000L);
     TRec_id_name_length!(long, string, long) tuckˑvˑplayerInput = TRec_id_name_length!(long, string, long)(id: tuckˑvˑexternalTrack.trackId, name: tuckˑvˑexternalTrack.title, length: tuckˑvˑexternalTrack.durationMs);
     tuckˑfnˑplayTrack(tuckˑvˑplayerInput);
     return;

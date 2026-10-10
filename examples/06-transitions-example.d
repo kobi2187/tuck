@@ -41,5 +41,20 @@ struct tuckˑtypeˑPodcastPlayerLifecycle {
         case tuckˑtypeˑPodcastPlayerLifecycleKind.Ready: return tuckˑvariantˑready == o.tuckˑvariantˑready;
         }
     }
+    tuckˑtypeˑPodcastPlayerLifecycle tuckCopyOwned() {
+        auto outValue = this;
+        final switch (kind) {
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Unloaded:
+            outValue.tuckˑvariantˑunloaded = rt.tuckCopyG(tuckˑvariantˑunloaded);
+            break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Loading:
+            outValue.tuckˑvariantˑloading = rt.tuckCopyG(tuckˑvariantˑloading);
+            break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Ready:
+            outValue.tuckˑvariantˑready = rt.tuckCopyG(tuckˑvariantˑready);
+            break;
+        }
+        return outValue;
+    }
 }
 

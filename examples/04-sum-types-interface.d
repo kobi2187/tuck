@@ -66,6 +66,24 @@ struct tuckˑtypeˑPodcastPlayerLifecycle {
         case tuckˑtypeˑPodcastPlayerLifecycleKind.Error: return tuckˑvariantˑerror == o.tuckˑvariantˑerror;
         }
     }
+    tuckˑtypeˑPodcastPlayerLifecycle tuckCopyOwned() {
+        auto outValue = this;
+        final switch (kind) {
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Unloaded:
+            outValue.tuckˑvariantˑunloaded = rt.tuckCopyG(tuckˑvariantˑunloaded);
+            break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Loading:
+            outValue.tuckˑvariantˑloading = rt.tuckCopyG(tuckˑvariantˑloading);
+            break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Ready:
+            outValue.tuckˑvariantˑready = rt.tuckCopyG(tuckˑvariantˑready);
+            break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Error:
+            outValue.tuckˑvariantˑerror = rt.tuckCopyG(tuckˑvariantˑerror);
+            break;
+        }
+        return outValue;
+    }
 }
 
 // interface Storable: no satisfying types

@@ -3,6 +3,18 @@ package main
 
 import rt "./tuckrt"
 
+tuckG_0_copy :: proc(value: $G) -> G {
+	out: G
+	resize(&out, len(value))
+	copy(out[:], value[:])
+	return out
+}
+tuckG_0_drop :: proc(value: $G) {
+	delete(value)
+}
+tuckG_0_reset :: proc(value: ^$G) { tuckG_0_drop(value^); value^ = {} }
+
+
 tuckˑtypeˑHz :: distinct u32
 
 tuckˑtypeˑMilliseconds :: distinct u32
@@ -139,6 +151,8 @@ __validated_tuckˑtypeˑVolume :: proc(v: tuckˑtypeˑVolume) -> tuckˑtypeˑVol
 }
 
 tuckˑtaskˑstreamReader :: proc(streamId: u8, chunks: [dynamic]u32) -> rt.TuckResult(rt.TuckUnit) {
+	chunks := chunks
+  defer tuckG_0_drop(chunks)
   for tuckˑvˑi in chunks {
       tuckˑvˑbuf := rt.tuckPoolAcquire(&tuckˑpoolˑBufferPool)
       if !(tuckˑvˑbuf.status == .Ok) {
@@ -249,5 +263,6 @@ main :: proc() {
 	tuckˑfnˑmain()
 	rt.tuckRun()
 	rt.tuckDrainActors()
+	rt.tuckPoolReset(&tuckˑpoolˑBufferPool)
 	rt.tuckTrackCheck()
 }

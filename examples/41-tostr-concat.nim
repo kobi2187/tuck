@@ -12,13 +12,17 @@ type tuckˑtypeˑJar* = object
 
 proc tuckˑfnˑmain*(): void =
   var tuckˑvˑn = 99
-  var tuckˑvˑs = tuckConcat(tuck_rt.toStr(tuckˑvˑn), " bottles")
+  var tuckOwnTmp1 = tuck_rt.toStr(tuckˑvˑn)
+  var tuckˑvˑs = tuckConcat(tuckOwnTmp1, " bottles")
   tuck_rt.printLine(tuckˑvˑs)
-  var tuckˑvˑt = tuckConcat(tuck_rt.toStr(tuckˑvˑn), " more")
+  var tuckOwnTmp2 = tuck_rt.toStr(tuckˑvˑn)
+  var tuckˑvˑt = tuckConcat(tuckOwnTmp2, " more")
   tuck_rt.printLine(tuckˑvˑt)
   var tuckˑvˑj = tuckˑtypeˑJar(count: 7, label: "jam")
   var tuckˑvˑc = tuckˑvˑj.count
-  var tuckˑvˑu = tuckConcat(tuckConcat(tuckˑvˑj.label, ": "), tuck_rt.toStr(tuckˑvˑc))
+  var tuckOwnTmp3 = tuckConcat(tuckˑvˑj.label, ": ")
+  var tuckOwnTmp4 = tuck_rt.toStr(tuckˑvˑc)
+  var tuckˑvˑu = tuckConcat(tuckOwnTmp3, tuckOwnTmp4)
   tuck_rt.printLine(tuckˑvˑu)
   if (tuckˑvˑs == "99 bottles"):
     if true:

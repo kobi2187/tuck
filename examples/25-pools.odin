@@ -76,6 +76,9 @@ tuckˑfnˑmain :: proc () -> int {
 main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
 	mainRc := tuckˑfnˑmain()
+	rt.tuckPoolReset(&tuckˑpoolˑRxBuffers)
+	rt.tuckPoolReset(&tuckˑpoolˑSessions)
+	rt.tuckPoolReset(&tuckˑpoolˑReadings)
 	rt.tuckTrackCheck()
 	os.exit(mainRc)
 }

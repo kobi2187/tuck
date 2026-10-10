@@ -6,24 +6,22 @@
 # Stage C made today's decisions into nodes (ownership_nodes); the
 # elaborator computed the rules' decisions beside them (ownership_elab) and
 # rule V checks a tree of such nodes (ownership_check). Here the rules write
-# the nodes themselves, on Odin, under TUCK_OWN=rules: the same `exkCopy`,
+# the nodes themselves on the COMMON LOWERED AST, before any backend clone:
+# explicit `exkCopy`, `exkMove`, `exkDrop`, `exkReset`,
 # `defer drop` and `dropsOld` the emitter already prints, decided from the
 # rules instead of from today's passes. Nothing else changes, so the
 # emitted program is the rules' program, and V and the tracked runs check
-# it before anything switches.
+# it before backend emission. This is now the default on all backends.
 #
-#   P  calling convention. Every call to a fn with a moved twin calls the
-#      twin, which is the body itself (twin_calls, `every`); a parameter
-#      the body consumes is P's answer, for every parameter, not only the
-#      first. The copying wrapper is never called.
+#   P  calling convention. Record consumption on each parameter once.
+#      Emit one implementation, without legacy copying wrappers/twins.
 #   S  every sink is decided: a binding, a construction's field, a list's
 #      element, a `return`, a value appended, an argument to a consuming
 #      parameter (a callee with no body by its signature's contract). A
 #      read of a place the
 #      body owns moves at its final use and copies otherwise; a read of a
 #      place it borrows, or of an element, always copies; a temporary moves.
-#      The take, `st = {b: st} apply` (an actor's field handed over and
-#      refilled by the same statement), moves.
+#      Singleton state reads copy; overwrites release the old owned state.
 #   D  every owned place is dropped where its scope ends unless it was moved
 #      out on every path, and an overwrite drops the old value unless it was
 #      moved out (the elaborator's `dropPlan`, placed by Stage C's walker).
@@ -39,15 +37,9 @@
 #     given to a reading parameter): bound, it is an owned place, dropped
 #     where its scope ends (D). Only when nothing with an effect runs before
 #     it in its statement, so the order of effects is kept.
-#   - a record copied where it is not bound (an argument, an element, a
-#     `return`): Odin prints a record's field copies only after a binding.
-#
-# NOT YET, and so not written here:
-#   - `str`: static or heap is rule G's answer. Its copies and drops stay
-#     today's (ownership_nodes, `staticOnly`), and so does its calling
-#     convention: a `str` parameter borrows.
-#   - an actor's field overwritten (rule T), and a Seq's elements and a
-#     sum's payloads (glue, rule G; A39).
+# Type-derived G handles nested records, arrays, strings, recursive sums
+# and result payloads. Static strings are cloned at owning sinks. Tasks and
+# both forms of message handlers use the same semantic body rules.
 import os, tables, sets, strutils
 import ast, ast_ops, ast_query
 import resolution
@@ -56,6 +48,8 @@ from analysis_ownership import ownershipFor, Ownership
 from twin_shape import ownsHeap, seqFieldNames
 from twin_calls import threadedCall, markBuilt
 from ssa_ir import rootOf
+import ownership_glue
+from ssa_liveness import markLoweredLiveness
 
 type Writer = object
   res: Resolution
@@ -67,7 +61,7 @@ type Writer = object
 
 proc seqOwning(w: Writer, t: Type): bool =
   ## Does a value of `t` own Seq storage the rules decide (not a `str`)?
-  t != nil and not isStr(t) and slotsOf(w.res, w.m, t).len > 0
+  t != nil and ownsStorage(w.m, t)
 
 proc consumed(w: var Writer, a: ArgOf): bool =
   ## Does the parameter this argument feeds consume it (rule P)?
@@ -75,25 +69,41 @@ proc consumed(w: var Writer, a: ArgOf): bool =
 
 proc copyNode(w: Writer, v: Expr, kind: CopyKind, fields: seq[string]): Expr =
   ## `v` copied; the copy is new and typed as its value.
-  result = w.res.typed(Expr(span: v.span, kind: exkCopy, copied: v,
+  let original = Expr()
+  original[] = v[]
+  result = w.res.typed(Expr(span: v.span, kind: exkCopy, copied: original,
                             copyKind: kind, copyFields: fields),
                        w.res.typeFor(v))
   fillIdsIn(result)
+  # Resolved calls can share this operand. Replace its object in place,
+  # rather than leaving an unelaborated reference in Resolution.calls.
+  v[] = result[]
+  result = v
 
 proc taken(w: Writer, v: Expr): bool =
   ## The take: an actor's field handed over by the assignment that refills
   ## it, never seen empty.
   w.refills.len > 0 and w.res.isOwnerField(v) and pathOf(v) == w.refills
 
+proc moveNode(w: Writer, v: Expr): Expr =
+  let original = Expr()
+  original[] = v[]
+  let wrapper = w.res.typed(Expr(span: v.span, kind: exkMove,
+                                movedValue: original), w.res.typeFor(v))
+  fillIdsIn(wrapper)
+  v[] = wrapper[]
+  v
+
 proc atSink(w: var Writer, v: Expr, atBinding: bool): Expr =
   ## `v` put to a sink: the copy rule S makes of it, or `v` itself (a move).
   let t = w.res.typeFor(v)
-  if v == nil or v.kind == exkCopy or not w.seqOwning(t) or w.taken(v) or
-     not w.res.copiesRead(w.ps, v):
-    return v
-  if seqElem(t) != nil: return w.copyNode(v, cpSeq, @[])
-  if atBinding: return w.copyNode(v, cpFields, seqFieldNames(w.res, w.m, t))
-  inc w.unprinted
+  if v != nil and v.kind == exkLit and v.litKind == lkStr and t == nil:
+    w.res.setType(v, Type(kind: tkNamed, name: "str"))
+    return w.copyNode(v, cpValue, @[])
+  if v == nil or v.kind in {exkCopy, exkMove} or not w.seqOwning(t): return v
+  if (isStr(t) and v.kind == exkLit) or w.res.copiesRead(w.ps, v):
+    return w.copyNode(v, cpValue, @[])
+  if w.res.isPlaceRead(v): return w.moveNode(v)
   v
 
 proc walk(w: var Writer, e: Expr, use: Use, arg: ArgOf)
@@ -106,6 +116,7 @@ proc visit(w: var Writer, slot: var Expr, use: Use, arg: ArgOf,
   if use == uSink or (use == uArg and w.consumed(arg)):
     slot = w.atSink(slot, atBinding)
   if slot.kind == exkCopy: w.walk(slot.copied, uBorrow, NoArg)
+  elif slot.kind == exkMove: w.walk(slot.movedValue, uBorrow, NoArg)
   else: w.walk(slot, use, arg)
 
 type Operand = tuple[child: Expr, use: Use, arg: ArgOf]
@@ -143,6 +154,12 @@ proc walk(w: var Writer, e: Expr, use: Use, arg: ArgOf) =
     return
   if e.kind == exkAssign:
     w.walkAssign(e)
+    return
+  if e.kind == exkBracketAssign:
+    w.visit(e.brValue, uSink, NoArg)
+    let typ = w.res.typeFor(e.brValue)
+    if ownsStorage(w.m, typ): e.replacedType = typ
+    w.walk(e.brTarget, uMutBorrow, NoArg)
     return
   let ops = w.operands(e, use, arg)
   let payload = if e.kind == exkCall: payloadOf(e) else: nil
@@ -183,6 +200,12 @@ proc bindHere(res: Resolution, n: Expr): Expr =
   result = Expr(span: val.span, kind: exkAssign, target: target,
                 assignVal: val, isDecl: true)
   fillIdsIn(result)
+  let site = res.shortcut(val)
+  if site.len > 0:
+    # Error handling belongs to the statement that now evaluates the call,
+    # not to the later read/discard of the bound owning value.
+    res.setShortcut(result, site)
+    res.shortcuts.del val.id
   markBuilt(result)
   markBuilt(n)
 
@@ -190,7 +213,7 @@ proc isTemporary(w: Writer, n: Expr): bool =
   ## A value no place holds: a call's result, a construction, a list. An
   ## element read is its container's.
   let c = if n.kind notin ByOwnKind and w.res.hasCall(n): w.res.call(n) else: n
-  c != nil and c.kind in {exkCall, exkList, exkFill} and
+  c != nil and c.kind in {exkCall, exkList, exkFill, exkBinary, exkWrapOk, exkIfaceCall} and
     not w.res.isPlaceRead(n) and not w.res.readsElement(w.m, n) and
     w.seqOwning(w.res.typeFor(n))
 
@@ -228,9 +251,7 @@ proc liftSelf(w: var Writer, n: Expr, use: Use, arg: ArgOf, L: var Lift,
   ## `n` itself, its operands done: named if a rule needs it named; `before`
   ## is whether something with an effect ran ahead of it.
   let sink = use == uSink or (use == uArg and w.consumed(arg))
-  if sink and w.copiedRecord(n):
-    L.lifted.add w.res.bindHere(n)            # a pure read: no order to keep
-  elif not sink and use notin {uThrough, uProject, uNone} and
+  if not sink and use notin {uThrough, uProject} and
        w.isTemporary(n) and not before:
     L.lifted.add w.res.bindHere(n)
     L.effects = before
@@ -246,7 +267,11 @@ proc lift(w: var Writer, n: Expr, use: Use, arg: ArgOf, L: var Lift,
     L.effects = true
     return
   let before = L.effects
-  if not w.res.isPlaceRead(n):
+  if n.kind == exkIfaceCall:
+    # Arms execute inside the dispatch closure. Never lift their payload
+    # reads or calls into the enclosing scope.
+    w.lift(n.dispatchRecv, uBorrow, NoArg, L)
+  elif not w.res.isPlaceRead(n):
     let c = if n.kind notin ByOwnKind and w.res.hasCall(n): w.res.call(n) else: n
     for o in w.operands(c, use, arg): w.lift(o.child, o.use, o.arg, L)
   if not own: w.liftSelf(n, use, arg, L, before)
@@ -266,7 +291,13 @@ proc liftStatement(w: var Writer, s: Expr): seq[Expr] =
   of exkIf: w.lift(s.cond, uBorrow, NoArg, L)
   of exkMatch: w.lift(s.subject, uBorrow, NoArg, L)
   of exkWhile, exkBlock, exkDefer, exkSelect, exkBreak, exkContinue: discard
-  else: w.lift(s, uNone, NoArg, L, own = true)
+  else:
+    let discardedTemporary = w.isTemporary(s)
+    w.lift(s, uNone, NoArg, L)
+    if discardedTemporary and s.kind == exkVar:
+      let value = w.res.freshCopy(s)
+      s[] = Expr(kind: exkDiscard, span: s.span, discardVal: value)[]
+      fillIdsIn(s)
   L.lifted
 
 proc liftAll(w: var Writer, d: Decl) =
@@ -300,22 +331,27 @@ proc statementOf(res: Resolution, body, read: Expr): tuple[b: Expr, i: int] =
     for i, s in b.stmts:
       if res.contains(s, read): result = (b, i)
 
-proc resetOf(w: Writer, read: Expr, place, slot: string): Expr =
+proc resetOf(w: Writer, d: Decl, read: Expr, place, slot: string): Expr =
   ## `place.slot = {}`: the slot is empty, and its drop frees nothing. The
   ## empty value is untyped, so Odin takes the type from the target (a
   ## generic record's field type has no name here).
-  let whole = pathOf(read) == place
   let span = read.span
-  var target = w.res.typed(Expr(span: span, kind: exkVar, name: place),
-    if whole: w.res.typeFor(read)
-    elif read.kind == exkField: w.res.typeFor(read.receiver)
-    else: nil)
-  if slot.len > 0:
-    let t = if pathOf(read) == place & "." & slot: w.res.typeFor(read) else: nil
+  var rootType: Type
+  for p in d.fnParams:
+    if p.name == place: rootType = ownershipParamType(d, p.typ)
+  for n in d.fnBody.nodes:
+    if n.kind == exkAssign and n.target != nil and n.target.kind == exkVar and
+       n.target.name == place:
+      rootType = if w.res.typeFor(n.target) != nil: w.res.typeFor(n.target)
+                 else: w.res.typeFor(n.assignVal)
+  var target = w.res.typed(Expr(span: span, kind: exkVar, name: place), rootType)
+  var path = ""
+  for field in slot.split('.'):
+    if field.len == 0: continue
+    path = if path.len == 0: field else: path & "." & field
     target = w.res.typed(Expr(span: span, kind: exkField, receiver: target,
-                              fieldName: slot), t)
-  let empty = w.res.typed(Expr(span: span, kind: exkList), nil)
-  result = Expr(span: span, kind: exkAssign, target: target, assignVal: empty)
+                              fieldName: field), typeAtPath(w.m, rootType, path))
+  result = Expr(span: span, kind: exkReset, resetPlace: target)
   fillIdsIn(result)
   markBuilt(result)
 
@@ -326,15 +362,16 @@ proc resetAfter(w: var Writer, d: Decl, key: string, read: Expr): bool =
   if b == nil: return false
   let (place, slot) = (key.split('\t')[0], key.split('\t')[1])
   let s = b.stmts[i]
+  let reset = w.resetOf(d, read, place, slot)
   case s.kind
   of exkReturn, exkRaise:
     # The value is bound first, so the reset runs before the scope's drops.
     let v = if s.kind == exkReturn: s.returnVal else: s.raiseVal
     b.stmts.insert(w.res.bindHere(v), i)
-    b.stmts.insert(w.resetOf(read, place, slot), i + 1)
+    b.stmts.insert(reset, i + 1)
   of exkIf, exkWhile, exkFor, exkMatch, exkBlock, exkSelect, exkDefer:
     return false                       # moved in a condition: nowhere to go
-  else: b.stmts.insert(w.resetOf(read, place, slot), i + 1)
+  else: b.stmts.insert(reset, i + 1)
   true
 
 # --- rule D, as a drop source ---------------------------------------------------
@@ -347,18 +384,18 @@ proc resetMoves(w: var Writer, d: Decl, plan: DropPlan,
                 keys: HashSet[string]): HashSet[string] =
   ## Rule M: every move of the slots in `keys` is followed by a reset of
   ## the slot. Returns the keys some move of which could not be reset.
-  var done: HashSet[NodeId]
+  var done: HashSet[(NodeId, string)]
   for k in keys:
     for read in plan.moves.getOrDefault(k):
-      if read.id in done: continue
-      done.incl read.id
+      if (read.id, k) in done: continue
+      done.incl (read.id, k)
       if not w.resetAfter(d, k, read): result.incl k
 
 proc maybeKeys(d: Decl, plan: DropPlan): HashSet[string] =
   ## The slots moved on some paths and still dropped: a `maybe` where the
   ## scope ends, or the old value of a `maybe` overwrite.
   for k, fate in plan.scopeEnd:
-    if fate == fMaybe and k.split('\t')[0] notin plan.strs: result.incl k
+    if fate == fMaybe: result.incl k
   for n in d.fnBody.nodes:
     if n.kind != exkAssign or plan.overwrite.getOrDefault(n.id) != fMaybe:
       continue
@@ -375,7 +412,7 @@ proc scopeEndDrops(d: Decl, plan: DropPlan, unreset: HashSet[string],
   for p in d.fnParams: params.incl p.name
   for k, fate in plan.scopeEnd:
     let (place, slot) = split(k)
-    if place in plan.strs or fate == fMoved or k in unreset: continue
+    if fate == fMoved or k in unreset: continue
     if place in params: src.paramDrops.add (place, slot)
     else: src.atScopeExit.mgetOrPut(place, @[]).add slot
 
@@ -398,37 +435,85 @@ proc overwriteDrops(d: Decl, plan: DropPlan, unreset: HashSet[string],
        n.target.kind notin {exkVar, exkField}:
       continue
     let name = rootOf(pathOf(n.target))
-    if n.target.kind == exkVar and name in plan.strs:
-      if name in today.freeBeforeOverwrite and threadedCall(n) == nil:
-        src.overwriteDrops.incl n.id
-    elif dropsOld(n, plan, unreset):
+    if dropsOld(n, plan, unreset):
       src.overwriteDrops.incl n.id
 
 proc rulesDrops(w: var Writer, d: Decl): DropSource =
   ## Rules D and M for one body, as a drop source: every owned place still
   ## owned where its scope ends, a `maybe` one once it is reset where it
-  ## moves, and every overwrite whose old value is still owned. A `str`
-  ## keeps today's frees (rule G).
+  ## moves, and every overwrite whose old value is still owned. Rule G
+  ## supplies the same storage classification for strings and containers.
   result.byAssignment = true
   let plan = w.res.dropPlan(w.m, d)
   let unreset = w.resetMoves(d, plan, maybeKeys(d, plan))
   scopeEndDrops(d, plan, unreset, result)
-  let today = ownershipFor(d)
-  for name, slots in today.freeAtScopeExit:
-    if name in plan.strs: result.atScopeExit[name] = slots
-  overwriteDrops(d, plan, unreset, today, result)
+  overwriteDrops(d, plan, unreset, Ownership(), result)
+
+proc publishConventions(m: Module, fns: seq[Decl]) =
+  for source in m.decls:
+    if source == nil: continue
+    if source.kind == dkTask:
+      for fn in fns:
+        if fn.id == source.id:
+          source.taskParams = fn.fnParams
+          source.taskOwnershipElaborated = true
+    elif source.kind == dkActor:
+      for h in source.handlers:
+        if h.kind != dkSelect: continue
+        for arm in h.selectArms.mitems:
+          for fn in fns:
+            if arm.body != nil and fn.id == arm.body.id: arm.binding = fn.fnParams
+
+proc inferConventions(res: Resolution, m: Module, fns: seq[Decl]) =
+  for d in fns:
+    if d.fnBody != nil: d.ownershipElaborated = true
+  publishConventions(m, fns)
+  var changed = true
+  while changed:
+    changed = false
+    for d in fns:
+      if d.fnBody == nil: continue
+      for p in d.fnParams.mitems:
+        if p.consumes or not ownsStorage(m, ownershipParamType(d, p.typ)) or
+           p.name == "self": continue
+        var memo: ConsumeMemo
+        if d.isOnHandler or res.consumesWhy(m, d, p.name, memo).len > 0:
+          p.consumes = true
+          changed = true
+    publishConventions(m, fns)
 
 proc writeRules*(res: Resolution, m: Module) =
-  ## TUCK_OWN=rules, on Odin: the rules write the copies, drops and resets
-  ## (step 9, in place of today's). Run after the appends are made.
+  ## Common ownership writes copies, moves, drops and resets before cloning.
+  ## Run after representation lowering and common appends.
   var w = Writer(res: res, m: m)
+  # Single-line exit arms need a statement scope for the return temporary
+  # and the reset that must execute before enclosing deferred drops.
+  for body in m.bodies:
+    for n in body.nodes:
+      if n.kind notin {exkIf, exkMatch, exkFor, exkWhile}: continue
+      for slot in n.childSlots:
+        if slot != nil and slot.kind in {exkReturn, exkRaise}:
+          slot = res.typed(Expr(kind: exkBlock, span: slot.span, stmts: @[slot]),
+                            res.typeFor(slot))
+          fillIdsIn(slot)
+  for body in m.bodies:
+    for n in body.nodes:
+      res.lastUses.excl n.id
+      if res.hasCall(n):
+        for c in res.call(n).nodes: res.lastUses.excl c.id
+  markLoweredLiveness(res, m)
+  var fns: seq[Decl]
+  for d in m.ownershipFns: fns.add d
+  inferConventions(res, m, fns)
+  for actor in m.decls(dkActor):
+    for field in actor.actorFields.mitems:
+      w.visit(field.default, uSink, NoArg)
   var sources: Table[NodeId, DropSource]
-  for d in m.allFns:
+  for d in fns:
     if d == nil or d.fnBody == nil: continue
     w.liftAll(d)
     w.writeCopies(d)
     sources[d.id] = w.rulesDrops(d)
-  materializeCopies(res, m, ownsStrs = true, staticOnly = true)
   materializeDropsFrom(res, m, proc (d: Decl): DropSource =
     sources.getOrDefault(d.id))
   if getEnv("TUCK_DEBUG_OWN") == "write" and w.unprinted > 0:

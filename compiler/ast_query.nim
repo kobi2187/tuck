@@ -113,6 +113,20 @@ iterator externFns*(m: Module): Decl =
   for mem in m.externMembers():
     if mem.kind == dkFn and mem.isExtern: yield mem
 
+proc checkedMatchIsExhaustive*(res: Resolution, e: Expr): bool =
+  ## Closed-domain matches reaching lowering have passed exhaustiveness
+  ## checking. Open-domain literal matches may still miss every arm.
+  for arm in e.arms:
+    if arm.pattern == nil or
+       arm.pattern.kind in {pkWild, pkVar, pkBind, pkTypeTest}:
+      return true
+  let t = res.typeFor(e.subject)
+  if t == nil: return false
+  if t.kind == tkNamed and t.name == "bool": return true
+  let d = res.declForType(t)
+  d != nil and d.kind == dkType and d.typeBody != nil and
+    d.typeBody.kind == tkSum
+
 proc exportedNames*(m: Module): (bool, HashSet[string]) =
   ## `public:` — the names this module lets an importer see, and whether it
   ## said anything at all.
@@ -229,6 +243,32 @@ iterator allFns*(m: Module): Decl =
     else:
       for mem in d.members():
         if mem.kind == dkFn: yield mem
+
+proc ownershipFunction*(d: Decl): Decl =
+  ## A task keeps its scheduling declaration, but its body obeys the same
+  ## ownership rules as a function. The adapter shares the body node.
+  if d == nil: return nil
+  if d.kind == dkFn: return d
+  if d.kind == dkTask:
+    return Decl(kind: dkFn, id: d.id, name: d.name, span: d.span,
+      fnParams: d.taskParams, fnReturnType: d.taskReturnType,
+      fnEffects: d.taskEffects, fnBody: d.taskBody,
+      ownershipElaborated: d.taskOwnershipElaborated, isOnHandler: true)
+
+iterator ownershipFns*(m: Module): Decl =
+  ## Common semantic bodies, including scheduled tasks and message arms.
+  for d in m.allFns: yield d
+  for d in m.decls:
+    if d == nil: continue
+    if d.kind == dkTask: yield ownershipFunction(d)
+    elif d.kind == dkActor:
+      for h in d.handlers:
+        if h.kind != dkSelect: continue
+        for arm in h.selectArms:
+          if arm.body != nil:
+            yield Decl(kind: dkFn, id: arm.body.id, span: arm.body.span,
+              name: d.name & "." & arm.source, fnParams: arm.binding,
+              fnBody: arm.body, isOnHandler: true)
 
 proc findFn*(m: Module, name: string): Decl =
   ## The fn declaration named `name`, wherever it sits: top level, or a member
@@ -449,7 +489,7 @@ proc implicitTailValue*(body: Expr): Expr =
     # table — subject == nil — keeps its per-row returns.)
     if lastS.subject != nil and not matchArmsReturn(lastS): lastS else: nil
   of exkReturn, exkRaise, exkIf, exkFor, exkWhile, exkBreak, exkContinue,
-     exkAssign, exkAppend, exkDrop, exkBlock, exkSelect, exkSend, exkDiscard,
+     exkAssign, exkAppend, exkDrop, exkReset, exkBlock, exkSelect, exkSend, exkDiscard,
      exkTripleDot:
     nil
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill, exkCall,
@@ -457,7 +497,7 @@ proc implicitTailValue*(body: Expr): Expr =
      exkCombinator, exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
      exkMixinRef, exkDefer, exkFinish, exkAcquire, exkOrdinal, exkValidate,
      exkIfaceCall, exkIfaceIs, exkIfacePayload, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset, exkWrapOk,
-     exkAbsent, exkCopy:
+     exkAbsent, exkCopy, exkMove:
     lastS
 
 proc injectTailReturn*(body: Expr) =

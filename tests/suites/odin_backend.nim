@@ -90,13 +90,13 @@ const
   # a tracked sweep found leaks in most of them on 2026-10-05, run by hand
   # because nothing ran it. 44-recursive-tree leaks its boxes (A39) and says
   # 90 until that is fixed, when this line flips like a bugOpen pin.
-  trackedExpect = "44-recursive-tree:90"
+  trackedExpect = ""
 
   # The same programs on the tree the OWNERSHIP RULES write (TUCK_OWN=rules,
   # compiler/ownership_write.nim), tracked: Stage D's run-time gate, and the
   # tree the switch makes the default. Known leaks, each waiting on rule G
   # (glue per type), are listed with what they answer.
-  rulesTrackedExpect = "44-recursive-tree:90"
+  rulesTrackedExpect = ""
 
 proc projFor(base: string, tracked = false, rules = false): string =
   ## The scratch package dir an example is staged and built in: its base name

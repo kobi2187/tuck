@@ -1,0 +1,17 @@
+import seq
+
+type Bag:
+  label: str
+  items: Seq[str]
+
+fn make({label: str}) -> Bag:
+  return {label: label, items: ["one", "two"]} Bag
+
+fn main() -> int:
+  var original = {label: "bag"} make
+  var copied = original
+  copied.items[0] = "changed"
+  if original.items[0] != "one":
+    return 9
+  copied = {label: "replacement"} make
+  return original.items.len

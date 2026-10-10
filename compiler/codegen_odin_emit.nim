@@ -11,6 +11,8 @@ import ast_query
 import codegen_common
 import codegen_odin_ctx
 import codegen_odin_util
+import ownership_glue, ownership_glue_odin
+from ownership_elab import RulesMode
 
 # Odin refuses a compound literal for a `[dynamic]T` unless the file opts in:
 # "Compound literals of dynamic types are disabled by default". Tuck's `Seq[T]`
@@ -77,7 +79,8 @@ proc emitOdinModule*(name: string, m: Module, res: Resolution,
   # This file lives in mod_<pkg>/, so siblings are one level up.
   var imports: seq[string]
   if "fmt." in body: imports.add("import \"core:fmt\"")
-  if "rt." in body: imports.add("import rt \"../tuckrt\"")
+  if "rt." in body or "rt." in ctx.hoisted.join("\n"):
+    imports.add("import rt \"../tuckrt\"")
   for modName in realModules.keys:
     let dep = modName.replace("-", "_")
     if dep != pkg and (dep & ".") in body:
@@ -176,7 +179,7 @@ proc actorInitLines(ctx: OdinCodegenCtx): string =
   ## contextless.
   for s in ctx.actorInits: result.add("\t" & s & "\n")
 
-proc actorFieldReleases(ctx: OdinCodegenCtx, m: Module): string =
+proc actorFieldReleases(ctx: var OdinCodegenCtx, m: Module): string =
   ## Every actor's heap fields, handed back at exit under TUCK_TRACK the way
   ## the slabs are: an actor is a daemon whose state lives until exit by
   ## design, and reported as a leak it hid the program's real ones (every
@@ -186,13 +189,17 @@ proc actorFieldReleases(ctx: OdinCodegenCtx, m: Module): string =
   for d in m.decls(dkActor):
     let owner = actorSingletonName(d.name)
     for f in d.actorFields:
+      if RulesMode:
+        if ownsStorage(m, f.typ):
+          result.add "\t" & ctx.odinGlue(f.typ).drop & "(" & owner & "." & f.name & ")\n"
+        continue
       if seqElem(f.typ) != nil:
         result.add "		delete(" & owner & "." & f.name & ")\n"
         continue
       for slot in seqFieldNames(ctx.res, m, f.typ):
         result.add "		delete(" & owner & "." & f.name & "." & slot & ")\n"
 
-proc exitLines(ctx: OdinCodegenCtx, m: Module, tracks: bool): string =
+proc exitLines(ctx: var OdinCodegenCtx, m: Module, tracks: bool): string =
   ## What the entry point runs after main and the drain, before `os.exit`
   ## (`_exit`, which runs no defers and no finalizers): the resource tables
   ## closed, the slabs reported and handed back, the actors' state handed
@@ -203,6 +210,12 @@ proc exitLines(ctx: OdinCodegenCtx, m: Module, tracks: bool): string =
   # entry point already owns the lifecycle (it boots the scheduler); this is
   # the other end of it.
   if declaresResources(m): result.add("\t" & ResourceShutdownProc & "()\n")
+  if RulesMode:
+    for pool in m.decls(dkPool):
+      result.add "\trt.tuckPoolReset(&" & pool.name & ")\n"
+    for pkg, module in ctx.realModules:
+      for pool in module.decls(dkPool):
+        result.add "\trt.tuckPoolReset(&" & pkg.replace("-", "_") & "." & pool.name & ")\n"
   # The slab proposal's exit report (Q3): cells never freed, per slab.
   for s in reportedSlabs(m, ctx.realModules):
     let pre = if s.origin == "": "" else: s.origin.replace("-", "_") & "."
@@ -220,11 +233,12 @@ proc exitLines(ctx: OdinCodegenCtx, m: Module, tracks: bool): string =
                SlabsReleaseProc & "()\n")
   # ...and every actor's state, after the drain above left them idle.
   let fieldDrops = ctx.actorFieldReleases(m)
-  if tracks and fieldDrops.len > 0:
+  if RulesMode: result.add fieldDrops
+  elif tracks and fieldDrops.len > 0:
     result.add("\twhen rt.TUCK_TRACK {\n" & fieldDrops & "\t}\n")
   if tracks: result.add("\trt.tuckTrackCheck()\n")
 
-proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string =
+proc genEntryPoint*(ctx: var OdinCodegenCtx, m: Module, body, mains: string): string =
   ## Tuck's `fn main` is a plain proc; Odin's entry point calls it. Static
   ## asserts fold into the same entry (Odin has #assert for compile-time, but
   ## these are runtime-checked, as on the other backends).
@@ -246,7 +260,7 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string
   # alone, so a program whose runtime calls all sit in its fns — every
   # `tuckSeqCopy` in a body, every twin — imported the runtime and was never
   # tracked: `-define:TUCK_TRACK=true` reported nothing, leak or bad free.
-  let tracks = tracksAllocations(m, body, mains) or
+  let tracks = tracksAllocations(m, body & ctx.hoisted.join("\n"), mains) or
                slabPackages(m, ctx.realModules).len > 0
   if tracks:
     result.add("\tcontext.allocator = rt.tuckTrackAllocator()\n")
@@ -297,11 +311,12 @@ proc emitOdin*(m: Module, res: Resolution,
   # everything the emitter needs was decided in backend_prepare.
   var ctx = newOdinCtx(m, realModules, moduleName, res)
   let (body, mains) = ctx.emitBody(m)
+  let entry = ctx.genEntryPoint(m, body, mains)
   result = odinPackage
-  let imports = ctx.odinImports(m, body, mains, realModules)
+  let imports = ctx.odinImports(m, body & ctx.hoisted.join("\n"), mains & entry, realModules)
   if imports.len > 0:
     result.add(imports.join("\n") & "\n\n")
   for h in ctx.hoisted:
     result.add(h & "\n\n")
   result.add(body)
-  result.add(ctx.genEntryPoint(m, body, mains))
+  result.add(entry)

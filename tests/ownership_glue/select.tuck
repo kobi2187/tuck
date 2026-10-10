@@ -1,0 +1,17 @@
+actor Store [queue: 8]:
+  label: str = "initial"
+  rows: Seq[Seq[str]] = [["initial"]]
+  count: int = 0
+  on select:
+    | replace -> {nextLabel: str, nextRows: Seq[Seq[str]]}:
+      label = nextLabel
+      rows = nextRows
+      count = count + 1
+
+fn done() -> bool:
+  return Store.count == 1
+
+fn main() -> int:
+  Store send replace {nextLabel: "new", nextRows: [["new"]]}
+  Store.waitUntil {pred: :done}
+  return Store.rows.len

@@ -63,7 +63,9 @@ proc nimFnParams*(res: Resolution, m: Module, d: Decl): seq[string] =
   ## parameters qualify is our own analysis's answer (analysis_liveness), not
   ## Nim's inference — Odin and D are handed the same fact.
   for p in d.fnParams:
-    let move = if paramIsMovable(res, m, d.fnBody, p): "sink " else: ""
+    let consuming = if d.ownershipElaborated: p.consumes
+                    else: paramIsMovable(res, m, d.fnBody, p)
+    let move = if consuming: "sink " else: ""
     result.add(p.name & ": " & move & genType(p.typ))
 
 proc groupMixins(ctx: CodegenCtx, d: Decl): string =

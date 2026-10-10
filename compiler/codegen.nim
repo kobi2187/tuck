@@ -810,6 +810,8 @@ proc genDefer(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## The body is always a block — `defer:` opens one, and the parser has no
   ## other form — so there is no inline arm to write.
   if e.deferBody == nil or e.deferBody.kind != exkBlock: return ind & "discard"
+  if e.deferBody.stmts.len == 1 and e.deferBody.stmts[0].kind == exkDrop:
+    return "" # Native destruction implements this common semantic operation.
   let body = ctx.genStmts(e.deferBody, ind)
   if body.len == 0: return ind & "discard"
   ind & "defer:\n" & body
@@ -888,8 +890,11 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   # Nim's `seq` and `string` assignment already copies, so prepare never
   # makes an `exkCopy` on this backend; if one arrives, the value IS its copy.
   of exkCopy: ctx.genExpr(e.copied)
+  of exkMove: ctx.genExpr(e.movedValue)
   of exkDrop:
-    raiseAssert "nim: ARC frees; prepare makes an exkDrop for Odin only"
+    ""
+  of exkReset: ctx.genExpr(e.resetPlace) & " = default(typeof(" &
+                 ctx.genExpr(e.resetPlace) & "))"
   of exkMatch: ctx.genExprMatch(e)
   of exkReturn: ctx.genReturn(e)
   of exkRaise: ctx.genRaise(e)
@@ -1035,6 +1040,9 @@ proc genFieldWrite(ctx: var CodegenCtx, e: Expr,
                ctx.genExpr(e.target.receiver) & ")")
 
 proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
+  if e.assignVal == nil and e.isDecl and e.declType != nil:
+    ctx.definedVars.incl e.target.name
+    return "var " & e.target.name & ": " & genType(e.declType)
   ## An assignment or binding, trying the special forms first: a task result
   ## slot, a declaration; else a plain field or variable write. (An append
   ## grown in place is no longer one of them: it reaches here as `exkAppend`.)

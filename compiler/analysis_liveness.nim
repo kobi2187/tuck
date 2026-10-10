@@ -268,13 +268,15 @@ proc stmtLive(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =
   ## the name a plain `x = ...` overwrites.
   var r: Live
   uses(c, e, r)
+  var outp = liveOut
+  if e.kind == exkAssign and e.target != nil and e.target.kind == exkVar:
+    # The old value is dead after its replacement, even when the new value
+    # in the same place is live on the next loop iteration.
+    outp.excl(e.target.name)
   if stamp:
     # A name this statement reads and nothing after it wants is dead here.
     # A plain `x = ...` also KILLS x, but only for statements before it.
-    stampSites(c, e, deadOf(r, liveOut, c.skip))
-  var outp = liveOut
-  if e.kind == exkAssign and e.target != nil and e.target.kind == exkVar:
-    outp.excl(e.target.name)
+    stampSites(c, e, deadOf(r, outp, c.skip))
   outp + r
 
 proc lastUseSites(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =

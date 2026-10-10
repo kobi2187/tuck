@@ -10,6 +10,7 @@ import ast_query
 import codegen_common
 import codegen_d_ctx
 from ownership_glue import ownsStorage
+from ownership_elab import RulesMode
 from mangle import mangleName
 import ./codegen_d
 
@@ -373,7 +374,18 @@ proc genDPayloadSum*(ctx: var DCodegenCtx, d: Decl, body: Type): string =
     else:
       let f = sumPayloadField(v.name)
       res.add("        " & tag & "return " & f & " == o." & f & ";\n")
-  res.add("        }\n    }\n}\n")
+  res.add("        }\n    }\n")
+  # G must visit only the active arm. tupleof over the outer struct would
+  # interpret inactive union bytes as other variants' array headers.
+  res.add("    " & d.name & " tuckCopyOwned() {\n")
+  res.add("        auto outValue = this;\n        final switch (kind) {\n")
+  for v in body.variants:
+    res.add("        case " & d.name & "Kind." & v.name & ":\n")
+    if v.fields.len > 0:
+      let f = sumPayloadField(v.name)
+      res.add("            outValue." & f & " = rt.tuckCopyG(" & f & ");\n")
+    res.add("            break;\n")
+  res.add("        }\n        return outValue;\n    }\n}\n")
   res
 
 proc genDValidate*(ctx: var DCodegenCtx, d: Decl): string =
@@ -566,7 +578,8 @@ proc genDSendHelper*(ctx: var DCodegenCtx, d: Decl,
     params.add(ctx.dType(p.typ) & " " & p.name)
     ctorArgs.add(", " & p.name & ": " & p.name)
     if ownsStorage(ctx.module, p.typ):
-      copies.add("    " & p.name & " = rt.tuckCopyG(" & p.name & ");\n")
+      if not RulesMode:
+        copies.add("    " & p.name & " = rt.tuckCopyG(" & p.name & ");\n")
   let sep = if params.len > 0: ", " else: ""
   # The enqueue is the actor's `on_full` (R6): wait for room (the default),
   # stop the program, or drop — the bare enqueue every send used to be.
@@ -824,7 +837,8 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   # A WRAPPER rather than a second body: the body is emitted once, so the two
   # cannot drift, and an unrecognised call site merely misses the speedup
   # instead of aliasing a live value.
-  let movedP = if refSelf or nameOverride != "": "" else: movedFnParam(ctx.res, ctx.module, d)
+  let movedP = if RulesMode or refSelf or nameOverride != "": ""
+               else: movedFnParam(ctx.res, ctx.module, d)
   let emitName = if movedP != "": movedName(fnName) else: fnName
   if movedP != "":
     result = ctx.genDTwinWrapper(d, fnName, tmplStr, retStr, movedP, refSelf)

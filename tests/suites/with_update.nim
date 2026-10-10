@@ -32,6 +32,74 @@ proc run*(t: var T) =
   ## Registers the `with` record-update assertions: copy, replace, same type —
   ## the shortcut that value semantics makes necessary.
   t.src Task & """
+import console
+
+fn first() -> int [io]:
+  {text: "first"} console::printLine
+  return 0
+
+fn make() -> Task [io]:
+  {text: "second"} console::printLine
+  return {title: "x", done: false, score: 1} Task
+
+fn main() -> int [io]:
+  let bundle = {n: first, item: make with {done: true}}
+  return bundle.n + bundle.item.score
+"""
+  t.hostBuilds "effectful reconstruction builds on every backend"
+  t.hostRuns "common reconstruction evaluates an effectful receiver once, after preceding fields", 1, "first\nsecond"
+  t.src Task & """
+import console
+
+fn make() -> Task [io]:
+  {text: "unexpected"} console::printLine
+  return {title: "x", done: false, score: 1} Task
+
+fn main() -> int [io]:
+  let item = if true: {title: "safe", done: false, score: 2} Task else: make with {done: true}
+  return item.score
+"""
+  t.hostBuilds "branch-local reconstruction builds on every backend"
+  t.hostRuns "common reconstruction keeps a receiver inside its chosen branch", 2, ""
+  t.src Task & """
+import console
+
+fn make() -> Task [io]:
+  {text: "tick"} console::printLine
+  return {title: "x", done: false, score: 1} Task
+
+fn maybe({enabled: bool}) -> bool [io]:
+  return enabled and (make with {done: true}).done
+
+fn main() -> int [io]:
+  if {enabled: false} maybe: return 9
+  var i = 0
+  for i < 3 and (make with {done: true}).done:
+    i = i + 1
+  return i
+"""
+  t.hostBuilds "short-circuit reconstruction builds on every backend"
+  t.hostRuns "common reconstruction preserves short-circuit and repeated loop evaluation", 3, "tick\ntick\ntick"
+  t.src Task & """
+import console
+
+type Choice:
+  | Safe
+  | Changed
+
+fn make() -> Task [io]:
+  {text: "unexpected"} console::printLine
+  return {title: "x", done: false, score: 1} Task
+
+fn main() -> int [io]:
+  let item = match Choice.Safe:
+    Safe: {title: "safe", done: false, score: 2} Task
+    Changed: make with {done: true}
+  return item.score
+"""
+  t.hostBuilds "value-match reconstruction builds on every backend"
+  t.hostRuns "common reconstruction keeps a receiver inside its selected match arm", 2, ""
+  t.src Task & """
 fn complete({self: Task}) -> Task:
   return self with {done: true}
 

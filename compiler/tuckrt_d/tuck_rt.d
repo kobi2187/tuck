@@ -130,6 +130,8 @@ T tuckCopyG(T)(T value)
             copy.value = Payload.init;
         return copy;
     }
+    else static if (is(T == struct) && __traits(hasMember, T, "tuckCopyOwned"))
+        return value.tuckCopyOwned();
     else static if (is(T == struct))
     {
         T copy = value;
@@ -314,7 +316,7 @@ string joinStr(string[] parts, string sep)
 
 T[] push(T)(T[] items, T value)
 {
-    return items ~ [value];
+    return tuckCopyG(items) ~ [value];
 }
 
 /// Bit operations. Tuck has no bitwise OPERATORS — `|` is already sum-variant

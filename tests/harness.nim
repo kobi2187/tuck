@@ -939,6 +939,14 @@ proc odinTracked*(t: var T, name: string, code: int, rules = false) =
   let (rc, output) = t.resultOf(r)
   if rc == code: t.ok name & "  [odin, tracked]"
   else:
+    let (erc, emitted) = t.resultOf(e)
+    if erc != 0:
+      t.no name, "emission failed:\n" & tailLines(emitted, 12)
+      return
+    let (brc, built) = t.resultOf(b)
+    if brc != 0:
+      t.no name, "Odin build failed:\n" & tailLines(built, 12)
+      return
     t.no name, "exited " & $rc & ", wanted " & $code &
                (if output.strip == "": " (NO OUTPUT)"
                 else: ": " & tailLines(output, 3))

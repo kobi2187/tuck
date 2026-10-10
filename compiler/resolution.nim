@@ -281,6 +281,7 @@ proc copyMeaning(r: Resolution, src, dst: NodeId) =
   if src in r.types: r.types[dst] = r.types[src]
   if src in r.shortcuts: r.shortcuts[dst] = r.shortcuts[src]
   if src in r.asyncCalls: r.asyncCalls.incl dst
+  if src in r.ownerFields: r.ownerFields.incl dst
   if src in r.declOf: r.declOf[dst] = r.declOf[src]
   if src in r.argFields: r.argFields[dst] = r.argFields[src]
   if src in r.callParams: r.callParams[dst] = r.callParams[src]
