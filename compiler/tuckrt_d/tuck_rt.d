@@ -98,6 +98,53 @@ TuckResult!T tfwd(T)(TuckStatus status, ushort err)
     return r;
 }
 
+/// Rule G copy kernel. Keep D's native collector; copy mutable storage
+/// recursively so a Tuck value never aliases another value's mutable data.
+/// Immutable leaves (including string) can safely share their backing store.
+T tuckCopyG(T)(T value)
+{
+    import std.traits : isDynamicArray, isStaticArray;
+    static if (is(T == immutable))
+        return value;
+    else static if (isDynamicArray!T)
+    {
+        auto copy = value.dup;
+        foreach (ref element; copy)
+            element = tuckCopyG(element);
+        return copy;
+    }
+    else static if (isStaticArray!T)
+    {
+        T copy = value;
+        foreach (ref element; copy)
+            element = tuckCopyG(element);
+        return copy;
+    }
+    else static if (is(T == TuckResult!Payload, Payload))
+    {
+        T copy = value;
+        // Failure/absence has no live payload. Do not traverse it.
+        if (value.status == TuckStatus.Ok)
+            copy.value = tuckCopyG(value.value);
+        else
+            copy.value = Payload.init;
+        return copy;
+    }
+    else static if (is(T == struct))
+    {
+        T copy = value;
+        static foreach (i; 0 .. T.tupleof.length)
+            copy.tupleof[i] = tuckCopyG(value.tupleof[i]);
+        return copy;
+    }
+    else
+    {
+        static assert(!is(T == class) && !is(T == union),
+                      "Rule G requires explicit glue for reference/union types");
+        return value;
+    }
+}
+
 /// `[saturating]` (spec 4.1): clamp at the type's bounds instead of
 /// wrapping. The caller widens first, so the guard tests the real value
 /// rather than one that has already wrapped.

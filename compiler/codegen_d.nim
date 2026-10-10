@@ -763,9 +763,8 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
   e.name
 
 proc genDCopy(ctx: var DCodegenCtx, e: Expr): string =
-  ## `.dup` (a bare Seq), or the record rebuilt with per-field `.dup`s (a
-  ## record holding one or more Seq fields): an `exkCopy` ownership_nodes
-  ## made from lowering_seqcopy's marks.
+  ## A copy node invokes rule G's recursive copy kernel. The node decides
+  ## WHETHER to copy; the type decides HOW, including nested storage.
   ##
   ## The decision — a D slice aliases where a Tuck Seq copies, and a D
   ## struct's bitwise field-for-field copy carries that aliasing one level
@@ -781,20 +780,10 @@ proc genDCopy(ctx: var DCodegenCtx, e: Expr): string =
   # lowering_seqcopy, once, and printed here.
   let valStr = ctx.genDExpr(e.copied)
   case e.copyKind
-  of cpSeq: return "(" & valStr & ").dup"
+  of cpSeq, cpFields: return "rt.tuckCopyG(" & valStr & ")"
   of cpStatic:
     raiseAssert "d: a static str is never copied to own — the collector " &
                 "frees, so prepare makes cpStatic for Odin only"
-  of cpFields: discard
-  # A D struct has no `.dup` of its own (only a slice does), so the record
-  # is rebuilt: take the value once into a temp (never re-evaluate `valStr`
-  # — it may be a call), then `.dup` just the fields that need it.
-  let tmp = ctx.freshName("tuckRecDup")
-  var fixups = ""
-  for f in e.copyFields:
-    fixups.add(tmp & "." & f & " = " & tmp & "." & f & ".dup; ")
-  "(() { auto " & tmp & " = " & valStr & "; " & fixups & "return " & tmp &
-    "; })()"
 
 proc callOwnerModule(ctx: DCodegenCtx, e: Expr): string =
   ## The imported module a call resolves into, or "" for a local one. A
@@ -1479,4 +1468,3 @@ proc genDStmtOrBlock*(ctx: var DCodegenCtx, body: Expr): string =
   if body == nil: return ""
   if body.kind == exkBlock: ctx.genDBlock(body)
   else: ctx.genDStmt(body)
-

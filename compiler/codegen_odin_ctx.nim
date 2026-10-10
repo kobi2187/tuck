@@ -64,6 +64,8 @@ type
                                        # already hoisted — one signature per
                                        # task, unlike anonymous records,
                                        # so the task's own name IS the key
+    glueNames*: Table[string, tuple[copy, drop, reset: string]]
+      ## Rule G procedures, memoized by emitted instantiated type.
 
 proc odinType*(ctx: var OdinCodegenCtx, t: Type): string
   ## Forward-declared: recStructName/odinTupleType/odinAppType/odinFuncType

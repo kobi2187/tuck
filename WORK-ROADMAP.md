@@ -27,6 +27,24 @@ not new owner rulings.
 - **Stay on this branch.** Commit and push here; no new PR or branch unless requested.
 - **One completed slice at a time.** Do not open another large feature while the
   current slice lacks tests, backend coverage, docs and an issue-status update.
+- **Test-first, targeted iteration.** Write and demonstrate a failing test before
+  implementation. During development run the relevant suites; reserve the full
+  `tests/run` for the end-of-session gate.
+
+## OWN implementation checkpoint
+
+2026-10-10: the owner chose **finish glue G, then switch**. Work remains on this
+branch. See [the detailed glue checkpoint](thoughts/shared/plans/2026-10-10-rule-g-status.md).
+
+- A shared recursive ownership type graph and an Odin copy/drop/reset generator
+  are implemented and tested independently of ownership placement.
+- D's existing copy nodes, borrowing twin wrappers and mailbox payload copies
+  now use recursive copy glue; its collector remains in place.
+- Odin's generator is **not yet wired into production ownership emission**.
+  Typed drop nodes, static-string sink ownership and the shared slot/checker
+  integration must land together before activation.
+- The default ownership switch has **not happened**. A39 and A41-A45 remain
+  open in the default-mode regression suite. No unrelated roadmap item has begun.
 
 ## Evidence and limits
 

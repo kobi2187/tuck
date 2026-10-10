@@ -9,6 +9,7 @@ import resolution
 import ast_query
 import codegen_common
 import codegen_d_ctx
+from ownership_glue import ownsStorage
 from mangle import mangleName
 import ./codegen_d
 
@@ -564,14 +565,8 @@ proc genDSendHelper*(ctx: var DCodegenCtx, d: Decl,
   for p in h.params:
     params.add(ctx.dType(p.typ) & " " & p.name)
     ctorArgs.add(", " & p.name & ": " & p.name)
-    if copyableContainer(ctx.res, ctx.module, p.typ):
-      let fields = movedCopyFields(ctx.res, ctx.module, p.typ)
-      if fields.len == 0:
-        copies.add("    " & p.name & " = " & p.name & ".dup;\n")
-      else:
-        for f in fields:
-          copies.add("    " & p.name & "." & f & " = " & p.name & "." & f &
-                     ".dup;\n")
+    if ownsStorage(ctx.module, p.typ):
+      copies.add("    " & p.name & " = rt.tuckCopyG(" & p.name & ");\n")
   let sep = if params.len > 0: ", " else: ""
   # The enqueue is the actor's `on_full` (R6): wait for room (the default),
   # stop the program, or drop — the bare enqueue every send used to be.
@@ -779,19 +774,12 @@ proc leaveReturnContext(ctx: var DCodegenCtx) =
 
 proc genDTwinWrapper(ctx: var DCodegenCtx, d: Decl, fnName, tmplStr, retStr,
                      movedP: string, refSelf: bool): string =
-  ## The one-line `f` of a threaded-container fn: `.dup` its moved parameter
-  ## (or each of its Seq fields) and delegate to the twin `f_moved`, which
-  ## holds the body.
+  ## Copy the borrowed value recursively, then delegate to the moved body.
   result = ctx.dVisibility(d) & ctx.dCallConv(d) & retStr & " " & fnName &
            tmplStr & "(" & ctx.genDParams(d.fnParams, refSelf) & ") {\n"
   var argNames: seq[string]
   for p in d.fnParams: argNames.add(p.name)
-  let fields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
-  if fields.len == 0:
-    result.add("    " & movedP & " = " & movedP & ".dup;\n")
-  else:
-    for f in fields:
-      result.add("    " & movedP & "." & f & " = " & movedP & "." & f & ".dup;\n")
+  result.add("    " & movedP & " = rt.tuckCopyG(" & movedP & ");\n")
   result.add("    return " & movedName(fnName) & "(" & argNames.join(", ") &
              ");\n}\n\n")
 

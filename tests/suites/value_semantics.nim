@@ -518,7 +518,7 @@ fn main() -> int:
 """
   t.okCheck "a threaded-container fn checks"
   t.emitsD "D emits the moved twin", r"tuckˑfnˑaddTo_moved\(tuckˑtypeˑBag b"
-  t.emitsD "...and the wrapper copies before delegating", r"b\.items = b\.items\.dup"
+  t.emitsD "...and the wrapper copies before delegating", r"b = rt.tuckCopyG\(b\)"
   t.emitsOdin "Odin emits it too", r"tuckˑfnˑaddTo_moved :: proc"
   t.omits "Nim needs no twin — it has sink", r"_moved"
   t.hostBuilds "...and every backend builds them"

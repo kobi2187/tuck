@@ -44,6 +44,7 @@ import object_composition
 import odin_backend
 import optimize
 import owner_fields
+import ownership_glue
 import ownership_rules
 import pointer_containment
 import pools
@@ -107,6 +108,7 @@ let registry: seq[Entry] = @[
   ("odin_backend",        SuiteProc(odin_backend.run),        false),
   ("optimize",            SuiteProc(optimize.run),            false),
   ("owner_fields",        SuiteProc(owner_fields.run),        false),
+  ("ownership_glue",      SuiteProc(ownership_glue.run),      false),
   ("ownership_rules",     SuiteProc(ownership_rules.run),     false),
   ("pointer_containment", SuiteProc(pointer_containment.run), true),
   ("pools",               SuiteProc(pools.run),               false),

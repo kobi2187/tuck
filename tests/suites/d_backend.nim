@@ -265,8 +265,8 @@ fn main() -> int:
   let x = a firstOf
   return x + a[0] + b[0]
 """
-  t.emitsD "M3: Seq assignment restores value semantics with .dup",
-           r"long\[\] tuckˑvˑb = \(tuckˑvˑa\)\.dup;"
+  t.emitsD "M3: Seq assignment restores value semantics with recursive glue",
+           r"long\[\] tuckˑvˑb = rt.tuckCopyG\(tuckˑvˑa\);"
   t.runsD "M3: writing b never writes a (7+7+50)", 64, dmdExe
 
   # --- Milestone 4: sum types and match ----------------------------------
@@ -488,9 +488,9 @@ fn main() -> int:
   return a[0] + b[0]
 """
   t.emitsD "seam: lowering marks the Seq copy, the emitter only prints it",
-           r"long\[\] tuckˑvˑb = \(tuckˑvˑa\)\.dup;"
+           r"long\[\] tuckˑvˑb = rt.tuckCopyG\(tuckˑvˑa\);"
   t.omitsD "seam: a fresh list literal owns its storage and needs no copy",
-           r"= \(\[7, 8, 9\]\)\.dup"
+           r"rt.tuckCopyG\(\[7, 8, 9\]\)"
   t.runsD "seam: writing b still never writes a (7+50)", 57, dmdExe
 
   # A D struct copies field-for-field, so a Seq-typed FIELD's copy is only
@@ -511,8 +511,8 @@ fn main() -> int:
   b.items[0] = 999
   return a.items[0]
 """
-  t.emitsD "seam: a record's Seq FIELD is dup'd too, not just a bare Seq",
-           r"tuckRecDup\d+\.items = tuckRecDup\d+\.items\.dup;"
+  t.emitsD "seam: a record's Seq FIELD is copied recursively, not just a bare Seq",
+           r"tuckˑvˑb = rt.tuckCopyG\(tuckˑvˑa\);"
   t.runsD "seam: writing b.items never writes a.items (still 10)", 10, dmdExe
 
   # --- decision tables (spec 6.1) ----------------------------------------
