@@ -1,5 +1,10 @@
 # Tuck 1.0: the dependency graph
 
+> Current dependency graph and execution order: [WORK-ROADMAP.md](WORK-ROADMAP.md).
+> This August report is retained as design evidence, not a live feature-status
+> checklist. Later rulings supersede its actor-instance, backend-split and
+> shared-runtime proposals; revalidate its missing-feature claims before coding.
+
 Status: planning report, 2026-08-19. Companion to three documents that already
 exist and are **not** repeated here:
 

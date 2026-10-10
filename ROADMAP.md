@@ -1,12 +1,17 @@
 # Tuck Roadmap (as of 2026-07-09)
 
+> Current execution order: [WORK-ROADMAP.md](WORK-ROADMAP.md). It links all
+> open issues and unfiled gaps, records dependencies, and starts a per-item
+> owner decision queue. The queues below are historical; their rulings
+> remain evidence unless a later explicit owner decision supersedes them.
+
 ---
 
 # THE WORK QUEUE — ordered by dependency, 2026-09-22 (revised)
 
-**Read this section first.** Everything below it is the standing rulings
-ledger and the per-feature status table; both remain authoritative for what
-was DECIDED. This section is the only thing that says what to do NEXT.
+**Read WORK-ROADMAP.md first for what to do next.** Everything below is the
+standing rulings ledger and historical per-feature status. Revalidate status
+before implementation; do not treat the old queue as the current order.
 
 Ordering rule, set by the user:
 
@@ -40,6 +45,10 @@ to be the thing most of the queue depends on:
   429 lines.
 - **Memory is specified as values plus an as-if rule** (spec §7.1, §7.5). The old tier
   model is retired.
+- **Clarification, later 2026-10-10:** finish ownership fixes, including the
+  approved rules switch. Backends keep their collectors for now. Only replacing
+  those collectors or adding selectable freeing policies is deferred; completing
+  partial features takes priority over new mechanisms.
 
 ---
 
