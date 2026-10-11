@@ -1077,6 +1077,17 @@ compiler names a runtime function: a new extern, in the runtime or in a
 program, states its contract or keeps the default.
 (`compiler/ownership_elab.nim`, "What a body-less callee does".)
 
+**Nothing collects.** No backend has a garbage collector or a reference
+count: Nim is built `--mm:none -d:useMalloc`, D runs with its collector off,
+Odin never had one. A value is freed exactly where the ownership rules drop
+it, so a program's memory is the same on all three. What the rules decide
+(copy, move, drop, reset, grow in place) is one tree, made before the
+backends split; each backend prints it as calls into its own runtime
+(`tuckDrop`, `tuckCopy`, `tuckMove`, `tuckPush`). Two consequences you can
+observe: a `for` or `match` binding is a *view* of what it walks (using it
+somewhere that keeps it copies it), and a task owns the parameters it is
+given and frees them when it ends.
+
 ## 14. Composition helpers
 
 ```tuck
