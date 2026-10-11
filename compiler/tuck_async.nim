@@ -854,8 +854,10 @@ proc checkWaiters(slot: ptr ActorSlot) =
   # contend with the actor for a lock it is about to stop caring about.
   for w in woken:
     var b: byte = 1
-    discard write(w.doneFd, addr b, 1)
-    discard close(w.doneFd)
+    # The fd first: the waiter frees `w` the moment the byte lands.
+    let fd = w.doneFd
+    discard write(fd, addr b, 1)
+    discard close(fd)
   tuckDrop(woken)
 
 proc tuckCheckWaiters*() =

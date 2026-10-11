@@ -99,6 +99,27 @@ EQUAL (8 bytes is no copy worth avoiding), and with Cap sized past N the
 bench measures DRAM rather than the mailbox. The bench now uses an envelope
 and a Cap of 131072 for that reason.
 
+## 2026-10-12 — the same apps with no memory manager on any backend
+
+Nim `--mm:none -d:useMalloc`, D with the collector off, Odin as before: every
+backend frees exactly where the ownership rules drop (`benches/mm_cost.sh`,
+`--release`, best of 3, peak RSS). The previous entry's figures are in
+brackets.
+
+| app | Nim | Odin | D |
+|---|---|---|---|
+| matching_engine | 19 ms, 6 MB (ARC: 217 ms, 21 MB) | 10 ms, 2 MB (16 ms, 2 MB) | 60 ms, 6 MB (GC: 60 ms, 3 MB) |
+| world_server | 87 ms, 8 MB (ARC: 326 ms, 78 MB) | 67 ms, 10 MB (109 ms, 9 MB) | 328 ms, 10 MB (GC: 4 807 ms, 18 MB) |
+
+Read:
+- **Taking the memory manager out made Nim 4-11x faster and 3-10x leaner on
+  both apps.** ARC was copying where the rules move and counting where they
+  drop; printing the rules' own moves and drops does neither.
+- **D lost its collector and kept its memory**: `world_server` 4.8 s -> 0.33 s
+  at 10 MB, where "collector off" without the drops was 0.64 s at 715 MB.
+- Odin is still the fastest, now by a smaller margin (its time also fell:
+  the same rules, fewer copies after the loop-variable and append fixes).
+
 ## 2026-10-11 — what memory management costs, per backend
 
 The two bench apps (`benches/apps/`), built `--release`, best of 3, with each
