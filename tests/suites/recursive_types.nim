@@ -354,8 +354,8 @@ fn main() -> int:
   return {e: t} total - 14
 """
   t.okCheck "a sum whose variant holds its own type is accepted"
-  t.emits "the edge declaration becomes a handle", r"left: seq\[tuckˑtypeˑExpr\]"
-  t.emits "a construction wraps the value", r"left: @\[tuckˑvˑa\]"
+  t.emits "the edge declaration becomes a handle", r"left\*: seq\[tuckˑtypeˑExpr\]"
+  t.emits "a construction wraps the value", r"left: @\[tuckMove\(tuckˑvˑa\)\]"
   t.emits "a read unwraps it", r"tuckAt\(e\.tuckˑvariantˑadd\.left, 0\)"
   t.hostBuilds "...and every backend's host compiler accepts the result"
   t.runs "...and the tree walks: (3+4)+(3+4)", 0
@@ -488,9 +488,9 @@ fn main() -> int:
 """
   t.okCheck "a JSON-shaped recursive sum checks"
   t.emits "an already-handled Seq edge is not boxed twice",
-          r"items: seq\[tuckˑtypeˑJson\]"
+          r"items\*: seq\[tuckˑtypeˑJson\]"
   t.emits "a direct edge gains exactly one handle",
-          r"label: string, inner: seq\[tuckˑtypeˑJson\]"
+          r"label\*: string\n    inner\*: seq\[tuckˑtypeˑJson\]"
   t.hostBuilds "...and every backend emits it"
   t.runs "...and the walk counts 3 nodes", 0
 

@@ -40,24 +40,35 @@ static:
 
 template headOf(x: typed): ptr SeqHead = cast[ptr SeqHead](cast[pointer](x))
 
+template ownsNothingToFree(T: typedesc): bool =
+  ## A value of `T` holds no storage a drop could free.
+  supportsCopyMem(T) or T is ref or T is ptr or T is pointer or
+    T is proc or T is cstring
+
+proc tuckDrop*[T](x: var T)
+
+proc dropBlock[T](x: var T) =
+  ## A string's or seq's block: freed unless Nim did not allocate it (a
+  ## literal, a shallow seq), and `x` left empty.
+  let h = headOf(x)
+  if h != nil and (h.reserved and flagBits) == 0: heapFree(h)
+  zeroMem(addr x, sizeof(T))
+
+proc dropSeq[T](x: var seq[T]) =
+  ## Each element first when it owns storage, then the block.
+  mixin tuckDrop
+  if headOf(x) != nil:
+    when not supportsCopyMem(T):
+      for e in x.mitems: tuckDrop(e)
+    dropBlock(x)
+
 proc tuckDrop*[T](x: var T) =
   ## Free what `x` owns, deeply, and leave it empty. A string literal and a
   ## seq Nim did not allocate are left alone.
   mixin tuckDrop
-  when supportsCopyMem(T) or T is ref or T is ptr or T is pointer or
-       T is proc or T is cstring:
-    discard
-  elif T is string:
-    let h = headOf(x)
-    if h != nil and (h.reserved and flagBits) == 0: heapFree(h)
-    zeroMem(addr x, sizeof(T))
-  elif T is seq:
-    let h = headOf(x)
-    if h != nil:
-      when not supportsCopyMem(typeof(x[0])):
-        for e in x.mitems: tuckDrop(e)
-      if (h.reserved and flagBits) == 0: heapFree(h)
-      zeroMem(addr x, sizeof(T))
+  when ownsNothingToFree(T): discard
+  elif T is string: dropBlock(x)
+  elif T is seq: dropSeq(x)
   elif T is array:
     when not supportsCopyMem(typeof(x[0])):
       for e in x.mitems: tuckDrop(e)

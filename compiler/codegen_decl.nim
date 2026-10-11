@@ -262,6 +262,27 @@ proc genSumDrop(d: Decl): string =
     else:
       result.add("  of " & v.name & ": tuckDrop(x." & sumPayloadField(v.name) & ")\n")
 
+proc genPayloadUnion(d: Decl, kindName: string): string =
+  ## The tagged union: a kind enum, an object type of its own for each
+  ## variant's payload, and the case object holding one field per variant
+  ## (named after it: no cross-branch name clashes). One `type` section, so
+  ## the payload types and the sum may refer to each other.
+  var tags: seq[string]
+  for v in d.typeBody.variants: tags.add(v.name)
+  result.add("type\n  " & kindName & "* = enum " & tags.join(", ") & "\n")
+  for v in d.typeBody.variants:
+    if v.fields.len == 0: continue
+    result.add("  " & sumPayloadType(d.name, v.name) & "* = object\n")
+    for f in v.fields:
+      result.add("    " & f.name & "*: " & genType(f.typ) & "\n")
+  result.add("  " & d.name & "* = object\n    case kind*: " & kindName & "\n")
+  for v in d.typeBody.variants:
+    if v.fields.len == 0:
+      result.add("    of " & v.name & ": discard\n")
+    else:
+      result.add("    of " & v.name & ": " & sumPayloadField(v.name) & "*: " &
+                 sumPayloadType(d.name, v.name) & "\n")
+
 proc genSumType*(ctx: var CodegenCtx, d: Decl): string =
   ## A sum type as Nim: a plain `enum` when no variant has a payload, else a
   ## `<Name>Kind` enum plus a case object whose branches each hold one NAMED
@@ -282,26 +303,8 @@ proc genSumType*(ctx: var CodegenCtx, d: Decl): string =
   var res = ""
   var kindName = d.name
   if hasPayload:
-    # tagged union: kind enum + object variant; each variant's payload is
-    # a field named after the variant (no cross-branch name clashes), of an
-    # object type of its own. One `type` section, so the payload types and
-    # the sum may refer to each other.
     kindName = d.name & "Kind"
-    var tags: seq[string]
-    for v in d.typeBody.variants: tags.add(v.name)
-    res.add("type\n  " & kindName & "* = enum " & tags.join(", ") & "\n")
-    for v in d.typeBody.variants:
-      if v.fields.len == 0: continue
-      res.add("  " & sumPayloadType(d.name, v.name) & "* = object\n")
-      for f in v.fields:
-        res.add("    " & f.name & "*: " & genType(f.typ) & "\n")
-    res.add("  " & d.name & "* = object\n    case kind*: " & kindName & "\n")
-    for v in d.typeBody.variants:
-      if v.fields.len == 0:
-        res.add("    of " & v.name & ": discard\n")
-      else:
-        res.add("    of " & v.name & ": " & sumPayloadField(v.name) & "*: " &
-                sumPayloadType(d.name, v.name) & "\n")
+    res.add(genPayloadUnion(d, kindName))
   else:
     res.add("type " & d.name & "* = enum ")
     var tags: seq[string]

@@ -1239,9 +1239,19 @@ when isMainModule:
           else: tuckMain
         let asyncExit =
           if mainReturns and postMain: "\n  " & exitWith("mainRc") else: ""
+        # With `--exceptions:goto` an error nobody handles does not end the
+        # process by itself (it exits 0), so the program's body runs inside
+        # one handler that reports it the way Nim does and exits 1.
+        let mainBody = asyncInit & boot & "  " & mainCall &
+                       asyncDrive & actorDrain & resShutdown & asyncExit
+        var guarded = ""
+        for ln in mainBody.splitLines:
+          guarded.add(if ln.len > 0: "  " & ln & "\n" else: "\n")
         writeFile(mainNim, readFile(mainNim) &
-          "\nwhen isMainModule:\n" & asyncInit & boot & "  " & mainCall &
-          asyncDrive & actorDrain & resShutdown & asyncExit & "\n")
+          "\nwhen isMainModule:\n  try:\n" & guarded &
+          "  except Exception as tuckErr:\n" &
+          "    stderr.writeLine(\"Error: unhandled exception: \" & tuckErr.msg & \" [\" & $tuckErr.name & \"]\")\n" &
+          "    quit(1)\n")
         # nim flags passthrough for cross/bare-metal: --nim:"--os:standalone ..."
         var nimFlags = ""
         for o in opts:
@@ -1298,9 +1308,11 @@ when isMainModule:
         # moves, copies, drops, resets and in-place growth are the runtime's
         # `tuckMove` / `tuckCopy` / `tuckDrop` / `tuckReset` / `tuckPush`
         # (tuck_rt, "memory"), so storage is freed where rule D says and
-        # nowhere else. (`--exceptions:goto` would make a releasing `defer` a
-        # label instead of a `setjmp`, but an unhandled error then exits 0.)
-        let nimCmd = "nim c --hints:off --warnings:off --mm:none -d:useMalloc " & nimFlags & asyncFlags &
+        # nowhere else. Exceptions are `goto`-based: setjmp's handler stack is
+        # corrupted by a coroutine switch inside a `defer`, and a releasing
+        # `defer` is then a label (the entry point reports what nobody
+        # handles, see below).
+        let nimCmd = "nim c --hints:off --warnings:off --mm:none -d:useMalloc --exceptions:goto " & nimFlags & asyncFlags &
                      nimDefinesFor(actorPolicy) & invFlag &
                      speedFlags & " --nimcache:" & quoteShell(nimCache) &
                      " -o:" & quoteShell(binPath) & " " &

@@ -382,6 +382,13 @@ proc genDActorCall(ctx: var DCodegenCtx, e: Expr): string =
   if actorMember != "":
     return actorMember & "(" & (@["self"] & ctx.genDCallArgs(e)).join(", ") & ")"
 
+proc genDSpawn(ctx: var DCodegenCtx, e: Expr, task: string): string =
+  ## Fire-and-forget: the arguments are evaluated here and handed to the job
+  ## (a closure over them would read them after their owner dropped them).
+  let args = ctx.genDCallArgs(e)
+  "rt.tuckSpawnJob(&" & task &
+    (if args.len > 0: ", " & args.join(", ") else: "") & ")"
+
 proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   ## A call in D, trying the special shapes first: `waitOn`, a sum variant, a
   ## primitive conversion, a task spawn, a member or combinator call. What is
@@ -400,10 +407,7 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   # Calling a task in STATEMENT position schedules it and moves on —
   # fire-and-forget (spec §9.2). A result-BOUND call is handled in
   # genDAssign, which needs the target to build the slot.
-  if ctx.index.isTaskName(calleeStr):
-    let args = ctx.genDCallArgs(e)
-    return "rt.tuckSpawnJob(&" & calleeStr &
-           (if args.len > 0: ", " & args.join(", ") else: "") & ")"
+  if ctx.index.isTaskName(calleeStr): return ctx.genDSpawn(e, calleeStr)
   let member = ctx.dMemberCallee(e)
   if member != "": calleeStr = member
   let combinator = ctx.asCombinatorCallD(e, calleeStr)
