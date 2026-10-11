@@ -1298,9 +1298,9 @@ when isMainModule:
         # moves, copies, drops, resets and in-place growth are the runtime's
         # `tuckMove` / `tuckCopy` / `tuckDrop` / `tuckReset` / `tuckPush`
         # (tuck_rt, "memory"), so storage is freed where rule D says and
-        # nowhere else. Exceptions are `goto`-based: a `defer` that releases
-        # storage is then a label, not a `setjmp`.
-        let nimCmd = "nim c --hints:off --warnings:off --mm:none -d:useMalloc --exceptions:goto " & nimFlags & asyncFlags &
+        # nowhere else. (`--exceptions:goto` would make a releasing `defer` a
+        # label instead of a `setjmp`, but an unhandled error then exits 0.)
+        let nimCmd = "nim c --hints:off --warnings:off --mm:none -d:useMalloc " & nimFlags & asyncFlags &
                      nimDefinesFor(actorPolicy) & invFlag &
                      speedFlags & " --nimcache:" & quoteShell(nimCache) &
                      " -o:" & quoteShell(binPath) & " " &

@@ -46,19 +46,19 @@ proc run*(t: var T) =
     case p
     of "rec_thread", "chain_form":
       t.emits "...and threads its Bag through a sink",
-              r"proc tuckˑfnˑaddTo\*\(b: sink tuckˑtypeˑBag"
+              r"proc tuckˑfnˑaddTo\*\(b: tuckˑtypeˑBag[^\n]*\n  var b = tuckBits\(b\)"
     of "generic_box":
       t.emits "...and threads its Box[T] through a sink",
-              r"proc tuckˑfnˑadd\*\[T\]\(b: sink tuckˑtypeˑBox\[T\]"
+              r"proc tuckˑfnˑadd\*\[T\]\(b: tuckˑtypeˑBox\[T\][^\n]*\n  var b = tuckBits\(b\)"
     of "two_fields":
       t.emits "...and threads its Pair through a sink",
-              r"proc tuckˑfnˑput\*\(p: sink tuckˑtypeˑPair"
+              r"proc tuckˑfnˑput\*\(p: tuckˑtypeˑPair[^\n]*\n  var p = tuckBits\(p\)"
     of "str_builder":
       t.emits "...and threads its Builder through a sink",
-              r"proc tuckˑfnˑadd\*\(b: sink tuckˑtypeˑBuilder"
+              r"proc tuckˑfnˑadd\*\(b: tuckˑtypeˑBuilder[^\n]*\n  var b = tuckBits\(b\)"
     of "seq_setat":
       t.emits "...and threads its Bag through a sink",
-              r"proc tuckˑfnˑbump\*\(b: sink tuckˑtypeˑBag"
+              r"proc tuckˑfnˑbump\*\(b: tuckˑtypeˑBag[^\n]*\n  var b = tuckBits\(b\)"
     of "read_only":
       t.emits "...and only borrows the Bag it reads",
               r"proc tuckˑfnˑtotal\*\(b: tuckˑtypeˑBag\)"

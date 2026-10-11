@@ -27,6 +27,7 @@ tuckˑfnˑapplyOperation :: proc (a: int, b: int, op: tuckˑfnsigˑBinOp) -> int
 
 tuckˑfnˑmain :: proc () {
   tuckˑvˑx := tuckˑtypeˑCtx{a = 5, b = 10}
+  defer rt.tuckDrop(tuckˑvˑx.op)
   tuckˑvˑwithOp := TRec_a_b_op(int, int, tuckˑfnsigˑBinOp){a = tuckˑvˑx.a, b = tuckˑvˑx.b, op = tuckˑfnˑplus}
   tuckˑvˑsmaller := TRec_a_b_op(int, int, tuckˑfnsigˑBinOp){a = tuckˑvˑwithOp.a, b = 2, op = tuckˑvˑwithOp.op}
   defer rt.tuckDrop(tuckˑvˑsmaller.op)

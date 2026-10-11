@@ -185,10 +185,14 @@ proc kindUses(res: Resolution, e: Expr): seq[ChildUse] =
   # A reset writes the place it empties.
   of exkReset: @[(e.resetPlace, uWrite)]
 
-const ByOwnKind* = {exkCall, exkBracket, exkBracketAssign}
+const ByOwnKind* = {exkCall, exkBracket, exkBracketAssign, exkSlabOp,
+                    exkArenaReset}
   ## Nodes classified by their own kind even when the checker resolved them
   ## to a call: a bracket is the language's element read (or write), and the
-  ## runtime call that implements it is not what it means.
+  ## runtime call that implements it is not what it means. A slab operation is
+  ## lowered into a node of its own that keeps the checker's id, so the call
+  ## recorded against that id is the pre-lowering one, whose operands are
+  ## not in this tree.
 
 proc uses*(res: Resolution, e: Expr): seq[ChildUse] =
   ## Every child of `e` with the use `e` makes of it (rule U). The children

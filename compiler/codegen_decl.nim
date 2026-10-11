@@ -963,6 +963,10 @@ proc sumEqForwardDecls*(m: Module): string =
     if d == nil or d.typeBody == nil or d.typeBody.kind != tkSum: continue
     if not sumHasPayload(d.typeBody): continue
     result.add("proc `==`*(a, b: " & d.name & "): bool {.noSideEffect.}\n")
+    # And its drop: the runtime's generic walk of a Seq[Other] instantiates
+    # where it is first used, so a sum's drop has to be visible before any
+    # sum that holds it is defined.
+    result.add("proc tuckDrop*(x: var " & d.name & ")\n")
   if result.len > 0: result.add("\n")
 
 proc fnForwardDecls*(m: Module): string =

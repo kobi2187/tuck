@@ -49,7 +49,9 @@ sendPut_tuckˑactorˑResult :: proc(self: ^tuckˑactorˑResult, c: int) {
 tuckˑtaskˑserve :: proc(lfd: int) {
   tuckˑvˑc := net.accept(lfd)
   if (tuckˑvˑc.status == .Ok) {
-      _ = net.recv(tuckˑvˑc.value.fd, 256)
+      tuckOwnTmp1 := net.recv(tuckˑvˑc.value.fd, 256)
+      defer rt.tuckDrop(tuckOwnTmp1)
+      _ = tuckOwnTmp1
       _ = net.send(tuckˑvˑc.value.fd, "pong")
       net.close(tuckˑvˑc.value.fd)
   }
@@ -61,6 +63,7 @@ tuckˑtaskˑclient :: proc(port: int) {
   if (tuckˑvˑc.status == .Ok) {
       _ = net.send(tuckˑvˑc.value.fd, "ping")
       tuckˑvˑr := net.recv(tuckˑvˑc.value.fd, 256)
+      defer rt.tuckDrop(tuckˑvˑr)
       net.close(tuckˑvˑc.value.fd)
       if (tuckˑvˑr.status == .Ok) {
           if (tuckˑvˑr.value.data == "pong") {

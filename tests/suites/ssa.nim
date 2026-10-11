@@ -289,7 +289,7 @@ fn main() -> int:
   t.emits "...the reader borrows its Seq",
           r"proc tuckˑfnˑwalk\*\(ns: seq\[int\], i: int\)"
   t.emits "...the grower keeps its sink",
-          r"proc tuckˑfnˑgrow\*\(xs: sink seq\[int\]\)"
+          r"proc tuckˑfnˑgrow\*\(xs: seq\[int\]\)[^\n]*\n  var xs = tuckBits\(xs\)"
   t.hostRuns("...and both compute what they did, on every backend", 8)
 
   # The same through a FIELD. The mirror stamps `b.items`'s final read on the
@@ -321,7 +321,7 @@ fn main() -> int:
 """
   t.okCheck "a container threaded through a record field checks"
   t.emits "...the threader keeps its sink, read through a field",
-          r"proc tuckˑfnˑaddTo\*\(b: sink tuckˑtypeˑBag, value: int\)"
+          r"proc tuckˑfnˑaddTo\*\(b: tuckˑtypeˑBag, value: int\)[^\n]*\n  var b = tuckBits\(b\)"
   t.emits "...the measurer borrows it",
           r"proc tuckˑfnˑsize\*\(b: tuckˑtypeˑBag\)"
   t.hostRuns("...and it computes what it did, on every backend", 10)
@@ -361,9 +361,9 @@ fn main() -> int:
 """
   t.okCheck "a construction reading its container twice checks"
   t.emits "...and Nim takes the container last, where it moves",
-          r"tuckˑtypeˑBuilt\(slot: .*, nodes: tuckˑvˑout\)"
+          r"tuckˑtypeˑBuilt\(slot: .*, nodes: tuckMove\(tuckˑvˑout\)\)"
   t.emits "...while a field that does not read it again stays as written",
-          r"tuckˑtypeˑTagged\(nodes: tuckˑvˑout, tag: 3\)"
+          r"tuckˑtypeˑTagged\(nodes: tuckMove\(tuckˑvˑout\), tag: 3\)"
   t.hostRuns("...and it computes what it did, on every backend", 9)
 
   # --- an ACTOR FIELD is not this body's to give away ----------------------

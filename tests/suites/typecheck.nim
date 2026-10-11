@@ -317,7 +317,7 @@ fn parseTitle({raw: str}) -> !str [io, error: ParseError]:
   # branch that only returns in `(let tuckDrop1 = ...)` — not an expression,
   # so the emitted Nim died on `invalid indentation`. ok_check alone would not
   # catch a return of that bug: the spurious shortcut still CHECKS clean.
-  t.omits "a guard clause emits no drop-site wrapper", "tuckDrop"
+  t.omits "a guard clause emits no drop-site wrapper", "tuckDrop1"
 
   # `!?T` carries TWO questions — did it fail, and was it absent — over one
   # tri-state carrier. `if r.ok:` is true only for tsOk, so it answers both at
