@@ -182,8 +182,7 @@ handleMsg_tuckˑactorˑDecoder :: proc(self: ^tuckˑactorˑDecoder, msg: tuckˑa
 	case .msgPause:
     switch v in self.state
     {
-    case tuckˑtypeˑPlayerState_Decoding:
-        self.state = tuckˑtypeˑPlayerState_Paused{}
+    case tuckˑtypeˑPlayerState_Decoding: self.state = tuckˑtypeˑPlayerState_Paused{};
     case tuckˑtypeˑPlayerState_Idle: ;
     case tuckˑtypeˑPlayerState_Paused: ;
     }

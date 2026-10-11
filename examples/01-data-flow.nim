@@ -25,7 +25,8 @@ proc tuckˑfnˑplayTrack*[T](payload: T): void =
 
 proc tuckˑfnˑmain*(): void =
   var tuckˑvˑrequest = (url: "example.com", timeout: tuckˑfnˑms(5'u32))
-  var tuckˑvˑresponse = tuckˑfnˑselectEpisodes(tuckˑfnˑparse(tuckˑfnˑfetch(tuckˑvˑrequest)))
+  var tuckOwnTmp1 = tuckˑfnˑfetch(tuckˑvˑrequest)
+  var tuckˑvˑresponse = tuckˑfnˑselectEpisodes(tuckˑfnˑparse(tuckOwnTmp1))
   var tuckˑvˑfeed = tuckˑfnˑfetch("https://example.com/feed")
   if tuckˑvˑfeed.hasNew:
     if true:

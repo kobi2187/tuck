@@ -314,8 +314,9 @@ proc writtenParams(d: Decl): seq[string] =
   ## move (rule M) is the usual one.
   if d.fnBody == nil: return
   for n in d.fnBody.nodes:
-    if n.kind != exkAssign or n.isDecl or n.target == nil: continue
-    var r = n.target
+    var r = if n.kind == exkReset: n.resetPlace
+            elif n.kind == exkAssign and not n.isDecl: n.target
+            else: nil
     while r != nil and r.kind == exkField: r = r.receiver
     if r == nil or r.kind != exkVar or r.name in result: continue
     for p in d.fnParams:

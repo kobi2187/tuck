@@ -39,9 +39,12 @@
 #   cpDeep    anything else that owns storage: a deep copy (`rt.tuckCopy`)
 #   cpStatic  a `str` (Odin): its bytes on the heap, so an owner may free it
 #
-# The aliasing backends only: Nim's assignment copies by itself.
+# On every backend's tree; Nim prints a copy as its value (its assignment
+# copies by itself), D a `str` copy as the `str` (immutable there).
 #
-# THIRD NODE: `exkDrop` — release what a place owns (Odin only), placed from
+# THIRD NODE: `exkDrop` — release what a place owns, printed by the backend
+# that frees by hand (Odin) and as nothing by ARC (Nim) and the collector
+# (D), placed from
 # the rules' `DropSource` (`ownership_write.rulesDrops`):
 #
 #   scope end    `defer drop(x.slot)` as the statements after the one that
@@ -85,19 +88,18 @@ proc materializeAppend(n: Expr, parts: tuple[read, value: Expr],
              kind: exkAppend, appendTarget: parts.read,
              appendValue: parts.value, appendsElement: element)[]
 
-proc materialize(res: Resolution, n: Expr, strGrows: bool): bool =
+proc materialize(res: Resolution, n: Expr): bool =
   ## Rewrites `n` if it is an append assigned back over its own argument.
   let pushed = selfAppendParts(res, n)
   if pushed.value != nil:
     materializeAppend(n, pushed, element = true)
     return true
-  if not strGrows: return false
   let concatenated = selfConcatParts(res, n)
   if concatenated.value == nil: return false
   materializeAppend(n, concatenated, element = false)
   true
 
-proc materializeAppends*(res: Resolution, m: Module, strGrows: bool) =
+proc materializeAppends*(res: Resolution, m: Module) =
   ## Every append assigned back over its own argument becomes `exkAppend`.
   ## `strGrows`: the backend's `str` grows in place (Nim, D — not Odin, whose
   ## strings are a pointer and a length, so `s = s + t` stays a concat and a
@@ -107,7 +109,7 @@ proc materializeAppends*(res: Resolution, m: Module, strGrows: bool) =
     for body in d.ownExprs:
       if body == nil: continue
       for n in body.nodes:
-        if n.kind == exkAssign and materialize(res, n, strGrows):
+        if n.kind == exkAssign and materialize(res, n):
           changed = true
     if changed and d.id.isSet:
       res.ssaGraphs.del((d.id, ssLowered))
@@ -118,7 +120,7 @@ proc dropOf(name, slot: string, span: Span, deep = false): Expr =
   if slot.len > 0:
     place = Expr(span: span, kind: exkField, receiver: place, fieldName: slot)
   let drop = Expr(span: span, kind: exkDrop, dropped: place, dropDeep: deep)
-  result = Expr(span: span, kind: exkDefer,
+  result = Expr(span: span, kind: exkDefer, deferReleases: true,
                 deferBody: Expr(span: span, kind: exkBlock, stmts: @[drop]))
   fillIdsIn(result)     # every node after prepare has one (assertTreeIds)
 
@@ -246,7 +248,7 @@ type DropsOf* = proc (d: Decl): DropSource
   ## A body's drop source.
 
 proc materializeDropsFrom*(res: Resolution, m: Module, sourceOf: DropsOf) =
-  ## Every drop `sourceOf` decided becomes a node. Odin only.
+  ## Every drop `sourceOf` decided becomes a node.
   var tasks: HashSet[string]
   for d in m.decls:
     if d != nil and d.kind == dkTask: tasks.incl d.name

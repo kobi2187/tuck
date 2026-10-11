@@ -61,7 +61,8 @@ void tuckˑfnˑplayTrack(T)(T payload) {
 
 void tuckˑfnˑmain() {
     TRec_url_timeout!(string, time.tuckˑtypeˑMilliseconds) tuckˑvˑrequest = TRec_url_timeout!(string, time.tuckˑtypeˑMilliseconds)(url: "example.com", timeout: time.tuckˑfnˑms(5L));
-    TRec_episodes!(long) tuckˑvˑresponse = tuckˑfnˑselectEpisodes(tuckˑfnˑparse(tuckˑfnˑfetch(tuckˑvˑrequest)));
+    TRec_hasNew_episodes_metadata!(bool, long, string) tuckOwnTmp1 = tuckˑfnˑfetch(tuckˑvˑrequest);
+    TRec_episodes!(long) tuckˑvˑresponse = tuckˑfnˑselectEpisodes(tuckˑfnˑparse(tuckOwnTmp1));
     TRec_hasNew_episodes_metadata!(bool, long, string) tuckˑvˑfeed = tuckˑfnˑfetch("https://example.com/feed");
     if (tuckˑvˑfeed.hasNew) {
         tuckˑfnˑprocess(tuckˑvˑfeed.episodes);

@@ -219,6 +219,8 @@ proc bodyOwnsNothing(res: Resolution, m: Module, d: Decl, depth: int,
     for v in d.variants:
       if not res.fieldsOwnNothing(m, v.fields, depth, strShared): return false
     return true
+  if d != nil and d.kind == dkObject:
+    return res.fieldsOwnNothing(m, d.objFields, depth, strShared)
   if d == nil or d.kind != dkType or d.typeBody == nil: return false
   let b = d.typeBody
   case b.kind
@@ -554,6 +556,10 @@ proc placesOf*(res: Resolution, m: Module, d: Decl,
        not res.isOwnerField(n.target):
       result.all.incl n.target.name
       result.owned.incl n.target.name
+
+proc owns*(ps: Places, place: string): bool =
+  ## Does the body own this place (a local, or a consuming parameter)?
+  place in ps.owned
 
 proc readsElement*(res: Resolution, m: Module, v: Expr): bool =
   ## A read of something another value holds, not a fresh value: `items[i]`

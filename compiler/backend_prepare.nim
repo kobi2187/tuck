@@ -26,15 +26,24 @@
 #      asked again after the passes that build calls, which run after it.
 #   7. MAKE THE DECISIONS NODES. An append assigned back over its own
 #      argument becomes `exkAppend` (`ownership_nodes`), which every emitter
-#      prints as its host's amortised append. Then, on the backends whose
-#      containers alias (Odin's `[dynamic]T`, D's `T[]`), the ownership rules
-#      write the program's ownership into the tree (`ownership_write`): each
-#      copy value semantics needs (`exkCopy`, rules S and G), and on Odin,
-#      which frees its own storage, the bindings that name temporaries, the
-#      drops at scope end, at an overwrite and of consumed parameters
-#      (`exkDrop`, `dropsOld`, rules D and P) and the resets after a move on
-#      some paths (rule M). Nim's ARC does all of this itself. Rule V
-#      (`ownership_check`, TUCK_DEBUG_OWN=verify) then checks the Odin tree.
+#      prints as its host's growth in place. Then the ownership rules write
+#      the program's ownership into the tree (`ownership_write`): the bindings
+#      that name temporaries, each copy value semantics needs (`exkCopy`,
+#      rules S and G), the drops at scope end, at an overwrite and of consumed
+#      parameters (`exkDrop` in a `deferReleases` defer, `dropsOld`, rules D
+#      and P), and the resets after a move on some paths (`exkReset`, rule M).
+#      Rule V (`ownership_check`, TUCK_DEBUG_OWN=verify) then checks it.
+#
+# ONE TREE, THREE PRINTERS. Every step but 2 takes no backend
+# (`prepareCommon`): a copy, a drop or a reset is the same fact on all three
+# targets, and only how it prints differs. Odin frees by hand, so it prints
+# all of them. D's slices alias, so it prints the copies; its collector frees,
+# so a drop or a reset prints as nothing, and a `str` is immutable there, so
+# its copy is itself. Nim's assignment copies and ARC frees, so a copy prints
+# as its value and a drop or a reset as nothing; its `sink` parameters are
+# rule P's answer (`Decl.ownedParams`), as the twins' copying wrappers are on
+# Odin and D. Step 2 and Nim's construction field order are the only steps
+# that know which backend they run for.
 #
 # WHY NOT BEFORE THE CLONE (ROADMAP M3.1 as first written). Two of
 # ownership's inputs are made by lowering, so it cannot precede lowering —
@@ -58,6 +67,7 @@ import modules
 import resolution
 import lowering
 import lowering_field_order
+import lowering_with
 import twin_calls
 import call_args
 import ownership_nodes
@@ -92,15 +102,6 @@ proc name*(b: Backend): string =
   of bkNim: "nim"
   of bkOdin: "odin"
   of bkDlang: "d"
-
-proc aliasesOnAssign*(b: Backend): bool =
-  ## Does this target's native container share a buffer on assignment?
-  ##
-  ## Nim's `seq` copies, so it needs no repair. Odin and D both alias — Odin
-  ## was assumed not to until a spike ran the same program on all three and
-  ## got 1, 1 and 99. The analysis has nothing to do with either target, so
-  ## `lowering_seqcopy` decides it once and each backend prints its own fix.
-  b in {bkOdin, bkDlang}
 
 proc rebasedImplModule(module, srcDir, outDir: string): string =
   ## Rewrite one `impl: <backend> "..."` module string from source-relative
@@ -146,35 +147,28 @@ var preparedOnce = false
   ## backend prepared in the same process would read the first one's
   ## decisions as its own. Every path in tuck.nim prepares exactly one.
 
-proc prepare*(prog: seq[LoadedModule], backend: Backend,
-              semLayer: Resolution, outDir: string): BackendTree =
-  ## Steps 1-7, for one backend. The checked program goes in; a private,
-  ## lowered, marked copy comes out.
-  doAssert not preparedOnce,
-    "backend_prepare: a second backend prepared in one process would read " &
-    "the first one's copy, ownership and twin decisions (keyed by node id)"
-  preparedOnce = true
+proc prepareCommon(prog: seq[LoadedModule], semLayer: Resolution): BackendTree =
+  ## Steps 1 and 3-7: the program every backend prints, lowered and with its
+  ## ownership written in as nodes. It takes no backend: a copy, a drop, a
+  ## reset or a named temporary is the same fact on all three, and each
+  ## emitter decides how to print it (Odin frees by hand; Nim's ARC and D's
+  ## collector print a drop or a reset as nothing).
   for lm in prog:                                                   # 1. clone
     result.mods.add LoadedModule(name: lm.name, path: lm.path,
                                  m: deepCopy(lm.m))
   for lm in result.mods[0 ..< result.mods.high]:
     result.real[lm.name] = lm.m
-  for lm in result.mods:                                           # 2. rebase
-    rebaseImplPaths(lm, backend.name, outDir)
-
   let t0 = vBegin(psLowering)
   for lm in result.mods:
     let ts = epochTime()
     lowerModule(semLayer, lm.m, result.real)                         # 3. lower
-    if backend == bkNim:
-      orderConstructionFields(semLayer, lm.m)       #    a moved field goes last
+    lowerWith(semLayer, lm.m)            #    `with` -> the construction it means
     # 4. NUMBER WHAT LOWERING MINTED. Lowering builds nodes (tail returns,
     # hoisted temporaries, desugared assignments) without ids; a node
     # without one drops out of the semantic layer. Existing ids are kept —
     # they are what makes the checker's facts reachable from this copy.
     fillIds(lm.m)
-    if backend.aliasesOnAssign:
-      markTwinCalls(semLayer, lm.m)                                # 5. twins
+    markTwinCalls(semLayer, lm.m)                                  # 5. twins
     # 6. EVERY CALL IS COMPLETE. The checker rejects a payload missing a
     # param, but it runs before lowering, and lowering builds and rewrites
     # calls. Asserted here, after the last pass that can, so no emitter is
@@ -185,16 +179,29 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     # 7. DECISIONS BECOME NODES. Last, because every pass above reads the
     # statements they replace; an emitter then prints the node instead of
     # re-deciding from a predicate.
-    materializeAppends(semLayer, lm.m, strGrows = backend != bkOdin)
+    materializeAppends(semLayer, lm.m)
     dumpParams(semLayer, lm.m)                 # TUCK_DEBUG_OWN=params (P)
     dumpDrops(semLayer, lm.m)                  # TUCK_DEBUG_OWN=drops (D, M)
-    if backend.aliasesOnAssign:                # the rules' copies, and on
-      writeRules(semLayer, lm.m, frees = backend == bkOdin)  # Odin its drops
+    writeRules(semLayer, lm.m)                 # copies, drops, resets (S-M)
     dumpCopies(lm.m)                           # TUCK_DEBUG_OWN=copies (S)
-    if backend == bkOdin:
-      verifyTree(semLayer, lm.m)               # TUCK_DEBUG_OWN=verify (V)
+    verifyTree(semLayer, lm.m)                 # TUCK_DEBUG_OWN=verify (V)
     vSub(lm.name, ts)
   vEnd(psLowering, t0)
+
+proc prepare*(prog: seq[LoadedModule], backend: Backend,
+              semLayer: Resolution, outDir: string): BackendTree =
+  ## Steps 1-7, for one backend. The checked program goes in; a private,
+  ## lowered copy with its ownership written in comes out. Everything but
+  ## step 2 is the same for every backend (`prepareCommon`).
+  doAssert not preparedOnce,
+    "backend_prepare: a second backend prepared in one process would read " &
+    "the first one's twin decisions (keyed by node id)"
+  preparedOnce = true
+  result = prepareCommon(prog, semLayer)
+  for lm in result.mods:                                           # 2. rebase
+    rebaseImplPaths(lm, backend.name, outDir)
+    if backend == bkNim:
+      orderConstructionFields(semLayer, lm.m)       #    a moved field goes last
 
 proc modules*(t: BackendTree): seq[Module] =
   ## The bare modules, for the stage assertions that take a `seq[Module]`.

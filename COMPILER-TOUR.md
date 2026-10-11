@@ -433,9 +433,13 @@ and a test can assert on it. The decisions come from the ownership rules
 - the elaborator (`ownership_elab`) answers rules P (which parameters a fn
   consumes), S (which sinks copy), D and M (where each owned place is dropped
   and reset) and G (what owning, dropping and copying a type means);
-- `ownership_write` writes them into the Odin and D trees: copies on both,
-  and on Odin, which frees by hand, the drops and resets too. Nim's ARC
-  does all of this itself;
+- `ownership_write` writes them into the one tree every backend prints
+  (`backend_prepare.prepareCommon`, which takes no backend): the bindings
+  that name temporaries, the copies (`exkCopy`), the drops (`exkDrop`,
+  `dropsOld`) and the resets (`exkReset`). Each emitter decides how a node
+  prints: Odin frees by hand and prints them all; D prints the copies and
+  leaves freeing to its collector; Nim prints a copy as its value, leaves
+  drops and resets to ARC, and reads rule P's `ownedParams` for `sink`;
 - rule V (`ownership_check`) walks the Odin tree and confirms that every
   owned value is moved or dropped exactly once on every path, and that
   nothing is read after it moved. It reads only the nodes.

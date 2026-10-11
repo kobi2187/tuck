@@ -511,8 +511,8 @@ fn main() -> int:
   b.items[0] = 999
   return a.items[0]
 """
-  t.emitsD "seam: a record's Seq FIELD is dup'd too, not just a bare Seq",
-           r"tuckRecDup\d+\.items = tuckRecDup\d+\.items\.dup;"
+  t.emitsD "seam: a record holding a Seq is copied deeply, not just its header",
+           r"tuckˑtypeˑBag tuckˑvˑb = rt\.tuckCopy\(tuckˑvˑa\);"
   t.runsD "seam: writing b.items never writes a.items (still 10)", 10, dmdExe
 
   # --- decision tables (spec 6.1) ----------------------------------------

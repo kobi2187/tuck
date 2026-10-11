@@ -150,20 +150,70 @@ proc laterInBlock(v: Value, i: int): bool =
     if v.uses[j].blk == v.uses[i].blk: return true
   false
 
+proc baseOf(fn: SsaFn, v: ValueId): ValueId =
+  ## The record value a projection is read out of, followed to the whole
+  ## value it starts from (`a.items.data` -> `a`); `v` itself if it is whole.
+  result = v
+  while fn.isField(result): result = fn.values[int32(result)].def.inputs[0]
+
+proc overlaps(p, q: Place): bool =
+  ## Does one place contain the other (`a` and `a.items`; not `a.tag`)?
+  p == q or p.startsWith(q & ".") or q.startsWith(p & ".")
+
+proc overlapping(fn: SsaFn): Table[ValueId, seq[ValueId]] =
+  ## For each value, the others read out of the same record version whose
+  ## places overlap its own: reading one reads the other's storage.
+  var byBase: Table[ValueId, seq[ValueId]]
+  for v in fn.values:
+    if v.uses.len > 0: byBase.mgetOrPut(fn.baseOf(v.id), @[]).add v.id
+  for _, group in byBase:
+    for a in group:
+      for b in group:
+        if a != b and overlaps(fn.values[int32(a)].place,
+                               fn.values[int32(b)].place):
+          result.mgetOrPut(a, @[]).add b
+
+proc reaches(succ: seq[seq[BlockId]], src, dst: BlockId): bool =
+  ## Can control leave `src` and come to `dst` (`src` itself, round a loop)?
+  var seen: HashSet[BlockId]
+  var stack = succ[int32(src)]
+  while stack.len > 0:
+    let b = stack.pop()
+    if b == dst: return true
+    if b in seen: continue
+    seen.incl b
+    stack.add succ[int32(b)]
+  false
+
+proc readAfter(fn: SsaFn, succ: seq[seq[BlockId]], others: seq[ValueId],
+               u: Use): bool =
+  ## Is any of `others` read after the read `u`: later in its block, or in a
+  ## block control can reach from it?
+  for o in others:
+    for w in fn.values[int32(o)].uses:
+      if w.blk == u.blk and (w.line, w.col) >= (u.line, u.col): return true
+      if succ.reaches(u.blk, w.blk): return true
+  false
+
 proc finalUses*(fn: SsaFn): HashSet[NodeId] =
-  ## The reads after which the buffer they read is never read again.
+  ## The reads after which the buffer they read is never read again: not as
+  ## the same value, and not through an overlapping place read out of the
+  ## same record (`var b = a` is no final read of `a` when `a.items` is
+  ## read after it, and `a.items` none when `a` is).
   ##
   ## Sibling arms need no rule: neither reaches the other. A `defer` does: it
   ## runs at scope exit, after every read the graph can see, so a root it
   ## names has no final read at all.
   let succ = fn.successors()
   let phis = fn.phiIndex()
+  let related = fn.overlapping()
   for v in fn.values:
     if v.uses.len == 0: continue
     if rootOf(v.place) in fn.deferredRoots: continue
     for i, u in v.uses:
       if v.laterInBlock(i): continue
       if fn.readAgain(succ, phis, v.id, u.blk): continue
+      if fn.readAfter(succ, related.getOrDefault(v.id), u): continue
       result.incl u.at
 
 # --- structural invariants --------------------------------------------------

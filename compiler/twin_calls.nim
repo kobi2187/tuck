@@ -23,7 +23,7 @@
 # answer on the node; the emitters print it.
 #
 # Runs as step 7 of `backend_prepare`, after `fillIds` (it keys by node id),
-# on the aliasing backends only.
+# on every backend's tree (Nim prints no twins, and does not ask).
 #
 # EVERY NODE AN EMITTER ASKS ABOUT MUST HAVE BEEN VISITED. The emitters print
 # calls this walk may not reach — one they synthesize, or one hanging off a

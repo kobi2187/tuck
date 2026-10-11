@@ -279,6 +279,7 @@ iterator childSlots*(e: Expr): var Expr =
       yield e.appendValue
     of exkCopy: yield e.copied
     of exkDrop: yield e.dropped
+    of exkReset: yield e.resetPlace
 
 proc poolOperands*(e: Expr): seq[Expr] =
   ## A pool op's operands in call order — the handle, then the value — for

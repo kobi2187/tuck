@@ -548,6 +548,26 @@ examples byte-identical, or explains each line that changes.
       (`Decl.ownedParams`). The twins themselves stay as the encoding, and
       Nim's `sink` still comes from its own analysis.
 
+   **One tree, 2026-10-11 (owner: "the memory rules' node types should be
+   common, before diverging to the deep-cloned AST for backends").** The
+   rules write the same nodes on every backend's tree
+   (`backend_prepare.prepareCommon` takes no backend): named temporaries,
+   `exkCopy`, `exkDrop` in a `deferReleases` defer, `dropsOld`, and a new
+   `exkReset` (rule M's reset was an assignment of an untyped empty list).
+   Each emitter decides how to print them. Nim prints a copy as its value
+   and drops and resets as nothing, and its `sink` reads rule P's
+   `ownedParams`: `codegen_common`'s own keep analysis is deleted. D prints
+   a `str` copy as the `str`. A `str` grown in place (`s = s + t`) is an
+   `exkAppend` everywhere; Odin frees the old bytes (`rt.tuckStrAppend`)
+   when the body owns the place (`appendFreesOld`). `with` over a place
+   lowers to the construction it means (`lowering_with`), so each kept
+   field is a read the rules decide on its own. Found on the way: a read of
+   `a` followed by a read of `a.items` (or the reverse) was stamped final,
+   so the whole record (or the part) moved while still read, which on D
+   aliased two records (the SSA mirror and its oracle both had it); an
+   `object`'s fields were not read by rule G, so an all-scalar object was
+   copied deeply.
+
    `TUCK_OWN` and the shadow differential are gone;
    `TUCK_DEBUG_OWN=uses|params|drops|copies|verify` prints each rule's
    answers (`ownership_dump`). The gate: V reports nothing over every

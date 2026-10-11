@@ -98,7 +98,7 @@ rt.TuckResult!(rt.TuckUnit) tuckˑobjectˑPodcastAppˑsetMany(tuckˑobjectˑPodc
 }
 
 void tuckˑobjectˑPodcastAppˑplay(ref tuckˑobjectˑPodcastApp self, tuckˑtypeˑEpisode episode) {
-    tuckˑobjectˑPodcastApp tuckChain1 = rt.tuckCopy(self);
+    tuckˑobjectˑPodcastApp tuckChain1 = self;
     tuckChain1 = tuckˑfnˑloadEpisode(tuckChain1, episode);
     tuckˑfnˑstartAudio(tuckChain1);
 }

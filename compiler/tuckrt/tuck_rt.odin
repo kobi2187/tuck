@@ -100,6 +100,15 @@ tuckConcat :: proc(a, b: string) -> string {
 	return strings.concatenate({a, b})
 }
 
+// `s += t` on a str its body owns (the ownership rules decided it): the new
+// bytes replace the old, which are freed. Odin's strings do not grow, so it
+// is a concatenation and a free, in one call.
+tuckStrAppend :: proc(s: ^string, t: string) {
+	old := s^
+	s^ = strings.concatenate({old, t})
+	if raw_data(old) != nil { delete(old) }
+}
+
 // Bit operations. Tuck has no bitwise OPERATORS — `|` is already sum-variant
 // syntax and a word operator is refused (TK-PA11) — so these are ordinary
 // postfix calls declared in std/bits.tuck, the same shape std/seq.tuck uses

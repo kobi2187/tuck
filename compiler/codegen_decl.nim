@@ -60,10 +60,11 @@ proc nimFnParams*(res: Resolution, m: Module, d: Decl): seq[string] =
   ##
   ## `sink` is not write permission either: it says the CALLER is finished
   ## with the value, so the callee may move out of it rather than copy. Which
-  ## parameters qualify is our own analysis's answer (analysis_liveness), not
-  ## Nim's inference — Odin and D are handed the same fact.
+  ## parameters qualify is rule P's answer (`Decl.ownedParams`, written by
+  ## the ownership rules on the tree every backend prints), not Nim's
+  ## inference — Odin and D read the same fact.
   for p in d.fnParams:
-    let move = if paramIsMovable(res, m, d.fnBody, p): "sink " else: ""
+    let move = if p.name in d.ownedParams: "sink " else: ""
     result.add(p.name & ": " & move & genType(p.typ))
 
 proc groupMixins(ctx: CodegenCtx, d: Decl): string =

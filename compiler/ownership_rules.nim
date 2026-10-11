@@ -180,6 +180,8 @@ proc kindUses(res: Resolution, e: Expr): seq[ChildUse] =
   # A copy only reads its value.
   of exkCopy: @[(e.copied, uBorrow)]
   of exkDrop: @[(e.dropped, uDrop)]
+  # A reset writes the place it empties.
+  of exkReset: @[(e.resetPlace, uWrite)]
 
 const ByOwnKind* = {exkCall, exkBracket, exkBracketAssign}
   ## Nodes classified by their own kind even when the checker resolved them

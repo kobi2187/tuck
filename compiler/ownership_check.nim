@@ -284,6 +284,15 @@ proc overwrite(c: var Check, n: Expr, keys: seq[string]) =
       if cLive in cans: c.report("overwrite-leak", cans, shown(k), n.span)
   for k in keys: c.st[k] = {cLive}
 
+proc walkReset(c: var Check, n: Expr) =
+  ## A place emptied after a move (rule M): what it held must have moved out
+  ## (or it leaks), and it is live again, holding nothing to free.
+  if c.dead: return
+  for k in c.keysOf(pathOf(n.resetPlace)):
+    let cans = c.st.getOrDefault(k, {cLive})
+    if cLive in cans: c.report("overwrite-leak", cans, shown(k), n.span)
+    c.st[k] = {cLive}
+
 proc walkAssign(c: var Check, n: Expr) =
   ## The value is evaluated (and may move things), then the place is
   ## defined: a new owned place, or an owned place or field losing its old
@@ -410,6 +419,7 @@ proc walkExpr(c: var Check, e: Expr, use: Use) =
   of exkReturn, exkRaise: c.walkExit(e)
   of exkBreak, exkContinue: c.walkJump(e)
   of exkDefer: c.deferDrops(e)
+  of exkReset: c.walkReset(e)
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill,
      exkBracket, exkBracketAssign, exkCall, exkChain, exkBinary, exkUnary,
      exkDiscard, exkTripleDot, exkImport, exkSend, exkAcquire, exkFinish,

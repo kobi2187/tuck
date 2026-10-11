@@ -1204,7 +1204,7 @@ proc genDefer(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## brace-delimited block rather than genBlock's braceless run of statements.
   ## A scope-end drop is one statement, and prints on one line.
   if e.deferBody == nil or e.deferBody.kind != exkBlock: return ""
-  if e.deferBody.stmts.len == 1 and e.deferBody.stmts[0].kind == exkDrop:
+  if e.deferReleases and e.deferBody.stmts.len == 1:
     return ind & "defer " & ctx.genDrop(e.deferBody.stmts[0])
   let body = ctx.genBlock(e.deferBody, ind)
   if body.len == 0: return ""
@@ -1376,10 +1376,14 @@ proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
 proc genAppend(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `xs += v` — an append assigned back over its own argument, grown in place
   ## by Odin's amortised `append`. ownership_nodes made the decision; this
-  ## prints it. (A str concat is never one here: Odin's strings do not grow,
-  ## so `s = s + t` stays a `tuckConcat` and a free of the old value.)
-  "append(&" & ctx.movedAssignTarget(e.appendTarget) & ", " &
-    ctx.genOdinExpr(e.appendValue) & ")"
+  ## prints it. Odin's strings do not grow: `s += t` is a concatenation that
+  ## frees the old bytes when the body owns them (`appendFreesOld`), and
+  ## leaves them otherwise (an actor's field may hold a static literal).
+  let target = ctx.movedAssignTarget(e.appendTarget)
+  let value = ctx.genOdinExpr(e.appendValue)
+  if e.appendsElement: "append(&" & target & ", " & value & ")"
+  elif e.appendFreesOld: "rt.tuckStrAppend(&" & target & ", " & value & ")"
+  else: target & " = rt.tuckConcat(" & target & ", " & value & ")"
 
 proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   ## First assignment to a name DECLARES it (`:=`); later ones assign (`=`).
@@ -1502,6 +1506,8 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkAppend: ctx.genAppend(e)
   of exkCopy: ctx.genOdinCopy(e)
   of exkDrop: ctx.genDrop(e)
+  # The place is empty after a move (rule M): its drop frees nothing.
+  of exkReset: ctx.genOdinAssignTarget(e.resetPlace) & " = {}"
   of exkMatch: (if e.subject != nil: ctx.genMatchExpr(e) else: "")
   of exkReturn: ctx.genReturnStmt(e)
   of exkRaise: ctx.genRaise(e)

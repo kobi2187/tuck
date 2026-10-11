@@ -419,8 +419,8 @@ fn main() -> int:
   return b.xs[0] + b.n
 """
   t.okCheck "an actor field handed to a threading fn checks"
-  t.emitsOdin "...and reaches the copying wrapper, not the twin",
-              r"tuckˑfnˑgrow\(self\.st\)"
+  t.emitsOdin "...and is copied before it reaches the twin",
+              r"tuckˑfnˑgrow_moved\(rt\.tuckCopy\(self\.st\)\)"
   # 7 + 0. A twin that took the field destructively would free it, and the
   # read after the wait would answer with whatever was left.
   t.hostRuns("...so the actor's own buffer survives", 7)

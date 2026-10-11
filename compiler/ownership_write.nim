@@ -1,53 +1,41 @@
 # compiler/ownership_write.nim
 #
-# THE RULES WRITE THEIR OWN TREE — the last step of Stage D
-# (thoughts/shared/plans/2026-10-05-ownership-rules-proposal.md, §8).
-#
-# Stage C made today's decisions into nodes (ownership_nodes); the
-# elaborator computed the rules' decisions beside them (ownership_elab) and
-# rule V checks a tree of such nodes (ownership_check). Here the rules write
-# the nodes themselves, on Odin, under TUCK_OWN=rules: the same `exkCopy`,
-# `defer drop` and `dropsOld` the emitter already prints, decided from the
-# rules instead of from today's passes. Nothing else changes, so the
-# emitted program is the rules' program, and V and the tracked runs check
-# it before anything switches.
+# THE RULES WRITE THE TREE — the ownership of a program, written into the
+# one tree every backend prints (thoughts/shared/plans/2026-10-05-
+# ownership-rules-proposal.md, §8). The elaborator (ownership_elab) answers
+# the rules; this writes the answers as nodes; rule V (ownership_check)
+# checks them. No backend is named here: each emitter decides how a node
+# prints (backend_prepare, "ONE TREE, THREE PRINTERS").
 #
 #   P  calling convention. Every call to a fn with a moved twin calls the
-#      twin, which is the body itself (twin_calls, `every`); a parameter
-#      the body consumes is P's answer, for every parameter, not only the
-#      first. The copying wrapper is never called.
+#      twin, which is the body itself (twin_calls); the parameters the body
+#      consumes are P's answer (`Decl.ownedParams`), which the copying
+#      wrapper copies and Nim's `sink` reads.
 #   S  every sink is decided: a binding, a construction's field, a list's
 #      element, a `return`, a value appended, an argument to a consuming
-#      parameter (a callee with no body by its signature's contract). A
-#      read of a place the
-#      body owns moves at its final use and copies otherwise; a read of a
-#      place it borrows, or of an element, always copies; a temporary moves.
-#      The take, `st = {b: st} apply` (an actor's field handed over and
-#      refilled by the same statement), moves.
+#      parameter (a callee with no body by its declaration's contract). A
+#      read of a place the body owns moves at its final use and copies
+#      otherwise (`exkCopy`); a read of a place it borrows, or of an element,
+#      always copies; a temporary moves. The take, `st = {b: st} apply` (an
+#      actor's field handed over and refilled by the same statement), moves.
 #   D  every owned place is dropped where its scope ends unless it was moved
-#      out on every path, and an overwrite drops the old value unless it was
-#      moved out (the elaborator's `dropPlan`, placed by Stage C's walker).
+#      out on every path (`exkDrop` in a `deferReleases` defer), and an
+#      overwrite drops the old value unless it was moved out (`dropsOld`).
+#   M  a place moved on some paths only (`maybe`) is reset after each
+#      statement that moves it (`exkReset`), and dropped like any other. A
+#      move in a `return` binds the value first, so the reset runs before
+#      the scope's drops.
+#   G  what a copy or a drop of a type is (`copyKind`, `dropDeep`).
 #
-#   M  a place moved on some paths only (`maybe`) is reset to empty after
-#      each statement that moves it, and dropped like any other. A move in
-#      a `return` binds the value first, so the reset runs before the
-#      scope's drops.
+# A temporary only borrowed (a list a `for` iterates, a call's result given
+# to a reading parameter, a `str` concatenation's operand) gets a NAME first:
+# a binding inserted before its statement, an owned place dropped where its
+# scope ends (D). Only when nothing with an effect runs before it in its
+# statement, so the order of effects is kept. A branch or arm that is one
+# statement gets a block of its own only when a binding or a reset lands in
+# it.
 #
-# Two values need a NAME before a rule can apply, and get one (a binding
-# inserted before the statement, as lowering_strtemps names a `str`):
-#   - a temporary only borrowed (a list a `for` iterates, a call's result
-#     given to a reading parameter): bound, it is an owned place, dropped
-#     where its scope ends (D). Only when nothing with an effect runs before
-#     it in its statement, so the order of effects is kept.
-#   - a record copied where it is not bound (an argument, an element, a
-#     `return`): Odin prints a record's field copies only after a binding.
-#
-# NOT YET, and so not written here:
-#   - `str`: static or heap is rule G's answer. Its copies and drops stay
-#     today's (ownership_nodes, `staticOnly`), and so does its calling
-#     convention: a `str` parameter borrows.
-#   - an actor's field overwritten (rule T), and a Seq's elements and a
-#     sum's payloads (glue, rule G; A39).
+# NOT YET: an actor's field overwritten (rule T).
 import tables, sets, strutils
 import ast, ast_ops, ast_query
 import resolution
@@ -61,11 +49,10 @@ type Writer = object
   memo: ConsumeMemo
   ps: Places
   refills: string     ## the place the enclosing assignment defines (the take)
-  strShared: bool     ## a `str` is immutable and shared by its copies (D)
 
 proc owns(w: Writer, t: Type): bool =
   ## Does a value of `t` own storage (rule G)?
-  w.res.owning(w.m, t, w.strShared)
+  w.res.owning(w.m, t)
 
 proc consumed(w: var Writer, a: ArgOf): bool =
   ## Does the parameter this argument feeds consume it (rule P)?
@@ -93,7 +80,7 @@ proc atSink(w: var Writer, v: Expr): Expr =
   let t = w.res.typeFor(v)
   if v == nil or v.kind == exkCopy or not w.owns(t) or w.taken(v): return v
   if not isStatic(v) and not w.res.copiesRead(w.ps, v): return v
-  w.copyNode(v, w.res.copyKindOf(w.m, t, w.strShared))
+  w.copyNode(v, w.res.copyKindOf(w.m, t))
 
 proc walk(w: var Writer, e: Expr, use: Use, arg: ArgOf)
 
@@ -161,9 +148,15 @@ proc walk(w: var Writer, e: Expr, use: Use, arg: ArgOf) =
     else: w.visitOne(slot, ops)
 
 proc writeCopies(w: var Writer, d: Decl) =
-  ## Rule S over one body: its value is the fn's result, a sink.
+  ## Rule S over one body: its value is the fn's result, a sink. And a `str`
+  ## grown in a place the body owns frees its old bytes where a backend
+  ## frees (an actor's field is not the body's, and may hold a literal).
   w.ps = w.res.placesOf(w.m, d, w.memo)
   w.walk(d.fnBody, uSink, NoArg)
+  for n in d.fnBody.nodes:
+    if n.kind == exkAppend and not n.appendsElement:
+      n.appendFreesOld = not w.res.isOwnerField(n.appendTarget) and
+        w.ps.owns(rootOf(pathOf(n.appendTarget)))
 
 # --- names for values a rule needs to see bound -------------------------------
 
@@ -273,31 +266,45 @@ proc liftStatement(w: var Writer, s: Expr): seq[Expr] =
   else: w.lift(s, uNone, NoArg, L, own = true)
   L.lifted
 
+const ArmStatements = {exkReturn, exkRaise, exkAssign, exkBreak, exkContinue}
+  ## What a branch or arm may be without a block: one statement.
+
 proc asBlock(e: Expr): Expr =
   ## A branch or arm that is one statement, given a block of its own, so a
   ## rule can put a statement before or after it.
-  if e == nil or e.kind notin {exkReturn, exkRaise, exkAssign, exkBreak,
-                               exkContinue}:
+  if e == nil or e.kind notin ArmStatements:
     return e
   result = Expr(span: e.span, kind: exkBlock, stmts: @[e])
   fillIdsIn(result)
   markBuilt(result)
 
-proc blockify(body: Expr) =
-  ## Every statement branch and arm under `body` in a block of its own.
+iterator armSlots(body: Expr): var Expr =
+  ## Every branch and arm under `body`: a place a single statement can stand
+  ## without a block of its own.
+  var parents: seq[Expr]
   for n in body.nodes:
-    if n.kind == exkIf:
-      n.thenBranch = asBlock(n.thenBranch)
-      n.elseBranch = asBlock(n.elseBranch)
-    elif n.kind == exkMatch:
-      for arm in n.arms.mitems: arm.body = asBlock(arm.body)
-    elif n.kind == exkFor: n.body = asBlock(n.body)
-    elif n.kind == exkWhile: n.whileBody = asBlock(n.whileBody)
+    if n.kind in {exkIf, exkMatch, exkFor, exkWhile}: parents.add n
+  for n in parents:
+    case n.kind
+    of exkIf:
+      yield n.thenBranch
+      yield n.elseBranch
+    of exkMatch:
+      for arm in n.arms.mitems: yield arm.body
+    of exkFor: yield n.body
+    of exkWhile: yield n.whileBody
+    else: discard
 
 proc liftAll(w: var Writer, d: Decl) =
-  ## Every block's statements, each given the bindings it needs.
-  blockify(d.fnBody)
+  ## Every block's statements, each given the bindings it needs; a branch or
+  ## arm that is one statement gets a block only when it needs one.
   w.ps = w.res.placesOf(w.m, d, w.memo)
+  for slot in d.fnBody.armSlots:
+    if slot == nil or slot.kind notin ArmStatements: continue
+    let lifted = w.liftStatement(slot)
+    if lifted.len > 0:
+      slot = asBlock(slot)
+      slot.stmts = lifted & slot.stmts
   var blocks: seq[Expr]
   for n in d.fnBody.nodes:
     if n.kind == exkBlock: blocks.add n
@@ -327,9 +334,7 @@ proc statementOf(res: Resolution, body, read: Expr): tuple[b: Expr, i: int] =
       if res.contains(s, read): result = (b, i)
 
 proc resetOf(w: Writer, read: Expr, place, slot: string): Expr =
-  ## `place.slot = {}`: the slot is empty, and its drop frees nothing. The
-  ## empty value is untyped, so Odin takes the type from the target (a
-  ## generic record's field type has no name here).
+  ## `reset(place.slot)`: the slot is empty, and its drop frees nothing.
   let whole = pathOf(read) == place
   let span = read.span
   var target = w.res.typed(Expr(span: span, kind: exkVar, name: place),
@@ -340,22 +345,24 @@ proc resetOf(w: Writer, read: Expr, place, slot: string): Expr =
     let t = if pathOf(read) == place & "." & slot: w.res.typeFor(read) else: nil
     target = w.res.typed(Expr(span: span, kind: exkField, receiver: target,
                               fieldName: slot), t)
-  let empty = w.res.typed(Expr(span: span, kind: exkList), nil)
-  result = Expr(span: span, kind: exkAssign, target: target, assignVal: empty)
+  result = Expr(span: span, kind: exkReset, resetPlace: target)
   fillIdsIn(result)
   markBuilt(result)
 
 proc resetPart(w: Writer, read: Expr): Expr =
-  ## `r.value = {}`: the part a read moved out of a place is empty.
-  let empty = w.res.typed(Expr(span: read.span, kind: exkList), nil)
-  result = Expr(span: read.span, kind: exkAssign, target: w.res.freshCopy(read),
-                assignVal: empty)
+  ## `reset(r.value)`: the part a read moved out of a place is empty.
+  result = Expr(span: read.span, kind: exkReset,
+                resetPlace: w.res.freshCopy(read))
   fillIdsIn(result)
   markBuilt(result)
 
 proc resetAfter(w: var Writer, d: Decl, read, reset: Expr): bool =
   ## `reset` right after the statement whose `read` moved what it empties;
-  ## false when there is no statement position to put it in.
+  ## false when there is no statement position to put it in. A branch or arm
+  ## that is that one statement gets a block of its own first.
+  for slot in d.fnBody.armSlots:
+    if slot != nil and slot.kind != exkBlock and w.res.contains(slot, read):
+      slot = asBlock(slot)
   let (b, i) = w.res.statementOf(d.fnBody, read)
   if b == nil: return false
   let s = b.stmts[i]
@@ -376,8 +383,7 @@ proc copyInstead(w: Writer, read: Expr) =
   ## place: the read keeps its id, and a copy of it takes its position.
   let inner = Expr()
   inner[] = read[]
-  read[] = w.copyNode(inner, w.res.copyKindOf(w.m, w.res.typeFor(inner),
-                                                 w.strShared))[]
+  read[] = w.copyNode(inner, w.res.copyKindOf(w.m, w.res.typeFor(inner)))[]
 
 # --- rule D, as a drop source ---------------------------------------------------
 
@@ -465,23 +471,19 @@ proc rulesDrops(w: var Writer, d: Decl): DropSource =
     if w.res.dropsDeep(w.m, t): result.deep.incl k
   w.overwriteDrops(d, plan, unreset, result)
 
-proc writeRules*(res: Resolution, m: Module, frees: bool) =
-  ## Step 9: the rules write the copies and, where the program `frees` its
-  ## own storage (Odin), the bindings, drops and resets too. Without it (D's
-  ## collector frees), only the copies value semantics needs: a `str` is
-  ## immutable there, shared by every copy. Run after the appends are made.
-  var w = Writer(res: res, m: m, strShared: not frees)
+proc writeRules*(res: Resolution, m: Module) =
+  ## Step 7: the rules write the bindings, copies, drops and resets into the
+  ## tree every backend prints. Run after the appends are made.
+  var w = Writer(res: res, m: m)
   var sources: Table[NodeId, DropSource]
   for d in m.allFns:
     if d == nil or d.fnBody == nil: continue
     d.ownedParams = @[]
     for p in d.fnParams:
-      if res.owning(m, p.typ, w.strShared) and
-         res.consumes(m, d, p.name, w.memo):
+      if res.owning(m, p.typ) and res.consumes(m, d, p.name, w.memo):
         d.ownedParams.add p.name
-    if frees: w.liftAll(d)
+    w.liftAll(d)
     w.writeCopies(d)
-    if frees: sources[d.id] = w.rulesDrops(d)
-  if frees:
-    materializeDropsFrom(res, m, proc (d: Decl): DropSource =
-      sources.getOrDefault(d.id))
+    sources[d.id] = w.rulesDrops(d)
+  materializeDropsFrom(res, m, proc (d: Decl): DropSource =
+    sources.getOrDefault(d.id))

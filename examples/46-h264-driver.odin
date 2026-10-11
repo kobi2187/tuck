@@ -59,14 +59,10 @@ tuckˑtypeˑAction :: enum { decode, configure, skip, flushThenDecode }
 tuckˑdecisionˑroute :: proc (nal: tuckˑtypeˑNalKind, configured: bool, midFrame: bool) -> tuckˑtypeˑAction {
   switch ((((int(nal) * 4) + ((configured ? 1 : 0) * 2)) + (midFrame ? 1 : 0)))
   {
-  case 0, 1, 16, 17, 18, 19:
-      return tuckˑtypeˑAction.skip
-  case 2, 3, 4, 6:
-      return tuckˑtypeˑAction.decode
-  case 5, 7:
-      return tuckˑtypeˑAction.flushThenDecode
-  case:
-      return tuckˑtypeˑAction.configure
+  case 0, 1, 16, 17, 18, 19: return tuckˑtypeˑAction.skip;
+  case 2, 3, 4, 6: return tuckˑtypeˑAction.decode;
+  case 5, 7: return tuckˑtypeˑAction.flushThenDecode;
+  case: return tuckˑtypeˑAction.configure;
   }
   return {}
 }

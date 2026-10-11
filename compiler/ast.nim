@@ -495,9 +495,13 @@ type
                     # (Odin, D). What the copy is, is rule G's (`copyKind`).
     exkDrop         # prepared only (ownership_nodes): release the storage the
                     # place `dropped` owns (rule D). Sits in a `defer` after
-                    # the declaration it ends, or at the top of a moved twin
-                    # for the parameter it consumed. Odin only: the other two
-                    # backends' memory is ARC's and the collector's (step 1.3).
+                    # the declaration it ends, or at the top of a body for a
+                    # parameter it consumes. Every backend's tree has it; the
+                    # one that frees by hand (Odin) prints it, ARC (Nim) and
+                    # the collector (D) do that themselves.
+    exkReset        # prepared only (ownership_write): the place `resetPlace`
+                    # is empty after a move on some paths (rule M), so its
+                    # drop frees nothing. Printed where drops are.
 
   CopyKind* = enum
     ## What an `exkCopy` copies (rule S: a sink copies when it is not the
@@ -664,6 +668,8 @@ type
       selArms*: seq[SelectArm]  # read/timeout branches (spec §9.3)
     of exkDefer:
       deferBody*: Expr  # the block to run at scope exit
+      deferReleases*: bool  # made by the ownership rules: it only releases
+                            # storage (`exkDrop`s), printed where drops are
     of exkOrdinal:
       ordinalOf*: Expr  # the enum or bool value whose ordinal this is
     of exkPoolOp:
@@ -687,6 +693,9 @@ type
                                    # READ of it the source wrote, so its stamps
                                    # (final use, owner field) stay attached
       appendValue*: Expr           # what is added at the end
+      appendFreesOld*: bool        # a str grown in a place the body owns
+                                   # (ownership_write): the old bytes are
+                                   # its, and freed where a backend frees
       appendsElement*: bool        # true: `appendValue` becomes the Seq's new
                                    # last element (a SINK — the container
                                    # keeps it). false: a str's bytes copied
@@ -695,6 +704,8 @@ type
       copied*: Expr                # the value copied; it keeps its own id, so
                                    # every fact about it stays attached
       copyKind*: CopyKind
+    of exkReset:
+      resetPlace*: Expr            # the place, or the part of one, emptied
     of exkDrop:
       dropped*: Expr               # the place: a local or parameter, or a
                                    # path into one (`b.ask`)

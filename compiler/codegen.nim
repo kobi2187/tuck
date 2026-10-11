@@ -805,10 +805,12 @@ proc genDefer(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## `defer:` (spec §7.4) — Nim spells it identically, scope-exit-ordered and
   ## LIFO, so this is a keyword and a body rather than a lowering. All three
   ## backends reach their own native defer for the same reason: nothing about
-  ## scope exit needs re-implementing in Tuck.
+  ## scope exit needs re-implementing in Tuck. One the ownership rules made
+  ## only releases storage, which ARC does itself: it prints as nothing.
   ##
   ## The body is always a block — `defer:` opens one, and the parser has no
   ## other form — so there is no inline arm to write.
+  if e.deferReleases: return ""
   if e.deferBody == nil or e.deferBody.kind != exkBlock: return ind & "discard"
   let body = ctx.genStmts(e.deferBody, ind)
   if body.len == 0: return ind & "discard"
@@ -885,11 +887,10 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkIf: ctx.genIf(e, ind)
   of exkAssign: ctx.genExprAssign(e)
   of exkAppend: ctx.genAppend(e)
-  # Nim's `seq` and `string` assignment already copies, so prepare never
-  # makes an `exkCopy` on this backend; if one arrives, the value IS its copy.
+  # Nim's `seq` and `string` assignment already copies, and ARC frees and
+  # moves: a copy prints as its value, and a drop or a reset as nothing.
   of exkCopy: ctx.genExpr(e.copied)
-  of exkDrop:
-    raiseAssert "nim: ARC frees; prepare makes an exkDrop for Odin only"
+  of exkDrop, exkReset: ""
   of exkMatch: ctx.genExprMatch(e)
   of exkReturn: ctx.genReturn(e)
   of exkRaise: ctx.genRaise(e)

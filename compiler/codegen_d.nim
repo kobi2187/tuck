@@ -770,8 +770,8 @@ proc genDCopy(ctx: var DCodegenCtx, e: Expr): string =
   case e.copyKind
   of cpSeq: "(" & valStr & ").dup"
   of cpDeep: "rt.tuckCopy(" & valStr & ")"
-  of cpStatic:
-    raiseAssert "d: a str is immutable and shared, so it is never copied"
+  # A str is immutable here, shared by every copy: its copy is itself.
+  of cpStatic: valStr
 
 proc callOwnerModule(ctx: DCodegenCtx, e: Expr): string =
   ## The imported module a call resolves into, or "" for a local one. A
@@ -1114,8 +1114,10 @@ proc genDDefer(ctx: var DCodegenCtx, e: Expr): string =
   ## `defer:` (spec §7.4). D spells scope exit `scope(exit)` — the same
   ## construct under a different name, and LIFO like the other two. D also has
   ## `scope(success)` and `scope(failure)`; Tuck's defer is the unconditional
-  ## one, so `scope(exit)` is the exact match and not an approximation.
-  if e.deferBody == nil: return ""
+  ## one, so `scope(exit)` is the exact match and not an approximation. One
+  ## the ownership rules made only releases storage, which the collector
+  ## does itself: it prints as nothing.
+  if e.deferBody == nil or e.deferReleases: return ""
   let ind = ctx.indD
   ind & "scope(exit) {\n" & ctx.genDNested(e.deferBody) & ind & "}"
 
@@ -1386,8 +1388,8 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkAssign: ctx.genDAssign(e)
   of exkAppend: ctx.genDAppend(e)
   of exkCopy: ctx.genDCopy(e)
-  of exkDrop:
-    raiseAssert "d: the collector frees; prepare makes an exkDrop for Odin only"
+  # The collector frees: a drop or a reset prints as nothing.
+  of exkDrop, exkReset: ""
   of exkReturn: ctx.genDReturn(e)
   of exkRaise: ctx.genDRaise(e)
   of exkDiscard:
