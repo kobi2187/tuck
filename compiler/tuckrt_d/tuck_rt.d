@@ -422,7 +422,11 @@ ulong shiftRight(ulong a, long by)
 string charAt(string s, long index)
 {
     tuckSeqBounds(index, cast(long) s.length, "charAt");
-    return [s[index]].idup;
+    // One allocation: `[s[index]].idup` builds the literal on the heap first,
+    // and with the collector off nobody frees it.
+    auto r = new char[](1);
+    r[0] = s[index];
+    return cast(string) r;
 }
 
 bool containsChar(string s, string ch)
@@ -472,7 +476,9 @@ R readLine(R)()
         return terr!P(errCode("console/IoError.EndOfInput"));
     while (line.length > 0 && (line[$ - 1] == '\n' || line[$ - 1] == '\r'))
         line = line[0 .. $ - 1];
-    return tok(tuckRec!(P, "line")(line.idup));
+    auto kept = line.idup;
+    tuckFreeBlock(cast(void*) line.ptr);   // readln's buffer was only ours
+    return tok(tuckRec!(P, "line")(kept));
 }
 
 /// A spinlock for the mailbox. NOT decoration: this runtime spawns one OS

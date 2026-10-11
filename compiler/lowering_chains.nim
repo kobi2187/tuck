@@ -235,7 +235,7 @@ proc lowerChains*(res: Resolution, m: Module) =
     if d.kind == dkFn:
       d.fnBody = lowerBody(res, m, d.fnBody, d.fnReturnType)
     elif d.kind == dkTask:
-      d.taskBody = lowerBody(res, m, d.taskBody, d.taskReturnType)
+      d.fnBody = lowerBody(res, m, d.fnBody, d.fnReturnType)
     elif d.kind == dkSelect:
       for arm in d.selectArms.mitems:
         lowerNested(res, m, arm.arg)

@@ -1195,10 +1195,10 @@ proc parseTaskDecl*(p: var Parser, sp: Span): Decl =
                   emitSp.line, emitSp.col)
   discard p.expect(tkColon)
   let body = p.parseBlock()
-  return Decl(span: sp, kind: dkTask, name: name, taskParams: params,
-              taskReturnType: retType, taskEffects: sig.effects,
-              taskErrorTypes: sig.errTypes, taskResourceKinds: sig.resources,
-              taskBody: body)
+  return Decl(span: sp, kind: dkTask, name: name, fnParams: params,
+              fnReturnType: retType, fnEffects: sig.effects,
+              fnErrorTypes: sig.errTypes, fnResourceKinds: sig.resources,
+              fnBody: body)
 
 proc parseFnDecl*(p: var Parser, sp: Span): Decl =
   ## fn name[T]({params}) -> ret [effects]: body — also `on select` arms and event handlers

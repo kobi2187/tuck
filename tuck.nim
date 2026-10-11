@@ -1293,11 +1293,14 @@ when isMainModule:
         # tuck_rt are compiled INTO the program, so this is how the mode
         # becomes a compile-time fact there rather than a branch at run time.
         let invFlag = if noInvariants: " -d:tuckNoInvariants " else: ""
-        # ARC, not ORC: deterministic destructors and no cycle collector.
-        # Every decision about ownership is the rules' (backend_prepare):
-        # the moves are printed (`move`), the `sink` parameters are rule P's,
-        # and ARC frees exactly where rule D drops.
-        let nimCmd = "nim c --hints:off --warnings:off --mm:arc " & nimFlags & asyncFlags &
+        # No memory manager at all: `--mm:none -d:useMalloc`. Every decision
+        # about ownership is the rules' (backend_prepare) and is printed:
+        # moves, copies, drops, resets and in-place growth are the runtime's
+        # `tuckMove` / `tuckCopy` / `tuckDrop` / `tuckReset` / `tuckPush`
+        # (tuck_rt, "memory"), so storage is freed where rule D says and
+        # nowhere else. Exceptions are `goto`-based: a `defer` that releases
+        # storage is then a label, not a `setjmp`.
+        let nimCmd = "nim c --hints:off --warnings:off --mm:none -d:useMalloc --exceptions:goto " & nimFlags & asyncFlags &
                      nimDefinesFor(actorPolicy) & invFlag &
                      speedFlags & " --nimcache:" & quoteShell(nimCache) &
                      " -o:" & quoteShell(binPath) & " " &

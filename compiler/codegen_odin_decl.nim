@@ -988,26 +988,26 @@ proc genTaskDecl*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## task body ONTO it. Anything relying on a yield behaves synchronously.
   ctx.currentParams = @[]
   var params: seq[string]
-  for p in d.taskParams:
+  for p in d.fnParams:
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
     params.add(p.name & ": " & ctx.odinType(p.typ))
   let retTypeStr =
-    if d.taskReturnType != nil: ctx.odinType(d.taskReturnType) else: "void"
+    if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
   let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
   let header = ind & d.name & " :: proc(" & params.join(", ") & ")" &
                retStr & " {"
   let oldVars = ctx.definedVars
-  for p in d.taskParams: ctx.definedVars.incl(p.name)
+  for p in d.fnParams: ctx.definedVars.incl(p.name)
   let oldIndent = ctx.indent
   (ctx.retWrapped, ctx.retInnerOdin, ctx.retInnerT) =
-    ctx.odinBangInfo(d.taskReturnType)
-  ctx.retAbsentCapable = absentCapable(d.taskReturnType)
-  var bodyStr = ctx.genOdinExpr(d.taskBody)
-  if d.taskBody != nil and d.taskBody.kind != exkBlock:
+    ctx.odinBangInfo(d.fnReturnType)
+  ctx.retAbsentCapable = absentCapable(d.fnReturnType)
+  var bodyStr = ctx.genOdinExpr(d.fnBody)
+  if d.fnBody != nil and d.fnBody.kind != exkBlock:
     let kw = if retTypeStr != "void": "return " else: ""
     bodyStr = ind & "\t" & kw & bodyStr
   elif retTypeStr != "void":
-    bodyStr = ensureTrailingReturn(bodyStr, d.taskBody, oldIndent)
+    bodyStr = ensureTrailingReturn(bodyStr, d.fnBody, oldIndent)
   ctx.indent = oldIndent
   ctx.retWrapped = false
   ctx.retAbsentCapable = false
@@ -1212,8 +1212,8 @@ proc genOdinSlabDrops(d: Decl, elem: string, owns: seq[string],
                       ind: string): string =
   ## The slab's `free`, `set` and `reset` for an element that owns heap:
   ## Odin has no destructors, so each deletes what a value it ends owns
-  ## before the runtime's own step. Nim's runtime resets the value and D's
-  ## collector reclaims it; here it is spelt per slab, by its Seq fields.
+  ## before the runtime's own step. Nim and D drop it with their generic
+  ## `tuckDrop`; here it is spelt per slab, by its Seq fields.
   let s = d.name
   proc drops(c, ind: string): string =
     for f in owns:

@@ -436,10 +436,20 @@ and a test can assert on it. The decisions come from the ownership rules
 - `ownership_write` writes them into the one tree every backend prints
   (`backend_prepare.prepareCommon`, which takes no backend): the bindings
   that name temporaries, the copies (`exkCopy`), the drops (`exkDrop`,
-  `dropsOld`) and the resets (`exkReset`). Each emitter decides how a node
-  prints: Odin frees by hand and prints them all; D prints the copies and
-  leaves freeing to its collector; Nim prints a copy as its value, leaves
-  drops and resets to ARC, and reads rule P's `ownedParams` for `sink`;
+  `dropsOld`) and the resets (`exkReset`). **No backend has a collector or
+  a reference counter**: Nim is built `--mm:none -d:useMalloc`, D runs with
+  `GC.disable()`, Odin has none, so every backend frees exactly where rule D
+  says and prints every node as a call (Odin `rt.tuckDrop`, D `rt.tuckDrop`,
+  Nim `tuckDrop`). Each emitter chooses only how: Odin and D walk a value
+  with a reflective runtime proc and give a payload sum an emitted
+  `tuckFree` / `tuckDup`, Nim gives it a `tuckDrop` overload and prints a
+  move as `tuckMove` (a bit move, the place emptied) because under
+  `--mm:none` its own assignment would copy. Rule P's `ownedParams` is how a
+  body adopts a parameter (`var x = tuckBits(x)` in Nim). Records and
+  tasks are the same to the rules: a `with`/`alias`/`bake`/`merge` over
+  places is lowered to the construction it means (`lowering_combinator`) so
+  each field read is a node of its own, and a task is a fn that owns its
+  parameters;
 - rule V (`ownership_check`) walks the Odin tree and confirms that every
   owned value is moved or dropped exactly once on every path, and that
   nothing is read after it moved. It reads only the nodes.

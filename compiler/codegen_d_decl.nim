@@ -476,30 +476,30 @@ proc genDTaskDecl*(ctx: var DCodegenCtx, d: Decl): string =
   ## `task name(...)` — an ordinary D function. What makes it a task is the
   ## CALL SITE: calling it schedules a coroutine, and binding its result
   ## awaits completion (spec §9.2). The body needs no marking of its own.
-  let retStr = ctx.dType(d.taskReturnType)
+  let retStr = ctx.dType(d.fnReturnType)
   # A task's return type is fallible exactly as a fn's can be, and a bare
   # `return` inside one has to produce the carrier — `return;` in a function
   # returning TuckResult is "`return` expression expected". genDFnDecl set
   # these three and genDTaskDecl did not, so every early return in a
   # `task ... -> !void` emitted D that would not compile.
-  let payload = bangInner(d.taskReturnType)
+  let payload = bangInner(d.fnReturnType)
   ctx.retWrapped = payload != nil
-  ctx.retAbsentCapable = absentCapable(d.taskReturnType)
+  ctx.retAbsentCapable = absentCapable(d.fnReturnType)
   ctx.retInnerT = payload
   ctx.retInnerD =
     if payload == nil: ""
     else:
       let inner = ctx.dType(payload)
       if inner == "void": "rt.TuckUnit" else: inner
-  result = retStr & " " & d.name & "(" & ctx.genDParams(d.taskParams) & ") {\n"
+  result = retStr & " " & d.name & "(" & ctx.genDParams(d.fnParams) & ") {\n"
   ctx.indent = 1
   ctx.definedVars.clear()
   ctx.currentParams = @[]
-  for p in d.taskParams:
+  for p in d.fnParams:
     ctx.definedVars.incl(p.name)
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
-  result.add(ctx.genDStmtOrBlock(d.taskBody))
-  result.add(dTrailingReturn(d.taskBody, retStr, 1))
+  result.add(ctx.genDStmtOrBlock(d.fnBody))
+  result.add(dTrailingReturn(d.fnBody, retStr, 1))
   ctx.indent = 0
   ctx.currentParams = @[]
   ctx.retWrapped = false

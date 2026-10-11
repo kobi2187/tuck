@@ -452,6 +452,6 @@ let DebugVerify = getEnv("TUCK_DEBUG_OWN") == "verify"
 proc verifyTree*(res: Resolution, m: Module) =
   ## TUCK_DEBUG_OWN=verify: rule V over every fn body of the prepared tree.
   if not DebugVerify: return
-  for d in m.allFns:
+  for d in m.allFnsAndTasks:
     if d == nil or d.fnBody == nil: continue
     for line in checkFn(res, m, d): echo line

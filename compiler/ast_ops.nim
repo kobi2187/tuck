@@ -275,8 +275,10 @@ iterator childSlots*(e: Expr): var Expr =
       yield e.cellRef
     of exkArenaReset: yield e.arenaRef
     of exkAppend:
-      yield e.appendTarget
+      # The value is built first, THEN the target grows: a read of the target
+      # inside the value (`xs += Many {items: xs}`) is not its last read.
       yield e.appendValue
+      yield e.appendTarget
     of exkCopy: yield e.copied
     of exkDrop: yield e.dropped
     of exkReset: yield e.resetPlace
@@ -354,8 +356,8 @@ iterator ownTypes*(d: Decl): Type =
       for p in d.fnParams: yield p.typ
       yield d.fnReturnType
     of dkTask:
-      for p in d.taskParams: yield p.typ
-      yield d.taskReturnType
+      for p in d.fnParams: yield p.typ
+      yield d.fnReturnType
     of dkFnSig:
       for p in d.sigParams: yield p.typ
       yield d.sigReturn
@@ -393,7 +395,7 @@ iterator ownExprSlots*(d: Decl): var Expr =
   if d != nil:
     case d.kind
     of dkFn: yield d.fnBody
-    of dkTask: yield d.taskBody
+    of dkTask: yield d.fnBody
     of dkConst: yield d.constVal
     of dkExpr: yield d.expr
     of dkStaticAssert: yield d.assertExpr

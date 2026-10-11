@@ -219,7 +219,7 @@ proc verifyDecl(acc: var seq[Offender], d: Decl, b: Budget) =
     # same reason match arms are.
     if not d.isDecision: acc.checkFn(d.name, d.fnBody, d.span, b)
   of dkTask:
-    acc.checkFn(d.name, d.taskBody, d.span, b)
+    acc.checkFn(d.name, d.fnBody, d.span, b)
   of dkActor:
     for h in d.handlers: acc.verifyDecl(h, b)
   of dkMixin, dkExtern, dkPending:

@@ -58,14 +58,21 @@ proc nimFnParams*(res: Resolution, m: Module, d: Decl): seq[string] =
   ## param have byte-identical signatures (both `Big*`). The exception is
   ## `self` in an object member, emitted by genMemberFn below.
   ##
-  ## `sink` is not write permission either: it says the CALLER is finished
-  ## with the value, so the callee may move out of it rather than copy. Which
-  ## parameters qualify is rule P's answer (`Decl.ownedParams`, written by
-  ## the ownership rules on the tree every backend prints), not Nim's
-  ## inference — Odin and D read the same fact.
+  ## A parameter the body OWNS (rule P: `Decl.ownedParams`, written by the
+  ## ownership rules on the tree every backend prints) is still declared
+  ## plain; the body adopts it (`adoptedParams`) and the rules' drop at the
+  ## end of the scope frees it, as in Odin and D.
   for p in d.fnParams:
-    let move = if p.name in d.ownedParams: "sink " else: ""
-    result.add(p.name & ": " & move & genType(p.typ))
+    result.add(p.name & ": " & genType(p.typ))
+
+proc adoptedParams(d: Decl, ind: string): string =
+  ## `var x = tuckBits(x)` for each parameter the body owns: a variable of
+  ## its own holding the caller's bits (Nim's parameters are not writable, and
+  ## the body moves out of it and drops it). The caller copied or moved the
+  ## value in; a plain `var x = x` would copy it again and lose the original.
+  for p in d.fnParams:
+    if p.name in d.ownedParams:
+      result.add(ind & "var " & p.name & " = tuckBits(" & p.name & ")\n")
 
 proc groupMixins(ctx: CodegenCtx, d: Decl): string =
   ## `mixin` for every requirement a group-bounded generic may call.
@@ -151,7 +158,8 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     ctx.definedVars.incl(p.name)
   let oldIndent = ctx.indent
   ctx.enterReturnContext(d.fnReturnType)
-  let bodyStr = ctx.genFnBody(d.fnBody, "  ".repeat(ctx.indent))
+  let bodyStr = adoptedParams(d, "  ".repeat(ctx.indent + 1)) &
+                ctx.genFnBody(d.fnBody, "  ".repeat(ctx.indent))
   ctx.indent = oldIndent
   ctx.leaveReturnContext()
   ctx.definedVars = oldVars
@@ -242,13 +250,25 @@ proc genSumEquality(d: Decl): string =
       let f = sumPayloadField(v.name)
       result.add("  of " & v.name & ": a." & f & " == b." & f & "\n")
 
+proc genSumDrop(d: Decl): string =
+  ## `tuckDrop` for a payload sum: the live variant's payload, dropped
+  ## deeply. Nim's `fields` does not work over a CASE object, so the runtime's
+  ## generic drop cannot reach the variants; this overload is the one a drop
+  ## of the sum (or of anything holding it) finds.
+  result = "\nproc tuckDrop*(x: var " & d.name & ") =\n  case x.kind\n"
+  for v in d.typeBody.variants:
+    if v.fields.len == 0:
+      result.add("  of " & v.name & ": discard\n")
+    else:
+      result.add("  of " & v.name & ": tuckDrop(x." & sumPayloadField(v.name) & ")\n")
+
 proc genSumType*(ctx: var CodegenCtx, d: Decl): string =
   ## A sum type as Nim: a plain `enum` when no variant has a payload, else a
   ## `<Name>Kind` enum plus a case object whose branches each hold one NAMED
   ## object (`<Name>_<Variant>`). Named, not a tuple: Nim's classic runtime
   ## cannot generate C for a recursive type through an anonymous tuple
-  ## (`Expr` holding `seq[Expr]` in a variant), which a program without ARC
-  ## needs. Payload sums also get structural `==`; transitions add their
+  ## (`Expr` holding `seq[Expr]` in a variant), which a program built
+  ## `--mm:none` needs. Payload sums also get structural `==`; transitions add their
   ## procs.
   let hasPayload = sumHasPayload(d.typeBody)
   let hasTransitions = d.typeBody.transitions.len > 0
@@ -290,6 +310,7 @@ proc genSumType*(ctx: var CodegenCtx, d: Decl): string =
 
   if hasPayload:
     res.add(genSumEquality(d))
+    res.add(genSumDrop(d))
   if hasTransitions:
     # transition matrix: pure predicate + checked assignment
     res.add(genTransitionProcs(d, kindName, hasPayload))
@@ -588,21 +609,22 @@ proc genTaskDecl*(ctx: var CodegenCtx, d: Decl): string =
   ## just genFnDecl.
   ctx.currentParams = @[]
   var params: seq[string]
-  for p in d.taskParams:
+  for p in d.fnParams:
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
     params.add(p.name & ": " & genType(p.typ))
-  let retTypeStr = if d.taskReturnType != nil: genType(d.taskReturnType) else: "void"
+  let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
   let header = "proc " & d.name & "*(" & params.join(", ") & "): " &
                retTypeStr & " ="
   let oldVars = ctx.definedVars
-  for p in d.taskParams: ctx.definedVars.incl(p.name)
+  for p in d.fnParams: ctx.definedVars.incl(p.name)
   let oldIndent = ctx.indent
   let oldInTask = ctx.inTask
-  (ctx.retWrapped, ctx.retInnerNim, ctx.retInnerT) = bangInfo(d.taskReturnType)
-  ctx.retAbsentCapable = absentCapable(d.taskReturnType)
+  (ctx.retWrapped, ctx.retInnerNim, ctx.retInnerT) = bangInfo(d.fnReturnType)
+  ctx.retAbsentCapable = absentCapable(d.fnReturnType)
   ctx.inTask = true
   # A task lowers to a proc, so its body needs no scope of its own either.
-  let bodyStr = ctx.genFnBody(d.taskBody, "  ".repeat(ctx.indent))
+  let bodyStr = adoptedParams(d, "  ".repeat(ctx.indent + 1)) &
+                ctx.genFnBody(d.fnBody, "  ".repeat(ctx.indent))
   ctx.inTask = oldInTask
   ctx.indent = oldIndent
   ctx.retWrapped = false
@@ -888,6 +910,11 @@ proc genInterfaceType(ctx: var CodegenCtx, d: Decl): string =
   result.add("type " & d.name & "* = object\n" &
              "  case tag*: " & d.name & "Tag\n" &
              branches.join("\n") & "\n")
+  # Its drop (rule G): the live satisfier's payload. A case object, so the
+  # runtime's generic walk cannot reach the branches (as for a payload sum).
+  result.add("\nproc tuckDrop*(x: var " & d.name & ") =\n  case x.tag\n")
+  for s in sats:
+    result.add("  of " & d.name & "_is_" & s.name & ": tuckDrop(x." & s.name & "Val)\n")
 
 proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   ## One top-level declaration. Every DeclKind is named, so a new one fails

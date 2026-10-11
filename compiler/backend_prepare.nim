@@ -36,13 +36,15 @@
 #
 # ONE TREE, THREE PRINTERS. Every step but 2 takes no backend
 # (`prepareCommon`): a copy, a drop or a reset is the same fact on all three
-# targets, and only how it prints differs. Odin frees by hand, so it prints
-# all of them. D's slices alias, so it prints the copies; its collector frees,
-# so a drop or a reset prints as nothing, and a `str` is immutable there, so
-# its copy is itself. Nim's assignment copies and ARC frees, so a copy prints
-# as its value and a drop or a reset as nothing; its `sink` parameters are
-# rule P's answer (`Decl.ownedParams`), as the twins' copying wrappers are on
-# Odin and D. Step 2 is the only step that knows which backend it runs for.
+# targets, and only how it prints differs. NO BACKEND HAS A COLLECTOR OR A
+# REFERENCE COUNT: Nim is built `--mm:none -d:useMalloc`, D runs with
+# `GC.disable()`, and Odin never had one, so each prints every node as a call
+# and frees exactly where the rules drop. Odin and D give a payload sum an
+# emitted free and copy; Nim gives it a `tuckDrop` overload, and moves by
+# bits (`tuckMove`) because its own assignment would copy. A parameter the
+# body owns (`Decl.ownedParams`, rule P) is adopted in Nim (`var x =
+# tuckBits(x)`) and dropped by a node at the body's exits, as on Odin and D.
+# Step 2 is the only step that knows which backend it runs for.
 #
 # WHY NOT BEFORE THE CLONE (ROADMAP M3.1 as first written). Two of
 # ownership's inputs are made by lowering, so it cannot precede lowering —
@@ -66,7 +68,7 @@ import modules
 import resolution
 import lowering
 import lowering_field_order
-import lowering_with
+import lowering_combinator
 import twin_calls
 import call_args
 import ownership_nodes
@@ -150,8 +152,8 @@ proc prepareCommon(prog: seq[LoadedModule], semLayer: Resolution): BackendTree =
   ## Steps 1 and 3-7: the program every backend prints, lowered and with its
   ## ownership written in as nodes. It takes no backend: a copy, a drop, a
   ## reset or a named temporary is the same fact on all three, and each
-  ## emitter decides how to print it (Odin frees by hand; Nim's ARC and D's
-  ## collector print a drop or a reset as nothing).
+  ## emitter decides how to print it (each as a call into its runtime: no backend
+  ## has a collector).
   for lm in prog:                                                   # 1. clone
     result.mods.add LoadedModule(name: lm.name, path: lm.path,
                                  m: deepCopy(lm.m))
@@ -161,7 +163,7 @@ proc prepareCommon(prog: seq[LoadedModule], semLayer: Resolution): BackendTree =
   for lm in result.mods:
     let ts = epochTime()
     lowerModule(semLayer, lm.m, result.real)                         # 3. lower
-    lowerWith(semLayer, lm.m)            #    `with` -> the construction it means
+    lowerCombinators(semLayer, lm.m)     #    `with`, `alias`, … -> the construction they mean
     orderConstructionFields(semLayer, lm.m)       #    a moved field goes last
     # 4. NUMBER WHAT LOWERING MINTED. Lowering builds nodes (tail returns,
     # hoisted temporaries, desugared assignments) without ids; a node

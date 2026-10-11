@@ -1117,7 +1117,7 @@ proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string 
   let task = ctx.module.findFn(tname)
   let params = task.paramNames()
   let paramTypes = task.paramTypes()
-  let retType = if task.taskReturnType != nil: ctx.odinType(task.taskReturnType)
+  let retType = if task.fnReturnType != nil: ctx.odinType(task.fnReturnType)
                 else: "void"
   let envName = "Env_" & tname
   let wrapName = "wrap_" & tname

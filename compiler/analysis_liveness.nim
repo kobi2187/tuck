@@ -335,7 +335,7 @@ proc markLivenessInto(res: Resolution, m: Module) =
     var body: Expr
     case d.kind
     of dkFn: body = d.fnBody
-    of dkTask: body = d.taskBody
+    of dkTask: body = d.fnBody
     else: discard
     if body == nil: continue
     var c = Ctx(res: res)

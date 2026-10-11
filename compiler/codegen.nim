@@ -47,6 +47,8 @@ import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_type   # genType: Tuck type -> Nim type text
 import ./ast_query
 import ./codegen_ctx
+from ownership_elab import owning
+from ownership_rules import isPlaceRead
 export genType        # re-exported: this file's public face is the backend
 
 
@@ -77,6 +79,7 @@ proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string
 # as a routing table; each takes the ctx + node and recomputes its own indent.
 proc genExprAssign(ctx: var CodegenCtx, e: Expr): string
 proc genAppend(ctx: var CodegenCtx, e: Expr): string
+proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string
 proc genExprMatch(ctx: var CodegenCtx, e: Expr): string
 proc genExprSend(ctx: var CodegenCtx, e: Expr): string
 proc genExprSelect(ctx: var CodegenCtx, e: Expr): string
@@ -248,19 +251,18 @@ proc genSaturatingCtor(satBase, calleeStr, arg: string): string =
   let satFn = if unsigned: "tuckSat" else: "tuckSatI"
   calleeStr & "(" & satFn & "[" & satBase & "](" & widen & "(" & arg & ")))"
 
-proc genSpawnCall(ctx: var CodegenCtx, calleeStr, call: string): string =
+proc genSpawnCall(ctx: var CodegenCtx, calleeStr, callName: string,
+                  args: seq[string]): string =
   ## Calling a task SCHEDULES it as a coroutine — it runs concurrently, main
-  ## drives it via tuckRun (spec §9.2). Fire-and-forget for now;
-  ## result-returning task calls are a later pass.
+  ## drives it via tuckRun (spec §9.2). Fire-and-forget; a result-bound call
+  ## is genTaskAssignment's.
   ##
-  ## `discard` only when there is something to discard: a `-> void` task
-  ## emitted `discard tuck_serve(...)` over a void proc, which Nim rejects with
-  ## "expression has no type (or is ambiguous)". So the most natural
-  ## fire-and-forget task — one that returns nothing — was the one shape that
-  ## did not compile.
-  let body = if ctx.taskRetType(calleeStr) == "void": call
-             else: "discard " & call
-  "tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: " & body & "))"
+  ## The arguments are evaluated HERE and handed to the job (the rules moved
+  ## or copied each one for it): a closure over them would read them later,
+  ## after their owner had dropped them. A result nobody awaits is dropped.
+  let spawn = if ctx.taskRetType(calleeStr) == "void": "tuckSpawnJob"
+              else: "tuckSpawnJobDrop"
+  spawn & "(" & callName & (if args.len > 0: ", " & args.join(", ") else: "") & ")"
 
 proc genValidatedCall(ctx: var CodegenCtx, call: string): string =
   ## Extern boundary: the returned value validates on entry.
@@ -286,7 +288,7 @@ proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
                  elif prim != calleeStr: prim
                  else: calleeStr
   let call = callName & "(" & args.join(", ") & ")"
-  if ctx.index.isTaskName(calleeStr): return ctx.genSpawnCall(calleeStr, call)
+  if ctx.index.isTaskName(calleeStr): return ctx.genSpawnCall(calleeStr, callName, args)
   if ctx.index.externInvRet(calleeStr) != "": return ctx.genValidatedCall(call)
   call
 
@@ -534,27 +536,21 @@ proc genSlabOp(ctx: var CodegenCtx, e: Expr): string =
 
 proc genIfaceCall(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## A call through an interface value, lowered (lowering_iface): a `case` on
-  ## the tag, each arm binding a mutable copy of the payload — a member takes
-  ## `self: var T`, and an interface value OWNS its data — and printing the
-  ## member call the lowering built. A case EXPRESSION, so it composes
-  ## anywhere a value is expected.
+  ## the tag, each arm naming the payload and printing the member call the
+  ## lowering built. A case EXPRESSION, so it composes anywhere a value is
+  ## expected.
+  ##
+  ## The name is an ALIAS of the payload (a template), not a variable holding
+  ## a copy: a member that changes its object (`self: var T`) then changes the
+  ## interface value's own payload in place, which is what the interface value
+  ## owning its data means, and nothing is copied that would have to be
+  ## dropped (under `--mm:none` a `var` binding deep-copies).
   let recv = ctx.genExpr(e.dispatchRecv)
-  let t = ctx.res.typeFor(e)
-  let isVoid = t == nil or (t.kind == tkNamed and t.name == "void")
   var arms: seq[string]
   for arm in e.dispatchArms:
     let payload = recv & "." & arm.satisfier & "Val"
-    var body = ind & "    var " & arm.bindName & " = " & payload & "\n"
-    if not arm.writesBack:
-      body.add(ind & "    " & ctx.genExpr(arm.call))
-    elif isVoid:
-      # The member changed the copy; the interface value takes it back.
-      body.add(ind & "    " & ctx.genExpr(arm.call) & "\n" &
-               ind & "    " & payload & " = " & arm.bindName)
-    else:
-      body.add(ind & "    let tuckResult = " & ctx.genExpr(arm.call) & "\n" &
-               ind & "    " & payload & " = " & arm.bindName & "\n" &
-               ind & "    tuckResult")
+    let body = ind & "    template " & arm.bindName & ": untyped {.used.} = " &
+               payload & "\n" & ind & "    " & ctx.genExpr(arm.call)
     arms.add(ind & "  of " & e.dispatchIface & "_is_" & arm.satisfier & ":\n" &
              body)
   if arms.len == 0: return ""
@@ -807,12 +803,13 @@ proc genDefer(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## LIFO, so this is a keyword and a body rather than a lowering. All three
   ## backends reach their own native defer for the same reason: nothing about
   ## scope exit needs re-implementing in Tuck. One the ownership rules made
-  ## only releases storage, which ARC does itself: it prints as nothing.
+  ## releases what a place owns (`tuckDrop`), on one line.
   ##
   ## The body is always a block — `defer:` opens one, and the parser has no
   ## other form — so there is no inline arm to write.
-  if e.deferReleases: return ""
   if e.deferBody == nil or e.deferBody.kind != exkBlock: return ind & "discard"
+  if e.deferReleases and e.deferBody.stmts.len == 1:
+    return ind & "defer: " & ctx.genExpr(e.deferBody.stmts[0])
   let body = ctx.genStmts(e.deferBody, ind)
   if body.len == 0: return ind & "discard"
   ind & "defer:\n" & body
@@ -852,6 +849,12 @@ proc genRaise(ctx: var CodegenCtx, e: Expr): string =
     return "return terr[" & ctx.retInnerNim & "](errCode(\"" & name & "\"))"
   "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv) & "))"
 
+proc genCopy(ctx: var CodegenCtx, e: Expr): string =
+  ## A value that shares nothing with its source (rule S; rule G chose which
+  ## kind): Nim's own assignment, under `--mm:none`, copies a seq, a string and
+  ## what they hold, and a string literal gets heap bytes of its own.
+  "tuckCopy(" & ctx.genExpr(e.copied) & ")"
+
 proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   ## The Nim backend's expression dispatch. An interface wrap is emitted
   ## around the node first (`wrapping` stops it re-wrapping itself); every
@@ -867,14 +870,14 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     return genInterfaceWrap(inner, ifaceName, objName)
   case e.kind
   of exkLit: ctx.genLit(e)
-  # A read the ownership rules move (rule S at an owned place's final use)
-  # says so: ARC's own inference is not asked.
-  of exkVar: (if e.movedOut: "move(" & ctx.genVar(e) & ")" else: ctx.genVar(e))
+  # A read the ownership rules move (rule M at an owned place's final use)
+  # says so: the value, and the place left empty.
+  of exkVar: (if e.movedOut: "tuckMove(" & ctx.genVar(e) & ")" else: ctx.genVar(e))
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     e.refName
   of exkField:
     let read = ctx.genFieldAccess(e, ind)
-    if e.movedOut and not ctx.res.hasCall(e): "move(" & read & ")" else: read
+    if e.movedOut and not ctx.res.hasCall(e): "tuckMove(" & read & ")" else: read
   of exkQualified: genQualified(ctx, e)
   of exkCall: ctx.genCallExpr(e)
   of exkCombinator: ctx.genCombinator(e)
@@ -892,10 +895,12 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkIf: ctx.genIf(e, ind)
   of exkAssign: ctx.genExprAssign(e)
   of exkAppend: ctx.genAppend(e)
-  # Nim's `seq` and `string` assignment already copies, and ARC frees and
-  # moves: a copy prints as its value, and a drop or a reset as nothing.
-  of exkCopy: ctx.genExpr(e.copied)
-  of exkDrop, exkReset: ""
+  # The rules' copies, drops and resets are printed (tuck_rt, "memory"). A
+  # literal copied to be owned (`cpStatic`) is already one: a string literal
+  # is copied by Nim's own assignment, and a drop leaves a static one alone.
+  of exkCopy: ctx.genCopy(e)
+  of exkDrop: "tuckDrop(" & ctx.genExpr(e.dropped) & ")"
+  of exkReset: "tuckReset(" & ctx.genAssignTarget(e.resetPlace) & ")"
   of exkMatch: ctx.genExprMatch(e)
   of exkReturn: ctx.genReturn(e)
   of exkRaise: ctx.genRaise(e)
@@ -972,13 +977,14 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
   let tname = e.assignVal.callee.name
   let ret = ctx.taskRetType(tname)
   let argParts = ctx.genCallArgs(e.assignVal)
-  let rawCall = tname & "(" & argParts.join(", ") & ")"
   let slot = "tuckSlot" & $ctx.tmpCounter
   ctx.tmpCounter.inc
+  # The arguments are evaluated at the spawn (see genSpawnCall); the slot is
+  # freed by the await that reads it.
   let spawn = "(let " & slot & " = newAsyncResult[" & ret & "](); " &
-              "spawnResult(" & slot & ", proc(): " & ret &
-              " {.closure, gcsafe.} = ({.cast(gcsafe).}: " & rawCall &
-              ")); awaitResult(" & slot & "))"
+              "tuckSpawnResultJob(" & slot & ", " & tname &
+              (if argParts.len > 0: ", " & argParts.join(", ") else: "") &
+              "); awaitResult(" & slot & "))"
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
      not ctx.res.isOwnerField(e.target):
     ctx.definedVars.incl(e.target.name)
@@ -988,10 +994,13 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
 proc genAppend(ctx: var CodegenCtx, e: Expr): string =
   ## `xs += v` — an append, or a str concat, grown in place. ownership_nodes
   ## made the decision (`xs = {items: xs, value: v} push` and `s = s + t`,
-  ## each assigned back over its own argument); this prints it. Nim's `seq`
-  ## and `string` both carry spare capacity, so `add` is amortised where
-  ## `push` / `tuckConcat` build a whole new value every time — the
-  ## difference between an O(n) loop and an O(n^2) one.
+  ## each assigned back over its own argument); this prints it. A seq and a
+  ## string both carry spare capacity, so growing is amortised where `push` /
+  ## `tuckConcat` build a whole new value every time — the difference between
+  ## an O(n) loop and an O(n^2) one. `tuckPush` / `tuckStrAppend` (not `add`)
+  ## because Nim's own growth leaves the block it moved from behind, and a
+  ## pushed element is stored by its bits: it is a value the rules moved or
+  ## copied in.
   ##
   ## The target is qualified here rather than taken as a bare name: the
   ## appended VALUE is built by the ordinary expression emitter, which does
@@ -1000,7 +1009,9 @@ proc genAppend(ctx: var CodegenCtx, e: Expr): string =
   ## undeclared identifier. The other two backends had the same hole. EV-9.
   let t = e.appendTarget
   let tgt = if ctx.res.isOwnerField(t): "self." & t.name else: t.name
-  tgt & ".add(" & ctx.genExpr(e.appendValue) & ")"
+  let value = ctx.genExpr(e.appendValue)
+  if e.appendsElement: "tuckPush(" & tgt & ", " & value & ")"
+  else: "tuckStrAppend(" & tgt & ", " & value & ")"
 
 proc genVarDeclaration(ctx: var CodegenCtx, e: Expr, targetStr, valStr: string): string =
   ## Variable declaration with optional stated type.
@@ -1010,6 +1021,25 @@ proc genVarDeclaration(ctx: var CodegenCtx, e: Expr, targetStr, valStr: string):
     let declared = if e.declType != nil: ": " & genType(e.declType) else: ""
     return "var " & name & declared & " = " & valStr
   ""
+
+proc genStore(ctx: var CodegenCtx, e: Expr, targetStr, valStr: string): string =
+  ## `target = value`. Under `--mm:none` Nim's assignment copies what a place
+  ## holds and frees nothing, so a store into a place that owns storage is
+  ## by bits: the value was built here or moved in (rule S made every other
+  ## read a copy), `tuckStore`; and one that overwrites a live value drops it
+  ## first (rule D, `dropsOld`), `tuckReplace`. A bare place read the rules
+  ## did not mark keeps Nim's own copy, which is always sound.
+  let t = block:
+    let tt = ctx.res.typeFor(e.target)
+    if tt != nil: tt else: ctx.res.typeFor(e.assignVal)
+  if t == nil or not ctx.res.owning(ctx.module, t):
+    return targetStr & " = " & valStr
+  let bare = ctx.res.isPlaceRead(e.assignVal) and not e.assignVal.movedOut
+  if e.dropsOld:
+    return "tuckReplace(" & targetStr & ", " &
+           (if bare: "tuckCopy(" & valStr & ")" else: valStr) & ")"
+  if bare: targetStr & " = " & valStr
+  else: "tuckStore(" & targetStr & ", " & valStr & ")"
 
 proc genFieldWrite(ctx: var CodegenCtx, e: Expr,
                    targetStr, valStr: string): string =
@@ -1034,7 +1064,7 @@ proc genFieldWrite(ctx: var CodegenCtx, e: Expr,
                                            e.target.fieldName)
     if regPrefix != "":
       return regPrefix & "_set(" & valStr & ")"
-  result = targetStr & " = " & valStr
+  result = ctx.genStore(e, targetStr, valStr)
   let owner = assignInvariantOwner(ctx.res, e)
   if owner != "" and ctx.index.hasInvariants(owner):
     result.add("\n" & "  ".repeat(ctx.indent) & "validate(" &

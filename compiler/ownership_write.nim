@@ -70,6 +70,11 @@ proc taken(w: Writer, v: Expr): bool =
   ## it, never seen empty.
   w.refills.len > 0 and w.res.isOwnerField(v) and pathOf(v) == w.refills
 
+proc isConstruction(w: Writer, v: Expr): bool =
+  ## `State.Ready`: a path that starts at a TYPE'S name builds a value of a
+  ## sum, it does not name a place.
+  w.m.findDecl(dkType, pathOf(v).split('.')[0]) != nil
+
 proc isStatic(v: Expr): bool =
   ## A `str` literal: static storage, which no owner may free.
   v.kind == exkLit and v.litKind == lkStr
@@ -80,7 +85,8 @@ proc atSink(w: var Writer, v: Expr): Expr =
   let t = w.res.typeFor(v)
   if v == nil or v.kind == exkCopy or not w.owns(t): return v
   if w.taken(v) or not isStatic(v) and not w.res.copiesRead(w.ps, v):
-    if w.res.isPlaceRead(v): v.movedOut = true   # a place handed over whole
+    if w.res.isPlaceRead(v) and not w.isConstruction(v):
+      v.movedOut = true   # a place handed over whole
     return v
   w.copyNode(v, w.res.copyKindOf(w.m, t))
 
@@ -355,6 +361,7 @@ proc resetPart(w: Writer, read: Expr): Expr =
   ## `reset(r.value)`: the part a read moved out of a place is empty.
   result = Expr(span: read.span, kind: exkReset,
                 resetPlace: w.res.freshCopy(read))
+  result.resetPlace.movedOut = false    # it names the place; it does not move it
   fillIdsIn(result)
   markBuilt(result)
 
@@ -373,6 +380,7 @@ proc resetAfter(w: var Writer, d: Decl, read, reset: Expr): bool =
     # The value is bound first, so the reset runs before the scope's drops.
     let v = if s.kind == exkReturn: s.returnVal else: s.raiseVal
     b.stmts.insert(w.res.bindHere(v), i)
+    v.movedOut = true                  # the new local's one read hands it on
     b.stmts.insert(reset, i + 1)
   of exkIf, exkWhile, exkFor, exkMatch, exkBlock, exkSelect, exkDefer:
     return false                       # moved in a condition: nowhere to go
@@ -478,7 +486,7 @@ proc writeRules*(res: Resolution, m: Module) =
   ## tree every backend prints. Run after the appends are made.
   var w = Writer(res: res, m: m)
   var sources: Table[NodeId, DropSource]
-  for d in m.allFns:
+  for d in m.allFnsAndTasks:
     if d == nil or d.fnBody == nil: continue
     d.ownedParams = @[]
     for p in d.fnParams:

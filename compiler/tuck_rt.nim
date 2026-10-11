@@ -1,6 +1,9 @@
 # compiler/tuck_rt.nim
 ## Shared Tuck compiler runtime implementation for static environments.
 import std/macros
+import std/typetraits
+import ./tuck_mem
+export tuck_mem   # tuckDrop, tuckMove, tuckCopy, …: what emitted code calls
 import std/strutils
 import std/math as stdmath
 
@@ -74,7 +77,7 @@ proc ord*(ch: string): int =
 proc tuckSetAt*[T](items: var seq[T], index: int, value: T) =
   ## What `xs[i] = v` lowers to: a bounds-checked write, in place.
   tuckSeqBounds(index, items.len, "setAt")
-  items[index] = value
+  tuckReplace(items[index], value)   # the old element is dropped, `value` kept
 
 proc setAt*[T](items: var seq[T], index: int, value: T) =
   ## std/seq's explicit `setAt`: the same bounds-checked write as
@@ -101,7 +104,7 @@ proc tuckArraySetAt*[N: static int, T](items: var array[N, T], index: int,
   ## A bounds-checked write into a fixed `Array[N, T]`, in place; the length
   ## is the type's `N`.
   tuckSeqBounds(index, N, "setAt")
-  items[index] = value
+  tuckReplace(items[index], value)
 
 # Value semantics: `items` is copied on return, same as any other Tuck
 # record/seq — growing the result never mutates the caller's seq, unlike
@@ -152,7 +155,7 @@ proc push*[T](items: seq[T], value: T): seq[T] =
   ## `items` with `value` appended, as a NEW seq: the caller's seq is
   ## unchanged (value semantics).
   result = items
-  result.add(value)
+  tuckPush(result, value)
 
 # --- bit operations -------------------------------------------------------
 #
@@ -234,8 +237,11 @@ proc ok*[T](r: TuckResult[T]): bool {.inline.} =
   r.status == tsOk
 
 proc tok*[T](v: T): TuckResult[T] {.inline.} =
-  ## A successful result carrying `v`.
-  TuckResult[T](status: tsOk, value: v)
+  ## A successful result carrying `v`. The result takes `v` by its bits: it
+  ## was built (or moved) for this, and an assignment would copy it and leak
+  ## the original.
+  result.status = tsOk
+  copyMem(addr result.value, unsafeAddr v, sizeof(T))
 
 proc tokVoid*(): TuckResult[tuple[]] {.inline.} =
   ## A successful `!void` result, which carries nothing.
@@ -514,7 +520,7 @@ proc growCell[T](s: var SlabChunked[T]): uint32 =
   i
 
 proc growCell[T](s: var SlabSeq[T]): uint32 =
-  if int(s.len) == s.cells.len: s.cells.setLen(s.cells.len + 1)
+  if int(s.len) == s.cells.len: tuckPush(s.cells, default(SlabCell[T]))
   result = s.len
   inc s.len
 
@@ -534,7 +540,7 @@ proc slabFill[S, T](s: var S, i: uint32, v: sink T): SlabRef {.inline.} =
   let c = s.cellAt(i)
   c.gen = c.gen + 1'u32
   c.link = SlabLive
-  c.value = v
+  tuckStore(c.value, v)          # `v` was built or moved for this cell
   inc s.live
   SlabRef(slot: i, gen: c.gen)
 
@@ -563,14 +569,23 @@ proc tuckSlabLive*[S](s: S, r: SlabRef): bool =
 proc tuckSlabFree*[S](s: var S, r: SlabRef) =
   ## The cell is free; every reference to it is stale from here on.
   let c = s.tuckSlabCell(r)
-  reset(c.value)          # what it holds goes now, not at reuse
+  tuckDrop(c.value)       # what it holds goes now, not at reuse
   c.link = s.freeHead
   s.freeHead = int32(r.slot) + 1
   dec s.live
 
+proc slabDropLive[S](s: var S) =
+  ## What the live cells hold goes with a reset. Only for a cell that owns
+  ## storage: a slab of plain values keeps its O(1) reset.
+  for i in 0'u32 ..< s.len:
+    let c = s.cellAt(i)
+    if c.link == SlabLive: tuckDrop(c.value)
+
 proc tuckSlabReset*[S](s: var S) =
-  ## Every cell free and every reference stale, in O(1): the storage stays and
-  ## is reused in order, each cell's tenancy moving on as it is.
+  ## Every cell free and every reference stale: the storage stays and is
+  ## reused in order, each cell's tenancy moving on as it is. O(1) for a slab
+  ## of plain values; a cell that owns storage drops it.
+  when not supportsCopyMem(typeof(s.cellAt(0'u32).value)): slabDropLive(s)
   s.len = 0
   s.freeHead = 0
   s.live = 0
@@ -1378,7 +1393,7 @@ proc readFile*(path: string): TuckResult[tuple[content: string]] =
   if r.outLen > 0:
     copyMem(addr content[0], r.outBuf, r.outLen)
   if r.outBuf != nil: cFree(r.outBuf)
-  tok((content: content))
+  tok((content: tuckMove(content)))
 
 proc writeFile*(path: string, content: string): TuckResult[tuple[]] =
   ## Replaces the file at `path` with `content`, on the blocking worker.
@@ -1418,8 +1433,10 @@ proc print*(text: string) =
   ## Writes `text` to stdout with no newline.
   stdout.write(text)
 proc printLine*(text: string) =
-  ## Writes `text` and a newline to stdout.
-  stdout.writeLine(text)
+  ## Writes `text` and a newline to stdout. Two plain writes: `writeLine` takes
+  ## a varargs of `$` conversions, which copies every string it is given.
+  stdout.write(text)
+  stdout.write("\n")
 
 type
   ReadLineReq = object
@@ -1462,7 +1479,7 @@ proc readLine*(): TuckResult[tuple[line: string]] =
   of iosOk:
     var line = newString(req.len)
     for i in 0 ..< req.len: line[i] = req.buf[i]
-    tok((line: line))
+    tok((line: tuckMove(line)))
   of iosIoFailed, iosNotFound, iosAccessDenied:
     terr[tuple[line: string]](errCode("console/IoError.IoFailed"))
 
@@ -1595,8 +1612,8 @@ proc recv*(fd: int, max: int): TuckResult[tuple[data: string]] =
     tuckAwaitRead(fd)
     let n = posix.recv(posix.SocketHandle(fd), addr buf[0], max, 0)
     if n > 0:
-      buf.setLen(n)
-      return tok((data: buf))
+      tuckStrTruncate(buf, n)
+      return tok((data: tuckMove(buf)))
     if n == 0: return tok((data: ""))
     let e = osLastError().int32
     if e != posix.EAGAIN and e != posix.EWOULDBLOCK:

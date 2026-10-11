@@ -613,7 +613,7 @@ fn main() -> int:
   # A task body is LOWERED like any other body.
   # Found 2026-08-15 while removing `else: discard`. lowerModule walked
   # `allFns()` and top-level `dkExpr` and nothing else — but a task keeps its
-  # body in `taskBody`, an Expr rather than a member Decl, so `allFns` (which
+  # body in `fnBody`, an Expr rather than a member Decl, so `allFns` (which
   # reaches nested fns via `members()`) never sees it. Every lowering therefore
   # skipped task bodies: a registry raise inside a task kept its pre-lowering
   # shape and emitted `LowMemory(tuck_AppEvents.raise)(42)`, which is not valid

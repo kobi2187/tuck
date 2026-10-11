@@ -960,7 +960,9 @@ type
       arenaSize*: int          ## `[size: N]`: a byte budget; 0 = unbounded
       arenaSizeText*: string   ## `[size: N]` as written, when N names a const
       arenaOwner*: string      ## the actor declaring it, "" for the module
-    of dkFn:
+    of dkFn, dkTask:
+      ## A task is a fn that runs as a coroutine: the same params, return
+      ## type, effects, error types, resources and body.
       fnGenerics*: seq[string]
       fnGenericBounds*: seq[seq[Type]]   # parallel to fnGenerics; bounds[i] =
                                           # the `group`s required for
@@ -1059,13 +1061,6 @@ type
       attrs*: seq[TypeAttr]
       actorFields*: seq[FieldDef]
       handlers*: seq[Decl]
-    of dkTask:
-      taskParams*: seq[Param]
-      taskReturnType*: Type
-      taskEffects*: seq[EffectMarker]
-      taskErrorTypes*: seq[string]  ## `[error: E | F]` — what it can raise
-      taskResourceKinds*: seq[string]  ## `[resource: k]` — what it acquires
-      taskBody*: Expr
     of dkSatisfies:
       # `Obj satisfies Iface` / `Obj satisfies [A, B, C]` at TOP LEVEL.
       # `name` is the OBJECT; these are the interfaces being attached to it.

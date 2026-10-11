@@ -332,7 +332,7 @@ proc taskRetTypeD(ctx: var DCodegenCtx, name: string): string =
   ## The D type a task hands back, for the result slot.
   for d in ctx.module.decls:
     if d != nil and d.kind == dkTask and d.name == name:
-      return ctx.dType(d.taskReturnType)
+      return ctx.dType(d.fnReturnType)
   "void"
 
 proc asDPrimConversion(ctx: var DCodegenCtx, e: Expr,

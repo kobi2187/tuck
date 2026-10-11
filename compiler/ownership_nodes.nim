@@ -39,12 +39,11 @@
 #   cpDeep    anything else that owns storage: a deep copy (`rt.tuckCopy`)
 #   cpStatic  a `str` (Odin): its bytes on the heap, so an owner may free it
 #
-# On every backend's tree; Nim prints a copy as its value (its assignment
-# copies by itself), D a `str` copy as the `str` (immutable there).
+# On every backend's tree; each prints it as a call into its runtime (Nim
+# `tuckCopy`, D `rt.tuckCopy` / `.dup`, Odin `rt.tuckCopy`).
 #
-# THIRD NODE: `exkDrop` — release what a place owns, printed by the backend
-# that frees by hand (Odin) and as nothing by ARC (Nim) and the collector
-# (D), placed from
+# THIRD NODE: `exkDrop` — release what a place owns, printed by every
+# backend (there is no collector or reference count to do it), placed from
 # the rules' `DropSource` (`ownership_write.rulesDrops`):
 #
 #   scope end    `defer drop(x.slot)` as the statements after the one that
@@ -88,14 +87,26 @@ proc materializeAppend(n: Expr, parts: tuple[read, value: Expr],
              kind: exkAppend, appendTarget: parts.read,
              appendValue: parts.value, appendsElement: element)[]
 
+proc stillNeeded(res: Resolution, parts: tuple[read, value: Expr]) =
+  ## `xs = push(xs, Many {items: xs})` was proved to read `xs` last inside
+  ## the value, because the assignment redefines it. As `xs += Many {items:
+  ## xs}` the append that follows still needs the buffer: a read of `xs`
+  ## (or a part of it) in the value is no longer its last.
+  let root = rootOf(pathOf(parts.read))
+  for x in parts.value.nodes:
+    if x.kind in {exkVar, exkField} and rootOf(pathOf(x)) == root:
+      res.lastUses.excl x.id
+
 proc materialize(res: Resolution, n: Expr): bool =
   ## Rewrites `n` if it is an append assigned back over its own argument.
   let pushed = selfAppendParts(res, n)
   if pushed.value != nil:
+    res.stillNeeded(pushed)
     materializeAppend(n, pushed, element = true)
     return true
   let concatenated = selfConcatParts(res, n)
   if concatenated.value == nil: return false
+  res.stillNeeded(concatenated)
   materializeAppend(n, concatenated, element = false)
   true
 
@@ -140,13 +151,6 @@ type DropSource* = object
 type DropWalk = object
   res: Resolution
   src: DropSource
-  tasks: HashSet[string]
-
-proc bindsTaskArgs(w: DropWalk, n: Expr): bool =
-  ## `let r = {args} someTask` — printed by its own path, which frees nothing.
-  let v = n.assignVal
-  v != nil and v.kind == exkCall and v.callee != nil and
-    v.callee.kind == exkVar and v.callee.name in w.tasks and v.args.len > 0
 
 proc deepAt(w: DropWalk, name, slot: string): bool =
   ## Does this slot's drop walk it (rule G)?
@@ -173,16 +177,14 @@ proc dropsAfter(w: DropWalk, n: Expr, defined: var HashSet[string]): seq[Expr] =
     n.dropsOldDeep = n.dropsOld and n.id in w.src.deepOverwrites
     return
   let name = n.target.name
-  let taskArgs = w.bindsTaskArgs(n)
-  let threaded = not taskArgs and threadedCall(n) != nil
+  let threaded = threadedCall(n) != nil
   let fresh = name notin defined and not w.res.isOwnerField(n.target)
   # A threaded call declares only a declaration (`genThreadedAssign`).
   if fresh and (n.isDecl or not threaded):
     defined.incl name
-    if taskArgs: return
     for slot in w.src.atScopeExit.getOrDefault(name):
       result.add dropOf(name, slot, n.span, w.deepAt(name, slot))
-  elif not fresh and not taskArgs:
+  elif not fresh:
     n.dropsOld = w.dropsOldOf(n)
     n.dropsOldDeep = n.dropsOld and n.id in w.src.deepOverwrites
 
@@ -249,14 +251,11 @@ type DropsOf* = proc (d: Decl): DropSource
 
 proc materializeDropsFrom*(res: Resolution, m: Module, sourceOf: DropsOf) =
   ## Every drop `sourceOf` decided becomes a node.
-  var tasks: HashSet[string]
-  for d in m.decls:
-    if d != nil and d.kind == dkTask: tasks.incl d.name
-  for d in m.allFns:
+  for d in m.allFnsAndTasks:
     if d == nil or d.fnBody == nil: continue
     let src = sourceOf(d)
     var defined: HashSet[string]
     for p in d.fnParams: defined.incl p.name
-    DropWalk(res: res, src: src, tasks: tasks).walkDrops(d.fnBody, defined)
+    DropWalk(res: res, src: src).walkDrops(d.fnBody, defined)
     materializeParamDrops(d, src)
     res.ssaGraphs.del((d.id, ssLowered))

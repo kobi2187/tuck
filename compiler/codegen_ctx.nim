@@ -111,7 +111,7 @@ proc taskRetType*(ctx: CodegenCtx, name: string): string =
   ## The Nim return type of a declared task, for its result slot.
   for d in ctx.module.decls:
     if d != nil and d.kind == dkTask and d.name == name:
-      return if d.taskReturnType != nil: genType(d.taskReturnType) else: "void"
+      return if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
   "void"
 
 proc fieldType*(ctx: var CodegenCtx, parent: string, f: FieldDef): string =

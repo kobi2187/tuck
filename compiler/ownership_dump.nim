@@ -30,7 +30,7 @@ proc dumpParams*(res: Resolution, m: Module) =
   ## Rule P, per owning parameter.
   if DebugOwn != "params": return
   var memo: ConsumeMemo
-  for d in m.allFns:
+  for d in m.allFnsAndTasks:
     if d == nil or d.fnBody == nil: continue
     for p in d.fnParams:
       if not res.owning(m, p.typ): continue
@@ -44,7 +44,7 @@ proc dumpDrops*(res: Resolution, m: Module) =
   ## Rules D and M, per owned slot where its scope ends. Before the rules
   ## write the tree: the plan is made from the program as written.
   if DebugOwn != "drops": return
-  for d in m.allFns:
+  for d in m.allFnsAndTasks:
     if d == nil or d.fnBody == nil: continue
     let plan = dropPlan(res, m, d)
     for k, fate in plan.scopeEnd:
@@ -55,7 +55,7 @@ proc dumpDrops*(res: Resolution, m: Module) =
 proc dumpCopies*(m: Module) =
   ## Rule S, per copy the rules wrote into the tree.
   if DebugOwn != "copies": return
-  for d in m.allFns:
+  for d in m.allFnsAndTasks:
     if d == nil or d.fnBody == nil: continue
     for n in d.fnBody.nodes:
       if n.kind == exkCopy:

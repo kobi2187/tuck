@@ -394,7 +394,7 @@ proc mangleDeclRefs(res: Resolution, d: Decl, names: MangleNames) =
   for t in d.ownTypes: mangleType(t, names)
 
   # A fn's body needs its params in scope as locals; mangleFnBody knows that.
-  # A task's is the same shape, spelled with taskParams. Both also re-mangle
+  # A task's is the same shape, spelled with fnParams. Both also re-mangle
   # their param/return types, which ownTypes above already covered —
   # harmless, since mangleName skips an already-prefixed name.
   if d.kind == dkFn:
@@ -406,8 +406,8 @@ proc mangleDeclRefs(res: Resolution, d: Decl, names: MangleNames) =
     # while the body reads `tuck_fd`.
     var locals = initHashSet[string]()
     var paramNames = initHashSet[string]()
-    for p in d.taskParams: paramNames.incl(p.name)
-    mangleExpr(res, d.taskBody, names, locals, paramNames)
+    for p in d.fnParams: paramNames.incl(p.name)
+    mangleExpr(res, d.fnBody, names, locals, paramNames)
   else:
     # Everything else owning an expression — dkExpr, dkConst, dkStaticAssert,
     # a select arm — has no parameters, so each gets a fresh empty scope.

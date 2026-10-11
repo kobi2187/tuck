@@ -45,7 +45,7 @@ proc calleeOf*(res: Resolution, m: Module, call: Expr): Decl =
   if result == nil and call.callee != nil and call.callee.kind == exkVar:
     result = m.findFn(call.callee.name)
     if result == nil: result = res.externs.getOrDefault(call.callee.name)
-  if result != nil and result.kind != dkFn: result = nil
+  if result != nil and result.kind notin {dkFn, dkTask}: result = nil
 
 proc paramFed(d: Decl, a: ArgOf): string =
   ## The name of the parameter of `d` the argument `a` feeds, or "".
@@ -542,6 +542,22 @@ type Places* = object
   all, owned: HashSet[string]
   m: Module
 
+proc patternNames(p: Pattern, names: var seq[string]) =
+  ## The names a pattern binds (a bare name may also be a variant to test:
+  ## it is then never read as a variable, so listing it is harmless).
+  if p == nil: return
+  case p.kind
+  of pkVar, pkBind: names.add p.name
+  of pkRecord:
+    for (_, sub) in p.fields: patternNames(sub, names)
+  of pkTuple:
+    for sub in p.elems: patternNames(sub, names)
+  of pkOr:
+    patternNames(p.left, names)
+    patternNames(p.right, names)
+  of pkTypeTest: names.add p.bindAs
+  of pkWild, pkLit: discard
+
 proc placesOf*(res: Resolution, m: Module, d: Decl,
               memo: var ConsumeMemo): Places =
   ## Every parameter and every local a body binds; it owns the locals and
@@ -556,6 +572,17 @@ proc placesOf*(res: Resolution, m: Module, d: Decl,
        not res.isOwnerField(n.target):
       result.all.incl n.target.name
       result.owned.incl n.target.name
+  # What a `for` or a `match` binds is a VIEW of what it walks: a place, but
+  # not the body's own, so a sink of it copies and nothing drops it.
+  var bound: seq[string]
+  for n in d.fnBody.nodes:
+    case n.kind
+    of exkFor: patternNames(n.iter, bound)
+    of exkMatch:
+      for arm in n.arms: patternNames(arm.pattern, bound)
+    else: discard
+  for name in bound:
+    if name notin result.owned: result.all.incl name
 
 proc owns*(ps: Places, place: string): bool =
   ## Does the body own this place (a local, or a consuming parameter)?

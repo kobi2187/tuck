@@ -222,9 +222,9 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
     of dkFn: tc.collectFnSig(d, top)
     of dkTask:
       tc.taskNames.incl(d.name)
-      tc.setFnSig(d.name, (d.taskParams, d.taskReturnType,
-                           newSeq[string](), d.taskEffects,
-                           d.taskResourceKinds, d.taskErrorTypes))
+      tc.setFnSig(d.name, (d.fnParams, d.fnReturnType,
+                           newSeq[string](), d.fnEffects,
+                           d.fnResourceKinds, d.fnErrorTypes))
     of dkFnSig: tc.collectFnSigType(d)
     of dkPool: tc.collectPoolSigs(d)
     of dkSlab: tc.collectSlabSigs(d)

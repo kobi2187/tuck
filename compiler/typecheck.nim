@@ -5730,9 +5730,9 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
   case d.kind
   of dkFn: tc.checkFnDecl(d)
   of dkTask:
-    checkFallibleNeedsIo(d.name, d.taskReturnType, d.taskEffects, d.span)
-    tc.currentErrTypes = d.taskErrorTypes
-    tc.checkFnBody(d.name, d.taskParams, d.taskReturnType, d.taskBody)
+    checkFallibleNeedsIo(d.name, d.fnReturnType, d.fnEffects, d.span)
+    tc.currentErrTypes = d.fnErrorTypes
+    tc.checkFnBody(d.name, d.fnParams, d.fnReturnType, d.fnBody)
     tc.currentErrTypes = @[]
   of dkExpr: discard tc.synthesize(d.expr)
   of dkObject:

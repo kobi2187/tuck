@@ -157,7 +157,9 @@ proc kindUses(res: Resolution, e: Expr): seq[ChildUse] =
   of exkAssign: @[(e.target, uWrite), (e.assignVal, uSink)]
   of exkReturn: @[(e.returnVal, uSink)]
   of exkRaise: @[(e.raiseVal, uSink)]
-  of exkDiscard: @[(e.discardVal, uNone)]
+  # A discarded value is looked at and then dropped: a temporary is named so
+  # that its drop has a place.
+  of exkDiscard: @[(e.discardVal, uBorrow)]
   of exkSend: @[(e.sendPayload, uSink)]        # rule T: into the mailbox
   of exkSelect: selectUses(e)
   of exkDefer: @[(e.deferBody, uNone)]
@@ -277,7 +279,7 @@ proc dumpUses*(res: Resolution, m: Module) =
   ## TUCK_DEBUG_OWN=uses: every read of an OWNING place in every fn body,
   ## with its use and whether the mirror proved it final — what rule S reads.
   if not DebugUses: return
-  for d in m.allFns:
+  for d in m.allFnsAndTasks:
     if d == nil or d.fnBody == nil: continue
     for (read, path, use, _) in res.placeUsesOf(d.fnBody):
       if not ownsHeap(m, res.typeFor(read)): continue
