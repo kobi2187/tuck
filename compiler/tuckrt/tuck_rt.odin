@@ -525,8 +525,10 @@ joinStr :: proc(parts: [dynamic]string, sep: string) -> string {
 }
 
 push :: proc(items: [dynamic]$T, value: T) -> [dynamic]T {
-	result := make([dynamic]T, len(items))
-	copy(result[:], items[:])
+	// A new seq that shares nothing with `items`: its elements are copied
+	// too (a str or a nested seq element would otherwise be freed twice,
+	// once with each seq).
+	result := tuckCopy(items)
 	append(&result, value)
 	return result
 }

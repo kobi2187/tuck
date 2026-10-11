@@ -386,13 +386,13 @@ string joinStr(string[] parts, string sep)
     return parts.join(sep);
 }
 
-/// A new seq: `items` and `value`, one allocation (a `~ [value]` also builds
-/// the one-element array on the heap, and nobody frees it).
+/// A new seq that shares nothing with `items` (its elements are copied too: a
+/// str or nested seq element would otherwise be freed twice, once with each
+/// seq), then `value`. `tuckPush` frees the block a growth leaves.
 T[] push(T)(T[] items, T value)
 {
-    auto r = new T[](items.length + 1);
-    r[0 .. $ - 1] = items[];
-    r[$ - 1] = value;
+    auto r = tuckCopy(items);
+    tuckPush(r, value);
     return r;
 }
 

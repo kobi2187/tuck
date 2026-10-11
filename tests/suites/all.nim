@@ -40,6 +40,7 @@ import mailbox_full
 import mangle
 import member_names
 import memory
+import memory_rules
 import object_composition
 import odin_backend
 import optimize
@@ -103,6 +104,7 @@ let registry: seq[Entry] = @[
   ("mangle",              SuiteProc(mangle.run),              true),
   ("member_names",        SuiteProc(member_names.run),        true),
   ("memory",              SuiteProc(memory.run),              false),
+  ("memory_rules",        SuiteProc(memory_rules.run),        false),
   ("object_composition",  SuiteProc(object_composition.run),  false),
   ("odin_backend",        SuiteProc(odin_backend.run),        false),
   ("optimize",            SuiteProc(optimize.run),            false),
