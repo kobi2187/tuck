@@ -168,8 +168,12 @@ long tuckˑfnˑmain() {
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
+    rt.tuckLeakMark();
     auto mainRc = tuckˑfnˑmain();
     rt.tuckSlabReport(tuckˑslabˑNodes);
     rt.tuckSlabReport(tuckˑslabˑStops);
-    return cast(int) mainRc;
+    rt.tuckSlabRelease(tuckˑslabˑNodes);
+    rt.tuckSlabRelease(tuckˑslabˑDirs);
+    rt.tuckSlabRelease(tuckˑslabˑStops);
+    return rt.tuckLeakCheck(cast(int) mainRc);
 }

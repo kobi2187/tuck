@@ -16,6 +16,7 @@ extern (C) ulong compressBound(ulong sourceLen);
 
 void tuckˑfnˑmain() {
     string tuckˑvˑv = zlibVersion();
+    scope(exit) rt.tuckDrop(tuckˑvˑv);
     console.printLine(tuckˑvˑv);
     ulong tuckˑvˑb = compressBound(1000L);
     if ((tuckˑvˑb == 1013L)) {
@@ -24,7 +25,9 @@ void tuckˑfnˑmain() {
     sys.exit(1L);
 }
 
-void main(string[] args) {
+int main(string[] args) {
     rt.tuckSetArgs(args);
+    rt.tuckLeakMark();
     tuckˑfnˑmain();
+    return rt.tuckLeakCheck(0);
 }

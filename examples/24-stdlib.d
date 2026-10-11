@@ -8,6 +8,7 @@ void tuckˑfnˑmain() {
     rt.TuckResult!(rt.TuckUnit) tuckˑvˑw = fs.writeFile("/tmp/tuck-demo.txt", "hello from tuck");
     if ((tuckˑvˑw.status == rt.TuckStatus.Ok)) {
         rt.TuckResult!(fs.TRec_fs_content!(string)) tuckˑvˑr = fs.readFile("/tmp/tuck-demo.txt");
+        scope(exit) rt.tuckDrop(tuckˑvˑr);
         if ((tuckˑvˑr.status == rt.TuckStatus.Ok)) {
             console.printLine(tuckˑvˑr.value.content);
             return;
@@ -16,7 +17,9 @@ void tuckˑfnˑmain() {
     console.printLine("stdlib demo failed");
 }
 
-void main(string[] args) {
+int main(string[] args) {
     rt.tuckSetArgs(args);
+    rt.tuckLeakMark();
     tuckˑfnˑmain();
+    return rt.tuckLeakCheck(0);
 }

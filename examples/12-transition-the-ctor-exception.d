@@ -37,6 +37,13 @@ struct tuckˑtypeˑPlayerState {
         tuckˑtypeˑPlayerState_Loading tuckˑvariantˑloading;
         tuckˑtypeˑPlayerState_Ready tuckˑvariantˑready;
     }
+    void tuckFree() {
+        final switch (kind) {
+        case tuckˑtypeˑPlayerStateKind.Unloaded: rt.tuckDrop(tuckˑvariantˑunloaded); break;
+        case tuckˑtypeˑPlayerStateKind.Loading: rt.tuckDrop(tuckˑvariantˑloading); break;
+        case tuckˑtypeˑPlayerStateKind.Ready: rt.tuckDrop(tuckˑvariantˑready); break;
+        }
+    }
     tuckˑtypeˑPlayerState tuckDup() {
         tuckˑtypeˑPlayerState r = this;
         final switch (kind) {
@@ -80,6 +87,14 @@ struct tuckˑtypeˑMqttSession {
         tuckˑtypeˑMqttSession_Connected tuckˑvariantˑconnected;
         tuckˑtypeˑMqttSession_Subscribing tuckˑvariantˑsubscribing;
     }
+    void tuckFree() {
+        final switch (kind) {
+        case tuckˑtypeˑMqttSessionKind.Disconnected: break;
+        case tuckˑtypeˑMqttSessionKind.Connecting: rt.tuckDrop(tuckˑvariantˑconnecting); break;
+        case tuckˑtypeˑMqttSessionKind.Connected: rt.tuckDrop(tuckˑvariantˑconnected); break;
+        case tuckˑtypeˑMqttSessionKind.Subscribing: rt.tuckDrop(tuckˑvariantˑsubscribing); break;
+        }
+    }
     tuckˑtypeˑMqttSession tuckDup() {
         tuckˑtypeˑMqttSession r = this;
         final switch (kind) {
@@ -102,16 +117,21 @@ struct tuckˑtypeˑMqttSession {
 }
 
 void tuckˑfnˑmain() {
-    tuckˑtypeˑConfig tuckˑvˑconfig = tuckˑtypeˑConfig(url: "https://example.com");
-    tuckˑtypeˑFeed tuckˑvˑfeed = tuckˑtypeˑFeed(title: "Deep Dive");
+    tuckˑtypeˑConfig tuckˑvˑconfig = tuckˑtypeˑConfig(url: ("https://example.com").idup);
+    tuckˑtypeˑFeed tuckˑvˑfeed = tuckˑtypeˑFeed(title: ("Deep Dive").idup);
     tuckˑtypeˑPlayerState tuckˑvˑp = tuckˑtypeˑPlayerState(kind: tuckˑtypeˑPlayerStateKind.Ready, tuckˑvariantˑready: tuckˑtypeˑPlayerState_Ready(config: tuckˑvˑconfig, feed: tuckˑvˑfeed));
+    scope(exit) rt.tuckDrop(tuckˑvˑp);
     tuckˑtypeˑMqttSession tuckˑvˑfresh = tuckˑtypeˑMqttSession(tuckˑtypeˑMqttSessionKind.Disconnected);
+    scope(exit) rt.tuckDrop(tuckˑvˑfresh);
     tuckˑtypeˑSocket tuckˑvˑsocket = tuckˑtypeˑSocket(fd: 3L);
     tuckˑtypeˑMqttSession tuckˑvˑsession = tuckˑtypeˑMqttSession(kind: tuckˑtypeˑMqttSessionKind.Connected, tuckˑvariantˑconnected: tuckˑtypeˑMqttSession_Connected(socket: tuckˑvˑsocket, keepalive: 60L));
+    scope(exit) rt.tuckDrop(tuckˑvˑsession);
     return;
 }
 
-void main(string[] args) {
+int main(string[] args) {
     rt.tuckSetArgs(args);
+    rt.tuckLeakMark();
     tuckˑfnˑmain();
+    return rt.tuckLeakCheck(0);
 }

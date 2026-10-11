@@ -2,6 +2,7 @@
 import "../compiler/tuck_rt"
 
 proc `==`*(a, b: tuckˑtypeˑPlayerState): bool {.noSideEffect.}
+proc tuckDrop*(x: var tuckˑtypeˑPlayerState)
 
 proc tuckˑfnˑSystemEvents_PlaybackStarted*(): void
 proc tuckˑfnˑSystemEvents_PlaybackStopped*(): void
@@ -30,12 +31,15 @@ proc `<`*(a, b: tuckˑtypeˑMilliseconds): bool {.borrow.}
 proc `<=`*(a, b: tuckˑtypeˑMilliseconds): bool {.borrow.}
 proc `$`*(a: tuckˑtypeˑMilliseconds): string {.borrow.}
 
-type tuckˑtypeˑPlayerStateKind* = enum Idle, Decoding, Paused
-type tuckˑtypeˑPlayerState* = object
-  case kind*: tuckˑtypeˑPlayerStateKind
-  of Idle: discard
-  of Decoding: tuckˑvariantˑdecoding*: tuple[sampleRate: tuckˑtypeˑHz]
-  of Paused: discard
+type
+  tuckˑtypeˑPlayerStateKind* = enum Idle, Decoding, Paused
+  tuckˑtypeˑPlayerState_Decoding* = object
+    sampleRate*: tuckˑtypeˑHz
+  tuckˑtypeˑPlayerState* = object
+    case kind*: tuckˑtypeˑPlayerStateKind
+    of Idle: discard
+    of Decoding: tuckˑvariantˑdecoding*: tuckˑtypeˑPlayerState_Decoding
+    of Paused: discard
 
 proc `==`*(a, b: tuckˑtypeˑPlayerState): bool {.noSideEffect.} =
   if a.kind != b.kind: return false
@@ -43,6 +47,12 @@ proc `==`*(a, b: tuckˑtypeˑPlayerState): bool {.noSideEffect.} =
   of Idle: true
   of Decoding: a.tuckˑvariantˑdecoding == b.tuckˑvariantˑdecoding
   of Paused: true
+
+proc tuckDrop*(x: var tuckˑtypeˑPlayerState) =
+  case x.kind
+  of Idle: discard
+  of Decoding: tuckDrop(x.tuckˑvariantˑdecoding)
+  of Paused: discard
 proc canTransition*(frm, to: tuckˑtypeˑPlayerStateKind): bool =
   case frm
   of Idle: to in {Decoding}
@@ -143,12 +153,12 @@ proc handleMsg*(self: tuckˑactorˑDecoder, msg: tuckˑactorˑDecoderMsg) =
       (case self.state.kind
       of Idle:
         if true:
-          self.state = tuckˑtypeˑPlayerState(kind: Decoding, tuckˑvariantˑdecoding: (sampleRate: rate))
+          self.state = tuckˑtypeˑPlayerState(kind: Decoding, tuckˑvariantˑdecoding: tuckˑtypeˑPlayerState_Decoding(sampleRate: rate))
           raise_tuckˑregistryˑSystemEvents_PlaybackStarted()
           tuckˑregisterˑDAC_CR_EN_set(true)
       of Paused:
         if true:
-          self.state = tuckˑtypeˑPlayerState(kind: Decoding, tuckˑvariantˑdecoding: (sampleRate: rate))
+          self.state = tuckˑtypeˑPlayerState(kind: Decoding, tuckˑvariantˑdecoding: tuckˑtypeˑPlayerState_Decoding(sampleRate: rate))
           raise_tuckˑregistryˑSystemEvents_PlaybackStarted()
           tuckˑregisterˑDAC_CR_EN_set(true)
       of Decoding:

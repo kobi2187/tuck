@@ -28,7 +28,7 @@ TRec_code!(long) tuckˑtaskˑreadOrGiveUp(long fd) {
 long tuckˑfnˑmain() {
     TRec_fd!(long) tuckˑvˑsrc = openSource(5L);
     auto tuckSlot1 = rt.newAsyncResult!(TRec_code!(long))();
-    rt.spawnResult(tuckSlot1, { return tuckˑtaskˑreadOrGiveUp(tuckˑvˑsrc.fd); });
+    rt.spawnResult(tuckSlot1, &tuckˑtaskˑreadOrGiveUp, tuckˑvˑsrc.fd);
     TRec_code!(long) tuckˑvˑr = rt.awaitResult(tuckSlot1);
     return tuckˑvˑr.code;
 }
@@ -36,7 +36,8 @@ long tuckˑfnˑmain() {
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
+    rt.tuckLeakMark();
     auto mainRc = tuckˑfnˑmain();
     rt.tuckRun();
-    return cast(int) mainRc;
+    return rt.tuckLeakCheck(cast(int) mainRc);
 }

@@ -55,7 +55,9 @@ void sendPut_tuckˑactorˑResult(ref tuckˑactorˑResult self, long c) {
 void tuckˑtaskˑserve(long lfd) {
     rt.TuckResult!(net.TRec_net_fd!(long)) tuckˑvˑc = net.accept(lfd);
     if ((tuckˑvˑc.status == rt.TuckStatus.Ok)) {
-        net.recv(tuckˑvˑc.value.fd, 256L);
+        rt.TuckResult!(net.TRec_net_data!(string)) tuckOwnTmp1 = net.recv(tuckˑvˑc.value.fd, 256L);
+        scope(exit) rt.tuckDrop(tuckOwnTmp1);
+        tuckOwnTmp1;
         net.send(tuckˑvˑc.value.fd, "pong");
         net.close(tuckˑvˑc.value.fd);
     }
@@ -67,6 +69,7 @@ void tuckˑtaskˑclient(long port) {
     if ((tuckˑvˑc.status == rt.TuckStatus.Ok)) {
         net.send(tuckˑvˑc.value.fd, "ping");
         rt.TuckResult!(net.TRec_net_data!(string)) tuckˑvˑr = net.recv(tuckˑvˑc.value.fd, 256L);
+        scope(exit) rt.tuckDrop(tuckˑvˑr);
         net.close(tuckˑvˑc.value.fd);
         if ((tuckˑvˑr.status == rt.TuckStatus.Ok)) {
             if ((tuckˑvˑr.value.data == "pong")) {
@@ -88,8 +91,8 @@ bool tuckˑfnˑdone() {
 long tuckˑfnˑmain() {
     rt.TuckResult!(net.TRec_net_fd!(long)) tuckˑvˑl = net.listen(34593L);
     if ((tuckˑvˑl.status == rt.TuckStatus.Ok)) {
-        rt.tuckSpawn({ cast(void) tuckˑtaskˑserve(tuckˑvˑl.value.fd); });
-        rt.tuckSpawn({ cast(void) tuckˑtaskˑclient(34593L); });
+        rt.tuckSpawnJob(&tuckˑtaskˑserve, tuckˑvˑl.value.fd);
+        rt.tuckSpawnJob(&tuckˑtaskˑclient, 34593L);
         rt.tuckWaitOn(tuckˑactorˑResultSlot, &tuckˑfnˑdone);
         net.close(tuckˑvˑl.value.fd);
         scheduler.stop();
@@ -102,8 +105,9 @@ int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
     tuckˑactorˑResultSlot = rt.tuckStartActor(&drain_tuckˑactorˑResult);
+    rt.tuckLeakMark();
     auto mainRc = tuckˑfnˑmain();
     rt.tuckRun();
     rt.tuckDrainActors();
-    return cast(int) mainRc;
+    return rt.tuckLeakCheck(cast(int) mainRc);
 }

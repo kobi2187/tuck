@@ -18,7 +18,8 @@ proc tuckˑfnˑfetch*[T](payload: T): tuple[status: int] =
 
 
 proc tuckˑfnˑmain*(): void =
-  var tuckˑvˑconfig = (url: "https://api.example.com", timeout: 100)
+  var tuckˑvˑconfig = (url: tuckCopy("https://api.example.com"), timeout: 100)
+  defer: tuckDrop(tuckˑvˑconfig.url)
   var tuckˑvˑresult = tuckˑfnˑfetch(tuckˑvˑconfig)
   return
 

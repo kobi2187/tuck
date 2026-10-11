@@ -21,8 +21,8 @@ var tuckˑslabˑScratchSpace_EthernetFrame* = SlabChunked[tuckˑtypeˑEthernetFr
 var tuckˑslabˑScratchSpace_Header* = SlabChunked[tuckˑtypeˑHeader](name: "ScratchSpace")
 proc tuckˑfnˑhandle*(len: int): int =
   var tuckˑvˑraw: array[128, uint8] = default(array[128, uint8])
-  var tuckˑvˑf = tuckˑtypeˑEthernetFrame(len: len, bytes: tuckˑvˑraw)
-  var tuckˑvˑfr = tuckArenaNew(tuckˑslabˑScratchSpace_EthernetFrame, tuckˑarenaˑScratchSpace, 144, tuckˑvˑf)
+  var tuckˑvˑf = tuckˑtypeˑEthernetFrame(len: len, bytes: tuckMove(tuckˑvˑraw))
+  var tuckˑvˑfr = tuckArenaNew(tuckˑslabˑScratchSpace_EthernetFrame, tuckˑarenaˑScratchSpace, 144, tuckMove(tuckˑvˑf))
   if not tuckˑvˑfr.ok:
     if true:
       return 0

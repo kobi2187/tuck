@@ -13,6 +13,6 @@ proc tuckˑtaskˑcompute*(base: int): tuple[r: int] =
   return (r: (tuckˑvˑa.v + tuckˑvˑb.v))
 
 proc tuckˑfnˑmain*(): int =
-  var tuckˑvˑres = (let tuckSlot0 = newAsyncResult[tuple[r: int]](); spawnResult(tuckSlot0, proc(): tuple[r: int] {.closure, gcsafe.} = ({.cast(gcsafe).}: tuckˑtaskˑcompute(21))); awaitResult(tuckSlot0))
+  var tuckˑvˑres = (let tuckSlot0 = newAsyncResult[tuple[r: int]](); tuckSpawnResultJob(tuckSlot0, tuckˑtaskˑcompute, 21); awaitResult(tuckSlot0))
   return tuckˑvˑres.r
 

@@ -53,6 +53,9 @@ long tuckˑfnˑmain() {
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
+    rt.tuckLeakMark();
     auto mainRc = tuckˑfnˑmain();
-    return cast(int) mainRc;
+    rt.tuckSlabRelease(tuckˑslabˑScratchSpace_EthernetFrame);
+    rt.tuckSlabRelease(tuckˑslabˑScratchSpace_Header);
+    return rt.tuckLeakCheck(cast(int) mainRc);
 }

@@ -60,22 +60,28 @@ void tuckˑfnˑplayTrack(T)(T payload) {
 
 
 void tuckˑfnˑmain() {
-    TRec_url_timeout!(string, time.tuckˑtypeˑMilliseconds) tuckˑvˑrequest = TRec_url_timeout!(string, time.tuckˑtypeˑMilliseconds)(url: "example.com", timeout: time.tuckˑfnˑms(5L));
+    TRec_url_timeout!(string, time.tuckˑtypeˑMilliseconds) tuckˑvˑrequest = TRec_url_timeout!(string, time.tuckˑtypeˑMilliseconds)(url: ("example.com").idup, timeout: time.tuckˑfnˑms(5L));
+    scope(exit) rt.tuckDrop(tuckˑvˑrequest.url);
     TRec_hasNew_episodes_metadata!(bool, long, string) tuckOwnTmp1 = tuckˑfnˑfetch(tuckˑvˑrequest);
+    scope(exit) rt.tuckDrop(tuckOwnTmp1.metadata);
     TRec_episodes!(long) tuckˑvˑresponse = tuckˑfnˑselectEpisodes(tuckˑfnˑparse(tuckOwnTmp1));
     TRec_hasNew_episodes_metadata!(bool, long, string) tuckˑvˑfeed = tuckˑfnˑfetch("https://example.com/feed");
+    scope(exit) rt.tuckDrop(tuckˑvˑfeed.metadata);
     if (tuckˑvˑfeed.hasNew) {
         tuckˑfnˑprocess(tuckˑvˑfeed.episodes);
     } else {
         tuckˑfnˑlog(tuckˑvˑfeed.metadata);
     }
-    TRec_trackId_title_durationMs!(long, string, long) tuckˑvˑexternalTrack = TRec_trackId_title_durationMs!(long, string, long)(trackId: 101L, title: "Deep Dive", durationMs: 212000L);
+    TRec_trackId_title_durationMs!(long, string, long) tuckˑvˑexternalTrack = TRec_trackId_title_durationMs!(long, string, long)(trackId: 101L, title: ("Deep Dive").idup, durationMs: 212000L);
     TRec_id_name_length!(long, string, long) tuckˑvˑnormalizedTrack = TRec_id_name_length!(long, string, long)(id: tuckˑvˑexternalTrack.trackId, name: tuckˑvˑexternalTrack.title, length: tuckˑvˑexternalTrack.durationMs);
+    scope(exit) rt.tuckDrop(tuckˑvˑnormalizedTrack.name);
     tuckˑfnˑplayTrack(tuckˑvˑnormalizedTrack);
     return;
 }
 
-void main(string[] args) {
+int main(string[] args) {
     rt.tuckSetArgs(args);
+    rt.tuckLeakMark();
     tuckˑfnˑmain();
+    return rt.tuckLeakCheck(0);
 }

@@ -15,11 +15,14 @@ long tuckˑfnˑplus(long a, long b) {
 
 void tuckˑfnˑmain() {
     tuckˑtypeˑCalc tuckˑvˑc = tuckˑtypeˑCalc(add: &tuckˑfnˑplus);
+    scope(exit) rt.tuckDrop(tuckˑvˑc.add);
     long tuckˑvˑr = tuckˑvˑc.add(40L, 2L);
     sys.exit(tuckˑvˑr);
 }
 
-void main(string[] args) {
+int main(string[] args) {
     rt.tuckSetArgs(args);
+    rt.tuckLeakMark();
     tuckˑfnˑmain();
+    return rt.tuckLeakCheck(0);
 }

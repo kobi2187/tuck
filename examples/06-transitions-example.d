@@ -33,6 +33,13 @@ struct tuckˑtypeˑPodcastPlayerLifecycle {
         tuckˑtypeˑPodcastPlayerLifecycle_Loading tuckˑvariantˑloading;
         tuckˑtypeˑPodcastPlayerLifecycle_Ready tuckˑvariantˑready;
     }
+    void tuckFree() {
+        final switch (kind) {
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Unloaded: rt.tuckDrop(tuckˑvariantˑunloaded); break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Loading: rt.tuckDrop(tuckˑvariantˑloading); break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Ready: rt.tuckDrop(tuckˑvariantˑready); break;
+        }
+    }
     tuckˑtypeˑPodcastPlayerLifecycle tuckDup() {
         tuckˑtypeˑPodcastPlayerLifecycle r = this;
         final switch (kind) {

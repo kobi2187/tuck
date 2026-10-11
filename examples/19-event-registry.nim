@@ -2,7 +2,7 @@
 import "../compiler/tuck_rt"
 
 proc tuckˑfnˑtriggerEvent*(): void
-proc tuckˑfnˑAppEvents_SensorFailure*(port: uint8, reason: sink string): void
+proc tuckˑfnˑAppEvents_SensorFailure*(port: uint8, reason: string): void
 proc tuckˑfnˑAppEvents_LowMemory*(remaining: uint32): void
 
 type tuckˑregistryˑAppEventsKind* = enum SensorFailure, LowMemory
@@ -26,9 +26,11 @@ proc raise_tuckˑregistryˑAppEvents_LowMemory*(remaining: uint32) =
 proc tuckˑfnˑtriggerEvent*(): void =
   raise_tuckˑregistryˑAppEvents_SensorFailure(1, "timeout")
 
-proc tuckˑfnˑAppEvents_SensorFailure*(port: uint8, reason: sink string): void =
+proc tuckˑfnˑAppEvents_SensorFailure*(port: uint8, reason: string): void =
+  var reason = tuckBits(reason)
   var tuckˑvˑx = port
-  var tuckˑvˑy = reason
+  var tuckˑvˑy = tuckMove(reason)
+  defer: tuckDrop(tuckˑvˑy)
 
 proc tuckˑfnˑAppEvents_LowMemory*(remaining: uint32): void =
   var tuckˑvˑleft = remaining

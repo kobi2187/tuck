@@ -18,6 +18,7 @@ long tuckˑfnˑmain() {
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
+    rt.tuckLeakMark();
     auto mainRc = tuckˑfnˑmain();
-    return cast(int) mainRc;
+    return rt.tuckLeakCheck(cast(int) mainRc);
 }

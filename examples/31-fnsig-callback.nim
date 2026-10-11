@@ -15,6 +15,7 @@ proc tuckˑfnˑplus*(a: int, b: int): int =
 
 proc tuckˑfnˑmain*(): void =
   var tuckˑvˑc = tuckˑtypeˑCalc(add: tuckˑfnˑplus)
+  defer: tuckDrop(tuckˑvˑc.add)
   var tuckˑvˑr = tuckˑvˑc.add(40, 2)
   sys.exit(tuckˑvˑr)
 

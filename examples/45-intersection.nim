@@ -44,6 +44,11 @@ type Detector* = object
   of Detector_is_tuckˑobjectˑCameraDetector: tuckˑobjectˑCameraDetectorVal*: tuckˑobjectˑCameraDetector
   of Detector_is_tuckˑobjectˑLoopDetector: tuckˑobjectˑLoopDetectorVal*: tuckˑobjectˑLoopDetector
 
+proc tuckDrop*(x: var Detector) =
+  case x.tag
+  of Detector_is_tuckˑobjectˑCameraDetector: tuckDrop(x.tuckˑobjectˑCameraDetectorVal)
+  of Detector_is_tuckˑobjectˑLoopDetector: tuckDrop(x.tuckˑobjectˑLoopDetectorVal)
+
 var tuckˑregisterˑSIGNAL_OUT = cast[ptr uint32](0x40011000)
 const tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT = 0
 const tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT = 1
@@ -183,10 +188,10 @@ proc tuckˑfnˑpoll*(d: Detector): tuckˑtypeˑDemand =
   var tuckˑvˑbits = (block:
     case d.tag
     of Detector_is_tuckˑobjectˑCameraDetector:
-      var tmp = d.tuckˑobjectˑCameraDetectorVal
+      template tmp: untyped {.used.} = d.tuckˑobjectˑCameraDetectorVal
       tuckˑobjectˑCameraDetectorˑreads(tmp)
     of Detector_is_tuckˑobjectˑLoopDetector:
-      var tmp = d.tuckˑobjectˑLoopDetectorVal
+      template tmp: untyped {.used.} = d.tuckˑobjectˑLoopDetectorVal
       tuckˑobjectˑLoopDetectorˑreads(tmp))
   (case tuckˑvˑbits
   of 1:
