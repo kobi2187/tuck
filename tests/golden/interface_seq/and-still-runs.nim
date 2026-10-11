@@ -16,6 +16,11 @@ type Animal* = object
   of Animal_is_tuckˑobjectˑCat: tuckˑobjectˑCatVal*: tuckˑobjectˑCat
   of Animal_is_tuckˑobjectˑDog: tuckˑobjectˑDogVal*: tuckˑobjectˑDog
 
+proc tuckDrop*(x: var Animal) =
+  case x.tag
+  of Animal_is_tuckˑobjectˑCat: tuckDrop(x.tuckˑobjectˑCatVal)
+  of Animal_is_tuckˑobjectˑDog: tuckDrop(x.tuckˑobjectˑDogVal)
+
 proc tuckˑobjectˑDogˑnoise*(self: tuckˑobjectˑDog): int =
   return 1
 
@@ -32,7 +37,9 @@ proc tuckˑfnˑcount*(xs: seq[tuckˑobjectˑDog]): int =
   return tuckˑvˑs
 
 proc tuckˑfnˑmain*(): int =
-  var tuckˑvˑa = tuckˑobjectˑDog(name: "rex")
-  var tuckˑvˑb = tuckˑobjectˑDog(name: "fido")
-  return tuckˑfnˑcount(@[tuckˑvˑa, tuckˑvˑb])
+  var tuckˑvˑa = tuckˑobjectˑDog(name: tuckCopy("rex"))
+  var tuckˑvˑb = tuckˑobjectˑDog(name: tuckCopy("fido"))
+  var tuckOwnTmp1 = @[tuckMove(tuckˑvˑa), tuckMove(tuckˑvˑb)]
+  defer: tuckDrop(tuckOwnTmp1)
+  return tuckˑfnˑcount(tuckOwnTmp1)
 

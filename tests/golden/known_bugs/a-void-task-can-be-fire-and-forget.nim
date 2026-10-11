@@ -43,7 +43,7 @@ proc tuckˑfnˑdone*(): bool =
   return (tuckˑactorˑSinkSingleton.hits == 5)
 
 proc tuckˑfnˑmain*(): int =
-  tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: tuckˑtaskˑfire()))
+  tuckSpawnJob(tuckˑtaskˑfire)
   tuckWaitOn(tuckˑactorˑSinkSlot, tuckˑfnˑdone)
   scheduler.stop()
   return tuckˑactorˑSinkSingleton.hits

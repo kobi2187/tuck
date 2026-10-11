@@ -14,5 +14,7 @@ proc tuckˑfnˑtotal*(xs: seq[tuckˑtypeˑP]): int =
   return tuckˑvˑs
 
 proc tuckˑfnˑmain*(): int =
-  return tuckˑfnˑtotal(@[tuckˑtypeˑP(n: 3), tuckˑtypeˑP(n: 38)])
+  var tuckOwnTmp1 = @[tuckˑtypeˑP(n: 3), tuckˑtypeˑP(n: 38)]
+  defer: tuckDrop(tuckOwnTmp1)
+  return tuckˑfnˑtotal(tuckOwnTmp1)
 
