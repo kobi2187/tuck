@@ -363,8 +363,19 @@ proc genDPayloadSum*(ctx: var DCodegenCtx, d: Decl, body: Type): string =
   # answer, which is worse than the Nim backend's refusal to compile the same
   # program at all. Same tag, then the ACTIVE payload only — the inactive
   # union arms hold whatever was last written there.
-  # A deep copy (rule G) copies the LIVE variant only: the inactive arms
-  # hold whatever was last written there, which a field walk would follow.
+  # A deep copy or a drop (rule G) walks the LIVE variant only: the inactive
+  # arms hold whatever was last written there, which a field walk would
+  # follow.
+  res.add("    void tuckFree() {\n")
+  res.add("        final switch (kind) {\n")
+  for v in body.variants:
+    let tag = "case " & d.name & "Kind." & v.name & ": "
+    if v.fields.len == 0:
+      res.add("        " & tag & "break;\n")
+    else:
+      let f = sumPayloadField(v.name)
+      res.add("        " & tag & "rt.tuckDrop(" & f & "); break;\n")
+  res.add("        }\n    }\n")
   res.add("    " & d.name & " tuckDup() {\n")
   res.add("        " & d.name & " r = this;\n")
   res.add("        final switch (kind) {\n")
@@ -578,7 +589,7 @@ proc genDSendHelper*(ctx: var DCodegenCtx, d: Decl,
   for p in h.params:
     params.add(ctx.dType(p.typ) & " " & p.name)
     ctorArgs.add(", " & p.name & ": " & p.name)
-    if ctx.res.owning(ctx.module, p.typ, strShared = true):
+    if ctx.res.owning(ctx.module, p.typ):
       copies.add("    " & p.name & " = rt.tuckCopy(" & p.name & ");\n")
   let sep = if params.len > 0: ", " else: ""
   # The enqueue is the actor's `on_full` (R6): wait for room (the default),

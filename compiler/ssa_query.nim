@@ -173,26 +173,16 @@ proc overlapping(fn: SsaFn): Table[ValueId, seq[ValueId]] =
                                fn.values[int32(b)].place):
           result.mgetOrPut(a, @[]).add b
 
-proc reaches(succ: seq[seq[BlockId]], src, dst: BlockId): bool =
-  ## Can control leave `src` and come to `dst` (`src` itself, round a loop)?
-  var seen: HashSet[BlockId]
-  var stack = succ[int32(src)]
-  while stack.len > 0:
-    let b = stack.pop()
-    if b == dst: return true
-    if b in seen: continue
-    seen.incl b
-    stack.add succ[int32(b)]
-  false
-
-proc readAfter(fn: SsaFn, succ: seq[seq[BlockId]], others: seq[ValueId],
+proc readAfter(fn: SsaFn, succ: seq[seq[BlockId]],
+               phis: Table[(int32, Place), ValueId], others: seq[ValueId],
                u: Use): bool =
-  ## Is any of `others` read after the read `u`: later in its block, or in a
-  ## block control can reach from it?
+  ## Is any of `others` read after the read `u`: later in its block, or
+  ## once control leaves it, as the same buffer (a loop's next turn reads a
+  ## new version, which is not this one)?
   for o in others:
     for w in fn.values[int32(o)].uses:
-      if w.blk == u.blk and (w.line, w.col) >= (u.line, u.col): return true
-      if succ.reaches(u.blk, w.blk): return true
+      if w.blk == u.blk and (w.line, w.col) > (u.line, u.col): return true
+    if fn.readAgain(succ, phis, o, u.blk): return true
   false
 
 proc finalUses*(fn: SsaFn): HashSet[NodeId] =
@@ -213,7 +203,7 @@ proc finalUses*(fn: SsaFn): HashSet[NodeId] =
     for i, u in v.uses:
       if v.laterInBlock(i): continue
       if fn.readAgain(succ, phis, v.id, u.blk): continue
-      if fn.readAfter(succ, related.getOrDefault(v.id), u): continue
+      if fn.readAfter(succ, phis, related.getOrDefault(v.id), u): continue
       result.incl u.at
 
 # --- structural invariants --------------------------------------------------

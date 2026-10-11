@@ -64,6 +64,10 @@ proc assignInvariantOwner*(res: Resolution, e: Expr): string =
   if t == nil or t.kind != tkNamed: return ""
   t.name
 
+proc sumPayloadType*(sumName, variantName: string): string =
+  ## The object type a payload-carrying variant's fields live in (Nim).
+  sumName & "_" & variantName
+
 proc sumPayloadField*(variantName: string): string =
   ## The struct/object field a payload variant's data sits in.
   ##

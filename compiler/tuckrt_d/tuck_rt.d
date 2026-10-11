@@ -21,18 +21,107 @@ import core.atomic : cas, atomicLoad, atomicStore;
 // tuck_rt.nim, which fronts tuck_async the same way.
 public import tuck_coro;
 
-/// A deep copy (rule G): a value of `T` that shares no mutable storage with
-/// `v`. A slice gets a new buffer, a struct each field copied, a payload sum
-/// its live variant (the `tuckDup` the emitter gives every one). Immutable
-/// data (`str`) and references (classes, pointers: slab refs, actors) are
-/// shared, as the collector frees them.
+/// MEMORY IS THE PROGRAM'S. The ownership rules decide every copy, move and
+/// drop (compiler/ownership_write.nim) and the emitted program carries them
+/// out; the collector does not run. It stays the allocator, and it collects
+/// only when an allocation would otherwise fail, which makes a missed drop
+/// a cost and never a crash.
+shared static this() {
+    import core.memory : GC;
+    GC.disable();
+}
+
+/// `-version=tuckTrack`: the bytes the program allocated and never freed,
+/// reported at exit (the allocation tracker's counterpart on Odin). Zero
+/// when the ownership rules' drops free everything. Without the version
+/// both calls are nothing.
+private ulong tuckLeakBase;
+void tuckLeakMark() {
+    version (tuckTrack) {
+        import core.memory : GC;
+        // The allocator keeps a little state the first time a size class is
+        // used (measured: 16 bytes at a program's first array literal). That
+        // is not the program's, so every size is used once, and freed, before
+        // the baseline is taken.
+        foreach (n; [1, 2, 3, 4, 8, 16, 24, 48, 100, 300, 1000, 4000]) {
+            auto w = new ubyte[](n); tuckFreeBlock(cast(void*) w.ptr);
+            auto v = new long[](n); tuckFreeBlock(cast(void*) v.ptr);
+        }
+        tuckLeakBase = GC.stats().usedSize;
+    }
+}
+int tuckLeakCheck(int rc) {
+    version (tuckTrack) {
+        import core.memory : GC;
+        import core.stdc.stdio : fprintf, stderr;
+        auto used = GC.stats().usedSize;
+        if (used > tuckLeakBase) {
+            fprintf(stderr, "TUCK-ALLOC: %llu bytes never freed\n",
+                    cast(ulong) (used - tuckLeakBase));
+            return 90;
+        }
+    }
+    return rc;
+}
+
+/// A drop (rule D): free what a value of `T` owns, deeply, and leave it
+/// empty. A slice's block, each element first when they own storage, a
+/// struct's fields, a payload sum's live variant (the `tuckFree` the emitter
+/// gives every one). `tuckFreeBlock` leaves what the collector did not
+/// allocate (a literal) and a slice into the middle of a block alone.
+void tuckDrop(T)(ref T v) {
+    import core.memory : GC;
+    import std.traits : isDynamicArray, isStaticArray, hasIndirections;
+    static if (__traits(hasMember, T, "tuckFree")) {
+        v.tuckFree();
+    } else static if (isDynamicArray!T) {
+        alias E = typeof(v[0]);
+        static if (hasIndirections!E && !is(E == immutable))
+            foreach (ref x; v) tuckDrop(x);
+        tuckFreeBlock(cast(void*) v.ptr);
+        v = null;
+    } else static if (isStaticArray!T) {
+        foreach (ref x; v) tuckDrop(x);
+    } else static if (is(T == struct)) {
+        foreach (ref f; v.tupleof) tuckDrop(f);
+    }
+}
+
+/// An overwrite that drops the old value (rule D): the new one is built
+/// first (it is the argument), then the old one is dropped, then stored.
+void tuckReplace(T)(ref T place, T value) {
+    tuckDrop(place);
+    place = value;
+}
+
+/// `xs += v` on a Seq: grown in place; when growth moved the block, the old
+/// one is freed (it was only `xs`'s).
+void tuckPush(T)(ref T[] xs, T v) {
+    import core.memory : GC;
+    auto old = xs.ptr;
+    xs ~= v;
+    if (old !is null && xs.ptr !is old) tuckFreeBlock(cast(void*) old);
+}
+
+/// `s += t` on a str the body owns: the same, for its bytes.
+void tuckStrAppend(ref string s, string t) {
+    import core.memory : GC;
+    auto old = s.ptr;
+    s ~= t;
+    if (old !is null && s.ptr !is old) tuckFreeBlock(cast(void*) old);
+}
+
+/// A deep copy (rule G): a value of `T` that shares no storage with `v`. A
+/// slice gets a new buffer, a `str` its own bytes, a struct each field
+/// copied, a payload sum its live variant (the `tuckDup` the emitter gives
+/// every one). References (classes, pointers: slab refs, actors) are shared.
 T tuckCopy(T)(T v) {
     import std.traits : isDynamicArray, isStaticArray, isPointer;
     static if (__traits(hasMember, T, "tuckDup")) {
         return v.tuckDup();
     } else static if (isDynamicArray!T) {
         alias E = typeof(v[0]);
-        static if (is(E == immutable)) return v;
+        static if (is(E == immutable)) return v.idup;   // a str: its own bytes
         else {
             auto r = new E[](v.length);
             foreach (i, ref x; v) r[i] = tuckCopy(x);
@@ -235,6 +324,7 @@ T at(T)(T[] items, long index)
 void tuckSetAt(T)(ref T[] items, long index, T value)
 {
     tuckSeqBounds(index, cast(long) items.length, "setAt");
+    tuckDrop(items[index]);        // the element it replaces is the Seq's
     items[index] = value;
 }
 
@@ -259,6 +349,7 @@ T tuckArrayAt(T, size_t N)(T[N] items, long index)
 void tuckArraySetAt(T, size_t N)(ref T[N] items, long index, T value)
 {
     tuckSeqBounds(index, cast(long) N, "setAt");
+    tuckDrop(items[index]);
     items[index] = value;
 }
 
@@ -295,9 +386,14 @@ string joinStr(string[] parts, string sep)
     return parts.join(sep);
 }
 
+/// A new seq: `items` and `value`, one allocation (a `~ [value]` also builds
+/// the one-element array on the heap, and nobody frees it).
 T[] push(T)(T[] items, T value)
 {
-    return items ~ [value];
+    auto r = new T[](items.length + 1);
+    r[0 .. $ - 1] = items[];
+    r[$ - 1] = value;
+    return r;
 }
 
 /// Bit operations. Tuck has no bitwise OPERATORS — `|` is already sum-variant
@@ -1071,14 +1167,50 @@ bool tuckSlabLive(S)(ref S s, SlabRef r)
 void tuckSlabFree(S)(ref S s, SlabRef r)
 {
     auto c = tuckSlabCell(s, r);
-    c.value = typeof(c.value).init;   // what it holds goes now, not at reuse
+    tuckDrop(c.value);        // what it owns goes now, not at reuse
     c.link = s.freeHead;
     s.freeHead = cast(int) r.slot + 1;
     s.live--;
 }
 
-/// Every cell free and every reference stale, in O(1).
-void tuckSlabReset(S)(ref S s) { s.len = 0; s.freeHead = 0; s.live = 0; }
+/// Every cell free and every reference stale: O(1) when the cells own no
+/// storage, else each live cell's value is dropped first (rule D).
+void tuckSlabReset(S)(ref S s)
+{
+    import std.traits : hasIndirections;
+    static if (hasIndirections!(typeof(s.cellAt(0).value)))
+        foreach (i; 0 .. s.len)
+        {
+            auto c = s.cellAt(i);
+            if (c.link == SLAB_LIVE) tuckDrop(c.value);
+        }
+    s.len = 0; s.freeHead = 0; s.live = 0;
+}
+
+/// At exit under `-version=tuckTrack`: hand the slab's own storage back, so
+/// the report names what the PROGRAM leaked rather than the slab, which
+/// lives until exit by design.
+void tuckSlabRelease(S)(ref S s)
+{
+    version (tuckTrack)
+    {
+        tuckSlabReset(s);
+        static if (__traits(hasMember, S, "top"))
+        {
+            foreach (pg; s.top)
+            {
+                if (pg is null) continue;
+                foreach (ch; *pg) if (ch !is null) tuckFreeBlock(cast(void*) ch);
+                tuckFreeBlock(cast(void*) pg);
+            }
+        }
+        else static if (__traits(hasMember, S, "cells") && is(typeof(s.cells) == U[], U))
+        {
+            tuckFreeBlock(cast(void*) s.cells.ptr);
+            s.cells = null;
+        }
+    }
+}
 
 long tuckSlabCount(S)(ref S s) { return s.live; }
 
@@ -1394,7 +1526,7 @@ R openSource(R)(long ms)
     int[2] pipes;
     if (pipe2(pipes, 0) != 0) return tuckRec!(R, "fd")(-1L);
     auto wr = pipes[1];
-    tuckSpawn({
+    tuckSpawnOwned({
         tuckSleep(ms);
         ubyte[1] b = [1];
         write(wr, b.ptr, 1);

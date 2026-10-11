@@ -1293,7 +1293,11 @@ when isMainModule:
         # tuck_rt are compiled INTO the program, so this is how the mode
         # becomes a compile-time fact there rather than a branch at run time.
         let invFlag = if noInvariants: " -d:tuckNoInvariants " else: ""
-        let nimCmd = "nim c --hints:off --warnings:off " & nimFlags & asyncFlags &
+        # ARC, not ORC: deterministic destructors and no cycle collector.
+        # Every decision about ownership is the rules' (backend_prepare):
+        # the moves are printed (`move`), the `sink` parameters are rule P's,
+        # and ARC frees exactly where rule D drops.
+        let nimCmd = "nim c --hints:off --warnings:off --mm:arc " & nimFlags & asyncFlags &
                      nimDefinesFor(actorPolicy) & invFlag &
                      speedFlags & " --nimcache:" & quoteShell(nimCache) &
                      " -o:" & quoteShell(binPath) & " " &
@@ -1392,7 +1396,10 @@ when isMainModule:
                 implDirs.incl(parentDir(path) / module.parentDir())
           var implIArgs = ""
           for dir in implDirs: implIArgs.add(" -I" & quoteShell(dir))
-          let dInv = if noInvariants: " -version=tuckNoInvariants" else: ""
+          # TUCK_DMD_EXTRA: flags appended verbatim (`-version=tuckTrack`
+          # makes the program report what it never freed, exit code 90).
+          let dInv = (if noInvariants: " -version=tuckNoInvariants" else: "") &
+                     " " & getEnv("TUCK_DMD_EXTRA")
           let dCmd = quoteShell(dmdExe) & " -i" & dOpt & dInv &
                      " -I" & quoteShell(outDir) & implIArgs &
                      " -of=" & quoteShell(dBin) & " " &

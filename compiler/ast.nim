@@ -558,6 +558,9 @@ type
     ## An expression or statement: one case branch per ExprKind. Statements are
     ## expressions here (`if`, `match` and blocks can produce values).
     sourceName*: Option[string]  ## see SourceName note below
+    movedOut*: bool  ## the ownership rules move this read of a place
+                     ## (ownership_write): a backend whose assignment copies
+                     ## (Nim's) prints it as a move; the rest as the read
     case kind*: ExprKind
     of exkLit:
       litKind*: LitKind

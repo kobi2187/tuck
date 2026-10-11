@@ -173,7 +173,8 @@ proc sumVariantCtor(ctx: var CodegenCtx, typeName, variantName: string,
       if pf[0] == f.name: valStr = ctx.genExpr(pf[1])
     parts.add(f.name & ": " & valStr)
   typeName & "(kind: " & variantName & ", " &
-    sumPayloadField(variantName) & ": (" & parts.join(", ") & "))"
+    sumPayloadField(variantName) & ": " & sumPayloadType(typeName, variantName) &
+    "(" & parts.join(", ") & "))"
 
 proc bangInfo*(t: Type): tuple[wrapped: bool, inner: string, innerT: Type] =
   ## For a `!T`/`?T`/`!?T` type: that it wraps, the payload's Nim type
@@ -866,10 +867,14 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     return genInterfaceWrap(inner, ifaceName, objName)
   case e.kind
   of exkLit: ctx.genLit(e)
-  of exkVar: ctx.genVar(e)
+  # A read the ownership rules move (rule S at an owned place's final use)
+  # says so: ARC's own inference is not asked.
+  of exkVar: (if e.movedOut: "move(" & ctx.genVar(e) & ")" else: ctx.genVar(e))
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     e.refName
-  of exkField: ctx.genFieldAccess(e, ind)
+  of exkField:
+    let read = ctx.genFieldAccess(e, ind)
+    if e.movedOut and not ctx.res.hasCall(e): "move(" & read & ")" else: read
   of exkQualified: genQualified(ctx, e)
   of exkCall: ctx.genCallExpr(e)
   of exkCombinator: ctx.genCombinator(e)

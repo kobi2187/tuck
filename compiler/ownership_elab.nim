@@ -563,10 +563,12 @@ proc owns*(ps: Places, place: string): bool =
 
 proc readsElement*(res: Resolution, m: Module, v: Expr): bool =
   ## A read of something another value holds, not a fresh value: `items[i]`
-  ## (rule U: an element is never moved out of its container), or a call
+  ## (rule U: an element is never moved out of its container), a slab's cell
+  ## (`Lists.get {r: l}`: the slab keeps it), or a call
   ## to a body-less callee that declares its result a `[view: x]`. A sink of
   ## one copies it.
-  if v.kind == exkBracket: return true
+  if v.kind in {exkBracket, exkSlabCell}: return true   # a slab's cell too
+  if v.kind == exkSlabOp and v.slabOp == soGet: return true
   if v.kind == exkField and not res.hasCall(v) and v.receiver != nil:
     return res.readsElement(m, v.receiver)  # `items[i].key`: part of one
   let call = if v.kind == exkCall: v elif res.hasCall(v): res.call(v) else: nil

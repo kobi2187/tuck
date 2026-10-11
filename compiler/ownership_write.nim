@@ -78,8 +78,10 @@ proc atSink(w: var Writer, v: Expr): Expr =
   ## `v` put to a sink: the copy rule S makes of it, or `v` itself (a move).
   ## What the copy is, is rule G's.
   let t = w.res.typeFor(v)
-  if v == nil or v.kind == exkCopy or not w.owns(t) or w.taken(v): return v
-  if not isStatic(v) and not w.res.copiesRead(w.ps, v): return v
+  if v == nil or v.kind == exkCopy or not w.owns(t): return v
+  if w.taken(v) or not isStatic(v) and not w.res.copiesRead(w.ps, v):
+    if w.res.isPlaceRead(v): v.movedOut = true   # a place handed over whole
+    return v
   w.copyNode(v, w.res.copyKindOf(w.m, t))
 
 proc walk(w: var Writer, e: Expr, use: Use, arg: ArgOf)

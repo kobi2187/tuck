@@ -244,8 +244,12 @@ proc genSumEquality(d: Decl): string =
 
 proc genSumType*(ctx: var CodegenCtx, d: Decl): string =
   ## A sum type as Nim: a plain `enum` when no variant has a payload, else a
-  ## `<Name>Kind` enum plus a case object whose branches each hold one tuple.
-  ## Payload sums also get structural `==`; transitions add their procs.
+  ## `<Name>Kind` enum plus a case object whose branches each hold one NAMED
+  ## object (`<Name>_<Variant>`). Named, not a tuple: Nim's classic runtime
+  ## cannot generate C for a recursive type through an anonymous tuple
+  ## (`Expr` holding `seq[Expr]` in a variant), which a program without ARC
+  ## needs. Payload sums also get structural `==`; transitions add their
+  ## procs.
   let hasPayload = sumHasPayload(d.typeBody)
   let hasTransitions = d.typeBody.transitions.len > 0
   if not hasPayload and not hasTransitions:
@@ -259,21 +263,25 @@ proc genSumType*(ctx: var CodegenCtx, d: Decl): string =
   var kindName = d.name
   if hasPayload:
     # tagged union: kind enum + object variant; each variant's payload is
-    # a tuple field named after the variant (no cross-branch name clashes)
+    # a field named after the variant (no cross-branch name clashes), of an
+    # object type of its own. One `type` section, so the payload types and
+    # the sum may refer to each other.
     kindName = d.name & "Kind"
     var tags: seq[string]
     for v in d.typeBody.variants: tags.add(v.name)
-    res.add("type " & kindName & "* = enum " & tags.join(", ") & "\n")
-    res.add("type " & d.name & "* = object\n  case kind*: " & kindName & "\n")
+    res.add("type\n  " & kindName & "* = enum " & tags.join(", ") & "\n")
+    for v in d.typeBody.variants:
+      if v.fields.len == 0: continue
+      res.add("  " & sumPayloadType(d.name, v.name) & "* = object\n")
+      for f in v.fields:
+        res.add("    " & f.name & "*: " & genType(f.typ) & "\n")
+    res.add("  " & d.name & "* = object\n    case kind*: " & kindName & "\n")
     for v in d.typeBody.variants:
       if v.fields.len == 0:
-        res.add("  of " & v.name & ": discard\n")
+        res.add("    of " & v.name & ": discard\n")
       else:
-        var parts: seq[string]
-        for f in v.fields:
-          parts.add(f.name & ": " & genType(f.typ))
-        res.add("  of " & v.name & ": " & sumPayloadField(v.name) &
-                "*: tuple[" & parts.join(", ") & "]\n")
+        res.add("    of " & v.name & ": " & sumPayloadField(v.name) & "*: " &
+                sumPayloadType(d.name, v.name) & "\n")
   else:
     res.add("type " & d.name & "* = enum ")
     var tags: seq[string]

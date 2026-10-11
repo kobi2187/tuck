@@ -42,8 +42,7 @@
 # its copy is itself. Nim's assignment copies and ARC frees, so a copy prints
 # as its value and a drop or a reset as nothing; its `sink` parameters are
 # rule P's answer (`Decl.ownedParams`), as the twins' copying wrappers are on
-# Odin and D. Step 2 and Nim's construction field order are the only steps
-# that know which backend they run for.
+# Odin and D. Step 2 is the only step that knows which backend it runs for.
 #
 # WHY NOT BEFORE THE CLONE (ROADMAP M3.1 as first written). Two of
 # ownership's inputs are made by lowering, so it cannot precede lowering —
@@ -163,6 +162,7 @@ proc prepareCommon(prog: seq[LoadedModule], semLayer: Resolution): BackendTree =
     let ts = epochTime()
     lowerModule(semLayer, lm.m, result.real)                         # 3. lower
     lowerWith(semLayer, lm.m)            #    `with` -> the construction it means
+    orderConstructionFields(semLayer, lm.m)       #    a moved field goes last
     # 4. NUMBER WHAT LOWERING MINTED. Lowering builds nodes (tail returns,
     # hoisted temporaries, desugared assignments) without ids; a node
     # without one drops out of the semantic layer. Existing ids are kept —
@@ -200,8 +200,6 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
   result = prepareCommon(prog, semLayer)
   for lm in result.mods:                                           # 2. rebase
     rebaseImplPaths(lm, backend.name, outDir)
-    if backend == bkNim:
-      orderConstructionFields(semLayer, lm.m)       #    a moved field goes last
 
 proc modules*(t: BackendTree): seq[Module] =
   ## The bare modules, for the stage assertions that take a `seq[Module]`.
