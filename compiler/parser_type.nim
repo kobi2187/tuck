@@ -227,9 +227,35 @@ proc effectMarkerFromName*(name: string, marker: var EffectMarker): bool =
 
 # Effect markers written after a return type (`-> T [io]`) parse as attrs on T —
 # or on the payload inside a !/? wrapper. Harvest them off wherever they landed.
-proc harvestEffects*(t: Type, effects: var seq[EffectMarker],
-                     errorTypes: var seq[string], emit: var string,
-                     resources: var seq[string]) =
+type
+  SignatureTail* = object
+    ## What follows a signature's return type: its effect markers, the error
+    ## enums it may raise, the C/runtime proc name an extern binds to, the
+    ## registry kinds it acquires (§7.4), and what an extern does with what
+    ## it is given: the arguments it KEEPS (`[keeps: value]`) and the one its
+    ## result is a VIEW into (`[view: items]`). Effects, error
+    ## enums and resource kinds can arrive from the return type itself (`!T`
+    ## harvests) or from the `[...]` bracket.
+    effects*: seq[EffectMarker]
+    errTypes*: seq[string]
+    emit*: string
+    resources*: seq[string]
+    keeps*: seq[string]
+    view*: string
+
+proc takeAttr*(tail: var SignatureTail, name, value: string): bool =
+  ## Folds one valued signature attribute into `tail`; false when `name` is
+  ## not one of them.
+  case name
+  of "error": tail.errTypes.add(value)   # [error: FsError | NetError]
+  of "emit": tail.emit = value
+  of "resource": tail.resources.add(value)  # [resource: udp] §7.4
+  of "keeps": tail.keeps.add(value)
+  of "view": tail.view = value
+  else: return false
+  true
+
+proc harvestEffects*(t: Type, tail: var SignatureTail) =
   ## `emit` is harvested here for the same reason `error` is: a bracket
   ## written after the RETURN TYPE is parsed as attributes ON that type, so
   ## parseEffectList never sees it. `[error: E]` was already lifted out; the
@@ -242,16 +268,13 @@ proc harvestEffects*(t: Type, effects: var seq[EffectMarker],
   var kept: seq[TypeAttr]
   for a in t.attrs:
     var marker: EffectMarker
-    if effectMarkerFromName(a.name, marker): effects.add(marker)
-    elif a.name == "error": errorTypes.add(a.value)  # [error: FsError | NetError]
-    elif a.name == "emit": emit = a.value
-    elif a.name == "resource": resources.add(a.value)  # [resource: udp] §7.4
-    else: kept.add(a)
+    if effectMarkerFromName(a.name, marker): tail.effects.add(marker)
+    elif not tail.takeAttr(a.name, a.value): kept.add(a)
   t.attrs = kept
   if t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
      t.base.name in ["!", "?", "!?"]:
     for arg in t.args:
-      harvestEffects(arg, effects, errorTypes, emit, resources)
+      harvestEffects(arg, tail)
 
 proc parseType*(p: var Parser): Type =
   ## A full type: a primary type followed by any postfix forms — `* N`

@@ -1,6 +1,8 @@
 #+feature dynamic-literals
 package main
 
+import rt "./tuckrt"
+
 tuckˑtypeˑConfig :: struct {
 	url: string,
 }
@@ -154,15 +156,20 @@ transitionTo_tuckˑtypeˑMqttSession :: proc(self: ^tuckˑtypeˑMqttSession, tar
 }
 
 tuckˑfnˑmain :: proc () {
-  tuckˑvˑconfig := tuckˑtypeˑConfig{url = "https://example.com"}
-  tuckˑvˑfeed := tuckˑtypeˑFeed{title = "Deep Dive"}
+  tuckˑvˑconfig := tuckˑtypeˑConfig{url = rt.tuckStrOwned("https://example.com")}
+  tuckˑvˑfeed := tuckˑtypeˑFeed{title = rt.tuckStrOwned("Deep Dive")}
   tuckˑvˑp: tuckˑtypeˑPlayerState = tuckˑtypeˑPlayerState_Ready{config = tuckˑvˑconfig, feed = tuckˑvˑfeed}
+  defer rt.tuckDrop(tuckˑvˑp)
   tuckˑvˑfresh: tuckˑtypeˑMqttSession = tuckˑtypeˑMqttSession_Disconnected{}
+  defer rt.tuckDrop(tuckˑvˑfresh)
   tuckˑvˑsocket := tuckˑtypeˑSocket{fd = 3}
   tuckˑvˑsession: tuckˑtypeˑMqttSession = tuckˑtypeˑMqttSession_Connected{socket = tuckˑvˑsocket, keepalive = u16(60)}
+  defer rt.tuckDrop(tuckˑvˑsession)
   return
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	tuckˑfnˑmain()
+	rt.tuckTrackCheck()
 }

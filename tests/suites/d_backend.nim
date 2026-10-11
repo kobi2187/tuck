@@ -475,7 +475,7 @@ fn main() -> int:
   t.runsD "fnsig: calling through the slot runs the referenced fn", 42, dmdExe
 
   # --- the per-backend lowering seam -------------------------------------
-  # `.dup` is decided by lowering_d (a tree pass), not by the emitter. The
+  # `.dup` is decided by the ownership rules (a tree pass), not by the emitter. The
   # assertion is the same either way — which is the point: the seam moved
   # the reasoning without changing the meaning.
   t.src """

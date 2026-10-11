@@ -1,0 +1,33 @@
+#!/bin/bash
+# The cost of memory management, per backend: each app built --release, run best of 3,
+# with memory management on (Nim ARC, D GC, Odin rules' drops) and off (Nim --mm:none,
+# D GC disabled). Odin has no "off" (its drops are in the program).
+OUT=${OUT:-$(mktemp -d)}
+cd "$(dirname "$0")/.."
+peakrun() {  # cmd... -> "ms peakMB rc"
+  local peak=0 cur t0 t1 rc
+  t0=$(date +%s%N); "$@" >/dev/null 2>&1 & local pid=$!
+  while kill -0 $pid 2>/dev/null; do
+    cur=$(awk '/VmHWM/{print $2}' /proc/$pid/status 2>/dev/null); [ -n "$cur" ] && [ "$cur" -gt "$peak" ] && peak=$cur; sleep 0.005
+  done
+  wait $pid; rc=$?; t1=$(date +%s%N)
+  echo "$(( (t1 - t0) / 1000000 )) $((peak/1024)) $rc"
+}
+best() { # label cmd...
+  local lab=$1; shift; local b=999999 bp=0 brc=
+  for i in 1 2 3; do read ms mb rc < <(peakrun "$@"); [ $ms -lt $b ] && { b=$ms; bp=$mb; brc=$rc; }; done
+  printf "%-34s %7d ms %6d MB  rc=%s\n" "$lab" $b $bp $brc
+}
+bin() { find $1 -maxdepth 1 -type f -perm -u+x ! -name '*.o' ! -name '*.a' | head -1; }
+for app in matching_engine world_server; do
+  d=$OUT/$app; rm -rf $d; mkdir -p $d/{arc,none,odin,dl}
+  ./tuck b benches/apps/$app.tuck --release -o:$d/arc >/dev/null 2>&1 || echo "$app nim arc: build failed"
+  ./tuck b benches/apps/$app.tuck --release --nim:--mm:none -o:$d/none >/dev/null 2>&1 || echo "$app nim none: build failed"
+  ./tuck b benches/apps/$app.tuck --release --odin -o:$d/odin >/dev/null 2>&1 || echo "$app odin: build failed"
+  ./tuck b benches/apps/$app.tuck --release --dlang -o:$d/dl >/dev/null 2>&1 || echo "$app d: build failed"
+  best "$app nim ARC" $(bin $d/arc)
+  best "$app nim --mm:none" $(bin $d/none)
+  best "$app odin (rules' drops)" $(bin $d/odin)
+  best "$app d GC" $(bin $d/dl)
+  best "$app d GC disabled" $(bin $d/dl) --DRT-gcopt=disable:1
+done

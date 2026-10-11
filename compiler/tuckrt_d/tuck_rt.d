@@ -21,6 +21,36 @@ import core.atomic : cas, atomicLoad, atomicStore;
 // tuck_rt.nim, which fronts tuck_async the same way.
 public import tuck_coro;
 
+/// A deep copy (rule G): a value of `T` that shares no mutable storage with
+/// `v`. A slice gets a new buffer, a struct each field copied, a payload sum
+/// its live variant (the `tuckDup` the emitter gives every one). Immutable
+/// data (`str`) and references (classes, pointers: slab refs, actors) are
+/// shared, as the collector frees them.
+T tuckCopy(T)(T v) {
+    import std.traits : isDynamicArray, isStaticArray, isPointer;
+    static if (__traits(hasMember, T, "tuckDup")) {
+        return v.tuckDup();
+    } else static if (isDynamicArray!T) {
+        alias E = typeof(v[0]);
+        static if (is(E == immutable)) return v;
+        else {
+            auto r = new E[](v.length);
+            foreach (i, ref x; v) r[i] = tuckCopy(x);
+            return r;
+        }
+    } else static if (isStaticArray!T) {
+        T r = v;
+        foreach (i; 0 .. T.length) r[i] = tuckCopy(v[i]);
+        return r;
+    } else static if (is(T == struct)) {
+        T r = v;
+        foreach (i, _; v.tupleof) r.tupleof[i] = tuckCopy(v.tupleof[i]);
+        return r;
+    } else {
+        return v;
+    }
+}
+
 // std/console — terminal I/O (rt-implemented externs).
 void print(string s) { stdout.write(s); stdout.flush(); }
 void printLine(string s) { stdout.writeln(s); }

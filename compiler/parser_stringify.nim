@@ -167,9 +167,7 @@ proc toString*(e: Expr): string =
     return e.appendTarget.toString() & " += " & e.appendValue.toString()
   of exkCopy:
     # Prepare-built: a copy where the backend's assignment would alias.
-    let what = if e.copyKind == cpFields: "copy[" & e.copyFields.join(", ") & "]"
-               else: "copy"
-    return what & "(" & e.copied.toString() & ")"
+    return "copy(" & e.copied.toString() & ")"
   of exkDrop:
     # Prepare-built: a release of the storage a place owns.
     return "drop(" & e.dropped.toString() & ")"

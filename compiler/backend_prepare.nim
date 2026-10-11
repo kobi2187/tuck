@@ -3,7 +3,7 @@
 # GETTING A TREE READY FOR ONE BACKEND — the stage between checking and
 # emitting, in one place.
 #
-# Nine steps, always the same nine, always in this order:
+# Seven steps, always the same seven, always in this order:
 #
 #   1. CLONE. Each backend lowers its own deepCopy, because lowering and the
 #      emitters both mutate the tree in place. Sharing one would hand the
@@ -15,41 +15,26 @@
 #      it from; the emitted import has to be relative to the OUTPUT directory
 #      instead, and `-o:` moves that around.
 #   3. LOWER. `lowerModule` simplifies the constructs every backend would
-#      otherwise each have to understand. Then, on a backend whose runtime
-#      hands the caller new `str` storage (Odin), NAME each nested one
-#      (`lowering_strtemps`) — an unnamed temporary has no owner to free it.
-#   4. MARK THE COPIES, for the backends whose native container ALIASES.
-#      Odin's `[dynamic]T` and D's `T[]` both copy a header that still points
-#      at the source buffer; Nim's `seq` has real value semantics and needs
-#      none of it. The copy pass records both halves of its decision —
-#      copied, or left alone because the value is already the binder's.
-#   5. NUMBER what lowering minted (`fillIds`), so nothing it built drops out
+#      otherwise each have to understand.
+#   4. NUMBER what lowering minted (`fillIds`), so nothing it built drops out
 #      of the semantic layer.
-#   6. DECIDE OWNERSHIP (the aliasing backends): who frees each buffer, and
-#      where. It reads steps 4 and 5, so it comes after them; step 9 writes
-#      it into the tree, so it comes before that. It used to run INSIDE the
-#      Odin emitter, twice per fn — a decision made as a side effect of
-#      printing.
-#   7. MARK THE TWIN CALLS (the aliasing backends): which calls hand their
-#      first argument to a threaded fn's MOVED twin, and which assignments
-#      thread through one (`twin_calls`, ROADMAP M3.5). It reads the moved-
-#      argument stamps step 4 made and keys by the ids step 5 filled. The
-#      Odin and D emitters decided it while printing, each its own way.
-#   8. ASSERT EVERY CALL COMPLETE (`call_args`): each payload call has a
+#   5. MARK THE TWIN CALLS (the aliasing backends): which calls reach a
+#      threaded fn's MOVED twin, and which assignments thread through one
+#      (`twin_calls`, ROADMAP M3.5). Keyed by the ids step 4 filled.
+#   6. ASSERT EVERY CALL COMPLETE (`call_args`): each payload call has a
 #      value for every param its callee declares. The checker's own rule,
 #      asked again after the passes that build calls, which run after it.
-#      The emitters used to fill a hole three ways (`nil`, `{}`, a refusal).
-#   9. MAKE THE DECISIONS NODES (`ownership_nodes`): an append assigned back
-#      over its own argument becomes `exkAppend`, which every emitter prints
-#      as its host's amortised append; on the aliasing backends, each copy a
-#      binding makes (steps 4 and 6 decided them) becomes `exkCopy`; on Odin,
-#      each free step 6 decided becomes an `exkDrop` (in a `defer` after a
-#      declaration, or at the top of a moved twin) or an assignment's
-#      `dropsOld`. The ownership rules' Stage C nodes: the emitters used to
-#      recognise the append's shape and look the copy marks and the frees up
-#      as they printed. Now none of them reads steps 4 or 6. Rule V
-#      (`ownership_check`, TUCK_DEBUG_OWN=verify) then checks the Odin tree
-#      these nodes make.
+#   7. MAKE THE DECISIONS NODES. An append assigned back over its own
+#      argument becomes `exkAppend` (`ownership_nodes`), which every emitter
+#      prints as its host's amortised append. Then, on the backends whose
+#      containers alias (Odin's `[dynamic]T`, D's `T[]`), the ownership rules
+#      write the program's ownership into the tree (`ownership_write`): each
+#      copy value semantics needs (`exkCopy`, rules S and G), and on Odin,
+#      which frees its own storage, the bindings that name temporaries, the
+#      drops at scope end, at an overwrite and of consumed parameters
+#      (`exkDrop`, `dropsOld`, rules D and P) and the resets after a move on
+#      some paths (rule M). Nim's ARC does all of this itself. Rule V
+#      (`ownership_check`, TUCK_DEBUG_OWN=verify) then checks the Odin tree.
 #
 # WHY NOT BEFORE THE CLONE (ROADMAP M3.1 as first written). Two of
 # ownership's inputs are made by lowering, so it cannot precede lowering —
@@ -62,7 +47,7 @@
 # copies had already drifted: two carried a `verifyStages` check the others
 # did not. That is the same shape as every other bug found in this compiler
 # lately (one decision, several copies, kept in step by hand), and the
-# remedy is the same one `lowering_seqcopy.nim` states for the copy decision:
+# remedy is always the same:
 # a decision that lives in one place can be inspected, tested and reused.
 #
 # WHAT IS NOT HERE: emitting. Each backend prints differently and that is the
@@ -72,18 +57,14 @@ import ast
 import modules
 import resolution
 import lowering
-import lowering_seqcopy
-import lowering_strtemps
 import lowering_field_order
-import analysis_ownership
 import twin_calls
 import call_args
 import ownership_nodes
 import ownership_check
 import ownership_write
-from ownership_elab import RulesMode
 import ownership_rules
-import ownership_shadow
+import ownership_dump
 import pipeline
 import verbose
 
@@ -159,44 +140,15 @@ proc rebaseImplPaths(lm: LoadedModule, backend, outDir: string) =
         mem.externImpl[i].module =
           rebasedImplModule(mem.externImpl[i].module, srcDir, outDir)
 
-proc ownedStrProcs*(b: Backend): seq[string] =
-  ## Runtime procs that hand back a `str` the CALLER now owns, on this
-  ## backend. Only Odin has any: Nim's ARC and D's GC free their own.
-  ## Runtime procs that hand back a `str` the CALLER now owns — Odin's
-  ## `strings.clone`, `strings.concatenate`, `strings.join`, `fmt.aprint`.
-  ##
-  ## A LIST, and it lives here rather than as an attribute in `std/`, because
-  ## "this returns freshly allocated storage" is a fact about the ODIN
-  ## RUNTIME'S IMPLEMENTATION and not about Tuck. On Nim the same call is
-  ## handled by ARC and on D by the GC; writing `[owned]` on `std/str.tuck`
-  ## would state a backend's private business as a language-level claim.
-  ##
-  ## DELIBERATELY SHORT. Two str-returning runtime procs are NOT here and
-  ## must not be added without reading them first:
-  ##
-  ##   splitLines  Odin's `strings.split_lines` hands back lines that SLICE
-  ##               the input. The `[dynamic]string` is fresh; the strings in
-  ##               it are not, and freeing one would cut into the caller's.
-  ##   readFile    its buffer becomes a FIELD of the `FsContent` record it
-  ##               returns, and a field is not a local — freeing it needs
-  ##               the record's own ownership, which is issue #82's shape.
-  ##
-  ## Leaving a proc off this list LEAKS, which is where the backend already
-  ## is. Putting one on it wrongly is a use-after-free. The asymmetry is why
-  ## the list is short and each absence is written down.
-  case b
-  of bkOdin: @["toStr", "tuckConcat", "joinStr", "charAt"]
-  of bkNim, bkDlang: @[]
-
 var preparedOnce = false
-  ## ONE BACKEND PER PROCESS. Steps 4, 6 and 7 record their decisions in
+  ## ONE BACKEND PER PROCESS. Steps 5 and 7 record decisions in
   ## tables keyed by node id, and node ids survive the clone — so a second
   ## backend prepared in the same process would read the first one's
   ## decisions as its own. Every path in tuck.nim prepares exactly one.
 
 proc prepare*(prog: seq[LoadedModule], backend: Backend,
               semLayer: Resolution, outDir: string): BackendTree =
-  ## Steps 1-9, for one backend. The checked program goes in; a private,
+  ## Steps 1-7, for one backend. The checked program goes in; a private,
   ## lowered, marked copy comes out.
   doAssert not preparedOnce,
     "backend_prepare: a second backend prepared in one process would read " &
@@ -214,51 +166,33 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
   for lm in result.mods:
     let ts = epochTime()
     lowerModule(semLayer, lm.m, result.real)                         # 3. lower
-    hoistStrTemps(semLayer, lm.m, ownedStrProcs(backend))     #    str temps
     if backend == bkNim:
       orderConstructionFields(semLayer, lm.m)       #    a moved field goes last
-    if backend.aliasesOnAssign:
-      markSeqCopiesIn(semLayer, lm.m)                                # 4. marks
-    # 5. NUMBER WHAT LOWERING MINTED. Lowering builds nodes (tail returns,
+    # 4. NUMBER WHAT LOWERING MINTED. Lowering builds nodes (tail returns,
     # hoisted temporaries, desugared assignments) without ids; a node
     # without one drops out of the semantic layer. Existing ids are kept —
     # they are what makes the checker's facts reachable from this copy.
     fillIds(lm.m)
-    # 6. OWNERSHIP, DECIDED. After the copy marks (it reads them) and after
-    # every node has an id (it keys by them); before step 9 writes it into
-    # the tree, so the emitter prints a decision instead of making one. Only
-    # on the backends whose containers alias — the same ones that get copy
-    # marks; Odin prints the frees, D's collector does not need them but the
-    # decision's assertions (buffer_check) still run over its tree.
     if backend.aliasesOnAssign:
-      decideOwnership(semLayer, lm.m, ownedStrProcs(backend))
-      markTwinCalls(semLayer, lm.m,                                # 7. twins
-                    every = RulesMode and backend == bkOdin)
-    # 8. EVERY CALL IS COMPLETE. The checker rejects a payload missing a
+      markTwinCalls(semLayer, lm.m)                                # 5. twins
+    # 6. EVERY CALL IS COMPLETE. The checker rejects a payload missing a
     # param, but it runs before lowering, and lowering builds and rewrites
     # calls. Asserted here, after the last pass that can, so no emitter is
     # ever handed a call with a hole to fill in its own way.
     assertCallsComplete(semLayer, lm.m, result.real)
     typeResolvedCalls(semLayer, lm.m)          # a resolved call has a type
     dumpUses(semLayer, lm.m)                   # TUCK_DEBUG_OWN=uses (rule U)
-    planDrops(semLayer, lm.m)                  # TUCK_DEBUG_OWN=drops (D, M)
-    planCopies(semLayer, lm.m)                 # TUCK_DEBUG_OWN=copies (S)
-    # 9. DECISIONS BECOME NODES (ownership_nodes, Stage C). Last, because
-    # every pass above reads the statements it replaces; an emitter then
-    # prints the node instead of re-deciding from a predicate.
+    # 7. DECISIONS BECOME NODES. Last, because every pass above reads the
+    # statements they replace; an emitter then prints the node instead of
+    # re-deciding from a predicate.
     materializeAppends(semLayer, lm.m, strGrows = backend != bkOdin)
-    if RulesMode and backend == bkOdin:
-      writeRules(semLayer, lm.m)               # TUCK_OWN=rules: the rules'
-    else:                                      # own copies and drops
-      if backend.aliasesOnAssign:
-        materializeCopies(semLayer, lm.m, ownsStrs = backend == bkOdin)
-      if backend == bkOdin:
-        materializeDrops(semLayer, lm.m)
+    dumpParams(semLayer, lm.m)                 # TUCK_DEBUG_OWN=params (P)
+    dumpDrops(semLayer, lm.m)                  # TUCK_DEBUG_OWN=drops (D, M)
+    if backend.aliasesOnAssign:                # the rules' copies, and on
+      writeRules(semLayer, lm.m, frees = backend == bkOdin)  # Odin its drops
+    dumpCopies(lm.m)                           # TUCK_DEBUG_OWN=copies (S)
     if backend == bkOdin:
       verifyTree(semLayer, lm.m)               # TUCK_DEBUG_OWN=verify (V)
-    diffParams(semLayer, lm.m, nim = backend == bkNim)  # TUCK_DEBUG_OWN=params
-    diffDrops(semLayer, lm.m)
-    diffCopies(semLayer, lm.m)
     vSub(lm.name, ts)
   vEnd(psLowering, t0)
 

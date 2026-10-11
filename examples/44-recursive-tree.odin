@@ -57,9 +57,12 @@ tuckˑtypeˑExpr_eq :: proc(a, b: tuckˑtypeˑExpr) -> bool {
 tuckˑfnˑeval :: proc (e: tuckˑtypeˑExpr) -> int {
   switch v in e
   {
-  case tuckˑtypeˑExpr_Num: return v.value;
-  case tuckˑtypeˑExpr_Neg: return (0 - tuckˑfnˑeval(rt.tuckAt(v.operand, 0)));
-  case tuckˑtypeˑExpr_Add: return (tuckˑfnˑeval(rt.tuckAt(v.left, 0)) + tuckˑfnˑeval(rt.tuckAt(v.right, 0)));
+  case tuckˑtypeˑExpr_Num:
+      return v.value
+  case tuckˑtypeˑExpr_Neg:
+      return (0 - tuckˑfnˑeval(rt.tuckAt(v.operand, 0)))
+  case tuckˑtypeˑExpr_Add:
+      return (tuckˑfnˑeval(rt.tuckAt(v.left, 0)) + tuckˑfnˑeval(rt.tuckAt(v.right, 0)))
   }
   return {}
 }
@@ -67,8 +70,10 @@ tuckˑfnˑeval :: proc (e: tuckˑtypeˑExpr) -> int {
 tuckˑfnˑdepth :: proc (e: tuckˑtypeˑExpr) -> int {
   switch v in e
   {
-  case tuckˑtypeˑExpr_Num: return 1;
-  case tuckˑtypeˑExpr_Neg: return (1 + tuckˑfnˑdepth(rt.tuckAt(v.operand, 0)));
+  case tuckˑtypeˑExpr_Num:
+      return 1
+  case tuckˑtypeˑExpr_Neg:
+      return (1 + tuckˑfnˑdepth(rt.tuckAt(v.operand, 0)))
   case tuckˑtypeˑExpr_Add:
       tuckˑvˑl := tuckˑfnˑdepth(rt.tuckAt(v.left, 0))
       tuckˑvˑr := tuckˑfnˑdepth(rt.tuckAt(v.right, 0))
@@ -84,8 +89,9 @@ tuckˑfnˑmain :: proc () -> int {
   tuckˑvˑthree: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Num{value = 3}
   tuckˑvˑfour: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Num{value = 4}
   tuckˑvˑsum: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Add{left = [dynamic]tuckˑtypeˑExpr{tuckˑvˑthree}, right = [dynamic]tuckˑtypeˑExpr{tuckˑvˑfour}}
-  tuckˑvˑneg: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Neg{operand = [dynamic]tuckˑtypeˑExpr{tuckˑvˑsum}}
+  tuckˑvˑneg: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Neg{operand = [dynamic]tuckˑtypeˑExpr{rt.tuckCopy(tuckˑvˑsum)}}
   tuckˑvˑwhole: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Add{left = [dynamic]tuckˑtypeˑExpr{tuckˑvˑsum}, right = [dynamic]tuckˑtypeˑExpr{tuckˑvˑneg}}
+  defer rt.tuckDrop(tuckˑvˑwhole)
   return ((tuckˑfnˑeval(tuckˑvˑwhole) + tuckˑfnˑdepth(tuckˑvˑwhole)) - 4)
 }
 

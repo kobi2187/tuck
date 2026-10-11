@@ -22,51 +22,11 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (14)
+## A. Open bugs (8)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
-
-**A39 — a recursive sum type's boxes are never freed on Odin.** Each edge of
-`type Expr: | Add({left: Expr, right: Expr}) ...` is a one-element Seq
-(lowering_recursive), and the ownership pass follows the Seq slots of
-records; a sum value is neither, so no box is ever deleted. Every tree built
-leaks all its boxes: 200 000 small trees peak at 111 MB on Odin, 10 MB on
-Nim and D. Freeing a value's own boxes alone would be wrong two ways — a
-child is a SHALLOW copy shared by every parent that took it (`sum` sits in
-both `whole` and `neg` in example 44), and a tree returned from a fn is
-reachable only through its root. The fix is deep ownership, which Nim and D
-already have: a copy of a value used again is a deep copy, a last use a
-move, and a drop proc frees a tree recursively. Found 2026-10-05 by
-`TUCK_TRACK` on example 44. Test: `known_bugs`, "A39: …". Waits on the
-ownership-rules proposal (`thoughts/shared/plans/2026-10-05-ownership-rules-
-proposal.md`), where it falls out of the type-derived glue (rule G) rather
-than becoming a fix outside the model.
-
-**A41–A45 — (Odin) owned values the tree never drops.** Found 2026-10-05 by
-rule V, the ownership checker, reading today's Odin tree
-(`compiler/ownership_check.nim`, `TUCK_DEBUG_OWN=verify`). Every one is
-confirmed at run time by `TUCK_TRACK`. Over the corpus they are 11 places
-and 25 temporaries, all in the stdlib modules' own code and the two bench
-apps; the stdlib's Set, List, Vec and Array checks leak under tracking.
-Rule D drops every owned place and temporary by construction. So they are
-left for the switch to it (proposal §8 step 4.1) rather than patched one by
-one in a pass that retires. Tests: `known_bugs`, "A41: …" to "A45: …", each
-a tracked Odin run that must still give the program's answer.
-- **A41** a record field overwritten in place (`b.items = [2, 3]`) leaks
-  what it replaced.
-- **A42** a local handed over at its last use has no scope-end drop, so
-  every return before that use leaks it.
-- **A43** a record local rebound through a threading fn
-  (`b = {b: b} add`) is never freed.
-- **A44** a returned local gets no drop, and so neither do its overwrites:
-  `out = {r: r, into: out} encode` leaks one buffer per iteration
-  (`toUtf16`, one per rune).
-- **A45** an owning temporary is never freed: a list literal a `for`
-  iterates, a call's result handed to a parameter that only reads it, or a
-  call's result copied at a binding (the original). `str` temporaries are
-  named and freed by `lowering_strtemps`; nothing does it for a Seq.
 
 **A27–A37 — constructs that do not cross a module boundary (R11 scan,
 2026-09-28).** A25, A26, A28, A30, A31, A33, A35 and A36 are fixed; their pins are
@@ -285,6 +245,23 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **A39, A41–A45 — (Odin) owned values the tree never dropped.** A39: a
+  recursive sum's boxes were never freed (200 000 small trees peaked at
+  111 MB on Odin, 10 MB on Nim and D). A41–A45, found by rule V reading the
+  old passes' tree: a field overwritten in place leaked what it replaced
+  (A41), a local handed over at its last use leaked on an earlier return
+  (A42), a record rebound through a threading fn was never freed (A43), a
+  returned local's overwrites leaked (A44), and an owning temporary was
+  never freed (A45). All closed by switching Odin (and D's copies) to the
+  tree the ownership rules write (`compiler/ownership_write.nim`): rule D
+  drops every owned place and temporary, and rule G's drops and copies are
+  deep. The old passes (`analysis_ownership`, `ownership_escape`,
+  `ownership_str`, `buffer_check`, `lowering_seqcopy`,
+  `analysis_provenance`, `lowering_strtemps`) are deleted. Rule V reports
+  nothing over the corpus, and every run-gated program, the stdlib checks,
+  both bench apps and the Savina ports run clean under `TUCK_TRACK`. A39
+  peaks at 1.7 MB. Fixed 2026-10-11. `known_bugs`, "A39: …" to "A45: …".
 
 - **A46 — a list literal could not be iterated on Odin.** `for r in [1, 2,
   3]:` built on Nim and D. On Odin, `for r in [dynamic]int{1, 2, 3} {` was

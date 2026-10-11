@@ -410,34 +410,38 @@ the same non-syntax logic twice, that's `codegen_common` calling.
 The rule behind that, at its strictest: **a backend prints; it does not
 decide.** A decision every backend needs is made once, from the tree, and
 handed to the three as data — which argument feeds each parameter
-(`call_args`), who frees a buffer (`analysis_ownership`), which call takes a
+(`call_args`), who copies and frees a value (the ownership rules), which call takes a
 moved twin (`twin_calls`), which bare name is the owner's field
 (`Resolution.ownerFields`, recorded by the checker's scopes). When a backend
 has to fill a gap its own way, the gap is the bug: `call_args` asserts every
-call complete after lowering (`backend_prepare` step 8), because the backends
+call complete after lowering (`backend_prepare` step 6), because the backends
 used to spell a missing argument three different ways. And each backend used
 to decide "is this name a field?" by looking it up in a set of field names,
 which cannot see a param that shadows one.
 
 Ownership goes one step further: its decisions are not handed over as
-tables at all, but written into the tree as nodes the emitters print
-(`ownership_nodes`, the last step of `backend_prepare`). An append grown in
-place is `exkAppend`, a copy where the target's assignment would alias is
+tables at all, but written into the tree as nodes the emitters print (the
+last step of `backend_prepare`). An append grown in place is `exkAppend`
+(`ownership_nodes`), a copy where the target's assignment would alias is
 `exkCopy`, and a free is `exkDrop` (in a `defer` after a declaration, or at
-the top of a moved twin) or an assignment's `dropsOld`. No emitter imports
-the copy marks or `analysis_ownership`. `tuck dump --stage:lowering --odin`
-shows every ownership decision as tree, and a test can assert on it. That
-tree is also what the ownership rules are checked against
+the top of a body that consumes a parameter) or an assignment's `dropsOld`.
+`tuck dump --stage:lowering --odin` shows every ownership decision as tree,
+and a test can assert on it. The decisions come from the ownership rules
 (`thoughts/shared/plans/2026-10-05-ownership-rules-proposal.md`):
-- the elaborator (`ownership_elab`) computes the same decisions from the
-  rules, and `ownership_shadow` prints where they differ;
-- rule V (`ownership_check`) walks the tree and confirms that every owned
-  value is moved or dropped exactly once on every path, and that nothing is
-  read after it moved. It reads only the nodes, so it checks whichever pass
-  wrote them;
-- under `TUCK_OWN=rules`, `ownership_write` writes the Odin tree from the
-  rules instead of from today's passes, the tree the switch makes the
-  default.
+- rule U (`ownership_rules`) classifies every read of an owning value as a
+  borrow or a sink;
+- the elaborator (`ownership_elab`) answers rules P (which parameters a fn
+  consumes), S (which sinks copy), D and M (where each owned place is dropped
+  and reset) and G (what owning, dropping and copying a type means);
+- `ownership_write` writes them into the Odin and D trees: copies on both,
+  and on Odin, which frees by hand, the drops and resets too. Nim's ARC
+  does all of this itself;
+- rule V (`ownership_check`) walks the Odin tree and confirms that every
+  owned value is moved or dropped exactly once on every path, and that
+  nothing is read after it moved. It reads only the nodes.
+
+`TUCK_DEBUG_OWN=uses|params|drops|copies|verify` prints each rule's answers
+(`ownership_dump`).
 
 ---
 

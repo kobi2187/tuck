@@ -763,38 +763,15 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
   e.name
 
 proc genDCopy(ctx: var DCodegenCtx, e: Expr): string =
-  ## `.dup` (a bare Seq), or the record rebuilt with per-field `.dup`s (a
-  ## record holding one or more Seq fields): an `exkCopy` ownership_nodes
-  ## made from lowering_seqcopy's marks.
-  ##
-  ## The decision — a D slice aliases where a Tuck Seq copies, and a D
-  ## struct's bitwise field-for-field copy carries that aliasing one level
-  ## down into any Seq-typed FIELD — is made before emission, not here; this
-  ## prints the node. That split is the point of the seam: the reasoning is
-  ## inspectable and testable as a tree pass, and the emitter stays a
-  ## printer.
-  # NO EXCEPTION for a read through a MOVED twin's parameter. There used to
-  # be one ("the param belongs to this call, so no defensive copy"), and it
-  # was a copy decision made here, invisible to the ownership pass reading
-  # the copy marks: `var t = xs; t[0] = 99; return xs` returned 99, and on
-  # Odin `t`'s free was a second free of `xs`. What is copied is decided in
-  # lowering_seqcopy, once, and printed here.
+  ## A value copied where a D slice would alias where a Tuck Seq copies
+  ## (ownership_write decided where, rule G what): `.dup` for a Seq of plain
+  ## values, else the runtime's deep copy. The emitter only prints it.
   let valStr = ctx.genDExpr(e.copied)
   case e.copyKind
-  of cpSeq: return "(" & valStr & ").dup"
+  of cpSeq: "(" & valStr & ").dup"
+  of cpDeep: "rt.tuckCopy(" & valStr & ")"
   of cpStatic:
-    raiseAssert "d: a static str is never copied to own — the collector " &
-                "frees, so prepare makes cpStatic for Odin only"
-  of cpFields: discard
-  # A D struct has no `.dup` of its own (only a slice does), so the record
-  # is rebuilt: take the value once into a temp (never re-evaluate `valStr`
-  # — it may be a call), then `.dup` just the fields that need it.
-  let tmp = ctx.freshName("tuckRecDup")
-  var fixups = ""
-  for f in e.copyFields:
-    fixups.add(tmp & "." & f & " = " & tmp & "." & f & ".dup; ")
-  "(() { auto " & tmp & " = " & valStr & "; " & fixups & "return " & tmp &
-    "; })()"
+    raiseAssert "d: a str is immutable and shared, so it is never copied"
 
 proc callOwnerModule(ctx: DCodegenCtx, e: Expr): string =
   ## The imported module a call resolves into, or "" for a local one. A

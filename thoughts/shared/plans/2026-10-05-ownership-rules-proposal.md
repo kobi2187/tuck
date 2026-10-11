@@ -523,11 +523,40 @@ examples byte-identical, or explains each line that changes.
      (`typeResolvedCalls`).
 
    Next: glue (G), then the switch.
-4. **Switch backend by backend**, Odin first, since it is where frees exist:
-   1. frees (D, M), retiring `analysis_ownership`, `ownership_escape`,
-      `ownership_str` and `buffer_check`;
-   2. copies (S), retiring `lowering_seqcopy` and `analysis_provenance`;
-   3. consuming parameters (P), retiring the twins and making Nim's `sink`
-      read the same set.
+
+   **Glue (G), DONE 2026-10-11.** A type owns storage unless it provably
+   owns none: plain scalars, declared types made only of them, registries,
+   and the handles slabs, arenas, pools and resources hand out. A `str` is
+   on the heap wherever an owned place holds it, so a literal is copied at
+   a sink. A Seq of plain values copies and drops as one buffer; anything
+   else is copied and dropped deeply, by a reflective walk in the Odin
+   runtime (`rt.tuckCopy`, `rt.tuckDrop`) and a template in the D one (a
+   payload sum copies its live variant through the `tuckDup` the emitter
+   gives it). The extern contract became explicit: `[keeps: p]` and
+   `[view: p]` on the declaration, the C convention (borrow everything,
+   return fresh) otherwise; the type-based guess is gone.
+4. **Switch backend by backend** — DONE 2026-10-11, in one step:
+   1. frees (D, M) on Odin: `analysis_ownership`, `ownership_escape`,
+      `ownership_str`, `buffer_check` and `lowering_strtemps` (with its
+      hardcoded list of allocating runtime procs) are deleted;
+   2. copies (S) on Odin and D: `lowering_seqcopy`, `lowering_d` and
+      `analysis_provenance` are deleted. D's copies are `.dup` for a Seq of
+      plain values and `rt.tuckCopy` otherwise; a `str` is immutable there
+      and never copied;
+   3. consuming parameters (P): every call to a twinned fn calls its twin,
+      and the copying wrapper copies the parameters P says the body owns
+      (`Decl.ownedParams`). The twins themselves stay as the encoding, and
+      Nim's `sink` still comes from its own analysis.
+
+   `TUCK_OWN` and the shadow differential are gone;
+   `TUCK_DEBUG_OWN=uses|params|drops|copies|verify` prints each rule's
+   answers (`ownership_dump`). The gate: V reports nothing over every
+   `.tuck`; every runnable program (51) runs tracked with no leak on Odin
+   and gives the same answer and output on D as before the switch; A39 and
+   A41–A45 are `bugFixed`. Found on the way: a variant construction
+   (`{config} PS.Ready`) did not move its fields, so they were freed twice
+   (`constructs` now knows a variant); a projection of an element
+   (`items[i].next`) deep-copied the whole element and leaked the copy (a
+   projection's receiver is never copied now).
 5. **What falls out:** A39, the local-field take (`slab_thread` linear on
    Odin and D), and the tracked list's one exception.

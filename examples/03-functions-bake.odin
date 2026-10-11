@@ -1,6 +1,8 @@
 #+feature dynamic-literals
 package main
 
+import rt "./tuckrt"
+
 TRec_a_b_op :: struct ($T_a: typeid, $T_b: typeid, $T_op: typeid) {
 	a: T_a,
 	b: T_b,
@@ -27,10 +29,13 @@ tuckˑfnˑmain :: proc () {
   tuckˑvˑx := tuckˑtypeˑCtx{a = 5, b = 10}
   tuckˑvˑwithOp := TRec_a_b_op(int, int, tuckˑfnsigˑBinOp){a = tuckˑvˑx.a, b = tuckˑvˑx.b, op = tuckˑfnˑplus}
   tuckˑvˑsmaller := TRec_a_b_op(int, int, tuckˑfnsigˑBinOp){a = tuckˑvˑwithOp.a, b = 2, op = tuckˑvˑwithOp.op}
+  defer rt.tuckDrop(tuckˑvˑsmaller.op)
   tuckˑvˑr := tuckˑfnˑapplyOperation(tuckˑvˑsmaller.a, tuckˑvˑsmaller.b, tuckˑvˑsmaller.op)
   return
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	tuckˑfnˑmain()
+	rt.tuckTrackCheck()
 }

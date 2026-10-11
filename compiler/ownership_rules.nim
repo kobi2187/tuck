@@ -57,10 +57,16 @@ proc constructs*(res: Resolution, call: Expr): bool =
   ## it builds, which the checker types the call as. A generic record's
   ## construction (`{items: xs} Set`) is typed as the application
   ## `Set[T]`, so its base is the name.
+  ## A sum's variant (`{config} PS.Ready`) names the sum as its receiver.
   var t = res.typeFor(call)
   if t != nil and t.kind == tkApp: t = t.base
-  call.callee != nil and call.callee.kind == exkVar and
-    t != nil and t.kind == tkNamed and t.name == call.callee.name
+  if t == nil or t.kind != tkNamed or call.callee == nil: return false
+  let c = call.callee
+  case c.kind
+  of exkVar: t.name == c.name
+  of exkField: c.receiver != nil and c.receiver.kind == exkVar and
+               c.receiver.name == t.name
+  else: false
 
 proc payloadOf*(call: Expr): Expr =
   ## A record-style call's payload struct, still unexploded, or nil.
@@ -81,8 +87,8 @@ proc fieldValues(fs: seq[FieldInit], u: Use): seq[ChildUse] =
 proc callUses(res: Resolution, call: Expr): seq[ChildUse] =
   ## A call's operands. A payload struct is not a value of its own: its
   ## fields are the parameters (or, for a construction, the record's fields).
-  let named = call.callee != nil and call.callee.kind == exkVar and
-              (res.declFor(call) != nil or res.constructs(call))
+  let named = res.constructs(call) or call.callee != nil and
+              call.callee.kind == exkVar and res.declFor(call) != nil
   result.add (call.callee, if named: uNone else: uBorrow)  # a closure local
   let payload = payloadOf(call)
   let fieldUse = if res.constructs(call): uSink else: uArg
@@ -171,9 +177,8 @@ proc kindUses(res: Resolution, e: Expr): seq[ChildUse] =
   of exkSlabCell: @[(e.cellSlab, uNone), (e.cellRef, uBorrow)]
   of exkArenaReset: @[(e.arenaRef, uNone)]
   of exkAppend: appendUses(e)
-  # A Seq's copy only reads its value. A record's field copy (`cpFields`)
-  # binds the value itself and then copies the listed fields in place.
-  of exkCopy: @[(e.copied, if e.copyKind == cpFields: uSink else: uBorrow)]
+  # A copy only reads its value.
+  of exkCopy: @[(e.copied, uBorrow)]
   of exkDrop: @[(e.dropped, uDrop)]
 
 const ByOwnKind* = {exkCall, exkBracket, exkBracketAssign}
@@ -200,8 +205,10 @@ proc effective*(parent, child: Use): Use =
 proc isPlaceRead*(res: Resolution, e: Expr): bool =
   ## A name, or a path through one (`b.items`) — not a call the checker
   ## resolved in its place: one written as a field (`a.total`), or a nullary
-  ## fn named bare (`emptyChain`).
-  e.kind in {exkVar, exkField} and pathOf(e).len > 0 and not res.hasCall(e)
+  ## fn named bare (`emptyChain`), or a construction written as a field with
+  ## its payload (`Expr.Neg {operand: e}`).
+  e.kind in {exkVar, exkField} and pathOf(e).len > 0 and not res.hasCall(e) and
+    (e.kind != exkField or e.dotArg == nil)
 
 type
   ArgOf* = tuple[call: Expr, index: int, name: string]

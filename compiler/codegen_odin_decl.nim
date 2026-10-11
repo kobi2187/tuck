@@ -296,19 +296,30 @@ proc genMovedTwin(ctx: var OdinCodegenCtx, d: Decl, header, bodyStr,
   var argNames: seq[string]
   for p in d.fnParams: argNames.add(p.name)
   var wrap = header & "\n"
-  wrap.add(ind & "  " & movedP & " := " & movedP & "\n")
-  let fields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
-  if fields.len == 0:
-    wrap.add(ind & "  " & movedP & " = rt.tuckSeqCopy(" & movedP & ")\n")
-  else:
-    for f in fields:
-      wrap.add(ind & "  " & movedP & "." & f & " = rt.tuckSeqCopy(" &
-               movedP & "." & f & ")\n")
+  # The wrapper is the BORROWING entry (a fn value, an interface arm): it
+  # copies every parameter the body owns, whole and deep (rule G), and the
+  # body consumes the copies.
+  for p in d.ownedParams:
+    wrap.add(ind & "  " & p & " := " & p & "\n")
+    wrap.add(ind & "  " & p & " = rt.tuckCopy(" & p & ")\n")
   wrap.add(ind & "  return " & twinName & "(" & argNames.join(", ") & ")\n")
   wrap.add(ind & "}\n\n")
   let twinHeader = header.replace(d.name.replace(".", "_") & " :: proc",
                                   twinName & " :: proc")
   wrap & twinHeader & "\n" & bodyStr & "\n" & ind & "}\n"
+
+proc writtenParams(d: Decl): seq[string] =
+  ## The parameters the body stores into: an Odin parameter is immutable, so
+  ## each is shadowed by a local of the same name first. A reset after a
+  ## move (rule M) is the usual one.
+  if d.fnBody == nil: return
+  for n in d.fnBody.nodes:
+    if n.kind != exkAssign or n.isDecl or n.target == nil: continue
+    var r = n.target
+    while r != nil and r.kind == exkField: r = r.receiver
+    if r == nil or r.kind != exkVar or r.name in result: continue
+    for p in d.fnParams:
+      if p.name == r.name and p.name != "self": result.add p.name
 
 proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## An ordinary fn. A pending fn is a stub, and leaves before any of this
@@ -334,7 +345,9 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   let movedP = movedFnParam(ctx.res, ctx.module, d)
   let savedMoved = ctx.movedParam
   ctx.movedParam = movedP
-  let bodyStr = ctx.genFnBody(d, retTypeStr, ind)
+  var bodyStr = ctx.genFnBody(d, retTypeStr, ind)
+  for p in writtenParams(d):
+    bodyStr = ind & "  " & p & " := " & p & "\n" & bodyStr
   ctx.movedParam = savedMoved
   ctx.leaveReturnContext()
   ctx.definedVars = savedVars

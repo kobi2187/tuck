@@ -2,6 +2,7 @@
 package main
 
 import "core:fmt"
+import rt "./tuckrt"
 import time "./mod_time"
 
 TRec_hasNew_episodes_metadata :: struct ($T_hasNew: typeid, $T_episodes: typeid, $T_metadata: typeid) {
@@ -60,20 +61,27 @@ tuckˑfnˑplayTrack :: proc(payload: $T) {
 
 
 tuckˑfnˑmain :: proc () {
-  tuckˑvˑrequest := TRec_url_timeout(string, time.tuckˑtypeˑMilliseconds){url = "example.com", timeout = time.tuckˑfnˑms(u32(5))}
-  tuckˑvˑresponse := tuckˑfnˑselectEpisodes(tuckˑfnˑparse(tuckˑfnˑfetch(tuckˑvˑrequest)))
+  tuckˑvˑrequest := TRec_url_timeout(string, time.tuckˑtypeˑMilliseconds){url = rt.tuckStrOwned("example.com"), timeout = time.tuckˑfnˑms(u32(5))}
+  defer rt.tuckDrop(tuckˑvˑrequest.url)
+  tuckOwnTmp1 := tuckˑfnˑfetch(tuckˑvˑrequest)
+  defer rt.tuckDrop(tuckOwnTmp1.metadata)
+  tuckˑvˑresponse := tuckˑfnˑselectEpisodes(tuckˑfnˑparse(tuckOwnTmp1))
   tuckˑvˑfeed := tuckˑfnˑfetch("https://example.com/feed")
+  defer rt.tuckDrop(tuckˑvˑfeed.metadata)
   if tuckˑvˑfeed.hasNew {
       tuckˑfnˑprocess(tuckˑvˑfeed.episodes)
   } else {
       tuckˑfnˑlog(tuckˑvˑfeed.metadata)
   }
-  tuckˑvˑexternalTrack := TRec_trackId_title_durationMs(int, string, int){trackId = 101, title = "Deep Dive", durationMs = 212000}
+  tuckˑvˑexternalTrack := TRec_trackId_title_durationMs(int, string, int){trackId = 101, title = rt.tuckStrOwned("Deep Dive"), durationMs = 212000}
   tuckˑvˑnormalizedTrack := TRec_id_name_length(int, string, int){id = tuckˑvˑexternalTrack.trackId, name = tuckˑvˑexternalTrack.title, length = tuckˑvˑexternalTrack.durationMs}
+  defer rt.tuckDrop(tuckˑvˑnormalizedTrack.name)
   tuckˑfnˑplayTrack(tuckˑvˑnormalizedTrack)
   return
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	tuckˑfnˑmain()
+	rt.tuckTrackCheck()
 }

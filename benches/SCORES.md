@@ -99,6 +99,33 @@ EQUAL (8 bytes is no copy worth avoiding), and with Cap sized past N the
 bench measures DRAM rather than the mailbox. The bench now uses an envelope
 and a Cap of 131072 for that reason.
 
+## 2026-10-11 — what memory management costs, per backend
+
+The two bench apps (`benches/apps/`), built `--release`, best of 3, with each
+backend's memory management on and, where it can be, off. Odin has no "off":
+its drops are written into the program by the ownership rules
+(`compiler/ownership_write.nim`), which became Odin's only path on this date.
+
+| app | Nim ARC | Nim `--mm:none` | Odin (rules' drops) | D GC | D GC disabled |
+|---|---|---|---|---|---|
+| matching_engine | 217 ms, 21 MB | killed at 13 GB | **16 ms, 2 MB** | 60 ms, 3 MB | 60 ms, 3 MB |
+| world_server | 326 ms, 78 MB | killed at 13.6 GB | **109 ms, 9 MB** | 4 807 ms, 18 MB | 642 ms, 715 MB |
+
+Read:
+- **Nim `--mm:none` is not an option as it stands.** Nothing frees, and both
+  apps ran out of memory. It only becomes one if the Nim tree takes the
+  rules' drops too, as Odin's does.
+- **D's collector is most of `world_server`'s time.** With the collector off
+  it runs 7.5x faster, at 40x the memory. D with the rules' drops written in
+  (`@nogc`, a drop as a free) would aim at both halves. That is the case for
+  unifying D onto Odin's path.
+- **Odin, with the rules' explicit drops, is the fastest and leanest of the
+  three on both apps.** (Nim ARC also copies where the rules would move; the
+  gap is not investigated here.)
+
+Re-run with `bash benches/mm_cost.sh` (needs nim, odin and dmd on PATH); the
+peak is VmHWM sampled every 5 ms.
+
 ## 2026-09-20 — bake-off against the published designs
 
 Tuck's mailbox is not a special problem, so the alternatives were built and

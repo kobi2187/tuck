@@ -1,6 +1,7 @@
 #+feature dynamic-literals
 package main
 
+import rt "./tuckrt"
 import sys "./mod_sys"
 import console "./mod_console"
 foreign import z "system:z"
@@ -18,6 +19,7 @@ foreign z {
 
 tuckˑfnˑmain :: proc () {
   tuckˑvˑv := zlibVersion()
+  defer rt.tuckDrop(tuckˑvˑv)
   console.printLine(tuckˑvˑv)
   tuckˑvˑb := compressBound(u64(1000))
   if (tuckˑvˑb == 1013) {
@@ -27,5 +29,7 @@ tuckˑfnˑmain :: proc () {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	tuckˑfnˑmain()
+	rt.tuckTrackCheck()
 }

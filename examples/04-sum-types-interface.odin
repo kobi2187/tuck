@@ -107,7 +107,8 @@ tuckˑobjectˑPodcastAppˑsetMany :: proc (self: tuckˑobjectˑPodcastApp, pairs
 }
 
 tuckˑobjectˑPodcastAppˑplay :: proc (self: ^tuckˑobjectˑPodcastApp, episode: tuckˑtypeˑEpisode) {
-  tuckChain1 := self^
+  tuckChain1 := rt.tuckCopy(self^)
+  defer rt.tuckDrop(tuckChain1)
   tuckChain1 = tuckˑfnˑloadEpisode(tuckChain1, episode)
   tuckˑfnˑstartAudio(tuckChain1)
 }

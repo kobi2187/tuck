@@ -57,6 +57,16 @@ struct tuckˑtypeˑPodcastPlayerLifecycle {
         tuckˑtypeˑPodcastPlayerLifecycle_Ready tuckˑvariantˑready;
         tuckˑtypeˑPodcastPlayerLifecycle_Error tuckˑvariantˑerror;
     }
+    tuckˑtypeˑPodcastPlayerLifecycle tuckDup() {
+        tuckˑtypeˑPodcastPlayerLifecycle r = this;
+        final switch (kind) {
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Unloaded: r.tuckˑvariantˑunloaded = rt.tuckCopy(tuckˑvariantˑunloaded); break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Loading: r.tuckˑvariantˑloading = rt.tuckCopy(tuckˑvariantˑloading); break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Ready: r.tuckˑvariantˑready = rt.tuckCopy(tuckˑvariantˑready); break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Error: r.tuckˑvariantˑerror = rt.tuckCopy(tuckˑvariantˑerror); break;
+        }
+        return r;
+    }
     bool opEquals(const tuckˑtypeˑPodcastPlayerLifecycle o) const {
         if (kind != o.kind) return false;
         final switch (kind) {
@@ -88,7 +98,7 @@ rt.TuckResult!(rt.TuckUnit) tuckˑobjectˑPodcastAppˑsetMany(tuckˑobjectˑPodc
 }
 
 void tuckˑobjectˑPodcastAppˑplay(ref tuckˑobjectˑPodcastApp self, tuckˑtypeˑEpisode episode) {
-    tuckˑobjectˑPodcastApp tuckChain1 = self;
+    tuckˑobjectˑPodcastApp tuckChain1 = rt.tuckCopy(self);
     tuckChain1 = tuckˑfnˑloadEpisode(tuckChain1, episode);
     tuckˑfnˑstartAudio(tuckChain1);
 }

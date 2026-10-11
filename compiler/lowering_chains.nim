@@ -60,6 +60,29 @@ proc rethreadCall(res: Resolution, call: Expr, oldId: NodeId,
     if call.args[i] != nil and call.args[i].id == oldId:
       result.args[i] = replacement
 
+proc reads(e: Expr, name: string): bool =
+  ## Does `e` read the name `name` anywhere?
+  for n in e.nodes:
+    if n.kind == exkVar and n.name == name: return true
+  false
+
+proc threadedRead(res: Resolution, call, base, into: Expr): Expr =
+  ## The read of `into` a step's call is handed: `into = f(into)`. It is
+  ## the FINAL read of the value `into` holds, since the assignment
+  ## overwrites it as soon as the call returns, so it is stamped so: the
+  ## value moves into the call rather than being copied. Not when the
+  ## call reads the name again elsewhere (`..f {n: x.len}` reads it after),
+  ## and not for an owner's field or `self`, which outlive the body (the
+  ## liveness pass never stamps those either). `call` is the checker's step
+  ## call, whose argument `base` this read replaces.
+  result = res.freshCopy(into)
+  if into.kind != exkVar or into.name == "self" or res.isOwnerField(base):
+    return
+  if call == nil or call.kind != exkCall: return
+  for a in call.args:
+    if a != nil and a.id != base.id and a.reads(into.name): return
+  res.markLastUse(result)
+
 proc stepMember(step: ChainStep): string =
   ## The member a `..` step names: a bare name, or `mod::fn`, whose target is
   ## an exkQualified node — reading `.name` off that is a FieldDefect.
@@ -80,7 +103,7 @@ proc stepStmts(res: Resolution, m: Module, chain: Expr,
       result.add Expr(span: step.span, kind: exkAssign,
                       target: res.freshCopy(into),
                       assignVal: rethreadCall(res, sc, chain.base.id,
-                                              res.freshCopy(into)))
+                                              threadedRead(res, sc, chain.base, into)))
     else:
       # `..field {v}`: set one field. Validated with the whole chain, at its
       # end — the intermediate states of a builder need not hold the

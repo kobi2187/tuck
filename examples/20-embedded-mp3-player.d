@@ -78,6 +78,15 @@ struct tuckˑtypeˑPlayerState {
     union {
         tuckˑtypeˑPlayerState_Decoding tuckˑvariantˑdecoding;
     }
+    tuckˑtypeˑPlayerState tuckDup() {
+        tuckˑtypeˑPlayerState r = this;
+        final switch (kind) {
+        case tuckˑtypeˑPlayerStateKind.Idle: break;
+        case tuckˑtypeˑPlayerStateKind.Decoding: r.tuckˑvariantˑdecoding = rt.tuckCopy(tuckˑvariantˑdecoding); break;
+        case tuckˑtypeˑPlayerStateKind.Paused: break;
+        }
+        return r;
+    }
     bool opEquals(const tuckˑtypeˑPlayerState o) const {
         if (kind != o.kind) return false;
         final switch (kind) {

@@ -37,6 +37,15 @@ struct tuckˑtypeˑPlayerState {
         tuckˑtypeˑPlayerState_Loading tuckˑvariantˑloading;
         tuckˑtypeˑPlayerState_Ready tuckˑvariantˑready;
     }
+    tuckˑtypeˑPlayerState tuckDup() {
+        tuckˑtypeˑPlayerState r = this;
+        final switch (kind) {
+        case tuckˑtypeˑPlayerStateKind.Unloaded: r.tuckˑvariantˑunloaded = rt.tuckCopy(tuckˑvariantˑunloaded); break;
+        case tuckˑtypeˑPlayerStateKind.Loading: r.tuckˑvariantˑloading = rt.tuckCopy(tuckˑvariantˑloading); break;
+        case tuckˑtypeˑPlayerStateKind.Ready: r.tuckˑvariantˑready = rt.tuckCopy(tuckˑvariantˑready); break;
+        }
+        return r;
+    }
     bool opEquals(const tuckˑtypeˑPlayerState o) const {
         if (kind != o.kind) return false;
         final switch (kind) {
@@ -70,6 +79,16 @@ struct tuckˑtypeˑMqttSession {
         tuckˑtypeˑMqttSession_Connecting tuckˑvariantˑconnecting;
         tuckˑtypeˑMqttSession_Connected tuckˑvariantˑconnected;
         tuckˑtypeˑMqttSession_Subscribing tuckˑvariantˑsubscribing;
+    }
+    tuckˑtypeˑMqttSession tuckDup() {
+        tuckˑtypeˑMqttSession r = this;
+        final switch (kind) {
+        case tuckˑtypeˑMqttSessionKind.Disconnected: break;
+        case tuckˑtypeˑMqttSessionKind.Connecting: r.tuckˑvariantˑconnecting = rt.tuckCopy(tuckˑvariantˑconnecting); break;
+        case tuckˑtypeˑMqttSessionKind.Connected: r.tuckˑvariantˑconnected = rt.tuckCopy(tuckˑvariantˑconnected); break;
+        case tuckˑtypeˑMqttSessionKind.Subscribing: r.tuckˑvariantˑsubscribing = rt.tuckCopy(tuckˑvariantˑsubscribing); break;
+        }
+        return r;
     }
     bool opEquals(const tuckˑtypeˑMqttSession o) const {
         if (kind != o.kind) return false;

@@ -33,6 +33,7 @@ proc collectFnSig*(tc: var TypeChecker, d: Decl, top: bool) =
       tc.groupBoundsOf[d.name] = d.fnGenericBounds
       break
   indexDecl(semLayer, d)
+  if d.isExtern and d.name notin semLayer.externs: semLayer.externs[d.name] = d
   tc.addFnDecl(d.name, d)
   # NOT pending: a pending fn emits a generic one-payload stub
   # (genPendingStub), so its real params are ({payload: T},) — nothing like its

@@ -18,6 +18,7 @@ import codegen_common
 import twin_calls  # which calls take the moved twin — decided in prepare
 from twin_shape import seqFieldNames
 from ast_ops import pathOf
+from ownership_rules import constructs
 
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
@@ -973,7 +974,10 @@ proc genFor(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## `for r in [dynamic]int{1, 2, 3} {` was a syntax error, so `for r in
   ## [1, 2, 3]:` built on Nim and D and not on Odin.
   var iterStr = ctx.genOdinExpr(e.iterable)
-  if '{' in iterStr: iterStr = "(" & iterStr & ")"
+  let it = e.iterable
+  if it != nil and (it.kind in {exkList, exkFill, exkStruct} or
+                    it.kind == exkCall and ctx.res.constructs(it)):
+    iterStr = "(" & iterStr & ")"
   let vars = if e.iter != nil and e.iter.kind == pkTuple and e.iter.elems.len == 2:
                genPatternStr(e.iter.elems[1]) & ", " &
                  genPatternStr(e.iter.elems[0])
@@ -1189,8 +1193,10 @@ proc genBlock(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
 proc genDrop(ctx: var OdinCodegenCtx, e: Expr): string =
   ## Release what a place owns (ownership_nodes decided which, and where).
   ## The place prints as its path: a local or parameter is never an owner
-  ## field or a register, so there is nothing for a lookup to add.
-  "delete(" & pathOf(e.dropped) & ")"
+  ## field or a register, so there is nothing for a lookup to add. A Seq of
+  ## plain values is one buffer; anything else is walked (rule G).
+  if e.dropDeep: "rt.tuckDrop(" & pathOf(e.dropped) & ")"
+  else: "delete(" & pathOf(e.dropped) & ")"
 
 proc genDefer(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## `defer:` (spec §7.4). Odin has `defer` natively, with the same scope-exit
@@ -1263,12 +1269,12 @@ proc movedAssignTarget(ctx: OdinCodegenCtx, t: Expr): string =
   else: t.name
 
 proc genOdinCopy(ctx: var OdinCodegenCtx, e: Expr): string =
-  ## A whole value copied (ownership_nodes decided which; this prints it).
+  ## A whole value copied (ownership_write decided where, rule G what).
   ##
   ##   cpSeq     `[dynamic]T` assignment copies the HEADER, so both names
   ##             would view one buffer, where a Tuck `Seq` assignment copies.
-  ##   cpStatic  a `str` literal is static storage, and the local it is bound
-  ##             to frees each value it holds (ownership step 5).
+  ##   cpStatic  a `str` on the heap, which its new owner frees.
+  ##   cpDeep    anything else that owns storage, walked by the runtime.
   ##
   ## No exception for a read through a MOVED twin's parameter — see the D
   ## emitter's note on `genDCopy`.
@@ -1276,26 +1282,7 @@ proc genOdinCopy(ctx: var OdinCodegenCtx, e: Expr): string =
   case e.copyKind
   of cpSeq: "rt.tuckSeqCopy(" & inner & ")"
   of cpStatic: "rt.tuckStrOwned(" & inner & ")"
-  of cpFields:
-    raiseAssert "odin: a record's field copies are statements after its " &
-                "binding (genAssign prints them), never an expression"
-
-proc boundOdinValue(v: Expr): Expr =
-  ## The value a binding prints: under a record's field copies, which Odin
-  ## prints as statements after the binding (`seqFieldFixups`).
-  if v != nil and v.kind == exkCopy and v.copyKind == cpFields: v.copied
-  else: v
-
-proc seqFieldFixups(ctx: var OdinCodegenCtx, target: string, e: Expr): string =
-  ## A RECORD carrying Seq fields: the struct copy is field-for-field, so each
-  ## Seq field's copy is a header aliasing the source. Emitted as statements
-  ## AFTER the assignment rather than around the value: Odin's procedure
-  ## literal does not capture locals, so the expression form D uses
-  ## (`(){ ... }()`) reports `Undeclared name` for the very value it wraps.
-  if e == nil or e.kind != exkCopy or e.copyKind != cpFields: return
-  for f in e.copyFields:
-    result.add("; " & target & "." & f & " = rt.tuckSeqCopy(" &
-               target & "." & f & ")")
+  of cpDeep: "rt.tuckCopy(" & inner & ")"
 
 proc unionDeclType(ctx: var OdinCodegenCtx, e: Expr): string =
   ## The union type name, when this value belongs to a payload sum.
@@ -1338,7 +1325,7 @@ proc genOdinVarDecl(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   # `defer` drops, as statements of their own (ownership_nodes). `defer`
   # rather than a free at the last use, because a defer needs no POSITION:
   # Odin runs it on every path out of the block. See EV-20.
-  decl & ctx.seqFieldFixups(e.target.name, e.assignVal)
+  decl
 
 proc dropThenStore(ctx: var OdinCodegenCtx, e: Expr, tgt, valStr: string): string =
   ## `tgt = valStr`, dropping the old value first when the assignment says
@@ -1347,6 +1334,8 @@ proc dropThenStore(ctx: var OdinCodegenCtx, e: Expr, tgt, valStr: string): strin
   let next = ctx.freshName("tuckNext")
   let ind = "  ".repeat(ctx.indent)
   result = next & " := " & valStr & "\n" & ind
+  if e.dropsOldDeep:
+    return result & "rt.tuckDrop(" & tgt & ")\n" & ind & tgt & " = " & next
   # A record owns its Seq fields, so dropping one drops each of them.
   let fields = seqFieldNames(ctx.res, ctx.module, ctx.res.typeFor(e.target))
   if fields.len == 0: result.add "delete(" & tgt & ")\n" & ind
@@ -1382,8 +1371,7 @@ proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
   # (57 where Nim and D compute 8). The new value is fresh — step 5 only
   # fires when every value assigned is — so freeing the old one once it
   # exists can never free the new one.
-  ctx.withAssignValidate(e, ctx.dropThenStore(e, tgt, valStr) &
-                            ctx.seqFieldFixups(tgt, e.assignVal))
+  ctx.withAssignValidate(e, ctx.dropThenStore(e, tgt, valStr))
 
 proc genAppend(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `xs += v` — an append assigned back over its own argument, grown in place
@@ -1401,7 +1389,7 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
   # own argument calls the MOVED twin, and needs no fix-up copies after it.
   let threaded = threadedCall(e)
   if threaded != nil: return ctx.genThreadedAssign(e, threaded)
-  let valStr = ctx.genOdinExpr(boundOdinValue(e.assignVal))
+  let valStr = ctx.genOdinExpr(e.assignVal)
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
      not ctx.res.isOwnerField(e.target):
     return ctx.genOdinVarDecl(e, valStr)

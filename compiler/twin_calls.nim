@@ -8,13 +8,13 @@
 # parameter, and a wrapper `f` that copies and delegates. Two decisions sit on
 # every call to such a fn:
 #
-#   TAKES THE TWIN   the call may hand its first argument over to be consumed:
-#                    it is dead here (`isMovedArg`, stamped by provenance) and
-#                    the call is not a member call (members get no twin).
-#   THREADED         `x = f(x, ...)`, or `let y = f(b.ask, ...)` with `b.ask`
-#                    dead: the result may skip its fix-up copy, because it can
-#                    only be the moved argument or fresh storage — unless
-#                    another argument the caller still reads could be it.
+#   TAKES THE TWIN   every call that is not a member call (members get no
+#                    twin): the twin is the body itself, and the caller
+#                    copies a live argument or moves a dead one (rule S at a
+#                    consuming parameter), so the copying wrapper is only
+#                    the entry for a fn value or an interface arm.
+#   THREADED         `x = f(x, ...)`: the assignment is printed as the twin
+#                    call stored back over its own argument.
 #
 # Both were answered by the Odin and D emitters as they printed, from
 # predicates in codegen_common — the decision made while building a string,
@@ -22,9 +22,8 @@
 # derived a member call's receiver type their own way. This pass records the
 # answer on the node; the emitters print it.
 #
-# Runs as step 7 of `backend_prepare`, after the copy marks (where provenance
-# stamps the moved arguments) and after `fillIds` (it keys by node id), on the
-# aliasing backends only.
+# Runs as step 7 of `backend_prepare`, after `fillIds` (it keys by node id),
+# on the aliasing backends only.
 #
 # EVERY NODE AN EMITTER ASKS ABOUT MUST HAVE BEEN VISITED. The emitters print
 # calls this walk may not reach — one they synthesize, or one hanging off a
@@ -44,66 +43,26 @@ var visited: HashSet[NodeId]
   ## every node the walk decided about, so an emitter's question about one it
   ## never saw fails loudly
 
-proc otherArgLives(res: Resolution, m: Module, call: Expr): bool =
-  ## Does any argument BESIDES the first still hold a container the caller
-  ## will read again? Then the callee's result may BE that container, and
-  ## the copy that separates them cannot be dropped.
-  for i in 1 ..< call.args.len:
-    let a = call.args[i]
-    if a == nil: continue
-    if not ownsHeap(m, res.typeFor(a)): continue
-    if res.isLastUse(a): continue   # dead too, so nothing observes the share
-    return true
-  false
-
 proc movedCallInto(res: Resolution, m: Module, call: Expr,
                    targetName: string): bool =
-  ## Is `call` a threaded-container call whose FIRST argument may be handed
-  ## over — its result then needing no fix-up copy?
-  ##
-  ## THE SYNTACTIC CASE: `x = f(x, ...)` overwrites its own argument, so the
-  ## old value is dead the instant the new one lands. No liveness involved.
-  ##
-  ## THE ANALYSED CASE, for everything else: a value this body OWNS and will
-  ## not read again, which `analysis_provenance` stamps as a moved argument —
-  ## `sweep(b.ask, ...)` at PATH granularity, `pass(a, ...)` for a plain local
-  ## dead after the call (EV-15). Being a last use says nobody HERE reads it
-  ## again, which on D and Odin says nothing about the caller whose buffer a
-  ## container parameter aliases; provenance joins the two.
-  ##
-  ## ...AND NO OTHER ARGUMENT MAY STILL BE LIVE. Reaching the twin is one
-  ## decision; SKIPPING THE RESULT'S FIX-UP COPY is a second, resting on the
-  ## result being unable to alias anything the caller still reads:
-  ##
-  ##     fn pick({p: Seq[int], q: Seq[int], which: int}) -> Seq[int]:
-  ##       if which == 0: return p
-  ##       return q
-  ##
-  ## is twinnable on `p` and returns `q`; dropping the copy of its result
-  ## came back 65 instead of 17 on D and Odin (value_semantics).
+  ## Is `call` a threaded-container call whose FIRST argument is the name it
+  ## is assigned back over (`x = f(x, ...)`)? The old value is dead the
+  ## instant the new one lands.
   if call == nil or call.kind != exkCall: return false
   if call.callee == nil or call.callee.kind != exkVar: return false
   if movedFnParam(res, m, m.findFn(call.callee.name)) == "": return false
-  if call.args.len < 1 or call.args[0] == nil: return false
-  let a = call.args[0]
-  if a.kind == exkVar and a.name == targetName: return true
-  if a.kind in {exkVar, exkField}:
-    return res.isMovedArg(a) and not otherArgLives(res, m, call)
-  false
+  call.args.len >= 1 and call.args[0] != nil and
+    call.args[0].kind == exkVar and call.args[0].name == targetName
 
-proc decideTakesTwin(res: Resolution, m: Module, e: Expr, every: bool): bool =
+proc decideTakesTwin(res: Resolution, m: Module, e: Expr): bool =
   ## May this call take its first argument destructively, at ANY position?
   ## The one that matters beyond an assignment is RETURN:
   ## `return {sl: up, c: c} relight` with `up` dead there and owned — no
   ## assignment emitter ever sees that call.
-  ##
-  ## `every` (TUCK_OWN=rules): every call does. The twin is the body itself,
-  ## and the caller copies a live argument or moves a dead one (rule S at a
-  ## consuming parameter), so the copying wrapper is never needed.
   e.kind == exkCall and e.callee != nil and e.callee.kind == exkVar and
     e.args.len > 0 and e.args[0] != nil and
     movedFnParam(res, m, m.findFn(e.callee.name)) != "" and
-    (every or res.isMovedArg(e.args[0])) and memberCallee(res, m, e) == ""
+    memberCallee(res, m, e) == ""
 
 proc decideThreaded(res: Resolution, m: Module, e: Expr): Expr =
   ## `x = f(x, ...)`, or `let y = f(b.ask, ...)` with `b.ask` never read
@@ -115,16 +74,16 @@ proc decideThreaded(res: Resolution, m: Module, e: Expr): Expr =
   if call != nil and res.hasCall(call): call = res.call(call)
   if movedCallInto(res, m, call, e.target.name): call else: nil
 
-proc decide(res: Resolution, m: Module, n: Expr, every: bool) =
+proc decide(res: Resolution, m: Module, n: Expr) =
   ## Makes both decisions for one node and marks it visited, so an emitter
   ## asking about a node the pass never reached is caught by `assertVisited`.
   if not n.id.isSet: return
   visited.incl n.id
-  if decideTakesTwin(res, m, n, every): takesTwin.incl n.id
+  if decideTakesTwin(res, m, n): takesTwin.incl n.id
   let c = decideThreaded(res, m, n)
   if c != nil: threaded[n.id] = c
 
-proc markIn(res: Resolution, m: Module, body: Expr, every: bool) =
+proc markIn(res: Resolution, m: Module, body: Expr) =
   ## Every node in a body, and every call a node PRINTS AS — the emitters
   ## print `res.call(n)` in its place, so that is a node they ask about.
   ## The checker builds those calls without ids (`server.start` stamped as
@@ -138,13 +97,13 @@ proc markIn(res: Resolution, m: Module, body: Expr, every: bool) =
       let c = res.call(n)
       fillIdsIn(c)
       stack.add c
-    decide(res, m, n, every)
+    decide(res, m, n)
 
-proc markTwinCalls*(res: Resolution, m: Module, every = false) =
+proc markTwinCalls*(res: Resolution, m: Module) =
   ## Decide both, for EVERY body of this backend's copy of the module, so an
   ## actor handler, a member fn or a select arm is reached as surely as a
-  ## top-level fn. `every`: every call to a fn with a twin calls it.
-  for e in m.bodies: markIn(res, m, e, every)
+  ## top-level fn.
+  for e in m.bodies: markIn(res, m, e)
 
 proc markBuilt*(e: Expr) =
   ## Nodes built after this pass by one that knows they take no twin (the
