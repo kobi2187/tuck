@@ -227,11 +227,10 @@ proc composeMixinsFrom*(m: Module, imported: Table[string, Decl]): seq[Decl] =
       let got = composedEntry(mem, mixins, records)
       if got.len != 1 or got[0] != mem: composed = true
       members.add(got)
-    if not composed: continue
     d.objMembers = members
     let owner = Type(span: d.span, kind: tkNamed, name: d.name)
-    for mem in d.objMembers: bindSelf(mem, owner)
-    result.add(d)
+    for mem in d.objMembers: bindSelf(mem, owner)   # every object, composed or not
+    if composed: result.add(d)
 
 proc composeMixins(m: Module) =
   discard composeMixinsFrom(m, initTable[string, Decl]())
