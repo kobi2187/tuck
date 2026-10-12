@@ -52,7 +52,7 @@ does not have to re-derive it:
 
 Worked through:
 
-- **No `ref` in Tier 1**, so no two names ever denote one record. A data race
+- **No references** (§7.1), so no two names ever denote one record. A data race
   needs two references to one mutable location; the sentence cannot be
   formed. That is why Tuck has no `Send`/`Sync`, no borrow checker, no
   lifetimes — not because those problems were solved, but because they were
@@ -60,8 +60,11 @@ Worked through:
 - **Messages are copied** into a fixed-size mailbox (§9.1), so nothing
   crosses an actor boundary by reference and "two actors sharing state" is
   likewise unsayable.
-- **No heap in Tier 1**, so use-after-free has no vocabulary either, and
-  neither does the machinery that would otherwise be needed to prevent it.
+- **No addresses.** A value owns its memory and the compiler frees it
+  (§7.5), so use-after-free has no vocabulary either, and neither does the
+  machinery that would otherwise be needed to prevent it. Where a program
+  needs identity it holds a handle, and a stale one is a caught runtime
+  error, never a read of whatever replaced it (§7.1).
 - **Parameters are values** (§7.1), so a callee cannot write through to its
   caller — the last way a name could reach memory it does not own.
 
@@ -511,6 +514,12 @@ Passing a function is just passing a struct with a function reference field:
 fn applyOperation({a: int, b: int, op: fn}) -> {result: int}:
   result = op.invoke {a, b}
 ```
+
+**No captures, by design.** A function reference (`:name`) names a declared
+fn; there are no lambdas that close over locals. Everything a called function
+sees reaches it as an argument, so data flow stays visible at the call site.
+The values a callback needs travel in its context struct, fixed with `bake`
+(§3.5) where they should not be supplied again.
 
 ### 3.5 `bake` — Compile-Time Specialization
 
@@ -1268,8 +1277,8 @@ An interface-typed value is a **copying tagged variant** over every type that
 satisfies it, not a pointer to one — the same shape a sealed sum type (§4.4)
 takes, generated instead of hand-written. A concrete object entering an
 interface slot is *copied* into the variant, tag and all; the variant then
-owns its data outright, the same as any other Tuck value (§7.1's Tier 1 rule
-"no `ref`" stands unqualified — an interface value introduces no reference or
+owns its data outright, the same as any other Tuck value (§7.1's rule
+"no references" stands unqualified — an interface value introduces no reference or
 pointer, user-visible or otherwise).
 
 ```tuck
@@ -1564,7 +1573,7 @@ decision routePacket({urgency: u2, encrypted: bool, bytes: u32}) -> Action:
 
 ### 6.2 Static Stack Depth Analysis
 
-For non-recursive Tier 1 code, worst-case stack depth is computable statically.
+For non-recursive code, worst-case stack depth is computable statically.
 Declare a budget on any function and the compiler verifies it:
 
 ```tuck
@@ -1574,7 +1583,8 @@ fn processISR({event: SensorEvent}) -> void [irq_safe, stack: 128]:
 ```
 
 Algorithm: DFS over the call graph in the IR, summing frame sizes. Recursive calls
-are flagged — they are banned in Tier 1 anyway (unbounded stack). The result is a
+are flagged: a fn with a stack budget cannot recurse, since its depth would be
+unbounded. The result is a
 certification-grade guarantee with zero runtime cost.
 
 ### 6.3 Complexity Limit — ruled, not yet enforced
@@ -1600,17 +1610,14 @@ the table's own exhaustiveness/overlap checking (§6.1) already bounds.
 
 ## Part 7: Memory
 
-### 7.1 Tier Model
+### 7.1 Values
 
-Tuck is one language everywhere, with strict boundaries:
-
-- **Tier 1 (Application):** Stack-only. Named structs, actors, errors as types,
-  no raw pointers, no `ref`, no heap. All structs are value types, copied across
-  actor boundaries. The allocator problem doesn't exist.
-- **Tier 2 (Library):** Same language + `ref`, `owned ref`, custom allocators,
-  SIMD, `when` conditionals, bump and arena allocators.
-- **Tier 3 (Systems):** Explicitly Nim. C FFI, MMIO, raw pointers, atomics. A
-  concrete substrate, not a vague escape hatch.
+**Everything in Tuck is a value.** Records, sums, Arrays, `Seq[E]`, `str`,
+`T?` and `T!` are values, and so are handles. A program has no references and
+no addresses, and it cannot observe where a value lives: on the stack, on the
+heap, or only in registers. Those are the compiler's choices (§7.5), not the
+program's. Programmers reason about values; the compiler is free to make them
+cheap.
 
 **A parameter is an immutable binding of a value.** A function may read its
 parameter and may copy it; it can never write through one to the caller's
@@ -1626,32 +1633,50 @@ fn afterFee({acct: Account, fee: int}) -> Account:
 Without this rule a function that reads like a question ("what *would* the
 balance be after a fee?") could answer it by changing the caller's account —
 and since the caller has no syntax marking the call as mutating, nothing at
-the call site would hint that it happened. That is the bug class Tier 1
-exists to remove, and it is the last way a name could reach memory it does
+the call site would hint that it happened. That is the bug class value
+semantics exists to remove, and it is the last way a name could reach memory it does
 not own (see "Prefer Removing the Vocabulary", Part 1).
 
 Two exceptions, both mutating state the callee **owns** rather than a
 caller's value: an object member mutating its own `self` (§5.1), and an actor
 handler mutating its own fields (§9.1).
 
-**Passing is free.** Value semantics costs nothing to pass at any size: both
-backends hand a record over without copying it — Nim passes a large object by
-hidden reference, Odin by value — and the guarantee above is what makes that
-safe. The copy in `var s = acct` is usually deleted too, since the optimizer
-can see the original is dead. Measured on this tree, value semantics beats
-reference semantics on construction (6–10x, no allocator), assignment (~8x,
-no refcount), and dense iteration (~2.4x, contiguous rather than
-pointer-chasing); the one case it loses is reading a single field from each
-of many large records, which is an array-of-structs *layout* problem that
-would cost the same in C. See `benches/bench_value_vs_ref.nim` and
-`benches/SCORES.md`.
+**Identity, where a program needs it, is a handle.** Some data must be
+reached from more than one place: a node in a graph, an open file, a pooled
+buffer. For those, a program declares a store and holds handles into it: plain
+values, copyable and comparable.
 
-**Pointers cross into Tier 3 and never come back.** A pointer-kind value
-(`cstring`, an opaque C handle, `Buf`) may be produced and consumed at an
-extern boundary, but never stored in a record, returned into Tier 1, or held
-past the expression that obtained it (`TK-TY07`, `TK-TY08`). This is not
-merely an FFI convention: it is what keeps the no-aliasing guarantee true at
-the one place the language cannot see the other side of.
+| Store | A handle names | Section |
+|---|---|---|
+| `pool` | one of N fixed slots | §7.2 |
+| `slab`, `arena` | a cell; complex data structures are built from these | §7.3 |
+| the resource registry | an open file, socket or similar | §7.4 |
+
+Two copies of a handle name the same cell. That is the one designed place
+where two names reach the same data, and it is visible in the type. A handle
+whose cell was freed is stale; using one is a caught runtime error (slot index
+plus generation counter, §7.3, §7.4).
+
+**Pointers stay at the extern boundary.** A pointer-kind value (`cstring`, an
+opaque C handle, `Buf`) may be produced and consumed at an extern boundary,
+but never stored in a record, returned into ordinary code, or held past the
+expression that obtained it (`TK-TY07`, `TK-TY08`). This is not merely an FFI
+convention: it is what keeps the no-aliasing guarantee true at the one place
+the language cannot see the other side of.
+
+**How Tuck reaches the machine.** Three mechanisms, all declared:
+- `extern [impl: nim "...", odin "...", d "..."]` binds each backend's own
+  library;
+- `extern [c, header: "..."]` binds one C source on every backend;
+- `register` and the hardware declarations (Part 8) give memory-mapped I/O
+  an explicit layout, permissions and bit fields.
+
+The layout of an ordinary record is not specified (open: see §7.5).
+
+**Hosted and bare metal.** Some capabilities need a hosted OS: the
+concurrency runtime's `mmap`-reserved stacks and its epoll/kqueue reactor
+(Part 9). They are marked as hosted where they are specified. Everything else
+in this part is available on every target.
 
 ### 7.2 Static Memory Pool
 
@@ -1865,7 +1890,7 @@ a table that fills is a bug surfacing early, not an OOM three days in.
 
 **Handles, not refs.** User code never holds the resource — it holds an opaque
 handle: a plain value (slot index + generation counter), copyable, comparable,
-Tier 1 safe (§7.1). The actual ref lives in the registry entry, in the runtime
+an ordinary value (§7.1). The actual ref lives in the registry entry, in the runtime
 layer, alongside its generation and an `isFinished` flag. A stale handle
 (generation mismatch) is a caught runtime error,
 never a write to the wrong file — the fd-reuse bug class is closed by
@@ -1998,6 +2023,64 @@ this section left open and what the compiler settled them as.
 
 ---
 
+### 7.5 What the compiler may do with a value
+
+**The as-if rule.** A program behaves as if every binding, assignment,
+argument, return and `send` made a fresh copy. The compiler may pass by
+reference, move instead of copy, keep a value in registers or delete it, but
+only where no program could tell the difference. Every backend is held to
+this one rule. A difference a program *can* observe is a compiler bug.
+
+**Three rules a program can observe.**
+- **Order.** Operands are evaluated left to right, as written. This matters as
+  soon as one has an effect (`[io]`, a `send`, a member that changes its
+  `self`). The compiler reorders only operands that cannot affect each other.
+- **Aliasing within one call.** If a call writes a place in place (a member
+  that changes `self`, `x[i] = v`, an in-place append) and also reads that same
+  place by value, the by-value read sees the value from before the write.
+- **Messages.** A `send` gives the receiver its own copy of the payload. After
+  the send the sender's value and the actor's value are unrelated (§9.1).
+
+**The cost model.** Programs cannot see memory, but they feel its cost:
+
+| Situation | Cost |
+|---|---|
+| passing a value to a parameter | free at any size on Nim and Odin; a struct copy on D today (open, below) |
+| the last use of a local, in a binding, a return, a container or a `send` | a move: no copy |
+| any other stored use | a copy, and a deep one: a nested `Seq` or `str` is copied too |
+| a string literal | static: never copied out of, never freed |
+| a handle | a few words; copying one never copies its cell |
+| freeing | at the end of the owning scope on every exit path; an overwritten value is freed after its replacement is built |
+
+"Last use" is in written order, per path: a value moved on one branch and kept
+on another is right on both.
+
+**What differs between backends.** Results never differ. Time and memory can,
+because each target has its own memory model, which is why benchmarks report
+per backend:
+
+| | Nim | Odin | D |
+|---|---|---|---|
+| a large record passed | by hidden reference | by value; Odin parameters are immutable, so the compiler may pass by pointer | by value, a real copy (a member's `self` is `ref`) |
+| copy | Nim's `=copy` hooks | emitted copy procedures | emitted deep `.dup` |
+| free | Nim's `=destroy`, at scope end | emitted, via `defer` at the declaration | D's collector: not prompt, so peak memory runs higher |
+
+**Where the rules are written.** The compiler implements this section through
+ten ownership rules (borrow or sink, move at a final use, consuming
+parameters, drop once, reset after a move, per-type glue, order, aliasing,
+sends, and a checker), ruled 2026-10-05 in
+`thoughts/shared/plans/2026-10-05-ownership-rules-proposal.md`. They are the
+compiler's contract, not the language's. They are checked, not trusted: an
+ownership checker verifies that every owned value is moved or dropped exactly
+once on every path, and `TUCK_TRACK` checks the same at run time.
+
+**State, 2026-10-10.** The deep copy of a nested owning value and the
+drop-on-every-exit rule are the behaviour after the switch to those rules
+(the proposal's §8 step 4.1). Until then the pins A39 and A41-A45
+(`tests/suites/known_bugs.nim`) are open: owned values the Odin tree does not
+free. Open questions — record layout, passing on D, prompt frees on D — are
+tracked in #104.
+
 ## Part 8: Hardware
 
 ### 8.1 Register Declarations
@@ -2073,19 +2156,24 @@ e.g. 1MB) rather than `calloc`'d — physical RAM is only committed for the
 pages a coroutine actually touches, so many idle coroutines are cheap even
 though each nominally "has" a big stack.
 
-**This makes the concurrency runtime a Tier 3 (§7.1) capability today, not a
-Tier 1 one**: `mmap` and the epoll/kqueue-based reactor that drives I/O
+**This makes the concurrency runtime a hosted-OS capability today (§7.1)**: `mmap` and the epoll/kqueue-based reactor that drives I/O
 readiness both assume a hosted OS. A bare-metal Cortex-M0 target has neither.
 Actors and tasks as specified below are real, both-backends-verified, and
 run-gated by the test suite — but they currently target Linux/macOS/Windows,
 not the bare-metal case Part 1 frames as a primary use case. A stackless,
-truly Tier-1-safe concurrency path is not designed; if the embedded story
+concurrency path for bare metal is not designed; if the embedded story
 needs one, it is separate future work, not a mode of what is built today.
 
 ### 9.1 Actors
 
 Long-lived isolated state machines, one instance per declared type (a
 singleton — there is no separate construction step, no reference to hold).
+
+The name borrows the actor vocabulary (mailbox, message, handler), but an
+actor is closer to a **service**: a data-processing singleton that receives
+copied messages, runs on the coroutine scheduler and reactor, and owns its
+state outright. Something that needs many independent instances is a task
+(§9.2), not an actor.
 
 **A `fn` in an actor is a member; an `on` is a message.** A member reads and
 writes the actor's fields, may return a value, and is called only by the
@@ -2293,7 +2381,8 @@ attributes.
 
 ### 9.2 Tasks
 
-Async operations with a defined completion. `[io]`-annotated function calls are
+Independent, object-like units of async work — as many as the program starts,
+unlike an actor's one. Async operations with a defined completion. `[io]`-annotated function calls are
 implicit yield points — no `await` keyword, no explicit `yield`. The effect system
 IS the yield annotation:
 
@@ -2392,11 +2481,11 @@ Where they meet:
   race against `quit` and a fire-and-forget message could be lost, which is the
   same observable bug as never delivering it.
 
-**This is a hosted-OS capability (Tier 3, §7.1),** as the runtime note above
+**This is a hosted-OS capability (§7.1),** as the runtime note above
 already said of `mmap` and the reactor. Threads do not exist on a bare-metal
 Cortex-M0 either, so requiring them concedes nothing that was not already
 conceded — but it does mean the concurrency model as specified here is not the
-bare-metal story, and a stackless Tier-1 path remains separate future work.
+bare-metal story, and a stackless bare-metal path remains separate future work.
 
 ---
 
@@ -2584,8 +2673,8 @@ transcription:
 - an actor → a mailbox struct (two statically sized buffers, swapped) plus handler procs
   dispatched by message tag; both backends run actors and tasks on their own
   coroutine, over the same vendored C library (minicoro) — see Part 9's
-  runtime note for why, and why that currently makes concurrency a Tier 3
-  (§7.1) capability rather than a Tier 1 one
+  runtime note for why, and why that currently makes concurrency a hosted-OS
+  capability (§7.1)
 - a register declaration → `volatile` field access with inline endian swap
   where `[big_endian]` is declared
 
@@ -2751,8 +2840,8 @@ These are deliberate omissions, not oversights:
 - Preprocessor / macros
 - Implicit conversions
 - Global mutable state (except the one declared `registry`)
-- Heap allocation in Tier 1
-- Recursion in Tier 1
+- References and addresses (§7.1)
+- Recursion under a stack budget (§6.2)
 - Preemptive scheduling
 
 ---

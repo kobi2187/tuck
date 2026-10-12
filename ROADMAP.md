@@ -19,6 +19,28 @@ to be the thing most of the queue depends on:
 > for unique features we should run a lowering pass, the rewrite pass,
 > instead of doing it in codegen.
 
+### Direction 2026-10-10 (owner)
+
+- **Order of work:** bugs first, then design decisions, then the important features
+  implemented concretely and well. Only then the stdlib, on a language that holds still.
+  Temporary support code (today's `std/`) is fine until then.
+- **Backends in tandem.** Nim, Odin and D keep improving together. There is no
+  "stabilise one, then reach parity" phase. Each keeps a native runtime, because the
+  three have different memory models (Nim's ARC hooks, Odin with no GC, D's collector),
+  and an ffi from D into a compiled runtime is not obviously better than native D. A
+  feature lands when it passes on all three, or with a pinned, tracked gap.
+- **Decide once, print three times.** This generalises the lowering rule above:
+  decisions about how features combine are made in the shared lowering, and emitters
+  print them. The runtime API each backend provides is written down, and one runtime
+  test suite runs on all three (#106).
+- **Stdlib: a contract and blessed implementations**, mixed per group (shim, ffi, pure
+  Tuck). See `stdlib-project/DIRECTION.md`.
+- **Real programs.** Two or three programs of 5,000-10,000 lines, written alongside the
+  stdlib work, to drive it (#107). The largest program in the tree today is
+  429 lines.
+- **Memory is specified as values plus an as-if rule** (spec §7.1, §7.5). The old tier
+  model is retired.
+
 ---
 
 ## The queue, re-validated 2026-09-28
