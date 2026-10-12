@@ -354,14 +354,16 @@ proc asDPrimConversion(ctx: var DCodegenCtx, e: Expr,
     return "cast(" & prim & ")(" & arg & ")"
   prim & "(" & arg & ")"
 
-proc genDActorWaitOn(ctx: var DCodegenCtx, e: Expr): string =
-  ## `Actor.waitUntil {pred: :p}` -> `rt.tuckWaitOn(<Actor>Slot, &p)`. The
-  ## checker rewrote the member call into `waitUntil(<actorRef>, pred)`, so the
-  ## actor is still named in arg 0. Twin of the Nim and Odin versions.
-  if not isActorWaitOn(e): return ""
+proc genDActorMember(ctx: var DCodegenCtx, e: Expr): string =
+  ## `Actor.waitUntil {pred: :p}` -> `rt.tuckWaitOn(<Actor>Slot, p)`, and
+  ## `pingUs` / `alive` likewise (ActorMembers). The checker rewrote the member
+  ## call into `member(<actorRef>, arg)`, so the actor is still named in arg 0.
+  ## Twin of the Nim and Odin versions.
+  let rt = actorMemberRt(e)
+  if rt == "": return ""
   # No `&` here: a `:fnRef` already emits D's address-of, and adding one gave
   # `&&tuck_done`.
-  "rt.tuckWaitOn(" & actorSlotName(e.args[0].refName) & ", " &
+  "rt." & rt & "(" & actorSlotName(e.args[0].refName) & ", " &
     ctx.genDExpr(e.args[1]) & ")"
 
 proc dMemberCallee(ctx: DCodegenCtx, e: Expr): string =
@@ -376,7 +378,7 @@ proc genDActorCall(ctx: var DCodegenCtx, e: Expr): string =
   ## The two actor-shaped calls, or "": `Actor.waitOn`, and a call to the
   ## actor's own member fn (A24), where `self` is already the `ref` the
   ## dispatch holds.
-  let waitOn = ctx.genDActorWaitOn(e)
+  let waitOn = ctx.genDActorMember(e)
   if waitOn != "": return waitOn
   let actorMember = actorMemberCallee(ctx.res, e)
   if actorMember != "":

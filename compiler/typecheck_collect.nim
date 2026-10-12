@@ -208,6 +208,30 @@ proc collectErrPolicy*(tc: var TypeChecker, d: Decl) =
     fail("Policy Error: errors [policy: " & d.policyName &
          "] needs an 'on unhandled({code, site})' handler", d.span)
 
+proc collectHeartbeatSigs(tc: var TypeChecker, d: Decl) =
+  ## The actor's liveness channel (issue #74): `Actor.pingUs {withinMs: n}`
+  ## and `Actor.alive {withinMs: n}`, registered like `waitUntil` as plain
+  ## `Owner.member` signatures. They are CLIENT-side: the actor declares
+  ## nothing, and the probe never enters its mailbox or runs a handler of its
+  ## own. A member of the same name written by the author wins, and the
+  ## built-in is then not registered.
+  ##
+  ## Units are in the names (`withinMs`, `pingUs`): `Milliseconds` lives in
+  ## std/time, which a caller need not import.
+  let intT = Type(span: d.span, kind: tkNamed, name: "int")
+  let optInt = Type(span: d.span, kind: tkApp, args: @[intT],
+                    base: Type(span: d.span, kind: tkNamed, name: "?"))
+  let within = @[Param(name: "withinMs", typ: intT, span: d.span)]
+  for (member, ret) in [("pingUs", optInt),
+                        ("alive", Type(span: d.span, kind: tkNamed,
+                                       name: "bool"))]:
+    if tc.actorMemberOwner.getOrDefault(member) == d.name or
+       tc.actorHandlerOwner.getOrDefault(member) == d.name: continue
+    # Blocks the caller until the actor answers or the deadline passes.
+    tc.setFnSig(d.name & "." & member,
+      (within, ret, newSeq[string](), @[emIo], newSeq[string](),
+       newSeq[string]()))
+
 proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
   ## `top` distinguishes a module's own declarations from the members nested
   ## inside a type, object, mixin or actor. Only top-level fns get recorded in
@@ -267,6 +291,7 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
                  span: d.span)],
          Type(span: d.span, kind: tkNamed, name: "void"),
          newSeq[string](), @[emIo], newSeq[string](), newSeq[string]()))
+      tc.collectHeartbeatSigs(d)
     of dkErrors: tc.collectErrPolicy(d)
     of dkResources: tc.collectResourceHandles(d)
     else: discard

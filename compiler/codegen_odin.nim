@@ -350,19 +350,21 @@ proc odinTypeArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
         break
     if not mentioned: result.add(ctx.odinType(targs[i]))
 
-proc genOdinActorWaitOn(ctx: var OdinCodegenCtx, e: Expr): string =
-  ## `Actor.waitUntil {pred: :p}` -> `rt.tuckWaitOn(<Actor>Slot, p)`. The
-  ## checker rewrote the member call into `waitUntil(<actorRef>, pred)`, so the
-  ## actor is still named in arg 0. Twin of the Nim genActorWaitOn.
-  if not isActorWaitOn(e): return ""
-  "rt.tuckWaitOn(" & actorSlotName(e.args[0].refName) & ", " &
+proc genOdinActorMember(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `Actor.waitUntil {pred: :p}` -> `rt.tuckWaitOn(<Actor>Slot, p)`, and
+  ## `pingUs` / `alive` likewise (ActorMembers). The checker rewrote the member
+  ## call into `member(<actorRef>, arg)`, so the actor is still named in arg 0.
+  ## Twin of the Nim genActorMember.
+  let rt = actorMemberRt(e)
+  if rt == "": return ""
+  "rt." & rt & "(" & actorSlotName(e.args[0].refName) & ", " &
     ctx.genOdinExpr(e.args[1]) & ")"
 
 proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A call in Odin, trying the special shapes first: `waitOn`, a sum
   ## variant, a member or combinator call. A member call passes `&receiver`,
   ## since every member fn takes `self: ^T`.
-  let waitOn = ctx.genOdinActorWaitOn(e)
+  let waitOn = ctx.genOdinActorMember(e)
   if waitOn != "": return waitOn
   let variant = ctx.asSumVariantCall(e)
   if variant != "": return variant

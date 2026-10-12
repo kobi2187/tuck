@@ -385,13 +385,24 @@ proc lookupFnParams*(m: Module, name: string): seq[string] =
   ## generic payload.
   m.findFn(name).paramNames()
 
-proc isActorWaitOn*(e: Expr): bool =
-  ## `Actor.waitUntil {pred: :p}`, as the checker rewrote it:
-  ## `waitUntil(<actorRef>, pred)`. Every backend prints it as a wait on the
-  ## actor's slot.
-  e != nil and e.kind == exkCall and e.callee != nil and
-    e.callee.kind == exkVar and e.callee.name == "waitUntil" and
-    e.args.len == 2 and e.args[0] != nil and e.args[0].kind == exkActorRef
+# The built-in members every actor answers, as the checker registered them
+# (`collectSigs` / `collectHeartbeatSigs`) -> the runtime proc each backend
+# prints. One table, so the three backends cannot disagree about which member
+# calls reach the actor's slot.
+const ActorMembers* = {
+  "waitUntil": "tuckWaitOn",
+  "pingUs": "tuckPingUs",
+  "alive": "tuckAlive"}.toTable
+
+proc actorMemberRt*(e: Expr): string =
+  ## `Actor.waitUntil {pred: :p}`, `Actor.pingUs {withinMs: n}`, as the
+  ## checker rewrote them: `member(<actorRef>, arg)`. The runtime proc that
+  ## takes the actor's slot, or "" when `e` is not such a call. Every backend
+  ## prints it as `rt(<Actor>Slot, arg)`.
+  if e == nil or e.kind != exkCall or e.callee == nil or
+     e.callee.kind != exkVar or e.args.len != 2 or e.args[0] == nil or
+     e.args[0].kind != exkActorRef: return ""
+  ActorMembers.getOrDefault(e.callee.name)
 
 proc msgVariantName*(handlerName: string): string =
   ## The message-enum tag a handler receives on — `msgAdd` for `on add`. The

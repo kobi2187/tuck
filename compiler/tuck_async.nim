@@ -32,6 +32,7 @@
 
 import std/nativesockets
 import std/locks
+import std/monotimes
 import ./tuck_coro
 import ./tuck_mem
 
@@ -744,6 +745,17 @@ type
     queued: bool        ## single mode only: already in the ready queue, so a
                         ## send does not enqueue it a second time. One thread,
                         ## so no atomic.
+    # The liveness channel (`Actor.pingUs` / `Actor.alive`). It is NOT a
+    # message: a probe is a word in the slot, so it passes whatever waits in
+    # the mailbox and runs no handler.
+    probe: int          ## the last probe id handed out; ATOMIC, written by
+                        ## clients (fetch-add), read by the actor
+    answered: int       ## the actor's own copy of the last id it answered, so
+                        ## the per-message check is one load of `probe` and one
+                        ## compare against a plain field only the actor touches
+    ackId: int          ## ATOMIC: `answered`, published for the clients
+    ackAt: int64        ## ATOMIC: the ACTOR'S clock (ns) at that answer. Read
+                        ## here and nowhere on the message path.
 
 var gMySlot {.threadvar.}: ptr ActorSlot
   ## The slot this thread serves, so the emitted drain can reach its waiters
@@ -860,16 +872,31 @@ proc checkWaiters(slot: ptr ActorSlot) =
     discard close(fd)
   tuckDrop(woken)
 
+proc nowNs(): int64 {.inline.} = getMonoTime().ticks
+
+proc answerProbe(slot: ptr ActorSlot) {.inline.} =
+  ## Reply to a pending ping, on the actor's own thread, at a message
+  ## boundary. The cost when nobody is pinging is one relaxed load and one
+  ## compare; the clock is read only to answer.
+  let p = atomicLoadN(addr slot.probe, ATOMIC_RELAXED)
+  if p == slot.answered: return
+  slot.answered = p
+  atomicStoreN(addr slot.ackAt, nowNs(), ATOMIC_RELAXED)
+  atomicStoreN(addr slot.ackId, p, ATOMIC_RELEASE)
+
 proc tuckCheckWaiters*() =
   ## Emitted in the drain loop after each handled message, so a predicate sees
   ## the EXACT moment it becomes true. Checking only once per drain pass would
-  ## miss a condition that went true and false again inside one batch.
+  ## miss a condition that went true and false again inside one batch. A
+  ## pending ping is answered at the same boundary.
   ##
   ## Nothing to do in single mode: a waiter there is main, on this same
   ## thread, re-testing its own predicate between scheduler passes — there is
   ## no other thread to hand the answer to.
   when not TuckActorsSingle:
-    if gMySlot != nil: checkWaiters(gMySlot)
+    if gMySlot != nil:
+      answerProbe(gMySlot)
+      checkWaiters(gMySlot)
 
 proc actorMain(slot: ptr ActorSlot) {.thread.} =
   ## One actor, forever. Its own scheduler and reactor, so an `[io]` call in a
@@ -886,6 +913,7 @@ proc actorMain(slot: ptr ActorSlot) {.thread.} =
   var spinBudget = ActorSpinMin   ## local: each actor earns its own
   while true:
     if slot.drain(): continue
+    answerProbe(slot)         # a ping that found the actor idle or spinning
     checkWaiters(slot)        # also after a pass that did nothing: a predicate
                               # registered while idle must be answered
     # Spin before committing to the park, for as long as spinning has been
@@ -977,6 +1005,7 @@ proc tuckStartActor*(drain: DrainProc): pointer {.discardable.} =
     slot.co = newCoroutine(proc() {.gcsafe.} = ({.cast(gcsafe).}:
       while true:
         if not slot.drain():
+          answerProbe(slot)
           slot.queued = false
           coroYield()), TuckStackSize)
     slot.queued = true
@@ -1143,6 +1172,53 @@ proc tuckWaitOn*(handle: pointer, pred: proc(): bool) =
       discard pumpOnce()   # runs a task, or polls the reactor for 1ms
   discard close(fds[0])
   deallocShared(w)
+
+proc pingStep() =
+  ## One step of a client waiting on a probe: let something else run, the way
+  ## a send waiting for room does (tuckAwaitRoom).
+  if inCoroutine(): tuckYield()
+  else:
+    when TuckActorsSingle: discard pumpOnce()
+    else:
+      if hasPending(): discard runNext()
+      else: discard posix.sched_yield()
+
+proc tuckPingNs*(handle: pointer, withinMs: int): int64 =
+  ## `Actor.pingUs` — the delay, in ns, from this call to the moment the actor
+  ## answered, read from the ACTOR'S clock; -1 when no answer came in
+  ## `withinMs`.
+  ##
+  ## The probe is a word in the actor's slot (see ActorSlot), not a message: it
+  ## does not wait behind the mailbox and runs no handler, so a reply at all
+  ## means the actor's loop is turning, and a late one means it was inside a
+  ## handler. The wait is on the client, which supplies the deadline.
+  ##
+  ## A parked actor is woken the way a send wakes it. Probes need no lock:
+  ## each client takes its own id and waits for `ackId` to reach it, so two
+  ## clients at once are both answered by the next boundary.
+  if handle == nil: return -1
+  let slot = cast[ptr ActorSlot](handle)
+  let t0 = nowNs()
+  let deadline = t0 + int64(withinMs) * 1_000_000
+  let id = atomicAddFetch(addr slot.probe, 1, ATOMIC_ACQ_REL)
+  when TuckActorsSingle:
+    tuckNotifySend(handle)
+  else:
+    wakeSlot(slot)
+  while atomicLoadN(addr slot.ackId, ATOMIC_ACQUIRE) < id:
+    if nowNs() >= deadline: return -1
+    pingStep()
+  # Judged by the ACTOR'S stamp, not by when this loop noticed: in single mode
+  # the actor runs on this very thread, so a handler that blocks it also blocks
+  # the deadline check, and the answer arrives "in time" only because nothing
+  # could look sooner. A reply stamped after the deadline is no answer.
+  let at = atomicLoadN(addr slot.ackAt, ATOMIC_RELAXED)
+  if at > deadline: return -1
+  max(0'i64, at - t0)
+
+proc tuckAlive*(handle: pointer, withinMs: int): bool =
+  ## `Actor.alive` — did the actor answer a probe within `withinMs`.
+  tuckPingNs(handle, withinMs) >= 0
 
 proc tuckDrainActors*() =
   ## Wait until every actor has emptied its mailbox. Emitted at the END of

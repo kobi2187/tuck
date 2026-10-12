@@ -196,6 +196,12 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 - **`readLine` is on the worker but need not be.** stdin has real readiness, so
   it could reach the reactor like a socket. The worker was the fix that removed
   the hang, not the right long-term shape.
+- **Liveness has no queue-depth reading and no `waitUntil` timeout.**
+  `Actor.alive` / `Actor.pingUs` (LANGUAGE-OVERVIEW §10) answer "is the loop
+  turning, and how late" from a slot word that passes the mailbox. Issue #74
+  also asks for "how far behind" (a mailbox count) and an optional timeout on
+  `Actor.waitUntil`; neither is built. The `[urgent]` mailbox (ROADMAP
+  2026-09-28) is a separate, larger change and not needed by the ping.
 - **Typed select sources.** `on select` lowers `read <fd>` / `timeout <ms>`
   only. Blocks example 16 (see B).
 - **The D runtime has no networking.** `listen`, `accept`, `connect`,

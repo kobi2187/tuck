@@ -826,6 +826,43 @@ gone entirely (`tests/suites/actor_result.nim`).
 > mailboxes. A generic actor nobody instantiates is refused (`TK-TY28`), not
 > dropped (`tests/suites/declarations.nim`).
 
+### Liveness — `Actor.alive` and `Actor.pingUs`
+
+Every actor answers two built-in calls, from any client, with no code in the
+actor and nothing to declare:
+
+```tuck
+if not Worker.alive {withinMs: 200}:        # bool: did it answer in time?
+  ...
+let d = Worker.pingUs {withinMs: 200}       # ?int: the delay, in microseconds
+if d.ok: ...
+```
+
+A ping is **not a message.** It is a word in the actor's slot, so it does not
+wait behind the mailbox and runs no handler; the actor's loop answers it at the
+next message boundary (or at once if idle, waking it if parked) with the
+actor's own clock. So an answer at all means the loop is turning, and a late one
+means the actor was inside a handler: the difference between *stuck* and *slow*.
+`pingUs` is that delay; absent means no answer within `withinMs`, and
+`alive` is "an answer arrived in time". The client chooses the deadline.
+
+Measured on a long handler (a billion-iteration loop): `alive {withinMs: 100}` is
+false while it runs and true after, on all three backends
+(`tests/suites/actor_heartbeat.nim`). Notes:
+
+- The cost to the actor is one relaxed load and one compare per message; the
+  clock is read only to answer.
+- An actor that declares its own `alive` or `pingUs` keeps it; the built-in
+  steps aside.
+- `--actors:single` runs the actor on the caller's thread, so a blocked
+  handler delays the reply rather than letting the call time out; the reply's
+  timestamp still decides, so `alive` is false and `pingUs` absent when it
+  came late.
+- Progress is not a member: expose the field and test it
+  (`Worker.processed > n` in a `waitUntil`).
+- A queue-depth reading (how far behind the mailbox is) and a timeout on
+  `Actor.waitUntil` are not built; see issue #74.
+
 ### Tasks — async that looks synchronous
 
 ```tuck

@@ -21,6 +21,7 @@ import "core:c"
 import "core:container/queue"
 import "core:sys/linux"
 import "core:thread"
+import "core:time"
 import "core:sync"
 import "base:intrinsics"
 import "base:runtime"
@@ -590,6 +591,15 @@ ActorSlot :: struct {
 	                 // whole fast path of a send, so it must be per-actor
 	                 // rather than a global anything.
 	waiters: [dynamic]^Waiter,
+	// The liveness channel (`Actor.pingUs` / `Actor.alive`). NOT a message: a
+	// probe is a word in the slot, so it passes whatever waits in the mailbox
+	// and runs no handler.
+	probe:    int,   // last probe id handed out. ATOMIC: clients fetch-add it
+	answered: int,   // the actor's own copy of the last id it answered, so the
+	                 // per-message check is one load and one compare
+	ackId:    int,   // ATOMIC: `answered`, published for the clients
+	ackAt:    i64,   // ATOMIC: the ACTOR's clock (ns) at that answer; read only
+	                 // to answer, never on the message path
 }
 
 // How far an idle actor re-checks its mailbox before parking. Adaptive,
@@ -646,10 +656,31 @@ checkWaiters :: proc(slot: ^ActorSlot) {
 	}
 }
 
+@(private)
+nowNs :: proc() -> i64 {
+	return time.tick_now()._nsec
+}
+
+@(private)
+answerProbe :: proc(slot: ^ActorSlot) {
+	// Reply to a pending ping on the actor's own thread, at a message
+	// boundary. Nobody pinging costs one relaxed load and one compare; the
+	// clock is read only to answer.
+	p := intrinsics.atomic_load_explicit(&slot.probe, .Relaxed)
+	if p == slot.answered do return
+	slot.answered = p
+	intrinsics.atomic_store_explicit(&slot.ackAt, nowNs(), .Relaxed)
+	intrinsics.atomic_store_explicit(&slot.ackId, p, .Release)
+}
+
 // Emitted in the drain loop after each handled message, so a predicate sees the
-// EXACT moment it becomes true rather than once per batch.
+// EXACT moment it becomes true rather than once per batch. A pending ping is
+// answered at the same boundary.
 tuckCheckWaiters :: proc() {
-	if gMySlot != nil do checkWaiters(gMySlot)
+	if gMySlot != nil {
+		answerProbe(gMySlot)
+		checkWaiters(gMySlot)
+	}
 }
 
 @(private)
@@ -665,6 +696,7 @@ actorMain :: proc(t: ^thread.Thread) {
 	spinBudget := ActorSpinMin   // each actor earns its own
 	for {
 		if slot.drain() do continue
+		answerProbe(slot)   // a ping that found the actor idle or spinning
 		checkWaiters(slot)
 		// Spin for as long as spinning has been paying. A producer still
 		// running hands over more work within nanoseconds, while a park costs
@@ -769,6 +801,46 @@ tuckWaitOn :: proc(handle: rawptr, pred: proc() -> bool) {
 		}
 	}
 	linux.close(fds[0])
+}
+
+// `Actor.pingUs {withinMs: n}` — the delay from this call to the moment the
+// actor answered, in microseconds, read from the ACTOR's clock; absent when no
+// answer came in `withinMs`. The probe is a word in the actor's slot (see
+// ActorSlot), not a message: it does not wait behind the mailbox and runs no
+// handler, so any answer means the actor's loop is turning and a late one means
+// it was inside a handler. Each client takes its own id and waits for `ackId`
+// to reach it, so no lock and two clients at once are both answered.
+tuckPingUs :: proc(handle: rawptr, withinMs: int) -> TuckResult(int) {
+	if handle == nil do return tnone(int)
+	slot := (^ActorSlot)(handle)
+	t0 := nowNs()
+	deadline := t0 + i64(withinMs) * 1_000_000
+	id := intrinsics.atomic_add(&slot.probe, 1) + 1
+	// Wake it the way a send does: the probe may be all there is to do.
+	sync.lock(&slot.lock)
+	slot.pending = true
+	sync.cond_signal(&slot.cond)
+	sync.unlock(&slot.lock)
+	for intrinsics.atomic_load_explicit(&slot.ackId, .Acquire) < id {
+		if nowNs() >= deadline do return tnone(int)
+		if inCoroutine() {
+			coroYield()
+		} else if hasPending() {
+			runNext()
+		} else {
+			intrinsics.cpu_relax()
+		}
+	}
+	// Judged by the actor's stamp: a reply stamped after the deadline is no
+	// answer, however soon this loop got to look at it.
+	at := intrinsics.atomic_load_explicit(&slot.ackAt, .Relaxed)
+	if at > deadline do return tnone(int)
+	return tok(int(max(i64(0), at - t0) / 1000))
+}
+
+// `Actor.alive {withinMs: n}` — did the actor answer a probe in time.
+tuckAlive :: proc(handle: rawptr, withinMs: int) -> bool {
+	return ok(tuckPingUs(handle, withinMs))
 }
 
 tuckDrainActors :: proc() {
