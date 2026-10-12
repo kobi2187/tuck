@@ -621,6 +621,35 @@ proc registryHandlers*(m: Module, d: Decl, v: VariantDef): seq[Decl] =
     if decl != nil and decl.kind == dkFn and writtenName(decl) == want:
       result.add decl
 
+proc handlerLinkSymbol*(res: Resolution, m: Module, d: Decl): string =
+  ## The symbol a registry handler is exported under, when its registry is
+  ## declared in ANOTHER module; "" otherwise. The registry's raise proc lives
+  ## with the registry and cannot import a module that imports it, so it
+  ## reaches such a handler by this name at link time instead. The compiler
+  ## knows every handler of the program (`handlerSites`), so the name is a
+  ## position in that list and both ends compute the same one.
+  if d == nil or d.kind != dkFn: return ""
+  let key = writtenName(d)
+  let dot = key.find('.')
+  if dot < 0 or not res.handlerSites.hasKey(key): return ""
+  let reg = key[0 ..< dot]
+  for r in m.decls(dkRegistry):
+    if writtenName(r) == reg: return ""
+  for k, id in res.handlerSites[key]:
+    if id == d.id: return "tuck_handler_" & key.replace('.', '_') & "_" & $k
+  ""
+
+proc foreignHandlerSymbols*(res: Resolution, m: Module, d: Decl,
+                            v: VariantDef): seq[string] =
+  ## The link symbols of this event's handlers that live in other modules —
+  ## what the registry's raise proc calls besides its own module's handlers.
+  let key = writtenName(d) & "." & v.name
+  var local = initHashSet[NodeId]()
+  for h in registryHandlers(m, d, v): local.incl(h.id)
+  for k, id in res.handlerSites.getOrDefault(key):
+    if id notin local:
+      result.add("tuck_handler_" & key.replace('.', '_') & "_" & $k)
+
 proc handlerProcName*(handler: Decl): string =
   ## A handler is declared as `Registry.Event`, which is no backend's
   ## identifier — the dot becomes an underscore, as its declaration does.

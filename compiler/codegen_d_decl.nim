@@ -171,6 +171,10 @@ proc dRegistryHandlerCalls*(ctx: DCodegenCtx, d: Decl,
     for f in v.fields: argNames.add(f.name)
     calls.add("    " & handlerProcName(decl) & "(" &
               argNames.join(", ") & ");")
+  for sym in foreignHandlerSymbols(ctx.res, ctx.module, d, v):
+    var argNames: seq[string]
+    for f in v.fields: argNames.add(f.name)
+    calls.add("    " & sym & "(" & argNames.join(", ") & ");")
   if calls.len > 0: calls.join("\n") & "\n" else: ""
 
 proc dActorFieldLines*(ctx: var DCodegenCtx, d: Decl): seq[string] =
@@ -663,6 +667,14 @@ proc genDRegistry*(ctx: var DCodegenCtx, d: Decl): string =
   ## may call a handler declared after it — no forward declarations needed.
   result = ctx.dRegistryEventStruct(d) & "\n"
   result.add("__gshared " & d.name & " latest" & d.name & ";\n\n")
+  # Handlers in other modules are reached by link symbol (A47): declared here
+  # without a body, defined and exported where they are written.
+  for v in d.variants:
+    var params: seq[string]
+    for f in v.fields: params.add(ctx.dType(f.typ) & " " & f.name)
+    for sym in foreignHandlerSymbols(ctx.res, ctx.module, d, v):
+      result.add("pragma(mangle, \"" & sym & "\") void " & sym & "(" &
+                 params.join(", ") & ");\n")
   for v in d.variants:
     result.add(ctx.dRegistryRaiseProc(d, v))
 
@@ -869,6 +881,8 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   let emitName = if movedP != "": movedName(fnName) else: fnName
   if movedP != "":
     result = ctx.genDTwinWrapper(d, fnName, tmplStr, retStr, movedP, refSelf)
+  let link = handlerLinkSymbol(ctx.res, ctx.module, d)
+  if link != "": result.add("pragma(mangle, \"" & link & "\")\n")
   result.add(ctx.dVisibility(d) & ctx.dCallConv(d) & retStr & " " & emitName & tmplStr & "(" &
              ctx.genDParams(d.fnParams, refSelf) & ") {\n")
   let savedMoved = ctx.movedParam

@@ -22,14 +22,14 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (5)
+## A. Open bugs (4)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
 
 **A27–A37 — constructs that do not cross a module boundary (R11 scan,
-2026-09-28).** A25, A26, A28, A29, A30, A31, A32, A33, A35, A36 and A37 are fixed; their pins are
+2026-09-28).** A25, A26, A28, A29, A30, A31, A32, A33, A35, A36, A37 and A47 are fixed; their pins are
 `bugFixed` in `cross_module`. Ruled: importing anything should work as well as the same
 module. Each construct was built declared in `lib` and used from the
 importer on Nim, Odin and D, against a one-module control that passes; these
@@ -39,6 +39,11 @@ failed. Tests: `cross_module`, each named "R11: …".
   satisfiers, emitted beside the interface, and the interface's module cannot
   import the importer that holds a satisfier. Needs a ruling on open-world
   dispatch (a vtable or fat pointer) or on where the union is emitted.
+- **A34** (Odin, D) a group bound whose provider is in another module — the
+  bounded fn's module cannot name it, because Odin and D resolve the
+  requirement where the generic is written. Nim works. Needs the provider
+  passed to the bounded fn (an extra proc parameter in Odin, an `alias`
+  template parameter in D). A14's sibling.
 - **A34** (Odin, D) a group bound whose provider is in another module — the
   bounded fn's module cannot name it, because Odin and D resolve the
   requirement where the generic is written. Nim works. Needs the provider
@@ -257,8 +262,16 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   generated beside the registry and was called unqualified from the importer.
   `ast_query.declaresCallable` now counts a registry's raise procs
   (`raiseProcName`, one spelling for the lowering and the three emitters), so
-  the call is qualified like any foreign fn. A handler in the registry's own
-  module runs; a handler in the importer is A47.
+  the call is qualified like any foreign fn.
+- **A47 — a registry handler in a module other than the registry's.** The raise
+  proc lives with the registry and cannot import a module that imports it, so
+  the handler was silently dropped on every backend. The compiler knows every
+  handler of the program (`Resolution.handlerSites`), so the raise proc now
+  declares each foreign handler by a LINK SYMBOL (`handlerLinkSymbol`: the
+  event and the handler's place in that list) and the handler's module exports
+  it: Nim `importc`/`exportc`, D `pragma(mangle)`, Odin a `foreign` block and
+  `@(export, link_name)`. No import, no table at run time. This is the
+  mechanism A27 and A34 need too.
 - **A18, A32 — an actor declared in an imported module.** The importer saw
   neither its fields nor its handlers ("no field 'total' on type Acc"), and on
   Odin and D nothing started it. The importer now holds the actor's SHAPE

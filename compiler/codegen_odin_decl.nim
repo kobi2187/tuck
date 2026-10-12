@@ -219,7 +219,11 @@ proc fnHeader*(ctx: var OdinCodegenCtx, d: Decl, retTypeStr, ind: string): strin
   # it to the file, which is the closest thing Odin has to a module-private
   # name and is exactly the scope one Tuck module occupies. Absent for an
   # exported name, and for every module with no public block.
-  let visPrefix = if isExportedDecl(ctx.module, d): ""
+  # A registry handler whose registry is in another module is exported under
+  # a link symbol the registry's raise proc declares (A47).
+  let link = handlerLinkSymbol(ctx.res, ctx.module, d)
+  let visPrefix = if link != "": ind & "@(export, link_name=\"" & link & "\")\n"
+                  elif isExportedDecl(ctx.module, d): ""
                   else: ind & "@(private)\n"
   visPrefix & inlinePrefix & ind & d.name.replace(".", "_") & " :: proc " &
     ctx.cCallbackConvention(d) & "(" & ctx.fnParamList(d) & ")" & retStr & " {"
@@ -837,7 +841,29 @@ proc registryHandlerCalls*(ctx: OdinCodegenCtx, d: Decl, v: VariantDef,
     var argNames: seq[string]
     for f in v.fields: argNames.add(f.name)
     calls.add(ind & "\t" & handlerProcName(decl) & "(" & argNames.join(", ") & ")")
+  for sym in foreignHandlerSymbols(ctx.res, ctx.module, d, v):
+    var argNames: seq[string]
+    for f in v.fields: argNames.add(f.name)
+    calls.add(ind & "\t" & sym & "(" & argNames.join(", ") & ")")
   if calls.len > 0: calls.join("\n") & "\n" else: ""
+
+proc foreignHandlerDecls(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## Body-less declarations of this registry's handlers that live in other
+  ## modules, linked by symbol (A47). A foreign block, since Odin refuses two
+  ## definitions of one link name; `system:c` names no library, it only makes
+  ## the symbols resolve at link time.
+  var decls: seq[string]
+  for v in d.variants:
+    var params: seq[string]
+    for f in v.fields: params.add(f.name & ": " & ctx.odinType(f.typ))
+    for sym in foreignHandlerSymbols(ctx.res, ctx.module, d, v):
+      decls.add(ind & "\t@(link_name=\"" & sym & "\") " & sym & " :: proc(" &
+                params.join(", ") & ") ---")
+  if decls.len == 0: return ""
+  let lib = "tuck_link_" & d.name
+  ind & "foreign import " & lib & " \"system:c\"\n" &
+    ind & "@(default_calling_convention=\"odin\")\n" &
+    ind & "foreign " & lib & " {\n" & decls.join("\n") & "\n" & ind & "}\n\n"
 
 proc registryRaiseProc*(ctx: var OdinCodegenCtx, d: Decl, v: VariantDef,
                        ind: string): string =
@@ -863,6 +889,7 @@ proc genRegistry*(ctx: var OdinCodegenCtx, d: Decl): string =
   let ind = "  ".repeat(ctx.indent)
   result = ctx.registryEventStruct(d, ind) & "\n"
   result.add(ind & "latest" & d.name & ": " & d.name & "\n\n")
+  result.add(ctx.foreignHandlerDecls(d, ind))
   for v in d.variants:
     result.add(ctx.registryRaiseProc(d, v, ind))
 

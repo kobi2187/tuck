@@ -42,6 +42,11 @@ proc collectNames(prog: seq[LoadedModule]) =
           fail("Type Error: '" & d.name & "' is declared as " & what &
                " more than once in this program", d.span)
         semLayer.table[d.name] = d
+  for lm in prog:
+    for d in lm.m.decls(dkFn):
+      # `on Registry.Event(...)`: the only top-level fn whose name has a dot.
+      if '.' in d.name and not isImportedCopy(d):
+        semLayer.handlerSites.mgetOrPut(d.name, @[]).add(d.id)
   collect(dkActor, actorNames, "an actor")
   collect(dkRegister, registerNames, "a register")
   collect(dkRegistry, registryNames, "a registry")

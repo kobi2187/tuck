@@ -924,8 +924,8 @@ on AppEvents.Low({left: int}) [io]:
   t.bugFixed "R11: an imported registry is raised on every backend"
 
   # The handler in the IMPORTER: the raise proc is lib's and cannot call into
-  # a module that imports lib, so on every backend the handler silently never
-  # runs. Needs a handler table the importer fills at start-up.
+  # a module that imports lib, so it reaches the handler by a link symbol the
+  # importer exports (handlerLinkSymbol).
   t.src """
 import console
 import lib
@@ -941,6 +941,28 @@ fn main() -> int [io]:
   | Low({left: int})
 """)
   t.quietly: t.hostRuns("A47: a registry handler in a module other than the registry's runs", 0, "low")
-  t.bugOpen "A47: a registry handler in a module other than the registry's runs"
+  t.bugFixed "A47: a registry handler in a module other than the registry's runs"
+
+  # Handlers on both sides of the module boundary: both run.
+  t.src """
+import console
+import lib
+
+on AppEvents.Low({left: int}) [io]:
+  {text: "importer"} console::printLine
+
+fn main() -> int [io]:
+  AppEvents.raise Low {left: 3}
+  return 0
+"""
+  t.addFile("lib.tuck", """import console
+
+registry AppEvents:
+  | Low({left: int})
+
+on AppEvents.Low({left: int}) [io]:
+  {text: "lib"} console::printLine
+""")
+  t.hostRuns "A47: handlers in the registry's module and in an importer both run", 0, "(?s)lib.*importer|importer.*lib"
 
   t.finish()

@@ -30,6 +30,15 @@ proc genPendingStub*(d: Decl): string =
          " =\n  stderr.writeLine(\"TUCK PENDING: " & d.writtenName &
          " invoked (not implemented)\")\n"
 
+proc nimFnPragmas*(inline: bool, linkSymbol: string): string =
+  ## ` {.inline.}`, and the export a registry handler needs when its registry
+  ## is in another module (handlerLinkSymbol). One spelling for the definition
+  ## and the forward declaration, which Nim requires to agree.
+  var pr: seq[string]
+  if inline: pr.add("inline")
+  if linkSymbol != "": pr.add("exportc: \"" & linkSymbol & "\"")
+  if pr.len == 0: "" else: " {." & pr.join(", ") & ".}"
+
 proc fnHeaderNim*(name, genericStr: string, params: seq[string],
                   retTypeStr, inlineStr: string, exported = true): string =
   ## A fn's Nim signature, without the trailing ` =`. Shared by the definition
@@ -149,7 +158,8 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
   let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
   # Generic fns pass their type params straight through — Nim monomorphizes
   let genericStr = if d.fnGenerics.len > 0: "[" & d.fnGenerics.join(", ") & "]" else: ""
-  let inlineStr = if d.isInline: " {.inline.}" else: ""
+  let inlineStr = nimFnPragmas(d.isInline,
+                               handlerLinkSymbol(ctx.res, ctx.module, d))
   let header = fnHeaderNim(fnNameSanitized, genericStr, params, retTypeStr,
                            inlineStr,
                            isExportedDecl(ctx.module, d)) & " ="
@@ -580,6 +590,14 @@ proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
       for f in v.fields: argNames.add(f.name)
       handlerCalls.add("  " & handlerProcName(decl) & "(" & argNames.join(", ") & ")")
 
+    # Handlers in other modules are reached by link symbol (A47): declared
+    # here without a body, defined and exported where they are written.
+    for sym in foreignHandlerSymbols(ctx.res, ctx.module, d, v):
+      raiseProcsStr.add("proc " & sym & "*(" & paramStr & ") {.importc: \"" &
+                        sym & "\".}\n")
+      var argNames: seq[string]
+      for f in v.fields: argNames.add(f.name)
+      handlerCalls.add("  " & sym & "(" & argNames.join(", ") & ")")
     let handlerInvokes = if handlerCalls.len > 0: handlerCalls.join("\n") else: "  discard"
     raiseProcsStr.add("proc " & raiseProcName(d.name, v.name) & "*(" & paramStr & ") =\n  latest" & d.name & " = " & d.name & "(" & TagField & ": " & v.name & assignStr & ")\n" & handlerInvokes & "\n\n")
 
@@ -990,7 +1008,7 @@ proc fnForwardDecls*(m: Module): string =
     let ret = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
     let gen = if d.fnGenerics.len > 0: "[" & d.fnGenerics.join(", ") & "]"
               else: ""
-    let inl = if d.isInline: " {.inline.}" else: ""
+    let inl = nimFnPragmas(d.isInline, handlerLinkSymbol(semLayer, m, d))
     result.add(fnHeaderNim(d.name.replace(".", "_"), gen, params, ret, inl,
                            isExportedDecl(m, d)) & "\n")
   if result.len > 0: result.add("\n")
