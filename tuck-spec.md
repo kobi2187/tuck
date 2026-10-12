@@ -2137,6 +2137,11 @@ actor UartDriver [queue: 8]:
     | shutdown   -> {}:  return    # only way to exit
 ```
 
+Any client can ask an actor whether it is alive with `Actor.alive {withinMs: n}`
+or how long it took to answer with `Actor.pingUs {withinMs: n}` (microseconds,
+absent on no answer). The probe bypasses the mailbox and runs no handler; the
+actor declares nothing. Implemented; see LANGUAGE-OVERVIEW §10.
+
 Only value types (copied) cross actor boundaries. No reference sharing across
 boundaries. Queue (mailbox) size is a compile-time constant — storage is sized
 from it at compile time, so a full mailbox is a fixed, known capacity, not an

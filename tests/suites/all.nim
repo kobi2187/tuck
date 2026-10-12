@@ -6,6 +6,7 @@
 ## `run*` proc and re-run it. The registry is bookkeeping, not a decision.
 
 import ../harness
+import actor_heartbeat
 import actor_mode
 import actor_result
 import auto_alias
@@ -70,6 +71,7 @@ type Entry = tuple[name: string, body: SuiteProc, quick: bool]
 # `quick` marks the check-only suites — no `tuck build`, no `odin build`. Those
 # are what tests/run --quick runs, the inner-loop gate that quick-test.sh was.
 let registry: seq[Entry] = @[
+  ("actor_heartbeat",     SuiteProc(actor_heartbeat.run),     false),
   ("actor_mode",          SuiteProc(actor_mode.run),          true),
   ("actor_result",        SuiteProc(actor_result.run),        true),
   ("auto_alias",          SuiteProc(auto_alias.run),          false),

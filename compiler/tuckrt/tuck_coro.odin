@@ -831,7 +831,10 @@ tuckPingUs :: proc(handle: rawptr, withinMs: int) -> TuckResult(int) {
 			intrinsics.cpu_relax()
 		}
 	}
+	// Judged by the actor's stamp: a reply stamped after the deadline is no
+	// answer, however soon this loop got to look at it.
 	at := intrinsics.atomic_load_explicit(&slot.ackAt, .Relaxed)
+	if at > deadline do return tnone(int)
 	return tok(int(max(i64(0), at - t0) / 1000))
 }
 

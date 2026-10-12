@@ -1208,7 +1208,13 @@ proc tuckPingNs*(handle: pointer, withinMs: int): int64 =
   while atomicLoadN(addr slot.ackId, ATOMIC_ACQUIRE) < id:
     if nowNs() >= deadline: return -1
     pingStep()
-  max(0'i64, atomicLoadN(addr slot.ackAt, ATOMIC_RELAXED) - t0)
+  # Judged by the ACTOR'S stamp, not by when this loop noticed: in single mode
+  # the actor runs on this very thread, so a handler that blocks it also blocks
+  # the deadline check, and the answer arrives "in time" only because nothing
+  # could look sooner. A reply stamped after the deadline is no answer.
+  let at = atomicLoadN(addr slot.ackAt, ATOMIC_RELAXED)
+  if at > deadline: return -1
+  max(0'i64, at - t0)
 
 proc tuckAlive*(handle: pointer, withinMs: int): bool =
   ## `Actor.alive` — did the actor answer a probe within `withinMs`.

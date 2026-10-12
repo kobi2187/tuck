@@ -1118,7 +1118,10 @@ long tuckPingNs(void* handle, long withinMs)
         else if (readyCount > 0) stepOne();
         else Thread.yield();
     }
+    // Judged by the actor's stamp: a reply stamped after the deadline is no
+    // answer, however soon this loop got to look at it.
     immutable at = atomicLoad!(MemoryOrder.raw)(slot.ackAt);
+    if (at > deadline) return -1;
     return at > t0 ? at - t0 : 0;
 }
 
