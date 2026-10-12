@@ -17,12 +17,13 @@ TRec_fd!(long) openSource(long ms) {
 
 
 TRec_code!(long) tuckˑtaskˑreadOrGiveUp(long fd) {
+    long tuckˑvˑcode = 0L;
     if (rt.tuckAwaitReadOrTimeout(fd, time.tuckˑfnˑms(100L))) {
-        return TRec_code!(long)(code: 1L);
+        tuckˑvˑcode = 1L;
     } else {
-        return TRec_code!(long)(code: 2L);
+        tuckˑvˑcode = 2L;
     }
-    return typeof(return).init;
+    return TRec_code!(long)(code: tuckˑvˑcode);
 }
 
 long tuckˑfnˑmain() {

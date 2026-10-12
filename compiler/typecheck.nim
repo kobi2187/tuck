@@ -146,9 +146,8 @@
 #   interior of an imported module at all. The cheapest pass is the one that
 #   does not run.
 #
-# MEASURE, DO NOT GUESS: benches/bench_phases.nim times each phase in
-# isolation against a generated program, re-parsing between mutating phases so
-# the work is real.
+# MEASURE, DO NOT GUESS: time each phase in isolation against a generated
+# program, re-parsing between mutating phases so the work is real.
 # ---------------------------------------------------------------------------
 import ast, semantics, lowering, tables, strutils, sets, options
 import resolution
@@ -4875,13 +4874,15 @@ proc synthRaise(tc: var TypeChecker, e: Expr): Type =
   # position has to carry the fn's real return type or it cannot satisfy it.
   tc.currentRet
 
-proc failIfBadActorArm(arm: SelectArm) =
-  ## TK-AC10..12: an actor's `on select` arm is a row in the table of messages
-  ## the actor answers — one line or one call (which may sit on the next
-  ## line), void, and nothing that ends or leaves a loop, because there is none.
+proc failIfBadSelectArm(arm: SelectArm) =
+  ## TK-AC10..12: an `on select` arm — an actor's or a task's — is a row in a
+  ## table of what is waited on: one line or one call (which may sit on the
+  ## next line), void, and nothing that ends or leaves anything. A task that
+  ## wants a value out of a race sets a local in the arm and returns it AFTER
+  ## the select.
   if arm.source == "shutdown":
-    fail(dcAcShutdown, "an actor has no `shutdown` arm: it lives as long as " &
-         "the program", arm.span)
+    fail(dcAcShutdown, "there is no `shutdown` arm: an actor lives as long " &
+         "as the program", arm.span)
   if arm.body != nil and arm.body.kind == exkBlock and arm.body.stmts.len > 1:
     fail(dcAcArmShape, "the arm '" & arm.source & "' has " &
          $arm.body.stmts.len & " statements; an arm is one line or one call. " &
@@ -4988,6 +4989,7 @@ proc synthSelect(tc: var TypeChecker, e: Expr): Type =
   ## bodies; the select's value is a branch outcome — leave it unknown, the
   ## bodies carry the returns.
   for arm in e.selArms:
+    failIfBadSelectArm(arm)
     failIfUnlowerableArm(arm)
     if arm.arg != nil: discard tc.synthesize(arm.arg)
     discard tc.synthesize(arm.body)
@@ -5802,7 +5804,7 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     # checked — a `..` step in one never resolved, a construction was never
     # typed, and each backend printed its own garbled guess.
     for arm in d.selectArms:
-      failIfBadActorArm(arm)
+      failIfBadSelectArm(arm)
       tc.checkFnBody(arm.source, arm.binding, nil, arm.body)
   # Exhaustive, so a new DeclKind has to be decided here (CLAUDE.md).
   of dkConst: discard       # bound and checked by bindConsts, before any body

@@ -47,9 +47,6 @@ actor Watchdog [queue: 4]:
 
   on feed() -> void:
     return
-
-  on select:
-    | shutdown -> {}: isRunning = false
 ```
 
 ## In use

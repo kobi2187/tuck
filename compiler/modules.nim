@@ -42,7 +42,7 @@
 # bodies, because now it has to emit code for them. Same loader, two depths.
 #
 # WHY THIS BEATS OPTIMIZING THE PASSES. Per-phase tuning is worth a few percent
-# (see benches/bench_phases.nim: no single phase exceeds ~30% of the total).
+# (measured: no single phase exceeded ~30% of the total).
 # Not loading the import closure at all is worth however large that closure
 # is — unbounded, and it grows with the project rather than the file. The
 # fastest pass is the one that does not run.

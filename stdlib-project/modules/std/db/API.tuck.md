@@ -114,9 +114,6 @@ actor Db [queue: 32]:
 
   on deleteToken({token: i64}) -> void:
     return
-
-  on select:
-    | shutdown -> {}: isOpen = false
 ```
 
 ## In use

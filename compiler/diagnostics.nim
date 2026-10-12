@@ -177,9 +177,9 @@ type
     dcAcUnknownAttr = "TK-AC07"         ## an actor attribute other than queue and on_full
     dcAcSlabOwner = "TK-AC08"           ## a slab reached by an owner other than its own
     dcAcRefCrossing = "TK-AC09"         ## a slab reference crossing an actor boundary
-    dcAcShutdown = "TK-AC10"            ## an actor `shutdown` arm, or a send of `shutdown`
-    dcAcArmShape = "TK-AC11"            ## an actor `on select` arm longer than one line or call
-    dcAcArmReturn = "TK-AC12"           ## an actor `on select` arm that `return`s
+    dcAcShutdown = "TK-AC10"            ## a `shutdown` arm, or a send of `shutdown`
+    dcAcArmShape = "TK-AC11"            ## an `on select` arm longer than one line or call
+    dcAcArmReturn = "TK-AC12"           ## an `on select` arm that `return`s
     dcMeSizeCount = "TK-ME01"           ## a pool/arena size or count is not positive
     dcMeArenaInert = "TK-ME02"          ## RETIRED 2026-10-04: the arena is built
     dcMeSlabInValue = "TK-ME03"         ## a slab declared inside an object or mixin
@@ -830,17 +830,19 @@ proc ruleExplanation(d: DiagCode): string =
     "built. Fix: remove the arm, and if the actor must cease to act, give " &
     "it a flag a message sets and have the other arms check it."
   of dcAcArmShape:
-    "An actor's `on select` arm is ONE line or ONE call; the call may sit " &
-    "on the next line. A multi-line arm reads as a handler body hidden in a " &
-    "table of messages, and the table is what a reader scans to see what the " &
-    "actor answers. Fix: move the work into a member `fn` of the actor and " &
-    "make the arm call it: `| done -> {}: {} finish`."
+    "An `on select` arm — an actor's or a task's — is ONE line or ONE call; " &
+    "the call may sit on the next line. A multi-line arm reads as a handler " &
+    "body hidden in a table of what is waited on, and the table is what a " &
+    "reader scans. Fix: move the work into a fn (an actor's member fn, or a " &
+    "task's helper) and make the arm call it: `| done -> {}: {} finish`."
   of dcAcArmReturn:
-    "An actor's `on select` arm is void and does not end anything: there is " &
-    "no listening loop for it to leave and no caller to hand a value to " &
-    "(a message is fire-and-forget, TK-AC02). `return` in an arm therefore " &
-    "means nothing. Fix: remove it; set a field if the actor should behave " &
-    "differently from now on."
+    "An `on select` arm is void and ends nothing: an actor has no listening " &
+    "loop for it to leave and no caller to hand a value to (a message is " &
+    "fire-and-forget, TK-AC02), and a task returns from the task body, not " &
+    "from a row of the select. Fix: remove the `return`. A task that wants " &
+    "a value out of a race sets a local in the arm and returns it after the " &
+    "select: `var code = 0`, `| read fd -> {}: code = 1`, then " &
+    "`return {code: code}`."
   of dcAcHandlerReturn:
     "A handler declared a return type, but an actor message is " &
     "fire-and-forget (spec 9.1) and there is no reply channel: correlation " &

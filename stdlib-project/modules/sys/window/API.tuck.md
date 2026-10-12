@@ -62,9 +62,6 @@ actor Window [queue: 32]:
 
   on ackEvents({upTo: i64}) -> void:
     return           # drops every buffered event with seq <= upTo
-
-  on select:
-    | shutdown -> {}: isOpen = false
 ```
 
 ## In use

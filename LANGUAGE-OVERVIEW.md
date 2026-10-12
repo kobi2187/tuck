@@ -902,10 +902,16 @@ let r = {base: 21} compute   # bound => awaited
 
 ```tuck
 task readOrGiveUp({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd          -> {}:  return {code: 1}
-    | timeout {30.ms}  -> {}:  return {code: 2}
+    | read fd          -> {}:  code = 1
+    | timeout {30.ms}  -> {}:  code = 2
+  return {code: code}
 ```
+
+An arm is one line or one call and is void, in a task as in an actor
+(`TK-AC11`, `TK-AC12`); a value out of the race is a local the arm sets and the
+task returns after the select.
 
 **Both race outcomes are run-verified**, which is the real evidence of genuine
 non-blocking I/O: source at 500ms vs a 30ms deadline → exit 2; source at 5ms vs

@@ -65,17 +65,14 @@ storage, not a loop; R12 — diagnostic codes per rule, and **arena is to be
 finished** (no longer deferred).
 
 **Waiting on the owner:**
-- R10 — RULED 2026-10-12 for ACTORS: an `on select` arm is ONE line or ONE
-  call (the call may sit on the next line), void, and cannot `return`
-  (TK-AC11/12). An actor is a singleton server that lives as long as the
-  program: no shutdown, stop or resume, no `shutdown` arm, no `send shutdown`
-  (TK-AC10) — the old `return` in it never stopped a Nim actor and would not
-  compile on Odin. Still open: do the same single-line rule and void arms apply
-  to a TASK's `on select`? A task's arm returns the task's result
-  (examples 29/30, `task_select`), and §9.3 allows a block there. Blocks #15.
+- ~~R10~~ RULED 2026-10-12, actors and tasks alike: an `on select` arm is ONE
+  line or ONE call (the call may sit on the next line), void, and cannot
+  `return` (TK-AC11/12). An actor is a singleton server that lives as long as
+  the program: no shutdown, stop or resume, no `shutdown` arm, no `send
+  shutdown` (TK-AC10). A task returns a race's value from a local set in the
+  arm, after the select. Built; #15 is unblocked.
 - ~~R12 — `benches/bench_phases`: rework or delete.~~ RULED 2026-10-12:
-  delete. The files (`benches/bench_phases.nim`, `.bph`, `.bph_cg`,
-  `.bph_prof`) and the three comments pointing at them are still to go.
+  delete. Done.
 - ~~Arena — what `alloc` returns~~ ruled 2026-09-29 with the slab proposal,
   built 2026-10-04 (item 9).
 - ~~The ownership rules~~ ruled 2026-10-05, "yes to all" (Q1–Q7); now

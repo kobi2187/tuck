@@ -32,12 +32,13 @@ openSource :: proc(ms: int) -> TRec_fd(int) {
 
 
 tuckˑtaskˑreadOrGiveUp :: proc(fd: int) -> TRec_code(int) {
+  tuckˑvˑcode := 0
   if rt.tuckAwaitReadOrTimeout(fd, int(time.tuckˑfnˑms(u32(100)))) {
-    return TRec_code(int){code = 1}
+    tuckˑvˑcode = 1
   } else {
-    return TRec_code(int){code = 2}
+    tuckˑvˑcode = 2
   }
-  return {}
+  return TRec_code(int){code = tuckˑvˑcode}
 }
 
 tuckˑfnˑmain :: proc () -> int {

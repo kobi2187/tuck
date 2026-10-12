@@ -877,9 +877,11 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task readOrGiveUp({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd          -> {}:  return {code: 1}
-    | timeout {30.ms}  -> {}:  return {code: 2}
+    | read fd          -> {}:  code = 1
+    | timeout {30.ms}  -> {}:  code = 2
+  return {code: code}
 
 fn main() -> int:
   let src = {ms: 500} openSource
@@ -895,9 +897,11 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task readOrGiveUp({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd           -> {}:  return {code: 1}
-    | timeout {100.ms}  -> {}:  return {code: 2}
+    | read fd           -> {}:  code = 1
+    | timeout {100.ms}  -> {}:  code = 2
+  return {code: code}
 
 fn main() -> int:
   let src = {ms: 5} openSource

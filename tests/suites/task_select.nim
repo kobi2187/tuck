@@ -24,9 +24,11 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task race({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd        -> {}: return {code: 70}
-    | timeout {5.ms} -> {}: return {code: 90}
+    | read fd        -> {}: code = 70
+    | timeout {5.ms} -> {}: code = 90
+  return {code: code}
 
 fn main() -> int [io]:
   let slow = {ms: 500} openSource
@@ -44,9 +46,11 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task race({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd          -> {}: return {code: 7}
-    | timeout {900.ms} -> {}: return {code: 3}
+    | read fd          -> {}: code = 7
+    | timeout {900.ms} -> {}: code = 3
+  return {code: code}
 
 fn main() -> int [io]:
   let fast = {ms: 10} openSource
@@ -65,8 +69,10 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task readOne({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd -> {}: return {code: 7}
+    | read fd -> {}: code = 7
+  return {code: code}
 
 fn main() -> int [io]:
   let fast = {ms: 10} openSource
@@ -82,8 +88,10 @@ fn main() -> int [io]:
 import time
 
 task waitABit() -> {code: int} [io]:
+  var code = 0
   on select:
-    | timeout {20.ms} -> {}: return {code: 5}
+    | timeout {20.ms} -> {}: code = 5
+  return {code: code}
 
 fn main() -> int [io]:
   let r = {} waitABit
@@ -108,9 +116,11 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task race({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd        -> {}: return {code: 70}
-    | timeout {5.ms} -> {}: return {code: 90}
+    | read fd        -> {}: code = 70
+    | timeout {5.ms} -> {}: code = 90
+  return {code: code}
 
 fn main() -> int [io]:
   let slow = {ms: 500} openSource
@@ -128,9 +138,11 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task race({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd          -> {}: return {code: 7}
-    | timeout {900.ms} -> {}: return {code: 3}
+    | read fd          -> {}: code = 7
+    | timeout {900.ms} -> {}: code = 3
+  return {code: code}
 
 fn main() -> int [io]:
   let fast = {ms: 10} openSource
@@ -149,8 +161,10 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task readOne({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd -> {}: return {code: 7}
+    | read fd -> {}: code = 7
+  return {code: code}
 
 fn main() -> int [io]:
   let fast = {ms: 10} openSource
@@ -166,8 +180,10 @@ fn main() -> int [io]:
 import time
 
 task waitABit() -> {code: int} [io]:
+  var code = 0
   on select:
-    | timeout {20.ms} -> {}: return {code: 5}
+    | timeout {20.ms} -> {}: code = 5
+  return {code: code}
 
 fn main() -> int [io]:
   let r = {} waitABit
@@ -195,9 +211,11 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task race({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd        -> {}: return {code: 70}
-    | timeout {5.ms} -> {}: return {code: 90}
+    | read fd        -> {}: code = 70
+    | timeout {5.ms} -> {}: code = 90
+  return {code: code}
 
 fn main() -> int [io]:
   let slow = {ms: 30000} openSource
@@ -207,55 +225,71 @@ fn main() -> int [io]:
   t.quietly: t.hostRuns("a fired timeout returns without waiting for the loser", 90)
   t.bugFixed "a fired timeout returns without waiting for the loser"
 
-  # An arm takes a BLOCK, not only a single expression. Forcing a wakeup's
-  # work into a helper was the language asking the author to decompose for the
-  # parser's convenience rather than for the reader's — and the helper then
-  # could not branch the loop, which is the shape the web-downloader app hit.
-  #
-  # Same two lines a match arm has used all along (parser_expr.parseMatchArm).
+  # AN ARM IS ONE LINE OR ONE CALL, AND VOID (R10, ruled 2026-10-12). The
+  # table of arms is what a reader scans to see what the task waits on; work
+  # goes in a helper the arm calls, and a value out of the race is a local the
+  # arm sets and the task returns AFTER the select. This replaces the earlier
+  # ruling that an arm took a block (the web-downloader app's shape): the
+  # decomposition it called "for the parser's convenience" is now the language.
   t.src """
 import time
-import console
 
 extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task race({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
     | read fd -> {}:
-      {text: "data"} printLine
-      let n = 40
-      let m = n + 2
-      return {code: m}
-    | timeout {900.ms} -> {}:
-      {text: "deadline"} printLine
-      return {code: 9}
+      code = 42
+    | timeout {900.ms} -> {}: code = 9
+  return {code: code}
 
 fn main() -> int [io]:
   let src = {ms: 10} openSource
   let r = {fd: src.fd} race
   return r.code
 """
-  t.hostRuns "a select arm takes a multi-statement block", 42
+  t.hostRuns "an arm may be one line, or one line under it", 42
 
-  # ...and a ONE-ARMED select with a block, which lowers to straight-line
-  # code and so also has to keep Odin's trailing-return rule happy.
   t.src """
+import time
+
 extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
-task readOne({fd: int}) -> {code: int} [io]:
+task race({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
     | read fd -> {}:
       let a = 3
-      let b = 4
-      return {code: a * b}
+      code = a * 4
+    | timeout {900.ms} -> {}: code = 9
+  return {code: code}
 
 fn main() -> int [io]:
   let src = {ms: 10} openSource
-  let r = {fd: src.fd} readOne
+  let r = {fd: src.fd} race
   return r.code
 """
-  t.hostRuns "...and a one-armed select with a block too", 12
+  t.badCheck "a task arm of two statements is refused (TK-AC11)", "TK-AC11"
+
+  t.src """
+import time
+
+extern:
+  fn openSource({ms: int}) -> {fd: int} [io]
+
+task race({fd: int}) -> {code: int} [io]:
+  on select:
+    | read fd -> {}: return {code: 1}
+    | timeout {900.ms} -> {}: return {code: 9}
+
+fn main() -> int [io]:
+  let src = {ms: 10} openSource
+  let r = {fd: src.fd} race
+  return r.code
+"""
+  t.badCheck "...and a task arm that returns is refused (TK-AC12)", "TK-AC12"
 
   t.finish()

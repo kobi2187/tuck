@@ -454,7 +454,7 @@ fn main() -> int:
   t.src """
 task handleConn({conn: int}) -> void:
   on select:
-    | timeout.5s -> {}: return
+    | timeout.5s -> {}: {"x"} echo
 
 fn main() -> int:
   return 0
@@ -2076,11 +2076,13 @@ actor Acc [queue: 8]:
   total: int = 0
   done: bool = false
 
+  fn bumpTwice({n: int}) -> void:
+    var b = {n: n} Box
+    b ..bump ..bump
+    total += b.n
+
   on select:
-    | add -> {n: int}:
-      var b = {n: n} Box
-      b ..bump ..bump
-      total += b.n
+    | add -> {n: int}:  {n: n} bumpTwice
     | finish -> {}:     done = true
 
 fn ready() -> bool:

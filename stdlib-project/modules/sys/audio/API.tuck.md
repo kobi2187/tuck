@@ -45,9 +45,6 @@ actor AudioDevice [queue: 16]:
 
   on close() -> void:
     isRunning = false
-
-  on select:
-    | shutdown -> {}: isRunning = false
 ```
 
 ## In use
