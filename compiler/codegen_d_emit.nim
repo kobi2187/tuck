@@ -30,6 +30,8 @@ proc emitDBody*(ctx: var DCodegenCtx, m: Module): tuple[body, mains: string] =
     else:
       let code = ctx.genDDecl(d)
       if code != "": body.add(code & "\n")
+  let register = ctx.genDRegisterHandlers(m)
+  if register != "": body.add(register & "\n")
   (body, mainStmts.join(""))
 
 const DShadowingModuleNames* = [
@@ -85,7 +87,9 @@ proc dBootSequence*(m: Module, real: Table[string, Module], hasTasks: bool): str
 proc moduleImports(ctx: DCodegenCtx, code: string, inModuleDir: bool): seq[string] =
   ## The Tuck modules the emitted text names, plus — for the entry point — each
   ## module whose actors it boots without otherwise naming it (A18).
-  let bootMods = if inModuleDir: @[] else: actorBootModules(ctx.module, ctx.realModules)
+  let bootMods = if inModuleDir: @[]
+                 else: actorBootModules(ctx.module, ctx.realModules) &
+                       handlerModules(ctx.module, ctx.realModules)
   for modName in ctx.realModules.keys:
     let alias = dAlias(modName)
     if usesSymbol(code, alias) or modName in bootMods:
@@ -161,7 +165,13 @@ proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
   # A program with tasks boots the scheduler before main and drives it
   # after, so anything main spawned and did not await still runs to
   # completion. Mirrors tuck.nim's Nim entry and the Odin one.
-  let boot = dBootSequence(m, ctx.realModules, hasTasks)
+  # Handlers declared for another module's registry are handed over before
+  # anything can raise: each such module's own, then this module's.
+  var register = ""
+  for p in handlerModules(m, ctx.realModules):
+    register.add("    " & dAlias(p) & "." & RegisterHandlersProc & "();\n")
+  if foreignHandlers(m).len > 0: register.add("    " & RegisterHandlersProc & "();\n")
+  let boot = register & dBootSequence(m, ctx.realModules, hasTasks)
   # Drive the loop only when TASKS exist. Actors are daemons whose drain
   # loops never finish, so running the scheduler for them after main would
   # spin forever — main owns the lifecycle and ends the program itself.

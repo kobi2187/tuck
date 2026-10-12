@@ -621,34 +621,64 @@ proc registryHandlers*(m: Module, d: Decl, v: VariantDef): seq[Decl] =
     if decl != nil and decl.kind == dkFn and writtenName(decl) == want:
       result.add decl
 
-proc handlerLinkSymbol*(res: Resolution, m: Module, d: Decl): string =
-  ## The symbol a registry handler is exported under, when its registry is
-  ## declared in ANOTHER module; "" otherwise. The registry's raise proc lives
-  ## with the registry and cannot import a module that imports it, so it
-  ## reaches such a handler by this name at link time instead. The compiler
-  ## knows every handler of the program (`handlerSites`), so the name is a
-  ## position in that list and both ends compute the same one.
-  if d == nil or d.kind != dkFn: return ""
+const RegisterHandlersProc* = "tuckRegisterHandlers"
+  ## What a module with handlers for another module's registry defines, and the
+  ## entry point calls once before main: it adds each such handler to its
+  ## event's list of handlers. Plain code in the emitted output, not a naming
+  ## convention.
+
+proc handlerListName*(registry, event: string): string =
+  ## The list of function references a registry keeps, per event, for the
+  ## handlers declared in OTHER modules. The raise proc calls its own module's
+  ## handlers directly and then walks this list.
+  "tuckHandlers_" & registry & "_" & event
+
+proc isForeignHandler*(m: Module, d: Decl): bool =
+  ## Is `d` an `on Registry.Event` handler whose registry another module
+  ## declares? The registry's raise proc cannot call into a module that
+  ## imports it, so such a handler is handed to the registry as a reference.
+  if d == nil or d.kind != dkFn: return false
   let key = writtenName(d)
   let dot = key.find('.')
-  if dot < 0 or not res.handlerSites.hasKey(key): return ""
-  let reg = key[0 ..< dot]
+  if dot < 0: return false
   for r in m.decls(dkRegistry):
-    if writtenName(r) == reg: return ""
-  for k, id in res.handlerSites[key]:
-    if id == d.id: return "tuck_handler_" & key.replace('.', '_') & "_" & $k
-  ""
+    if writtenName(r) == key[0 ..< dot]: return false
+  true
 
-proc foreignHandlerSymbols*(res: Resolution, m: Module, d: Decl,
-                            v: VariantDef): seq[string] =
-  ## The link symbols of this event's handlers that live in other modules —
-  ## what the registry's raise proc calls besides its own module's handlers.
+proc registryOfHandler*(res: Resolution, d: Decl): Decl =
+  ## The registry an `on Registry.Event` handler is for, nil when unknown.
+  let key = writtenName(d)
+  let dot = key.find('.')
+  if dot < 0: return nil
+  res.registryNames.getOrDefault(key[0 ..< dot])
+
+proc handlerListOf*(res: Resolution, d: Decl): string =
+  ## The list a foreign handler is added to (handlerListName), "" if its
+  ## registry is unknown.
+  let reg = res.registryOfHandler(d)
+  if reg == nil: return ""
+  let key = writtenName(d)
+  handlerListName(reg.name, key[key.find('.') + 1 .. ^1])
+
+proc foreignHandlers*(m: Module): seq[Decl] =
+  ## Every handler this module declares for another module's registry.
+  for d in m.decls(dkFn):
+    if isForeignHandler(m, d): result.add d
+
+proc handlerModules*(m: Module, real: Table[string, Module]): seq[string] =
+  ## The other modules of the program that register handlers, sorted.
+  for modName, other in real:
+    if other != m and foreignHandlers(other).len > 0: result.add modName
+  result.sort()
+
+proc hasForeignHandlers*(res: Resolution, m: Module, d: Decl,
+                         v: VariantDef): bool =
+  ## Does some module other than `m` handle this event of `m`'s registry `d`?
   let key = writtenName(d) & "." & v.name
   var local = initHashSet[NodeId]()
   for h in registryHandlers(m, d, v): local.incl(h.id)
-  for k, id in res.handlerSites.getOrDefault(key):
-    if id notin local:
-      result.add("tuck_handler_" & key.replace('.', '_') & "_" & $k)
+  for id in res.handlerSites.getOrDefault(key):
+    if id notin local: return true
 
 proc handlerProcName*(handler: Decl): string =
   ## A handler is declared as `Registry.Event`, which is no backend's

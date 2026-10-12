@@ -135,3 +135,4 @@ proc emitNim*(m: Module, res: Resolution,
   result.add(sumEqForwardDecls(m))
   result.add(fnForwardDecls(m))
   result.add(body)
+  result.add(genRegisterHandlers(m))

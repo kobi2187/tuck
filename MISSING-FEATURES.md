@@ -39,7 +39,7 @@ failed. Tests: `cross_module`, each named "R11: …".
   satisfiers, emitted beside the interface, and the interface's module cannot
   import the importer that holds a satisfier. Needs a ruling on open-world
   dispatch (a vtable or fat pointer) or on where the union is emitted.
-  Designed in `thoughts/shared/plans/2026-10-12-cross-module-link-proposal.md`.
+  Designed in `thoughts/shared/plans/2026-10-12-cross-module-references-proposal.md`.
 - **A34** (Odin, D) a group bound whose provider is in another module — the
   bounded fn's module cannot name it, because Odin and D resolve the
   requirement where the generic is written. Nim works. Needs the provider
@@ -266,13 +266,14 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   the call is qualified like any foreign fn.
 - **A47 — a registry handler in a module other than the registry's.** The raise
   proc lives with the registry and cannot import a module that imports it, so
-  the handler was silently dropped on every backend. The compiler knows every
-  handler of the program (`Resolution.handlerSites`), so the raise proc now
-  declares each foreign handler by a LINK SYMBOL (`handlerLinkSymbol`: the
-  event and the handler's place in that list) and the handler's module exports
-  it: Nim `importc`/`exportc`, D `pragma(mangle)`, Odin a `foreign` block and
-  `@(export, link_name)`. No import, no table at run time. This is the
-  mechanism A27 and A34 need too.
+  the handler was silently dropped on every backend. Now a registry keeps, for
+  each event that other modules handle, a LIST OF FUNCTION REFERENCES
+  (`tuckHandlers_<Registry>_<Event>`), and its raise proc walks the list after
+  calling its own module's handlers. A module with such handlers defines
+  `tuckRegisterHandlers`, which adds them to those lists, and the entry point
+  calls it once before `main`. Plain emitted code, no naming convention and no
+  linker: `Resolution.handlerSites` only tells the registry that an event has
+  outside handlers. This is the mechanism A27 needs too.
 - **A18, A32 — an actor declared in an imported module.** The importer saw
   neither its fields nor its handlers ("no field 'total' on type Acc"), and on
   Odin and D nothing started it. The importer now holds the actor's SHAPE

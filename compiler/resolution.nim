@@ -50,11 +50,11 @@ type
     # exkMixinRef. Not a general-purpose lookup for other passes to grow
     # dependent on — those should use declFor on the rewritten reference.
     actorNames*: Table[string, Decl]
-    # `Registry.Event` -> every handler for it, across the whole program, in
-    # a fixed order (the order modules load). A registry's raise proc is
-    # emitted in the registry's module and cannot import a module that
-    # imports it, so a handler declared elsewhere is reached by a link symbol
-    # built from its place in this list (codegen_common.handlerLinkSymbol).
+    # `Registry.Event` -> every handler for it, across the whole program. A
+    # registry's raise proc is emitted in the registry's module, which does not
+    # see the handlers declared in a module that imports it; this is how the
+    # registry knows an event has such handlers (codegen_common.
+    # hasForeignHandlers) and so keeps a list of function references for them.
     handlerSites*: Table[string, seq[NodeId]]
     registerNames*: Table[string, Decl]
     registryNames*: Table[string, Decl]

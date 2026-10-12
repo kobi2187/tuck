@@ -49,6 +49,8 @@ proc emitBody*(ctx: var OdinCodegenCtx, m: Module): tuple[types, mains: string] 
       if code != "":
         body.add(code & "\n")
   if declaresSlab(m): body.add(ctx.genOdinSlabsRelease(m) & "\n")
+  let register = ctx.genOdinRegisterHandlers(m)
+  if register != "": body.add(register & "\n")
   (body, mainStmts.join("\n"))
 
 proc runtimeUsers*(m: Module, actorNames: var seq[string],
@@ -157,7 +159,7 @@ proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
   # The entry point's slab reports and releases name the runtime and each
   # slab's package, though the body may name neither (genEntryPoint).
   let slabPkgs = slabPackages(m, realModules)
-  let bootPkgs = actorBootModules(m, realModules)
+  let bootPkgs = actorBootModules(m, realModules) & handlerModules(m, realModules)
   if tracksAllocations(m, body, mains) or slabPkgs.len > 0 or bootPkgs.len > 0:
     result.add("import rt \"./tuckrt\"")
   # Imported Tuck modules are sibling packages (mod_<name>/), referenced
@@ -278,6 +280,11 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string
   for a in ctx.staticAsserts:
     result.add("\tassert(" & a & ")\n")
   result.add(actorInitLines(ctx))
+  # Handlers declared for another module's registry are handed over before
+  # anything can raise: each such module's own, then this module's.
+  for p in handlerModules(m, ctx.realModules):
+    result.add("\t" & p.replace("-", "_") & "." & RegisterHandlersProc & "()\n")
+  if foreignHandlers(m).len > 0: result.add("\t" & RegisterHandlersProc & "()\n")
   var actorNames: seq[string]
   var hasTasks = false
   runtimeUsers(m, actorNames, hasTasks)

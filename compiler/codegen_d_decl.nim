@@ -171,10 +171,11 @@ proc dRegistryHandlerCalls*(ctx: DCodegenCtx, d: Decl,
     for f in v.fields: argNames.add(f.name)
     calls.add("    " & handlerProcName(decl) & "(" &
               argNames.join(", ") & ");")
-  for sym in foreignHandlerSymbols(ctx.res, ctx.module, d, v):
+  if hasForeignHandlers(ctx.res, ctx.module, d, v):
     var argNames: seq[string]
     for f in v.fields: argNames.add(f.name)
-    calls.add("    " & sym & "(" & argNames.join(", ") & ");")
+    calls.add("    foreach (h; " & handlerListName(d.name, v.name) & ") h(" &
+              argNames.join(", ") & ");")
   if calls.len > 0: calls.join("\n") & "\n" else: ""
 
 proc dActorFieldLines*(ctx: var DCodegenCtx, d: Decl): seq[string] =
@@ -659,6 +660,21 @@ proc genDPendingBlock*(ctx: var DCodegenCtx, d: Decl): string =
     let code = ctx.genDPendingStub(mem)
     if code != "": result.add(code & "\n")
 
+proc genDRegisterHandlers*(ctx: DCodegenCtx, m: Module): string =
+  ## What the entry point calls to hand this module's handlers for other
+  ## modules' registries to those registries.
+  let hs = foreignHandlers(m)
+  if hs.len == 0: return ""
+  result = "void " & RegisterHandlersProc & "() {\n"
+  for h in hs:
+    let reg = ctx.res.registryOfHandler(h)
+    let origin = if reg == nil: "" else:
+      declOrigin(m, ctx.realModules, reg.name, {dkRegistry})
+    let pre = if origin == "": "" else: dAlias(origin) & "."
+    result.add("    " & pre & ctx.res.handlerListOf(h) & " ~= &" &
+               dHandlerFnName(h.name) & ";\n")
+  result.add("}\n")
+
 proc genDRegistry*(ctx: var DCodegenCtx, d: Decl): string =
   ## An event registry (spec Part 10): the event type, the latest-event
   ## global, and one raise proc per event.
@@ -667,14 +683,14 @@ proc genDRegistry*(ctx: var DCodegenCtx, d: Decl): string =
   ## may call a handler declared after it — no forward declarations needed.
   result = ctx.dRegistryEventStruct(d) & "\n"
   result.add("__gshared " & d.name & " latest" & d.name & ";\n\n")
-  # Handlers in other modules are reached by link symbol (A47): declared here
-  # without a body, defined and exported where they are written.
+  # Handlers in other modules are handed to this registry as references: one
+  # list per event, which the raise proc walks after its own module's.
   for v in d.variants:
+    if not hasForeignHandlers(ctx.res, ctx.module, d, v): continue
     var params: seq[string]
-    for f in v.fields: params.add(ctx.dType(f.typ) & " " & f.name)
-    for sym in foreignHandlerSymbols(ctx.res, ctx.module, d, v):
-      result.add("pragma(mangle, \"" & sym & "\") void " & sym & "(" &
-                 params.join(", ") & ");\n")
+    for f in v.fields: params.add(ctx.dType(f.typ))
+    result.add("__gshared void function(" & params.join(", ") & ")[] " &
+               handlerListName(d.name, v.name) & ";\n")
   for v in d.variants:
     result.add(ctx.dRegistryRaiseProc(d, v))
 
@@ -881,8 +897,6 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   let emitName = if movedP != "": movedName(fnName) else: fnName
   if movedP != "":
     result = ctx.genDTwinWrapper(d, fnName, tmplStr, retStr, movedP, refSelf)
-  let link = handlerLinkSymbol(ctx.res, ctx.module, d)
-  if link != "": result.add("pragma(mangle, \"" & link & "\")\n")
   result.add(ctx.dVisibility(d) & ctx.dCallConv(d) & retStr & " " & emitName & tmplStr & "(" &
              ctx.genDParams(d.fnParams, refSelf) & ") {\n")
   let savedMoved = ctx.movedParam

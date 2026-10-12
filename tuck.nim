@@ -1151,7 +1151,9 @@ when isMainModule:
       # an uninitialised runtime). Same root as #73's actor half — `m.decls` is
       # the entry module and imports are invisible to it — but a worse symptom
       # than a checker rejection.
+      var handlerMods: seq[string]   # other modules handling a registry that is not theirs
       for lm in prog:
+        if lm.m != m and foreignHandlers(lm.m).len > 0: handlerMods.add(lm.name)
         for d in lm.m.decls:
           if d == nil: continue
           if runsActor(d):
@@ -1196,6 +1198,22 @@ when isMainModule:
         # scheduler::waitUntil.
         let usesRuntime = actorNames.len > 0 or hasTasks
         var boot = ""
+        # Handlers for another module's registry are handed over before
+        # anything can raise (each module's tuckRegisterHandlers). A module
+        # only another module imports is imported here by name.
+        var registerCalls = ""
+        var extraImports = ""
+        proc importedDirectly(name: string): bool =
+          for d in m.decls:
+            if d != nil and d.kind == dkImport and d.name == name: return true
+        for hm in handlerMods:
+          if not importedDirectly(hm):
+            let asName = nimModuleName(hm)
+            extraImports.add(if asName == hm: "import " & hm & "\n"
+                             else: "import " & hm & " as " & asName & "\n")
+          registerCalls.add("  " & RegisterHandlersProc & "()\n")
+        if foreignHandlers(m).len > 0: registerCalls.add("  " & RegisterHandlersProc & "()\n")
+        if extraImports != "": writeFile(mainNim, extraImports & readFile(mainNim))
         var asyncInit = ""
         var asyncDrive = ""
         if usesRuntime:
@@ -1258,7 +1276,7 @@ when isMainModule:
         # With `--exceptions:goto` an error nobody handles does not end the
         # process by itself (it exits 0), so the program's body runs inside
         # one handler that reports it the way Nim does and exits 1.
-        let mainBody = asyncInit & boot & "  " & mainCall &
+        let mainBody = registerCalls & asyncInit & boot & "  " & mainCall &
                        asyncDrive & actorDrain & resShutdown & asyncExit
         var guarded = ""
         for ln in mainBody.splitLines:
