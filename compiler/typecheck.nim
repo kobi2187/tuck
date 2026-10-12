@@ -327,6 +327,14 @@ proc sigForReceiver(tc: TypeChecker, name: string, recvT: Type): FnSig =
     if tc.compatible(recvT, pt): return sig
   tc.sigOf(name)
 
+proc sigsAcceptReceiver(tc: TypeChecker, name: string, recvT: Type): bool =
+  ## Does some overload of `name` take `recvT` as its first parameter?
+  for sig in tc.sigsOf(name):
+    if sig.params.len == 0 or sig.params[0].typ == nil: continue
+    let pt = sig.params[0].typ
+    if (pt.kind == tkNamed and pt.name in sig.generics) or
+       tc.compatible(recvT, pt): return true
+
 proc bindPayloadFields(tc: var TypeChecker, fnName: string,
                        params: seq[Param], argStruct: Expr, sp: Span): seq[Expr]
   ## Forward-declared: the claim passes it runs are defined further down.
@@ -2577,25 +2585,36 @@ proc providerBindings(tc: TypeChecker, want: Decl, got: FnSig, concreteT: Type,
       tc.inferBindings(got.params[i].typ, substituteGroup(w.typ, concreteT, binds),
                        got.generics, result, fnName, sp)
 
-proc requirementKey(tc: TypeChecker, member, fnName: string): string =
+proc requirementKey(tc: TypeChecker, member, fnName: string,
+                    concreteT: Type = nil): string =
   ## Which `hashOf` satisfies a bound — the one visible to the module that
   ## DECLARES the bounded fn, not the one visible to the caller. A program may
   ## import two implementations of the same contract; the verb was written
   ## against exactly one of them, and re-resolving at the call site would make
   ## a correct verb unsatisfiable the moment a second implementation is in
   ## scope.
+  ##
+  ## When the declaring module sees the name through TWO imports, neither owns
+  ## it bare and there is no one the verb "was written against": the provider
+  ## is the import whose fn accepts `concreteT` as its receiver (A14).
   let owner =
     if "::" in fnName: fnName.split("::")[0]
     else: tc.bareOwnerOf.getOrDefault(fnName)
   if owner != "" and tc.fnSigs.hasKey(owner & "::" & member):
     return owner & "::" & member
+  if concreteT != nil and not tc.fnSigs.hasKey(member):
+    for imp in tc.ambiguousImports.getOrDefault(member):
+      let qualified = imp & "::" & member
+      if tc.fnSigs.hasKey(qualified) and
+         tc.sigsAcceptReceiver(qualified, concreteT):
+        return qualified
   member
 
 proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
                       binds: Table[string, Type], groupName, paramName,
                       fnName: string, sp: Span) =
   ## One requirement against what `concreteT` actually declares.
-  let key = tc.requirementKey(want.name, fnName)
+  let key = tc.requirementKey(want.name, fnName, concreteT)
   # Tuck has TWO contract mechanisms, split by what they abstract over:
   # `interface` for role objects, which opt in with `satisfies` and compose
   # with `+`; `group` for plain types, which is the generics-facing one a
@@ -2695,7 +2714,7 @@ proc unifyRequirements(tc: TypeChecker, g: Decl, concreteT: Type,
   ## params solved from the concrete type — and only then is the requirement
   ## read off the instantiated signature.
   for want in g.groupMembers:
-    let key = tc.requirementKey(want.name, fnName)
+    let key = tc.requirementKey(want.name, fnName, concreteT)
     if want == nil or want.kind != dkFn or not tc.fnSigs.hasKey(key):
       continue
     let got = tc.sigOf(key)
@@ -3872,9 +3891,12 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
   ## nodes the parser already decided on.
   let calleeName = tc.calleeNameOf(e)
   tc.checkActorCall(e, calleeName)
-  tc.checkAmbiguousImports(e, calleeName)
+  # Group dispatch BEFORE the ambiguity check: a requirement on a bounded type
+  # param is meant to reach whichever provider matches the receiver, so two
+  # imports exporting its name is the situation a group exists for (A14).
   let viaGroup = tc.asGroupRequirement(e, calleeName)
   if viaGroup != nil: return viaGroup
+  tc.checkAmbiguousImports(e, calleeName)
   result = tc.asBuiltinOrEchoCall(e, calleeName)
   if result != nil: return
   result = tc.asNamedCallee(e, calleeName)

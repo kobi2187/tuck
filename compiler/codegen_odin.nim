@@ -713,7 +713,7 @@ proc qualifiedForeignFn(ctx: OdinCodegenCtx, name: string): string =
   ## An unqualified cross-module call (`0 exit` for `sys::exit`). Nim resolves
   ## this itself through the emitted `import`; Odin never merges package
   ## scopes, so the owning package has to be found and spelled out here.
-  if ctx.module.declaresCallable(name): return ""
+  if ctx.module.declaresCallable(name) or name in ctx.providerParams: return ""
   for modName, im in ctx.realModules:
     if im.declaresCallable(name):
       return modName.replace("-", "_") & "." & name

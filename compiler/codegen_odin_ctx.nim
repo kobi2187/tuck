@@ -31,6 +31,8 @@ type
     retInnerOdin*: string  # Odin type of the payload (for terr<T>)
     retInnerT*: Type       # payload Tuck type (typed struct-literal emission)
     retInvName*: string    # fn returns an invariant-carrying type: validate at return
+    providerParams*: HashSet[string]  # requirements the current fn takes as constant
+                           # proc params (A34): its body calls THEM, unqualified
     tmpCounter*: int
     movedParam*: string    # while emitting a fn's MOVED twin: the param it
                            # takes destructively. NOT a reason to skip a

@@ -44,7 +44,8 @@ proc importDeclaring(ctx: DCodegenCtx, name: string): string =
   ## module declares it (local wins) or nobody does. D has no cross-module
   ## scope merge, so every foreign call has to be qualified — three separate
   ## copies of this search had grown before it was named once.
-  if name == "" or ctx.module.declaresCallable(name): return ""
+  if name == "" or ctx.module.declaresCallable(name) or
+     name in ctx.providerParams: return ""
   for modName, im in ctx.realModules:
     if im.declaresCallable(name): return modName
   ""

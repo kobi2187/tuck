@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (2)
+## A. Open bugs (1)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -35,22 +35,16 @@ module. Each construct was built declared in `lib` and used from the
 importer on Nim, Odin and D, against a one-module control that passes; these
 failed. Tests: `cross_module`, each named "R11: …".
 
-**A14 — a group with two implementations cannot be used.** A group takes free
-fns — an object's own member belongs to the `interface`/`satisfies` mechanism
-instead, ruled 2026-09-13 and now refused with a message offering both routes.
-Two free fns of one name in a single module is a Structure Error, so the
-multi-provider case, which is the only reason to declare a group, is by
-construction the CROSS-MODULE case — also the stdlib's shape, a module per
-implementation. That then fails for a different reason: the bounded verb's body
-calls the requirement UNQUALIFIED, and two imports exporting that name trip the
-ambiguous-import rule before group dispatch is consulted — *"'reads' is exported
-by 2 imports (sensa, sensb) — call it as 'sensa::reads' to say which"*.
-Qualifying is exactly what the verb must not do; it has to reach whichever
-provider matches `T`. `requirementKey`'s own doc comment anticipates the
-situation ("a program may import two implementations of the same contract");
-the call site never asks it. SINGLE-provider groups work end to end on all
-three backends and are pinned, including cross-module. Issue #38. Test:
-`known_bugs`, "a group bound picks the provider of the RECEIVER's type".
+**A14 — FIXED 2026-10-12.** A group with two implementations, one per
+imported module, is usable: the bounded verb's body calls the requirement by its
+bare name and each call reaches the provider of the *receiver's* type. Three
+changes: group dispatch runs before the ambiguous-import rule (`synthCall`);
+`requirementKey` picks, among the imports that all export the name, the one
+whose fn accepts the concrete type as its receiver; and Odin and D no longer
+qualify a requirement the fn already takes as a provider parameter (A34), so
+the body calls the argument rather than whichever import `realModules` listed
+last. Issue #38. Test: `known_bugs`, "a group bound picks the provider of the
+RECEIVER's type" — `bugFixed`, run on all three backends.
 
 **A16 — a fired `timeout` does not bound latency.** The right arm wins and the
 right value comes back, but not until the LOSING source has completed: a 5ms

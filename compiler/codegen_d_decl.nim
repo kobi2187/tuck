@@ -868,6 +868,7 @@ proc leaveReturnContext(ctx: var DCodegenCtx) =
   ctx.retAbsentCapable = false
   ctx.retInnerD = ""
   ctx.retInnerT = nil
+  ctx.providerParams.clear()
 
 proc genDTwinWrapper(ctx: var DCodegenCtx, d: Decl, fnName, tmplStr, retStr,
                      movedP: string, refSelf: bool): string =
@@ -899,6 +900,8 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   # know the payload type to name terr!(T). Restored after the body, since
   # a nested emission may set its own.
   ctx.enterReturnContext(d.fnReturnType)
+  for need in providerNeeds(ctx.module, ctx.realModules, d):
+    ctx.providerParams.incl(need.req)
   # Implicit return: the value flowing at the end of a body is the result.
   # ast_query's shared version, not a private port — the Odin backend kept
   # its own copy and it has since drifted (no matchArmsReturn guard, so a

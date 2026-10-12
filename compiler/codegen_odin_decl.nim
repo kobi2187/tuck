@@ -256,6 +256,8 @@ proc enterReturnContext*(ctx: var OdinCodegenCtx, d: Decl) =
        d.fnReturnType.kind == tkNamed and
        ctx.index.hasInvariants(d.fnReturnType.name): d.fnReturnType.name
     else: ""
+  for need in providerNeeds(ctx.module, ctx.realModules, d):
+    ctx.providerParams.incl(need.req)
 
 proc leaveReturnContext*(ctx: var OdinCodegenCtx) =
   ## Undoes `enterReturnContext` after a fn body, so the next emission starts
@@ -265,6 +267,7 @@ proc leaveReturnContext*(ctx: var OdinCodegenCtx) =
   ctx.retInnerOdin = ""
   ctx.retInnerT = nil
   ctx.retInvName = ""
+  ctx.providerParams.clear()
 
 proc genFnBody*(ctx: var OdinCodegenCtx, d: Decl, retTypeStr, ind: string): string =
   ## The body, with every return path accounted for: a single-expression body
