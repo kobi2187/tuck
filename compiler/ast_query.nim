@@ -1117,6 +1117,22 @@ proc declOrigin*(m: Module, real: Table[string, Module], name: string,
       if d != nil and d.kind in kinds and d.name == name: return modName
   ""
 
+proc actorOrigin*(m: Module, real: Table[string, Module], name: string): string =
+  ## The OTHER module declaring the actor `name`, or "" when `m` does. The
+  ## importer holds a body-less copy of an imported actor (modules.importedCopy),
+  ## which is not a declaration: declOrigin would take it for one. Odin and D
+  ## qualify each reference to the singleton, its slot and its send helpers
+  ## with this (R11, A32).
+  for d in m.decls:
+    if d != nil and d.kind == dkActor and d.name == name and
+       not isImportedCopy(d): return ""
+  for modName, other in real:
+    if other == m: continue
+    for d in other.decls:
+      if d != nil and d.kind == dkActor and d.name == name and
+         not isImportedCopy(d): return modName
+  ""
+
 proc declAnywhere*(m: Module, real: Table[string, Module], name: string,
                    kind: DeclKind): Decl =
   ## The declaration `name` (as emitted) of `kind`, in `m` or the module that

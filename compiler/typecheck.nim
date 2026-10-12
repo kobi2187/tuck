@@ -5740,7 +5740,8 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     tc.checkObjectDecl(d)
   of dkMixin, dkExtern, dkPending:
     for m in d.mixinMembers: tc.checkDecl(m)
-  of dkActor: tc.checkActorDecl(d)
+  of dkActor:
+    if not isImportedCopy(d): tc.checkActorDecl(d)   # its origin checks the bodies
   of dkStaticAssert: discard tc.synthesize(d.assertExpr)
   of dkType:
     if d.typeBody != nil and d.typeBody.kind == tkRecord:

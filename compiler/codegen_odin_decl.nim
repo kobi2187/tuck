@@ -1256,6 +1256,19 @@ proc genOdinSlabsRelease*(ctx: var OdinCodegenCtx, m: Module): string =
     result.add "\t\trt.tuckSlabRelease(&" & d.name & ")\n"
   result.add "\t}\n}\n"
 
+proc genOdinActorsBoot*(ctx: OdinCodegenCtx, m: Module): string =
+  ## What an imported module's package hands the entry point to boot its
+  ## actors: their starting field values (#87), then each drain started with
+  ## its slot KEPT in this package. The entry cannot do either itself — the
+  ## singleton, the slot and the drain are this package's (A18, A32).
+  result = ActorsBootProc & " :: proc() {\n"
+  for s in ctx.actorInits: result.add "\t" & s & "\n"
+  for d in m.decls:
+    if runsActor(d):
+      result.add "\t" & actorSlotName(d.name) & " = rt.tuckStartActor(drain_" &
+                 d.name & ")\n"
+  result.add "}\n"
+
 proc genOdinSlab(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## A slab: one package-level instance of the storage its attributes chose,
   ## zero but for its written name (the stale-reference messages carry it).
@@ -1322,7 +1335,7 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## One top-level declaration. Every DeclKind is named, so a new one fails
   ## to compile here until it is decided (CLAUDE.md).
   if d == nil: return ""
-  if d.kind in {dkType, dkObject, dkInterface} and d.span.file.startsWith(ImportedTypeMarker):
+  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.span.file.startsWith(ImportedTypeMarker):
     return ""  # defined in its own module; that module's Odin file has it
   let ind = "  ".repeat(ctx.indent)
   case d.kind

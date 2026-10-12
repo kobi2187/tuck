@@ -22,7 +22,7 @@
 # Sits below both backends in the dependency DAG, alongside ast_query and
 # lowering — it imports those and nothing that imports either codegen module.
 import resolution
-import ast, lowering, ast_query, ast_ops, strutils, sets, tables, options
+import ast, lowering, ast_query, ast_ops, strutils, sets, tables, options, algorithm
 import ./ast_query
 import twin_shape
 import call_args
@@ -323,13 +323,34 @@ proc resolveWrapNames*(m: Module, iface, objName: string): tuple[iface, obj: str
     if d.kind == dkObject and src == objName: result.obj = d.name
 
 
+proc runsActor*(d: Decl): bool =
+  ## Is `d` an actor DECLARED here that has a drain to start? An importer's
+  ## copy of an imported actor (A32) is not: its origin starts it.
+  d != nil and d.kind == dkActor and not isImportedCopy(d) and actorHasMessages(d)
+
 proc hasRunningActors*(m: Module): bool =
   ## Does this module declare an actor that actually runs? The same question
   ## the three entry builders ask before emitting the boot and the exit drain,
   ## asked once — a hand-rolled loop in each is how #61 happened.
   for d in m.decls:
-    if d != nil and d.kind == dkActor and actorHasMessages(d): return true
+    if runsActor(d): return true
   false
+
+const ActorsBootProc* = "tuckActorsBoot"
+  ## What an imported module's package exports for the entry point to call: it
+  ## sets the module's actors' starting fields and starts their drains, which
+  ## the entry cannot do itself — the drain and the slot live in that package
+  ## (A18, A32). The slab release (`SlabsReleaseProc`) is the same shape.
+
+proc actorBootModules*(m: Module, real: Table[string, Module]): seq[string] =
+  ## The other modules of the program that declare a running actor, sorted.
+  for modName, other in real:
+    if other != m and hasRunningActors(other): result.add modName
+  result.sort()
+
+proc programRunsActors*(m: Module, real: Table[string, Module]): bool =
+  ## Does any module of the program, this one included, run an actor?
+  hasRunningActors(m) or actorBootModules(m, real).len > 0
 
 proc actorSlotName*(actorType: string): string =
   ## The runtime handle for an actor's thread, named <type>Slot. `Actor.waitUntil`

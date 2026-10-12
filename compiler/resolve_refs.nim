@@ -37,6 +37,7 @@ proc collectNames(prog: seq[LoadedModule]) =
     ## failing on a second declaration of the same name.
     for lm in prog:
       for d in lm.m.decls(kind):
+        if isImportedCopy(d): continue   # the importer's shape; its origin is the name
         if semLayer.table.hasKey(d.name):
           fail("Type Error: '" & d.name & "' is declared as " & what &
                " more than once in this program", d.span)

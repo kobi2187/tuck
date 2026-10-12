@@ -406,6 +406,20 @@ proc importedShape(d: Decl, sp: Span): Decl =
          typeBody: d.typeBody, typeMembers: d.typeMembers, span: sp)
   of dkInterface:
     Decl(kind: dkInterface, name: d.name, ifaceMembers: d.ifaceMembers, span: sp)
+  of dkActor:
+    # An actor's shape: its fields, its attributes (`queue`, `on_full`), and
+    # each handler or member as a body-less signature. A singleton lives where
+    # it is declared; the importer only reads its fields, sends to it and
+    # waits on it, which needs the types and nothing else (A32).
+    var handlers: seq[Decl]
+    for h in d.handlers:
+      if h == nil or h.kind != dkFn: continue
+      handlers.add Decl(kind: dkFn, name: h.name, fnParams: h.fnParams,
+                        fnReturnType: h.fnReturnType, fnEffects: h.fnEffects,
+                        fnGenerics: h.fnGenerics, isOnHandler: h.isOnHandler,
+                        span: sp)
+    Decl(kind: dkActor, name: d.name, attrs: d.attrs, actorFields: d.actorFields,
+         handlers: handlers, span: sp)
   else:
     var members: seq[Decl]
     for m in d.objMembers:
@@ -437,7 +451,8 @@ proc injectImportedTypes*(prog: var seq[LoadedModule]) =
   for lm in prog:
     var own: seq[Decl]
     for d in lm.m.decls:
-      if d != nil and d.kind in {dkType, dkObject, dkInterface} and
+      if d != nil and d.kind in {dkType, dkObject, dkInterface, dkActor} and
+         not (d.kind == dkActor and d.actorGenerics.len > 0) and
          not d.span.file.startsWith(ImportedTypeMarker):
         own.add(d)
     typesByName[lm.name] = own
