@@ -39,6 +39,7 @@ failed. Tests: `cross_module`, each named "R11: …".
   satisfiers, emitted beside the interface, and the interface's module cannot
   import the importer that holds a satisfier. Needs a ruling on open-world
   dispatch (a vtable or fat pointer) or on where the union is emitted.
+  Designed in `thoughts/shared/plans/2026-10-12-cross-module-link-proposal.md`.
 - **A34** (Odin, D) a group bound whose provider is in another module — the
   bounded fn's module cannot name it, because Odin and D resolve the
   requirement where the generic is written. Nim works. Needs the provider
