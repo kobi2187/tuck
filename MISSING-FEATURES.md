@@ -22,24 +22,18 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (4)
+## A. Open bugs (3)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
 
 **A27–A37 — constructs that do not cross a module boundary (R11 scan,
-2026-09-28).** A25, A26, A28, A29, A30, A31, A32, A33, A35, A36, A37 and A47 are fixed; their pins are
+2026-09-28).** A25, A26, A27, A28, A29, A30, A31, A32, A33, A35, A36, A37 and A47 are fixed; their pins are
 `bugFixed` in `cross_module`. Ruled: importing anything should work as well as the same
 module. Each construct was built declared in `lib` and used from the
 importer on Nim, Odin and D, against a one-module control that passes; these
 failed. Tests: `cross_module`, each named "R11: …".
-- **A27** an object in the importer cannot `satisfies` an imported interface.
-  Why it is hard: an interface compiles to a closed tagged union of its
-  satisfiers, emitted beside the interface, and the interface's module cannot
-  import the importer that holds a satisfier. Needs a ruling on open-world
-  dispatch (a vtable or fat pointer) or on where the union is emitted.
-  Designed in `thoughts/shared/plans/2026-10-12-cross-module-references-proposal.md`.
 - **A34** (Odin, D) a group bound whose provider is in another module — the
   bounded fn's module cannot name it, because Odin and D resolve the
   requirement where the generic is written. Nim works. Needs the provider
@@ -253,6 +247,20 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **A27 — an object in the importer satisfies an imported interface.** An
+  interface is a union of its satisfiers held by value, emitted where it is
+  declared, and the satisfier's module imports that one. The data moves
+  instead: `iface_hoist` puts the satisfier's fields, and the types they
+  mention that would close the cycle, into a generated module
+  `iface_variants` (a real, readable module in the emitted program, headed by
+  a note of where each type was written), marks the originals `hoistedTo`
+  (their struct is not emitted twice, their members stay), and gives the
+  interface's module a shape-only copy to list in its union. The interface's
+  module cannot call the satisfier's members, so it keeps one function
+  reference per contract member and satisfier (`tuckImpl_<I>_<member>_<S>`)
+  that the satisfier's module assigns in `tuckRegister`. Values stay by value.
+  Refused with a message: a moved object that composes another (`+ ...`) or a
+  moved type with members. Tests: `cross_module`, "A27: …".
 - **A29 — `+ Mixin` from another module.** Parsing composes only the mixins
   one file holds, so the importer's object kept the `+ Mixin` entry and a call
   met the mixin's fn with `Self` unbound. `modules.composeImportedMixins`

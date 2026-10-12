@@ -752,6 +752,11 @@ type
 
   # Imported type decls are injected into the importer for checking and
   # lowering, marked with this span.file so codegen skips re-emitting them.
+const VariantsModule* = "iface_variants"
+  ## The module iface_hoist generates to hold the data of types that satisfy an
+  ## interface their own module cannot hand to the interface's module. A real
+  ## module in the emitted program, readable on purpose.
+
 const ImportedTypeMarker* = "<imported>"
 
   ## The attribute `parseArenaDecl` puts on the record an `arena` parses into,
@@ -906,6 +911,10 @@ type
     ## (and, once mangled, the name the user wrote).
     name*: string
     sourceName*: Option[string]  ## see SourceName note below
+    hoistedTo*: string
+      ## A type or object whose DATA lives in a generated module of this name
+      ## (iface_hoist): the declaration keeps its members, but no backend
+      ## emits its struct, and a reference to it names the generated module.
     case kind*: DeclKind
     of dkType:
       generics*: seq[string]

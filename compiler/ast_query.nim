@@ -264,6 +264,11 @@ proc findFn*(m: Module, name: string): Decl =
   nil
 
 
+proc isImportedCopy*(d: Decl): bool =
+  ## Is `d` an importer's copy of another module's type or object
+  ## (modules.injectImportedTypes)? Its origin checks and emits it.
+  d != nil and d.span.file.startsWith(ImportedTypeMarker & ":")
+
 proc declaresFn*(m: Module, name: string): bool {.inline.} =
   ## Does this module declare a fn by this name (wherever it sits)?
   m.findFn(name) != nil
@@ -274,6 +279,41 @@ proc raiseProcName*(registry, event: string): string =
   ## makes the call and the emitters that define it.
   "raise_" & registry & "_" & event
 
+proc findObjectMember*(obj: Decl, name: string): Decl
+proc implementingName*(obj: Decl, iface, member: string): string
+
+proc implVarName*(iface, member, satisfier: string): string =
+  ## The function reference an interface's module keeps for one contract member
+  ## of one satisfier whose data moved to a generated module (iface_hoist): the
+  ## satisfier's module assigns its member there at start-up, and the interface
+  ## module's own dispatch calls through it.
+  "tuckImpl_" & iface & "_" & member & "_" & satisfier
+
+proc isMovedSatisfier*(m: Module, iface: Decl, s: Decl): bool =
+  ## Is `s` a satisfier of `iface` whose members this module cannot call
+  ## directly: its data moved to a generated module and it is not declared
+  ## here? Calls to its members go through `implVarName`.
+  if s == nil or s.hoistedTo == "": return false
+  for d in m.decls:
+    if d != nil and d.kind == dkObject and d.name == s.name and
+       not isImportedCopy(d): return false
+  true
+
+proc implVarMember*(m: Module, name: string): Decl =
+  ## The satisfier's member (this module holds its signature only) that the
+  ## function reference `name` stands for, or nil when `name` is not one.
+  for i in m.decls(dkInterface):
+    if isImportedCopy(i): continue
+    for c in m.decls(dkObject):
+      if not isImportedCopy(c) or c.hoistedTo == "" or i.name notin c.satisfies:
+        continue
+      for mem in i.ifaceMembers:
+        if mem != nil and implVarName(i.name, mem.name, c.name) == name:
+          return findObjectMember(c, implementingName(c, i.name, mem.name))
+
+proc declaresImplVar(m: Module, name: string): bool =
+  m.implVarMember(name) != nil
+
 proc declaresRaiseProc(m: Module, name: string): bool =
   for d in m.decls(dkRegistry):
     for v in d.variants:
@@ -283,7 +323,7 @@ proc declaresCallable*(m: Module, name: string): bool =
   ## A fn, or the raise proc a registry generates for one of its events: what
   ## a call by this name can reach in `m`. Odin and D qualify a call with the
   ## module that declares it (R11, A37).
-  m.declaresFn(name) or m.declaresRaiseProc(name)
+  m.declaresFn(name) or m.declaresRaiseProc(name) or m.declaresImplVar(name)
 proc params*(d: Decl): seq[Param] =
   ## A callable's parameters, in order. Tasks keep theirs in a separate field
   ## from fns; callers asking "what does this take" should not have to care.
@@ -698,7 +738,13 @@ proc memberCalleeModule*(res: Resolution, m: Module, e: Expr): string =
   ## is another module (an imported object, R11), else "" — what Odin and D
   ## qualify the member proc with.
   if memberCallee(res, m, e) == "": return ""
-  moduleDeclaringType(m, memberOwner(m, memberRecvType(res, e)))
+  let owner = memberOwner(m, memberRecvType(res, e))
+  # An object whose DATA moved to a generated module (iface_hoist) still has
+  # its members here: they are this module's, not the generated one's.
+  for d in m.decls:
+    if d != nil and d.kind == dkObject and d.name == owner and
+       not d.span.file.startsWith(ImportedTypeMarker & ":"): return ""
+  moduleDeclaringType(m, owner)
 
 proc callWritesSelf*(res: Resolution, m: Module, e: Expr): bool =
   ## Is `e` a call of an object member that changes its `self`? Its receiver
@@ -706,6 +752,10 @@ proc callWritesSelf*(res: Resolution, m: Module, e: Expr): bool =
   if e == nil or e.kind != exkCall or e.callee == nil or
      e.callee.kind != exkVar or e.args.len < 1 or e.args[0] == nil:
     return false
+  # A call through a satisfier's function reference (iface_hoist): whether it
+  # changes `self` is the member's, which this module holds as a signature.
+  let viaRef = m.implVarMember(e.callee.name)
+  if viaRef != nil: return writesSelf(res, viaRef)
   writesSelf(res, memberDeclOf(m, memberOwner(m, memberRecvType(res, e)),
                                e.callee.name))
 
@@ -1053,14 +1103,12 @@ proc moduleDeclaringType*(module: Module, name: string): string =
   ## been exercised.
   for d in module.decls:
     if d == nil or d.kind notin {dkType, dkObject, dkInterface} or d.name != name: continue
+    # A type whose data moved to a generated module (iface_hoist) is declared
+    # here but lives there.
+    if d.hoistedTo != "" and not isImportedCopy(d): return d.hoistedTo
     if not d.span.file.startsWith(ImportedTypeMarker & ":"): return ""
     return d.span.file[ImportedTypeMarker.len + 1 .. ^1]
   ""
-
-proc isImportedCopy*(d: Decl): bool =
-  ## Is `d` an importer's copy of another module's type or object
-  ## (modules.injectImportedTypes)? Its origin checks and emits it.
-  d != nil and d.span.file.startsWith(ImportedTypeMarker & ":")
 
 type ActorMsgHandler* = object
   ## An actor's receive branch, gathered from BOTH `on <name>` blocks AND `on

@@ -679,7 +679,112 @@ fn main() -> int:
   fn area({self: Self}) -> int
 """)
   t.quietly: t.hostRuns("R11: an object satisfies an interface declared in another module", 16)
-  t.bugOpen "R11: an object satisfies an interface declared in another module"
+  t.bugFixed "R11: an object satisfies an interface declared in another module"
+
+  # The interface's module calls through its own value: the satisfier's members
+  # are in the importer, which the interface's module cannot import, so the
+  # call goes through a function reference the importer hands over at start-up.
+  t.src """
+import lib
+
+object Sq:
+  satisfies Shape
+  s: int
+  fn area({self: Sq}) -> int:
+    return self.s * self.s
+
+fn main() -> int:
+  let x: Shape = {s: 4} Sq
+  return {s: x} describe
+"""
+  t.addFile("lib.tuck", """interface Shape:
+  fn area({self: Self}) -> int
+
+fn describe({s: Shape}) -> int:
+  return s.area + 1
+""")
+  t.hostRuns "A27: the interface's own module dispatches to a satisfier it cannot import", 17
+
+  # Two satisfiers in two modules, a field of a user type that has to move with
+  # its object, and a contract member with an argument.
+  t.src """
+import lib
+import rects
+
+object Sq:
+  satisfies Shape
+  s: int
+
+  fn area({self: Sq}) -> int:
+    return self.s * self.s
+
+  fn scaled({self: Sq, by: int}) -> int:
+    return self.s * by
+
+fn main() -> int:
+  let a: Shape = {s: 4} Sq
+  let b = {w: 2, h: 3} makeRect
+  return {s: a} describe * 100 + {s: b} describe
+"""
+  t.addFile("lib.tuck", """interface Shape:
+  fn area({self: Self}) -> int
+  fn scaled({self: Self, by: int}) -> int
+
+fn describe({s: Shape}) -> int:
+  return s.area + s.scaled {by: 2}
+""")
+  t.addFile("rects.tuck", """import lib
+
+type Dim:
+  w: int
+  h: int
+
+object Rect:
+  satisfies Shape
+  d: Dim
+
+  fn area({self: Rect}) -> int:
+    return self.d.w * self.d.h
+
+  fn scaled({self: Rect, by: int}) -> int:
+    return self.d.w * self.d.h * by
+
+fn makeRect({w: int, h: int}) -> Shape:
+  return {d: {w: w, h: h}} Rect
+""")
+  # (4 * 4 + 4 * 2) * 100 + (2 * 3 + 2 * 3 * 2), low byte
+  t.hostRuns "A27: satisfiers in two modules, a type that moves with them, a member with an argument", 114
+  t.odinTracked "A27: ...and it leaks nothing on Odin", 114
+
+  # A member that changes its object.
+  t.src """
+import lib
+
+object Tally:
+  satisfies Counter
+  n: int
+
+  fn bump({self: Tally}):
+    self.n = self.n + 5
+
+  fn read({self: Tally}) -> int:
+    return self.n
+
+fn main() -> int:
+  let t: Counter = {n: 1} Tally
+  return {c: t} twice
+"""
+  t.addFile("lib.tuck", """interface Counter:
+  fn bump({self: Self})
+  fn read({self: Self}) -> int
+
+fn twice({c: Counter}) -> int:
+  var k = c
+  k.bump
+  k.bump
+  return k.read
+""")
+  t.hostRuns "A27: a satisfier's member that changes its object, called from the interface's module", 11
 
   t.src """
 import lib

@@ -65,7 +65,8 @@ proc returnsInterface(res: Resolution, e: Expr, iface: string): bool =
   t != nil and t.kind == tkNamed and t.name == iface
 
 proc dispatchArm(res: Resolution, e: Expr, s: Decl,
-                 iface, contractMember: string): DispatchArm =
+                 iface, contractMember: string,
+                 foreign = false): DispatchArm =
   ## The arm for one satisfier `s`: a typed call to the member implementing
   ## `iface.contractMember` — its own name unless `satisfies iface {… -> …}`
   ## renamed it — with the payload (bound as `PayloadBind`) as `self` and the
@@ -77,7 +78,12 @@ proc dispatchArm(res: Resolution, e: Expr, s: Decl,
     "no member '" & member & "' taking self — the conformance check missed it"
   # The satisfier's type as the checker built it, edge and all: the member's
   # own `self` param.
-  let callee = Expr(span: e.span, kind: exkVar, name: member)
+  # A satisfier whose members this module cannot call by name (its data moved
+  # to a generated module) is reached through the function reference its own
+  # module handed over (implVarName).
+  let callee = Expr(span: e.span, kind: exkVar,
+                    name: if foreign: implVarName(iface, contractMember, s.name)
+                          else: member)
   let checked = res.call(e)
   let bound = if checked != nil and checked.args.len > 1: checked.args[1 .. ^1]
               else: @[]
@@ -96,8 +102,10 @@ proc lowerOne(res: Resolution, m: Module, real: Table[string, Module],
   ## Replace an interface call IN PLACE, so every parent keeps its pointer.
   let ic = res.ifaceCallOf(e)
   var arms: seq[DispatchArm]
+  let ifaceDecl = m.findDecl(dkInterface, ic.iface)
   for s in satisfiersOf(m, real, ic.iface):
-    arms.add dispatchArm(res, e, s, ic.iface, ic.member)
+    arms.add dispatchArm(res, e, s, ic.iface, ic.member,
+                         isMovedSatisfier(m, ifaceDecl, s))
   let t = res.typeFor(e)
   let node = res.typed(Expr(span: e.span, kind: exkIfaceCall,
                            dispatchRecv: e.receiver, dispatchIface: ic.iface,

@@ -67,6 +67,7 @@ import compiler/codegen_d_emit  # emitD/emitDModule: same reasoning as
                                 # codegen_emit above, for the D backend.
 import compiler/ast_serializer
 import compiler/modules
+import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
 import compiler/actor_mode
 import compiler/pipeline
@@ -616,6 +617,7 @@ proc checkProgram(path: string, needBodies = false,
   for lm in result.mitems: resolveWhenBlocks(lm.m, buildTarget)  # spec §8.3
   block:
     let t0 = vBegin(psInjectTypes)
+    hoistSatisfierData(result)   # a satisfier the interface's module cannot see (A27)
     injectImportedTypes(result)  # imported types are visible unqualified
     composeImportedMixins(result)  # `+ Mixin` from another module (A29)
     # Whole-program, cross-module (a type's visibility depends on OTHER
@@ -905,6 +907,7 @@ when isMainModule:
       if stageStr == "load":
         dumpTree(mods, fmt)
       else:
+        hoistSatisfierData(loaded)
         injectImportedTypes(loaded)
         if stageStr == "inject-types":
           dumpTree(mods, fmt)
@@ -1153,7 +1156,7 @@ when isMainModule:
       # than a checker rejection.
       var handlerMods: seq[string]   # other modules handling a registry that is not theirs
       for lm in prog:
-        if lm.m != m and foreignHandlers(lm.m).len > 0: handlerMods.add(lm.name)
+        if lm.m != m and registersAnything(lm.m): handlerMods.add(lm.name)
         for d in lm.m.decls:
           if d == nil: continue
           if runsActor(d):
@@ -1199,7 +1202,7 @@ when isMainModule:
         let usesRuntime = actorNames.len > 0 or hasTasks
         var boot = ""
         # Handlers for another module's registry are handed over before
-        # anything can raise (each module's tuckRegisterHandlers). A module
+        # anything can raise (each module's tuckRegister). A module
         # only another module imports is imported here by name.
         var registerCalls = ""
         var extraImports = ""
@@ -1211,8 +1214,8 @@ when isMainModule:
             let asName = nimModuleName(hm)
             extraImports.add(if asName == hm: "import " & hm & "\n"
                              else: "import " & hm & " as " & asName & "\n")
-          registerCalls.add("  " & RegisterHandlersProc & "()\n")
-        if foreignHandlers(m).len > 0: registerCalls.add("  " & RegisterHandlersProc & "()\n")
+          registerCalls.add("  " & nimModuleName(hm) & "." & RegisterProc & "()\n")
+        if registersAnything(m): registerCalls.add("  " & RegisterProc & "()\n")
         if extraImports != "": writeFile(mainNim, extraImports & readFile(mainNim))
         var asyncInit = ""
         var asyncDrive = ""

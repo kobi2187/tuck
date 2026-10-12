@@ -1,7 +1,6 @@
 # Reaching a module that imports you: A47 (built), A34 and A27 (proposed)
 
-Status: A47 is built and pinned `bugFixed`. A34 and A27 are proposals; the
-representation question for A27 (§4) wants a ruling.
+Status: A47 and A27 are built and pinned `bugFixed`. A34 is a proposal.
 
 ## 1. The shape of the problem
 
@@ -65,45 +64,52 @@ Only a bounded fn whose provider is NOT visible from its own module needs this;
 everything else keeps today's emission, so no example re-emits. No table, no
 start-up call: the reference travels with the call.
 
-## 4. A27: an object in the importer satisfies an imported interface
+## 4. A27: an object in the importer satisfies an imported interface (BUILT)
 
-An interface compiles to a closed tagged union of its satisfiers, by value, with
-the call dispatch printed at each call site. The union is built from usage, as
-ruled. For an interface with a satisfier in a module the interface's module
-cannot see, the union cannot hold that satisfier's type, nor call its members.
+An interface compiles to a closed union of its satisfiers, held BY VALUE (spec
+§5.3: values copy, and every optimisation must give the same result as if they
+were written that way). Ruled: keep it by value.
 
-Proposal: such an interface value is **a pointer and a table of function
-references**, the classic shape and the same idea as §2.
+The union is emitted where the interface is declared, so every satisfier's data
+type has to be nameable there; a satisfier in a module that imports the
+interface's module closes an import cycle. The compiler sees the whole program,
+so it moves DATA:
 
+- `iface_hoist` (before `injectImportedTypes`) finds the satisfiers an interface's
+  module cannot see and puts their fields, and the types those fields mention
+  that live in an interface module or anything that imports one, into one
+  generated module, `iface_variants`. It is a real module in the emitted program
+  with one declaration per moved type and a header saying where each came from.
+- The original declaration keeps its members and is marked `hoistedTo`: no
+  backend emits its struct again, and a reference to it names the generated
+  module.
+- The interface's module gets a shape-only copy of each satisfier, so its union
+  lists it.
+- Every module that is not a dependency of the generated module imports it, so
+  a type that moved is still visible where it was.
+
+The interface's module cannot call the satisfier's members (§2): it keeps one
+function reference per contract member and satisfier,
+`tuckImpl_<Interface>_<member>_<Satisfier>`, which the satisfier's module assigns
+in `tuckRegister`. A module that declares the satisfier itself dispatches
+directly. Single-module interfaces are untouched.
+
+```nim
+# iface_variants.nim                    # lib.nim (declares Shape)
+type Sq* = object                       var tuckImpl_Shape_area_Sq*: proc (self: Sq): int
+  s*: int                               ...  tuckImpl_Shape_area_Sq(tmp)  # in dispatch
+
+# m.nim (declares Sq and its members)
+proc tuckRegister*() =
+  tuckImpl_Shape_area_Sq = Sq_area
 ```
-Shape = { data: pointer, vt: ^ShapeVTable }
-ShapeVTable = { area: proc(data: pointer) -> int, drop: proc(data: pointer),
-                copy: proc(data: pointer) -> pointer, typeId: int }
-```
 
-- Each satisfier's module defines its table and registers nothing at run time:
-  the conversion `x: Shape = {s: 4} Sq` is in the importer, which knows `Sq`, so
-  it builds the box and names `Sq`'s table directly.
-- The library calls `s.vt.area(s.data)`. No import, no lookup.
-- `match v: Sq q` compares `typeId`, which the closed world assigns.
-- Ownership: the box is owned by the `Shape`; drop and copy go through the table,
-  so the existing glue (`tuckDrop`/`tuckCopy` for a sum) gains one more case.
-
-Cost: an allocation per conversion and a second representation of an interface
-value in all three backends and in the ownership glue. It applies only to an
-interface that has a satisfier outside the interface's module; every
-single-module interface is unchanged.
-
-Alternative: move the satisfier's data fields, and the types they reference,
-into a generated module the interface's module imports, keeping values by value.
-Cheaper at run time, but it splits an object declaration into data and members
-and has to carry the whole type closure (consts, aliases, generics) with it.
-
-Recommendation: the table. It is the simplest to explain and to read in the
-emitted code, and it needs nothing moved between modules.
+Refused with a message (not yet moved): an object that composes another
+declaration, a type with member fns.
 
 ## 5. Order
 
 1. A47 (done): lists of function references for registry handlers.
-2. A34: provider parameters for a foreign provider (§3).
-3. A27: the pointer-and-table representation for cross-module interfaces (§4).
+2. A27 (done): the satisfier's data moves to `iface_variants`, its members are
+   reached through function references (§4).
+3. A34: provider parameters for a foreign provider (§3).

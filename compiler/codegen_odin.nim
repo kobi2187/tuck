@@ -399,7 +399,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   # PASSING member call so far reached its receiver through the chain
   # emitter instead, which threads an existing pointer through, never
   # needing to take one here.
-  if member != "" and args.len > 0 and callWritesSelf(ctx.res, ctx.module, e):
+  if args.len > 0 and callWritesSelf(ctx.res, ctx.module, e):
     args[0] = "&" & args[0]
   let emitted = ctx.genCallWithArgs(e, calleeStr, args)
   if emitted != "": return emitted

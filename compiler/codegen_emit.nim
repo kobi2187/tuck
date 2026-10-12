@@ -117,6 +117,7 @@ proc emitNim*(m: Module, res: Resolution,
   # ponytail: one pragma instead of merging 11 emit sites into a single block;
   # do that if codeReordering ever bites.
   result = "{.experimental: \"codeReordering\".}\n"
+  if moduleName == VariantsModule: result.add(variantsHeader(m, "#"))
   # QUOTED: an import is a path, and an unquoted one is parsed as Nim
   # expressions — a checkout under `my-projects/` imported `my - projects`,
   # and one under a directory starting with a digit read it as a number.
@@ -135,4 +136,4 @@ proc emitNim*(m: Module, res: Resolution,
   result.add(sumEqForwardDecls(m))
   result.add(fnForwardDecls(m))
   result.add(body)
-  result.add(genRegisterHandlers(m))
+  result.add(genRegister(m))

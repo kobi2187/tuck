@@ -6304,6 +6304,22 @@ proc failSelfWrite(call: MemberCall, member: string) =
   err.col = call.span.col
   raise withModulePrefix(err, call.modulePath)
 
+proc addHoistedWriters(mods: seq[tuple[name, path: string, m: Module]],
+                       writers: var HashSet[NodeId]) =
+  ## A satisfier whose data moved to a generated module (iface_hoist) is held
+  ## by the interface's module as a shape-only copy with no bodies: it changes
+  ## `self` exactly when its original does.
+  for (_, _, m) in mods:
+    for c in m.decls(dkObject):
+      if not isImportedCopy(c) or c.hoistedTo == "": continue
+      for (_, _, other) in mods:
+        for o in other.decls(dkObject):
+          if o.name != c.name or isImportedCopy(o) or o.hoistedTo == "": continue
+          for mc in c.objMembers:
+            let mo = findObjectMember(o, mc.name)
+            if mo != nil and mo.id in writers and mc.id.isSet:
+              writers.incl mc.id
+
 proc checkSelfWrites(mods: seq[tuple[name, path: string, m: Module]]) =
   ## A member that changes its object may be called on a `var` only — never
   ## on a parameter or a `let` (ruled 2026-09-28: a parameter is immutable
@@ -6313,7 +6329,8 @@ proc checkSelfWrites(mods: seq[tuple[name, path: string, m: Module]]) =
   ## whether a member writes `self` can depend on members in other modules.
   ## The answer is kept on the semantic layer for the backends: a member
   ## that only reads takes `self` by value.
-  let writers = computeSelfWriters(mods)
+  var writers = computeSelfWriters(mods)
+  addHoistedWriters(mods, writers)
   semLayer.selfWriters = writers
   var real = initTable[string, Module]()
   for (name, path, m) in mods: real[name] = m

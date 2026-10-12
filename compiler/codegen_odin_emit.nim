@@ -49,7 +49,7 @@ proc emitBody*(ctx: var OdinCodegenCtx, m: Module): tuple[types, mains: string] 
       if code != "":
         body.add(code & "\n")
   if declaresSlab(m): body.add(ctx.genOdinSlabsRelease(m) & "\n")
-  let register = ctx.genOdinRegisterHandlers(m)
+  let register = ctx.genOdinRegister(m)
   if register != "": body.add(register & "\n")
   (body, mainStmts.join("\n"))
 
@@ -77,6 +77,7 @@ proc emitOdinModule*(name: string, m: Module, res: Resolution,
   # emitted package carries a tuck_ prefix; the import alias at the use site
   # keeps the Tuck name, so qualified calls still read as `io.printLine`.
   var res = odinFeatures & "package tuck_" & pkg & "\n\n"
+  if name == VariantsModule: res.add(variantsHeader(m, "//"))
   # This file lives in mod_<pkg>/, so siblings are one level up.
   var imports: seq[string]
   if "fmt." in body: imports.add("import \"core:fmt\"")
@@ -159,7 +160,7 @@ proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
   # The entry point's slab reports and releases name the runtime and each
   # slab's package, though the body may name neither (genEntryPoint).
   let slabPkgs = slabPackages(m, realModules)
-  let bootPkgs = actorBootModules(m, realModules) & handlerModules(m, realModules)
+  let bootPkgs = actorBootModules(m, realModules) & registerModules(m, realModules)
   if tracksAllocations(m, body, mains) or slabPkgs.len > 0 or bootPkgs.len > 0:
     result.add("import rt \"./tuckrt\"")
   # Imported Tuck modules are sibling packages (mod_<name>/), referenced
@@ -282,9 +283,9 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string
   result.add(actorInitLines(ctx))
   # Handlers declared for another module's registry are handed over before
   # anything can raise: each such module's own, then this module's.
-  for p in handlerModules(m, ctx.realModules):
-    result.add("\t" & p.replace("-", "_") & "." & RegisterHandlersProc & "()\n")
-  if foreignHandlers(m).len > 0: result.add("\t" & RegisterHandlersProc & "()\n")
+  for p in registerModules(m, ctx.realModules):
+    result.add("\t" & p.replace("-", "_") & "." & RegisterProc & "()\n")
+  if registersAnything(m): result.add("\t" & RegisterProc & "()\n")
   var actorNames: seq[string]
   var hasTasks = false
   runtimeUsers(m, actorNames, hasTasks)

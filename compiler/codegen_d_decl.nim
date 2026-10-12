@@ -86,6 +86,23 @@ proc dBitSetter*(bf: BitFieldInfo, regName: string): string =
     "    if (value) *" & regName & " |= (1u << " & bf.prefix & "_SHIFT);\n" &
     "    else *" & regName & " &= ~(1u << " & bf.prefix & "_SHIFT);\n}\n"
 
+proc implVarDecls(ctx: var DCodegenCtx, d: Decl, sats: seq[Decl]): string =
+  ## Satisfiers whose members live in a module this one cannot import: one
+  ## function reference per contract member, filled in at start-up (tuckRegister)
+  ## and called through by this module's dispatch.
+  for v in implVars(ctx.res, ctx.module, d, sats):
+    let selfT = ctx.importedTypeQualifierD(v.sat.name)
+    var params: seq[string]
+    for i, p in v.mem.fnParams:
+      let ty = if isSelfType(p.typ): (if i == 0 and v.selfByRef: "ref " else: "") & selfT
+               else: ctx.dType(p.typ)
+      params.add(ty & " " & p.name)
+    let ret = if v.mem.fnReturnType == nil: "void"
+              elif isSelfType(v.mem.fnReturnType): selfT
+              else: ctx.dType(v.mem.fnReturnType)
+    result.add("__gshared " & ret & " function(" & params.join(", ") & ") " &
+               v.name & ";\n")
+
 proc genDInterface*(ctx: var DCodegenCtx, d: Decl): string =
   ## An interface is a COPYING TAGGED VARIANT over every type that satisfies
   ## it (spec 5.3) — not a vtable, not a pointer to a base. This is not OOP:
@@ -110,8 +127,10 @@ proc genDInterface*(ctx: var DCodegenCtx, d: Decl): string =
   result.add("struct " & d.name & " {\n")
   result.add("    " & d.name & "Tag tag;\n")
   for st in sats:
-    result.add("    " & st.name & " " & st.name & "Val;\n")
+    result.add("    " & ctx.importedTypeQualifierD(st.name) & " " & st.name &
+               "Val;\n")
   result.add("}\n")
+  result.add(ctx.implVarDecls(d, sats))
 
 proc genDErrHandler*(ctx: var DCodegenCtx, d: Decl): string =
   ## The `errors [policy: ...]` block's `on unhandled({code, site})` handler
@@ -660,19 +679,27 @@ proc genDPendingBlock*(ctx: var DCodegenCtx, d: Decl): string =
     let code = ctx.genDPendingStub(mem)
     if code != "": result.add(code & "\n")
 
-proc genDRegisterHandlers*(ctx: DCodegenCtx, m: Module): string =
-  ## What the entry point calls to hand this module's handlers for other
-  ## modules' registries to those registries.
-  let hs = foreignHandlers(m)
-  if hs.len == 0: return ""
-  result = "void " & RegisterHandlersProc & "() {\n"
-  for h in hs:
+proc genDRegister*(ctx: DCodegenCtx, m: Module): string =
+  ## What the entry point calls once, before main, to hand this module's
+  ## handlers for other modules' registries to those registries, and its
+  ## members of an interface another module declares to that module's
+  ## function references (implVarName).
+  if not registersAnything(m): return ""
+  result = "void " & RegisterProc & "() {\n"
+  for h in foreignHandlers(m):
     let reg = ctx.res.registryOfHandler(h)
     let origin = if reg == nil: "" else:
       declOrigin(m, ctx.realModules, reg.name, {dkRegistry})
     let pre = if origin == "": "" else: dAlias(origin) & "."
     result.add("    " & pre & ctx.res.handlerListOf(h) & " ~= &" &
                dHandlerFnName(h.name) & ";\n")
+  for (iface, o) in movedSatisfiers(m):
+    let origin = moduleDeclaringType(m, iface.name)
+    let pre = if origin == "": "" else: dAlias(origin) & "."
+    for mem in iface.ifaceMembers:
+      if mem == nil or mem.kind != dkFn: continue
+      result.add("    " & pre & implVarName(iface.name, mem.name, o.name) & " = &" &
+                 memberProcName(o.name, implementingName(o, iface.name, mem.name)) & ";\n")
   result.add("}\n")
 
 proc genDRegistry*(ctx: var DCodegenCtx, d: Decl): string =
@@ -919,10 +946,13 @@ proc genDObjectDecl*(ctx: var DCodegenCtx, d: Decl): string =
   ## `object` — a plain D struct plus its member fns as qualified free
   ## procs. Composition (+Mixin) and satisfies arrive with the interface
   ## work.
-  result = "struct " & d.name & " {\n"
-  for f in d.objFields:
-    result.add("    " & ctx.dFieldType(d.name, f) & " " & f.name & ";\n")
-  result.add("}\n\n")
+  # A moved object's struct is the generated module's (iface_hoist); only its
+  # members are emitted here.
+  if d.hoistedTo == "":
+    result = "struct " & d.name & " {\n"
+    for f in d.objFields:
+      result.add("    " & ctx.dFieldType(d.name, f) & " " & f.name & ";\n")
+    result.add("}\n\n")
   for mem in d.objMembers:
     if mem == nil: continue
     if mem.kind == dkFn:
@@ -1040,7 +1070,7 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.span.file.startsWith(ImportedTypeMarker):
     return ""
   case d.kind
-  of dkType: ctx.genDTypeDecl(d)
+  of dkType: (if d.hoistedTo != "": "" else: ctx.genDTypeDecl(d))
   of dkObject: ctx.genDObjectDecl(d)
   of dkRegistry: ctx.genDRegistry(d)
   of dkPool:

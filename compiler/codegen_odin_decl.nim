@@ -71,7 +71,8 @@ proc genOdinMemberFn*(ctx: var OdinCodegenCtx, m: Decl, objName: string): string
   var params = m.fnParams
   for i in 0 ..< params.len:
     if params[i].name == "self" and byPointer:
-      params[i].typ = Type(span: m.span, kind: tkNamed, name: "^" & objName)
+      params[i].typ = Type(span: m.span, kind: tkNamed,
+                           name: "^" & ctx.importedTypeQualifier(objName))
   # THE MEMBER'S OWN ID: this is the same fn — same body, same decisions —
   # printed with Odin's `self` convention, and every side table (ownership,
   # SSA, resolution) knows it by that id.
@@ -855,19 +856,27 @@ proc foreignHandlerLists(ctx: var OdinCodegenCtx, d: Decl, ind: string): string 
                params.join(", ") & ")\n")
   if result != "": result.add("\n")
 
-proc genOdinRegisterHandlers*(ctx: OdinCodegenCtx, m: Module): string =
-  ## What the entry point calls to hand this module's handlers for other
-  ## modules' registries to those registries.
-  let hs = foreignHandlers(m)
-  if hs.len == 0: return ""
-  result = RegisterHandlersProc & " :: proc() {\n"
-  for h in hs:
+proc genOdinRegister*(ctx: OdinCodegenCtx, m: Module): string =
+  ## What the entry point calls once, before main, to hand this module's
+  ## handlers for other modules' registries to those registries, and its
+  ## members of an interface another module declares to that module's
+  ## function references (implVarName).
+  if not registersAnything(m): return ""
+  result = RegisterProc & " :: proc() {\n"
+  for h in foreignHandlers(m):
     let reg = ctx.res.registryOfHandler(h)
     let origin = if reg == nil: "" else:
       declOrigin(m, ctx.realModules, reg.name, {dkRegistry})
     let pre = if origin == "": "" else: origin.replace("-", "_") & "."
     result.add("\tappend(&" & pre & ctx.res.handlerListOf(h) & ", " &
                handlerProcName(h) & ")\n")
+  for (iface, o) in movedSatisfiers(m):
+    let origin = moduleDeclaringType(m, iface.name)
+    let pre = if origin == "": "" else: origin.replace("-", "_") & "."
+    for mem in iface.ifaceMembers:
+      if mem == nil or mem.kind != dkFn: continue
+      result.add("\t" & pre & implVarName(iface.name, mem.name, o.name) & " = " &
+                 memberProcName(o.name, implementingName(o, iface.name, mem.name)) & "\n")
   result.add("}\n")
 
 proc registryRaiseProc*(ctx: var OdinCodegenCtx, d: Decl, v: VariantDef,
@@ -1010,6 +1019,9 @@ proc genObjectDecl*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
       members.add(ctx.genOdinDecl(member) & "\n")
   let body = if fields.len > 0: fields.join("\n") & "\n" else: ""
   # manager objects hold var state but are Tier 1 value types too
+  # A moved object's struct is the generated module's (iface_hoist); only its
+  # members are emitted here.
+  if d.hoistedTo != "": return members
   ind & d.name & " :: struct {\n" & body & ind & "}\n\n" & members
 
 proc genTaskDecl*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
@@ -1345,6 +1357,23 @@ proc genOdinFnSig(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   return ind & d.name & " :: proc " & conv & "(" & params.join(", ") & ")" &
          retStr & "\n"
 
+proc implVarDecls(ctx: var OdinCodegenCtx, d: Decl, sats: seq[Decl], ind: string): string =
+  ## Satisfiers whose members live in a module this one cannot import: one
+  ## function reference per contract member, filled in at start-up (tuckRegister)
+  ## and called through by this module's dispatch.
+  for v in implVars(ctx.res, ctx.module, d, sats):
+    let selfT = ctx.importedTypeQualifier(v.sat.name)
+    var params: seq[string]
+    for i, p in v.mem.fnParams:
+      let ty = if isSelfType(p.typ): (if i == 0 and v.selfByRef: "^" else: "") & selfT
+               else: ctx.odinType(p.typ)
+      params.add(p.name & ": " & ty)
+    let rt = v.mem.fnReturnType
+    let ret = if rt == nil or (rt.kind == tkNamed and rt.name in ["void", "unit"]): ""
+              elif isSelfType(rt): " -> " & selfT
+              else: " -> " & ctx.odinType(rt)
+    result.add("\n" & ind & v.name & ": proc(" & params.join(", ") & ")" & ret & "\n")
+
 proc genOdinInterface(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## A VARIANT over the satisfying types, copied in — mirrors the Nim backend
   ## (spec §5.3). Odin's tagged union does what Nim's case-object does: the
@@ -1357,11 +1386,13 @@ proc genOdinInterface(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   var fields: seq[string]
   for st in sats:
     tags.add(d.name & "_is_" & st.name)
-    fields.add(ind & "\t" & st.name & "Val: " & st.name & ",")
+    fields.add(ind & "\t" & st.name & "Val: " &
+               ctx.importedTypeQualifier(st.name) & ",")
   result = ind & d.name & "Tag :: enum { " & tags.join(", ") & " }\n\n"
   result.add(ind & d.name & " :: struct {\n" &
              ind & "\ttag: " & d.name & "Tag,\n" &
              fields.join("\n") & "\n" & ind & "}\n")
+  result.add(ctx.implVarDecls(d, sats, ind))
 
 proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## One top-level declaration. Every DeclKind is named, so a new one fails
@@ -1372,7 +1403,7 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   let ind = "  ".repeat(ctx.indent)
   case d.kind
   of dkFn: ctx.genOdinFnDecl(d)
-  of dkType: ctx.genOdinTypeDecl(d)
+  of dkType: (if d.hoistedTo != "": "" else: ctx.genOdinTypeDecl(d))
   of dkObject: ctx.genObjectDecl(d, ind)
   of dkActor: ctx.genActor(d)
   of dkTask: ctx.genTaskDecl(d, ind)
