@@ -842,6 +842,12 @@ proc dTemplateParamList(generics: seq[string], params: seq[Param]): string =
     parts.add(if g in sizeNames: "size_t " & g else: g)
   parts.join(", ")
 
+proc dProviderAliases(needs: seq[ProviderNeed]): string =
+  ## `, alias size`: the providers of a group the fn's own module cannot name
+  ## are template parameters the call site supplies (A34). They keep the
+  ## requirement's own name, so the body is unchanged.
+  for n in needs: result.add(", alias " & n.req)
+
 proc enterReturnContext(ctx: var DCodegenCtx, retType: Type) =
   ## A fallible fn wraps every return in the carrier; the arms of its body
   ## need the payload type to name terr!(T). Cleared by leaveReturnContext.
@@ -905,7 +911,8 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   # Nothing in the corpus is a generic fn, so a whole language feature was
   # missing from a backend with nothing to notice.
   let tmplStr = if d.fnGenerics.len > 0:
-                  "(" & dTemplateParamList(d.fnGenerics, d.fnParams) & ")"
+                  "(" & dTemplateParamList(d.fnGenerics, d.fnParams) &
+                    dProviderAliases(providerNeeds(ctx.module, ctx.realModules, d)) & ")"
                 else: ""
   # A fn that threads a container through (`f(c, ...) -> c`) is emitted TWICE:
   # the real body as `f_moved`, which may read its container param without a

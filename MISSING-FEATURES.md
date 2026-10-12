@@ -22,33 +22,18 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (3)
+## A. Open bugs (2)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
 
 **A27–A37 — constructs that do not cross a module boundary (R11 scan,
-2026-09-28).** A25, A26, A27, A28, A29, A30, A31, A32, A33, A35, A36, A37 and A47 are fixed; their pins are
+2026-09-28).** A25, A26, A27, A28, A29, A30, A31, A32, A33, A34, A35, A36, A37 and A47 are fixed; their pins are
 `bugFixed` in `cross_module`. Ruled: importing anything should work as well as the same
 module. Each construct was built declared in `lib` and used from the
 importer on Nim, Odin and D, against a one-module control that passes; these
 failed. Tests: `cross_module`, each named "R11: …".
-- **A34** (Odin, D) a group bound whose provider is in another module — the
-  bounded fn's module cannot name it, because Odin and D resolve the
-  requirement where the generic is written. Nim works. Needs the provider
-  passed to the bounded fn (an extra proc parameter in Odin, an `alias`
-  template parameter in D). A14's sibling.
-- **A34** (Odin, D) a group bound whose provider is in another module — the
-  bounded fn's module cannot name it, because Odin and D resolve the
-  requirement where the generic is written. Nim works. Needs the provider
-  passed to the bounded fn (an extra proc parameter in Odin, an `alias`
-  template parameter in D). A14's sibling.
-- **A47** a registry handler (`on Reg.Event`) declared in a module other than
-  the registry's never runs, on any backend. The raise proc is the registry
-  module's and cannot call into a module that imports it, so the handler is
-  dropped without a word. Needs a handler table the handler's module fills at
-  start-up (the shape of `tuckActorsBoot`). Test: `cross_module`, "A47: …".
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism
@@ -261,6 +246,20 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   that the satisfier's module assigns in `tuckRegister`. Values stay by value.
   Refused with a message: a moved object that composes another (`+ ...`) or a
   moved type with members. Tests: `cross_module`, "A27: …".
+- **A34 — a group bound whose provider is in another module (Odin, D).** Odin
+  and D resolve a requirement where the generic is WRITTEN, so a bounded fn in
+  one module could not call the provider (`size`) another module declares for
+  its type. The provider is now an argument: a bounded fn whose own module
+  does not declare a requirement it calls takes it as a constant proc
+  parameter in Odin (`big :: proc(x: $T, $size: proc(self: T) -> int)`) and an
+  `alias` template parameter in D (`big(T, alias size)(T x)`), under the
+  requirement's own name so the body is unchanged, and each call site passes
+  the fn of that name whose `self` is the argument's type
+  (`codegen_common.providerNeeds` / `providerFor`). Nim already resolved at
+  instantiation. Only a plain bound by a group without type parameters of its
+  own, on a type parameter some parameter names outright; anything else
+  resolves by name as before. A14 (two implementations of one requirement
+  visible to the bounded fn) is separate.
 - **A29 — `+ Mixin` from another module.** Parsing composes only the mixins
   one file holds, so the importer's object kept the `+ Mixin` entry and a call
   met the mixin's fn with `Self` unbound. `modules.composeImportedMixins`

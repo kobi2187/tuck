@@ -367,6 +367,24 @@ proc genOdinActorMember(ctx: var OdinCodegenCtx, e: Expr): string =
   "rt." & rt & "(" & ctx.odinActorPkg(e.args[0].refName) &
     actorSlotName(e.args[0].refName) & ", " & ctx.genOdinExpr(e.args[1]) & ")"
 
+proc providerArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
+  ## The providers a bounded fn is handed (A34): for each requirement its own
+  ## module cannot name, the fn of that name whose `self` is the argument's
+  ## type, found here or in another module.
+  if e.callee == nil or e.callee.kind != exkVar: return
+  let found = fnHome(ctx.module, ctx.realModules, e.callee.name)
+  if found.isNone: return
+  let home = found.get
+  let args = if e.isPayloadCall: payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+             else: e.args
+  for need in providerNeeds(home, ctx.realModules, home.findFn(e.callee.name)):
+    if need.paramIdx >= args.len: continue
+    let t = ctx.res.typeFor(args[need.paramIdx])
+    if t == nil or t.kind != tkNamed: continue
+    let (modName, name) = providerFor(ctx.module, ctx.realModules, need, t.name)
+    if name != "":
+      result.add((if modName == "": "" else: modName.replace("-", "_") & ".") & name)
+
 proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A call in Odin, trying the special shapes first: `waitOn`, a sum
   ## variant, a member or combinator call. A member call passes `&receiver`,
@@ -389,6 +407,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   let combinator = ctx.asCombinatorCall(e, calleeStr)
   if combinator != "": return combinator
   var args = ctx.genCallArgs(e)
+  args.add(ctx.providerArgs(e))
   # genOdinMemberFn gives EVERY member fn's self a pointer, `^T`,
   # unconditionally — not just the ones that mutate it — so every call
   # site has to pass `&receiver` to match, regardless of whether this

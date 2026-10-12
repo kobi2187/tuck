@@ -691,6 +691,72 @@ proc movedSatisfiers*(m: Module): seq[tuple[iface: Decl, obj: Decl]] =
       let i = m.findDecl(dkInterface, name)
       if i != nil: result.add (i, o)
 
+type ProviderNeed* = object
+  ## One group requirement a bounded fn calls but its own module does not
+  ## declare: the call site must hand the fn its provider (A34). Odin and D
+  ## resolve a name where the generic is WRITTEN, so a provider declared by the
+  ## caller's module is invisible there unless it is passed in.
+  req*: string       # the requirement as the body calls it (mangled)
+  member*: Decl      # the group's signature for it
+  param*: string     # the bounded type parameter, `T` in `[T: Sized]`
+  paramIdx*: int     # a fn parameter whose type is exactly `param`
+
+proc findGroup(m: Module, real: Table[string, Module], name: string): Decl =
+  result = m.findDecl(dkGroup, name)
+  if result != nil: return
+  for _, other in real:
+    result = other.findDecl(dkGroup, name)
+    if result != nil: return
+
+proc paramNamed(f: Decl, typeParam: string): int =
+  ## The index of a parameter of `f` whose type is exactly `typeParam`, or -1.
+  for k, p in f.fnParams:
+    if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == typeParam: return k
+  -1
+
+proc needsOfBound(home: Module, real: Table[string, Module], bound: Type,
+                  param: string, idx: int): seq[ProviderNeed] =
+  ## What one bound on type parameter `param` asks of the module declaring the
+  ## fn: each requirement of a plain group that module does not itself declare.
+  if bound == nil or bound.kind != tkNamed: return
+  let grp = findGroup(home, real, bound.name)
+  if grp == nil or grp.groupGenerics.len > 0: return
+  for mem in grp.groupMembers:
+    if mem == nil or mem.kind != dkFn: continue
+    let req = prefixed(mem.name, nkFn)
+    if not home.declaresFn(req):
+      result.add ProviderNeed(req: req, member: mem, param: param, paramIdx: idx)
+
+proc providerNeeds*(home: Module, real: Table[string, Module], f: Decl): seq[ProviderNeed] =
+  ## The providers `f` (declared in `home`) is passed. Only a plain bound on a
+  ## type parameter that a parameter names outright, by a group without type
+  ## parameters of its own; anything else keeps resolving by name.
+  if f == nil or f.kind != dkFn: return
+  for i, g in f.fnGenerics:
+    let idx = f.paramNamed(g)
+    if i >= f.fnGenericBounds.len or idx < 0: continue
+    for b in f.fnGenericBounds[i]:
+      result.add needsOfBound(home, real, b, g, idx)
+
+proc fnHome*(m: Module, real: Table[string, Module], name: string): Option[Module] =
+  ## The module declaring the fn `name`: this one, else another of the program.
+  if m.declaresFn(name): return some(m)
+  for _, other in real:
+    if other.declaresFn(name): return some(other)
+
+proc providerFor*(m: Module, real: Table[string, Module], need: ProviderNeed,
+                  selfType: string): tuple[module, name: string] =
+  ## The fn named by the requirement whose first parameter is `selfType`: this
+  ## module's, else another's. `module` is "" for this one.
+  proc fits(mod2: Module): bool =
+    for d in mod2.decls(dkFn):
+      if d.name == need.req and d.fnParams.len > 0 and d.fnParams[0].typ != nil and
+         d.fnParams[0].typ.kind == tkNamed and d.fnParams[0].typ.name == selfType:
+        return true
+  if fits(m): return ("", need.req)
+  for modName, other in real:
+    if other != m and fits(other): return (modName, need.req)
+
 type ImplVar* = object
   ## One function reference an interface's module keeps (implVarName): the
   ## contract member `mem` of the moved satisfier `sat`.

@@ -168,6 +168,18 @@ proc markFirstTypeParam(ty, g: string): string =
     i.inc
   ty
 
+proc providerProcType(ctx: var OdinCodegenCtx, need: ProviderNeed): string =
+  ## `proc(self: T) -> int`: the group's signature with `Self` read as the
+  ## bounded type parameter.
+  var ps: seq[string]
+  for p in need.member.fnParams:
+    ps.add(p.name & ": " & (if isSelfType(p.typ): need.param else: ctx.odinType(p.typ)))
+  let rt = need.member.fnReturnType
+  let ret = if rt == nil or (rt.kind == tkNamed and rt.name in ["void", "unit"]): ""
+            elif isSelfType(rt): " -> " & need.param
+            else: " -> " & ctx.odinType(rt)
+  "proc(" & ps.join(", ") & ")" & ret
+
 proc fnParamList*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## Records pass BY VALUE. The checker binds every param isVar:true, but a
   ## Tuck mutator returns the updated record and the caller assigns it back
@@ -207,6 +219,11 @@ proc fnParamList*(ctx: var OdinCodegenCtx, d: Decl): string =
   var typeParams: seq[string]
   for g in d.fnGenerics:
     if g notin bound: typeParams.add("$" & g & ": typeid")
+  # The providers of a group the fn's own module cannot name (A34): constant
+  # proc parameters the call site supplies, so the body's `size(x)` calls the
+  # caller's. They keep the requirement's own name, so the body is unchanged.
+  for need in providerNeeds(ctx.module, ctx.realModules, d):
+    params.add("$" & need.req & ": " & ctx.providerProcType(need))
   (typeParams & params).join(", ")
 
 proc fnHeader*(ctx: var OdinCodegenCtx, d: Decl, retTypeStr, ind: string): string =

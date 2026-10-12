@@ -1,6 +1,6 @@
 # Reaching a module that imports you: A47 (built), A34 and A27 (proposed)
 
-Status: A47 and A27 are built and pinned `bugFixed`. A34 is a proposal.
+Status: A47, A27 and A34 are built and pinned `bugFixed`.
 
 ## 1. The shape of the problem
 
@@ -45,7 +45,7 @@ was dropped: a naming convention resolved by the linker is something a developer
 has to take on faith, where a list of function references is something they can
 read.
 
-## 3. A34: a group provider in another module
+## 3. A34: a group provider in another module (BUILT)
 
 Odin and D resolve a requirement where the generic is WRITTEN, so `big[T: Sized]`
 in `lib` cannot name `size` from the importer. Nim resolves at instantiation and
@@ -112,4 +112,4 @@ declaration, a type with member fns.
 1. A47 (done): lists of function references for registry handlers.
 2. A27 (done): the satisfier's data moves to `iface_variants`, its members are
    reached through function references (§4).
-3. A34: provider parameters for a foreign provider (§3).
+3. A34 (done): provider parameters for a provider the bounded fn's module cannot name (§3).

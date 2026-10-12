@@ -398,6 +398,46 @@ proc genDSpawn(ctx: var DCodegenCtx, e: Expr, task: string): string =
   "rt.tuckSpawnJob(&" & task &
     (if args.len > 0: ", " & args.join(", ") else: "") & ")"
 
+proc dProviderArgs(ctx: var DCodegenCtx, e: Expr): seq[string] =
+  ## The providers a bounded fn is handed (A34): for each requirement its own
+  ## module cannot name, the fn of that name whose `self` is the argument's
+  ## type, found here or in another module, qualified by its module's alias.
+  if e.callee == nil or e.callee.kind != exkVar: return
+  let found = fnHome(ctx.module, ctx.realModules, e.callee.name)
+  if found.isNone: return
+  let home = found.get
+  let args = if e.isPayloadCall: payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+             else: e.args
+  for need in providerNeeds(home, ctx.realModules, home.findFn(e.callee.name)):
+    if need.paramIdx >= args.len: continue
+    let t = ctx.res.typeFor(args[need.paramIdx])
+    if t == nil or t.kind != tkNamed: continue
+    let (modName, name) = providerFor(ctx.module, ctx.realModules, need, t.name)
+    if name != "":
+      result.add((if modName == "": "" else: dAlias(modName) & ".") & name)
+
+proc templateCall(ctx: var DCodegenCtx, e: Expr, calleeStr: string,
+                  args: seq[string]): string =
+  ## A call that needs its template arguments spelled out, "" otherwise: a type
+  ## param no parameter mentions (the checker recorded it, recordCallTypeArgs),
+  ## or providers the bounded fn is handed as `alias` parameters, which D cannot
+  ## deduce — then every type parameter is read off the argument it names.
+  var parts: seq[string]
+  for t in ctx.res.callTypeArgsFor(e): parts.add(ctx.dType(t))
+  let providers = ctx.dProviderArgs(e)
+  if providers.len > 0 and parts.len == 0:
+    let found = fnHome(ctx.module, ctx.realModules, e.callee.name)
+    let f = found.get.findFn(e.callee.name)
+    let argEs = if e.isPayloadCall: payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+                else: e.args
+    for g in f.fnGenerics:
+      for k, p in f.fnParams:
+        if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == g and k < argEs.len:
+          parts.add(ctx.dType(ctx.res.typeFor(argEs[k])))
+          break
+  if parts.len == 0: return ""
+  calleeStr & "!(" & (parts & providers).join(", ") & ")(" & args.join(", ") & ")"
+
 proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   ## A call in D, trying the special shapes first: `waitOn`, a sum variant, a
   ## primitive conversion, a task spawn, a member or combinator call. What is
@@ -435,11 +475,8 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   # D gets the template arguments spelled out: `tuck_firstOf!(Row, long)(r)`.
   # Recorded by the checker only where that is the case — see
   # recordCallTypeArgs — so an ordinary generic call is untouched.
-  let targs = ctx.res.callTypeArgsFor(e)
-  if targs.len > 0:
-    var parts: seq[string]
-    for t in targs: parts.add(ctx.dType(t))
-    return calleeStr & "!(" & parts.join(", ") & ")(" & args.join(", ") & ")"
+  let templated = ctx.templateCall(e, calleeStr, args)
+  if templated != "": return templated
   # A call that may take its first argument destructively, in ANY position.
   # See codegen_common.movedCalleeName — the position nothing else reaches is
   # `return f(x, ...)`.

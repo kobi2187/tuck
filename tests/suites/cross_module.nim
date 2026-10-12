@@ -976,7 +976,7 @@ fn big[T: Sized]({x: T}) -> bool:
   return {self: x} size > 10
 """)
   t.quietly: t.hostRuns("R11: a group's provider in another module is found on every backend", 1)
-  t.bugOpen "R11: a group's provider in another module is found on every backend"
+  t.bugFixed "R11: a group's provider in another module is found on every backend"
 
   t.src """
 import lib
