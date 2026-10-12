@@ -16,12 +16,31 @@ tuckˑtypeˑHeader :: struct {
 
 tuckˑarenaˑScratchSpace := rt.ArenaBudget{size = 2048}
 tuckˑarenaˑScratchSpace_reset :: proc() {
-	rt.tuckSlabReset(&tuckˑslabˑScratchSpace_EthernetFrame)
+	tuckˑslabˑScratchSpace_EthernetFrame_reset()
 	rt.tuckSlabReset(&tuckˑslabˑScratchSpace_Header)
 	tuckˑarenaˑScratchSpace.used = 0
 }
 
 tuckˑslabˑScratchSpace_EthernetFrame := rt.SlabChunked(tuckˑtypeˑEthernetFrame){name = "ScratchSpace"}
+tuckˑslabˑScratchSpace_EthernetFrame_free :: proc(r: rt.SlabRef) {
+	c := rt.tuckSlabCell(&tuckˑslabˑScratchSpace_EthernetFrame, r)
+	rt.tuckDrop(c.value)
+	rt.tuckSlabFree(&tuckˑslabˑScratchSpace_EthernetFrame, r)
+}
+tuckˑslabˑScratchSpace_EthernetFrame_set :: proc(r: rt.SlabRef, v: tuckˑtypeˑEthernetFrame) {
+	c := rt.tuckSlabCell(&tuckˑslabˑScratchSpace_EthernetFrame, r)
+	rt.tuckDrop(c.value)
+	c.value = v
+}
+tuckˑslabˑScratchSpace_EthernetFrame_reset :: proc() {
+	for i in 0 ..< tuckˑslabˑScratchSpace_EthernetFrame.len {
+		c := rt.tuckSlabCellAt(&tuckˑslabˑScratchSpace_EthernetFrame, i)
+		if c.link == rt.SLAB_LIVE {
+			rt.tuckDrop(c.value)
+		}
+	}
+	rt.tuckSlabReset(&tuckˑslabˑScratchSpace_EthernetFrame)
+}
 
 tuckˑslabˑScratchSpace_Header := rt.SlabChunked(tuckˑtypeˑHeader){name = "ScratchSpace"}
 
@@ -54,6 +73,7 @@ tuckˑfnˑmain :: proc () -> int {
 
 tuckSlabsRelease :: proc() {
 	when rt.TUCK_TRACK {
+		tuckˑslabˑScratchSpace_EthernetFrame_reset()
 		rt.tuckSlabRelease(&tuckˑslabˑScratchSpace_EthernetFrame)
 		rt.tuckSlabRelease(&tuckˑslabˑScratchSpace_Header)
 	}
