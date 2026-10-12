@@ -389,7 +389,7 @@ fn stash({n: int}) -> int [io]:
   # more than collecting names — an imported actor's drain is in another
   # package, so the call has to be QUALIFIED. Odin hangs, D returns 0.
   t.quietly: t.hostRuns("an imported actor runs on every backend", 6)
-  t.bugOpen "an imported actor runs on every backend"
+  t.bugFixed "an imported actor runs on every backend"
 
   # --- the msgpack AST cache (.tuck-cache) ---------------------------------
   #
@@ -786,7 +786,56 @@ fn main() -> int:
     total += n
 """)
   t.quietly: t.hostRuns("R11: an imported actor's fields and handlers are visible to the importer", 6)
-  t.bugOpen "R11: an imported actor's fields and handlers are visible to the importer"
+  t.bugFixed "R11: an imported actor's fields and handlers are visible to the importer"
+
+  # The actor's starting field value is the package's to set (Odin) or a
+  # module constructor (D), and a program that reaches the actor only through
+  # a middle module still starts it. A18 and A32 together.
+  t.src """
+import scheduler
+import lib
+
+fn done() -> bool:
+  return Acc.total > 40
+
+fn main() -> int:
+  Acc send add {n: 2}
+  Acc.waitUntil {pred: :done}
+  return Acc.total
+"""
+  t.addFile("lib.tuck", """actor Acc [queue: 8]:
+  total: int = 40
+  on add({n: int}):
+    total += n
+""")
+  t.hostRuns "an imported actor's starting field value is in place", 42
+
+  t.src """
+import mid
+
+fn main() -> int:
+  {x: 0} mid::bump
+  return {x: 0} mid::current
+"""
+  t.addFile("lib.tuck", """actor Acc [queue: 8]:
+  total: int = 40
+  on add({n: int}):
+    total += n
+""")
+  t.addFile("mid.tuck", """import scheduler
+import lib
+
+fn bump({x: int}):
+  Acc send add {n: 2}
+
+fn ready() -> bool:
+  return Acc.total > 40
+
+fn current({x: int}) -> int:
+  Acc.waitUntil {pred: :ready}
+  return Acc.total
+""")
+  t.hostRuns "an actor only a middle module imports is still started", 42
 
   t.src """
 import lib
@@ -854,6 +903,29 @@ fn main() -> int:
   t.quietly: t.hostRuns("R11: an imported pool works on every backend", 5)
   t.bugFixed "R11: an imported pool works on every backend"
 
+  # The registry and its handler live in lib; the importer raises. The raise
+  # proc is lib's, so Odin and D must qualify the call, and the handler runs.
+  t.src """
+import lib
+
+fn main() -> int [io]:
+  AppEvents.raise Low {left: 3}
+  return 0
+"""
+  t.addFile("lib.tuck", """import console
+
+registry AppEvents:
+  | Low({left: int})
+
+on AppEvents.Low({left: int}) [io]:
+  {text: "low"} console::printLine
+""")
+  t.quietly: t.hostRuns("R11: an imported registry is raised on every backend", 0, "low")
+  t.bugFixed "R11: an imported registry is raised on every backend"
+
+  # The handler in the IMPORTER: the raise proc is lib's and cannot call into
+  # a module that imports lib, so on every backend the handler silently never
+  # runs. Needs a handler table the importer fills at start-up.
   t.src """
 import console
 import lib
@@ -868,7 +940,7 @@ fn main() -> int [io]:
   t.addFile("lib.tuck", """registry AppEvents:
   | Low({left: int})
 """)
-  t.quietly: t.hostRuns("R11: an imported registry is raised on every backend", 0)
-  t.bugOpen "R11: an imported registry is raised on every backend"
+  t.quietly: t.hostRuns("A47: a registry handler in a module other than the registry's runs", 0, "low")
+  t.bugOpen "A47: a registry handler in a module other than the registry's runs"
 
   t.finish()

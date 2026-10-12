@@ -543,7 +543,7 @@ proc dRegistryRaiseProc*(ctx: var DCodegenCtx, d: Decl,
     params.add(ctx.dType(f.typ) & " " & f.name)
     assigns.add(f.name & ": " & f.name)
   let assignStr = if assigns.len > 0: ", " & assigns.join(", ") else: ""
-  "void raise_" & d.name & "_" & v.name & "(" & params.join(", ") &
+  "void " & raiseProcName(d.name, v.name) & "(" & params.join(", ") &
     ") {\n    latest" & d.name & " = " & d.name & "(" & d.name & "Kind." &
     v.name & assignStr & ");\n" & ctx.dRegistryHandlerCalls(d, v) & "}\n\n"
 
@@ -718,6 +718,18 @@ proc genDActorInits(ctx: var DCodegenCtx, d: Decl): string =
 
 proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
                 refSelf = false): string
+
+proc genDActorsBoot*(ctx: DCodegenCtx, m: Module): string =
+  ## What an imported module hands the entry point to boot its actors: each
+  ## drain started with its slot KEPT in this module. The starting field
+  ## values are already in place (a module constructor, genDActorInits); the
+  ## entry cannot start a drain that lives here (A18, A32).
+  result = "void " & ActorsBootProc & "() {\n"
+  for d in m.decls:
+    if runsActor(d):
+      result.add("    " & actorSlotName(d.name) & " = rt.tuckStartActor(&drain_" &
+                 d.name & ");\n")
+  result.add("}\n")
 
 proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
   ## An actor is a SINGLETON SERVICE (spec 9.1): one instance per declared

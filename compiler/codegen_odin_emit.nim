@@ -233,6 +233,22 @@ proc exitLines(ctx: OdinCodegenCtx, m: Module, tracks: bool): string =
     result.add("\twhen rt.TUCK_TRACK {\n" & fieldDrops & "\t}\n")
   if tracks: result.add("\trt.tuckTrackCheck()\n")
 
+proc bootLines(actorNames: seq[string], hasTasks: bool,
+               bootPkgs: seq[string]): string =
+  ## The runtime boot the entry point runs before main: the scheduler, then
+  ## this module's actors, then every other module's own (A18).
+  if actorNames.len == 0 and not hasTasks and bootPkgs.len == 0: return ""
+  result = "\trt.tuckAsyncInit()\n"
+  # The slot is KEPT: `Actor.waitUntil` names the actor at the call site, so
+  # the emitted call needs a handle to hand the predicate to.
+  for a in actorNames:
+    result.add("\t" & actorSlotName(a) & " = rt.tuckStartActor(drain_" &
+               a & ")\n")
+  # Another module's actors start themselves: their drains and slots live in
+  # that package.
+  for p in bootPkgs:
+    result.add("\t" & p.replace("-", "_") & "." & ActorsBootProc & "()\n")
+
 proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string =
   ## Tuck's `fn main` is a plain proc; Odin's entry point calls it. Static
   ## asserts fold into the same entry (Odin has #assert for compile-time, but
@@ -266,17 +282,7 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string
   var hasTasks = false
   runtimeUsers(m, actorNames, hasTasks)
   let bootPkgs = actorBootModules(m, ctx.realModules)
-  if actorNames.len > 0 or hasTasks or bootPkgs.len > 0:
-    result.add("\trt.tuckAsyncInit()\n")
-    # The slot is KEPT: `Actor.waitUntil` names the actor at the call site, so
-    # the emitted call needs a handle to hand the predicate to.
-    for a in actorNames:
-      result.add("\t" & actorSlotName(a) & " = rt.tuckStartActor(drain_" &
-                 a & ")\n")
-    # Another module's actors start themselves (A18): their drains and slots
-    # live in that package.
-    for p in bootPkgs:
-      result.add("\t" & p.replace("-", "_") & "." & ActorsBootProc & "()\n")
+  result.add(bootLines(actorNames, hasTasks, bootPkgs))
   if mains != "": result.add(mains & "\n")
   # A value-returning `fn main` IS the process exit code (mirrors tuck.nim).
   let mainFn = mainDecl(m)

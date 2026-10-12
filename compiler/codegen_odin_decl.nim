@@ -849,7 +849,7 @@ proc registryRaiseProc*(ctx: var OdinCodegenCtx, d: Decl, v: VariantDef,
     params.add(f.name & ": " & ctx.odinType(f.typ))
     assigns.add(f.name & " = " & f.name)
   let assignStr = if assigns.len > 0: ", " & assigns.join(", ") else: ""
-  ind & "raise_" & d.name & "_" & v.name & " :: proc(" & params.join(", ") &
+  ind & raiseProcName(d.name, v.name) & " :: proc(" & params.join(", ") &
     ") {\n" & ind & "\tlatest" & d.name & " = " & d.name & "{" & TagField & " = ." &
     v.name & assignStr & "}\n" & ctx.registryHandlerCalls(d, v, ind) &
     ind & "}\n\n"

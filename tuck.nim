@@ -1139,6 +1139,7 @@ when isMainModule:
       var hasMain = false
       var mainReturns = false
       var actorNames: seq[string]
+      var actorModules: seq[string]   # other modules declaring a running actor
       var hasTasks = false
       # `fn main` is the ENTRY module's, but actors and tasks are collected
       # across the WHOLE PROGRAM. Scanning only the entry meant an actor
@@ -1152,8 +1153,10 @@ when isMainModule:
       for lm in prog:
         for d in lm.m.decls:
           if d == nil: continue
-          if d.kind == dkActor and actorHasMessages(d):
+          if runsActor(d):
             actorNames.add(mangleName(d.name, nkActor))
+            if lm.m != m and lm.name notin actorModules:
+              actorModules.add(lm.name)
           if d.kind == dkTask: hasTasks = true
       for d in m.decls:
         # `m` was mangled above, so `fn main` is now tuck_main here.
@@ -1198,6 +1201,18 @@ when isMainModule:
           let asyncImp = relativePath(getAppDir() / "compiler" / "tuck_async", outDir).replace('\\', '/')
           writeFile(mainNim, "import " & asyncImp & "\n" & readFile(mainNim))
           asyncInit = "  tuckAsyncInit()\n"
+          # `registerActor<Name>` lives in the actor's module, so the entry
+          # names that module even when only another module imports it (A18).
+          var viaMid = ""
+          for am in actorModules:
+            var direct = false
+            for d in m.decls:
+              if d != nil and d.kind == dkImport and d.name == am: direct = true
+            if not direct:
+              let asName = nimModuleName(am)
+              viaMid.add(if asName == am: "import " & am & "\n"
+                         else: "import " & am & " as " & asName & "\n")
+          if viaMid != "": writeFile(mainNim, viaMid & readFile(mainNim))
           for a in actorNames: boot.add("  registerActor" & a & "()\n")
           if hasTasks: asyncDrive = "\n  tuckRun()"
         # a value-returning main IS the process exit code. When the runtime

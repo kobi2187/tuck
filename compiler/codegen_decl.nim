@@ -581,7 +581,7 @@ proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
       handlerCalls.add("  " & handlerProcName(decl) & "(" & argNames.join(", ") & ")")
 
     let handlerInvokes = if handlerCalls.len > 0: handlerCalls.join("\n") else: "  discard"
-    raiseProcsStr.add("proc raise_" & d.name & "_" & v.name & "*(" & paramStr & ") =\n  latest" & d.name & " = " & d.name & "(" & TagField & ": " & v.name & assignStr & ")\n" & handlerInvokes & "\n\n")
+    raiseProcsStr.add("proc " & raiseProcName(d.name, v.name) & "*(" & paramStr & ") =\n  latest" & d.name & " = " & d.name & "(" & TagField & ": " & v.name & assignStr & ")\n" & handlerInvokes & "\n\n")
 
   return enumStr & typeStr & "\n" & globalVarStr & raiseProcsStr
 

@@ -150,8 +150,8 @@ proc flattenRegistryRaise(e: Expr) =
     return
   if fieldNode.fieldName != "raise": return
   e.callee = Expr(span: e.span, kind: exkVar,
-                  name: "raise_" & fieldNode.receiver.refName & "_" &
-                        eventNameNode.name)
+                  name: raiseProcName(fieldNode.receiver.refName,
+                                      eventNameNode.name))
   e.args = payloadArgs
 
 proc memberParams(res: Resolution, e: Expr, inner: Expr, m: Module): seq[string] =

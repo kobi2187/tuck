@@ -22,26 +22,27 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (8)
+## A. Open bugs (6)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
 
 **A27–A37 — constructs that do not cross a module boundary (R11 scan,
-2026-09-28).** A25, A26, A28, A30, A31, A33, A35 and A36 are fixed; their pins are
+2026-09-28).** A25, A26, A28, A30, A31, A32, A33, A35, A36 and A37 are fixed; their pins are
 `bugFixed` in `cross_module`. Ruled: importing anything should work as well as the same
 module. Each construct was built declared in `lib` and used from the
 importer on Nim, Odin and D, against a one-module control that passes; these
 failed. Tests: `cross_module`, each named "R11: …".
 - **A27** an object in the importer cannot `satisfies` an imported interface.
 - **A29** `+ Mixin` from another module: `Self` is not bound (R11's origin).
-- **A32** an imported actor's fields and handlers are invisible to the
-  importer ("no field 'total' on type Acc", #73). Distinct from A18, which is
-  an imported actor never STARTED on Odin/D.
 - **A34** (Odin, D) a group bound whose provider is in another module — the
   bounded fn's module cannot name it. A14's sibling.
-- **A37** (Odin, D) an imported registry's `raise` is unqualified.
+- **A47** a registry handler (`on Reg.Event`) declared in a module other than
+  the registry's never runs, on any backend. The raise proc is the registry
+  module's and cannot call into a module that imports it, so the handler is
+  dropped without a word. Needs a handler table the handler's module fills at
+  start-up (the shape of `tuckActorsBoot`). Test: `cross_module`, "A47: …".
 
 **A14 — a group with two implementations cannot be used.** A group takes free
 fns — an object's own member belongs to the `interface`/`satisfies` mechanism
@@ -70,18 +71,6 @@ THIS task does. `examples/29-task-timeout` says the timeout "fires WHILE the
 read is outstanding", which is true of the result and not of the clock, and
 that is the whole point of a timeout. Test: `task_select`, "a fired timeout
 returns without waiting for the loser".
-
-**A18 — on Odin and D, an actor declared in an IMPORTED module is never
-started.** Both entry builders collect actors from the entry module only
-(`runtimeUsers` for Odin, `dBootSequence` for D), so a program whose actors all
-live in libraries boots no scheduler and starts no drain. Odin hangs, D returns
-the wrong answer. The Nim half of this was worse and is fixed: it SEGFAULTED,
-because the first `send` reached `tuckNotifySend` against an uninitialised
-runtime, and tuck.nim now collects across the whole program. Odin and D need
-more than a wider scan — an imported actor's drain lives in another package, so
-the emitted call must be QUALIFIED. Test: `cross_module`, "an imported actor
-runs on every backend". Found 2026-09-17 writing the first import/cache tests;
-same scope error as #73.
 
 A1 (an attribute name — `priority`, `error`, `stack` — reserved everywhere,
 though TK-PA08's own text promised "only inside brackets") was RULED on
@@ -251,6 +240,27 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   precedence hint in the error.
 
 ## E. Fixed since the last snapshot — do not re-report
+
+- **A37 — an imported registry's `raise` (Odin, D).** The raise proc is
+  generated beside the registry and was called unqualified from the importer.
+  `ast_query.declaresCallable` now counts a registry's raise procs
+  (`raiseProcName`, one spelling for the lowering and the three emitters), so
+  the call is qualified like any foreign fn. A handler in the registry's own
+  module runs; a handler in the importer is A47.
+- **A18, A32 — an actor declared in an imported module.** The importer saw
+  neither its fields nor its handlers ("no field 'total' on type Acc"), and on
+  Odin and D nothing started it. The importer now holds the actor's SHAPE
+  (`modules.importedCopy`: fields, attributes, each handler as a signature),
+  like an imported object, so field reads, `send`, `waitUntil` and the
+  liveness calls check against it. Odin and D qualify the singleton, the slot
+  and the send helpers with the actor's package (`ast_query.actorOrigin`), and
+  each module that runs an actor exports `tuckActorsBoot` — its starting
+  field values and its drains — which the entry point calls; a module reached
+  only through another still starts. Nim names such a module in the entry.
+  Tests: `cross_module`, "an imported actor runs on every backend", "R11: an
+  imported actor's fields…", "an imported actor's starting field value…",
+  "an actor only a middle module imports…". Left: a Seq field of an imported
+  actor is not handed back at exit under `TUCK_TRACK`.
 
 - **A39, A41–A45 — (Odin) owned values the tree never dropped.** A39: a
   recursive sum's boxes were never freed (200 000 small trees peaked at

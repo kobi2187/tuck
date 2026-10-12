@@ -267,6 +267,23 @@ proc findFn*(m: Module, name: string): Decl =
 proc declaresFn*(m: Module, name: string): bool {.inline.} =
   ## Does this module declare a fn by this name (wherever it sits)?
   m.findFn(name) != nil
+
+proc raiseProcName*(registry, event: string): string =
+  ## What `Registry.raise Event {...}` becomes: a call to this proc, which each
+  ## backend generates beside the registry. ONE spelling for the lowering that
+  ## makes the call and the emitters that define it.
+  "raise_" & registry & "_" & event
+
+proc declaresRaiseProc(m: Module, name: string): bool =
+  for d in m.decls(dkRegistry):
+    for v in d.variants:
+      if raiseProcName(d.name, v.name) == name: return true
+
+proc declaresCallable*(m: Module, name: string): bool =
+  ## A fn, or the raise proc a registry generates for one of its events: what
+  ## a call by this name can reach in `m`. Odin and D qualify a call with the
+  ## module that declares it (R11, A37).
+  m.declaresFn(name) or m.declaresRaiseProc(name)
 proc params*(d: Decl): seq[Param] =
   ## A callable's parameters, in order. Tasks keep theirs in a separate field
   ## from fns; callers asking "what does this take" should not have to care.

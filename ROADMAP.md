@@ -47,7 +47,7 @@ to be the thing most of the queue depends on:
 
 Checked against the compiler at `1d94eae`, not carried over from below. M1,
 M2 (its exit), M3 and M4 except 4.3 are done; the spine's remainder is M2.1
-and M4.3. Open bugs pinned `bugOpen`: A14, A16, A18, A24 — the four
+and M4.3. Open bugs pinned `bugOpen`: A14, A16, A24 — the four
 MISSING-FEATURES §A counts.
 
 **Ruled 2026-09-28, later the same day:** R3 (a) — support a one-line `if`
