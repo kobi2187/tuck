@@ -389,7 +389,7 @@ fn stash({n: int}) -> int [io]:
   # more than collecting names — an imported actor's drain is in another
   # package, so the call has to be QUALIFIED. Odin hangs, D returns 0.
   t.quietly: t.hostRuns("an imported actor runs on every backend", 6)
-  t.bugOpen "an imported actor runs on every backend"
+  t.bugFixed "an imported actor runs on every backend"
 
   # --- the msgpack AST cache (.tuck-cache) ---------------------------------
   #
@@ -679,7 +679,112 @@ fn main() -> int:
   fn area({self: Self}) -> int
 """)
   t.quietly: t.hostRuns("R11: an object satisfies an interface declared in another module", 16)
-  t.bugOpen "R11: an object satisfies an interface declared in another module"
+  t.bugFixed "R11: an object satisfies an interface declared in another module"
+
+  # The interface's module calls through its own value: the satisfier's members
+  # are in the importer, which the interface's module cannot import, so the
+  # call goes through a function reference the importer hands over at start-up.
+  t.src """
+import lib
+
+object Sq:
+  satisfies Shape
+  s: int
+  fn area({self: Sq}) -> int:
+    return self.s * self.s
+
+fn main() -> int:
+  let x: Shape = {s: 4} Sq
+  return {s: x} describe
+"""
+  t.addFile("lib.tuck", """interface Shape:
+  fn area({self: Self}) -> int
+
+fn describe({s: Shape}) -> int:
+  return s.area + 1
+""")
+  t.hostRuns "A27: the interface's own module dispatches to a satisfier it cannot import", 17
+
+  # Two satisfiers in two modules, a field of a user type that has to move with
+  # its object, and a contract member with an argument.
+  t.src """
+import lib
+import rects
+
+object Sq:
+  satisfies Shape
+  s: int
+
+  fn area({self: Sq}) -> int:
+    return self.s * self.s
+
+  fn scaled({self: Sq, by: int}) -> int:
+    return self.s * by
+
+fn main() -> int:
+  let a: Shape = {s: 4} Sq
+  let b = {w: 2, h: 3} makeRect
+  return {s: a} describe * 100 + {s: b} describe
+"""
+  t.addFile("lib.tuck", """interface Shape:
+  fn area({self: Self}) -> int
+  fn scaled({self: Self, by: int}) -> int
+
+fn describe({s: Shape}) -> int:
+  return s.area + s.scaled {by: 2}
+""")
+  t.addFile("rects.tuck", """import lib
+
+type Dim:
+  w: int
+  h: int
+
+object Rect:
+  satisfies Shape
+  d: Dim
+
+  fn area({self: Rect}) -> int:
+    return self.d.w * self.d.h
+
+  fn scaled({self: Rect, by: int}) -> int:
+    return self.d.w * self.d.h * by
+
+fn makeRect({w: int, h: int}) -> Shape:
+  return {d: {w: w, h: h}} Rect
+""")
+  # (4 * 4 + 4 * 2) * 100 + (2 * 3 + 2 * 3 * 2), low byte
+  t.hostRuns "A27: satisfiers in two modules, a type that moves with them, a member with an argument", 114
+  t.odinTracked "A27: ...and it leaks nothing on Odin", 114
+
+  # A member that changes its object.
+  t.src """
+import lib
+
+object Tally:
+  satisfies Counter
+  n: int
+
+  fn bump({self: Tally}):
+    self.n = self.n + 5
+
+  fn read({self: Tally}) -> int:
+    return self.n
+
+fn main() -> int:
+  let t: Counter = {n: 1} Tally
+  return {c: t} twice
+"""
+  t.addFile("lib.tuck", """interface Counter:
+  fn bump({self: Self})
+  fn read({self: Self}) -> int
+
+fn twice({c: Counter}) -> int:
+  var k = c
+  k.bump
+  k.bump
+  return k.read
+""")
+  t.hostRuns "A27: a satisfier's member that changes its object, called from the interface's module", 11
 
   t.src """
 import lib
@@ -728,7 +833,7 @@ fn main() -> int:
     return self.n * 2
 """)
   t.quietly: t.hostRuns("R11: a mixin composed from another module", 42)
-  t.bugOpen "R11: a mixin composed from another module"
+  t.bugFixed "R11: a mixin composed from another module"
 
   t.src """
 import lib
@@ -786,7 +891,56 @@ fn main() -> int:
     total += n
 """)
   t.quietly: t.hostRuns("R11: an imported actor's fields and handlers are visible to the importer", 6)
-  t.bugOpen "R11: an imported actor's fields and handlers are visible to the importer"
+  t.bugFixed "R11: an imported actor's fields and handlers are visible to the importer"
+
+  # The actor's starting field value is the package's to set (Odin) or a
+  # module constructor (D), and a program that reaches the actor only through
+  # a middle module still starts it. A18 and A32 together.
+  t.src """
+import scheduler
+import lib
+
+fn done() -> bool:
+  return Acc.total > 40
+
+fn main() -> int:
+  Acc send add {n: 2}
+  Acc.waitUntil {pred: :done}
+  return Acc.total
+"""
+  t.addFile("lib.tuck", """actor Acc [queue: 8]:
+  total: int = 40
+  on add({n: int}):
+    total += n
+""")
+  t.hostRuns "an imported actor's starting field value is in place", 42
+
+  t.src """
+import mid
+
+fn main() -> int:
+  {x: 0} mid::bump
+  return {x: 0} mid::current
+"""
+  t.addFile("lib.tuck", """actor Acc [queue: 8]:
+  total: int = 40
+  on add({n: int}):
+    total += n
+""")
+  t.addFile("mid.tuck", """import scheduler
+import lib
+
+fn bump({x: int}):
+  Acc send add {n: 2}
+
+fn ready() -> bool:
+  return Acc.total > 40
+
+fn current({x: int}) -> int:
+  Acc.waitUntil {pred: :ready}
+  return Acc.total
+""")
+  t.hostRuns "an actor only a middle module imports is still started", 42
 
   t.src """
 import lib
@@ -822,7 +976,7 @@ fn big[T: Sized]({x: T}) -> bool:
   return {self: x} size > 10
 """)
   t.quietly: t.hostRuns("R11: a group's provider in another module is found on every backend", 1)
-  t.bugOpen "R11: a group's provider in another module is found on every backend"
+  t.bugFixed "R11: a group's provider in another module is found on every backend"
 
   t.src """
 import lib
@@ -854,6 +1008,29 @@ fn main() -> int:
   t.quietly: t.hostRuns("R11: an imported pool works on every backend", 5)
   t.bugFixed "R11: an imported pool works on every backend"
 
+  # The registry and its handler live in lib; the importer raises. The raise
+  # proc is lib's, so Odin and D must qualify the call, and the handler runs.
+  t.src """
+import lib
+
+fn main() -> int [io]:
+  AppEvents.raise Low {left: 3}
+  return 0
+"""
+  t.addFile("lib.tuck", """import console
+
+registry AppEvents:
+  | Low({left: int})
+
+on AppEvents.Low({left: int}) [io]:
+  {text: "low"} console::printLine
+""")
+  t.quietly: t.hostRuns("R11: an imported registry is raised on every backend", 0, "low")
+  t.bugFixed "R11: an imported registry is raised on every backend"
+
+  # The handler in the IMPORTER: the raise proc is lib's and cannot call into
+  # a module that imports lib, so it reaches the handler by a link symbol the
+  # importer exports (handlerLinkSymbol).
   t.src """
 import console
 import lib
@@ -868,7 +1045,29 @@ fn main() -> int [io]:
   t.addFile("lib.tuck", """registry AppEvents:
   | Low({left: int})
 """)
-  t.quietly: t.hostRuns("R11: an imported registry is raised on every backend", 0)
-  t.bugOpen "R11: an imported registry is raised on every backend"
+  t.quietly: t.hostRuns("A47: a registry handler in a module other than the registry's runs", 0, "low")
+  t.bugFixed "A47: a registry handler in a module other than the registry's runs"
+
+  # Handlers on both sides of the module boundary: both run.
+  t.src """
+import console
+import lib
+
+on AppEvents.Low({left: int}) [io]:
+  {text: "importer"} console::printLine
+
+fn main() -> int [io]:
+  AppEvents.raise Low {left: 3}
+  return 0
+"""
+  t.addFile("lib.tuck", """import console
+
+registry AppEvents:
+  | Low({left: int})
+
+on AppEvents.Low({left: int}) [io]:
+  {text: "lib"} console::printLine
+""")
+  t.hostRuns "A47: handlers in the registry's module and in an importer both run", 0, "(?s)lib.*importer|importer.*lib"
 
   t.finish()

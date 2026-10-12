@@ -580,8 +580,17 @@ proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
       for f in v.fields: argNames.add(f.name)
       handlerCalls.add("  " & handlerProcName(decl) & "(" & argNames.join(", ") & ")")
 
+    # Handlers in other modules are handed to this registry as references:
+    # the event keeps a list and the raise proc walks it after its own.
+    if hasForeignHandlers(ctx.res, ctx.module, d, v):
+      let list = handlerListName(d.name, v.name)
+      raiseProcsStr.add("var " & list & "*: seq[proc (" & paramStr &
+                        ") {.nimcall.}]\n")
+      var argNames: seq[string]
+      for f in v.fields: argNames.add(f.name)
+      handlerCalls.add("  for h in " & list & ": h(" & argNames.join(", ") & ")")
     let handlerInvokes = if handlerCalls.len > 0: handlerCalls.join("\n") else: "  discard"
-    raiseProcsStr.add("proc raise_" & d.name & "_" & v.name & "*(" & paramStr & ") =\n  latest" & d.name & " = " & d.name & "(" & TagField & ": " & v.name & assignStr & ")\n" & handlerInvokes & "\n\n")
+    raiseProcsStr.add("proc " & raiseProcName(d.name, v.name) & "*(" & paramStr & ") =\n  latest" & d.name & " = " & d.name & "(" & TagField & ": " & v.name & assignStr & ")\n" & handlerInvokes & "\n\n")
 
   return enumStr & typeStr & "\n" & globalVarStr & raiseProcsStr
 
@@ -602,8 +611,11 @@ proc genObjectDecl*(ctx: var CodegenCtx, d: Decl): string =
     else:
       members.add(ctx.genDecl(member) & "\n")
   let body = if fields.len > 0: fields.join("\n") else: "  discard"
-  # manager objects hold var state but are Tier 1 value types too
-  ctx.typeSection.add("type " & d.name & "* = object\n" & body)
+  # manager objects hold var state but are Tier 1 value types too. A moved
+  # object's struct is the generated module's (iface_hoist); only its members
+  # are emitted here.
+  if d.hoistedTo == "":
+    ctx.typeSection.add("type " & d.name & "* = object\n" & body)
   members
 
 proc genTaskDecl*(ctx: var CodegenCtx, d: Decl): string =
@@ -882,6 +894,22 @@ proc genFnSigType(d: Decl): string =
   return "type " & d.name & "*" & sGen & " = proc(" & params.join(", ") &
          "): " & retStr & " " & conv & "\n"
 
+proc implVarDecls(ctx: CodegenCtx, d: Decl, sats: seq[Decl]): string =
+  ## Satisfiers whose members live in a module this one cannot import: one
+  ## function reference per contract member, which that module fills in at
+  ## start-up (tuckRegister) and this module's dispatch calls through.
+  for v in implVars(ctx.res, ctx.module, d, sats):
+    var params: seq[string]
+    for i, p in v.mem.fnParams:
+      let ty = if isSelfType(p.typ): (if i == 0 and v.selfByRef: "var " else: "") & v.sat.name
+               else: genType(p.typ)
+      params.add(p.name & ": " & ty)
+    let ret = if v.mem.fnReturnType == nil: "void"
+              elif isSelfType(v.mem.fnReturnType): v.sat.name
+              else: genType(v.mem.fnReturnType)
+    result.add("\nvar " & v.name & "*: proc (" & params.join(", ") & "): " &
+               ret & " {.nimcall.}\n")
+
 proc genInterfaceType(ctx: var CodegenCtx, d: Decl): string =
   ## An interface value is a VARIANT over the types that satisfy it: a tag
   ## plus the object itself, copied in (spec §5.3). Copy, not a pointer to
@@ -918,16 +946,17 @@ proc genInterfaceType(ctx: var CodegenCtx, d: Decl): string =
   result.add("\nproc tuckDrop*(x: var " & d.name & ") =\n  case x.tag\n")
   for s in sats:
     result.add("  of " & d.name & "_is_" & s.name & ": tuckDrop(x." & s.name & "Val)\n")
+  result.add(ctx.implVarDecls(d, sats))
 
 proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   ## One top-level declaration. Every DeclKind is named, so a new one fails
   ## to compile here until it is decided (CLAUDE.md).
   if d == nil: return ""
-  if d.kind in {dkType, dkObject, dkInterface} and d.span.file.startsWith(ImportedTypeMarker):
+  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.span.file.startsWith(ImportedTypeMarker):
     return ""  # defined in its own module; the Nim import brings it in
   case d.kind
   of dkFn: ctx.genFnDecl(d)
-  of dkType: ctx.genTypeDecl(d)
+  of dkType: (if d.hoistedTo != "": "" else: ctx.genTypeDecl(d))
   of dkObject: ctx.genObjectDecl(d)
   of dkActor: ctx.genActor(d)
   of dkTask: ctx.genTaskDecl(d)
@@ -971,6 +1000,22 @@ proc sumEqForwardDecls*(m: Module): string =
     # sum that holds it is defined.
     result.add("proc tuckDrop*(x: var " & d.name & ")\n")
   if result.len > 0: result.add("\n")
+
+proc genRegister*(m: Module): string =
+  ## The proc the entry point calls once, before main, to hand this module's
+  ## handlers for other modules' registries to those registries (see
+  ## handlerListName), and its members that other modules call through an
+  ## interface to the interface's module (see implVarName).
+  if not registersAnything(m): return ""
+  result = "\nproc " & RegisterProc & "*() =\n"
+  for h in foreignHandlers(m):
+    result.add("  tuckPush(" & semLayer.handlerListOf(h) & ", " &
+               handlerProcName(h) & ")\n")
+  for (iface, o) in movedSatisfiers(m):
+    for mem in iface.ifaceMembers:
+      if mem == nil or mem.kind != dkFn: continue
+      result.add("  " & implVarName(iface.name, mem.name, o.name) & " = " &
+                 memberProcName(o.name, implementingName(o, iface.name, mem.name)) & "\n")
 
 proc fnForwardDecls*(m: Module): string =
   ## Forward-declare every top-level fn, so a call may precede its definition.

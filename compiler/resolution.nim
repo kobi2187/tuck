@@ -50,6 +50,12 @@ type
     # exkMixinRef. Not a general-purpose lookup for other passes to grow
     # dependent on — those should use declFor on the rewritten reference.
     actorNames*: Table[string, Decl]
+    # `Registry.Event` -> every handler for it, across the whole program. A
+    # registry's raise proc is emitted in the registry's module, which does not
+    # see the handlers declared in a module that imports it; this is how the
+    # registry knows an event has such handlers (codegen_common.
+    # hasForeignHandlers) and so keeps a list of function references for them.
+    handlerSites*: Table[string, seq[NodeId]]
     registerNames*: Table[string, Decl]
     registryNames*: Table[string, Decl]
     poolNames*: Table[string, Decl]
@@ -456,7 +462,9 @@ proc resetResolution*() =
   let mixinNames = semLayer.mixinNames
   let constNames = semLayer.constNames
   let ambiguousConsts = semLayer.ambiguousConsts
+  let handlerSites = semLayer.handlerSites
   semLayer = newResolution()
+  semLayer.handlerSites = handlerSites
   semLayer.actorNames = actorNames
   semLayer.registerNames = registerNames
   semLayer.registryNames = registryNames

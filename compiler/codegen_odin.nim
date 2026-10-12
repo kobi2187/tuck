@@ -350,6 +350,13 @@ proc odinTypeArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
         break
     if not mentioned: result.add(ctx.odinType(targs[i]))
 
+proc odinActorPkg(ctx: OdinCodegenCtx, actor: string): string =
+  ## "<pkg>." when another module declares the actor, else "" (R11, A32 — as a
+  ## pool is qualified). Its singleton, slot and send helpers are that
+  ## package's.
+  let origin = actorOrigin(ctx.module, ctx.realModules, actor)
+  if origin == "": "" else: origin.replace("-", "_") & "."
+
 proc genOdinActorMember(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `Actor.waitUntil {pred: :p}` -> `rt.tuckWaitOn(<Actor>Slot, p)`, and
   ## `pingUs` / `alive` likewise (ActorMembers). The checker rewrote the member
@@ -357,8 +364,26 @@ proc genOdinActorMember(ctx: var OdinCodegenCtx, e: Expr): string =
   ## Twin of the Nim genActorMember.
   let rt = actorMemberRt(e)
   if rt == "": return ""
-  "rt." & rt & "(" & actorSlotName(e.args[0].refName) & ", " &
-    ctx.genOdinExpr(e.args[1]) & ")"
+  "rt." & rt & "(" & ctx.odinActorPkg(e.args[0].refName) &
+    actorSlotName(e.args[0].refName) & ", " & ctx.genOdinExpr(e.args[1]) & ")"
+
+proc providerArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
+  ## The providers a bounded fn is handed (A34): for each requirement its own
+  ## module cannot name, the fn of that name whose `self` is the argument's
+  ## type, found here or in another module.
+  if e.callee == nil or e.callee.kind != exkVar: return
+  let found = fnHome(ctx.module, ctx.realModules, e.callee.name)
+  if found.isNone: return
+  let home = found.get
+  let args = if e.isPayloadCall: payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+             else: e.args
+  for need in providerNeeds(home, ctx.realModules, home.findFn(e.callee.name)):
+    if need.paramIdx >= args.len: continue
+    let t = ctx.res.typeFor(args[need.paramIdx])
+    if t == nil or t.kind != tkNamed: continue
+    let (modName, name) = providerFor(ctx.module, ctx.realModules, need, t.name)
+    if name != "":
+      result.add((if modName == "": "" else: modName.replace("-", "_") & ".") & name)
 
 proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A call in Odin, trying the special shapes first: `waitOn`, a sum
@@ -382,6 +407,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   let combinator = ctx.asCombinatorCall(e, calleeStr)
   if combinator != "": return combinator
   var args = ctx.genCallArgs(e)
+  args.add(ctx.providerArgs(e))
   # genOdinMemberFn gives EVERY member fn's self a pointer, `^T`,
   # unconditionally — not just the ones that mutate it — so every call
   # site has to pass `&receiver` to match, regardless of whether this
@@ -392,7 +418,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   # PASSING member call so far reached its receiver through the chain
   # emitter instead, which threads an existing pointer through, never
   # needing to take one here.
-  if member != "" and args.len > 0 and callWritesSelf(ctx.res, ctx.module, e):
+  if args.len > 0 and callWritesSelf(ctx.res, ctx.module, e):
     args[0] = "&" & args[0]
   let emitted = ctx.genCallWithArgs(e, calleeStr, args)
   if emitted != "": return emitted
@@ -687,9 +713,9 @@ proc qualifiedForeignFn(ctx: OdinCodegenCtx, name: string): string =
   ## An unqualified cross-module call (`0 exit` for `sys::exit`). Nim resolves
   ## this itself through the emitted `import`; Odin never merges package
   ## scopes, so the owning package has to be found and spelled out here.
-  if ctx.module.declaresFn(name): return ""
+  if ctx.module.declaresCallable(name): return ""
   for modName, im in ctx.realModules:
-    if im.declaresFn(name):
+    if im.declaresCallable(name):
       return modName.replace("-", "_") & "." & name
   ""
 
@@ -922,7 +948,8 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
     return ctx.genOdinCall(stamped)
   # `Counter.total` reads the actor SINGLETON's field, not a type's.
   if e.receiver != nil and e.receiver.kind == exkActorRef:
-    return actorSingletonName(e.receiver.refName) & "." & e.fieldName
+    return ctx.odinActorPkg(e.receiver.refName) &
+      actorSingletonName(e.receiver.refName) & "." & e.fieldName
   if isResultStatusTest(e):
     # parenthesised: a guard may negate it (`!r.ok`), and `!x == y` would
     # otherwise bind the `!` to the receiver alone
@@ -1418,7 +1445,8 @@ proc genSend(ctx: var OdinCodegenCtx, e: Expr): string =
     for f in e.sendPayload.fields:
       sendArgs.add(ctx.genOdinExpr(f.value))
   let sep = if sendArgs.len > 0: ", " else: ""
-  "send" & e.sendHandler.capitalize() & "_" & e.sendActor & "(&" &
+  let pre = ctx.odinActorPkg(e.sendActor)
+  pre & "send" & e.sendHandler.capitalize() & "_" & e.sendActor & "(&" & pre &
     actorSingletonName(e.sendActor) & sep & sendArgs.join(", ") & ")"
 
 proc odinSelectTimeoutMs(ctx: var OdinCodegenCtx, arm: SelectArm): string =

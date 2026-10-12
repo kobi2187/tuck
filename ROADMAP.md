@@ -19,6 +19,14 @@ to be the thing most of the queue depends on:
 > for unique features we should run a lowering pass, the rewrite pass,
 > instead of doing it in codegen.
 
+### Handoff 2026-10-12
+
+`thoughts/shared/plans/2026-10-12-handoff.md` says what just landed (memory
+rules, the actor liveness channel, R11 cross-module parity), what each cost, the
+traps found, and what is left in the order below. Open bugs: A14, A16; R11's
+24-construct scan is `ok` on all three backends except case 06, a deliberate
+refusal.
+
 ### Direction 2026-10-10 (owner)
 
 - **Order of work:** bugs first, then design decisions, then the important features
@@ -47,7 +55,7 @@ to be the thing most of the queue depends on:
 
 Checked against the compiler at `1d94eae`, not carried over from below. M1,
 M2 (its exit), M3 and M4 except 4.3 are done; the spine's remainder is M2.1
-and M4.3. Open bugs pinned `bugOpen`: A14, A16, A18, A24 — the four
+and M4.3. Open bugs pinned `bugOpen`: A14, A16 — the two
 MISSING-FEATURES §A counts.
 
 **Ruled 2026-09-28, later the same day:** R3 (a) — support a one-line `if`
@@ -142,7 +150,9 @@ finished** (no longer deferred).
    `wait` when unwritten (the check measured free, benches/SCORES.md "R6").
    A self-send cannot wait, so under `wait` it asserts. Build it on all three
    backends and all three actor modes.
-8. R11 — cross-module parity. SCANNED 2026-09-28: 24 constructs declared in
+8. ~~R11~~ **DONE 2026-10-12** (PR #111): A25–A37 and A47 fixed on all three
+   backends; the scan is `ok` everywhere except case 06, a deliberate refusal
+   (handoff §4a). Original text: R11 — cross-module parity. SCANNED 2026-09-28: 24 constructs declared in
    one module and used from another, on all three backends, each against a
    one-module control. Eleven cross (types, generic fns and records, sums,
    decision tables, `?T`, tasks, transitions, fnsigs, record composition,

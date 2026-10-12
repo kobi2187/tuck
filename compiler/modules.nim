@@ -309,6 +309,7 @@ proc updateIndex*(dir: string, mods: seq[LoadedModule],
   var idx = SigIndex(stamp: buildStamp, entries: loadIndex(dir))
   let reachesSlab = slabReachers(mods)
   for lm in mods:
+    if lm.path == "": continue   # generated (iface_hoist): no source to hash
     var deps: seq[tuple[name, hash: string]]
     for imp in importsOf(lm.m):
       let ipath = resolvedImportPath(lm.path.parentDir, imp)
@@ -406,6 +407,20 @@ proc importedShape(d: Decl, sp: Span): Decl =
          typeBody: d.typeBody, typeMembers: d.typeMembers, span: sp)
   of dkInterface:
     Decl(kind: dkInterface, name: d.name, ifaceMembers: d.ifaceMembers, span: sp)
+  of dkActor:
+    # An actor's shape: its fields, its attributes (`queue`, `on_full`), and
+    # each handler or member as a body-less signature. A singleton lives where
+    # it is declared; the importer only reads its fields, sends to it and
+    # waits on it, which needs the types and nothing else (A32).
+    var handlers: seq[Decl]
+    for h in d.handlers:
+      if h == nil or h.kind != dkFn: continue
+      handlers.add Decl(kind: dkFn, name: h.name, fnParams: h.fnParams,
+                        fnReturnType: h.fnReturnType, fnEffects: h.fnEffects,
+                        fnGenerics: h.fnGenerics, isOnHandler: h.isOnHandler,
+                        span: sp)
+    Decl(kind: dkActor, name: d.name, attrs: d.attrs, actorFields: d.actorFields,
+         handlers: handlers, span: sp)
   else:
     var members: seq[Decl]
     for m in d.objMembers:
@@ -419,7 +434,7 @@ proc importedShape(d: Decl, sp: Span): Decl =
          satisfies: d.satisfies, satisfiesRenames: d.satisfiesRenames,
          objMembers: members, span: sp)
 
-proc importedCopy(d: Decl, imp: string): Decl =
+proc importedCopy*(d: Decl, imp: string): Decl =
   ## The importer's copy of an imported type, interface or object, stamped
   ## with its origin (`isImportedCopy` in ast_query reads the stamp back).
   ## A DEEP copy under fresh ids: sharing the original's nodes put two
@@ -430,17 +445,27 @@ proc importedCopy(d: Decl, imp: string): Decl =
   result.span = sp
   freshIds(result)
 
+proc holdsType(m: Module, name: string): bool =
+  ## Does `m` already hold a declaration of this type, object or interface — its
+  ## own, or a copy placed there?
+  for d in m.decls:
+    if d != nil and d.kind in {dkType, dkObject, dkInterface} and d.name == name:
+      return true
+
+proc injectable(m: Module): seq[Decl] =
+  ## The declarations of `m` an importer sees: its own types, objects,
+  ## interfaces and (non-generic) actors, not the copies it holds of others'.
+  for d in m.decls:
+    if d != nil and d.kind in {dkType, dkObject, dkInterface, dkActor} and
+       not (d.kind == dkActor and d.actorGenerics.len > 0) and
+       not d.span.file.startsWith(ImportedTypeMarker):
+      result.add d
+
 proc injectImportedTypes*(prog: var seq[LoadedModule]) =
   ## Make each module's imported types — and objects — visible unqualified in
   ## the importer.
   var typesByName = initTable[string, seq[Decl]]()
-  for lm in prog:
-    var own: seq[Decl]
-    for d in lm.m.decls:
-      if d != nil and d.kind in {dkType, dkObject, dkInterface} and
-         not d.span.file.startsWith(ImportedTypeMarker):
-        own.add(d)
-    typesByName[lm.name] = own
+  for lm in prog: typesByName[lm.name] = lm.m.injectable()
   # A module's `public:` list, if it has one, decides which of its types an
   # importer may see. Without a list everything is visible, as it was before
   # the block existed.
@@ -450,12 +475,36 @@ proc injectImportedTypes*(prog: var seq[LoadedModule]) =
     for imp in importsOf(prog[i].m):
       let (restricted, allowed) = exportsByName.getOrDefault(imp, (false, initHashSet[string]()))
       for td in typesByName.getOrDefault(imp):
-        if restricted and td.name notin allowed: continue
+        # Not exported, or the importer already holds a declaration of the name
+        # (its own, whose data moved to a generated module, or a copy placed
+        # there): one wins.
+        if (restricted and td.name notin allowed) or
+           prog[i].m.holdsType(td.name): continue
         # importedCopy numbers it (and everything in it) afresh: a type
         # reference resolves TO this decl, and an edge needs an id to point
         # at (#21).
         let marked = importedCopy(td, imp)
         prog[i].m.decls.insert(marked, 0)
+
+proc composeImportedMixins*(prog: var seq[LoadedModule]) =
+  ## `+ Mixin` naming a mixin another module declares. Parsing composes only
+  ## what one file holds, so the importer's object still carries the entry;
+  ## now that the program is loaded the mixin's fns are copied in and `Self`
+  ## bound to the object, as for a local mixin (R11, A29).
+  var mixinsByName = initTable[string, seq[Decl]]()
+  var exportsByName = initTable[string, (bool, HashSet[string])]()
+  for lm in prog:
+    exportsByName[lm.name] = exportedNames(lm.m)
+    for d in lm.m.decls(dkMixin): mixinsByName.mgetOrPut(lm.name, @[]).add(d)
+  for i in 0 ..< prog.len:
+    var visible = initTable[string, Decl]()
+    for imp in importsOf(prog[i].m):
+      let (restricted, allowed) = exportsByName.getOrDefault(imp, (false, initHashSet[string]()))
+      for mx in mixinsByName.getOrDefault(imp):
+        if restricted and mx.name notin allowed: continue
+        visible[mx.name] = mx
+    if visible.len == 0: continue
+    for d in composeMixinsFrom(prog[i].m, visible): freshIds(d)
 
 proc loadProgram*(entryPath: string): seq[LoadedModule] =
   ## Parse the entry file and its whole import closure. Dep-first order,

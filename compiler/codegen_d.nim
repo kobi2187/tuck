@@ -44,9 +44,9 @@ proc importDeclaring(ctx: DCodegenCtx, name: string): string =
   ## module declares it (local wins) or nobody does. D has no cross-module
   ## scope merge, so every foreign call has to be qualified — three separate
   ## copies of this search had grown before it was named once.
-  if name == "" or ctx.module.declaresFn(name): return ""
+  if name == "" or ctx.module.declaresCallable(name): return ""
   for modName, im in ctx.realModules:
-    if im.declaresFn(name): return modName
+    if im.declaresCallable(name): return modName
   ""
 
 proc genDQualified(ctx: DCodegenCtx, e: Expr): string =
@@ -354,6 +354,13 @@ proc asDPrimConversion(ctx: var DCodegenCtx, e: Expr,
     return "cast(" & prim & ")(" & arg & ")"
   prim & "(" & arg & ")"
 
+proc dActorPkg(ctx: DCodegenCtx, actor: string): string =
+  ## "<alias>." when another module declares the actor, else "" (R11, A32 —
+  ## as a pool is qualified). Its singleton, slot and send helpers are that
+  ## module's.
+  let origin = actorOrigin(ctx.module, ctx.realModules, actor)
+  if origin == "": "" else: dAlias(origin) & "."
+
 proc genDActorMember(ctx: var DCodegenCtx, e: Expr): string =
   ## `Actor.waitUntil {pred: :p}` -> `rt.tuckWaitOn(<Actor>Slot, p)`, and
   ## `pingUs` / `alive` likewise (ActorMembers). The checker rewrote the member
@@ -363,8 +370,8 @@ proc genDActorMember(ctx: var DCodegenCtx, e: Expr): string =
   if rt == "": return ""
   # No `&` here: a `:fnRef` already emits D's address-of, and adding one gave
   # `&&tuck_done`.
-  "rt." & rt & "(" & actorSlotName(e.args[0].refName) & ", " &
-    ctx.genDExpr(e.args[1]) & ")"
+  "rt." & rt & "(" & ctx.dActorPkg(e.args[0].refName) &
+    actorSlotName(e.args[0].refName) & ", " & ctx.genDExpr(e.args[1]) & ")"
 
 proc dMemberCallee(ctx: DCodegenCtx, e: Expr): string =
   ## `memberCallee`, qualified with its module when the receiver's object is
@@ -390,6 +397,46 @@ proc genDSpawn(ctx: var DCodegenCtx, e: Expr, task: string): string =
   let args = ctx.genDCallArgs(e)
   "rt.tuckSpawnJob(&" & task &
     (if args.len > 0: ", " & args.join(", ") else: "") & ")"
+
+proc dProviderArgs(ctx: var DCodegenCtx, e: Expr): seq[string] =
+  ## The providers a bounded fn is handed (A34): for each requirement its own
+  ## module cannot name, the fn of that name whose `self` is the argument's
+  ## type, found here or in another module, qualified by its module's alias.
+  if e.callee == nil or e.callee.kind != exkVar: return
+  let found = fnHome(ctx.module, ctx.realModules, e.callee.name)
+  if found.isNone: return
+  let home = found.get
+  let args = if e.isPayloadCall: payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+             else: e.args
+  for need in providerNeeds(home, ctx.realModules, home.findFn(e.callee.name)):
+    if need.paramIdx >= args.len: continue
+    let t = ctx.res.typeFor(args[need.paramIdx])
+    if t == nil or t.kind != tkNamed: continue
+    let (modName, name) = providerFor(ctx.module, ctx.realModules, need, t.name)
+    if name != "":
+      result.add((if modName == "": "" else: dAlias(modName) & ".") & name)
+
+proc templateCall(ctx: var DCodegenCtx, e: Expr, calleeStr: string,
+                  args: seq[string]): string =
+  ## A call that needs its template arguments spelled out, "" otherwise: a type
+  ## param no parameter mentions (the checker recorded it, recordCallTypeArgs),
+  ## or providers the bounded fn is handed as `alias` parameters, which D cannot
+  ## deduce — then every type parameter is read off the argument it names.
+  var parts: seq[string]
+  for t in ctx.res.callTypeArgsFor(e): parts.add(ctx.dType(t))
+  let providers = ctx.dProviderArgs(e)
+  if providers.len > 0 and parts.len == 0:
+    let found = fnHome(ctx.module, ctx.realModules, e.callee.name)
+    let f = found.get.findFn(e.callee.name)
+    let argEs = if e.isPayloadCall: payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+                else: e.args
+    for g in f.fnGenerics:
+      for k, p in f.fnParams:
+        if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == g and k < argEs.len:
+          parts.add(ctx.dType(ctx.res.typeFor(argEs[k])))
+          break
+  if parts.len == 0: return ""
+  calleeStr & "!(" & (parts & providers).join(", ") & ")(" & args.join(", ") & ")"
 
 proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   ## A call in D, trying the special shapes first: `waitOn`, a sum variant, a
@@ -428,11 +475,8 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   # D gets the template arguments spelled out: `tuck_firstOf!(Row, long)(r)`.
   # Recorded by the checker only where that is the case — see
   # recordCallTypeArgs — so an ordinary generic call is untouched.
-  let targs = ctx.res.callTypeArgsFor(e)
-  if targs.len > 0:
-    var parts: seq[string]
-    for t in targs: parts.add(ctx.dType(t))
-    return calleeStr & "!(" & parts.join(", ") & ")(" & args.join(", ") & ")"
+  let templated = ctx.templateCall(e, calleeStr, args)
+  if templated != "": return templated
   # A call that may take its first argument destructively, in ANY position.
   # See codegen_common.movedCalleeName — the position nothing else reaches is
   # `return f(x, ...)`.
@@ -670,7 +714,8 @@ proc genDFieldRead(ctx: var DCodegenCtx, e: Expr): string =
   # `Counter.total` reads the actor SINGLETON's field — an actor is one
   # instance per declared type, so the type name IS the instance.
   if e.receiver != nil and e.receiver.kind == exkActorRef:
-    return actorSingletonName(e.receiver.refName) & "." & e.fieldName
+    return ctx.dActorPkg(e.receiver.refName) &
+      actorSingletonName(e.receiver.refName) & "." & e.fieldName
   # A register field is a raw pointer with no real field — reading it means
   # calling the getter genDRegister already emitted for it.
   if e.receiver != nil and e.receiver.kind == exkRegisterRef:
@@ -1313,7 +1358,8 @@ proc genDSend(ctx: var DCodegenCtx, e: Expr): string =
     for f in e.sendPayload.fields:
       sendArgs.add(ctx.genDExpr(f.value))
   let sep = if sendArgs.len > 0: ", " else: ""
-  "send" & e.sendHandler.capitalize() & "_" & e.sendActor & "(" &
+  let pre = ctx.dActorPkg(e.sendActor)
+  pre & "send" & e.sendHandler.capitalize() & "_" & e.sendActor & "(" & pre &
     actorSingletonName(e.sendActor) & sep & sendArgs.join(", ") & ")"
 
 proc dSelectTimeoutMs(ctx: var DCodegenCtx, arm: SelectArm): string =

@@ -200,15 +200,21 @@ proc composedEntry(mem: Decl, mixins, records: Table[string, Decl]): seq[Decl] =
   checkRecordRenames(records, mem)
   @[mem]
 
-proc composeMixins(m: Module) =
+proc composeMixinsFrom*(m: Module, imported: Table[string, Decl]): seq[Decl] =
   ## `+ Mixin` in an object means the mixin's fns ARE the object's members
   ## (spec §4.5: composition is set union). Materialised here, before the
   ## checker, so a call on the object finds the member with `Self` bound to
   ## this object and the copied body is checked against this object's
-  ## fields. Only a mixin this module declares — the same reach lowering's
-  ## merge had; an entry naming anything else stays for later stages (a
-  ## record's fields merge in lowering; an unknown name is a sketch).
-  var mixins, records: Table[string, Decl]
+  ## fields. A mixin this module declares, or one of `imported` — parsing
+  ## sees one file, so the first call passes none and the program loader
+  ## calls again with the imports' mixins (R11, A29). An entry naming
+  ## anything else stays for later stages (a record's fields merge in
+  ## lowering; an unknown name is a sketch).
+  ##
+  ## Returns the objects that gained members, whose copies the caller must
+  ## number afresh when it composed after parsing.
+  var mixins = imported
+  var records: Table[string, Decl]
   for d in m.decls:
     if d == nil: continue
     if d.kind == dkMixin: mixins[d.name] = d
@@ -216,11 +222,18 @@ proc composeMixins(m: Module) =
   for d in m.decls:
     if d == nil or d.kind != dkObject: continue
     var members: seq[Decl]
+    var composed = false
     for mem in d.objMembers:
-      members.add(composedEntry(mem, mixins, records))
+      let got = composedEntry(mem, mixins, records)
+      if got.len != 1 or got[0] != mem: composed = true
+      members.add(got)
     d.objMembers = members
     let owner = Type(span: d.span, kind: tkNamed, name: d.name)
-    for mem in d.objMembers: bindSelf(mem, owner)
+    for mem in d.objMembers: bindSelf(mem, owner)   # every object, composed or not
+    if composed: result.add(d)
+
+proc composeMixins(m: Module) =
+  discard composeMixinsFrom(m, initTable[string, Decl]())
 
 proc failSlabInValue(owner: Decl, slab: Decl) =
   failRewrite(dcMeSlabInValue, (if slab.kind == dkArena: "arena '" else: "slab '") &

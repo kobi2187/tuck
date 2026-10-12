@@ -49,6 +49,8 @@ proc emitBody*(ctx: var OdinCodegenCtx, m: Module): tuple[types, mains: string] 
       if code != "":
         body.add(code & "\n")
   if declaresSlab(m): body.add(ctx.genOdinSlabsRelease(m) & "\n")
+  let register = ctx.genOdinRegister(m)
+  if register != "": body.add(register & "\n")
   (body, mainStmts.join("\n"))
 
 proc runtimeUsers*(m: Module, actorNames: var seq[string],
@@ -58,7 +60,7 @@ proc runtimeUsers*(m: Module, actorNames: var seq[string],
     if d == nil: continue
     # actorHasMessages, not `is an actor`: one with no handlers has no drain
     # to start, exactly as genOdinActor declines to emit one (#61).
-    if d.kind == dkActor and actorHasMessages(d): actorNames.add(d.name)
+    if runsActor(d): actorNames.add(d.name)
     elif d.kind == dkTask: hasTasks = true
 
 proc emitOdinModule*(name: string, m: Module, res: Resolution,
@@ -68,12 +70,14 @@ proc emitOdinModule*(name: string, m: Module, res: Resolution,
   ## hoisted types, then its declarations. No entry point.
   let pkg = name.replace("-", "_")
   var ctx = newOdinCtx(m, realModules, name, res, modPrefix = pkg & "_")
-  let (body, _) = ctx.emitBody(m)
+  var (body, _) = ctx.emitBody(m)
+  if hasRunningActors(m): body.add(ctx.genOdinActorsBoot(m) & "\n")
   # Odin package names are GLOBAL, not scoped to their directory, so a Tuck
   # module called `io` or `os` would collide with core:io / core:os. The
   # emitted package carries a tuck_ prefix; the import alias at the use site
   # keeps the Tuck name, so qualified calls still read as `io.printLine`.
   var res = odinFeatures & "package tuck_" & pkg & "\n\n"
+  if name == VariantsModule: res.add(variantsHeader(m, "//"))
   # This file lives in mod_<pkg>/, so siblings are one level up.
   var imports: seq[string]
   if "fmt." in body: imports.add("import \"core:fmt\"")
@@ -156,7 +160,8 @@ proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
   # The entry point's slab reports and releases name the runtime and each
   # slab's package, though the body may name neither (genEntryPoint).
   let slabPkgs = slabPackages(m, realModules)
-  if tracksAllocations(m, body, mains) or slabPkgs.len > 0:
+  let bootPkgs = actorBootModules(m, realModules) & registerModules(m, realModules)
+  if tracksAllocations(m, body, mains) or slabPkgs.len > 0 or bootPkgs.len > 0:
     result.add("import rt \"./tuckrt\"")
   # Imported Tuck modules are sibling packages (mod_<name>/), referenced
   # qualified as `<name>.fn` — import each one the body actually calls. The
@@ -164,7 +169,8 @@ proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
   # module called `io` is fine as long as core:io isn't also imported).
   for modName in realModules.keys:
     let pkg = modName.replace("-", "_")
-    if (pkg & ".") in body or (pkg & ".") in mains or modName in slabPkgs:
+    if (pkg & ".") in body or (pkg & ".") in mains or modName in slabPkgs or
+       modName in bootPkgs:
       result.add("import " & pkg & " \"./mod_" & pkg & "\"")
   # C libraries bound by extern blocks — see emitOdinModule for why these are
   # hoisted here rather than emitted beside the `foreign` block.
@@ -189,6 +195,7 @@ proc actorFieldReleases(ctx: OdinCodegenCtx, m: Module): string =
   ## field of a record field — what its handlers own and thread. A `str` field
   ## stays: it may hold a literal, and deleting that is a bad free.
   for d in m.decls(dkActor):
+    if isImportedCopy(d): continue
     let owner = actorSingletonName(d.name)
     for f in d.actorFields:
       if seqElem(f.typ) != nil:
@@ -229,6 +236,22 @@ proc exitLines(ctx: OdinCodegenCtx, m: Module, tracks: bool): string =
     result.add("\twhen rt.TUCK_TRACK {\n" & fieldDrops & "\t}\n")
   if tracks: result.add("\trt.tuckTrackCheck()\n")
 
+proc bootLines(actorNames: seq[string], hasTasks: bool,
+               bootPkgs: seq[string]): string =
+  ## The runtime boot the entry point runs before main: the scheduler, then
+  ## this module's actors, then every other module's own (A18).
+  if actorNames.len == 0 and not hasTasks and bootPkgs.len == 0: return ""
+  result = "\trt.tuckAsyncInit()\n"
+  # The slot is KEPT: `Actor.waitUntil` names the actor at the call site, so
+  # the emitted call needs a handle to hand the predicate to.
+  for a in actorNames:
+    result.add("\t" & actorSlotName(a) & " = rt.tuckStartActor(drain_" &
+               a & ")\n")
+  # Another module's actors start themselves: their drains and slots live in
+  # that package.
+  for p in bootPkgs:
+    result.add("\t" & p.replace("-", "_") & "." & ActorsBootProc & "()\n")
+
 proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string =
   ## Tuck's `fn main` is a plain proc; Odin's entry point calls it. Static
   ## asserts fold into the same entry (Odin has #assert for compile-time, but
@@ -258,16 +281,16 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string
   for a in ctx.staticAsserts:
     result.add("\tassert(" & a & ")\n")
   result.add(actorInitLines(ctx))
+  # Handlers declared for another module's registry are handed over before
+  # anything can raise: each such module's own, then this module's.
+  for p in registerModules(m, ctx.realModules):
+    result.add("\t" & p.replace("-", "_") & "." & RegisterProc & "()\n")
+  if registersAnything(m): result.add("\t" & RegisterProc & "()\n")
   var actorNames: seq[string]
   var hasTasks = false
   runtimeUsers(m, actorNames, hasTasks)
-  if actorNames.len > 0 or hasTasks:
-    result.add("\trt.tuckAsyncInit()\n")
-    # The slot is KEPT: `Actor.waitUntil` names the actor at the call site, so
-    # the emitted call needs a handle to hand the predicate to.
-    for a in actorNames:
-      result.add("\t" & actorSlotName(a) & " = rt.tuckStartActor(drain_" &
-                 a & ")\n")
+  let bootPkgs = actorBootModules(m, ctx.realModules)
+  result.add(bootLines(actorNames, hasTasks, bootPkgs))
   if mains != "": result.add(mains & "\n")
   # A value-returning `fn main` IS the process exit code (mirrors tuck.nim).
   let mainFn = mainDecl(m)
@@ -281,7 +304,8 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string
   if hasTasks: result.add("\trt.tuckRun()\n")
   # Wait for every actor to empty its mailbox before exiting: an actor thread
   # is detached, so without this a `send` races the process teardown.
-  if actorNames.len > 0: result.add("\trt.tuckDrainActors()\n")
+  if actorNames.len > 0 or bootPkgs.len > 0:
+    result.add("\trt.tuckDrainActors()\n")
   result.add(ctx.exitLines(m, tracks))
   if mainReturns: result.add("\tos.exit(mainRc)\n")
   result.add("}\n")

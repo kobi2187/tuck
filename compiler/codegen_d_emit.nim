@@ -30,6 +30,8 @@ proc emitDBody*(ctx: var DCodegenCtx, m: Module): tuple[body, mains: string] =
     else:
       let code = ctx.genDDecl(d)
       if code != "": body.add(code & "\n")
+  let register = ctx.genDRegister(m)
+  if register != "": body.add(register & "\n")
   (body, mainStmts.join(""))
 
 const DShadowingModuleNames* = [
@@ -62,7 +64,7 @@ proc usesSymbol*(code, sym: string): bool =
   ## symbol may be invoked (`writeln(x)`) or reached through (`stderr.x`).
   (sym & "(") in code or (sym & ".") in code
 
-proc dBootSequence*(m: Module, hasTasks: bool): string =
+proc dBootSequence*(m: Module, real: Table[string, Module], hasTasks: bool): string =
   ## What runs BEFORE main: the scheduler, then every actor as a daemon.
   ## An actor is a singleton service alive for the whole program, not
   ## something main spawns — but one with no messages has no drain to start
@@ -70,13 +72,28 @@ proc dBootSequence*(m: Module, hasTasks: bool): string =
   ## genDActor.
   var daemons: seq[string]
   for d in m.decls:
-    if d != nil and d.kind == dkActor and actorHasMessages(d):
+    if runsActor(d):
       # The slot is KEPT: `Actor.waitUntil` names the actor at the call site,
       # so the emitted call needs a handle to hand the predicate to.
       daemons.add("    " & actorSlotName(d.name) &
                   " = rt.tuckStartActor(&drain_" & d.name & ");\n")
+  # Another module's actors start themselves (A18): their drains and slots
+  # live in that module.
+  let bootMods = actorBootModules(m, real)
+  for p in bootMods: daemons.add("    " & dAlias(p) & "." & ActorsBootProc & "();\n")
   if not hasTasks and daemons.len == 0: return ""
   "    rt.tuckAsyncInit();\n" & daemons.join("")
+
+proc moduleImports(ctx: DCodegenCtx, code: string, inModuleDir: bool): seq[string] =
+  ## The Tuck modules the emitted text names, plus — for the entry point — each
+  ## module whose actors it boots without otherwise naming it (A18).
+  let bootMods = if inModuleDir: @[]
+                 else: actorBootModules(ctx.module, ctx.realModules) &
+                       registerModules(ctx.module, ctx.realModules)
+  for modName in ctx.realModules.keys:
+    let alias = dAlias(modName)
+    if usesSymbol(code, alias) or modName in bootMods:
+      result.add("import " & alias & " = mod_" & alias & ";")
 
 proc dImports*(ctx: DCodegenCtx, body, mains: string,
               inModuleDir = false): seq[string] =
@@ -100,10 +117,7 @@ proc dImports*(ctx: DCodegenCtx, body, mains: string,
     if usesSymbol(code, sym): stdioSyms.add(sym)
   if stdioSyms.len > 0:
     result.add("import std.stdio : " & stdioSyms.join(", ") & ";")
-  for modName in ctx.realModules.keys:
-    let alias = dAlias(modName)
-    if usesSymbol(code, alias):
-      result.add("import " & alias & " = mod_" & alias & ";")
+  result.add(ctx.moduleImports(code, inModuleDir))
   # `impl: d "..."` modules — a bare module name, unlike Nim's/Odin's own
   # relative-path imports, so tuck.nim's build step resolves it with an
   # extra dmd `-I` rather than anything rebased or copied here.
@@ -125,6 +139,7 @@ proc actorFieldReleases(ctx: DCodegenCtx, m: Module): string =
   ## until exit by design, and reported as a leak it hides the program's real
   ## ones. A `str` field that holds a literal is left alone by the free.
   for d in m.decls(dkActor):
+    if isImportedCopy(d): continue
     for f in d.actorFields:
       if ctx.res.owning(m, f.typ):
         result.add "        rt.tuckDrop(" & actorSingletonName(d.name) & "." &
@@ -150,7 +165,13 @@ proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
   # A program with tasks boots the scheduler before main and drives it
   # after, so anything main spawned and did not await still runs to
   # completion. Mirrors tuck.nim's Nim entry and the Odin one.
-  let boot = dBootSequence(m, hasTasks)
+  # Handlers declared for another module's registry are handed over before
+  # anything can raise: each such module's own, then this module's.
+  var register = ""
+  for p in registerModules(m, ctx.realModules):
+    register.add("    " & dAlias(p) & "." & RegisterProc & "();\n")
+  if registersAnything(m): register.add("    " & RegisterProc & "();\n")
+  let boot = register & dBootSequence(m, ctx.realModules, hasTasks)
   # Drive the loop only when TASKS exist. Actors are daemons whose drain
   # loops never finish, so running the scheduler for them after main would
   # spin forever — main owns the lifecycle and ends the program itself.
@@ -158,7 +179,7 @@ proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
     # Wait for every actor to empty its mailbox before exiting: an actor thread
     # is detached, so without this a `send` races the process teardown and a
     # fire-and-forget message can be lost.
-    (if hasRunningActors(m): "    rt.tuckDrainActors();\n" else: "") &
+    (if programRunsActors(m, ctx.realModules): "    rt.tuckDrainActors();\n" else: "") &
     # §7.4's close-all, after the loop is driven so anything a task acquired
     # is still registered when the tables close. In the entry point rather
     # than a `static ~this()` module destructor, so the three backends put it
@@ -188,8 +209,10 @@ proc emitDModule*(name: string, m: Module, res: Resolution,
   ## `std` or `core` from colliding with D's own top-level packages.
   let alias = dAlias(name)
   var ctx = newDCtx(m, realModules, name, res, modPrefix = alias & "_")
-  let (body, _) = ctx.emitDBody(m)
+  var (body, _) = ctx.emitDBody(m)
+  if hasRunningActors(m): body.add(ctx.genDActorsBoot(m) & "\n")
   result = "module mod_" & alias & ";\n\n"
+  if name == VariantsModule: result.add(variantsHeader(m, "//"))
   let imports = ctx.dImports(body, "", inModuleDir = true)
   if imports.len > 0:
     result.add(imports.join("\n") & "\n\n")

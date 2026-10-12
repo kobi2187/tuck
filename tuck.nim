@@ -67,6 +67,7 @@ import compiler/codegen_d_emit  # emitD/emitDModule: same reasoning as
                                 # codegen_emit above, for the D backend.
 import compiler/ast_serializer
 import compiler/modules
+import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
 import compiler/actor_mode
 import compiler/pipeline
@@ -616,7 +617,9 @@ proc checkProgram(path: string, needBodies = false,
   for lm in result.mitems: resolveWhenBlocks(lm.m, buildTarget)  # spec §8.3
   block:
     let t0 = vBegin(psInjectTypes)
+    hoistSatisfierData(result)   # a satisfier the interface's module cannot see (A27)
     injectImportedTypes(result)  # imported types are visible unqualified
+    composeImportedMixins(result)  # `+ Mixin` from another module (A29)
     # Whole-program, cross-module (a type's visibility depends on OTHER
     # modules' imports) — no per-module hook to time individually.
     vSubNote($result.len & " module(s)")
@@ -904,6 +907,7 @@ when isMainModule:
       if stageStr == "load":
         dumpTree(mods, fmt)
       else:
+        hoistSatisfierData(loaded)
         injectImportedTypes(loaded)
         if stageStr == "inject-types":
           dumpTree(mods, fmt)
@@ -1139,6 +1143,7 @@ when isMainModule:
       var hasMain = false
       var mainReturns = false
       var actorNames: seq[string]
+      var actorModules: seq[string]   # other modules declaring a running actor
       var hasTasks = false
       # `fn main` is the ENTRY module's, but actors and tasks are collected
       # across the WHOLE PROGRAM. Scanning only the entry meant an actor
@@ -1149,11 +1154,15 @@ when isMainModule:
       # an uninitialised runtime). Same root as #73's actor half — `m.decls` is
       # the entry module and imports are invisible to it — but a worse symptom
       # than a checker rejection.
+      var handlerMods: seq[string]   # other modules handling a registry that is not theirs
       for lm in prog:
+        if lm.m != m and registersAnything(lm.m): handlerMods.add(lm.name)
         for d in lm.m.decls:
           if d == nil: continue
-          if d.kind == dkActor and actorHasMessages(d):
+          if runsActor(d):
             actorNames.add(mangleName(d.name, nkActor))
+            if lm.m != m and lm.name notin actorModules:
+              actorModules.add(lm.name)
           if d.kind == dkTask: hasTasks = true
       for d in m.decls:
         # `m` was mangled above, so `fn main` is now tuck_main here.
@@ -1192,12 +1201,40 @@ when isMainModule:
         # scheduler::waitUntil.
         let usesRuntime = actorNames.len > 0 or hasTasks
         var boot = ""
+        # Handlers for another module's registry are handed over before
+        # anything can raise (each module's tuckRegister). A module
+        # only another module imports is imported here by name.
+        var registerCalls = ""
+        var extraImports = ""
+        proc importedDirectly(name: string): bool =
+          for d in m.decls:
+            if d != nil and d.kind == dkImport and d.name == name: return true
+        for hm in handlerMods:
+          if not importedDirectly(hm):
+            let asName = nimModuleName(hm)
+            extraImports.add(if asName == hm: "import " & hm & "\n"
+                             else: "import " & hm & " as " & asName & "\n")
+          registerCalls.add("  " & nimModuleName(hm) & "." & RegisterProc & "()\n")
+        if registersAnything(m): registerCalls.add("  " & RegisterProc & "()\n")
+        if extraImports != "": writeFile(mainNim, extraImports & readFile(mainNim))
         var asyncInit = ""
         var asyncDrive = ""
         if usesRuntime:
           let asyncImp = relativePath(getAppDir() / "compiler" / "tuck_async", outDir).replace('\\', '/')
           writeFile(mainNim, "import " & asyncImp & "\n" & readFile(mainNim))
           asyncInit = "  tuckAsyncInit()\n"
+          # `registerActor<Name>` lives in the actor's module, so the entry
+          # names that module even when only another module imports it (A18).
+          var viaMid = ""
+          for am in actorModules:
+            var direct = false
+            for d in m.decls:
+              if d != nil and d.kind == dkImport and d.name == am: direct = true
+            if not direct:
+              let asName = nimModuleName(am)
+              viaMid.add(if asName == am: "import " & am & "\n"
+                         else: "import " & am & " as " & asName & "\n")
+          if viaMid != "": writeFile(mainNim, viaMid & readFile(mainNim))
           for a in actorNames: boot.add("  registerActor" & a & "()\n")
           if hasTasks: asyncDrive = "\n  tuckRun()"
         # a value-returning main IS the process exit code. When the runtime
@@ -1242,7 +1279,7 @@ when isMainModule:
         # With `--exceptions:goto` an error nobody handles does not end the
         # process by itself (it exits 0), so the program's body runs inside
         # one handler that reports it the way Nim does and exits 1.
-        let mainBody = asyncInit & boot & "  " & mainCall &
+        let mainBody = registerCalls & asyncInit & boot & "  " & mainCall &
                        asyncDrive & actorDrain & resShutdown & asyncExit
         var guarded = ""
         for ln in mainBody.splitLines:

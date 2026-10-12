@@ -110,6 +110,7 @@ proc index(s: var Scan) =
       s.pathOf[key(d)] = lm.path
       s.moduleOf[key(d)] = i
     for a in lm.m.decls(dkActor):
+      if isImportedCopy(a): continue   # its origin is the actor
       for h in a.handlers:
         if h != nil: s.actorOf[key(h)] = a
 
@@ -266,6 +267,7 @@ proc checkReach(s: var Scan) =
   ## Each owner's entries, in source order.
   for i, lm in s.mods:
     for a in lm.m.decls(dkActor):
+      if isImportedCopy(a): continue
       for h in a.handlers:
         if h != nil and h.kind in {dkFn, dkSelect}: s.walkEntry(h, a.name)
     for d in lm.m.decls:
@@ -370,6 +372,7 @@ proc checkCrossing(s: Scan) =
   ## Handler payloads and actor fields, every actor of the program.
   for lm in s.mods:
     for a in lm.m.decls(dkActor):
+      if isImportedCopy(a): continue
       s.checkPayloads(a)
       s.checkFields(a)
 
