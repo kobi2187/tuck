@@ -19,6 +19,7 @@ import twin_calls  # which calls take the moved twin — decided in prepare
 from twin_shape import seqFieldNames
 from ast_ops import pathOf
 from ownership_rules import constructs
+from ownership_elab import owning
 
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
@@ -738,15 +739,14 @@ proc odinSlab(ctx: var OdinCodegenCtx, name: string): string =
   "&" & ctx.odinSlabPkg(name) & name
 
 proc odinSlabOwns*(ctx: OdinCodegenCtx, d: Decl): seq[string] =
-  ## What a slab's element owns on the heap, as Odin's ownership pass counts
-  ## it — the element's Seq fields, or "" for an element that IS a Seq. Odin
-  ## has no destructors, so a cell's value going (`free`, `set`, `reset`)
-  ## must delete these, which the slab's own procs do (genOdinSlab). Asked of
-  ## the slab's own module, so its declaration and every use agree.
+  ## Does a slab's element own storage (rule G)? `@[""]` — the whole value —
+  ## when it does, else nothing. Odin has no destructors, so a cell's value
+  ## going (`free`, `set`, `reset`) must be dropped, which the slab's own
+  ## procs do (genOdinSlab) with the runtime's reflective drop. Asked of the
+  ## slab's own module, so its declaration and every use agree.
   let origin = declOrigin(ctx.module, ctx.realModules, d.name, {dkSlab})
   let home = if origin == "": ctx.module else: ctx.realModules[origin]
-  if seqElem(d.slabElem) != nil: @[""]
-  else: seqFieldNames(ctx.res, home, d.slabElem)
+  if ctx.res.owning(home, d.slabElem): @[""] else: @[]
 
 proc genOdinSlabOp(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A slab operation (slab proposal, section 3). A fixed slab's `new` is its

@@ -1216,8 +1216,8 @@ proc genOdinSlabDrops(d: Decl, elem: string, owns: seq[string],
   ## `tuckDrop`; here it is spelt per slab, by its Seq fields.
   let s = d.name
   proc drops(c, ind: string): string =
-    for f in owns:
-      result.add ind & "delete(" & c & ".value" & (if f == "": "" else: "." & f) & ")\n"
+    for _ in owns:
+      result.add ind & "rt.tuckDrop(" & c & ".value)\n"
   result = ind & s & "_free :: proc(r: rt.SlabRef) {\n" &
     ind & "\tc := rt.tuckSlabCell(&" & s & ", r)\n" & drops("c", ind & "\t") &
     ind & "\trt.tuckSlabFree(&" & s & ", r)\n" & ind & "}\n"

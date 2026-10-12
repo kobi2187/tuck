@@ -205,3 +205,93 @@ fn main() -> int:
   t.hostRuns "...and every backend answers the same", 3
   t.odinTracked "...and Odin frees all of it", 3
 
+  # an Array field of strs, read and rebuilt.
+  t.src """
+import seq
+
+type Grid = {cells: Array[3, str], n: int}
+
+fn fill({g: Grid, s: str}) -> Grid:
+  var cells = g.cells
+  cells[1] = s
+  return {cells: cells, n: g.n + 1} Grid
+
+fn main() -> int:
+  let g = {cells: ["a", "b", "c"], n: 0} Grid
+  let h = {g: g, s: "xyz"} fill
+  let k = {g: h, s: "q"} fill
+  return g.cells[1].len + h.cells[1].len * 10 + k.n * 100
+"""
+  t.okCheck "an Array field of strs, read and rebuilt: checks"
+  t.hostRuns "...and every backend answers the same", 231
+  t.odinTracked "...and Odin frees all of it", 231
+
+  # a generic record holding a Seq of owned values.
+  t.src """
+import seq
+
+type Box[T]:
+  items: Seq[T]
+  tag: str
+
+fn put[T]({b: Box[T], v: T}) -> Box[T]:
+  let more = {items: b.items, value: v} push
+  return {items: more, tag: b.tag} Box
+
+fn main() -> int:
+  var b: Box[str] = {items: [], tag: "t"} Box
+  b = {b: b, v: "one"} put
+  b = {b: b, v: "three"} put
+  var c: Box[int] = {items: [], tag: "n"} Box
+  c = {b: c, v: 4} put
+  return b.items.len * 10 + b.items[1].len + c.items[0] * 100
+"""
+  t.okCheck "a generic record holding a Seq of owned values: checks"
+  t.hostRuns "...and every backend answers the same", 169
+  t.odinTracked "...and Odin frees all of it", 169
+
+  # an arena and a slab whose cells own a str and a Seq.
+  t.src """
+import seq
+
+type Note:
+  text: str
+  tags: Seq[str]
+
+arena Scratch [size: 65536]
+
+slab Notes = Note
+
+fn work({n: int}) -> int:
+  var total = 0
+  var i = 0
+  for i < n:
+    var tags: Seq[str] = []
+    tags = {items: tags, value: "a"} push
+    tags = {items: tags, value: "bb"} push
+    let note = {text: "note", tags: tags} Note
+    let r = Scratch.new {value: note}
+    if r.ok:
+      total = total + r.value.tags.len + r.value.text.len
+    i = i + 1
+  Scratch.reset
+  return total
+
+fn keep({n: int}) -> int:
+  var i = 0
+  var live = 0
+  for i < n:
+    let r = Notes.new {text: "kept", tags: ["x"]}
+    let g = Notes.get {r: r}
+    live = live + g.text.len
+    Notes.free {r: r}
+    i = i + 1
+  return live
+
+fn main() -> int:
+  return {n: 20} work + {n: 5} keep
+"""
+  t.okCheck "an arena and a slab whose cells own a str and a Seq: checks"
+  t.hostRuns "...and every backend answers the same", 140
+  t.odinTracked "...and Odin frees all of it", 140
+

@@ -84,7 +84,7 @@ proc setAt*[T](items: var seq[T], index: int, value: T) =
   ## `xs[i] = v`.
   tuckSetAt(items, index, value)
 
-proc tuckArrayAt*[N: static int, T](items: array[N, T], index: int): T =
+proc tuckArrayAt*[N: static int, T](items: array[N, T], index: int): lent T =
   ## A bounds-checked read of a fixed `Array[N, T]`.
   ##
   ## `Array[N, T]` needs its OWN pair, separate from tuckAt/tuckSetAt above.
