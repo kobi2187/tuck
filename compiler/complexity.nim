@@ -180,7 +180,7 @@ proc walk(m: var Metrics, e: Expr) =
   # operands and bodies still walk — the statements inside fork like any
   # others.
   of exkUnary, exkBlock, exkCall, exkCombinator, exkStruct, exkList, exkFill,
-     exkBracket, exkBracketAssign, exkAssign, exkAppend, exkCopy, exkDrop, exkField, exkReturn, exkRaise,
+     exkBracket, exkBracketAssign, exkAssign, exkAppend, exkCopy, exkDrop, exkReset, exkField, exkReturn, exkRaise,
      exkDiscard, exkTripleDot, exkSend, exkAcquire, exkFinish, exkDefer,
      exkOrdinal, exkValidate, exkIfaceCall, exkIfaceIs, exkIfacePayload,
      exkWrapOk, exkAbsent, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset, exkLit, exkVar,
@@ -219,7 +219,7 @@ proc verifyDecl(acc: var seq[Offender], d: Decl, b: Budget) =
     # same reason match arms are.
     if not d.isDecision: acc.checkFn(d.name, d.fnBody, d.span, b)
   of dkTask:
-    acc.checkFn(d.name, d.taskBody, d.span, b)
+    acc.checkFn(d.name, d.fnBody, d.span, b)
   of dkActor:
     for h in d.handlers: acc.verifyDecl(h, b)
   of dkMixin, dkExtern, dkPending:

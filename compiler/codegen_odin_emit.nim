@@ -5,7 +5,7 @@
 # flags/entry point into one Odin source file. The public entry points
 # (`emitOdin`/`emitOdinModule`) sit above genOdinDecl/genOdinExpr in the
 # import order, same shape as codegen_emit.nim for the Nim backend.
-import ast, strutils, tables, algorithm
+import ast, ast_ops, strutils, tables, algorithm
 import resolution
 import ast_query
 import codegen_common
@@ -123,18 +123,23 @@ proc shouldImportRt(m: Module, body, mains: string): bool =
   runtimeUsers(m, actorNames, hasTasks)
   actorNames.len > 0 or hasTasks or "rt." in body or "rt." in mains
 
-proc allocates(body: string): bool =
-  ## The program builds Seqs (`[dynamic]`) or frees heap values of its own.
-  ## Such a program is tracked under TUCK_TRACK even when it calls nothing in
-  ## the runtime: `b.items = [2, 3]` leaks the `[1]` it overwrote all the
-  ## same, and the tracker is the runtime's (A41 was invisible to it).
-  "[dynamic]" in body or "delete(" in body
+proc allocates(m: Module): bool =
+  ## The program builds containers, copies or frees values of its own: a
+  ## list, an append, a copy or a drop is in its tree. Such a program is
+  ## tracked under TUCK_TRACK even when it calls nothing in the runtime:
+  ## `b.items = [2, 3]` leaks the `[1]` it overwrote all the same, and the
+  ## tracker is the runtime's (A41 was invisible to it).
+  for e in m.bodies:
+    for n in e.nodes:
+      if n.kind in {exkList, exkAppend, exkCopy, exkDrop} or
+         n.kind == exkAssign and n.dropsOld: return true
+  false
 
 proc tracksAllocations(m: Module, body, mains: string): bool =
   ## Does the entry point install the allocation tracker? Whenever the
   ## program uses the runtime or allocates at all. The header imports the
   ## runtime under the same condition, and the tracker line uses it.
-  shouldImportRt(m, body, mains) or allocates(body)
+  shouldImportRt(m, body, mains) or allocates(m)
 
 proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
                  realModules: Table[string, Module]): seq[string] =

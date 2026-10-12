@@ -13,24 +13,25 @@ tuckˑtypeˑJar :: struct {
 
 tuckˑfnˑmain :: proc () {
   tuckˑvˑn := 99
-  tuckStrTmp1 := str.toStr(tuckˑvˑn)
-  defer delete(tuckStrTmp1)
-  tuckˑvˑs := rt.tuckConcat(tuckStrTmp1, " bottles")
-  defer delete(tuckˑvˑs)
+  tuckOwnTmp1 := str.toStr(tuckˑvˑn)
+  defer rt.tuckDrop(tuckOwnTmp1)
+  tuckˑvˑs := rt.tuckConcat(tuckOwnTmp1, " bottles")
+  defer rt.tuckDrop(tuckˑvˑs)
   console.printLine(tuckˑvˑs)
-  tuckStrTmp2 := str.toStr(tuckˑvˑn)
-  defer delete(tuckStrTmp2)
-  tuckˑvˑt := rt.tuckConcat(tuckStrTmp2, " more")
-  defer delete(tuckˑvˑt)
+  tuckOwnTmp2 := str.toStr(tuckˑvˑn)
+  defer rt.tuckDrop(tuckOwnTmp2)
+  tuckˑvˑt := rt.tuckConcat(tuckOwnTmp2, " more")
+  defer rt.tuckDrop(tuckˑvˑt)
   console.printLine(tuckˑvˑt)
-  tuckˑvˑj := tuckˑtypeˑJar{count = 7, label = "jam"}
+  tuckˑvˑj := tuckˑtypeˑJar{count = 7, label = rt.tuckStrOwned("jam")}
+  defer rt.tuckDrop(tuckˑvˑj.label)
   tuckˑvˑc := tuckˑvˑj.count
-  tuckStrTmp3 := rt.tuckConcat(tuckˑvˑj.label, ": ")
-  defer delete(tuckStrTmp3)
-  tuckStrTmp4 := str.toStr(tuckˑvˑc)
-  defer delete(tuckStrTmp4)
-  tuckˑvˑu := rt.tuckConcat(tuckStrTmp3, tuckStrTmp4)
-  defer delete(tuckˑvˑu)
+  tuckOwnTmp3 := rt.tuckConcat(tuckˑvˑj.label, ": ")
+  defer rt.tuckDrop(tuckOwnTmp3)
+  tuckOwnTmp4 := str.toStr(tuckˑvˑc)
+  defer rt.tuckDrop(tuckOwnTmp4)
+  tuckˑvˑu := rt.tuckConcat(tuckOwnTmp3, tuckOwnTmp4)
+  defer rt.tuckDrop(tuckˑvˑu)
   console.printLine(tuckˑvˑu)
   if (tuckˑvˑs == "99 bottles") {
       if (tuckˑvˑu == "jam: 7") {

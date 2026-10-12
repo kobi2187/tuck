@@ -35,7 +35,7 @@ iterator markerSites*(m: Module): tuple[owner: string, kinds: seq[string],
     if d.kind == dkFn:
       if d.fnResourceKinds.len > 0: yield (d.name, d.fnResourceKinds, d.span)
     elif d.kind == dkTask:
-      if d.taskResourceKinds.len > 0: yield (d.name, d.taskResourceKinds, d.span)
+      if d.fnResourceKinds.len > 0: yield (d.name, d.fnResourceKinds, d.span)
     else:
       for mem in d.members():
         if mem.kind == dkFn and mem.fnResourceKinds.len > 0:

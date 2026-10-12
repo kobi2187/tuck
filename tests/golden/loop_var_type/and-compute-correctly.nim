@@ -19,5 +19,9 @@ proc tuckˑfnˑboth*(ps: seq[tuckˑtypeˑP], qs: seq[tuckˑtypeˑQ]): int =
   return tuckˑvˑs
 
 proc tuckˑfnˑmain*(): int =
-  return tuckˑfnˑboth(@[tuckˑtypeˑP(n: 1)], @[tuckˑtypeˑQ(m: 41)])
+  var tuckOwnTmp1 = @[tuckˑtypeˑP(n: 1)]
+  defer: tuckDrop(tuckOwnTmp1)
+  var tuckOwnTmp2 = @[tuckˑtypeˑQ(m: 41)]
+  defer: tuckDrop(tuckOwnTmp2)
+  return tuckˑfnˑboth(tuckOwnTmp1, tuckOwnTmp2)
 

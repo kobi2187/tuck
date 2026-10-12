@@ -11,6 +11,7 @@ proc tuckˑfnˑparse*[T](payload: T): tuple[feed: tuckˑtypeˑFeed] =
 
 proc tuckˑtaskˑfetchFeed*(url: string): TuckResult[tuple[feed: tuckˑtypeˑFeed]] =
   var tuckˑvˑresp = http.tuckˑfnˑget(url)
+  defer: tuckDrop(tuckˑvˑresp)
   if tuckˑvˑresp.ok:
     if true:
       return tok(tuckˑfnˑparse(tuckˑvˑresp.value.body))

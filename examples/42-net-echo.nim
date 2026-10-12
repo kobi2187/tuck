@@ -42,7 +42,9 @@ proc tuckˑtaskˑserve*(lfd: int): void =
   var tuckˑvˑc = net.accept(lfd)
   if tuckˑvˑc.ok:
     if true:
-      discard net.recv(tuckˑvˑc.value.fd, 256)
+      var tuckOwnTmp1 = net.recv(tuckˑvˑc.value.fd, 256)
+      defer: tuckDrop(tuckOwnTmp1)
+      discard tuckOwnTmp1
       discard net.send(tuckˑvˑc.value.fd, "pong")
       net.close(tuckˑvˑc.value.fd)
   return
@@ -53,6 +55,7 @@ proc tuckˑtaskˑclient*(port: int): void =
     if true:
       discard net.send(tuckˑvˑc.value.fd, "ping")
       var tuckˑvˑr = net.recv(tuckˑvˑc.value.fd, 256)
+      defer: tuckDrop(tuckˑvˑr)
       net.close(tuckˑvˑc.value.fd)
       if tuckˑvˑr.ok:
         if true:
@@ -75,8 +78,8 @@ proc tuckˑfnˑmain*(): int =
   var tuckˑvˑl = net.listen(34593)
   if tuckˑvˑl.ok:
     if true:
-      tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: tuckˑtaskˑserve(tuckˑvˑl.value.fd)))
-      tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}: tuckˑtaskˑclient(34593)))
+      tuckSpawnJob(tuckˑtaskˑserve, tuckˑvˑl.value.fd)
+      tuckSpawnJob(tuckˑtaskˑclient, 34593)
       tuckWaitOn(tuckˑactorˑResultSlot, tuckˑfnˑdone)
       net.close(tuckˑvˑl.value.fd)
       scheduler.stop()

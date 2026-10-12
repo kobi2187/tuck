@@ -14,7 +14,7 @@
 ##   USE tuckˑfnˑboth tuckˑvˑxs sink 18:11
 ##
 ## `arg` is a call's argument, settled by rule P from the callee — pinned
-## below through `TUCK_DEBUG_OWN=params`, beside today's Nim `sink`.
+## below through `TUCK_DEBUG_OWN=params` (compiler/ownership_dump.nim).
 import std/[os, strutils]
 import ../harness
 
@@ -25,32 +25,25 @@ proc usesDump(t: var T): int =
               t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "out"], vEmit)
 
 proc paramsDump(t: var T): int =
-  ## Rule P beside today's Nim `sink`, for the current snippet.
+  ## Rule P, for the current snippet.
   t.needCmd(@["env", "TUCK_DEBUG_OWN=params", "./tuck", "c",
-              t.curDir / "t.tuck", "-o:" & t.curDir / "outp"], vEmit)
+              t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "outp"], vEmit)
 
 proc dropsDump(t: var T): int =
-  ## Rules D and M beside Odin's frees (the Stage C nodes), for the current
-  ## snippet.
+  ## Rules D and M, for the current snippet.
   t.needCmd(@["env", "TUCK_DEBUG_OWN=drops", "./tuck", "c",
               t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "outd"], vEmit)
 
 proc copiesDump(t: var T): int =
-  ## Rule S beside the copies Odin makes (Stage C's `exkCopy`), for the
-  ## current snippet.
+  ## Rule S as written into the Odin tree (`exkCopy`), for the current
+  ## snippet.
   t.needCmd(@["env", "TUCK_DEBUG_OWN=copies", "./tuck", "c",
               t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "outc"], vEmit)
 
 proc verifyDump(t: var T): int =
-  ## Rule V over the current snippet's Odin tree (the Stage C nodes today's
-  ## passes wrote).
+  ## Rule V over the current snippet's Odin tree, as the rules wrote it.
   t.needCmd(@["env", "TUCK_DEBUG_OWN=verify", "./tuck", "c",
               t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "outv"], vEmit)
-
-proc rulesVerifyDump(t: var T): int =
-  ## Rule V over the tree the RULES write (TUCK_OWN=rules, ownership_write).
-  t.needCmd(@["env", "TUCK_OWN=rules", "TUCK_DEBUG_OWN=verify", "./tuck", "c",
-              t.curDir / "t.tuck", "--odin", "-o:" & t.curDir / "outr"], vEmit)
 
 proc dumpLacks(t: var T, idx: int, name, needle: string) =
   ## The dump has no line holding `needle` (prefixes dropped as in dumpHas).
@@ -137,11 +130,11 @@ fn main() -> int:
 
   # --- rule P: a parameter consumes iff some final read of it is a sink ----
   #
-  # Beside today's Nim `sink` (codegen_common.paramIsMovable), with the
-  # reason P gives. Over every .tuck in the tree P and `sink` agree on 213
-  # owning parameters and differ on 17, all of one kind — pinned below as
-  # `bytesOf`: a final read handed to a runtime extern that only reads it,
-  # which today's analysis takes to keep anything it cannot see into.
+  # With the reason P gives. (Measured beside Nim's `sink` before the switch,
+  # over every .tuck in the tree: 213 owning parameters agreed and 17
+  # differed, all of one kind — `bytesOf` below: a final read handed to a
+  # runtime extern that only reads it, which `sink` takes to keep anything
+  # it cannot see into.)
   t.src """
 import seq
 import str
@@ -177,33 +170,27 @@ fn main() -> int:
 """
   let p = t.paramsDump()
   t.dumpHas p, "P: a parameter returned is consumed (a sink)",
-            "PARAM keepIt xs same (a sink at 8:10)"
-  t.dumpHas p, "P: one only measured is borrowed", "PARAM lenOf xs same\n"
-  t.dumpHas p, "P: one handed to a runtime reader is borrowed (today " &
-               "over-approximates it as kept: the one kind of difference)",
-            "PARAM bytesOf t today-only\n"
+            "PARAM keepIt xs consumes (a sink at 8:10)"
+  t.dumpHas p, "P: one only measured is borrowed", "PARAM lenOf xs borrows"
+  t.dumpHas p, "P: one handed to a runtime reader is borrowed",
+            "PARAM bytesOf t borrows"
   t.dumpHas p, "P: one handed to a consuming parameter is consumed",
-            "PARAM viaKeep xs same (keepIt keeps it at 17:15)"
+            "PARAM viaKeep xs consumes (keepIt keeps it at 17:15)"
   t.dumpHas p, "P: a `pending:` fn with no body is read by its " &
-               "signature: a `str` in, a new `str` out, so it only reads it",
-            "PARAM viaOpaque t today-only\n"
-  t.dumpHas p, "P: a callee with no body is read by its signature: push's " &
-               "result has its items' own type, a new Seq, so push only " &
-               "reads them (today's `sink` says kept)",
-            "PARAM grow xs today-only\n"
+               "declaration: it keeps nothing it does not name, so it only " &
+               "reads it", "PARAM viaOpaque t borrows"
+  t.dumpHas p, "P: a callee with no body keeps only what it declares: " &
+               "push says `[keeps: value]`, so it only reads its items",
+            "PARAM grow xs borrows"
   t.dumpHas p, "P: a recursive reader borrows (the least fixed point)",
-            "PARAM walk xs same\n"
+            "PARAM walk xs borrows"
 
   # --- rules D and M: where each owned place is dropped --------------------
   #
-  # Beside the drops Stage C made from today's ownership pass. Over every
-  # .tuck in the tree, on Odin: 343 owned slots agree; 27 are freed today
-  # but not by the rules (19 twin parameters P says only borrow — the caller
-  # drops them instead; 5 dead values today copies and then frees, which the
-  # rules move; 3 handed to a `pending:` fn with no body); 52 are dropped by
-  # the rules and leaked today (40 `str` locals, which on Odin wait on rule
-  # G's static-or-heap answer; 12 Seqs today cannot prove owned). The one
-  # real bug among them, a pushed element freed while held, was A40.
+  # (Measured beside the old ownership pass before the switch, over every
+  # .tuck in the tree on Odin: 343 owned slots agreed, 27 were freed only by
+  # the old pass and 52 only by the rules, every one explained; the one real
+  # bug among them, a pushed element freed while held, was A40.)
   t.src """
 import seq
 
@@ -224,24 +211,20 @@ fn main() -> int:
 """
   let dd = t.dropsDump()
   t.dumpHas dd, "D: a consuming parameter returned is moved: nobody drops it",
-            "DROP keep xs - same moved"
+            "DROP keep xs - moved"
   t.dumpHas dd, "D: an owned local nothing moves is dropped at its scope's end",
-            "DROP main r - same owned"
+            "DROP main r - owned"
   t.dumpHas dd, "M: moved on one path and kept on the other is `maybe`: " &
-                "dropped, and reset where moved (today leaks it)",
-            "DROP pick a - rules-only maybe"
-  t.dumpHas dd, "D: a local only measured is dropped (today leaks it: its " &
-                "read sits inside a call taken to carry everything out)",
-            "DROP pick n - rules-only owned"
+                "dropped, and reset where moved",
+            "DROP pick a - maybe"
+  t.dumpHas dd, "D: a local only measured is dropped",
+            "DROP pick n - owned"
 
   # --- rule S: a sink moves at an owned place's final use, else copies -----
   #
-  # Beside the copies Odin makes at a binding. Over every .tuck in the tree
-  # no binding is copied by the rules and not today — the rules find no
-  # aliasing today misses. Today copies 37 the rules do not: call results it
-  # cannot prove fresh (a temporary is the binder's: any aliasing is copied
-  # inside the callee), dead values it copies and then frees (which the rules
-  # move), and two `str` literals copied to the heap (rule G's business).
+  # A temporary is the binder's (any aliasing is copied inside the callee),
+  # and a dead value moves. What the copy is, is rule G's: `seq` for a Seq
+  # of plain values.
   t.src """
 import seq
 
@@ -260,21 +243,19 @@ fn main() -> int:
 """
   let cd = t.copiesDump()
   t.dumpHas cd, "S: a place still read later is copied where it is bound",
-            "COPY main 10:3 same rules=all today=all"
+            "COPY main 10:11 seq"
   t.dumpHas cd, "S: an element read is copied (it is never moved out of " &
-                "its container)", "COPY main 12:3 same rules=all today=all"
+                "its container)", "COPY main 12:21 seq"
 
   # --- rule V: the tree checked ----------------------------------------------
   #
-  # compiler/ownership_check.nim reads the Odin tree as Stage C left it
-  # (copies, drops, `dropsOld`) under today's convention (a moved twin owns
-  # its first parameter; a call marked for the twin, or threaded through
-  # it, hands its argument over). Over every .tuck in the tree it reports 11
-  # places and 25 temporaries never dropped (A41-A45, each confirmed by
-  # TUCK_TRACK), 3 borrowed values returned for the caller to copy (today's
-  # provenance scheme, where rule S copies in the callee), and one list
-  # holding live Seqs uncopied: sound today only because Odin's drop of a
-  # Seq of Seqs is shallow.
+  # compiler/ownership_check.nim reads the Odin tree as the rules wrote it
+  # (copies, drops, resets, `dropsOld`). Before the switch, over every .tuck
+  # in the tree, it reported on the old passes' tree 11 places and 25
+  # temporaries never dropped (A41-A45, each confirmed by TUCK_TRACK), 3
+  # borrowed values returned for the caller to copy, and one list holding
+  # live Seqs uncopied. The program below holds one of each; on the rules'
+  # tree it reports none of them.
   t.src """
 import seq
 
@@ -328,24 +309,9 @@ fn main() -> int:
   return {n: 1} early + {} refill + {} nest + {} sumList + got.len + bx.items.len
 """
   let vd = t.verifyDump()
-  t.dumpLacks vd, "V: a moved twin's body owns, reads and drops its parameter: " &
-                  "nothing to report", "VERIFY shrink"
-  t.dumpHas vd, "V: a borrowed parameter's field handed over uncopied (today " &
-                "the caller copies the result)",
-            "VERIFY itemsOf borrowed-sunk b.items 20:11"
-  t.dumpHas vd, "V: a local handed over at its last use leaks on the return " &
-                "before it (A42)", "VERIFY early leak (some paths) xs 23:3"
-  t.dumpHas vd, "V: a field overwritten without dropping what it held (A41)",
-            "VERIFY refill overwrite-leak b.items 31:3"
-  t.dumpHas vd, "V: a list holding a live Seq uncopied: the Seq is read after " &
-                "it moved...", "VERIFY nest use-after-move a 38:21"
-  t.dumpHas vd, "...and dropped after it moved", "VERIFY nest drop-after-move a 35:3"
-  t.dumpHas vd, "V: a temporary only borrowed is never dropped (A45)",
-            "VERIFY sumList temp-leak list 42:12"
-  let rv = t.rulesVerifyDump()
-  t.dumpLacks rv, "V: the tree the rules write (TUCK_OWN=rules) has none of " &
-                  "these: every place dropped or moved once, every live " &
-                  "read copied, every temporary named and dropped", "VERIFY"
+  t.dumpLacks vd, "V: the tree the rules write has none of these: every " &
+                  "place dropped or moved once, every live read copied, " &
+                  "every temporary named and dropped", "VERIFY"
   let gu = t.usesDump()
   t.classifies gu, "U: a generic record's construction takes its fields " &
                    "(`{items: xs} Box` is typed `Box[T]`)", "boxed xs sink final 17:18"

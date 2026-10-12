@@ -19,14 +19,17 @@ TRec_status!(long) tuckˑfnˑfetch(T)(T payload) {
 
 
 void tuckˑfnˑmain() {
-    TRec_url_timeout!(string, long) tuckˑvˑconfig = TRec_url_timeout!(string, long)(url: "https://api.example.com", timeout: 100L);
+    TRec_url_timeout!(string, long) tuckˑvˑconfig = TRec_url_timeout!(string, long)(url: ("https://api.example.com").idup, timeout: 100L);
+    scope(exit) rt.tuckDrop(tuckˑvˑconfig.url);
     TRec_status!(long) tuckˑvˑresult = tuckˑfnˑfetch(tuckˑvˑconfig);
     return;
 }
 
 enum tuckˑtypeˑLightState { Off, On }
 
-void main(string[] args) {
+int main(string[] args) {
     rt.tuckSetArgs(args);
+    rt.tuckLeakMark();
     tuckˑfnˑmain();
+    return rt.tuckLeakCheck(0);
 }

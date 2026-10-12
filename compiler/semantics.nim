@@ -235,8 +235,8 @@ proc verifyDecl*(c: var Checker, d: Decl) =
   of dkTask:
     if d.name in c.visiting: return
     c.visiting.incl(d.name)
-    c.checkExpr(d.taskBody, Demands(effects: d.taskEffects,
-                                    resources: d.taskResourceKinds), d.name)
+    c.checkExpr(d.fnBody, Demands(effects: d.fnEffects,
+                                    resources: d.fnResourceKinds), d.name)
     c.visiting.excl(d.name)
   of dkActor:
     for h in d.handlers:
@@ -286,8 +286,8 @@ proc collectLocal(c: var Checker, m: Module) =
       c.declared[d.name] = Demands(effects: d.fnEffects,
                                    resources: d.fnResourceKinds)
     of dkTask:
-      c.declared[d.name] = Demands(effects: d.taskEffects,
-                                   resources: d.taskResourceKinds)
+      c.declared[d.name] = Demands(effects: d.fnEffects,
+                                   resources: d.fnResourceKinds)
       c.taskNames.incl(d.name)
     of dkActor:
       for h in d.handlers:

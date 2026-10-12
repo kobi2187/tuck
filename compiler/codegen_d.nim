@@ -332,7 +332,7 @@ proc taskRetTypeD(ctx: var DCodegenCtx, name: string): string =
   ## The D type a task hands back, for the result slot.
   for d in ctx.module.decls:
     if d != nil and d.kind == dkTask and d.name == name:
-      return ctx.dType(d.taskReturnType)
+      return ctx.dType(d.fnReturnType)
   "void"
 
 proc asDPrimConversion(ctx: var DCodegenCtx, e: Expr,
@@ -382,6 +382,13 @@ proc genDActorCall(ctx: var DCodegenCtx, e: Expr): string =
   if actorMember != "":
     return actorMember & "(" & (@["self"] & ctx.genDCallArgs(e)).join(", ") & ")"
 
+proc genDSpawn(ctx: var DCodegenCtx, e: Expr, task: string): string =
+  ## Fire-and-forget: the arguments are evaluated here and handed to the job
+  ## (a closure over them would read them after their owner dropped them).
+  let args = ctx.genDCallArgs(e)
+  "rt.tuckSpawnJob(&" & task &
+    (if args.len > 0: ", " & args.join(", ") else: "") & ")"
+
 proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   ## A call in D, trying the special shapes first: `waitOn`, a sum variant, a
   ## primitive conversion, a task spawn, a member or combinator call. What is
@@ -400,10 +407,7 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   # Calling a task in STATEMENT position schedules it and moves on —
   # fire-and-forget (spec §9.2). A result-BOUND call is handled in
   # genDAssign, which needs the target to build the slot.
-  if ctx.index.isTaskName(calleeStr):
-    let args = ctx.genDCallArgs(e)
-    return "rt.tuckSpawn({ cast(void) " & calleeStr &
-           "(" & args.join(", ") & "); })"
+  if ctx.index.isTaskName(calleeStr): return ctx.genDSpawn(e, calleeStr)
   let member = ctx.dMemberCallee(e)
   if member != "": calleeStr = member
   let combinator = ctx.asCombinatorCallD(e, calleeStr)
@@ -588,6 +592,9 @@ proc genDSlabOp(ctx: var DCodegenCtx, e: Expr): string =
     # An arena's budget pays for the cell first (tuckArenaNew).
     return "rt.tuckArenaNew(" & ctx.dSlab(e.slabRef.refName) & ", " &
            ctx.dArena(arena.name) & ", " & $slab.slabCost & ", " & value & ")"
+  if e.slabOp == soSet:     # the old value is the cell's: dropped, then replaced
+    return "rt.tuckReplace(" & slabCellValue(ctx.dSlab(e.slabRef.refName), arg, "rt.") &
+           ", " & value & ")"
   slabOpCall(e.slabOp, ctx.dSlab(e.slabRef.refName), arg, value, "rt.")
 
 proc genDIfaceCall(ctx: var DCodegenCtx, e: Expr): string =
@@ -763,38 +770,14 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
   e.name
 
 proc genDCopy(ctx: var DCodegenCtx, e: Expr): string =
-  ## `.dup` (a bare Seq), or the record rebuilt with per-field `.dup`s (a
-  ## record holding one or more Seq fields): an `exkCopy` ownership_nodes
-  ## made from lowering_seqcopy's marks.
-  ##
-  ## The decision — a D slice aliases where a Tuck Seq copies, and a D
-  ## struct's bitwise field-for-field copy carries that aliasing one level
-  ## down into any Seq-typed FIELD — is made before emission, not here; this
-  ## prints the node. That split is the point of the seam: the reasoning is
-  ## inspectable and testable as a tree pass, and the emitter stays a
-  ## printer.
-  # NO EXCEPTION for a read through a MOVED twin's parameter. There used to
-  # be one ("the param belongs to this call, so no defensive copy"), and it
-  # was a copy decision made here, invisible to the ownership pass reading
-  # the copy marks: `var t = xs; t[0] = 99; return xs` returned 99, and on
-  # Odin `t`'s free was a second free of `xs`. What is copied is decided in
-  # lowering_seqcopy, once, and printed here.
+  ## A value copied where a D slice would alias where a Tuck Seq copies
+  ## (ownership_write decided where, rule G what): `.dup` for a Seq of plain
+  ## values, else the runtime's deep copy. The emitter only prints it.
   let valStr = ctx.genDExpr(e.copied)
   case e.copyKind
-  of cpSeq: return "(" & valStr & ").dup"
-  of cpStatic:
-    raiseAssert "d: a static str is never copied to own — the collector " &
-                "frees, so prepare makes cpStatic for Odin only"
-  of cpFields: discard
-  # A D struct has no `.dup` of its own (only a slice does), so the record
-  # is rebuilt: take the value once into a temp (never re-evaluate `valStr`
-  # — it may be a call), then `.dup` just the fields that need it.
-  let tmp = ctx.freshName("tuckRecDup")
-  var fixups = ""
-  for f in e.copyFields:
-    fixups.add(tmp & "." & f & " = " & tmp & "." & f & ".dup; ")
-  "(() { auto " & tmp & " = " & valStr & "; " & fixups & "return " & tmp &
-    "; })()"
+  of cpSeq: "(" & valStr & ").dup"
+  of cpDeep: "rt.tuckCopy(" & valStr & ")"
+  of cpStatic: "(" & valStr & ").idup"     # a str's own bytes, to drop
 
 proc callOwnerModule(ctx: DCodegenCtx, e: Expr): string =
   ## The imported module a call resolves into, or "" for a local one. A
@@ -888,6 +871,7 @@ proc genDMovedCall(ctx: var DCodegenCtx, e: Expr): string =
      not ctx.res.isOwnerField(e.target):
     ctx.definedVars.incl(e.target.name)
     return ctx.genDLocalDecl(e, call)
+  if e.dropsOld: return "rt.tuckReplace(" & ctx.movedAssignTarget(e.target) & ", " & call & ")"
   ctx.movedAssignTarget(e.target) & " = " & call
 
 proc genDBoundTaskCall(ctx: var DCodegenCtx, e: Expr): string =
@@ -904,13 +888,12 @@ proc genDBoundTaskCall(ctx: var DCodegenCtx, e: Expr): string =
   if not ctx.index.isTaskName(v.callee.name): return ""
   let ret = ctx.taskRetTypeD(v.callee.name)
   let args = ctx.genDCallArgs(v)
-  let rawCall = v.callee.name & "(" & args.join(", ") & ")"
   let slot = ctx.freshName("tuckSlot")
   # Three statements, laid out here — the caller strips its own indent and
   # terminator for this shape (see genDStmt's boundTaskCall test).
   var res = "auto " & slot & " = rt.newAsyncResult!(" & ret & ")();\n"
-  res.add(ctx.indD & "rt.spawnResult(" & slot & ", { return " & rawCall &
-          "; });\n")
+  res.add(ctx.indD & "rt.spawnResult(" & slot & ", &" & v.callee.name &
+          (if args.len > 0: ", " & args.join(", ") else: "") & ");\n")
   let declT = ctx.dDeclType(ctx.res.typeFor(e.target))
   let targetDecl =
     if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
@@ -957,7 +940,13 @@ proc genDAppend(ctx: var DCodegenCtx, e: Expr): string =
   ## made the decision; this prints it. D's `~=` on an array grows through
   ## the GC's capacity, so it is amortised where `a ~ b` builds a whole new
   ## array each time — an O(n) loop against an O(n^2) one.
-  ctx.movedAssignTarget(e.appendTarget) & " ~= " & ctx.genDExpr(e.appendValue)
+  ## The block growth leaves behind is freed (`rt.tuckPush`), and so are a
+  ## `str`'s old bytes when the body owns them (`appendFreesOld`).
+  let target = ctx.movedAssignTarget(e.appendTarget)
+  let value = ctx.genDExpr(e.appendValue)
+  if e.appendsElement: "rt.tuckPush(" & target & ", " & value & ")"
+  elif e.appendFreesOld: "rt.tuckStrAppend(" & target & ", " & value & ")"
+  else: target & " ~= " & value
 
 proc genDInPlaceAssign(ctx: var DCodegenCtx, e: Expr): string =
   ## An assignment that updates its target IN PLACE rather than rebinding
@@ -975,6 +964,7 @@ proc genDRebind(ctx: var DCodegenCtx, e: Expr): string =
   # A FIELD is never a new local: inside an actor handler `total += n`
   # assigns the singleton's field, so it must not be declared here.
   if ctx.res.isOwnerField(e.target):
+    if e.dropsOld: return "rt.tuckReplace(self." & e.target.name & ", " & valStr & ")"
     return "self." & e.target.name & " = " & valStr
   if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
     ctx.definedVars.incl(e.target.name)
@@ -984,7 +974,9 @@ proc genDRebind(ctx: var DCodegenCtx, e: Expr): string =
     let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,
                                         e.target.fieldName)
     if prefix != "": return prefix & "_set(" & valStr & ")"
-  result = ctx.genDAssignTarget(e.target) & " = " & valStr
+  result = if e.dropsOld:   # the old value is dropped once the new exists
+             "rt.tuckReplace(" & ctx.genDAssignTarget(e.target) & ", " & valStr & ")"
+           else: ctx.genDAssignTarget(e.target) & " = " & valStr
   # A field assignment is a mutation site and re-validates, exactly as a `..`
   # chain step does — one shared decision so the three backends cannot drift
   # on which sites check. See codegen_common.assignInvariantOwner.
@@ -1137,9 +1129,12 @@ proc genDDefer(ctx: var DCodegenCtx, e: Expr): string =
   ## `defer:` (spec §7.4). D spells scope exit `scope(exit)` — the same
   ## construct under a different name, and LIFO like the other two. D also has
   ## `scope(success)` and `scope(failure)`; Tuck's defer is the unconditional
-  ## one, so `scope(exit)` is the exact match and not an approximation.
+  ## one, so `scope(exit)` is the exact match and not an approximation. One
+  ## the ownership rules made releases what a place owns, on one line.
   if e.deferBody == nil: return ""
   let ind = ctx.indD
+  if e.deferReleases and e.deferBody.stmts.len == 1:
+    return ind & "scope(exit) " & ctx.genDExpr(e.deferBody.stmts[0]) & ";"
   ind & "scope(exit) {\n" & ctx.genDNested(e.deferBody) & ind & "}"
 
 proc genDWhile(ctx: var DCodegenCtx, e: Expr): string =
@@ -1409,8 +1404,12 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkAssign: ctx.genDAssign(e)
   of exkAppend: ctx.genDAppend(e)
   of exkCopy: ctx.genDCopy(e)
-  of exkDrop:
-    raiseAssert "d: the collector frees; prepare makes an exkDrop for Odin only"
+  # The program frees (the collector does not run): a drop walks what the
+  # place owns (`rt.tuckDrop`); a reset leaves it empty after a move.
+  of exkDrop: "rt.tuckDrop(" & ctx.genDExpr(e.dropped) & ")"
+  of exkReset:
+    let place = ctx.genDAssignTarget(e.resetPlace)
+    place & " = typeof(" & place & ").init"
   of exkReturn: ctx.genDReturn(e)
   of exkRaise: ctx.genDRaise(e)
   of exkDiscard:

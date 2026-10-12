@@ -13,6 +13,7 @@ proc compressBound*(sourceLen: uint64): uint64 {.importc: "compressBound", heade
 
 proc tuckˑfnˑmain*(): void =
   var tuckˑvˑv = zlibVersion()
+  defer: tuckDrop(tuckˑvˑv)
   tuck_rt.printLine(tuckˑvˑv)
   var tuckˑvˑb = compressBound(1000'u64)
   if (tuckˑvˑb == 1013):

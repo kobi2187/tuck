@@ -992,7 +992,7 @@ environment struct — nothing to do with `Seq`. So every copy and every
 exits. D emits the same copies and survives only because D has a GC.
 
 **2. A defensive copy is emitted for call results that cannot alias.**
-`markSeqCopies` in `compiler/lowering_seqcopy.nim:95` exempts exactly one
+`markSeqCopies` (line 95 of the since-deleted `lowering_seqcopy`) exempts exactly one
 node kind:
 
 ```nim

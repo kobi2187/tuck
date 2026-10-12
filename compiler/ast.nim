@@ -489,26 +489,29 @@ type
                     # tree, where every pass sees it, instead of re-derived by
                     # each emitter from the assignment's shape (ownership
                     # proposal §8, Stage C).
-    exkCopy         # prepared only (ownership_nodes): the value a binding
-                    # copies where the backend's own assignment would alias
-                    # it (Odin, D), or a static `str` made heap-owned (Odin).
-                    # Made from lowering_seqcopy's marks and the ownership
-                    # pass's `copyToOwn`, which each emitter used to look up
-                    # while printing (proposal §8, Stage C, step 1.2).
+    exkCopy         # prepared only (ownership_write): a value copied where
+                    # it is put to a sink that is not its final use (rule
+                    # S), where the backend's own assignment would alias it
+                    # (Odin, D). What the copy is, is rule G's (`copyKind`).
     exkDrop         # prepared only (ownership_nodes): release the storage the
                     # place `dropped` owns (rule D). Sits in a `defer` after
-                    # the declaration it ends, or at the top of a moved twin
-                    # for the parameter it consumed. Odin only: the other two
-                    # backends' memory is ARC's and the collector's (step 1.3).
+                    # the declaration it ends, or at the top of a body for a
+                    # parameter it consumes. Every backend's tree has it; the
+                    # one that frees by hand (Odin) prints it, ARC (Nim) and
+                    # the collector (D) do that themselves.
+    exkReset        # prepared only (ownership_write): the place `resetPlace`
+                    # is empty after a move on some paths (rule M), so its
+                    # drop frees nothing. Printed where drops are.
 
   CopyKind* = enum
     ## What an `exkCopy` copies (rule S: a sink copies when it is not the
     ## value's final use; rule G: what a copy of a type means).
     cpSeq       ## a `Seq`'s buffer: the native assignment copies only a header
-    cpFields    ## a record's `Seq` fields (`copyFields`), each copied — the
-                ## record's own struct copy carries their headers along
-    cpStatic    ## a `str` literal, copied to the heap so the local holding it
-                ## can free each value it is given (Odin, `copyToOwn`)
+    cpStatic    ## a `str`, copied to the heap so its new owner can free it
+                ## (Odin; D's strings are immutable and shared)
+    cpDeep      ## anything else that owns storage (a Seq of owning elements, a
+                ## record, a sum, a `?T`/`!T`, a str inside any of them):
+                ## copied whole and deeply (rule G, `rt.tuckCopy`)
 
   SlabOpKind* = enum
     ## What a slab operation does (thoughts/shared/plans/
@@ -555,6 +558,9 @@ type
     ## An expression or statement: one case branch per ExprKind. Statements are
     ## expressions here (`if`, `match` and blocks can produce values).
     sourceName*: Option[string]  ## see SourceName note below
+    movedOut*: bool  ## the ownership rules move this read of a place
+                     ## (ownership_write): a backend whose assignment copies
+                     ## (Nim's) prints it as a move; the rest as the read
     case kind*: ExprKind
     of exkLit:
       litKind*: LitKind
@@ -630,6 +636,8 @@ type
                         # value is released after the new one is built and
                         # before it is stored — drop-and-replace (rules D and
                         # E). Odin only; never on a declaration.
+      dropsOldDeep*: bool  # and that drop walks the old value (rule G), as
+                           # an `exkDrop`'s `dropDeep` does
       isMutable*: bool  # true only for `var`
       inChain*: bool    # a step of a lowered `..` chain: NOT re-validated on
                         # its own — the chain validates once, at its end
@@ -663,6 +671,8 @@ type
       selArms*: seq[SelectArm]  # read/timeout branches (spec §9.3)
     of exkDefer:
       deferBody*: Expr  # the block to run at scope exit
+      deferReleases*: bool  # made by the ownership rules: it only releases
+                            # storage (`exkDrop`s), printed where drops are
     of exkOrdinal:
       ordinalOf*: Expr  # the enum or bool value whose ordinal this is
     of exkPoolOp:
@@ -686,6 +696,9 @@ type
                                    # READ of it the source wrote, so its stamps
                                    # (final use, owner field) stay attached
       appendValue*: Expr           # what is added at the end
+      appendFreesOld*: bool        # a str grown in a place the body owns
+                                   # (ownership_write): the old bytes are
+                                   # its, and freed where a backend frees
       appendsElement*: bool        # true: `appendValue` becomes the Seq's new
                                    # last element (a SINK — the container
                                    # keeps it). false: a str's bytes copied
@@ -694,10 +707,14 @@ type
       copied*: Expr                # the value copied; it keeps its own id, so
                                    # every fact about it stays attached
       copyKind*: CopyKind
-      copyFields*: seq[string]     # cpFields: the Seq fields that are copied
+    of exkReset:
+      resetPlace*: Expr            # the place, or the part of one, emptied
     of exkDrop:
       dropped*: Expr               # the place: a local or parameter, or a
                                    # path into one (`b.ask`)
+      dropDeep*: bool              # rule G: its storage nests (or may), so
+                                   # the drop walks it (`rt.tuckDrop`); else
+                                   # it is a Seq of plain values (`delete`)
     of exkIfaceCall:
       dispatchRecv*: Expr          # the interface value, evaluated once
       dispatchIface*: string       # the interface's (mangled) type name
@@ -943,7 +960,9 @@ type
       arenaSize*: int          ## `[size: N]`: a byte budget; 0 = unbounded
       arenaSizeText*: string   ## `[size: N]` as written, when N names a const
       arenaOwner*: string      ## the actor declaring it, "" for the module
-    of dkFn:
+    of dkFn, dkTask:
+      ## A task is a fn that runs as a coroutine: the same params, return
+      ## type, effects, error types, resources and body.
       fnGenerics*: seq[string]
       fnGenericBounds*: seq[seq[Type]]   # parallel to fnGenerics; bounds[i] =
                                           # the `group`s required for
@@ -980,6 +999,11 @@ type
       externHeader*: string # extern [c, header: "uart.h"] — empty = rt-implemented
       externEmit*: string   # [emit: "nimProc"] — the exact runtime/C proc name
                             # to emit; empty = use the Tuck name
+      externKeeps*: seq[string] # [keeps: value] — the parameters a body-less
+                                # fn keeps (stores, or frees): the caller
+                                # hands them over. Every other one is read.
+      externView*: string   # [view: items] — its owning result is part of
+                            # this argument, which it reads: not a fresh value
       externLib*: string    # extern [c, header: "zlib.h", lib: "z"] — the C
                             # library to link. Nim emits {.passL: "-lz".};
                             # Odin emits `foreign import z "system:z"`.
@@ -993,6 +1017,10 @@ type
                             # stays a string. A seq, not a Table: it holds one
                             # or two entries and rides the msgpack AST cache.
       isInline*: bool   # `fn inline name(...)` — codegen hint ({.inline.} / [Inline])
+      ownedParams*: seq[string] # prepared only (ownership_write, Odin): the
+                                # parameters the body owns (rule P). A call
+                                # hands them over; the copying wrapper `f`
+                                # of a moved twin copies each one first.
       isOnHandler*: bool # spelled `on name(...)`: in an actor, a MESSAGE
                          # handler; a `fn` there is a member the actor's own
                          # code calls (A24). Both parse to dkFn.
@@ -1033,13 +1061,6 @@ type
       attrs*: seq[TypeAttr]
       actorFields*: seq[FieldDef]
       handlers*: seq[Decl]
-    of dkTask:
-      taskParams*: seq[Param]
-      taskReturnType*: Type
-      taskEffects*: seq[EffectMarker]
-      taskErrorTypes*: seq[string]  ## `[error: E | F]` — what it can raise
-      taskResourceKinds*: seq[string]  ## `[resource: k]` — what it acquires
-      taskBody*: Expr
     of dkSatisfies:
       # `Obj satisfies Iface` / `Obj satisfies [A, B, C]` at TOP LEVEL.
       # `name` is the OBJECT; these are the interfaces being attached to it.

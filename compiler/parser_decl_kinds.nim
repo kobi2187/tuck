@@ -7,7 +7,7 @@
 # mixin/when blocks parsing NESTED declarations) stay in parser.nim
 # alongside the dispatch, since a satellite parseDecl already imports can
 # never import parseDecl back.
-import ast, strutils
+import ast, strutils, sequtils
 import ast_query
 import ../lexer
 import parser_base
@@ -17,14 +17,6 @@ import parser_type
 import diagnostics
 
 type
-  SignatureTail* = tuple[effects: seq[EffectMarker], errTypes: seq[string],
-                        emit: string, resources: seq[string]]
-    ## What follows a signature's return type: its effect markers, the error
-    ## enums it may raise, the C/runtime proc name an extern binds to, and the
-    ## registry kinds it acquires (§7.4). Effects, error enums and resource
-    ## kinds can arrive from the return type itself (`!T` harvests) or from
-    ## the `[...]` bracket.
-
   ExternBinding* = object
     ## Where an extern block's signatures are actually implemented.
     header: string   # a C header to include
@@ -597,9 +589,7 @@ proc parseDistinctDecl*(p: var Parser, sp: Span): Decl =
   if p.current().kind == tkNewline: discard p.advance()
   Decl(span: sp, kind: dkType, name: name, generics: @[], typeBody: aliasType)
 
-proc parseEffectList*(p: var Parser, effects: var seq[EffectMarker],
-                     errTypes: var seq[string], emit: var string,
-                     resources: var seq[string], strict = true) =
+proc parseEffectList*(p: var Parser, tail: var SignatureTail, strict = true) =
   ## `[io, may_block]` — the effect markers, with the THREE valued attributes
   ## that share the bracket folded in: `error:` names the enums a fn may
   ## raise, `emit:` the exact runtime/C proc name to emit, and `resource:`
@@ -618,17 +608,25 @@ proc parseEffectList*(p: var Parser, effects: var seq[EffectMarker],
     let effSp = p.getSpan()
     let effName = p.expectAttrName("Expected effect marker").value
     if effName == "error":
-      p.parseErrorTypes(errTypes)
+      p.parseErrorTypes(tail.errTypes)
     elif effName == "emit":
       discard p.expect(tkColon)
-      emit = p.expect(tkStrLit, "Expected proc name string after 'emit:'").value
+      tail.emit = p.expect(tkStrLit, "Expected proc name string after 'emit:'").value
     elif effName == "resource":
       discard p.expect(tkColon)
-      resources.add(p.expectName(
+      tail.resources.add(p.expectName(
         "Expected a resource kind name after 'resource:'").value)
+    elif effName == "keeps":
+      discard p.expect(tkColon)
+      tail.keeps.add(p.expectName(
+        "Expected the parameter an extern keeps after 'keeps:'").value)
+    elif effName == "view":
+      discard p.expect(tkColon)
+      tail.view = p.expectName(
+        "Expected the parameter an extern's result is a view into after 'view:'").value
     else:
       var marker: EffectMarker
-      if effectMarkerFromName(effName, marker): effects.add(marker)
+      if effectMarkerFromName(effName, marker): tail.effects.add(marker)
       elif strict:
         p.reportError("Unknown effect marker: " & effName, effSp.line, effSp.col)
     if p.current().kind == tkComma: discard p.advance()
@@ -1027,10 +1025,8 @@ proc parseSignatureTail*(p: var Parser, retType: Type,
                         strict = true): SignatureTail =
   ## The effects and error enums, harvested from the return type and then
   ## from the attribute bracket.
-  harvestEffects(retType, result.effects, result.errTypes, result.emit,
-                 result.resources)
-  p.parseEffectList(result.effects, result.errTypes, result.emit,
-                    result.resources, strict)
+  harvestEffects(retType, result)
+  p.parseEffectList(result, strict)
 
 proc parseRegistryDecl*(p: var Parser, sp: Span): Decl =
   ## registry Name: | Variant {fields} — global event registry (spec 10)
@@ -1157,12 +1153,19 @@ proc parseSigFn*(p: var Parser, what: string): Decl =
   let params = parseParamList(p)
   let retType = p.parseReturnType()
   let sig = p.parseSignatureTail(retType, strict = false)
+  # `[keeps: x]` and `[view: x]` name a parameter: a misspelt one would
+  # silently say nothing, so it is refused.
+  for named in sig.keeps & @[sig.view]:
+    if named.len > 0 and not params.anyIt(it.name == named):
+      p.reportError("'" & named & "' names no parameter of " & name,
+                    spDecl.line, spDecl.col)
   if p.current().kind == tkNewline: discard p.advance()
   Decl(span: spDecl, kind: dkFn, name: name, fnParams: params,
        fnGenerics: generics, fnGenericBounds: bounds,
        fnReturnType: retType, fnEffects: sig.effects,
        fnBody: nil, fnErrorTypes: sig.errTypes, externEmit: sig.emit,
-       fnResourceKinds: sig.resources)
+       fnResourceKinds: sig.resources, externKeeps: sig.keeps,
+       externView: sig.view)
 
 proc parseTaskDecl*(p: var Parser, sp: Span): Decl =
   ## task name({params}) -> ret [effects]: body (spec 9.2)
@@ -1192,10 +1195,10 @@ proc parseTaskDecl*(p: var Parser, sp: Span): Decl =
                   emitSp.line, emitSp.col)
   discard p.expect(tkColon)
   let body = p.parseBlock()
-  return Decl(span: sp, kind: dkTask, name: name, taskParams: params,
-              taskReturnType: retType, taskEffects: sig.effects,
-              taskErrorTypes: sig.errTypes, taskResourceKinds: sig.resources,
-              taskBody: body)
+  return Decl(span: sp, kind: dkTask, name: name, fnParams: params,
+              fnReturnType: retType, fnEffects: sig.effects,
+              fnErrorTypes: sig.errTypes, fnResourceKinds: sig.resources,
+              fnBody: body)
 
 proc parseFnDecl*(p: var Parser, sp: Span): Decl =
   ## fn name[T]({params}) -> ret [effects]: body — also `on select` arms and event handlers

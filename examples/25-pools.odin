@@ -40,13 +40,17 @@ tuckˑfnˑdrainOnce :: proc () -> int {
       return 0
   }
   tuckˑvˑdst := rt.tuckPoolAddr(&tuckˑpoolˑRxBuffers, tuckˑvˑb.value)
+  defer rt.tuckDrop(tuckˑvˑdst)
   memset(tuckˑvˑdst, 1, 512)
   tuckˑvˑrx := rt.tuckPoolRead(&tuckˑpoolˑRxBuffers, tuckˑvˑb.value)
+  defer rt.tuckDrop(tuckˑvˑrx)
   rt.tuckPoolRelease(&tuckˑpoolˑRxBuffers, tuckˑvˑb.value)
   if !(tuckˑvˑrx.status == .Ok) {
       return 0
   }
   tuckˑvˑbytes := tuckˑvˑrx.value
+  defer rt.tuckDrop(tuckˑvˑbytes)
+  tuckˑvˑrx.value = {}
   if (rt.tuckArrayAt(tuckˑvˑbytes, 511) != 1) {
       return 0
   }

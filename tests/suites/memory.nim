@@ -106,8 +106,10 @@ fn main() -> int:
   return a.items.len + b.items.len + a.n + b.n
 """
   t.okCheck "both twin shapes check"
-  t.emitsOdin "the twin that builds a new value frees its parameter",
-              r"defer delete\(p\.items\)"
+  # Rule P: `rebuild` only reads `p`, so it borrows it, and the caller frees
+  # the value the call rebuilt from, once the new one exists.
+  t.emitsOdin "the caller frees what a borrowing call rebuilt from",
+              r"tuckNext1 := tuckˑfnˑrebuild_moved\(tuckˑvˑa, 5\)\n\s*rt\.tuckDrop\(tuckˑvˑa\)"
   t.omitsOdin "...and the twin that hands its own back does not",
               r"defer delete\(q\.items\)"
   # 2 + 3 + 1 + 1, pinned on all three backends.

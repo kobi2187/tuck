@@ -95,6 +95,7 @@ struct Coroutine
     McoCoro* handle;
     void delegate() entryPoint;
     CoroutineState state;
+    bool ownsEntry;      /// the entry's closure frame is this coroutine's alone
 }
 
 // PER THREAD, not per program. Each actor runs on its own OS thread with its
@@ -176,6 +177,10 @@ void destroyCoroutine(Coroutine* c)
     import core.stdc.stdlib : free;
     if (c is null) return;
     if (c.handle !is null) mco_destroy(c.handle);
+    // A closure the runtime built for this coroutine alone: its frame goes
+    // with it (no collector will). One a caller wrote may share a frame with
+    // the rest of its function, and is not ours to free.
+    if (c.ownsEntry) tuckFreeBlock(c.entryPoint.ptr);
     free(c);
 }
 
@@ -287,10 +292,54 @@ private struct IoWaiter
     bool isTimer;
 }
 
+/// fd -> who is parked on it. A malloc'd array indexed by fd (descriptors
+/// are small), not an associative array: an AA's nodes are collector memory
+/// that nothing can free one by one, and the reactor inserts and removes on
+/// every wait.
+private struct FdTable
+{
+    IoWaiter* data;
+    size_t cap;
+    size_t count;
+
+    IoWaiter* find(int fd)
+    {
+        if (fd < 0 || cast(size_t) fd >= cap || data[fd].coro is null) return null;
+        return data + fd;
+    }
+
+    void set(int fd, IoWaiter w)
+    {
+        import core.stdc.stdlib : realloc;
+        import core.stdc.string : memset;
+        if (cast(size_t) fd >= cap)
+        {
+            size_t n = cap == 0 ? 64 : cap;
+            while (n <= cast(size_t) fd) n *= 2;
+            auto p = cast(IoWaiter*) realloc(data, n * IoWaiter.sizeof);
+            if (p is null) tuckCoroFail("out of memory growing the fd table");
+            memset(p + cap, 0, (n - cap) * IoWaiter.sizeof);
+            data = p;
+            cap = n;
+        }
+        if (data[fd].coro is null) count++;
+        data[fd] = w;
+    }
+
+    void remove(int fd)
+    {
+        if (find(fd) is null) return;
+        data[fd] = IoWaiter.init;
+        count--;
+    }
+
+    size_t length() { return count; }
+}
+
 private struct EventLoop
 {
     int epfd = -1;
-    IoWaiter[int] waiters;   // fd -> who is parked on it
+    FdTable waiters;
     bool inited;
 }
 
@@ -308,7 +357,7 @@ private void parkCurrent(int fd, bool isTimer)
 {
     auto c = activeCoroutine;
     if (c is null) tuckCoroFail("cannot await outside a coroutine");
-    gLoop.waiters[fd] = IoWaiter(c, isTimer);
+    gLoop.waiters.set(fd, IoWaiter(c, isTimer));
     suspend();
 }
 
@@ -400,13 +449,13 @@ bool tuckAwaitReadOrTimeout(long fd, long timeoutMs)
 
     auto c = activeCoroutine;
     if (c is null) tuckCoroFail("cannot await outside a coroutine");
-    gLoop.waiters[rfd] = IoWaiter(c, false);
-    gLoop.waiters[tfd] = IoWaiter(c, true);
+    gLoop.waiters.set(rfd, IoWaiter(c, false));
+    gLoop.waiters.set(tfd, IoWaiter(c, true));
     suspend();
 
     // Exactly one side fired and was removed by runOnce; whichever is still
     // registered lost the race.
-    bool readable = (rfd !in gLoop.waiters);
+    bool readable = (gLoop.waiters.find(rfd) is null);
     unwatch(rfd, false);
     unwatch(tfd, true);
     return readable;
@@ -422,17 +471,20 @@ private bool runOnce(int timeoutMs = 100)
 
     // A read racing a timeout can land BOTH sides in one batch, so a
     // coroutine already resumed in this pass must not be queued twice.
-    bool[Coroutine*] resumed;
+    Coroutine*[64] resumed;          // at most one per event in this batch
+    size_t nresumed = 0;
     foreach (i; 0 .. n)
     {
         int fd = events[i].data.fd;
-        auto wp = fd in gLoop.waiters;
+        auto wp = gLoop.waiters.find(fd);
         if (wp is null) continue;
         auto w = *wp;
         gLoop.waiters.remove(fd);
-        if (w.coro !in resumed)
+        bool seen = false;
+        foreach (r; resumed[0 .. nresumed]) if (r is w.coro) seen = true;
+        if (!seen)
         {
-            resumed[w.coro] = true;
+            resumed[nresumed++] = w.coro;
             schedule(w.coro);
         }
     }
@@ -476,6 +528,26 @@ void tuckAsyncInit()
 
 /// Fire-and-forget: schedule a task, do not wait for it (spec §9.2).
 void tuckSpawn(void delegate() fn) { cast(void) spawn(fn); }
+
+/// Append to a runtime-owned array, freeing the block growth leaves behind.
+private void tuckPushPtr(T)(ref T[] xs, T v)
+{
+    auto old = xs.ptr;
+    xs ~= v;
+    if (old !is null && xs.ptr !is old) tuckFreeBlock(cast(void*) old);
+}
+
+/// Spawn a closure THIS RUNTIME made, which nothing else shares: the frame
+/// is freed when the coroutine is.
+void tuckSpawnOwned(void delegate() fn) { spawn(fn).ownsEntry = true; }
+
+/// Spawn `fn(args)`. The arguments are bound NOW, at the call (as on Odin),
+/// into the one closure the runtime owns, rather than read later through a
+/// frame shared with the caller's function.
+void tuckSpawnJob(F, Args...)(F fn, Args args)
+{
+    tuckSpawnOwned({ cast(void) fn(args); });
+}
 
 // ===========================================================================
 // The offload seam  (mirrors tuckrt/tuck_coro.odin's tuckSubmitBlocking)
@@ -593,10 +665,10 @@ TuckAsyncResult!T newAsyncResult(T)()
 }
 
 /// Schedule `fn`, storing its result in `slot` when it finishes.
-void spawnResult(T)(TuckAsyncResult!T slot, T delegate() fn)
+void spawnResult(T, F, Args...)(TuckAsyncResult!T slot, F fn, Args args)
 {
-    tuckSpawn({
-        slot.value = fn();
+    tuckSpawnOwned({
+        slot.value = fn(args);
         slot.done = true;
     });
 }
@@ -619,7 +691,9 @@ T awaitResult(T)(TuckAsyncResult!T slot)
         else
             runOnce(1);
     }
-    return slot.value;
+    auto v = slot.value;
+    tuckFreeBlock(cast(void*) slot);     // the slot was this await's alone
+    return v;
 }
 
 // ===========================================================================
@@ -667,6 +741,20 @@ private struct ActorSlot
     Waiter*[] waiters;
 }
 
+/// Free the block a slice owns. A small array keeps its length byte at the
+/// END of its block, so the slice starts at the block; one over 2 KB keeps a
+/// 16-byte header in FRONT, so the slice starts 16 bytes in, and freeing that
+/// pointer is silently ignored (the allocator wants the base). Any other
+/// pointer is an interior slice, a literal or the stack, and is left alone.
+void tuckFreeBlock(void* p) {
+    import core.memory : GC;
+    if (p is null) return;
+    auto info = GC.query(p);
+    if (info.base is null) return;
+    if (p is info.base || (info.size > 2048 && p is info.base + 16))
+        GC.free(info.base);
+}
+
 private __gshared ActorSlot*[] gActorSlots;  /// SHARED: tuckDrainActors has
 private __gshared Mutex gSlotsLock;          /// to reach every actor at exit
 
@@ -687,25 +775,35 @@ private void checkWaiters(ActorSlot* slot)
     // ALWAYS on the actor's own thread, where the state is settled.
     // The length check first is the "free when unused" property.
     if (slot.waiters.length == 0) return;
+    // Compacted IN PLACE, and `woken` allocated only when somebody wakes:
+    // this runs after every message, and with no collector a fresh array
+    // per call is a leak per message.
     Waiter*[] woken;
-    Waiter*[] kept;
+    size_t kept = 0;
     slot.lock.lock();
     foreach (w; slot.waiters)
     {
         if (w.satisfied) continue;
         if (w.pred()) { w.satisfied = true; woken ~= w; }
-        else kept ~= w;
+        else slot.waiters[kept++] = w;
     }
-    slot.waiters = kept;
+    if (kept == 0)
+    {
+        tuckFreeBlock(cast(void*) slot.waiters.ptr);   // nobody left waiting
+        slot.waiters = null;
+    }
+    else slot.waiters = slot.waiters[0 .. kept];
     slot.lock.unlock();
     // Outside the lock: the waiter wakes at once and must not contend for a
     // lock it is about to stop caring about.
     foreach (w; woken)
     {
         ubyte b = 1;
-        write(w.doneFd, &b, 1);
-        close(w.doneFd);
+        immutable fd = w.doneFd;       // the waiter frees `w` once it wakes
+        write(fd, &b, 1);
+        close(fd);
     }
+    tuckFreeBlock(cast(void*) woken.ptr);
 }
 
 /// Emitted in the drain loop after each handled message, so a predicate sees
@@ -816,7 +914,7 @@ void tuckWaitOn(void* handle, bool function() pred)
     pipe(fds);
     w.doneFd = fds[1];
     slot.lock.lock();
-    slot.waiters ~= w;
+    tuckPushPtr(slot.waiters, w);
     slot.pending = true;      // evaluate ONCE IMMEDIATELY: it may already hold
     slot.cond.notify();
     slot.lock.unlock();
@@ -843,6 +941,7 @@ void tuckWaitOn(void* handle, bool function() pred)
         }
     }
     close(fds[0]);
+    tuckFreeBlock(cast(void*) w);      // it was only ever ours and the actor's
 }
 
 /// Wait for every actor to empty its mailbox, then retire its thread.
@@ -894,6 +993,7 @@ private void retireActors()
         s.lock.unlock();
     }
     foreach (s; slots) s.thread.join();
+    tuckFreeBlock(cast(void*) slots.ptr);
 }
 
 /// Emitted by each send after enqueue: wake every actor so whichever owns that

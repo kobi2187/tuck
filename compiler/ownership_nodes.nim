@@ -10,8 +10,8 @@
 # exists only in the string a backend built, where nothing after it can see
 # it and three backends each re-derive it their own way. Stage C turns each
 # decision into an AST node the pass makes once and every emitter prints.
-# Stage D then makes the same nodes from the rules instead of from today's
-# predicates, and a differential compares the two.
+# Stage D made the same nodes from the rules instead, and today's predicates
+# are gone.
 #
 # FIRST NODE: `exkAppend` — `xs += v`, a container grown in place.
 #
@@ -28,39 +28,31 @@
 # once); the decision now lives here and they print `exkAppend`.
 #
 # RUNS LAST in `backend_prepare`, after every pass that reads the assignment
-# it replaces: the copy marks and provenance (which ask selfAppendValue
-# themselves, to learn that `xs` keeps its buffer), ownership and the twin
-# marks. The node keeps the assignment's id, so every fact recorded against
+# it replaces (the twin marks). The node keeps the assignment's id, so every fact recorded against
 # the statement — its type (void), a shortcut site — stays attached.
 #
-# SECOND NODE: `exkCopy` — the value a binding copies (step 1.2).
+# SECOND NODE: `exkCopy` — a value copied where it is put to a sink that is
+# not its place's final use (rule S, `ownership_write`). What the copy is,
+# is rule G's (`ownership_elab.copyKindOf`):
 #
-#   cpSeq     a `Seq` bound where Odin's `[dynamic]T` / D's `T[]` would share
-#             the buffer (lowering_seqcopy's `needsDup`)
-#   cpFields  a record whose `Seq` fields would be shared the same way, one
-#             level down (`recordDupFields`)
-#   cpStatic  a `str` literal the ownership pass decided its local must own,
-#             so the free at its overwrite never frees static storage
-#             (`copyToOwn`, Odin only)
+#   cpSeq     a `Seq` of plain values: one new buffer
+#   cpDeep    anything else that owns storage: a deep copy (`rt.tuckCopy`)
+#   cpStatic  a `str` (Odin): its bytes on the heap, so an owner may free it
 #
-# Made exactly where the emitters printed them: on an assignment's value,
-# except a task's awaited result and a call threaded through a moved twin —
-# both already the binder's alone. (The copy MARKS can sit on those two too:
-# lowering_seqcopy marks every non-exclusive binding, and the ownership pass
-# still reads the mark there as "copied". That disagreement is real and is
-# what Stage D's differential is for; here it is carried over unchanged.)
-# The aliasing backends only: Nim's assignment copies by itself.
+# On every backend's tree; each prints it as a call into its runtime (Nim
+# `tuckCopy`, D `rt.tuckCopy` / `.dup`, Odin `rt.tuckCopy`).
 #
-# THIRD NODE: `exkDrop` — release what a place owns (step 1.3, Odin only).
+# THIRD NODE: `exkDrop` — release what a place owns, printed by every
+# backend (there is no collector or reference count to do it), placed from
+# the rules' `DropSource` (`ownership_write.rulesDrops`):
 #
 #   scope end    `defer drop(x.slot)` as the statements after the one that
-#                DECLARES `x` (the ownership pass's `freeAtScopeExit`)
+#                DECLARES `x`
 #   overwrite    the assignment's own `dropsOld`: drop-and-replace, because
 #                the old value dies after the new one is built and before it
-#                is stored, and there is no statement position between the
-#                two without minting a temporary (`freeBeforeOverwrite`)
-#   moved twin   `defer drop(p.slot)` at the top of a twin's body, for the
-#                parameter slots it consumed (`twinFreesParam`)
+#                is stored
+#   parameter    `defer drop(p.slot)` at the top of a body that consumes
+#                its parameter (rule P)
 #
 # "The one that declares x" is the statement the Odin emitter prints with
 # `:=`: the first assignment to the name in its scope, where `for`/`while`
@@ -73,33 +65,11 @@
 # the graph, or the next fetch fails as "a pass rewrote it without saying
 # so". No consumer fetches the lowered graph after this pass today; dropping
 # it keeps that true by construction rather than by luck.
-import tables, sets, os
+import tables, sets
 import ast, ast_ops, ast_query
 import resolution
 import ssa_ir
-import lowering_seqcopy
-import analysis_ownership
 import twin_calls
-import twin_shape
-
-let DebugUnbacked = not defined(release) and
-                    getEnv("TUCK_DEBUG_INPLACE").len > 0
-  ## Read once at module init, not per assignment.
-
-proc reportUnbacked(res: Resolution, n: Expr, why: string) =
-  ## ITEM 4, MEASURED (thoughts/ssa-mirror-design.md, Stage C): a binding
-  ## `markSeqCopies` marked as copied — a call is not `exclusivelyOwned` —
-  ## that gets no copy here, because it is an append grown in place, a call
-  ## threaded through a moved twin, or a task's awaited result. The ownership
-  ## pass reads the mark as "copied, so fresh" (`afterBinding`), and at
-  ## exactly these sites nothing backs the claim. Moved here from the Odin
-  ## emitter, which could see only the twin case, and only on Odin.
-  when not defined(release):
-    if DebugUnbacked and n.assignVal != nil and
-       (needsDup(res, n.assignVal) or
-        recordDupFields(res, n.assignVal).len > 0):
-      echo "INPLACE-BYPASS ", pathOf(n.target), " at ", n.span.line, ":",
-           n.span.col, " (", why, ")"
 
 proc materializeAppend(n: Expr, parts: tuple[read, value: Expr],
                        element: bool) =
@@ -117,21 +87,30 @@ proc materializeAppend(n: Expr, parts: tuple[read, value: Expr],
              kind: exkAppend, appendTarget: parts.read,
              appendValue: parts.value, appendsElement: element)[]
 
-proc materialize(res: Resolution, n: Expr, strGrows: bool): bool =
+proc stillNeeded(res: Resolution, parts: tuple[read, value: Expr]) =
+  ## `xs = push(xs, Many {items: xs})` was proved to read `xs` last inside
+  ## the value, because the assignment redefines it. As `xs += Many {items:
+  ## xs}` the append that follows still needs the buffer: a read of `xs`
+  ## (or a part of it) in the value is no longer its last.
+  let root = rootOf(pathOf(parts.read))
+  for x in parts.value.nodes:
+    if x.kind in {exkVar, exkField} and rootOf(pathOf(x)) == root:
+      res.lastUses.excl x.id
+
+proc materialize(res: Resolution, n: Expr): bool =
   ## Rewrites `n` if it is an append assigned back over its own argument.
   let pushed = selfAppendParts(res, n)
   if pushed.value != nil:
-    reportUnbacked(res, n, "append")
+    res.stillNeeded(pushed)
     materializeAppend(n, pushed, element = true)
     return true
-  if not strGrows: return false
   let concatenated = selfConcatParts(res, n)
   if concatenated.value == nil: return false
-  reportUnbacked(res, n, "append")
+  res.stillNeeded(concatenated)
   materializeAppend(n, concatenated, element = false)
   true
 
-proc materializeAppends*(res: Resolution, m: Module, strGrows: bool) =
+proc materializeAppends*(res: Resolution, m: Module) =
   ## Every append assigned back over its own argument becomes `exkAppend`.
   ## `strGrows`: the backend's `str` grows in place (Nim, D — not Odin, whose
   ## strings are a pointer and a length, so `s = s + t` stays a concat and a
@@ -141,117 +120,50 @@ proc materializeAppends*(res: Resolution, m: Module, strGrows: bool) =
     for body in d.ownExprs:
       if body == nil: continue
       for n in body.nodes:
-        if n.kind == exkAssign and materialize(res, n, strGrows):
+        if n.kind == exkAssign and materialize(res, n):
           changed = true
     if changed and d.id.isSet:
       res.ssaGraphs.del((d.id, ssLowered))
 
-proc copyOf(res: Resolution, v: Expr, ownedStrs: HashSet[NodeId]):
-    tuple[kind: CopyKind, fields: seq[string], any: bool] =
-  ## What copy the binding of `v` makes, from the marks the passes recorded.
-  if needsDup(res, v): return (cpSeq, @[], true)
-  let fields = recordDupFields(res, v)
-  if fields.len > 0: return (cpFields, fields, true)
-  if v.id.isSet and v.id in ownedStrs:
-    doAssert v.kind == exkLit and v.litKind == lkStr,
-      "ownership marked a non-literal to copy: " & $v.kind
-    return (cpStatic, @[], true)
-
-proc bindsTask(tasks: HashSet[string], e: Expr): bool =
-  ## `let r = {args} someTask`: the value is the task's awaited result.
-  let v = e.assignVal
-  v != nil and v.kind == exkCall and v.callee != nil and
-    v.callee.kind == exkVar and v.callee.name in tasks
-
-proc materializeCopy(res: Resolution, n: Expr, ownedStrs: HashSet[NodeId],
-                     staticOnly: bool) =
-  ## Wraps the value `n` binds in the copy it makes, if any. The value keeps
-  ## its node and id; the copy is new, and typed as its value. `staticOnly`:
-  ## only a `str` literal made owned (the rules decide every other copy).
-  let v = n.assignVal
-  if v == nil: return
-  let (kind, fields, any) = copyOf(res, v, ownedStrs)
-  if not any or (staticOnly and kind != cpStatic): return
-  n.assignVal = res.typed(Expr(span: v.span, kind: exkCopy, copied: v,
-                               copyKind: kind, copyFields: fields),
-                          res.typeFor(v))
-
-proc materializeCopies*(res: Resolution, m: Module, ownsStrs: bool,
-                        staticOnly = false) =
-  ## Every copy a binding makes becomes `exkCopy`. On the aliasing backends
-  ## only; `ownsStrs`: this backend frees `str` (Odin), so a literal its
-  ## local must own is copied to the heap. `staticOnly`: only those literals
-  ## (under TUCK_OWN=rules, where the rules decide the rest).
-  var tasks: HashSet[string]
-  for d in m.decls:
-    if d != nil and d.kind == dkTask: tasks.incl d.name
-  var fns: HashSet[NodeId]
-  for d in m.allFns: fns.incl d.id
-  for d in m.allDecls:
-    let ownedStrs = if ownsStrs and d.id in fns: ownershipFor(d).copyToOwn
-                    else: initHashSet[NodeId]()
-    for body in d.ownExprs:
-      if body == nil: continue
-      for n in body.nodes:
-        if n.kind != exkAssign: continue
-        if bindsTask(tasks, n): reportUnbacked(res, n, "task")
-        elif threadedCall(n) != nil: reportUnbacked(res, n, "threaded")
-        else: materializeCopy(res, n, ownedStrs, staticOnly)
-
-proc dropOf(name, slot: string, span: Span): Expr =
+proc dropOf(name, slot: string, span: Span, deep = false): Expr =
   ## `defer drop(name.slot)` — the place as a path ("" slot: the whole value).
   var place = Expr(span: span, kind: exkVar, name: name)
   if slot.len > 0:
     place = Expr(span: span, kind: exkField, receiver: place, fieldName: slot)
-  let drop = Expr(span: span, kind: exkDrop, dropped: place)
-  result = Expr(span: span, kind: exkDefer,
+  let drop = Expr(span: span, kind: exkDrop, dropped: place, dropDeep: deep)
+  result = Expr(span: span, kind: exkDefer, deferReleases: true,
                 deferBody: Expr(span: span, kind: exkBlock, stmts: @[drop]))
   fillIdsIn(result)     # every node after prepare has one (assertTreeIds)
 
 type DropSource* = object
-  ## Where one body's drops come from: today's ownership pass, or the rules
-  ## (ownership_write). The placement below is the same for both.
+  ## One body's drops, as the rules decided them (ownership_write).
   atScopeExit*: Table[string, seq[string]]
     ## owned place -> the slots dropped where its scope ends
-  byAssignment*: bool
-    ## the rules decide each overwrite by the assignment (`overwriteDrops`);
-    ## today's pass decides by the name (`overwriteNames`)
   overwriteDrops*: HashSet[NodeId]
-  overwriteNames*: HashSet[string]
+    ## the assignments that drop the value they replace
   paramDrops*: seq[tuple[param, slot: string]]
     ## parameter slots the body owns, dropped at its every exit
-
-proc todaysDrops(res: Resolution, m: Module, d: Decl): DropSource =
-  ## Today's ownership pass, as a drop source: its scope-end frees, the names
-  ## freed at each overwrite, and a moved twin's parameter.
-  let own = ownershipFor(d)
-  result.atScopeExit = own.freeAtScopeExit
-  result.overwriteNames = own.freeBeforeOverwrite
-  let p = movedFnParam(res, m, d)
-  if p != "":
-    for slot in own.twinFreesParam: result.paramDrops.add (p, slot)
+  deep*: HashSet[string]
+    ## `place & "\t" & slot` of each slot whose drop walks it (rule G)
+  deepOverwrites*: HashSet[NodeId]
+    ## the overwrites whose old value is walked when it is dropped (rule G)
 
 type DropWalk = object
   res: Resolution
   src: DropSource
-  tasks: HashSet[string]
 
-proc bindsTaskArgs(w: DropWalk, n: Expr): bool =
-  ## `let r = {args} someTask` — printed by its own path, which frees nothing.
-  let v = n.assignVal
-  v != nil and v.kind == exkCall and v.callee != nil and
-    v.callee.kind == exkVar and v.callee.name in w.tasks and v.args.len > 0
+proc deepAt(w: DropWalk, name, slot: string): bool =
+  ## Does this slot's drop walk it (rule G)?
+  name & "\t" & slot in w.src.deep
 
 proc fieldDropsOld(w: DropWalk, n: Expr): bool =
   ## An overwrite of one field (`b.items = v`): only the rules drop there.
-  w.src.byAssignment and n.target.kind == exkField and
-    n.id in w.src.overwriteDrops
+  n.target.kind == exkField and n.id in w.src.overwriteDrops
 
-proc dropsOldOf(w: DropWalk, n: Expr, threaded: bool): bool =
-  ## Does this overwrite drop the value it replaces? The rules decide by the
-  ## assignment; today's pass by the name, never across a threaded call.
-  if w.src.byAssignment: n.id in w.src.overwriteDrops
-  else: not threaded and n.target.name in w.src.overwriteNames
+proc dropsOldOf(w: DropWalk, n: Expr): bool =
+  ## Does this overwrite drop the value it replaces? Decided by the rules,
+  ## per assignment.
+  n.id in w.src.overwriteDrops
 
 proc dropsAfter(w: DropWalk, n: Expr, defined: var HashSet[string]): seq[Expr] =
   ## The drops that follow the assignment `n`, and its own `dropsOld` — as
@@ -262,18 +174,19 @@ proc dropsAfter(w: DropWalk, n: Expr, defined: var HashSet[string]): seq[Expr] =
   if n.target == nil: return
   if n.target.kind != exkVar:
     n.dropsOld = w.fieldDropsOld(n)
+    n.dropsOldDeep = n.dropsOld and n.id in w.src.deepOverwrites
     return
   let name = n.target.name
-  let taskArgs = w.bindsTaskArgs(n)
-  let threaded = not taskArgs and threadedCall(n) != nil
+  let threaded = threadedCall(n) != nil
   let fresh = name notin defined and not w.res.isOwnerField(n.target)
   # A threaded call declares only a declaration (`genThreadedAssign`).
   if fresh and (n.isDecl or not threaded):
     defined.incl name
-    if taskArgs: return
     for slot in w.src.atScopeExit.getOrDefault(name):
-      result.add dropOf(name, slot, n.span)
-  elif not fresh and not taskArgs: n.dropsOld = w.dropsOldOf(n, threaded)
+      result.add dropOf(name, slot, n.span, w.deepAt(name, slot))
+  elif not fresh:
+    n.dropsOld = w.dropsOldOf(n)
+    n.dropsOldDeep = n.dropsOld and n.id in w.src.deepOverwrites
 
 proc walkDrops(w: DropWalk, e: Expr, defined: var HashSet[string])
 
@@ -323,34 +236,26 @@ proc walkDrops(w: DropWalk, e: Expr, defined: var HashSet[string]) =
     for c in e.children: w.walkDrops(c, defined)
 
 proc materializeParamDrops(d: Decl, src: DropSource) =
-  ## The parameter slots the body owns, dropped at its every exit: a moved
-  ## twin's consumed parameter today, a consuming parameter (P) by the rules.
+  ## The parameter slots the body owns (rule P), dropped at its every exit.
   if src.paramDrops.len == 0: return
   doAssert d.fnBody != nil and d.fnBody.kind == exkBlock,
     "ownership_nodes: " & d.name & " owns a parameter but has no block " &
     "body to put its drops in"
   var drops: seq[Expr]
-  for (p, slot) in src.paramDrops: drops.add dropOf(p, slot, d.fnBody.span)
+  for (p, slot) in src.paramDrops:
+    drops.add dropOf(p, slot, d.fnBody.span, p & "\t" & slot in src.deep)
   d.fnBody.stmts = drops & d.fnBody.stmts
 
 type DropsOf* = proc (d: Decl): DropSource
   ## A body's drop source.
 
 proc materializeDropsFrom*(res: Resolution, m: Module, sourceOf: DropsOf) =
-  ## Every drop `sourceOf` decided becomes a node. Odin only.
-  var tasks: HashSet[string]
-  for d in m.decls:
-    if d != nil and d.kind == dkTask: tasks.incl d.name
-  for d in m.allFns:
+  ## Every drop `sourceOf` decided becomes a node.
+  for d in m.allFnsAndTasks:
     if d == nil or d.fnBody == nil: continue
     let src = sourceOf(d)
     var defined: HashSet[string]
     for p in d.fnParams: defined.incl p.name
-    DropWalk(res: res, src: src, tasks: tasks).walkDrops(d.fnBody, defined)
+    DropWalk(res: res, src: src).walkDrops(d.fnBody, defined)
     materializeParamDrops(d, src)
     res.ssaGraphs.del((d.id, ssLowered))
-
-proc materializeDrops*(res: Resolution, m: Module) =
-  ## Every free the ownership pass decided becomes a drop. Odin only.
-  materializeDropsFrom(res, m, proc (d: Decl): DropSource =
-    todaysDrops(res, m, d))

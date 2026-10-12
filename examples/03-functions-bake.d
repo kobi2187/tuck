@@ -26,13 +26,17 @@ long tuckˑfnˑapplyOperation(long a, long b, tuckˑfnsigˑBinOp op) {
 
 void tuckˑfnˑmain() {
     tuckˑtypeˑCtx tuckˑvˑx = tuckˑtypeˑCtx(a: 5L, b: 10L);
+    scope(exit) rt.tuckDrop(tuckˑvˑx.op);
     TRec_a_b_op!(long, long, tuckˑfnsigˑBinOp) tuckˑvˑwithOp = TRec_a_b_op!(long, long, tuckˑfnsigˑBinOp)(a: tuckˑvˑx.a, b: tuckˑvˑx.b, op: &tuckˑfnˑplus);
     TRec_a_b_op!(long, long, tuckˑfnsigˑBinOp) tuckˑvˑsmaller = TRec_a_b_op!(long, long, tuckˑfnsigˑBinOp)(a: tuckˑvˑwithOp.a, b: 2L, op: tuckˑvˑwithOp.op);
+    scope(exit) rt.tuckDrop(tuckˑvˑsmaller.op);
     long tuckˑvˑr = tuckˑfnˑapplyOperation(tuckˑvˑsmaller.a, tuckˑvˑsmaller.b, tuckˑvˑsmaller.op);
     return;
 }
 
-void main(string[] args) {
+int main(string[] args) {
     rt.tuckSetArgs(args);
+    rt.tuckLeakMark();
     tuckˑfnˑmain();
+    return rt.tuckLeakCheck(0);
 }

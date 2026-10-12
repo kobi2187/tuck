@@ -79,8 +79,20 @@ finished** (no longer deferred).
    (`ownership_write`). V reports nothing on it, A41–A45 run leak-free, and
    every runnable program gives its answer tracked, with leaks in 6
    programs against 8, all of them G's. A callee with no body is read by a
-   contract on its signature, with no names (LANGUAGE-OVERVIEW §13). Next:
-   glue (G), then the switch. Owner: "we need a more generalized mechanism to consolidate all
+   contract on its signature, with no names (LANGUAGE-OVERVIEW §13).
+   **SWITCHED 2026-10-11.** Glue (G) is in: a type owns storage unless it
+   provably owns none, and its drops and copies are deep (`rt.tuckDrop`,
+   `rt.tuckCopy`, a reflective walk in the Odin runtime, a template in the
+   D one). An extern states its contract on its declaration, `[keeps: p]`
+   and `[view: p]`, the C convention otherwise (LANGUAGE-OVERVIEW §13).
+   Odin takes its copies, drops and resets from the rules, D its copies,
+   and the old passes are deleted (`analysis_ownership`, `ownership_escape`,
+   `ownership_str`, `buffer_check`, `lowering_seqcopy`, `analysis_provenance`,
+   `lowering_strtemps`, `lowering_d`, `ownership_shadow`). A39 and A41–A45
+   are fixed; V reports nothing over the corpus; every runnable program
+   runs leak-free under `TUCK_TRACK` and gives the same answer on D.
+   Left: a fn that consumes a parameter and has no twin, called through a
+   fn value (the caller borrows, the callee consumes). Owner: "we need a more generalized mechanism to consolidate all
    the bug fixes. I thought SSA was the solution but the rules may need more
    formalization." Ten rules (borrow vs sink, move at a final use, consuming
    parameters, drop once at scope end with reset on move, type-derived copy

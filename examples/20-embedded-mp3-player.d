@@ -78,6 +78,22 @@ struct tuckˑtypeˑPlayerState {
     union {
         tuckˑtypeˑPlayerState_Decoding tuckˑvariantˑdecoding;
     }
+    void tuckFree() {
+        final switch (kind) {
+        case tuckˑtypeˑPlayerStateKind.Idle: break;
+        case tuckˑtypeˑPlayerStateKind.Decoding: rt.tuckDrop(tuckˑvariantˑdecoding); break;
+        case tuckˑtypeˑPlayerStateKind.Paused: break;
+        }
+    }
+    tuckˑtypeˑPlayerState tuckDup() {
+        tuckˑtypeˑPlayerState r = this;
+        final switch (kind) {
+        case tuckˑtypeˑPlayerStateKind.Idle: break;
+        case tuckˑtypeˑPlayerStateKind.Decoding: r.tuckˑvariantˑdecoding = rt.tuckCopy(tuckˑvariantˑdecoding); break;
+        case tuckˑtypeˑPlayerStateKind.Paused: break;
+        }
+        return r;
+    }
     bool opEquals(const tuckˑtypeˑPlayerState o) const {
         if (kind != o.kind) return false;
         final switch (kind) {
@@ -226,11 +242,13 @@ void tuckˑfnˑSystemEvents_HardwareError(ubyte code) {
 void tuckˑfnˑmain() {
 }
 
-void main(string[] args) {
+int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
     tuckˑactorˑDecoderSlot = rt.tuckStartActor(&drain_tuckˑactorˑDecoder);
+    rt.tuckLeakMark();
     tuckˑfnˑmain();
     rt.tuckRun();
     rt.tuckDrainActors();
+    return rt.tuckLeakCheck(0);
 }

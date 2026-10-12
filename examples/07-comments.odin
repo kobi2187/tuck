@@ -2,6 +2,7 @@
 package main
 
 import "core:fmt"
+import rt "./tuckrt"
 
 TRec_status :: struct ($T_status: typeid) {
 	status: T_status,
@@ -19,7 +20,8 @@ tuckˑfnˑfetch :: proc(payload: $T) -> TRec_status(int) {
 
 
 tuckˑfnˑmain :: proc () {
-  tuckˑvˑconfig := TRec_url_timeout(string, int){url = "https://api.example.com", timeout = 100}
+  tuckˑvˑconfig := TRec_url_timeout(string, int){url = rt.tuckStrOwned("https://api.example.com"), timeout = 100}
+  defer rt.tuckDrop(tuckˑvˑconfig.url)
   tuckˑvˑresult := tuckˑfnˑfetch(tuckˑvˑconfig)
   return
 }
@@ -38,5 +40,7 @@ transitionTo_tuckˑtypeˑLightState :: proc(self: ^tuckˑtypeˑLightState, targe
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	tuckˑfnˑmain()
+	rt.tuckTrackCheck()
 }

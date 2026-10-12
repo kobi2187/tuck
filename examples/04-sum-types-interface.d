@@ -57,6 +57,24 @@ struct tuckˑtypeˑPodcastPlayerLifecycle {
         tuckˑtypeˑPodcastPlayerLifecycle_Ready tuckˑvariantˑready;
         tuckˑtypeˑPodcastPlayerLifecycle_Error tuckˑvariantˑerror;
     }
+    void tuckFree() {
+        final switch (kind) {
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Unloaded: rt.tuckDrop(tuckˑvariantˑunloaded); break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Loading: rt.tuckDrop(tuckˑvariantˑloading); break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Ready: rt.tuckDrop(tuckˑvariantˑready); break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Error: rt.tuckDrop(tuckˑvariantˑerror); break;
+        }
+    }
+    tuckˑtypeˑPodcastPlayerLifecycle tuckDup() {
+        tuckˑtypeˑPodcastPlayerLifecycle r = this;
+        final switch (kind) {
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Unloaded: r.tuckˑvariantˑunloaded = rt.tuckCopy(tuckˑvariantˑunloaded); break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Loading: r.tuckˑvariantˑloading = rt.tuckCopy(tuckˑvariantˑloading); break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Ready: r.tuckˑvariantˑready = rt.tuckCopy(tuckˑvariantˑready); break;
+        case tuckˑtypeˑPodcastPlayerLifecycleKind.Error: r.tuckˑvariantˑerror = rt.tuckCopy(tuckˑvariantˑerror); break;
+        }
+        return r;
+    }
     bool opEquals(const tuckˑtypeˑPodcastPlayerLifecycle o) const {
         if (kind != o.kind) return false;
         final switch (kind) {

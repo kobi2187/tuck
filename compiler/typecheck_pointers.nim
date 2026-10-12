@@ -183,7 +183,7 @@ proc checkPointerContainment(decls: TypeDecls, d: Decl, inExtern = false) =
   case d.kind
   of dkFn: checkFnPointers(decls, d, inExtern)
   of dkTask:
-    checkParamPointers(decls, d.taskParams, d.taskReturnType, "task", d.span)
+    checkParamPointers(decls, d.fnParams, d.fnReturnType, "task", d.span)
   of dkType: checkTypePointers(decls, d, inExtern)
   of dkObject: checkMemberPointers(decls, d.objFields, d.objMembers,
                                    "an object field", inExtern)

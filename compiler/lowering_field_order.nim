@@ -19,9 +19,10 @@
 # assignment, or a call that might change its receiver keeps every field
 # where it was written, and Nim copies as it did.
 #
-# Odin and D need none of this. Their containers are headers, a construction
-# copies no buffer, and lowering_seqcopy decides the copies they do make.
-import std/strutils
+# Every backend takes it (backend_prepare): the ownership rules run after it,
+# on the one tree all three print, so a field moved last is a move, not a
+# copy, wherever the construction is printed.
+import std/[strutils, sets]
 import ast, ast_ops, ast_query, resolution
 import twin_shape
 
@@ -78,14 +79,34 @@ proc movesLast(res: Resolution, m: Module, fs: seq[FieldInit], i: int): bool =
     if mentionsName(fs[k].value, root): readAgain = true
   readAgain
 
+proc finalReadsOf(res: Resolution, e: Expr, root: string): seq[Expr] =
+  ## The reads of `root` under `e` stamped as its final use, in a call the
+  ## checker resolved in a node's place too (`out.len` is `len(out)`).
+  for n in e.nodes:
+    let c = if n.kind != exkCall and res.hasCall(n): res.call(n) else: nil
+    for r in (if c != nil: @[n, c] else: @[n]):
+      for x in r.nodes:
+        if x.kind == exkVar and x.name == root and res.isLastUse(x):
+          result.add x
+
 proc reorder(res: Resolution, m: Module, s: Expr) =
   ## The fields of one construction's payload: those that hand on a
-  ## container read again later go last, in their written order.
+  ## container read again later go last, in their written order. The final
+  ## use moves with it: a field it now follows read the root last only in
+  ## the written order.
   var kept, last: seq[FieldInit]
   for i in 0 ..< s.fields.len:
     if movesLast(res, m, s.fields, i): last.add s.fields[i]
     else: kept.add s.fields[i]
-  if last.len > 0: s.fields = kept & last
+  if last.len == 0: return
+  for f in last:
+    let root = rootTaken(res, m, f.value)
+    var finals: seq[Expr]
+    for k in kept: finals.add res.finalReadsOf(k.value, root)
+    if finals.len == 0: continue
+    for x in finals: res.lastUses.excl x.id
+    res.markLastUse(f.value)
+  s.fields = kept & last
 
 proc orderConstructionFields*(res: Resolution, m: Module) =
   ## Every record construction in this backend's copy of the module.

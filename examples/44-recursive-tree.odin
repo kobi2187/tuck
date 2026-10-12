@@ -84,8 +84,9 @@ tuckˑfnˑmain :: proc () -> int {
   tuckˑvˑthree: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Num{value = 3}
   tuckˑvˑfour: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Num{value = 4}
   tuckˑvˑsum: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Add{left = [dynamic]tuckˑtypeˑExpr{tuckˑvˑthree}, right = [dynamic]tuckˑtypeˑExpr{tuckˑvˑfour}}
-  tuckˑvˑneg: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Neg{operand = [dynamic]tuckˑtypeˑExpr{tuckˑvˑsum}}
+  tuckˑvˑneg: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Neg{operand = [dynamic]tuckˑtypeˑExpr{rt.tuckCopy(tuckˑvˑsum)}}
   tuckˑvˑwhole: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Add{left = [dynamic]tuckˑtypeˑExpr{tuckˑvˑsum}, right = [dynamic]tuckˑtypeˑExpr{tuckˑvˑneg}}
+  defer rt.tuckDrop(tuckˑvˑwhole)
   return ((tuckˑfnˑeval(tuckˑvˑwhole) + tuckˑfnˑdepth(tuckˑvˑwhole)) - 4)
 }
 

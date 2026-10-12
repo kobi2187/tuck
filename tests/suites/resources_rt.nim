@@ -43,7 +43,7 @@ proc run*(t: var T) =
   ## three runtimes in its own language.
   # --- Nim -----------------------------------------------------------------
   # Always available: it is what builds the compiler.
-  let nimIdx = t.needCmd(@["nim", "c", "--hints:off", "-r",
+  let nimIdx = t.needCmd(@["nim", "c", "--hints:off", "--mm:none", "-d:useMalloc", "-r",
                            "-o:" & (t.dir / "nim_rt_check"),
                            t.root / NimCheck], verb = vBuild)
   t.reportArm("Nim", nimIdx)

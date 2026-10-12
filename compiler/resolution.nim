@@ -33,6 +33,11 @@ type
     # Together they replace asking the module "which decl is named X", which
     # is a scan of the declaration list per question.
     decls*: Table[NodeId, Decl]        # id -> the declaration itself
+    externs*: Table[string, Decl]
+      ## Every body-less `extern:` fn the program declares, by name, first
+      ## wins. A call into another module resolves to a signature, not a
+      ## declaration, and the ownership rules read what an extern declares
+      ## it keeps (`[keeps: x]`, `[view: x]`) off the declaration itself.
     declOf*: Table[NodeId, NodeId]     # referring node -> declaration id
     # Whole-program name -> Decl, for the five kinds a bare Capitalized name
     # can reference OUTRIGHT (not through `decls`/`declOf`, which are
@@ -126,17 +131,6 @@ type
       ## Nodes analysis_liveness proved are a local's FINAL read, so the copy
       ## made for them is unobservable and may be a move. A set rather than a
       ## table: the only question asked is yes/no.
-    movedArgs*: HashSet[NodeId]
-      ## Call ARGUMENTS the enclosing fn may hand on destructively —
-      ## `lastUses` AND owned. The two are not the same question and the gap
-      ## between them is a use-after-free.
-      ##
-      ## Being a last use says nobody in THIS body reads the value again. On
-      ## Nim that settles it, because `sink` hands the rest to ARC. On D and
-      ## Odin a container parameter ALIASES the caller's buffer, so a fn that
-      ## is not a twin does not own what it was passed and cannot give it
-      ## away to be freed. `analysis_provenance` knows which values a body
-      ## allocated; this set is where it writes that down.
     ownerFields*: HashSet[NodeId]
       ## Bare names that are the OWNER's field — an object member's, an actor
       ## handler's, an invariant's — and not a param or local shadowing one.
@@ -209,23 +203,34 @@ proc declaresResources*(m: Module): bool =
     if d != nil and d.kind == dkResources and d.resKinds.len > 0: return true
   false
 
-proc reportedSlabs*(m: Module, real: Table[string, Module]):
+proc slabsOf(m: Module, real: Table[string, Module], reportedOnly: bool):
     seq[tuple[origin, name: string]] =
-  ## The slabs whose unfreed cells the exit reports (slab proposal Q3): every
-  ## one the program declares, as emitted, but those marked `[leaks: ok]` —
-  ## with the module declaring it, "" for the entry module's own, which Odin
-  ## and D qualify by (R11). The entry points call `tuckSlabReport` on each,
-  ## after main and whatever runs after it, before the process exits.
+  ## Every slab the program declares, with the module declaring it, "" for
+  ## the entry module's own, which Odin and D qualify by (R11).
   for d in m.decls:
-    if d != nil and d.kind == dkSlab and not d.slabLeaksOk:
+    if d != nil and d.kind == dkSlab and not (reportedOnly and d.slabLeaksOk):
       result.add ("", d.name)
   var imported: seq[tuple[origin, name: string]]
   for modName, other in real:
     if other == m: continue
     for d in other.decls:
-      if d != nil and d.kind == dkSlab and not d.slabLeaksOk:
+      if d != nil and d.kind == dkSlab and not (reportedOnly and d.slabLeaksOk):
         imported.add (modName, d.name)
   result.add imported.sorted   # the table's order is its hashing's
+
+proc reportedSlabs*(m: Module, real: Table[string, Module]):
+    seq[tuple[origin, name: string]] =
+  ## The slabs whose unfreed cells the exit reports (slab proposal Q3): every
+  ## one the program declares, as emitted, but those marked `[leaks: ok]`.
+  ## The entry points call `tuckSlabReport` on each, after main and whatever
+  ## runs after it, before the process exits.
+  slabsOf(m, real, reportedOnly = true)
+
+proc allSlabs*(m: Module, real: Table[string, Module]):
+    seq[tuple[origin, name: string]] =
+  ## Every slab, `[leaks: ok]` ones included: what the exit hands back under
+  ## the tracker, since a slab lives until exit by design either way.
+  slabsOf(m, real, reportedOnly = false)
 
 proc acquireSite*(e: Expr, moduleName: string): string =
   ## Where an acquire happened, as the OPEN RESOURCES report prints it —
@@ -274,7 +279,7 @@ proc grafted*(e: Expr): Expr =
 
 proc copyMeaning(r: Resolution, src, dst: NodeId) =
   ## Carry what a node MEANS to its copy: its type, what it resolved to, its
-  ## call's argument mapping. Not `lastUses` or `movedArgs` — whether a read
+  ## call's argument mapping. Not `lastUses` — whether a read
   ## is the last one depends on the body it sits in, and a copy sits in a
   ## different one; left unstamped it is merely not moved, which is safe.
   if src in r.calls: r.calls[dst] = r.calls[src]
@@ -400,7 +405,6 @@ proc newResolution*(): Resolution =
              ifaceCalls: initTable[NodeId, tuple[iface, member: string]](),
              lastUses: initHashSet[NodeId](),
              ssaGraphs: initTable[(NodeId, SsaStage), CachedSsa](),
-             movedArgs: initHashSet[NodeId](),
              ownerFields: initHashSet[NodeId]())
 
 # The program-wide semantic layer. The compiler processes one program per
@@ -701,16 +705,6 @@ proc markLastUse*(r: Resolution, e: Expr) =
   if e == nil: return
   ensureId(e)
   r.lastUses.incl(e.id)
-
-proc markMovedArgId*(r: Resolution, id: NodeId) =
-  ## The same, for a caller holding the node's id rather than the node —
-  ## the SSA graph speaks in ids because a value's uses are ids.
-  r.movedArgs.incl(id)
-
-proc isMovedArg*(r: Resolution, e: Expr): bool =
-  ## May this argument be taken by a MOVED twin? False for anything the
-  ## analysis did not reach — which copies, exactly as it always did.
-  e != nil and e.id in r.movedArgs
 
 proc markOwnerField*(r: Resolution, e: Expr) =
   ## Records that the bare name `e` is the owner's field (read as

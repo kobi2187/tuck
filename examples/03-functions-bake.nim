@@ -20,8 +20,10 @@ proc tuckˑfnˑapplyOperation*(a: int, b: int, op: tuckˑfnsigˑBinOp): int =
 
 proc tuckˑfnˑmain*(): void =
   var tuckˑvˑx = tuckˑtypeˑCtx(a: 5, b: 10)
+  defer: tuckDrop(tuckˑvˑx.op)
   var tuckˑvˑwithOp = (a: tuckˑvˑx.a, b: tuckˑvˑx.b, op: tuckˑfnˑplus)
-  var tuckˑvˑsmaller = (a: tuckˑvˑwithOp.a, b: 2, op: tuckˑvˑwithOp.op)
+  var tuckˑvˑsmaller = (a: tuckˑvˑwithOp.a, b: 2, op: tuckMove(tuckˑvˑwithOp.op))
+  defer: tuckDrop(tuckˑvˑsmaller.op)
   var tuckˑvˑr = tuckˑfnˑapplyOperation(tuckˑvˑsmaller.a, tuckˑvˑsmaller.b, tuckˑvˑsmaller.op)
   return
 

@@ -35,13 +35,17 @@ long tuckˑfnˑdrainOnce() {
         return 0L;
     }
     ubyte* tuckˑvˑdst = rt.tuckPoolAddr(tuckˑpoolˑRxBuffers, tuckˑvˑb.value);
+    scope(exit) rt.tuckDrop(tuckˑvˑdst);
     memset(tuckˑvˑdst, 1L, 512L);
     rt.TuckResult!(ubyte[512]) tuckˑvˑrx = rt.tuckPoolRead(tuckˑpoolˑRxBuffers, tuckˑvˑb.value);
+    scope(exit) rt.tuckDrop(tuckˑvˑrx);
     rt.tuckPoolRelease(tuckˑpoolˑRxBuffers, tuckˑvˑb.value);
     if (!(tuckˑvˑrx.status == rt.TuckStatus.Ok)) {
         return 0L;
     }
     ubyte[512] tuckˑvˑbytes = tuckˑvˑrx.value;
+    scope(exit) rt.tuckDrop(tuckˑvˑbytes);
+    tuckˑvˑrx.value = typeof(tuckˑvˑrx.value).init;
     if ((rt.tuckArrayAt(tuckˑvˑbytes, 511L) != 1L)) {
         return 0L;
     }
@@ -70,6 +74,7 @@ long tuckˑfnˑmain() {
 
 int main(string[] args) {
     rt.tuckSetArgs(args);
+    rt.tuckLeakMark();
     auto mainRc = tuckˑfnˑmain();
-    return cast(int) mainRc;
+    return rt.tuckLeakCheck(cast(int) mainRc);
 }

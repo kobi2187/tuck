@@ -10,6 +10,7 @@ proc tuckˑfnˑmain*(): void =
   if tuckˑvˑw.ok:
     if true:
       var tuckˑvˑr = fs.readFile("/tmp/tuck-demo.txt")
+      defer: tuckDrop(tuckˑvˑr)
       if tuckˑvˑr.ok:
         if true:
           console.printLine(tuckˑvˑr.value.content)

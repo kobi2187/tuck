@@ -296,19 +296,31 @@ proc genMovedTwin(ctx: var OdinCodegenCtx, d: Decl, header, bodyStr,
   var argNames: seq[string]
   for p in d.fnParams: argNames.add(p.name)
   var wrap = header & "\n"
-  wrap.add(ind & "  " & movedP & " := " & movedP & "\n")
-  let fields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
-  if fields.len == 0:
-    wrap.add(ind & "  " & movedP & " = rt.tuckSeqCopy(" & movedP & ")\n")
-  else:
-    for f in fields:
-      wrap.add(ind & "  " & movedP & "." & f & " = rt.tuckSeqCopy(" &
-               movedP & "." & f & ")\n")
+  # The wrapper is the BORROWING entry (a fn value, an interface arm): it
+  # copies every parameter the body owns, whole and deep (rule G), and the
+  # body consumes the copies.
+  for p in d.ownedParams:
+    wrap.add(ind & "  " & p & " := " & p & "\n")
+    wrap.add(ind & "  " & p & " = rt.tuckCopy(" & p & ")\n")
   wrap.add(ind & "  return " & twinName & "(" & argNames.join(", ") & ")\n")
   wrap.add(ind & "}\n\n")
   let twinHeader = header.replace(d.name.replace(".", "_") & " :: proc",
                                   twinName & " :: proc")
   wrap & twinHeader & "\n" & bodyStr & "\n" & ind & "}\n"
+
+proc writtenParams(d: Decl): seq[string] =
+  ## The parameters the body stores into: an Odin parameter is immutable, so
+  ## each is shadowed by a local of the same name first. A reset after a
+  ## move (rule M) is the usual one.
+  if d.fnBody == nil: return
+  for n in d.fnBody.nodes:
+    var r = if n.kind == exkReset: n.resetPlace
+            elif n.kind == exkAssign and not n.isDecl: n.target
+            else: nil
+    while r != nil and r.kind == exkField: r = r.receiver
+    if r == nil or r.kind != exkVar or r.name in result: continue
+    for p in d.fnParams:
+      if p.name == r.name and p.name != "self": result.add p.name
 
 proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## An ordinary fn. A pending fn is a stub, and leaves before any of this
@@ -334,7 +346,9 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   let movedP = movedFnParam(ctx.res, ctx.module, d)
   let savedMoved = ctx.movedParam
   ctx.movedParam = movedP
-  let bodyStr = ctx.genFnBody(d, retTypeStr, ind)
+  var bodyStr = ctx.genFnBody(d, retTypeStr, ind)
+  for p in writtenParams(d):
+    bodyStr = ind & "  " & p & " := " & p & "\n" & bodyStr
   ctx.movedParam = savedMoved
   ctx.leaveReturnContext()
   ctx.definedVars = savedVars
@@ -974,26 +988,26 @@ proc genTaskDecl*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## task body ONTO it. Anything relying on a yield behaves synchronously.
   ctx.currentParams = @[]
   var params: seq[string]
-  for p in d.taskParams:
+  for p in d.fnParams:
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
     params.add(p.name & ": " & ctx.odinType(p.typ))
   let retTypeStr =
-    if d.taskReturnType != nil: ctx.odinType(d.taskReturnType) else: "void"
+    if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
   let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
   let header = ind & d.name & " :: proc(" & params.join(", ") & ")" &
                retStr & " {"
   let oldVars = ctx.definedVars
-  for p in d.taskParams: ctx.definedVars.incl(p.name)
+  for p in d.fnParams: ctx.definedVars.incl(p.name)
   let oldIndent = ctx.indent
   (ctx.retWrapped, ctx.retInnerOdin, ctx.retInnerT) =
-    ctx.odinBangInfo(d.taskReturnType)
-  ctx.retAbsentCapable = absentCapable(d.taskReturnType)
-  var bodyStr = ctx.genOdinExpr(d.taskBody)
-  if d.taskBody != nil and d.taskBody.kind != exkBlock:
+    ctx.odinBangInfo(d.fnReturnType)
+  ctx.retAbsentCapable = absentCapable(d.fnReturnType)
+  var bodyStr = ctx.genOdinExpr(d.fnBody)
+  if d.fnBody != nil and d.fnBody.kind != exkBlock:
     let kw = if retTypeStr != "void": "return " else: ""
     bodyStr = ind & "\t" & kw & bodyStr
   elif retTypeStr != "void":
-    bodyStr = ensureTrailingReturn(bodyStr, d.taskBody, oldIndent)
+    bodyStr = ensureTrailingReturn(bodyStr, d.fnBody, oldIndent)
   ctx.indent = oldIndent
   ctx.retWrapped = false
   ctx.retAbsentCapable = false
@@ -1198,12 +1212,12 @@ proc genOdinSlabDrops(d: Decl, elem: string, owns: seq[string],
                       ind: string): string =
   ## The slab's `free`, `set` and `reset` for an element that owns heap:
   ## Odin has no destructors, so each deletes what a value it ends owns
-  ## before the runtime's own step. Nim's runtime resets the value and D's
-  ## collector reclaims it; here it is spelt per slab, by its Seq fields.
+  ## before the runtime's own step. Nim and D drop it with their generic
+  ## `tuckDrop`; here it is spelt per slab, by its Seq fields.
   let s = d.name
   proc drops(c, ind: string): string =
-    for f in owns:
-      result.add ind & "delete(" & c & ".value" & (if f == "": "" else: "." & f) & ")\n"
+    for _ in owns:
+      result.add ind & "rt.tuckDrop(" & c & ".value)\n"
   result = ind & s & "_free :: proc(r: rt.SlabRef) {\n" &
     ind & "\tc := rt.tuckSlabCell(&" & s & ", r)\n" & drops("c", ind & "\t") &
     ind & "\trt.tuckSlabFree(&" & s & ", r)\n" & ind & "}\n"

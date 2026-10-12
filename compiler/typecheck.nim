@@ -5056,8 +5056,8 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkCopy:
     # Built after the checker (ownership_nodes): a copy is its value's type.
     semLayer.typeFor(e.copied)
-  of exkDrop:
-    # Built after the checker (ownership_nodes): a statement.
+  of exkDrop, exkReset:
+    # Built after the checker (ownership_nodes, _write): a statement.
     tc.namedType("void", e.span)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum
@@ -5730,9 +5730,9 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
   case d.kind
   of dkFn: tc.checkFnDecl(d)
   of dkTask:
-    checkFallibleNeedsIo(d.name, d.taskReturnType, d.taskEffects, d.span)
-    tc.currentErrTypes = d.taskErrorTypes
-    tc.checkFnBody(d.name, d.taskParams, d.taskReturnType, d.taskBody)
+    checkFallibleNeedsIo(d.name, d.fnReturnType, d.fnEffects, d.span)
+    tc.currentErrTypes = d.fnErrorTypes
+    tc.checkFnBody(d.name, d.fnParams, d.fnReturnType, d.fnBody)
     tc.currentErrTypes = @[]
   of dkExpr: discard tc.synthesize(d.expr)
   of dkObject:

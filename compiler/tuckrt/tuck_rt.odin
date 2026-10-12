@@ -16,6 +16,7 @@ import "core:math"
 import "core:os"
 import "core:strconv"
 import "base:intrinsics"
+import "base:runtime"
 import "core:mem"
 import "core:strings"
 import "core:sys/linux"
@@ -97,6 +98,15 @@ toStr :: proc(value: $T) -> string {
 
 tuckConcat :: proc(a, b: string) -> string {
 	return strings.concatenate({a, b})
+}
+
+// `s += t` on a str its body owns (the ownership rules decided it): the new
+// bytes replace the old, which are freed. Odin's strings do not grow, so it
+// is a concatenation and a free, in one call.
+tuckStrAppend :: proc(s: ^string, t: string) {
+	old := s^
+	s^ = strings.concatenate({old, t})
+	if raw_data(old) != nil { delete(old) }
 }
 
 // Bit operations. Tuck has no bitwise OPERATORS — `|` is already sum-variant
@@ -278,6 +288,161 @@ tuckSeqCopy :: proc(items: [dynamic]$T) -> [dynamic]T {
 	return out
 }
 
+// RULE G, the glue: what dropping and copying a value of any type means,
+// read off Odin's own type info, so one walk serves every type a program
+// declares. The compiler prints `delete`/`tuckSeqCopy` for a Seq of plain
+// values and calls these for everything else (a Seq whose elements own
+// storage, a record, a sum, a `?T`/`!T`, a str inside any of them).
+//
+// What a value owns: the buffer of each `[dynamic]` and of each `string`
+// inside it, at any depth (a recursive sum's box is a one-element
+// `[dynamic]`). Nothing else is followed: a pointer, a slice, a `cstring`
+// or a proc is never owned. Every `string` an owned value holds is on the
+// heap: a literal is copied before it is stored (cpStatic).
+
+tuckHasHeap :: proc(ti: ^runtime.Type_Info) -> bool {
+	// Does a value of this type own a buffer anywhere? A `[dynamic]` always
+	// does, and is not looked into, so a recursive type ends here.
+	base := runtime.type_info_base(ti)
+	if base == nil do return false
+	#partial switch v in base.variant {
+	case runtime.Type_Info_String:
+		return !v.is_cstring
+	case runtime.Type_Info_Dynamic_Array:
+		return true
+	case runtime.Type_Info_Array:
+		return tuckHasHeap(v.elem)
+	case runtime.Type_Info_Enumerated_Array:
+		return tuckHasHeap(v.elem)
+	case runtime.Type_Info_Struct:
+		for i in 0 ..< int(v.field_count) {
+			if tuckHasHeap(v.types[i]) do return true
+		}
+	case runtime.Type_Info_Union:
+		for t in v.variants {
+			if tuckHasHeap(t) do return true
+		}
+	}
+	return false
+}
+
+tuckUnionVariant :: proc(p: rawptr, u: runtime.Type_Info_Union) -> ^runtime.Type_Info {
+	// The variant a union value holds, or nil when it holds none.
+	if len(u.variants) == 0 || u.tag_type == nil do return nil
+	at := rawptr(uintptr(p) + u.tag_offset)
+	tag: i64
+	switch u.tag_type.size {
+	case 1: tag = i64((^u8)(at)^)
+	case 2: tag = i64((^u16)(at)^)
+	case 4: tag = i64((^u32)(at)^)
+	case:   tag = i64((^u64)(at)^)
+	}
+	if !u.no_nil {
+		if tag == 0 do return nil
+		tag -= 1
+	}
+	if tag < 0 || int(tag) >= len(u.variants) do return nil
+	return u.variants[tag]
+}
+
+tuckDropAt :: proc(p: rawptr, ti: ^runtime.Type_Info) {
+	// Frees everything the value at `p` owns, depth first.
+	base := runtime.type_info_base(ti)
+	if p == nil || base == nil do return
+	#partial switch v in base.variant {
+	case runtime.Type_Info_String:
+		if v.is_cstring do return
+		// A `""` literal has no data; an empty string that has some was
+		// allocated (`clone_from_bytes` keeps room for a NUL) and is freed.
+		s := (^runtime.Raw_String)(p)
+		if s.data != nil do runtime.mem_free_with_size(s.data, s.len, context.allocator)
+		s^ = {}
+	case runtime.Type_Info_Dynamic_Array:
+		a := (^runtime.Raw_Dynamic_Array)(p)
+		if a.data == nil do return
+		if tuckHasHeap(v.elem) {
+			for i in 0 ..< a.len {
+				tuckDropAt(rawptr(uintptr(a.data) + uintptr(i * v.elem_size)), v.elem)
+			}
+		}
+		runtime.mem_free_with_size(a.data, a.cap * v.elem_size, a.allocator)
+		a^ = {}
+	case runtime.Type_Info_Array:
+		for i in 0 ..< v.count {
+			tuckDropAt(rawptr(uintptr(p) + uintptr(i * v.elem_size)), v.elem)
+		}
+	case runtime.Type_Info_Enumerated_Array:
+		for i in 0 ..< v.count {
+			tuckDropAt(rawptr(uintptr(p) + uintptr(i * v.elem_size)), v.elem)
+		}
+	case runtime.Type_Info_Struct:
+		for i in 0 ..< int(v.field_count) {
+			tuckDropAt(rawptr(uintptr(p) + v.offsets[i]), v.types[i])
+		}
+	case runtime.Type_Info_Union:
+		tuckDropAt(p, tuckUnionVariant(p, v))
+	}
+}
+
+tuckCopyAt :: proc(p: rawptr, ti: ^runtime.Type_Info) {
+	// `p` holds a bitwise copy of a value: gives it its own copy of every
+	// buffer it shares with the original, depth first.
+	base := runtime.type_info_base(ti)
+	if p == nil || base == nil do return
+	#partial switch v in base.variant {
+	case runtime.Type_Info_String:
+		if v.is_cstring do return
+		s := (^string)(p)
+		if len(s^) == 0 {
+			(^runtime.Raw_String)(p)^ = {}
+		} else {
+			s^ = strings.clone(s^)
+		}
+	case runtime.Type_Info_Dynamic_Array:
+		a := (^runtime.Raw_Dynamic_Array)(p)
+		n := a.len
+		src := a.data
+		a^ = {}
+		if n == 0 do return
+		bytes, _ := runtime.mem_alloc(n * v.elem_size, v.elem.align, context.allocator)
+		runtime.mem_copy_non_overlapping(raw_data(bytes), src, n * v.elem_size)
+		a^ = {data = raw_data(bytes), len = n, cap = n, allocator = context.allocator}
+		if tuckHasHeap(v.elem) {
+			for i in 0 ..< n {
+				tuckCopyAt(rawptr(uintptr(a.data) + uintptr(i * v.elem_size)), v.elem)
+			}
+		}
+	case runtime.Type_Info_Array:
+		for i in 0 ..< v.count {
+			tuckCopyAt(rawptr(uintptr(p) + uintptr(i * v.elem_size)), v.elem)
+		}
+	case runtime.Type_Info_Enumerated_Array:
+		for i in 0 ..< v.count {
+			tuckCopyAt(rawptr(uintptr(p) + uintptr(i * v.elem_size)), v.elem)
+		}
+	case runtime.Type_Info_Struct:
+		for i in 0 ..< int(v.field_count) {
+			tuckCopyAt(rawptr(uintptr(p) + v.offsets[i]), v.types[i])
+		}
+	case runtime.Type_Info_Union:
+		tuckCopyAt(p, tuckUnionVariant(p, v))
+	}
+}
+
+tuckDrop :: proc(value: $T) {
+	// Drops what `value` owns. By value, so a parameter can be dropped too:
+	// the copy shares every buffer it frees.
+	v := value
+	tuckDropAt(rawptr(&v), type_info_of(T))
+}
+
+tuckCopy :: proc(value: $T) -> T {
+	// A copy of `value` that shares no buffer with it.
+	out := value
+	tuckCopyAt(rawptr(&out), type_info_of(T))
+	return out
+}
+
 tuckAt_slice :: proc(items: []$T, index: int) -> T {
 	assert(index >= 0 && index < len(items), "at: index out of bounds")
 	return items[index]
@@ -292,8 +457,12 @@ tuckAt :: proc{tuckAt_slice, tuckAt_dyn}
 at :: proc{tuckAt_slice, tuckAt_dyn}
 
 tuckSetAt_slice :: proc(items: []$T, index: int, value: T) {
+	// The container owns its elements (rule G): the one replaced is dropped.
+	// `value` is evaluated before the call, so it may read the old element.
 	assert(index >= 0 && index < len(items), "setAt: index out of bounds")
+	old := items[index]
 	items[index] = value
+	tuckDrop(old)
 }
 
 tuckSetAt_dyn :: proc(items: [dynamic]$T, index: int, value: T) {
@@ -319,7 +488,9 @@ tuckArrayAt :: proc(items: [$N]$T, index: int) -> T {
 
 tuckArraySetAt :: proc(items: ^[$N]$T, index: int, value: T) {
 	assert(index >= 0 && index < N, "setAt: index out of bounds")
+	old := items[index]
 	items[index] = value
+	tuckDrop(old)
 }
 
 // Value semantics: allocates its own backing array rather than growing
@@ -354,8 +525,10 @@ joinStr :: proc(parts: [dynamic]string, sep: string) -> string {
 }
 
 push :: proc(items: [dynamic]$T, value: T) -> [dynamic]T {
-	result := make([dynamic]T, len(items))
-	copy(result[:], items[:])
+	// A new seq that shares nothing with `items`: its elements are copied
+	// too (a str or a nested seq element would otherwise be freed twice,
+	// once with each seq).
+	result := tuckCopy(items)
 	append(&result, value)
 	return result
 }
@@ -370,9 +543,13 @@ containsChar :: proc(s: string, ch: string) -> bool {
 }
 
 splitLines :: proc(s: string) -> [dynamic]string {
+	// Every line is its own copy: an extern's result is fresh (it never
+	// views an argument it does not declare `[view: x]`), so the caller
+	// owns, and frees, each one.
 	lines, _ := strings.split_lines(s)
+	defer delete(lines)
 	result := make([dynamic]string, len(lines))
-	copy(result[:], lines[:])
+	for line, i in lines do result[i] = strings.clone(line)
 	return result
 }
 
@@ -1581,7 +1758,7 @@ argCount :: proc() -> ArgCount {
 
 argAt :: proc(index: int) -> ArgValue {
 	if index < 0 || index + 1 >= len(os.args) do return ArgValue{arg = ""}
-	return ArgValue{arg = os.args[index + 1]}
+	return ArgValue{arg = strings.clone(os.args[index + 1])}   // fresh: the caller frees it
 }
 
 getEnv :: proc(name: string) -> TuckResult(EnvValue) {

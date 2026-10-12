@@ -184,13 +184,13 @@ fn main() -> int:
   total echo
   return n + c + pick + total + idxSum
 """
-  # `s = s + v` is D's native append, not a runtime call — and since Stage 2a
-  # not a fresh concatenation either. The assertion's point was always "no
-  # tuckConcat here"; `~=` satisfies it and is also amortised, where
+  # `s = s + v` grows in place — `rt.tuckStrAppend`, which frees the block a
+  # growth moves from — and is not a fresh concatenation. The assertion's
+  # point was always "no tuckConcat here"; it is also amortised, where
   # `s = (s ~ v)` rebuilt the whole string every time. The non-self form
   # still emits `~`, which `generics` pins from the other side.
   t.emitsD "M2: string + is D's native append, no runtime call",
-           r"tuckˑvˑs ~= ""cd"""
+           r"rt\.tuckStrAppend\(tuckˑvˑs, ""cd""\)"
   t.emitsD "M2: len is D's native length, cast back to Tuck's signed int",
            r"cast\(long\) tuckˑvˑs\.length"
   t.emitsD "M2: value-position if is D's native ternary",
@@ -475,7 +475,7 @@ fn main() -> int:
   t.runsD "fnsig: calling through the slot runs the referenced fn", 42, dmdExe
 
   # --- the per-backend lowering seam -------------------------------------
-  # `.dup` is decided by lowering_d (a tree pass), not by the emitter. The
+  # `.dup` is decided by the ownership rules (a tree pass), not by the emitter. The
   # assertion is the same either way — which is the point: the seam moved
   # the reasoning without changing the meaning.
   t.src """
@@ -511,8 +511,8 @@ fn main() -> int:
   b.items[0] = 999
   return a.items[0]
 """
-  t.emitsD "seam: a record's Seq FIELD is dup'd too, not just a bare Seq",
-           r"tuckRecDup\d+\.items = tuckRecDup\d+\.items\.dup;"
+  t.emitsD "seam: a record holding a Seq is copied deeply, not just its header",
+           r"tuckˑtypeˑBag tuckˑvˑb = rt\.tuckCopy\(tuckˑvˑa\);"
   t.runsD "seam: writing b.items never writes a.items (still 10)", 10, dmdExe
 
   # --- decision tables (spec 6.1) ----------------------------------------
@@ -614,7 +614,7 @@ fn main() -> int:
   return res.r
 """
   t.emitsD "task: a result-bound call spawns into a slot and awaits it",
-           r"rt\.spawnResult\(tuckSlot\d+, \{ return tuckˑtaskˑcompute\(21L\); \}\)"
+           r"rt\.spawnResult\(tuckSlot\d+, &tuckˑtaskˑcompute, 21L\)"
   t.emitsD "task: the await reads back through the slot",
            r"= rt\.awaitResult\(tuckSlot\d+\);"
   t.emitsD "task: a program with tasks boots the scheduler",

@@ -143,8 +143,8 @@ proc memberSeq*(d: Decl): seq[Decl] =
   ## new DeclKind fails to compile here and gets decided instead of skipped.
   ##
   ## dkTask is the one worth pausing on: a task is NOT memberless, but what it
-  ## holds is an Expr (taskBody), not a nested Decl, and this yields
-  ## declarations. Callers that want bodies to walk must reach taskBody
+  ## holds is an Expr (fnBody), not a nested Decl, and this yields
+  ## declarations. Callers that want bodies to walk must reach fnBody
   ## themselves — rewriteModule and lowerModule both do. lowerModule did not
   ## until 2026-08-15, and emitted an unlowered registry raise from every task
   ## body as a result.
@@ -230,6 +230,17 @@ iterator allFns*(m: Module): Decl =
       for mem in d.members():
         if mem.kind == dkFn: yield mem
 
+iterator allFnsAndTasks*(m: Module): Decl =
+  ## `allFns` and the tasks: every declaration with a body that owns its
+  ## parameters. The ownership rules see all of them; the lowerings that
+  ## handle tasks on their own keep to `allFns`.
+  for d in m.decls:
+    if d == nil: continue
+    if d.kind in {dkFn, dkTask}: yield d
+    else:
+      for mem in d.members():
+        if mem.kind == dkFn: yield mem
+
 proc findFn*(m: Module, name: string): Decl =
   ## The fn declaration named `name`, wherever it sits: top level, or a member
   ## of a mixin/extern block or a manager type. Pending stubs do not count,
@@ -260,7 +271,7 @@ proc params*(d: Decl): seq[Param] =
   ## A callable's parameters, in order. Tasks keep theirs in a separate field
   ## from fns; callers asking "what does this take" should not have to care.
   if d == nil: return @[]
-  if d.kind == dkTask: d.taskParams else: d.fnParams
+  if d.kind == dkTask: d.fnParams else: d.fnParams
 
 proc paramNames*(d: Decl): seq[string] =
   ## A callable's parameter names, in order; empty for nil.
@@ -351,7 +362,7 @@ proc isStatementBranch(b: Expr): bool =
   ## A one-line branch that is a STATEMENT, not a value: an assignment, a
   ## `return`, `raise`, `break`, `continue`, `discard` or `send` — or an `if`
   ## that is itself the statement form (an `elif` chain lands here).
-  b != nil and (b.kind in {exkAssign, exkAppend, exkDrop, exkBracketAssign, exkReturn,
+  b != nil and (b.kind in {exkAssign, exkAppend, exkDrop, exkReset, exkBracketAssign, exkReturn,
                            exkRaise, exkBreak, exkContinue, exkDiscard,
                            exkSend} or
                 (b.kind == exkIf and not isValueIf(b)))
@@ -449,7 +460,7 @@ proc implicitTailValue*(body: Expr): Expr =
     # table — subject == nil — keeps its per-row returns.)
     if lastS.subject != nil and not matchArmsReturn(lastS): lastS else: nil
   of exkReturn, exkRaise, exkIf, exkFor, exkWhile, exkBreak, exkContinue,
-     exkAssign, exkAppend, exkDrop, exkBlock, exkSelect, exkSend, exkDiscard,
+     exkAssign, exkAppend, exkDrop, exkReset, exkBlock, exkSelect, exkSend, exkDiscard,
      exkTripleDot:
     nil
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill, exkCall,

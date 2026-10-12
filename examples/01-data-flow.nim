@@ -24,17 +24,22 @@ proc tuckˑfnˑplayTrack*[T](payload: T): void =
 
 
 proc tuckˑfnˑmain*(): void =
-  var tuckˑvˑrequest = (url: "example.com", timeout: tuckˑfnˑms(5'u32))
-  var tuckˑvˑresponse = tuckˑfnˑselectEpisodes(tuckˑfnˑparse(tuckˑfnˑfetch(tuckˑvˑrequest)))
+  var tuckˑvˑrequest = (url: tuckCopy("example.com"), timeout: tuckˑfnˑms(5'u32))
+  defer: tuckDrop(tuckˑvˑrequest.url)
+  var tuckOwnTmp1 = tuckˑfnˑfetch(tuckˑvˑrequest)
+  defer: tuckDrop(tuckOwnTmp1.metadata)
+  var tuckˑvˑresponse = tuckˑfnˑselectEpisodes(tuckˑfnˑparse(tuckOwnTmp1))
   var tuckˑvˑfeed = tuckˑfnˑfetch("https://example.com/feed")
+  defer: tuckDrop(tuckˑvˑfeed.metadata)
   if tuckˑvˑfeed.hasNew:
     if true:
       tuckˑfnˑprocess(tuckˑvˑfeed.episodes)
   else:
     if true:
       tuckˑfnˑlog(tuckˑvˑfeed.metadata)
-  var tuckˑvˑexternalTrack = (trackId: 101, title: "Deep Dive", durationMs: 212000)
-  var tuckˑvˑnormalizedTrack = (id: tuckˑvˑexternalTrack.trackId, name: tuckˑvˑexternalTrack.title, length: tuckˑvˑexternalTrack.durationMs)
+  var tuckˑvˑexternalTrack = (trackId: 101, title: tuckCopy("Deep Dive"), durationMs: 212000)
+  var tuckˑvˑnormalizedTrack = (id: tuckˑvˑexternalTrack.trackId, name: tuckMove(tuckˑvˑexternalTrack.title), length: tuckˑvˑexternalTrack.durationMs)
+  defer: tuckDrop(tuckˑvˑnormalizedTrack.name)
   tuckˑfnˑplayTrack(tuckˑvˑnormalizedTrack)
   return
 

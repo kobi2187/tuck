@@ -333,7 +333,7 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
      exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef, exkDefer,
      exkFinish, exkAcquire, exkOrdinal, exkValidate, exkIfaceCall,
      exkIfaceIs, exkIfacePayload, exkWrapOk, exkAbsent, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset,
-     exkAppend, exkCopy, exkDrop:
+     exkAppend, exkCopy, exkDrop, exkReset:
     discard
 
   # flattenRegistryRaise runs BEFORE the recursive descent, not after: a
@@ -441,8 +441,8 @@ proc lowerTailReturns(m: Module) =
   for d in m.allDecls:
     if d.kind == dkFn and d.fnBody != nil and returnsValue(d.fnReturnType):
       injectTailReturn(d.fnBody)
-    elif d.kind == dkTask and d.taskBody != nil and returnsValue(d.taskReturnType):
-      injectTailReturn(d.taskBody)
+    elif d.kind == dkTask and d.fnBody != nil and returnsValue(d.fnReturnType):
+      injectTailReturn(d.fnBody)
 
 proc lowerModule*(res: Resolution, m: Module, real: Table[string, Module]) =
   ## Rewrite a module in place into the simpler form the backends expect.

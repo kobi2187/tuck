@@ -31,13 +31,17 @@ proc tuckˑfnˑdrainOnce*(): int =
     if true:
       return 0
   var tuckˑvˑdst = tuckPoolAddr(tuckˑpoolˑRxBuffers, tuckˑvˑb.value)
+  defer: tuckDrop(tuckˑvˑdst)
   memset(tuckˑvˑdst, 1, 512)
   var tuckˑvˑrx = tuckPoolRead(tuckˑpoolˑRxBuffers, tuckˑvˑb.value)
+  defer: tuckDrop(tuckˑvˑrx)
   tuckPoolRelease(tuckˑpoolˑRxBuffers, tuckˑvˑb.value)
   if not tuckˑvˑrx.ok:
     if true:
       return 0
-  var tuckˑvˑbytes = tuckˑvˑrx.value
+  var tuckˑvˑbytes = tuckMove(tuckˑvˑrx.value)
+  defer: tuckDrop(tuckˑvˑbytes)
+  tuckReset(tuckˑvˑrx.value)
   if (tuck_rt.tuckArrayAt(tuckˑvˑbytes, 511) != 1):
     if true:
       return 0

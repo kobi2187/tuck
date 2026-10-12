@@ -80,7 +80,7 @@ fn main() -> int:
   # assertion that fails if the emission ever reverts to bake's bare tuple.
   t.hostBuilds "every backend's host compiler accepts a `with` on a record"
   t.emits "a named record rebuilds through its constructor, not a tuple",
-          "tuckˑtypeˑTask\\(title: .bumped., done: self\\.done"
+          "tuckˑtypeˑTask\\(title: tuckCopy\\(.bumped.\\), done: self\\.done"
   t.emitsOdin "...and Odin uses its own struct literal",
               r"tuckˑtypeˑTask\{title = "
 

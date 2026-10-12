@@ -2,14 +2,18 @@
 # Bounds are a precondition: an out-of-range index is a program error
 # reported at the call site, not a result the caller matches on.
 extern:
-  fn at[T]({items: Seq[T], index: int}) -> T
-  fn setAt[T]({items: Seq[T], index: int, value: T}) -> void
+  # What each one does with what it is given is declared, since the
+  # compiler cannot read a body-less fn: `at` hands back the element itself
+  # (`[view: items]`: the caller copies it to keep it), `setAt` and `push` store
+  # the `value` they are given (`[keeps: value]`). Everything else is read.
+  fn at[T]({items: Seq[T], index: int}) -> T [view: items]
+  fn setAt[T]({items: Seq[T], index: int, value: T}) -> void [keeps: value]
   # `push` returns the grown seq rather than mutating `items` in place —
   # `at`/`setAt` mutate through a receiver the caller already owns as a
   # `var`, but growing can reallocate, so there is no shared backing store
   # to mutate through. Value semantics, same convention as std/random's
   # threaded state: `xs = {items: xs, value: v} push`.
-  fn push[T]({items: Seq[T], value: T}) -> Seq[T]
+  fn push[T]({items: Seq[T], value: T}) -> Seq[T] [keeps: value]
   # `count`, not `len` — and that is the FIX, not a workaround. PROTOCOLS.md
   # makes `count(target)` the verb for "how many" across every collection, so
   # a Seq answering `count` is what the convention already said it should do.

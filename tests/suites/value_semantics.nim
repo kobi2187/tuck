@@ -518,7 +518,7 @@ fn main() -> int:
 """
   t.okCheck "a threaded-container fn checks"
   t.emitsD "D emits the moved twin", r"tuckˑfnˑaddTo_moved\(tuckˑtypeˑBag b"
-  t.emitsD "...and the wrapper copies before delegating", r"b\.items = b\.items\.dup"
+  t.emitsD "...and the wrapper copies before delegating", r"b = rt\.tuckCopy\(b\);"
   t.emitsOdin "Odin emits it too", r"tuckˑfnˑaddTo_moved :: proc"
   t.omits "Nim needs no twin — it has sink", r"_moved"
   t.hostBuilds "...and every backend builds them"
@@ -877,9 +877,12 @@ fn main() -> int:
   # Asserted as the CALL SITE and not as the twin's absence: `_moved` is
   # named inside the wrapper's own one-line body, so `omits` matched that
   # and failed on emitted code that was already correct.
-  t.emitsOdin "a fn that does not own its parameter may not hand it on",
-              r"tuckˑvˑo := tuckˑfnˑreshape\(xs\)"
-  t.emitsD "...and the same on D", r"tuckˑvˑo = tuckˑfnˑreshape\(xs\)"
+  # Rule P: `reshape` only reads `xs`, so even its twin borrows it, and a
+  # parameter `peek` only borrows may be handed to it uncopied: nothing frees it.
+  t.emitsOdin "a fn that does not own its parameter hands it only to a reader",
+              r"tuckˑvˑo := tuckˑfnˑreshape_moved\(xs\)"
+  t.omitsOdin "...which frees nothing of it", r"delete\(xs\)"
+  t.emitsD "...and the same on D", r"tuckˑvˑo = tuckˑfnˑreshape_moved\(xs\)"
   # 4 + 4 + 5. Freeing src makes the last two terms read freed memory, which
   # is why this is asserted by VALUE and on every backend.
   t.hostRuns("...so the caller's buffer survives the call", 13)

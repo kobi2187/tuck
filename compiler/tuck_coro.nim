@@ -21,6 +21,7 @@ import std/os
 import std/selectors
 import std/sets
 import std/tables
+import ./tuck_mem
 
 # ===========================================================================
 # from arsenal/minicoro.nim
@@ -322,6 +323,7 @@ type
     ## Internal coroutine object
     state*: CoroutineState
     entryPoint: CoroutineProc
+    ownsEntry: bool      ## the closure's environment is this coroutine's alone
     backend: UnifiedBackend
 
 type
@@ -355,8 +357,15 @@ proc destroyCoroutine*(c: Coroutine) =
   if c == nil: return
   if c.backend.handle != nil:
     destroy(c.backend)
-  c.entryPoint = nil   # decref the closure's captured environment, if any
+  # An environment made for this coroutine alone (`tuckSpawnOwned`) is freed
+  # with it; one shared with other closures of the same frame never is.
+  if c.ownsEntry and c.entryPoint != nil: dealloc(rawEnv(c.entryPoint))
+  c.entryPoint = nil
   dealloc(c)
+
+proc ownEntry*(c: Coroutine) =
+  ## The entry closure's environment belongs to `c` and goes with it.
+  c.ownsEntry = true
 
 # =============================================================================
 # Error Helpers
@@ -791,11 +800,13 @@ proc waitForWrite*(loop: EventLoop, fd: int | SocketHandle) =
 proc removeWaiter*(loop: EventLoop, fd: int) =
   ## Remove a waiter for this fd.
   if loop.waiters.hasKey(fd):
+    let w = loop.waiters[fd]
     try:
       loop.selector.unregister(fd)
     except:
       discard  # Already unregistered
     loop.waiters.del(fd)
+    dealloc(cast[pointer](w))
 
 # =============================================================================
 # Event Loop Execution
@@ -824,7 +835,8 @@ proc waitForReadOrTimeout*(loop: EventLoop, fd: int | SocketHandle,
   ioWaiter.pairFd = timerFd
   loop.waiters[timerFd].pairFd = fdInt
   coroYield()
-  not outcome[]
+  result = not outcome[]
+  dealloc(cast[pointer](outcome))     # shared with the waiters; read and done
 
 proc waitTimer*(loop: EventLoop, timeoutMs: int) =
   ## Suspend the current coroutine for `timeoutMs` (a cooperative sleep).
@@ -842,13 +854,15 @@ proc runOnce*(loop: EventLoop, timeoutMs: int = 100): bool =
   ## timeoutMs: How long to wait for events (default 100ms)
 
   # Use std/selectors to wait for I/O events (cross-platform)
-  let readyKeys = loop.selector.select(timeoutMs)
+  var readyKeys = loop.selector.select(timeoutMs)
+  defer: tuckDrop(readyKeys)         # `select` hands back a fresh seq each time
 
   if readyKeys.len == 0:
     return false
 
   # Resume coroutines that have I/O ready
-  var resumed = initHashSet[int]()   # coros already woken this pass (by fd)
+  var resumed: seq[int]              # coros already woken this pass (by fd)
+  defer: tuckDrop(resumed)
   for key in readyKeys:
     let waiter = loop.selector.getData(key.fd)
     let fd = key.fd.int
@@ -863,19 +877,23 @@ proc runOnce*(loop: EventLoop, timeoutMs: int = 100): bool =
     let pair = waiter.pairFd
     if waiter.outcome != nil:
       waiter.outcome[] = waiter.isTimer
-    let coroId = cast[int](waiter.coro)
+    let coro = waiter.coro
+    let coroId = cast[int](coro)
 
-    # unregister this fd and its pair (the loser)
+    # unregister this fd and its pair (the loser), and free their waiters:
+    # nothing refers to one once it is out of the table and the selector
     for f in [fd, pair]:
       if f >= 0 and loop.waiters.hasKey(f):
+        let w = loop.waiters[f]
         loop.waiters.del(f)
         try: loop.selector.unregister(f)
         except: discard
+        dealloc(cast[pointer](w))
 
     # resume the coroutine exactly once
     if coroId notin resumed:
-      resumed.incl(coroId)
-      ready(waiter.coro)
+      tuckPush(resumed, coroId)
+      ready(coro)
 
   return readyKeys.len > 0
 

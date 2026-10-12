@@ -550,10 +550,11 @@ proc walk(b: var Builder, e: Expr) =
     b.reads(e.assignVal)
     b.defineTo(e.target, e.assignVal)
   of exkAppend:
-    # `xs += v` reads the old `xs`, then `v` (the order the source wrote
-    # them), and defines the new `xs` — the old buffer, grown.
-    b.reads(e.appendTarget)
+    # `xs += v` builds `v`, then reads the old `xs` and defines the new one —
+    # the old buffer, grown. In that order, so a read of `xs` inside `v` is
+    # not its last: the append that follows still needs the buffer.
     b.reads(e.appendValue)
+    b.reads(e.appendTarget)
     b.defineTo(e.appendTarget, e)
   of exkIf: b.walkIf(e)
   of exkMatch: b.walkMatch(e)
@@ -595,9 +596,9 @@ proc buildFn*(res: Resolution, d: Decl): SsaFn =
   b.fn.entry = b.newBlock("entry")
   b.here = b.fn.entry
   b.sealBlock(b.fn.entry)
-  # A task's body lives in `taskBody`; reading only `fnBody` built every task
+  # A task's body lives in `fnBody`; reading only `fnBody` built every task
   # an empty graph, which says "no reads" and so never stamps anything.
-  let body = if d.kind == dkTask: d.taskBody else: d.fnBody
+  let body = if d.kind == dkTask: d.fnBody else: d.fnBody
   if body != nil:
     b.walk(body)
     deferRoots(body, b.fn.deferredRoots)

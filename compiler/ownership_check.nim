@@ -11,24 +11,16 @@
 #
 # It reads the TREE, the Stage C nodes an emitter prints (`exkCopy`, a
 # `defer` of an `exkDrop`, an assignment's `dropsOld`, the in-place
-# `exkAppend`), and not the plan that wrote them. So it checks whichever
-# pass decided: today's passes now, the elaborator after the switch. A move
+# `exkAppend`), and not the plan that wrote them (`ownership_write`). A move
 # is what the tree does, not what the SSA mirror proved: a sink read (rule
 # U) with no copy around it hands the value over, final or not.
 #
 # THE CONVENTION. Which parameters a body owns, and which arguments a call
-# hands over, depend on how calls are encoded. Today's aliasing backends use
-# twins. A fn with a moved twin prints its body as `f_moved`, which owns its
-# first parameter. A call hands its first argument over when `twin_calls`
-# marked it for the twin, or when its assignment threads a container through
-# it (`x = f(x, ...)`, printed `x = f_moved(x, ...)`). Every other parameter
-# borrows. A callee with no Tuck body keeps the contract its signature
-# states (`ownership_elab`, "What a body-less callee does"). Under rule P
-# (TUCK_OWN=rules) the convention is P's answer: that is what `consumed`
-# and the owned parameters read.
+# hands over, are rule P's answer (`consumed`); a callee with no Tuck body
+# keeps the contract its declaration states (`[keeps: x]`, `[view: x]`).
 #
-# THE STATE of an owned slot (what Odin frees: a Seq or a str itself, or a
-# record's Seq fields) is the SET of what it may hold on the paths reaching
+# THE STATE of an owned slot (rule G's slots: the value itself, or a
+# record's owning fields) is the SET of what it may hold on the paths reaching
 # here: live, moved out, dropped. "On some paths" falls out of the join.
 # - Arms meet by union.
 # - A loop is walked until its head stops growing.
@@ -45,19 +37,11 @@
 # with `(some paths)` after the finding when no path reaching it was certain.
 # A finding about a drop or a leak is placed where the place was declared.
 #
-# NOT YET CHECKED, waiting on rule G:
-# - A `str` is checked only where it is dropped (a drop after a move, a
-#   double drop). On Odin a str is immutable, and freed only where today
-#   proves it heap, so an alias of one is harmless until one side drops it.
-#   Whether one nobody drops leaks (static or heap) is G's answer.
-# - What a record's non-Seq fields own, and a Seq's elements (glue; A39).
 import os, tables, sets, strutils, sequtils
 import ast, ast_ops, ast_query
 import resolution
 import ownership_rules, ownership_elab
 from ssa_ir import rootOf
-from twin_shape import ownsHeap, movedFnParam
-from twin_calls import callsTwin, threadedCall
 
 type
   Can = enum cLive, cMoved, cDropped
@@ -77,12 +61,8 @@ type
     fn: string
     slots: Table[string, seq[string]]   ## owned place -> its slots
     declAt: Table[string, Span]         ## owned place -> where it began
-    strs: HashSet[string]               ## the owned places that are a str
     borrowed: HashSet[string]           ## the parameters the body borrows
-    rules: bool                         ## rule P's convention (TUCK_OWN=rules)
     memo: ConsumeMemo
-    threaded: Expr                      ## the call the assignment being
-                                        ## walked threads through a twin
     refills: string                     ## the place that assignment defines
     scopes: seq[Scope]
     loops: seq[Loop]
@@ -127,24 +107,17 @@ proc spanOf(c: Check, k: string): Span =
 # --- the convention -----------------------------------------------------------
 
 proc consumed(c: var Check, a: ArgOf): bool =
-  ## Does the call take this argument over? Under rule P (TUCK_OWN=rules),
-  ## P's answer. Today: a callee with no Tuck body by the contract its
-  ## signature states (ownership_elab), else the moved twin's first
-  ## parameter when the call was marked for the twin.
-  if a.call == nil: return false
-  if c.rules: return c.res.argConsumesWhy(c.m, a, c.memo).len > 0
-  let t = c.res.argTarget(c.m, a)
-  if t.bodyless: return c.res.bodylessKeeps(c.m, a.call, a.index)
-  t.param == movedFnParam(c.res, c.m, t.callee) and
-    (a.call == c.threaded or callsTwin(a.call))
+  ## Does the call take this argument over (rule P)?
+  a.call != nil and c.res.argConsumesWhy(c.m, a, c.memo).len > 0
+
+proc owns(c: Check, t: Type): bool =
+  ## Does a value of `t` own storage (rule G)?
+  c.res.owning(c.m, t)
 
 proc sinks(c: var Check, pu: PlaceUse): bool =
-  ## Is this read put where it is handed to a new owner? (Under rule P a
-  ## `str` argument still borrows: its convention waits on rule G.)
-  let t = c.res.typeFor(pu.read)
-  ownsHeap(c.m, t) and
-    (pu.use == uSink or
-     (pu.use == uArg and not (c.rules and isStr(t)) and c.consumed(pu.arg)))
+  ## Is this read put where it is handed to a new owner?
+  c.owns(c.res.typeFor(pu.read)) and
+    (pu.use == uSink or (pu.use == uArg and c.consumed(pu.arg)))
 
 proc idOf(e: Expr): string = $e.id.uint32
 
@@ -159,37 +132,16 @@ proc namedArgs(res: Resolution, call: Expr): seq[(string, Expr)] =
       let name = if i < ps.len: ps[i] else: ""
       result.add (name, a)
 
-proc fieldCopies(c: Check, e: Expr): HashSet[string] =
-  ## The reads under `e` that a copy of a record's Seq fields (`cpFields`)
-  ## copies: `<read id>` for the value a construction's field is given,
-  ## `<read id>\t<field>` for one field of a record read whole. The copy is
-  ## made after the binding, so the value is never handed over. (What
-  ## `cpSeq` and `cpStatic` copy is a borrow already, by rule U.)
-  for n in e.nodes:
-    if n.kind != exkCopy or n.copyKind != cpFields: continue
-    let v = n.copied
-    if v.kind in {exkVar, exkField}:
-      for f in n.copyFields: result.incl idOf(v) & "\t" & f
-    elif v.kind == exkCall:
-      for (name, a) in c.res.namedArgs(v):
-        if a != nil and name in n.copyFields: result.incl idOf(a)
-
-proc sunkSlots(c: Check, pu: PlaceUse, copies: HashSet[string]): seq[string] =
-  ## The slots of the value this read hands over, less what is copied: ""
-  ## for the value itself, else a record's Seq fields.
-  let id = idOf(pu.read)
-  if id in copies: return
-  for s in slotsOf(c.res, c.m, c.res.typeFor(pu.read)):
-    if id & "\t" & s notin copies: result.add s
+proc sunkSlots(c: Check, pu: PlaceUse): seq[string] =
+  ## The slots of the value this read hands over: "" for the value itself,
+  ## else a record's owning fields.
+  slotsOf(c.res, c.m, c.res.typeFor(pu.read))
 
 # --- events -------------------------------------------------------------------
-
-proc isStrSlot(c: Check, k: string): bool = k.split('\t')[0] in c.strs
 
 proc read(c: var Check, k: string, at: Span) =
   ## A read: what it reads must not have been moved out or dropped.
   let cans = c.st.getOrDefault(k, {cLive})
-  if c.isStrSlot(k) and cDropped notin cans: return  # an alias, harmless
   if cMoved in cans: c.report("use-after-move", cans, shown(k), at)
   if cDropped in cans: c.report("use-after-drop", cans, shown(k), at)
 
@@ -201,26 +153,13 @@ proc dropSlot(c: var Check, k: string) =
   c.st[k] = {cDropped}
 
 proc isTemporary(c: Check, e: Expr): bool =
-  ## A value no place holds: a call's result, a construction, a list. An
-  ## element read is its container's, not a new value; a `str` waits on G.
-  e != nil and e.kind in {exkCall, exkList, exkFill} and
+  ## A value no place holds: a call's result, a construction, a list, an
+  ## operator that builds one (`a + b` on `str`). An element read is its
+  ## container's, not a new value.
+  e != nil and (e.kind in {exkCall, exkList, exkFill, exkCopy} or
+                e.kind == exkBinary and e.binOp notin {boRangeIncl, boRangeExcl}) and
     not c.res.isPlaceRead(e) and not c.res.readsElement(c.m, e) and
-    not isStr(c.res.typeFor(e)) and
-    slotsOf(c.res, c.m, c.res.typeFor(e)).len > 0   # Seq slots; str is G's
-
-proc fieldCopyLeaks(c: var Check, e: Expr) =
-  ## A copy of a record's Seq fields (`cpFields`) replaces each listed field
-  ## with its copy, in place, after the binding, and what the field held
-  ## before is never dropped. That leaks it when it was fresh: the fields of
-  ## a call's result, or a temporary a construction's field was given.
-  let v = e.copied
-  if v == nil or v.kind != exkCall or c.res.readsElement(c.m, v): return
-  if not c.res.constructs(v):
-    c.report("temp-leak", {cLive}, "fields", v.span)
-    return
-  for (name, a) in c.res.namedArgs(v):
-    if name in e.copyFields and c.isTemporary(a):
-      c.report("temp-leak", {cLive}, ($a.kind)[3 .. ^1].toLowerAscii, a.span)
+    slotsOf(c.res, c.m, c.res.typeFor(e)).len > 0
 
 proc temporaries(c: var Check, e: Expr, use: Use, arg: ArgOf) =
   ## Rule D for a value no place holds: unless something takes it (a sink,
@@ -232,7 +171,6 @@ proc temporaries(c: var Check, e: Expr, use: Use, arg: ArgOf) =
               (use == uArg and c.consumed(arg))
   if not taken and c.isTemporary(e):
     c.report("temp-leak", {cLive}, ($e.kind)[3 .. ^1].toLowerAscii, e.span)
-  if e.kind == exkCopy and e.copyKind == cpFields: c.fieldCopyLeaks(e)
   var argNo = 0
   for (ch, u) in c.res.uses(e):
     var a = NoArg
@@ -255,12 +193,11 @@ proc take(c: var Check, pu: PlaceUse, sunk: seq[string],
   ## The value a sink read hands over leaves its place: the slots in `sunk`
   ## (a whole place's) or the one field read.
   let whole = pu.path == rootOf(pu.path)
-  let str = isStr(c.res.typeFor(pu.read))
-  if not str and c.borrowedSink(pu):
+  if c.borrowedSink(pu):
     c.report("borrowed-sunk", {cLive}, pu.path, pu.read.span)
   for k in c.keysOf(pu.path):
     if whole and k.split('\t')[1] notin sunk: continue
-    if k in moved and not str:
+    if k in moved:
       c.report("moved-twice", {cMoved}, shown(k), pu.read.span)
     moved.incl k
     c.st[k] = {cMoved}
@@ -273,13 +210,12 @@ proc step(c: var Check, e: Expr, use: Use) =
   let pus = c.res.placeUsesUnder(e, use)
   for pu in pus:
     if pu.use in {uWrite, uDrop, uNone}: continue
-    if not ownsHeap(c.m, c.res.typeFor(pu.read)): continue
+    if not c.owns(c.res.typeFor(pu.read)): continue
     for k in c.keysOf(pu.path): c.read(k, pu.read.span)
-  let copies = c.fieldCopies(e)
   var moved: HashSet[string]
   for pu in pus:
     if not c.sinks(pu): continue
-    let sunk = c.sunkSlots(pu, copies)
+    let sunk = c.sunkSlots(pu)
     if sunk.len > 0: c.take(pu, sunk, moved)
 
 proc declare(c: var Check, place: string, t: Type, at: Span) =
@@ -289,7 +225,6 @@ proc declare(c: var Check, place: string, t: Type, at: Span) =
   c.slots[place] = ss
   c.declAt[place] = at
   c.scopes[^1].places.add place
-  if isStr(t): c.strs.incl place
   for s in ss: c.st[slotKey(place, s)] = {cLive}
 
 proc deferDrops(c: var Check, e: Expr) =
@@ -310,7 +245,6 @@ proc close(c: var Check, i: int) =
   let sc = c.scopes[i]
   for j in countdown(sc.drops.high, 0): c.dropSlot(sc.drops[j])
   for place in sc.places:
-    if place in c.strs: continue        # static or heap: rule G
     for s in c.slots[place]:
       let k = slotKey(place, s)
       let cans = c.st.getOrDefault(k, {cLive})
@@ -345,20 +279,28 @@ proc overwrite(c: var Check, n: Expr, keys: seq[string]) =
   ## moved out, or is dropped first (`dropsOld`).
   for k in keys:
     if n.dropsOld: c.dropSlot(k)
-    elif not c.isStrSlot(k):
+    else:
       let cans = c.st.getOrDefault(k, {cLive})
       if cLive in cans: c.report("overwrite-leak", cans, shown(k), n.span)
   for k in keys: c.st[k] = {cLive}
+
+proc walkReset(c: var Check, n: Expr) =
+  ## A place emptied after a move (rule M): what it held must have moved out
+  ## (or it leaks), and it is live again, holding nothing to free.
+  if c.dead: return
+  for k in c.keysOf(pathOf(n.resetPlace)):
+    let cans = c.st.getOrDefault(k, {cLive})
+    if cLive in cans: c.report("overwrite-leak", cans, shown(k), n.span)
+    c.st[k] = {cLive}
 
 proc walkAssign(c: var Check, n: Expr) =
   ## The value is evaluated (and may move things), then the place is
   ## defined: a new owned place, or an owned place or field losing its old
   ## value, which must have been moved out or is dropped (`dropsOld`).
-  let (outer, outerPlace) = (c.threaded, c.refills)
-  c.threaded = threadedCall(n)
+  let outerPlace = c.refills
   c.refills = if n.target != nil: pathOf(n.target) else: ""
   c.walkExpr(n.assignVal, uSink)
-  (c.threaded, c.refills) = (outer, outerPlace)
+  c.refills = outerPlace
   let t = n.target
   if c.dead or t == nil: return
   if t.kind == exkVar and t.name notin c.slots and t.name notin c.borrowed:
@@ -376,7 +318,6 @@ proc walkBlock(c: var Check, b: Expr, use: Use) =
   for place in sc.places:
     for s in c.slots[place]: c.st.del slotKey(place, s)
     c.slots.del place
-    c.strs.excl place
 
 proc walkArms(c: var Check, arms: seq[Expr], use: Use, mayFallThrough: bool) =
   ## Alternatives from one state, joined where they meet. `mayFallThrough`:
@@ -478,6 +419,7 @@ proc walkExpr(c: var Check, e: Expr, use: Use) =
   of exkReturn, exkRaise: c.walkExit(e)
   of exkBreak, exkContinue: c.walkJump(e)
   of exkDefer: c.deferDrops(e)
+  of exkReset: c.walkReset(e)
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill,
      exkBracket, exkBracketAssign, exkCall, exkChain, exkBinary, exkUnary,
      exkDiscard, exkTripleDot, exkImport, exkSend, exkAcquire, exkFinish,
@@ -490,15 +432,11 @@ proc walkExpr(c: var Check, e: Expr, use: Use) =
 
 proc checkFn(res: Resolution, m: Module, d: Decl): seq[string] =
   ## Rule V over one fn's body, under the twins' convention.
-  var c = Check(res: res, m: m, fn: d.name, rules: RulesMode)
+  var c = Check(res: res, m: m, fn: d.name)
   c.scopes.add Scope()
   if "self" notin d.fnParams.mapIt(it.name): c.borrowed.incl "self"
-  let moved = movedFnParam(res, m, d)
   for p in d.fnParams:
-    let owns = if c.rules: not isStr(p.typ) and
-                           res.consumes(m, d, p.name, c.memo)
-               else: p.name == moved
-    if owns and ownsHeap(m, p.typ): c.declare(p.name, p.typ, d.fnBody.span)
+    if res.consumes(m, d, p.name, c.memo) and c.owns(p.typ): c.declare(p.name, p.typ, d.fnBody.span)
     else: c.borrowed.incl p.name
   c.walkExpr(d.fnBody, uSink)
   if not c.dead: c.leave(0)
@@ -514,6 +452,6 @@ let DebugVerify = getEnv("TUCK_DEBUG_OWN") == "verify"
 proc verifyTree*(res: Resolution, m: Module) =
   ## TUCK_DEBUG_OWN=verify: rule V over every fn body of the prepared tree.
   if not DebugVerify: return
-  for d in m.allFns:
+  for d in m.allFnsAndTasks:
     if d == nil or d.fnBody == nil: continue
     for line in checkFn(res, m, d): echo line

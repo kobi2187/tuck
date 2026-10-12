@@ -20,13 +20,16 @@ void tuckˑfnˑplayTrack(T)(T payload) {
 }
 
 void tuckˑfnˑmain() {
-    TRec_trackId_title_durationMs!(long, string, long) tuckˑvˑexternalTrack = TRec_trackId_title_durationMs!(long, string, long)(trackId: 42L, title: "Slow Jam", durationMs: 215000L);
+    TRec_trackId_title_durationMs!(long, string, long) tuckˑvˑexternalTrack = TRec_trackId_title_durationMs!(long, string, long)(trackId: 42L, title: ("Slow Jam").idup, durationMs: 215000L);
     TRec_id_name_length!(long, string, long) tuckˑvˑplayerInput = TRec_id_name_length!(long, string, long)(id: tuckˑvˑexternalTrack.trackId, name: tuckˑvˑexternalTrack.title, length: tuckˑvˑexternalTrack.durationMs);
+    scope(exit) rt.tuckDrop(tuckˑvˑplayerInput.name);
     tuckˑfnˑplayTrack(tuckˑvˑplayerInput);
     return;
 }
 
-void main(string[] args) {
+int main(string[] args) {
     rt.tuckSetArgs(args);
+    rt.tuckLeakMark();
     tuckˑfnˑmain();
+    return rt.tuckLeakCheck(0);
 }

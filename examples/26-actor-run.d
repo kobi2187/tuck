@@ -63,7 +63,8 @@ int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
     tuckˑactorˑCounterSlot = rt.tuckStartActor(&drain_tuckˑactorˑCounter);
+    rt.tuckLeakMark();
     auto mainRc = tuckˑfnˑmain();
     rt.tuckDrainActors();
-    return cast(int) mainRc;
+    return rt.tuckLeakCheck(cast(int) mainRc);
 }

@@ -155,7 +155,7 @@ proc deadOf(used, live, skip: Live): Live =
     if p in skip or rootOf(p) in skip: continue
     result.incl(p)
   # A ROOT whose every path is dead is itself dead, and it has to be said
-  # separately: `paramIsMovable` asks about the WHOLE parameter, not one of
+  # separately: rule P asks about the WHOLE parameter, not one of
   # its fields, so stamping only `e.num.value` silently dropped the `sink`
   # off every fn that reads a parameter through a field. `isLive` already
   # answers this — a root is live if anything under it is.
@@ -167,18 +167,27 @@ proc deadOf(used, live, skip: Live): Live =
 
 proc lastUseSites(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live
 
+proc overlaps(p, q: string): bool =
+  ## Does one path contain the other (`a` and `a.items`; not `a.tag`)?
+  p.startsWith(q & ".") or q.startsWith(p & ".")
+
 proc stampSites(c: Ctx, e: Expr, dead: Live) =
   ## Mark the FINAL read of each dead name inside `e`. Walks in evaluation
   ## order and keeps the last site seen, because `f(x, g(x))` reads x twice
-  ## and only the second one may be moved from.
+  ## and only the second one may be moved from. A read followed, in the same
+  ## statement, by a read of an overlapping path is not final either:
+  ## `s.minutes + {s: s} f` reads `s.minutes` again through `s`.
   if e == nil: return
-  var lastFor: Table[string, Expr]
-  proc walk(n: Expr) =
-    ## Records the last site seen for each dead name, in evaluation order, so the
-    ## final read wins.
+  var lastFor: Table[string, tuple[site: Expr, at: int]]
+  var order = 0
+  proc walk(n: Expr, at = -1) =
+    ## Records the last site seen for each dead name, in evaluation order, so
+    ## the final read wins. `at`: a field's receiver is read where the field
+    ## is, not after it.
     if n == nil: return
+    let here = if at >= 0: at else: (inc order; order)
     if n.kind == exkVar and n.name in dead:
-      lastFor[n.name] = n
+      lastFor[n.name] = (n, here)
       return
     if n.kind == exkField and c.res.hasCall(n):
       walk(c.res.call(n))      # a call written as a field: see `uses`
@@ -186,10 +195,10 @@ proc stampSites(c: Ctx, e: Expr, dead: Live) =
     if n.kind == exkField:
       let p = pathOf(n)
       if p.len > 0:
-        if p in dead: lastFor[p] = n
+        if p in dead: lastFor[p] = (n, here)
         # Keep descending: the ROOT may be dead as a whole, and its stamp is
-        # what `paramIsMovable` reads.
-        walk(n.receiver)
+        # what rule P reads.
+        walk(n.receiver, here)
         walk(n.dotArg)           # read after the receiver: see `uses`
         return
     if n.kind == exkAssign:
@@ -198,7 +207,11 @@ proc stampSites(c: Ctx, e: Expr, dead: Live) =
       return
     for ch in n.children: walk(ch)
   walk(e)
-  for _, site in lastFor: markLastUse(c.res, site)
+  for p, last in lastFor:
+    var readAfter = false
+    for q, other in lastFor:
+      if other.at > last.at and overlaps(p, q): readAfter = true
+    if not readAfter: markLastUse(c.res, last.site)
 
 proc seqLive(c: Ctx, stmts: seq[Expr], liveOut: Live, stamp: bool): Live =
   ## A sequence, walked BACKWARD: each statement's liveOut is what the next
@@ -322,7 +335,7 @@ proc markLivenessInto(res: Resolution, m: Module) =
     var body: Expr
     case d.kind
     of dkFn: body = d.fnBody
-    of dkTask: body = d.taskBody
+    of dkTask: body = d.fnBody
     else: discard
     if body == nil: continue
     var c = Ctx(res: res)

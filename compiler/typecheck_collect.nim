@@ -33,6 +33,7 @@ proc collectFnSig*(tc: var TypeChecker, d: Decl, top: bool) =
       tc.groupBoundsOf[d.name] = d.fnGenericBounds
       break
   indexDecl(semLayer, d)
+  if d.isExtern and d.name notin semLayer.externs: semLayer.externs[d.name] = d
   tc.addFnDecl(d.name, d)
   # NOT pending: a pending fn emits a generic one-payload stub
   # (genPendingStub), so its real params are ({payload: T},) — nothing like its
@@ -221,9 +222,9 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
     of dkFn: tc.collectFnSig(d, top)
     of dkTask:
       tc.taskNames.incl(d.name)
-      tc.setFnSig(d.name, (d.taskParams, d.taskReturnType,
-                           newSeq[string](), d.taskEffects,
-                           d.taskResourceKinds, d.taskErrorTypes))
+      tc.setFnSig(d.name, (d.fnParams, d.fnReturnType,
+                           newSeq[string](), d.fnEffects,
+                           d.fnResourceKinds, d.fnErrorTypes))
     of dkFnSig: tc.collectFnSigType(d)
     of dkPool: tc.collectPoolSigs(d)
     of dkSlab: tc.collectSlabSigs(d)

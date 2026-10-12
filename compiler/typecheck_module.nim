@@ -241,7 +241,7 @@ proc failIfDuplicateMembers*(m: Module) =
           fail("Structure Error: '" & n & "' is exported by the `public:` " &
                "block but this module declares no such name", d.span)
     of dkTask:
-      failIfDuplicateMember("parameter", d.name, paramNames(d.taskParams))
+      failIfDuplicateMember("parameter", d.name, paramNames(d.fnParams))
     of dkObject:
       failIfDuplicateMember("field", d.name, fieldNames(d.objFields))
       # `+ Record` members merge fields in, so the union is what must be unique

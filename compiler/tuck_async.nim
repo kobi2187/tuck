@@ -33,6 +33,7 @@
 import std/nativesockets
 import std/locks
 import ./tuck_coro
+import ./tuck_mem
 
 type
   TuckFd* = int | SocketHandle
@@ -57,6 +58,15 @@ proc tuckAsyncInit*() =
 proc tuckSpawn*(fn: proc() {.closure, gcsafe.}) =
   ## Launch a task as a coroutine on the scheduler.
   schedule(newCoroutine(fn, TuckStackSize))
+
+proc tuckSpawnOwned*(fn: proc() {.closure, gcsafe.}) =
+  ## `tuckSpawn` for a closure made by the CALLER'S OWN CALL of a helper, so
+  ## its environment holds nothing but what that call captured: it is freed
+  ## with the coroutine. (A closure written in a user's fn shares its frame's
+  ## environment with every other closure there, and must never be freed.)
+  let c = newCoroutine(fn, TuckStackSize)
+  c.ownEntry()
+  schedule(c)
 
 proc inCoroutine*(): bool =
   ## Are we on a coroutine, or in the main context? Spelled as a predicate
@@ -194,7 +204,7 @@ proc openSource*(ms: int): tuple[fd: int] =
   var fds: array[2, cint]
   discard pipe(fds)
   let wr = fds[1]
-  tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
     tuckSleep(ms)
     var b: byte = 1
     discard write(wr, addr b, 1)
@@ -235,23 +245,347 @@ proc newAsyncResult*[T](): TuckAsyncResult[T] =
   ## An empty result slot, not yet done, for `spawnResult` to fill.
   TuckAsyncResult[T](done: false)
 
-proc spawnResult*[T](slot: TuckAsyncResult[T],
-                     body: proc(): T {.closure, gcsafe.}) =
-  ## Spawn a task whose return value lands in `slot`.
-  tuckSpawn(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
-    slot.value = body()
-    slot.done = true))
-
 proc awaitResult*[T](slot: TuckAsyncResult[T]): T =
   ## Get a task's result. Inside a coroutine: yield until done. In the main
   ## (non-coroutine) context: drive the scheduler until done, then return.
+  ## The slot was this await's alone: its value moves out and it is freed.
   if running() != nil:
     while not slot.done: tuckYield()
   else:
     while not slot.done:
       if not runNext():
         discard gLoop.runOnce(1)   # let I/O + timers make progress
-  slot.value
+  result = tuckMove(slot.value)
+  dealloc(cast[pointer](slot))
+
+# A task is spawned with its arguments EVALUATED NOW and handed over: the
+# rules moved or copied each one, so the job owns them, and the task's fn
+# (which owns its parameters) drops them. One job record per spawn, freed when
+# the task ends; the closure that runs it is made inside this proc, so its
+# environment is this call's alone (`tuckSpawnOwned`). One overload per
+# arity (0..6).
+
+type
+  TuckJob0 = object
+    fn: proc() {.nimcall.}
+  TuckResJob0[R] = object
+    fn: proc(): R {.nimcall.}
+    slot: TuckAsyncResult[R]     ## nil: nobody awaits; the value is dropped
+
+proc tuckSpawnJob*(fn: proc() {.nimcall.}) =
+  ## Spawn `fn` on its arguments.
+  let job = create(TuckJob0)
+  job.fn = fn
+  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    job.fn()
+    dealloc(job)))
+
+proc tuckSpawnResultJob*[R](slot: TuckAsyncResult[R], fn: proc(): R {.nimcall.}) =
+  ## Spawn `fn` on its arguments, its return value landing in `slot` (nil: the
+  ## value, which nobody awaits, is dropped).
+  let job = create(TuckResJob0[R])
+  job.fn = fn
+  job.slot = slot
+  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    var r = job.fn()
+    if job.slot == nil:
+      tuckDrop(r)
+    else:
+      tuckStore(job.slot.value, r)
+      job.slot.done = true
+    dealloc(job)))
+
+proc tuckSpawnJobDrop*[R](fn: proc(): R {.nimcall.}) =
+  ## Spawn `fn` on its arguments; the value it returns is dropped.
+  tuckSpawnResultJob(TuckAsyncResult[R](nil), fn)
+
+type
+  TuckJob1[A0] = object
+    fn: proc(a0: A0) {.nimcall.}
+    a0: A0
+  TuckResJob1[R, A0] = object
+    fn: proc(a0: A0): R {.nimcall.}
+    slot: TuckAsyncResult[R]     ## nil: nobody awaits; the value is dropped
+    a0: A0
+
+proc tuckSpawnJob*[A0](fn: proc(a0: A0) {.nimcall.}, a0: A0) =
+  ## Spawn `fn` on its arguments.
+  let job = create(TuckJob1[A0])
+  job.fn = fn
+  copyMem(addr job.a0, unsafeAddr a0, sizeof(A0))
+  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    job.fn(job.a0)
+    dealloc(job)))
+
+proc tuckSpawnResultJob*[R, A0](slot: TuckAsyncResult[R], fn: proc(a0: A0): R {.nimcall.}, a0: A0) =
+  ## Spawn `fn` on its arguments, its return value landing in `slot` (nil: the
+  ## value, which nobody awaits, is dropped).
+  let job = create(TuckResJob1[R, A0])
+  job.fn = fn
+  job.slot = slot
+  copyMem(addr job.a0, unsafeAddr a0, sizeof(A0))
+  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    var r = job.fn(job.a0)
+    if job.slot == nil:
+      tuckDrop(r)
+    else:
+      tuckStore(job.slot.value, r)
+      job.slot.done = true
+    dealloc(job)))
+
+proc tuckSpawnJobDrop*[R, A0](fn: proc(a0: A0): R {.nimcall.}, a0: A0) =
+  ## Spawn `fn` on its arguments; the value it returns is dropped.
+  tuckSpawnResultJob(TuckAsyncResult[R](nil), fn, a0)
+
+type
+  TuckJob2[A0, A1] = object
+    fn: proc(a0: A0, a1: A1) {.nimcall.}
+    a0: A0
+    a1: A1
+  TuckResJob2[R, A0, A1] = object
+    fn: proc(a0: A0, a1: A1): R {.nimcall.}
+    slot: TuckAsyncResult[R]     ## nil: nobody awaits; the value is dropped
+    a0: A0
+    a1: A1
+
+proc tuckSpawnJob*[A0, A1](fn: proc(a0: A0, a1: A1) {.nimcall.}, a0: A0, a1: A1) =
+  ## Spawn `fn` on its arguments.
+  let job = create(TuckJob2[A0, A1])
+  job.fn = fn
+  copyMem(addr job.a0, unsafeAddr a0, sizeof(A0))
+  copyMem(addr job.a1, unsafeAddr a1, sizeof(A1))
+  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    job.fn(job.a0, job.a1)
+    dealloc(job)))
+
+proc tuckSpawnResultJob*[R, A0, A1](slot: TuckAsyncResult[R], fn: proc(a0: A0, a1: A1): R {.nimcall.}, a0: A0, a1: A1) =
+  ## Spawn `fn` on its arguments, its return value landing in `slot` (nil: the
+  ## value, which nobody awaits, is dropped).
+  let job = create(TuckResJob2[R, A0, A1])
+  job.fn = fn
+  job.slot = slot
+  copyMem(addr job.a0, unsafeAddr a0, sizeof(A0))
+  copyMem(addr job.a1, unsafeAddr a1, sizeof(A1))
+  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    var r = job.fn(job.a0, job.a1)
+    if job.slot == nil:
+      tuckDrop(r)
+    else:
+      tuckStore(job.slot.value, r)
+      job.slot.done = true
+    dealloc(job)))
+
+proc tuckSpawnJobDrop*[R, A0, A1](fn: proc(a0: A0, a1: A1): R {.nimcall.}, a0: A0, a1: A1) =
+  ## Spawn `fn` on its arguments; the value it returns is dropped.
+  tuckSpawnResultJob(TuckAsyncResult[R](nil), fn, a0, a1)
+
+type
+  TuckJob3[A0, A1, A2] = object
+    fn: proc(a0: A0, a1: A1, a2: A2) {.nimcall.}
+    a0: A0
+    a1: A1
+    a2: A2
+  TuckResJob3[R, A0, A1, A2] = object
+    fn: proc(a0: A0, a1: A1, a2: A2): R {.nimcall.}
+    slot: TuckAsyncResult[R]     ## nil: nobody awaits; the value is dropped
+    a0: A0
+    a1: A1
+    a2: A2
+
+proc tuckSpawnJob*[A0, A1, A2](fn: proc(a0: A0, a1: A1, a2: A2) {.nimcall.}, a0: A0, a1: A1, a2: A2) =
+  ## Spawn `fn` on its arguments.
+  let job = create(TuckJob3[A0, A1, A2])
+  job.fn = fn
+  copyMem(addr job.a0, unsafeAddr a0, sizeof(A0))
+  copyMem(addr job.a1, unsafeAddr a1, sizeof(A1))
+  copyMem(addr job.a2, unsafeAddr a2, sizeof(A2))
+  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    job.fn(job.a0, job.a1, job.a2)
+    dealloc(job)))
+
+proc tuckSpawnResultJob*[R, A0, A1, A2](slot: TuckAsyncResult[R], fn: proc(a0: A0, a1: A1, a2: A2): R {.nimcall.}, a0: A0, a1: A1, a2: A2) =
+  ## Spawn `fn` on its arguments, its return value landing in `slot` (nil: the
+  ## value, which nobody awaits, is dropped).
+  let job = create(TuckResJob3[R, A0, A1, A2])
+  job.fn = fn
+  job.slot = slot
+  copyMem(addr job.a0, unsafeAddr a0, sizeof(A0))
+  copyMem(addr job.a1, unsafeAddr a1, sizeof(A1))
+  copyMem(addr job.a2, unsafeAddr a2, sizeof(A2))
+  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    var r = job.fn(job.a0, job.a1, job.a2)
+    if job.slot == nil:
+      tuckDrop(r)
+    else:
+      tuckStore(job.slot.value, r)
+      job.slot.done = true
+    dealloc(job)))
+
+proc tuckSpawnJobDrop*[R, A0, A1, A2](fn: proc(a0: A0, a1: A1, a2: A2): R {.nimcall.}, a0: A0, a1: A1, a2: A2) =
+  ## Spawn `fn` on its arguments; the value it returns is dropped.
+  tuckSpawnResultJob(TuckAsyncResult[R](nil), fn, a0, a1, a2)
+
+type
+  TuckJob4[A0, A1, A2, A3] = object
+    fn: proc(a0: A0, a1: A1, a2: A2, a3: A3) {.nimcall.}
+    a0: A0
+    a1: A1
+    a2: A2
+    a3: A3
+  TuckResJob4[R, A0, A1, A2, A3] = object
+    fn: proc(a0: A0, a1: A1, a2: A2, a3: A3): R {.nimcall.}
+    slot: TuckAsyncResult[R]     ## nil: nobody awaits; the value is dropped
+    a0: A0
+    a1: A1
+    a2: A2
+    a3: A3
+
+proc tuckSpawnJob*[A0, A1, A2, A3](fn: proc(a0: A0, a1: A1, a2: A2, a3: A3) {.nimcall.}, a0: A0, a1: A1, a2: A2, a3: A3) =
+  ## Spawn `fn` on its arguments.
+  let job = create(TuckJob4[A0, A1, A2, A3])
+  job.fn = fn
+  copyMem(addr job.a0, unsafeAddr a0, sizeof(A0))
+  copyMem(addr job.a1, unsafeAddr a1, sizeof(A1))
+  copyMem(addr job.a2, unsafeAddr a2, sizeof(A2))
+  copyMem(addr job.a3, unsafeAddr a3, sizeof(A3))
+  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    job.fn(job.a0, job.a1, job.a2, job.a3)
+    dealloc(job)))
+
+proc tuckSpawnResultJob*[R, A0, A1, A2, A3](slot: TuckAsyncResult[R], fn: proc(a0: A0, a1: A1, a2: A2, a3: A3): R {.nimcall.}, a0: A0, a1: A1, a2: A2, a3: A3) =
+  ## Spawn `fn` on its arguments, its return value landing in `slot` (nil: the
+  ## value, which nobody awaits, is dropped).
+  let job = create(TuckResJob4[R, A0, A1, A2, A3])
+  job.fn = fn
+  job.slot = slot
+  copyMem(addr job.a0, unsafeAddr a0, sizeof(A0))
+  copyMem(addr job.a1, unsafeAddr a1, sizeof(A1))
+  copyMem(addr job.a2, unsafeAddr a2, sizeof(A2))
+  copyMem(addr job.a3, unsafeAddr a3, sizeof(A3))
+  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    var r = job.fn(job.a0, job.a1, job.a2, job.a3)
+    if job.slot == nil:
+      tuckDrop(r)
+    else:
+      tuckStore(job.slot.value, r)
+      job.slot.done = true
+    dealloc(job)))
+
+proc tuckSpawnJobDrop*[R, A0, A1, A2, A3](fn: proc(a0: A0, a1: A1, a2: A2, a3: A3): R {.nimcall.}, a0: A0, a1: A1, a2: A2, a3: A3) =
+  ## Spawn `fn` on its arguments; the value it returns is dropped.
+  tuckSpawnResultJob(TuckAsyncResult[R](nil), fn, a0, a1, a2, a3)
+
+type
+  TuckJob5[A0, A1, A2, A3, A4] = object
+    fn: proc(a0: A0, a1: A1, a2: A2, a3: A3, a4: A4) {.nimcall.}
+    a0: A0
+    a1: A1
+    a2: A2
+    a3: A3
+    a4: A4
+  TuckResJob5[R, A0, A1, A2, A3, A4] = object
+    fn: proc(a0: A0, a1: A1, a2: A2, a3: A3, a4: A4): R {.nimcall.}
+    slot: TuckAsyncResult[R]     ## nil: nobody awaits; the value is dropped
+    a0: A0
+    a1: A1
+    a2: A2
+    a3: A3
+    a4: A4
+
+proc tuckSpawnJob*[A0, A1, A2, A3, A4](fn: proc(a0: A0, a1: A1, a2: A2, a3: A3, a4: A4) {.nimcall.}, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4) =
+  ## Spawn `fn` on its arguments.
+  let job = create(TuckJob5[A0, A1, A2, A3, A4])
+  job.fn = fn
+  copyMem(addr job.a0, unsafeAddr a0, sizeof(A0))
+  copyMem(addr job.a1, unsafeAddr a1, sizeof(A1))
+  copyMem(addr job.a2, unsafeAddr a2, sizeof(A2))
+  copyMem(addr job.a3, unsafeAddr a3, sizeof(A3))
+  copyMem(addr job.a4, unsafeAddr a4, sizeof(A4))
+  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    job.fn(job.a0, job.a1, job.a2, job.a3, job.a4)
+    dealloc(job)))
+
+proc tuckSpawnResultJob*[R, A0, A1, A2, A3, A4](slot: TuckAsyncResult[R], fn: proc(a0: A0, a1: A1, a2: A2, a3: A3, a4: A4): R {.nimcall.}, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4) =
+  ## Spawn `fn` on its arguments, its return value landing in `slot` (nil: the
+  ## value, which nobody awaits, is dropped).
+  let job = create(TuckResJob5[R, A0, A1, A2, A3, A4])
+  job.fn = fn
+  job.slot = slot
+  copyMem(addr job.a0, unsafeAddr a0, sizeof(A0))
+  copyMem(addr job.a1, unsafeAddr a1, sizeof(A1))
+  copyMem(addr job.a2, unsafeAddr a2, sizeof(A2))
+  copyMem(addr job.a3, unsafeAddr a3, sizeof(A3))
+  copyMem(addr job.a4, unsafeAddr a4, sizeof(A4))
+  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    var r = job.fn(job.a0, job.a1, job.a2, job.a3, job.a4)
+    if job.slot == nil:
+      tuckDrop(r)
+    else:
+      tuckStore(job.slot.value, r)
+      job.slot.done = true
+    dealloc(job)))
+
+proc tuckSpawnJobDrop*[R, A0, A1, A2, A3, A4](fn: proc(a0: A0, a1: A1, a2: A2, a3: A3, a4: A4): R {.nimcall.}, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4) =
+  ## Spawn `fn` on its arguments; the value it returns is dropped.
+  tuckSpawnResultJob(TuckAsyncResult[R](nil), fn, a0, a1, a2, a3, a4)
+
+type
+  TuckJob6[A0, A1, A2, A3, A4, A5] = object
+    fn: proc(a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5) {.nimcall.}
+    a0: A0
+    a1: A1
+    a2: A2
+    a3: A3
+    a4: A4
+    a5: A5
+  TuckResJob6[R, A0, A1, A2, A3, A4, A5] = object
+    fn: proc(a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5): R {.nimcall.}
+    slot: TuckAsyncResult[R]     ## nil: nobody awaits; the value is dropped
+    a0: A0
+    a1: A1
+    a2: A2
+    a3: A3
+    a4: A4
+    a5: A5
+
+proc tuckSpawnJob*[A0, A1, A2, A3, A4, A5](fn: proc(a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5) {.nimcall.}, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5) =
+  ## Spawn `fn` on its arguments.
+  let job = create(TuckJob6[A0, A1, A2, A3, A4, A5])
+  job.fn = fn
+  copyMem(addr job.a0, unsafeAddr a0, sizeof(A0))
+  copyMem(addr job.a1, unsafeAddr a1, sizeof(A1))
+  copyMem(addr job.a2, unsafeAddr a2, sizeof(A2))
+  copyMem(addr job.a3, unsafeAddr a3, sizeof(A3))
+  copyMem(addr job.a4, unsafeAddr a4, sizeof(A4))
+  copyMem(addr job.a5, unsafeAddr a5, sizeof(A5))
+  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    job.fn(job.a0, job.a1, job.a2, job.a3, job.a4, job.a5)
+    dealloc(job)))
+
+proc tuckSpawnResultJob*[R, A0, A1, A2, A3, A4, A5](slot: TuckAsyncResult[R], fn: proc(a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5): R {.nimcall.}, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5) =
+  ## Spawn `fn` on its arguments, its return value landing in `slot` (nil: the
+  ## value, which nobody awaits, is dropped).
+  let job = create(TuckResJob6[R, A0, A1, A2, A3, A4, A5])
+  job.fn = fn
+  job.slot = slot
+  copyMem(addr job.a0, unsafeAddr a0, sizeof(A0))
+  copyMem(addr job.a1, unsafeAddr a1, sizeof(A1))
+  copyMem(addr job.a2, unsafeAddr a2, sizeof(A2))
+  copyMem(addr job.a3, unsafeAddr a3, sizeof(A3))
+  copyMem(addr job.a4, unsafeAddr a4, sizeof(A4))
+  copyMem(addr job.a5, unsafeAddr a5, sizeof(A5))
+  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    var r = job.fn(job.a0, job.a1, job.a2, job.a3, job.a4, job.a5)
+    if job.slot == nil:
+      tuckDrop(r)
+    else:
+      tuckStore(job.slot.value, r)
+      job.slot.done = true
+    dealloc(job)))
+
+proc tuckSpawnJobDrop*[R, A0, A1, A2, A3, A4, A5](fn: proc(a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5): R {.nimcall.}, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5) =
+  ## Spawn `fn` on its arguments; the value it returns is dropped.
+  tuckSpawnResultJob(TuckAsyncResult[R](nil), fn, a0, a1, a2, a3, a4, a5)
 
 # --- actor runtime (spec §9) ----------------------------------------------
 # An actor is a SINGLETON coroutine that loops: drain its mailbox, and when
@@ -511,17 +845,20 @@ proc checkWaiters(slot: ptr ActorSlot) =
     if w.satisfied: continue
     if w.pred():
       w.satisfied = true
-      woken.add(w)
+      tuckPush(woken, w)
     else:
-      kept.add(w)
-  slot.waiters = kept
+      tuckPush(kept, w)
+  tuckReplace(slot.waiters, kept)   # the old list's block is freed
   release(slot.lock)
   # Written OUTSIDE the lock: the waiter wakes immediately and must not
   # contend with the actor for a lock it is about to stop caring about.
   for w in woken:
     var b: byte = 1
-    discard write(w.doneFd, addr b, 1)
-    discard close(w.doneFd)
+    # The fd first: the waiter frees `w` the moment the byte lands.
+    let fd = w.doneFd
+    discard write(fd, addr b, 1)
+    discard close(fd)
+  tuckDrop(woken)
 
 proc tuckCheckWaiters*() =
   ## Emitted in the drain loop after each handled message, so a predicate sees
@@ -643,7 +980,7 @@ proc tuckStartActor*(drain: DrainProc): pointer {.discardable.} =
           slot.queued = false
           coroYield()), TuckStackSize)
     slot.queued = true
-    gActorSlots.add(slot)
+    tuckPush(gActorSlots, slot)
     schedule(slot.co)
   else:
     # An OS thread of its own. The slot is allocShared'd and the Thread lives
@@ -658,7 +995,7 @@ proc tuckStartActor*(drain: DrainProc): pointer {.discardable.} =
                              # already be queued by the time we get here
     slot.working = true
     acquire(gSlotsLock)
-    gActorSlots.add(slot)
+    tuckPush(gActorSlots, slot)
     release(gSlotsLock)
     createThread(slot.thr, actorMain, slot)
   cast[pointer](slot)
@@ -780,7 +1117,7 @@ proc tuckWaitOn*(handle: pointer, pred: proc(): bool) =
   w.pred = cast[proc(): bool {.gcsafe.}](pred)
   w.doneFd = fds[1]
   acquire(slot.lock)
-  slot.waiters.add(w)
+  tuckPush(slot.waiters, w)
   slot.pending = true
   signal(slot.cond)
   release(slot.lock)

@@ -2,6 +2,7 @@
 import "../compiler/tuck_rt"
 
 proc `==`*(a, b: tuckˑtypeˑPodcastPlayerLifecycle): bool {.noSideEffect.}
+proc tuckDrop*(x: var tuckˑtypeˑPodcastPlayerLifecycle)
 
 proc tuckˑfnˑloadEpisode*(self: tuckˑobjectˑPodcastApp, episode: tuckˑtypeˑEpisode): tuckˑobjectˑPodcastApp
 proc tuckˑfnˑstartAudio*(self: tuckˑobjectˑPodcastApp): void
@@ -25,13 +26,26 @@ type tuckˑtypeˑPair* = object
   key*: string
   val*: string
 
-type tuckˑtypeˑPodcastPlayerLifecycleKind* = enum Unloaded, Loading, Ready, Error
-type tuckˑtypeˑPodcastPlayerLifecycle* = object
-  case kind*: tuckˑtypeˑPodcastPlayerLifecycleKind
-  of Unloaded: tuckˑvariantˑunloaded*: tuple[config: tuckˑtypeˑConfig]
-  of Loading: tuckˑvariantˑloading*: tuple[config: tuckˑtypeˑConfig, progress: int]
-  of Ready: tuckˑvariantˑready*: tuple[config: tuckˑtypeˑConfig, feed: tuckˑtypeˑFeed, audio: tuckˑtypeˑAudioPlayer]
-  of Error: tuckˑvariantˑerror*: tuple[config: tuckˑtypeˑConfig, reason: string]
+type
+  tuckˑtypeˑPodcastPlayerLifecycleKind* = enum Unloaded, Loading, Ready, Error
+  tuckˑtypeˑPodcastPlayerLifecycle_Unloaded* = object
+    config*: tuckˑtypeˑConfig
+  tuckˑtypeˑPodcastPlayerLifecycle_Loading* = object
+    config*: tuckˑtypeˑConfig
+    progress*: int
+  tuckˑtypeˑPodcastPlayerLifecycle_Ready* = object
+    config*: tuckˑtypeˑConfig
+    feed*: tuckˑtypeˑFeed
+    audio*: tuckˑtypeˑAudioPlayer
+  tuckˑtypeˑPodcastPlayerLifecycle_Error* = object
+    config*: tuckˑtypeˑConfig
+    reason*: string
+  tuckˑtypeˑPodcastPlayerLifecycle* = object
+    case kind*: tuckˑtypeˑPodcastPlayerLifecycleKind
+    of Unloaded: tuckˑvariantˑunloaded*: tuckˑtypeˑPodcastPlayerLifecycle_Unloaded
+    of Loading: tuckˑvariantˑloading*: tuckˑtypeˑPodcastPlayerLifecycle_Loading
+    of Ready: tuckˑvariantˑready*: tuckˑtypeˑPodcastPlayerLifecycle_Ready
+    of Error: tuckˑvariantˑerror*: tuckˑtypeˑPodcastPlayerLifecycle_Error
 
 proc `==`*(a, b: tuckˑtypeˑPodcastPlayerLifecycle): bool {.noSideEffect.} =
   if a.kind != b.kind: return false
@@ -40,6 +54,13 @@ proc `==`*(a, b: tuckˑtypeˑPodcastPlayerLifecycle): bool {.noSideEffect.} =
   of Loading: a.tuckˑvariantˑloading == b.tuckˑvariantˑloading
   of Ready: a.tuckˑvariantˑready == b.tuckˑvariantˑready
   of Error: a.tuckˑvariantˑerror == b.tuckˑvariantˑerror
+
+proc tuckDrop*(x: var tuckˑtypeˑPodcastPlayerLifecycle) =
+  case x.kind
+  of Unloaded: tuckDrop(x.tuckˑvariantˑunloaded)
+  of Loading: tuckDrop(x.tuckˑvariantˑloading)
+  of Ready: tuckDrop(x.tuckˑvariantˑready)
+  of Error: tuckDrop(x.tuckˑvariantˑerror)
 
 type tuckˑobjectˑPodcastApp* = object
   volume*: int

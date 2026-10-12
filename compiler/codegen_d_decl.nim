@@ -11,6 +11,7 @@ import codegen_common
 import codegen_d_ctx
 from mangle import mangleName
 import ./codegen_d
+from ownership_elab import owning
 
 proc dVisibility*(ctx: DCodegenCtx, d: Decl): string =
   ## The `public:` block reaching the emitted artifact (spec 2.3c). D defaults
@@ -362,6 +363,30 @@ proc genDPayloadSum*(ctx: var DCodegenCtx, d: Decl, body: Type): string =
   # answer, which is worse than the Nim backend's refusal to compile the same
   # program at all. Same tag, then the ACTIVE payload only — the inactive
   # union arms hold whatever was last written there.
+  # A deep copy or a drop (rule G) walks the LIVE variant only: the inactive
+  # arms hold whatever was last written there, which a field walk would
+  # follow.
+  res.add("    void tuckFree() {\n")
+  res.add("        final switch (kind) {\n")
+  for v in body.variants:
+    let tag = "case " & d.name & "Kind." & v.name & ": "
+    if v.fields.len == 0:
+      res.add("        " & tag & "break;\n")
+    else:
+      let f = sumPayloadField(v.name)
+      res.add("        " & tag & "rt.tuckDrop(" & f & "); break;\n")
+  res.add("        }\n    }\n")
+  res.add("    " & d.name & " tuckDup() {\n")
+  res.add("        " & d.name & " r = this;\n")
+  res.add("        final switch (kind) {\n")
+  for v in body.variants:
+    let tag = "case " & d.name & "Kind." & v.name & ": "
+    if v.fields.len == 0:
+      res.add("        " & tag & "break;\n")
+    else:
+      let f = sumPayloadField(v.name)
+      res.add("        " & tag & "r." & f & " = rt.tuckCopy(" & f & "); break;\n")
+  res.add("        }\n        return r;\n    }\n")
   res.add("    bool opEquals(const " & d.name & " o) const {\n")
   res.add("        if (kind != o.kind) return false;\n")
   res.add("        final switch (kind) {\n")
@@ -451,30 +476,30 @@ proc genDTaskDecl*(ctx: var DCodegenCtx, d: Decl): string =
   ## `task name(...)` — an ordinary D function. What makes it a task is the
   ## CALL SITE: calling it schedules a coroutine, and binding its result
   ## awaits completion (spec §9.2). The body needs no marking of its own.
-  let retStr = ctx.dType(d.taskReturnType)
+  let retStr = ctx.dType(d.fnReturnType)
   # A task's return type is fallible exactly as a fn's can be, and a bare
   # `return` inside one has to produce the carrier — `return;` in a function
   # returning TuckResult is "`return` expression expected". genDFnDecl set
   # these three and genDTaskDecl did not, so every early return in a
   # `task ... -> !void` emitted D that would not compile.
-  let payload = bangInner(d.taskReturnType)
+  let payload = bangInner(d.fnReturnType)
   ctx.retWrapped = payload != nil
-  ctx.retAbsentCapable = absentCapable(d.taskReturnType)
+  ctx.retAbsentCapable = absentCapable(d.fnReturnType)
   ctx.retInnerT = payload
   ctx.retInnerD =
     if payload == nil: ""
     else:
       let inner = ctx.dType(payload)
       if inner == "void": "rt.TuckUnit" else: inner
-  result = retStr & " " & d.name & "(" & ctx.genDParams(d.taskParams) & ") {\n"
+  result = retStr & " " & d.name & "(" & ctx.genDParams(d.fnParams) & ") {\n"
   ctx.indent = 1
   ctx.definedVars.clear()
   ctx.currentParams = @[]
-  for p in d.taskParams:
+  for p in d.fnParams:
     ctx.definedVars.incl(p.name)
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
-  result.add(ctx.genDStmtOrBlock(d.taskBody))
-  result.add(dTrailingReturn(d.taskBody, retStr, 1))
+  result.add(ctx.genDStmtOrBlock(d.fnBody))
+  result.add(dTrailingReturn(d.fnBody, retStr, 1))
   ctx.indent = 0
   ctx.currentParams = @[]
   ctx.retWrapped = false
@@ -564,14 +589,8 @@ proc genDSendHelper*(ctx: var DCodegenCtx, d: Decl,
   for p in h.params:
     params.add(ctx.dType(p.typ) & " " & p.name)
     ctorArgs.add(", " & p.name & ": " & p.name)
-    if copyableContainer(ctx.res, ctx.module, p.typ):
-      let fields = movedCopyFields(ctx.res, ctx.module, p.typ)
-      if fields.len == 0:
-        copies.add("    " & p.name & " = " & p.name & ".dup;\n")
-      else:
-        for f in fields:
-          copies.add("    " & p.name & "." & f & " = " & p.name & "." & f &
-                     ".dup;\n")
+    if ctx.res.owning(ctx.module, p.typ):
+      copies.add("    " & p.name & " = rt.tuckCopy(" & p.name & ");\n")
   let sep = if params.len > 0: ", " else: ""
   # The enqueue is the actor's `on_full` (R6): wait for room (the default),
   # stop the program, or drop — the bare enqueue every send used to be.
@@ -786,12 +805,10 @@ proc genDTwinWrapper(ctx: var DCodegenCtx, d: Decl, fnName, tmplStr, retStr,
            tmplStr & "(" & ctx.genDParams(d.fnParams, refSelf) & ") {\n"
   var argNames: seq[string]
   for p in d.fnParams: argNames.add(p.name)
-  let fields = movedCopyFields(ctx.res, ctx.module, d.fnParams[0].typ)
-  if fields.len == 0:
-    result.add("    " & movedP & " = " & movedP & ".dup;\n")
-  else:
-    for f in fields:
-      result.add("    " & movedP & "." & f & " = " & movedP & "." & f & ".dup;\n")
+  # The BORROWING entry: every parameter the body owns (rule P) is copied
+  # whole and deep (rule G), and the body consumes the copies.
+  for p in d.ownedParams:
+    result.add("    " & p & " = rt.tuckCopy(" & p & ");\n")
   result.add("    return " & movedName(fnName) & "(" & argNames.join(", ") &
              ");\n}\n\n")
 

@@ -395,9 +395,9 @@ fn main() -> int:
   return 0
 """
   t.okCheck "a self-append checks"
-  t.emits "Nim appends in place", r"tuckˑvˑa\.add\(3\)"
+  t.emits "Nim appends in place", r"tuckPush\(tuckˑvˑa, 3\)"
   t.emitsOdin "Odin appends in place", r"append\(&tuckˑvˑa, 3\)"
-  t.emitsD "D appends in place", r"tuckˑvˑa ~= 3L"
+  t.emitsD "D appends in place", r"rt\.tuckPush\(tuckˑvˑa, 3L\)"
   t.hostBuilds "...on every backend"
   t.runs "...and a copy taken beforehand is untouched", 0
 
@@ -441,8 +441,8 @@ fn main() -> int:
   return 0
 """
   t.okCheck "a self-concat checks"
-  t.emits "Nim appends a str in place", r"tuckˑvˑa\.add\("
-  t.emitsD "D appends a str in place", r"tuckˑvˑa ~= "
+  t.emits "Nim appends a str in place", r"tuckStrAppend\(tuckˑvˑa, "
+  t.emitsD "D appends a str in place", r"rt\.tuckStrAppend\(tuckˑvˑa, "
   t.omits "a PREPEND is left alone on Nim", r"tuckˑvˑb\.add\("
   t.omitsD "...and on D", r"tuckˑvˑb ~="
   t.omits "a self-concat is left alone on Nim", r"tuckˑvˑc\.add\("

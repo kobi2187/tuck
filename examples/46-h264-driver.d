@@ -265,7 +265,8 @@ int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
     tuckˑactorˑPipelineSlot = rt.tuckStartActor(&drain_tuckˑactorˑPipeline);
+    rt.tuckLeakMark();
     auto mainRc = tuckˑfnˑmain();
     rt.tuckDrainActors();
-    return cast(int) mainRc;
+    return rt.tuckLeakCheck(cast(int) mainRc);
 }

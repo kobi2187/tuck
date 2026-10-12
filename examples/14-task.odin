@@ -21,6 +21,7 @@ tuckˑfnˑparse :: proc(payload: $T) -> TRec_feed(tuckˑtypeˑFeed) {
 
 tuckˑtaskˑfetchFeed :: proc(url: string) -> rt.TuckResult(TRec_feed(tuckˑtypeˑFeed)) {
   tuckˑvˑresp := http.tuckˑfnˑget(url)
+  defer rt.tuckDrop(tuckˑvˑresp)
   if (tuckˑvˑresp.status == .Ok) {
       return rt.tok(tuckˑfnˑparse(tuckˑvˑresp.value.body))
   }

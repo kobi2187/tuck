@@ -17,6 +17,11 @@ type Animal* = object
   of Animal_is_tuckˑobjectˑCat: tuckˑobjectˑCatVal*: tuckˑobjectˑCat
   of Animal_is_tuckˑobjectˑDog: tuckˑobjectˑDogVal*: tuckˑobjectˑDog
 
+proc tuckDrop*(x: var Animal) =
+  case x.tag
+  of Animal_is_tuckˑobjectˑCat: tuckDrop(x.tuckˑobjectˑCatVal)
+  of Animal_is_tuckˑobjectˑDog: tuckDrop(x.tuckˑobjectˑDogVal)
+
 proc tuckˑobjectˑDogˑnoise*(self: tuckˑobjectˑDog): int =
   return 1
 
@@ -26,9 +31,9 @@ proc tuckˑobjectˑCatˑnoise*(self: tuckˑobjectˑCat): int =
 
 
 proc tuckˑfnˑmakeMany*(): seq[Animal] =
-  var tuckˑvˑd = tuckˑobjectˑDog(name: "rex")
+  var tuckˑvˑd = tuckˑobjectˑDog(name: tuckCopy("rex"))
   var tuckˑvˑc = tuckˑobjectˑCat(lives: 9)
-  return @[Animal(tag: Animal_is_tuckˑobjectˑDog, tuckˑobjectˑDogVal: tuckˑvˑd), Animal(tag: Animal_is_tuckˑobjectˑCat, tuckˑobjectˑCatVal: tuckˑvˑc)]
+  return @[Animal(tag: Animal_is_tuckˑobjectˑDog, tuckˑobjectˑDogVal: tuckMove(tuckˑvˑd)), Animal(tag: Animal_is_tuckˑobjectˑCat, tuckˑobjectˑCatVal: tuckˑvˑc)]
 
 proc tuckˑfnˑtotal*(xs: seq[Animal]): int =
   var tuckˑvˑs = 0
@@ -37,13 +42,15 @@ proc tuckˑfnˑtotal*(xs: seq[Animal]): int =
       tuckˑvˑs = (tuckˑvˑs + (block:
         case tuckˑvˑa.tag
         of Animal_is_tuckˑobjectˑCat:
-          var tmp = tuckˑvˑa.tuckˑobjectˑCatVal
+          template tmp: untyped {.used.} = tuckˑvˑa.tuckˑobjectˑCatVal
           tuckˑobjectˑCatˑnoise(tmp)
         of Animal_is_tuckˑobjectˑDog:
-          var tmp = tuckˑvˑa.tuckˑobjectˑDogVal
+          template tmp: untyped {.used.} = tuckˑvˑa.tuckˑobjectˑDogVal
           tuckˑobjectˑDogˑnoise(tmp)))
   return tuckˑvˑs
 
 proc tuckˑfnˑmain*(): int =
-  return tuckˑfnˑtotal(tuckˑfnˑmakeMany())
+  var tuckOwnTmp1 = tuckˑfnˑmakeMany()
+  defer: tuckDrop(tuckOwnTmp1)
+  return tuckˑfnˑtotal(tuckOwnTmp1)
 

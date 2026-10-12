@@ -31,6 +31,7 @@ void tuckˑfnˑtriggerEvent() {
 void tuckˑfnˑAppEvents_SensorFailure(ubyte port, string reason) {
     ubyte tuckˑvˑx = port;
     string tuckˑvˑy = reason;
+    scope(exit) rt.tuckDrop(tuckˑvˑy);
 }
 
 void tuckˑfnˑAppEvents_LowMemory(uint remaining) {

@@ -21,7 +21,9 @@ void tuckˑfnˑmain() {
     return;
 }
 
-void main(string[] args) {
+int main(string[] args) {
     rt.tuckSetArgs(args);
+    rt.tuckLeakMark();
     tuckˑfnˑmain();
+    return rt.tuckLeakCheck(0);
 }
