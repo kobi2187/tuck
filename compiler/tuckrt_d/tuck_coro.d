@@ -739,6 +739,15 @@ private struct ActorSlot
     bool retiring;        /// set once, at exit: leave the loop, do not park
     Thread thread;        /// kept so the exit drain can join it
     Waiter*[] waiters;
+    // The liveness channel (`Actor.pingUs` / `Actor.alive`). NOT a message: a
+    // probe is a word in the slot, so it passes whatever waits in the mailbox
+    // and runs no handler.
+    shared long probe;    /// last probe id handed out; clients fetch-add it
+    long answered;        /// the actor's own copy of the last id it answered,
+                          /// so the per-message check is one load, one compare
+    shared long ackId;    /// `answered`, published for the clients
+    shared long ackAt;    /// the ACTOR'S clock (ns) at that answer; read only
+                          /// to answer, never on the message path
 }
 
 /// Free the block a slice owns. A small array keeps its length byte at the
@@ -806,11 +815,36 @@ private void checkWaiters(ActorSlot* slot)
     tuckFreeBlock(cast(void*) woken.ptr);
 }
 
+private long nowNs()
+{
+    import core.time : MonoTime, convClockFreq;
+    return convClockFreq(MonoTime.currTime.ticks, MonoTime.ticksPerSecond,
+                         1_000_000_000L);
+}
+
+/// Reply to a pending ping on the actor's own thread, at a message boundary.
+/// Nobody pinging costs one load and one compare; the clock is read only to
+/// answer.
+private void answerProbe(ActorSlot* slot)
+{
+    import core.atomic : MemoryOrder;
+    immutable p = atomicLoad!(MemoryOrder.raw)(slot.probe);
+    if (p == slot.answered) return;
+    slot.answered = p;
+    atomicStore!(MemoryOrder.raw)(slot.ackAt, nowNs());
+    atomicStore!(MemoryOrder.rel)(slot.ackId, p);
+}
+
 /// Emitted in the drain loop after each handled message, so a predicate sees
-/// the EXACT moment it becomes true rather than once per batch.
+/// the EXACT moment it becomes true rather than once per batch. A pending ping
+/// is answered at the same boundary.
 void tuckCheckWaiters()
 {
-    if (gMySlot !is null) checkWaiters(gMySlot);
+    if (gMySlot !is null)
+    {
+        answerProbe(gMySlot);
+        checkWaiters(gMySlot);
+    }
 }
 
 private void actorMain(ActorSlot* slot)
@@ -821,6 +855,7 @@ private void actorMain(ActorSlot* slot)
     while (true)
     {
         if (slot.drain()) continue;
+        answerProbe(slot);   // a ping that found the actor idle or spinning
         checkWaiters(slot);
         // Spin for as long as spinning has been paying. A producer that is
         // still running hands over more work within nanoseconds, while a
@@ -1054,6 +1089,43 @@ void tuckAwaitRoom(void* handle, string actor)
     if (inCoroutine()) tuckYield();          // re-queues the caller first
     else if (readyCount > 0) stepOne();
     else Thread.yield();
+}
+
+/// `Actor.pingUs` — the delay, in ns, from this call to the moment the actor
+/// answered, read from the ACTOR'S clock; -1 when no answer came in
+/// `withinMs`. The probe is a word in the actor's slot, not a message: it does
+/// not wait behind the mailbox and runs no handler, so any answer means the
+/// actor's loop is turning and a late one means it was inside a handler. Each
+/// client takes its own id and waits for `ackId` to reach it, so no lock and
+/// two clients at once are both answered.
+long tuckPingNs(void* handle, long withinMs)
+{
+    import core.atomic : MemoryOrder;
+    if (handle is null) return -1;
+    auto slot = cast(ActorSlot*) handle;
+    immutable t0 = nowNs();
+    immutable deadline = t0 + withinMs * 1_000_000L;
+    immutable id = atomicOp!"+="(slot.probe, 1);
+    // Wake it the way a send does: the probe may be all there is to do.
+    slot.lock.lock();
+    slot.pending = true;
+    slot.cond.notify();
+    slot.lock.unlock();
+    while (atomicLoad!(MemoryOrder.acq)(slot.ackId) < id)
+    {
+        if (nowNs() >= deadline) return -1;
+        if (inCoroutine()) tuckYield();
+        else if (readyCount > 0) stepOne();
+        else Thread.yield();
+    }
+    immutable at = atomicLoad!(MemoryOrder.raw)(slot.ackAt);
+    return at > t0 ? at - t0 : 0;
+}
+
+/// `Actor.alive` — did the actor answer a probe within `withinMs`.
+bool tuckAlive(void* handle, long withinMs)
+{
+    return tuckPingNs(handle, withinMs) >= 0;
 }
 
 /// Main blocks until a predicate over public actor state holds, driving the

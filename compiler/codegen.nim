@@ -311,24 +311,26 @@ proc withTypeArgs(ctx: CodegenCtx, calleeStr: string, e: Expr): string =
   for t in targs: parts.add(genType(t))
   calleeStr & "[" & parts.join(", ") & "]"
 
-proc genActorWaitOn(ctx: var CodegenCtx, e: Expr): string =
-  ## `Actor.waitUntil {pred: :p}` -> `tuckWaitOn(<Actor>Slot, p)`.
+proc genActorMember(ctx: var CodegenCtx, e: Expr): string =
+  ## `Actor.waitUntil {pred: :p}` -> `tuckWaitOn(<Actor>Slot, p)`; `pingUs` and
+  ## `alive` the same way (ActorMembers).
   ##
-  ## The checker rewrote the member call into `waitUntil(<actorRef>, pred)`
+  ## The checker rewrote the member call into `member(<actorRef>, arg)`
   ## (asStaticMemberCall), so the actor is still named in arg 0 and codegen
   ## routes it to THAT actor's slot. Same shape as `Pool.acquire` reaching the
   ## runtime's acquire: the member name belongs to the ACTOR surface, not to a
   ## library the compiler had to learn by name.
-  if not isActorWaitOn(e): return ""
-  "tuckWaitOn(" & actorSlotName(e.args[0].refName) & ", " &
+  let rt = actorMemberRt(e)
+  if rt == "": return ""
+  rt & "(" & actorSlotName(e.args[0].refName) & ", " &
     ctx.genExpr(e.args[1]) & ")"
 
 proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   ## Every exkCall, whatever produced it: `waitOn`, record construction, a sum
   ## variant, a member or combinator call, else a plain call with its
   ## arguments in parameter order and any explicit type arguments.
-  let waitOn = ctx.genActorWaitOn(e)
-  if waitOn != "": return waitOn
+  let actorBuiltin = ctx.genActorMember(e)
+  if actorBuiltin != "": return actorBuiltin
   if ctx.isRecordConstruction(e): return ctx.genRecordCtor(e)
   let variant = ctx.asSumVariantCall(e)
   if variant != "": return variant

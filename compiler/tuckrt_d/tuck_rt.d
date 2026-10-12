@@ -201,6 +201,15 @@ T[N] tuckFill(T, size_t N)(T v)
     return r;
 }
 
+/// `Actor.pingUs {withinMs: n}` — the actor's answer delay in microseconds, or
+/// absent when it did not answer in time. The probe is tuck_coro's; the result
+/// type is here because that module cannot see TuckResult.
+TuckResult!long tuckPingUs(void* handle, long withinMs)
+{
+    immutable ns = tuckPingNs(handle, withinMs);
+    return ns < 0 ? tnone!long() : tok(ns / 1000);
+}
+
 TuckResult!T tnone(T)()
 {
     TuckResult!T r;

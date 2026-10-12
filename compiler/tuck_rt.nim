@@ -1762,4 +1762,11 @@ proc hash*(data: string): uint64 =
 # base runtime. A name defined in both modules is a Nim redefinition error at
 # stdlib-compile time — the intended hard error, the stdlib author's to fix.
 # (The import itself is up with the externs, which call into it.)
+proc tuckPingUs*(handle: pointer, withinMs: int): TuckResult[int] =
+  ## `Actor.pingUs {withinMs: n}` — the actor's answer delay in microseconds,
+  ## or absent when it did not answer in time. The probe is tuck_async's; the
+  ## result type is here because that module cannot see TuckResult.
+  let ns = tuckPingNs(handle, withinMs)
+  if ns < 0: tnone[int]() else: tok(int(ns div 1000))
+
 export tuck_async
