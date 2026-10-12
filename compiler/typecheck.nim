@@ -4875,6 +4875,23 @@ proc synthRaise(tc: var TypeChecker, e: Expr): Type =
   # position has to carry the fn's real return type or it cannot satisfy it.
   tc.currentRet
 
+proc failIfBadActorArm(arm: SelectArm) =
+  ## TK-AC10..12: an actor's `on select` arm is a row in the table of messages
+  ## the actor answers — one line or one call (which may sit on the next
+  ## line), void, and nothing that ends or leaves a loop, because there is none.
+  if arm.source == "shutdown":
+    fail(dcAcShutdown, "an actor has no `shutdown` arm: it lives as long as " &
+         "the program", arm.span)
+  if arm.body != nil and arm.body.kind == exkBlock and arm.body.stmts.len > 1:
+    fail(dcAcArmShape, "the arm '" & arm.source & "' has " &
+         $arm.body.stmts.len & " statements; an arm is one line or one call. " &
+         "Fix: move them into a member fn and call it", arm.span)
+  if arm.body != nil:
+    for n in arm.body.nodes:
+      if n.kind == exkReturn:
+        fail(dcAcArmReturn, "the arm '" & arm.source & "' returns; an arm is " &
+             "void and ends nothing", n.span)
+
 proc failIfSendToMember(actorDecl: Decl, handler: string) =
   ## TK-AC05: a `send` names a message, and a `fn` in an actor is a member
   ## its own code calls, not a message it receives (A24).
@@ -4887,9 +4904,11 @@ proc failIfSendToMember(actorDecl: Decl, handler: string) =
 proc sendHandlerParams(tc: TypeChecker, actorDecl: Decl, handler: string,
                        found: var bool): seq[Param] =
   ## The params a handler expects. It is an `on <name>` block OR an `on select`
-  ## message arm (spec §9.3); `shutdown` is the reserved control message and
-  ## takes an empty payload.
-  if handler == "shutdown": found = true
+  ## message arm (spec §9.3).
+  if handler == "shutdown":
+    fail(dcAcShutdown, "'" & actorDecl.name & "' cannot be sent `shutdown`: " &
+         "an actor has no shutdown, it lives as long as the program",
+         actorDecl.span)
   failIfSendToMember(actorDecl, handler)
   for h in actorDecl.handlers:
     if found: break
@@ -5783,6 +5802,7 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     # checked — a `..` step in one never resolved, a construction was never
     # typed, and each backend printed its own garbled guess.
     for arm in d.selectArms:
+      failIfBadActorArm(arm)
       tc.checkFnBody(arm.source, arm.binding, nil, arm.body)
   # Exhaustive, so a new DeclKind has to be decided here (CLAUDE.md).
   of dkConst: discard       # bound and checked by bindConsts, before any body

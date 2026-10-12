@@ -787,8 +787,12 @@ return type, with nothing checking it was ever assigned and nothing collecting
 it — the emitted `handleMsg` returns nothing, so it became a discarded local.
 A fn returns with `return`.
 
-`on select` gives message arms plus a reserved `shutdown`. Like any handler it
-lives inside its actor (or task); at the top level only a registry handler,
+`on select` gives an actor its message arms. An arm is **one line or one call**
+(the call may sit on the next line), void, and cannot `return` (`TK-AC11`,
+`TK-AC12`): several statements belong in a member `fn` the arm calls. An actor is
+a singleton server that lives as long as the program, so it has no shutdown,
+stop or resume (`TK-AC10`); the `shutdown` arm and `send shutdown` are gone. Like
+any handler it lives inside its actor (or task); at the top level only a registry handler,
 `on Registry.Event({...}):`, may start with `on` (`TK-PA15`):
 
 ```tuck
@@ -799,7 +803,6 @@ actor Tally [queue: 16]:
   on select:
     | add -> {n: int}:  total += n
     | finish -> {}:     done = true
-    | shutdown -> {}:   total = total
 ```
 
 Run-verified 55 on every backend.

@@ -177,6 +177,9 @@ type
     dcAcUnknownAttr = "TK-AC07"         ## an actor attribute other than queue and on_full
     dcAcSlabOwner = "TK-AC08"           ## a slab reached by an owner other than its own
     dcAcRefCrossing = "TK-AC09"         ## a slab reference crossing an actor boundary
+    dcAcShutdown = "TK-AC10"            ## an actor `shutdown` arm, or a send of `shutdown`
+    dcAcArmShape = "TK-AC11"            ## an actor `on select` arm longer than one line or call
+    dcAcArmReturn = "TK-AC12"           ## an actor `on select` arm that `return`s
     dcMeSizeCount = "TK-ME01"           ## a pool/arena size or count is not positive
     dcMeArenaInert = "TK-ME02"          ## RETIRED 2026-10-04: the arena is built
     dcMeSlabInValue = "TK-ME03"         ## a slab declared inside an object or mixin
@@ -817,6 +820,27 @@ proc ruleExplanation(d: DiagCode): string =
     "(`Nodes.get {r}`) instead of the reference; an actor that needs " &
     "references of its own declares its own slab (`slab Nodes = Node` " &
     "inside the actor), whose references its fields may hold."
+  of dcAcShutdown:
+    "An actor is a singleton server that lives as long as the program: it " &
+    "has no shutdown, no stop and no resume. It is started with the program " &
+    "and its mailbox is simply never sent to again when nothing needs it. " &
+    "`shutdown` used to be a reserved arm and a reserved message; it ended " &
+    "the actor, but a `return` written in it (the documented way) did " &
+    "not, and nothing it promised — cleanup, a drained mailbox — was " &
+    "built. Fix: remove the arm, and if the actor must cease to act, give " &
+    "it a flag a message sets and have the other arms check it."
+  of dcAcArmShape:
+    "An actor's `on select` arm is ONE line or ONE call; the call may sit " &
+    "on the next line. A multi-line arm reads as a handler body hidden in a " &
+    "table of messages, and the table is what a reader scans to see what the " &
+    "actor answers. Fix: move the work into a member `fn` of the actor and " &
+    "make the arm call it: `| done -> {}: {} finish`."
+  of dcAcArmReturn:
+    "An actor's `on select` arm is void and does not end anything: there is " &
+    "no listening loop for it to leave and no caller to hand a value to " &
+    "(a message is fire-and-forget, TK-AC02). `return` in an arm therefore " &
+    "means nothing. Fix: remove it; set a field if the actor should behave " &
+    "differently from now on."
   of dcAcHandlerReturn:
     "A handler declared a return type, but an actor message is " &
     "fire-and-forget (spec 9.1) and there is no reply channel: correlation " &

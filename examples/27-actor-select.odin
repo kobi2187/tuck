@@ -4,7 +4,7 @@ package main
 import "core:os"
 import rt "./tuckrt"
 
-tuckˑactorˑAccumulatorMsgKind :: enum { msgAdd, msgFinish, msgShutdown }
+tuckˑactorˑAccumulatorMsgKind :: enum { msgAdd, msgFinish }
 tuckˑactorˑAccumulatorMsg :: struct {
 	tuckTag: tuckˑactorˑAccumulatorMsgKind,
 	n: int,
@@ -13,7 +13,6 @@ tuckˑactorˑAccumulator :: struct {
 	total: int,
 	done: bool,
 	mailbox: rt.Mailbox(tuckˑactorˑAccumulatorMsg, 64),
-	finished: bool,
 }
 
 tuckˑactorˑAccumulatorSingleton: tuckˑactorˑAccumulator
@@ -25,16 +24,12 @@ handleMsg_tuckˑactorˑAccumulator :: proc(self: ^tuckˑactorˑAccumulator, msg:
 self.total = (self.total + n)
 	case .msgFinish:
 self.done = true
-	case .msgShutdown:
-self.total = self.total
-		self.finished = true
 	}
 }
 
 tuckˑactorˑAccumulatorSlot: rawptr
 
 drain_tuckˑactorˑAccumulator :: proc() -> bool {
-	if tuckˑactorˑAccumulatorSingleton.finished { return false }
 	didWork := false
 	batch, n := rt.takeBatch(&tuckˑactorˑAccumulatorSingleton.mailbox)
 	for i in 0 ..< n {
@@ -52,11 +47,6 @@ sendAdd_tuckˑactorˑAccumulator :: proc(self: ^tuckˑactorˑAccumulator, n: int
 
 sendFinish_tuckˑactorˑAccumulator :: proc(self: ^tuckˑactorˑAccumulator) {
 	rt.sendWaiting(&self.mailbox, tuckˑactorˑAccumulatorMsg{tuckTag = .msgFinish}, tuckˑactorˑAccumulatorSlot, "Accumulator")
-	rt.tuckNotifySend(tuckˑactorˑAccumulatorSlot)
-}
-
-sendShutdown_tuckˑactorˑAccumulator :: proc(self: ^tuckˑactorˑAccumulator) {
-	rt.sendWaiting(&self.mailbox, tuckˑactorˑAccumulatorMsg{tuckTag = .msgShutdown}, tuckˑactorˑAccumulatorSlot, "Accumulator")
 	rt.tuckNotifySend(tuckˑactorˑAccumulatorSlot)
 }
 

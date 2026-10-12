@@ -334,4 +334,83 @@ fn main() -> int:
   t.runs "...and every arm delivers", 23
   t.hostRuns "...on every backend", 23
 
+  # --- an actor's `on select` arm (R10, ruled 2026-10-12) ------------------
+  #
+  # An arm is ONE line or ONE call, void, and ends nothing. An actor is a
+  # singleton server that lives as long as the program, so it has no shutdown,
+  # no stop and no resume: the reserved `shutdown` arm and message are gone.
+  t.src """
+actor Tally [queue: 8]:
+  total: int = 0
+
+  fn settle() -> void:
+    total += 100
+    total += 1
+
+  on select:
+    | add -> {n: int}:  total += n
+    | done -> {}:
+      {} settle
+
+fn main() -> int:
+  Tally send add {n: 1}
+  Tally send done {}
+  return 0
+"""
+  t.okCheck "an arm may be one line, or one call on the next line"
+
+  t.src """
+actor Tally [queue: 8]:
+  total: int = 0
+
+  on select:
+    | add -> {n: int}:
+      total += n
+      total += 1
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an arm of two statements is refused (TK-AC11)", "TK-AC11"
+
+  t.src """
+actor Tally [queue: 8]:
+  total: int = 0
+
+  on select:
+    | add -> {n: int}:  total += n
+    | shutdown -> {}:   total = 0
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "a shutdown arm is refused (TK-AC10)", "TK-AC10"
+
+  t.src """
+actor Tally [queue: 8]:
+  total: int = 0
+
+  on select:
+    | add -> {n: int}:  total += n
+
+fn main() -> int:
+  Tally send shutdown {}
+  return 0
+"""
+  t.badCheck "...and so is sending `shutdown` (TK-AC10)", "TK-AC10"
+
+  t.src """
+actor Tally [queue: 8]:
+  total: int = 0
+
+  on select:
+    | add -> {n: int}:  return
+    | done -> {}:       total = 1
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an arm that returns is refused (TK-AC12)", "TK-AC12"
+
+
   t.finish()

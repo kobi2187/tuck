@@ -141,10 +141,8 @@ proc absentCapable*(t: Type): bool =
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
     t.base.name in ["?", "!?"] and t.args.len == 1
 
-proc collectHandlers*(d: Decl):
-    tuple[handlers: seq[ActorMsgHandler], shutdownBody: Expr, hasShutdown: bool] =
-  ## Split an actor's declarations into message handlers plus the reserved
-  ## `shutdown` control arm (which stops the actor rather than adding a message).
+proc collectHandlers*(d: Decl): seq[ActorMsgHandler] =
+  ## An actor's message handlers, from both spellings.
   ##
   ## The two forms are the same thing to a backend: `on add({n: int}): ...` and
   ## an `| add -> {n: int}: ...` arm both declare a message named add with that
@@ -152,16 +150,12 @@ proc collectHandlers*(d: Decl):
   ## sites — made every `on select` actor look like an actor with NO handlers.
   for h in d.handlers:
     if h.kind == dkFn and h.isOnHandler:
-      result.handlers.add(ActorMsgHandler(name: h.name, params: h.fnParams,
-                                          body: h.fnBody))
+      result.add(ActorMsgHandler(name: h.name, params: h.fnParams,
+                                 body: h.fnBody))
     elif h.kind == dkSelect:
       for arm in h.selectArms:
-        if arm.source == "shutdown":
-          result.shutdownBody = arm.body
-          result.hasShutdown = true
-        else:
-          result.handlers.add(ActorMsgHandler(name: arm.source,
-                                              params: arm.binding, body: arm.body))
+        result.add(ActorMsgHandler(name: arm.source, params: arm.binding,
+                                   body: arm.body))
 
 proc isActorTemplate*(d: Decl): bool =
   ## An exported generic actor — `public: Box[T]`. It survives generic_actors
@@ -177,7 +171,7 @@ proc isActorTemplate*(d: Decl): bool =
 
 proc actorHasMessages*(d: Decl): bool =
   ## Whether this actor has anything to receive. A specimen actor
-  ## (`actor X: ...`) has no handlers and no shutdown, so it gets no envelope
+  ## (`actor X: ...`) has no handlers, so it gets no envelope
   ## type, no mailbox and no drain — and the entry point must not try to start
   ## one.
   ##
@@ -188,8 +182,7 @@ proc actorHasMessages*(d: Decl): bool =
   ## call to a registerActor/drain proc their own genActor had declined to
   ## define (issue #61).
   if isActorTemplate(d): return false   # nothing to start: it is not emitted
-  let (handlers, _, hasShutdown) = collectHandlers(d)
-  handlers.len > 0 or hasShutdown
+  collectHandlers(d).len > 0
 
 proc actorQueueSize*(m: Module, d: Decl): string =
   ## The `[queue: N]` attribute, or the default mailbox size.

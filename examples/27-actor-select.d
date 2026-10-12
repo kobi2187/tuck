@@ -2,7 +2,7 @@ module _27_actor_select;
 
 import rt = tuck_rt;
 
-enum tuckˑactorˑAccumulatorMsgKind { msgAdd, msgFinish, msgShutdown }
+enum tuckˑactorˑAccumulatorMsgKind { msgAdd, msgFinish }
 
 struct tuckˑactorˑAccumulatorMsg {
     tuckˑactorˑAccumulatorMsgKind tuckTag;
@@ -13,7 +13,6 @@ struct tuckˑactorˑAccumulator {
     long total;
     bool done;
     rt.Mailbox!(tuckˑactorˑAccumulatorMsg, 64) mailbox;
-    bool finished;
 }
 
 __gshared tuckˑactorˑAccumulator tuckˑactorˑAccumulatorSingleton;
@@ -32,17 +31,12 @@ void handleMsg_tuckˑactorˑAccumulator(ref tuckˑactorˑAccumulator self, tuck�
         case tuckˑactorˑAccumulatorMsgKind.msgFinish:
             self.done = true;
             break;
-        case tuckˑactorˑAccumulatorMsgKind.msgShutdown:
-            self.total = self.total;
-            self.finished = true;
-            break;
     }
 }
 
 __gshared void* tuckˑactorˑAccumulatorSlot;
 
 bool drain_tuckˑactorˑAccumulator() {
-    if (tuckˑactorˑAccumulatorSingleton.finished) return false;
     bool did = false;
     foreach (ref msg; tuckˑactorˑAccumulatorSingleton.mailbox) {
         handleMsg_tuckˑactorˑAccumulator(tuckˑactorˑAccumulatorSingleton, msg);

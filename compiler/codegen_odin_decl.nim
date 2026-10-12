@@ -649,15 +649,11 @@ proc genMsgEnvelope*(ctx: var OdinCodegenCtx, d: Decl, handlers: seq[ActorMsgHan
     (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "") &
     ind & "}\n"
 
-proc genActorState*(ctx: var OdinCodegenCtx, d: Decl, hasShutdown: bool,
-                   ind: string): string =
-  ## The actor's state struct: its own fields, its mailbox, and — when it can
-  ## be shut down — the flag the drain checks.
+proc genActorState*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## The actor's state struct: its own fields and its mailbox.
   var fields = ctx.actorFieldLines(d)
   fields.add(ind & "\tmailbox: rt.Mailbox(" & d.name & "Msg, " &
              mailboxSize(ctx.module, d) & "),")
-  if hasShutdown:
-    fields.add(ind & "\tfinished: bool,")
   ind & d.name & " :: struct {\n" & fields.join("\n") & "\n" & ind & "}\n\n"
 
 proc newHandlerCtx*(ctx: OdinCodegenCtx, d: Decl): OdinCodegenCtx =
@@ -686,7 +682,7 @@ proc genHandlerCase*(hctx: var OdinCodegenCtx, h: ActorMsgHandler, ind: string):
     hctx.genOdinExpr(h.body)
 
 proc genDispatch*(ctx: var OdinCodegenCtx, d: Decl, handlers: seq[ActorMsgHandler],
-                 shutdownBody: Expr, hasShutdown: bool, ind: string): string =
+                 ind: string): string =
   ## The switch that routes an envelope to its handler.
   var hctx = ctx.newHandlerCtx(d)
   var cases: seq[string]
@@ -697,19 +693,12 @@ proc genDispatch*(ctx: var OdinCodegenCtx, d: Decl, handlers: seq[ActorMsgHandle
   for h in handlers:
     cases.add(hctx.genHandlerCase(h, ind))
     hctx.definedVars = outer
-  if hasShutdown:
-    # Stops the actor rather than adding a message: run the arm's body, then
-    # set the flag the drain checks.
-    let sdBody = if shutdownBody != nil: hctx.genOdinExpr(shutdownBody) & "\n"
-                 else: ""
-    cases.add(ind & "\tcase .msgShutdown:\n" & sdBody &
-              ind & "\t\tself.finished = true")
   ctx.adoptHandlerCtx(hctx)
   ind & "handleMsg_" & d.name & " :: proc(self: ^" & d.name & ", msg: " &
     d.name & "Msg) {\n" & ind & "\tswitch msg." & TagField & " {\n" & cases.join("\n") &
     "\n" & ind & "\t}\n" & ind & "}\n"
 
-proc genDrain*(d: Decl, hasShutdown: bool, ind: string): string =
+proc genDrain*(d: Decl, ind: string): string =
   ## The actor's coroutine body. Parks when the mailbox empties;
   ## tuckNotifySend wakes it after a send.
   ##
@@ -720,11 +709,8 @@ proc genDrain*(d: Decl, hasShutdown: bool, ind: string): string =
   ## D do not have the bug because there the RUNTIME owns the actor loop and
   ## makes this decision — the drain merely reports whether it did work.
   let singleton = actorSingletonName(d.name)
-  let finishedGuard = if hasShutdown:
-                        ind & "\tif " & singleton & ".finished { return false }\n"
-                      else: ""
   "\n" & ind & actorSlotName(d.name) & ": rawptr\n" &
-    "\n" & ind & "drain_" & d.name & " :: proc() -> bool {\n" & finishedGuard &
+    "\n" & ind & "drain_" & d.name & " :: proc() -> bool {\n" &
     ind & "\tdidWork := false\n" &
     # takeBatch swaps the mailbox's two buffers once and returns what was
     # waiting, so this loop holds no lock and copies nothing — the same shape
@@ -793,14 +779,6 @@ proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
     ind & "\trt.tuckNotifySend(" & actorSlotName(d.name) & ")\n" &
     ind & "}\n"
 
-proc genShutdownSender*(d: Decl, ind: string): string =
-  ## `sendShutdown_<Actor>`: enqueues the shutdown message and wakes the
-  ## actor's scheduler slot, like any other send helper.
-  "\n" & ind & "sendShutdown_" & d.name & " :: proc(self: ^" & d.name &
-    ") {\n" & ind & "\t" &
-    odinEnqueue(d, d.name & "Msg{" & TagField & " = .msgShutdown}") & "\n" &
-    ind & "\trt.tuckNotifySend(" & actorSlotName(d.name) & ")\n" & ind & "}\n"
-
 proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## An actor emits its message envelope, state struct, singleton, dispatch,
   ## drain loop and one send helper per handler.
@@ -812,26 +790,22 @@ proc genActor*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## not compile.
   if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code
   let ind = "  ".repeat(ctx.indent)
-  let (handlers, shutdownBody, hasShutdown) = collectHandlers(d)
+  let handlers = collectHandlers(d)
   var variants: seq[string]
   for h in handlers: variants.add(msgVariantName(h.name))
-  if hasShutdown:
-    variants.add("msgShutdown")   # sent as `Actor send shutdown {}`
   ctx.collectActorInits(d)
   if variants.len == 0:
     return ctx.genInertActor(d, ind)
   result = ctx.genMsgEnvelope(d, handlers, variants, ind)
-  result.add(ctx.genActorState(d, hasShutdown, ind))
+  result.add(ctx.genActorState(d, ind))
   # One instance per declared actor (spec §9.1); sends and field reads target
   # it, so `Counter.total` means `counterSingleton.total`.
   result.add(ind & actorSingletonName(d.name) & ": " & d.name & "\n\n")
   for m in actorMemberFns(d): result.add(ctx.genOdinActorMemberFn(m, d.name) & "\n")
-  result.add(ctx.genDispatch(d, handlers, shutdownBody, hasShutdown, ind))
-  result.add(genDrain(d, hasShutdown, ind))
+  result.add(ctx.genDispatch(d, handlers, ind))
+  result.add(genDrain(d, ind))
   for h in handlers:
     result.add(ctx.genSendHelper(d, h, ind))
-  if hasShutdown:
-    result.add(genShutdownSender(d, ind))
 
 proc registryEventStruct*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## The event enum and the flat struct carrying every variant's fields,

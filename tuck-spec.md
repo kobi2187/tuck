@@ -2221,9 +2221,16 @@ actor UartDriver [queue: 8]:
     uart.flush {txBuf} [io]     # [io] → implicit yield, others can run
 
   on select:
-    | timer.1s   -> {}:  self.heartbeat
-    | shutdown   -> {}:  return    # only way to exit
+    | timer.1s   -> {}:  {} heartbeat
 ```
+
+An actor's `on select` arm is **one line or one call** (the call may sit on the
+next line) and it is **void**: it names no return type, ends nothing and does not
+`return` (TK-AC11, TK-AC12). Work that needs several statements is a member `fn`
+of the actor that the arm calls. An actor is a **singleton server that lives as
+long as the program**: it has no shutdown, stop or resume (TK-AC10). The mailbox
+policy is `on_full`, liveness is `Actor.alive`, and an actor that must stop acting
+holds a flag its arms check.
 
 Any client can ask an actor whether it is alive with `Actor.alive {withinMs: n}`
 or how long it took to answer with `Actor.pingUs {withinMs: n}` (microseconds,
@@ -2415,7 +2422,6 @@ task handleConn({conn: Connection}) -> !void:
   on select:
     | conn.recv   -> {msg}:  msg.process
     | timeout.5s  -> {}:     conn.keepalive
-    | shutdown    -> {}:     return
 ```
 
 **An arm takes a BLOCK, not only a single expression.** The same two spellings
