@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (1)
+## A. Open bugs (0)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -46,16 +46,18 @@ the body calls the argument rather than whichever import `realModules` listed
 last. Issue #38. Test: `known_bugs`, "a group bound picks the provider of the
 RECEIVER's type" — `bugFixed`, run on all three backends.
 
-**A16 — a fired `timeout` does not bound latency.** The right arm wins and the
-right value comes back, but not until the LOSING source has completed: a 5ms
-deadline against a 500ms source returns after 0.50s, and against a 3s source
-after 3.00s, identically on all three backends. The delay scales with the
-source, which is what says it is the await rather than a fixed cost — binding
-a task's result drives the scheduler until ALL work finishes rather than until
-THIS task does. `examples/29-task-timeout` says the timeout "fires WHILE the
-read is outstanding", which is true of the result and not of the clock, and
-that is the whole point of a timeout. Test: `task_select`, "a fired timeout
-returns without waiting for the loser".
+**A16 — FIXED 2026-10-12: a fired `timeout` did not end the program.** The
+diagnosis above was wrong. The right arm won and the value came back at once (a
+3 s source answered 90 after ~9 ms); what lingered was the PROCESS, in the
+exit-time `tuckRun()`, waiting for the demo source's helper coroutine —
+`openSource` was a pipe fed by a coroutine sleeping `ms`, and an abandoned loser
+left that coroutine running. `awaitResult` only ever drove the scheduler until
+its own slot was done. `openSource` is now a one-shot timerfd on all three
+runtimes (`tuck_async.nim`, `tuckrt/tuck_coro.odin`, `tuckrt_d/tuck_coro.d`),
+which is readable at `ms` and leaves nothing to drain. A *real* source is an fd,
+so this is also what a program sees in practice; a task someone spawns and never
+awaits still keeps `tuckRun` open, by design. Test: `task_select`, "a fired
+timeout returns without waiting for the loser" — `bugFixed`, on all three.
 
 A1 (an attribute name — `priority`, `error`, `stack` — reserved everywhere,
 though TK-PA08's own text promised "only inside brackets") was RULED on

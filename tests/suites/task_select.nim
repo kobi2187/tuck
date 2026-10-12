@@ -6,10 +6,9 @@
 ## comes back. The assertions here use 7 and 90 for exactly that reason: a
 ## number that cannot be confused with an arm index.
 ##
-## The source is `openSource {ms}` (compiler/tuck_async.nim): it opens a pipe,
-## arms a writer coroutine to feed one byte after `ms`, and returns the read fd
-## immediately. So the delay is a real async event, not a blocking call in the
-## caller.
+## The source is `openSource {ms}` (compiler/tuck_async.nim): a one-shot timerfd
+## armed for `ms`, returned at once. So the delay is a real async event, not a
+## blocking call in the caller.
 
 import ../harness
 
@@ -18,6 +17,90 @@ proc run*(t: var T) =
   ## one-arm awaits, and what a task's await costs.
   # The winning arm's VALUE comes back, not its index. Timeout wins here: a
   # 5ms deadline against a 3s source.
+  t.src """
+import time
+
+extern:
+  fn openSource({ms: int}) -> {fd: int} [io]
+
+task race({fd: int}) -> {code: int} [io]:
+  on select:
+    | read fd        -> {}: return {code: 70}
+    | timeout {5.ms} -> {}: return {code: 90}
+
+fn main() -> int [io]:
+  let slow = {ms: 500} openSource
+  let r = {fd: slow.fd} race
+  return r.code
+"""
+  t.hostRuns "the winning timeout arm's value is returned, not its index", 90
+
+  # ...and the other way: the read wins a 900ms deadline, and 7 is neither
+  # arm's position.
+  t.src """
+import time
+
+extern:
+  fn openSource({ms: int}) -> {fd: int} [io]
+
+task race({fd: int}) -> {code: int} [io]:
+  on select:
+    | read fd          -> {}: return {code: 7}
+    | timeout {900.ms} -> {}: return {code: 3}
+
+fn main() -> int [io]:
+  let fast = {ms: 10} openSource
+  let r = {fd: fast.fd} race
+  return r.code
+"""
+  t.hostRuns "the winning read arm's value is returned too", 7
+
+  # A select with ONE arm is a plain await, not a race. Both single-arm forms
+  # used to emit `discard` and throw the arm's body away, so the task answered
+  # with a zero-valued record instead of what the arm returned (issue #56) —
+  # the emitter required BOTH a read and a timeout arm and fell to a marker
+  # otherwise. Each runtime already had tuckAwaitRead and tuckSleep.
+  t.src """
+extern:
+  fn openSource({ms: int}) -> {fd: int} [io]
+
+task readOne({fd: int}) -> {code: int} [io]:
+  on select:
+    | read fd -> {}: return {code: 7}
+
+fn main() -> int [io]:
+  let fast = {ms: 10} openSource
+  let r = {fd: fast.fd} readOne
+  return r.code
+"""
+  t.runs "a one-armed select returns its arm's value", 7
+  t.hostRuns "...on every backend", 7
+  t.bugFixed "a one-armed select returns its arm's value"
+
+  # ...and the other single-arm form: a bare deadline, which is a sleep.
+  t.src """
+import time
+
+task waitABit() -> {code: int} [io]:
+  on select:
+    | timeout {20.ms} -> {}: return {code: 5}
+
+fn main() -> int [io]:
+  let r = {} waitABit
+  return r.code
+"""
+  t.hostRuns "a timeout-only select is a sleep, and returns its value", 5
+
+  # A FIRED TIMEOUT BOUNDS LATENCY (A16, fixed 2026-10-12). The right arm won and
+  # the value came back at once — a `{ms: 3000}` source answered 90 after ~9ms —
+  # but the PROCESS then sat in the exit-time `tuckRun()` until the abandoned
+  # source finished, because `openSource` was a pipe fed by a helper coroutine
+  # sleeping `ms`. The await was never the cause. `openSource` is a one-shot
+  # timerfd now: readable at `ms`, nothing for the scheduler to drain.
+  #
+  # Asserted through the harness's own `timeout 10` on a run: a 30 s source
+  # that still held the program open would be killed and report 124. On all
+  # three backends, which had each copied the same helper coroutine.
   t.src """
 import time
 
@@ -121,8 +204,8 @@ fn main() -> int [io]:
   let r = {fd: slow.fd} race
   return r.code
 """
-  t.quietly: t.runs("a fired timeout returns without waiting for the loser", 90)
-  t.bugOpen "a fired timeout returns without waiting for the loser"
+  t.quietly: t.hostRuns("a fired timeout returns without waiting for the loser", 90)
+  t.bugFixed "a fired timeout returns without waiting for the loser"
 
   # An arm takes a BLOCK, not only a single expression. Forcing a wakeup's
   # work into a helper was the language asking the author to decompose for the

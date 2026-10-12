@@ -23,7 +23,7 @@ to be the thing most of the queue depends on:
 
 `thoughts/shared/plans/2026-10-12-handoff.md` says what just landed (memory
 rules, the actor liveness channel, R11 cross-module parity), what each cost, the
-traps found, and what is left in the order below. Open bugs: A16 (A14 fixed 2026-10-12); R11's
+traps found, and what is left in the order below. Open bugs: none (A14 and A16 fixed 2026-10-12); R11's
 24-construct scan is `ok` on all three backends except case 06, a deliberate
 refusal.
 
@@ -55,7 +55,7 @@ refusal.
 
 Checked against the compiler at `1d94eae`, not carried over from below. M1,
 M2 (its exit), M3 and M4 except 4.3 are done; the spine's remainder is M2.1
-and M4.3. Open bugs pinned `bugOpen`: A16 (A14 fixed 2026-10-12) —
+and M4.3. Open bugs pinned `bugOpen`: none (A14, A16 fixed 2026-10-12) —
 MISSING-FEATURES §A counts.
 
 **Ruled 2026-09-28, later the same day:** R3 (a) — support a one-line `if`
@@ -185,7 +185,7 @@ finished** (no longer deferred).
    name the slab it lives in (`type Cell[T, S: slab]`).
 10. M4.3 — actor dispatch lowered (`genActorDispatch` / `genDispatch` /
     `genDDispatch` still build it); needs the message envelope in Tuck first.
-11. A16 / #55 — a fired `timeout` bounds latency.
+11. ~~A16 / #55 — a fired `timeout` bounds latency.~~ Fixed 2026-10-12: `openSource` held the exit open, not the await.
 12. #15 — typed select sources, the task form; unblocks example 16 (meets R10).
 13. #30 — D reads and writes a register through a plain `*ptr`, not
     `volatileLoad`/`volatileStore` (checked on example 11).

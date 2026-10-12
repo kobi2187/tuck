@@ -387,6 +387,26 @@ private bool armTimer(out int tfd, long ms)
     return true;
 }
 
+/// A one-shot timerfd armed for `ms`, NOT registered with epoll: the demo
+/// source `openSource` hands out. Readable once the deadline passes, with no
+/// helper coroutine to hold `tuckRun` open (A16). -1 on any syscall failure.
+int tuckTimerSource(long ms)
+{
+    int tfd = timerfd_create(CLOCK_MONOTONIC, 0);
+    if (tfd < 0) return -1;
+    itimerspec spec;
+    spec.it_value.tv_sec = cast(typeof(spec.it_value.tv_sec))(ms / 1000);
+    // an all-zero it_value DISARMS a timerfd; `ms: 0` means "ready now"
+    spec.it_value.tv_nsec = cast(typeof(spec.it_value.tv_nsec))(
+        ms <= 0 ? 1 : (ms % 1000) * 1_000_000);
+    if (timerfd_settime(tfd, 0, &spec, null) != 0)
+    {
+        close(tfd);
+        return -1;
+    }
+    return tfd;
+}
+
 private bool watchFd(int fd, bool write_)
 {
     epoll_event ev;

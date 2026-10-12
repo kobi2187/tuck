@@ -1524,28 +1524,13 @@ void sleepMs(uint ms)
 }
 
 // --- a demo async source -----------------------------------------------
-// A REAL non-blocking source: a pipe whose write end is fed by a writer
-// coroutine after `ms` (a reactor-driven sleep, no OS thread). The read fd
-// genuinely becomes readable at `ms`, so a task racing `read fd` against
-// `timeout N` sees the true winner. Mirrors tuck_async.nim's openSource and
-// tuckrt/tuck_coro.odin's openSource — the runtimes must agree on what
-// "async" means, or a program's behaviour would depend on which backend
-// built it.
-//
-// Unlike the Odin port, D HAS real closures, so the writer coroutine simply
-// captures `ms` and the write fd by delegate — no context.user_ptr
-// marshaling layer is needed (that machinery exists only because Odin's
-// `proc()` literals cannot read an outer local).
+// A REAL non-blocking source: a one-shot timerfd, readable once `ms` passes,
+// so a task racing `read fd` against `timeout N` sees the true winner. It has
+// no helper coroutine — that held `tuckRun` open past a fired timeout (A16).
+// Mirrors tuck_async.nim's openSource and tuckrt/tuck_coro.odin's openSource —
+// the runtimes must agree on what "async" means, or a program's behaviour
+// would depend on which backend built it.
 R openSource(R)(long ms)
 {
-    int[2] pipes;
-    if (pipe2(pipes, 0) != 0) return tuckRec!(R, "fd")(-1L);
-    auto wr = pipes[1];
-    tuckSpawnOwned({
-        tuckSleep(ms);
-        ubyte[1] b = [1];
-        write(wr, b.ptr, 1);
-        close(wr);
-    });
-    return tuckRec!(R, "fd")(cast(long) pipes[0]);
+    return tuckRec!(R, "fd")(cast(long) tuckTimerSource(ms));
 }
