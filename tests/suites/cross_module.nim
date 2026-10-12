@@ -728,7 +728,7 @@ fn main() -> int:
     return self.n * 2
 """)
   t.quietly: t.hostRuns("R11: a mixin composed from another module", 42)
-  t.bugOpen "R11: a mixin composed from another module"
+  t.bugFixed "R11: a mixin composed from another module"
 
   t.src """
 import lib

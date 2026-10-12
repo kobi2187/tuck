@@ -617,6 +617,7 @@ proc checkProgram(path: string, needBodies = false,
   block:
     let t0 = vBegin(psInjectTypes)
     injectImportedTypes(result)  # imported types are visible unqualified
+    composeImportedMixins(result)  # `+ Mixin` from another module (A29)
     # Whole-program, cross-module (a type's visibility depends on OTHER
     # modules' imports) — no per-module hook to time individually.
     vSubNote($result.len & " module(s)")

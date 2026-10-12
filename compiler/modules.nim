@@ -472,6 +472,26 @@ proc injectImportedTypes*(prog: var seq[LoadedModule]) =
         let marked = importedCopy(td, imp)
         prog[i].m.decls.insert(marked, 0)
 
+proc composeImportedMixins*(prog: var seq[LoadedModule]) =
+  ## `+ Mixin` naming a mixin another module declares. Parsing composes only
+  ## what one file holds, so the importer's object still carries the entry;
+  ## now that the program is loaded the mixin's fns are copied in and `Self`
+  ## bound to the object, as for a local mixin (R11, A29).
+  var mixinsByName = initTable[string, seq[Decl]]()
+  var exportsByName = initTable[string, (bool, HashSet[string])]()
+  for lm in prog:
+    exportsByName[lm.name] = exportedNames(lm.m)
+    for d in lm.m.decls(dkMixin): mixinsByName.mgetOrPut(lm.name, @[]).add(d)
+  for i in 0 ..< prog.len:
+    var visible = initTable[string, Decl]()
+    for imp in importsOf(prog[i].m):
+      let (restricted, allowed) = exportsByName.getOrDefault(imp, (false, initHashSet[string]()))
+      for mx in mixinsByName.getOrDefault(imp):
+        if restricted and mx.name notin allowed: continue
+        visible[mx.name] = mx
+    if visible.len == 0: continue
+    for d in composeMixinsFrom(prog[i].m, visible): freshIds(d)
+
 proc loadProgram*(entryPath: string): seq[LoadedModule] =
   ## Parse the entry file and its whole import closure. Dep-first order,
   ## entry module last. Diamond imports collapse; cycles are errors.

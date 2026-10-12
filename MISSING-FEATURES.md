@@ -22,22 +22,28 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (6)
+## A. Open bugs (5)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
 
 **A27–A37 — constructs that do not cross a module boundary (R11 scan,
-2026-09-28).** A25, A26, A28, A30, A31, A32, A33, A35, A36 and A37 are fixed; their pins are
+2026-09-28).** A25, A26, A28, A29, A30, A31, A32, A33, A35, A36 and A37 are fixed; their pins are
 `bugFixed` in `cross_module`. Ruled: importing anything should work as well as the same
 module. Each construct was built declared in `lib` and used from the
 importer on Nim, Odin and D, against a one-module control that passes; these
 failed. Tests: `cross_module`, each named "R11: …".
 - **A27** an object in the importer cannot `satisfies` an imported interface.
-- **A29** `+ Mixin` from another module: `Self` is not bound (R11's origin).
+  Why it is hard: an interface compiles to a closed tagged union of its
+  satisfiers, emitted beside the interface, and the interface's module cannot
+  import the importer that holds a satisfier. Needs a ruling on open-world
+  dispatch (a vtable or fat pointer) or on where the union is emitted.
 - **A34** (Odin, D) a group bound whose provider is in another module — the
-  bounded fn's module cannot name it. A14's sibling.
+  bounded fn's module cannot name it, because Odin and D resolve the
+  requirement where the generic is written. Nim works. Needs the provider
+  passed to the bounded fn (an extra proc parameter in Odin, an `alias`
+  template parameter in D). A14's sibling.
 - **A47** a registry handler (`on Reg.Event`) declared in a module other than
   the registry's never runs, on any backend. The raise proc is the registry
   module's and cannot call into a module that imports it, so the handler is
@@ -241,6 +247,12 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
 
 ## E. Fixed since the last snapshot — do not re-report
 
+- **A29 — `+ Mixin` from another module.** Parsing composes only the mixins
+  one file holds, so the importer's object kept the `+ Mixin` entry and a call
+  met the mixin's fn with `Self` unbound. `modules.composeImportedMixins`
+  composes after the program loads, from the mixins the importer imports
+  (honouring `public:`), numbering the grown objects afresh. Test:
+  `cross_module`, "R11: a mixin composed from another module".
 - **A37 — an imported registry's `raise` (Odin, D).** The raise proc is
   generated beside the registry and was called unqualified from the importer.
   `ast_query.declaresCallable` now counts a registry's raise procs
