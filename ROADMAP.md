@@ -65,9 +65,16 @@ storage, not a loop; R12 — diagnostic codes per rule, and **arena is to be
 finished** (no longer deferred).
 
 **Waiting on the owner:**
-- R10 — actor arms only, or a task's too (§9.3 keeps a block so an arm can
-  `return`); and whether a bare `return` stays an arm.
-- R12 — `benches/bench_phases`: rework or delete.
+- R10 — PARTLY RULED 2026-10-12: an `on select` arm is ONE line or ONE call
+  (the call may sit on the next line), never a multi-line block, and every arm
+  is void. Still open: how an actor ends or pauses, which replaces `return` in
+  a `shutdown` arm (that `return` is broken: Nim never stops the actor, Odin
+  refuses to compile it, D has no `sendShutdown_`). Options in the chat of
+  2026-10-12: `stop` + a `shutdown` cleanup arm, or `shutdown` as a pause with
+  a `resume`. Blocks #15.
+- ~~R12 — `benches/bench_phases`: rework or delete.~~ RULED 2026-10-12:
+  delete. The files (`benches/bench_phases.nim`, `.bph`, `.bph_cg`,
+  `.bph_prof`) and the three comments pointing at them are still to go.
 - ~~Arena — what `alloc` returns~~ ruled 2026-09-29 with the slab proposal,
   built 2026-10-04 (item 9).
 - ~~The ownership rules~~ ruled 2026-10-05, "yes to all" (Q1–Q7); now
