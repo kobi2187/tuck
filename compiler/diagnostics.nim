@@ -161,6 +161,7 @@ type
     dcEfUnused = "TK-EF02"              ## a declared [io] nothing in the body needs
     dcEfRestriction = "TK-EF03"         ## a [R] fn calls something not declared [R]
     dcEfCombination = "TK-EF04"         ## markers declared together that exclude or require each other
+    dcEfAllocation = "TK-EF05"          ## an allocating construct in a [no_alloc] fn
     dcPeClash = "TK-PE01"               ## `pending:` clashes with a real decl
     dcPoMalformed = "TK-PO01"           ## the errors policy block is malformed
     dcSeConstruction = "TK-SE01"        ## a sealed type built outside a transition
@@ -812,6 +813,13 @@ proc ruleExplanation(d: DiagCode): string =
     "I/O and does not block. Implications are written, not inferred, so that a " &
     "signature tells the whole truth at a glance. Fix: add or remove the " &
     "marker the message names."
+  of dcEfAllocation:
+    "A `[no_alloc]` fn promises it never touches the heap. Most allocation is " &
+    "syntax, not a call, so the call rule alone cannot see it: a `Seq` " &
+    "literal, a `str + str` concatenation. Those are errors in the body. " &
+    "NOT allocation: a fixed `Array`, a stack record, `pool`/`slab`/`arena` " &
+    "operations (their storage is sized at declaration) and string literals. " &
+    "Fix: use an `Array[N, T]` or a pool, or drop `[no_alloc]` from the fn."
   of dcEfUnused:
     "A fn declares `[io]` but nothing in its body performs I/O, suspends or " &
     "spawns, so the marker promises a suspend point there is not. Declared " &

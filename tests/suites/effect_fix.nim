@@ -178,4 +178,34 @@ fn main() -> int:
 """
   t.okCheck "pure calling pure checks clean"
 
+  t.src """
+fn build({x: int}) -> int [no_alloc]:
+  let xs: Seq[int] = [x, x]
+  return xs.len
+"""
+  t.badCheck "a Seq literal allocates in a no_alloc fn", "TK-EF05"
+
+  t.src """
+fn join({a: str, b: str}) -> str [no_alloc]:
+  return a + b
+"""
+  t.badCheck "str concatenation allocates in a no_alloc fn", "TK-EF05"
+
+  t.src """
+fn fixed({x: int}) -> int [no_alloc]:
+  let a: Array[2, int] = [x, x]
+  return a[0] + a[1]
+
+fn lit() -> str [no_alloc]:
+  return "hello"
+"""
+  t.okCheck "an Array and a string literal do not allocate"
+
+  t.src """
+fn build({x: int}) -> int:
+  let xs: Seq[int] = [x, x]
+  return xs.len
+"""
+  t.okCheck "an unrestricted fn may allocate"
+
   t.finish()

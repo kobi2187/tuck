@@ -312,6 +312,28 @@ proc checkRestrictions(c: Checker, d: Decl) =
       for r in restr:
         if r notin callee.markers: failRestriction(d.name, r, callee, n.span)
 
+proc allocatingConstruct(n: Expr): string =
+  ## What `n` allocates, or "" if it does not. THE list of allocating syntax
+  ## for `[no_alloc]` (TK-EF05): a new construct that allocates has to be
+  ## classified here. Calls are not listed — the restriction rule sees them.
+  case n.kind
+  of exkList:
+    if seqElem(semLayer.typeFor(n)) != nil: "a Seq literal" else: ""
+  of exkBinary:
+    if isStringConcat(n): "a str concatenation" else: ""
+  else: ""
+
+proc checkNoAlloc(d: Decl) =
+  ## TK-EF05: the body of a `[no_alloc]` fn holds no allocating construct.
+  if emNoAlloc notin d.fnEffects or d.fnBody == nil: return
+  for n in d.fnBody.nodes:
+    let what = allocatingConstruct(n)
+    if what != "":
+      reportError(withCode(dcEfAllocation,
+        "'" & d.name & "' is [no_alloc] but contains " & what &
+        ", which allocates. Fix: use an Array or a pool, or drop [no_alloc]"),
+        n.span)
+
 proc checkMarkerCombinations(d: Decl) =
   ## TK-EF04: markers that exclude each other, and implications that must be
   ## written (`irq_safe` requires `no_alloc`).
@@ -333,7 +355,9 @@ proc verifyFn(c: var Checker, d: Decl) =
   ## One fn body against its own bracket — `main`'s budget aside, below.
   # A contradictory bracket is a fault of the DECLARATION, so a body-less
   # signature gets it too.
-  if d != nil: checkMarkerCombinations(d)
+  if d != nil:
+    checkMarkerCombinations(d)
+    checkNoAlloc(d)
   if d == nil or d.fnBody == nil or d.name in c.visiting: return
   c.visiting.incl(d.name)
   # main is ASSUMED to touch I/O — the [io] marker distinguishes pure fns
