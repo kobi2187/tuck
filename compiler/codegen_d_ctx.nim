@@ -60,6 +60,8 @@ type
     retAbsentCapable*: bool   # return type is ?T/!?T — bare return means tnone
     retInnerD*: string      # D type of the payload (for terr!T)
     retInnerT*: Type        # payload Tuck type (typed struct-literal returns)
+    providerParams*: HashSet[string]  # requirements the current fn takes as alias
+                            # params (A34): its body calls THEM, unqualified
     inlineTagOwner*: Table[string, string]  # tag -> hoisted enum that owns it.
                             # An INLINE sum has no declaration, so
                             # enumTagOwner (which scans decls) cannot see it.

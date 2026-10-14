@@ -42,7 +42,7 @@ proc tuckˑfnˑdrainOnce*(): int =
   var tuckˑvˑbytes = tuckMove(tuckˑvˑrx.value)
   defer: tuckDrop(tuckˑvˑbytes)
   tuckReset(tuckˑvˑrx.value)
-  if (tuck_rt.tuckArrayAt(tuckˑvˑbytes, 511) != 1):
+  if (tuck_rt.tuckArrayAt(tuckˑvˑbytes, 511) != 1'u8):
     if true:
       return 0
   var tuckˑvˑr = tuckPoolAcquire(tuckˑpoolˑReadings)

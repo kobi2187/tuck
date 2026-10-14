@@ -37,11 +37,11 @@ below should be re-examined and probably deleted in favour of it.
 pending:
   fn toNarrow({x: i64}) -> i32?
   fn toNarrowClamped({x: i64}) -> i32
-  fn toApprox({x: float}) -> f32
+  fn toApprox({x: f64}) -> f32
   fn parseInt({t: str}) -> i64?
-  fn parseFloat({t: str}) -> float?
+  fn parseFloat({t: str}) -> f64?
   fn intToStr({x: i64}) -> str
-  fn floatToStr({x: float}) -> str
+  fn floatToStr({x: f64}) -> str
 ```
 
 ## Notes

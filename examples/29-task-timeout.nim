@@ -6,10 +6,12 @@ import time
 proc tuckˑfnˑmain*(): int
 
 proc tuckˑtaskˑreadOrGiveUp*(fd: int): tuple[code: int] =
+  var tuckˑvˑcode = 0
   if tuckAwaitReadOrTimeout(fd, int(tuckˑfnˑms(30'u32))):
-    return (code: 1)
+    tuckˑvˑcode = 1
   else:
-    return (code: 2)
+    tuckˑvˑcode = 2
+  return (code: tuckˑvˑcode)
 
 proc tuckˑfnˑmain*(): int =
   var tuckˑvˑsrc = openSource(500)

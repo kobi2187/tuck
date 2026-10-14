@@ -91,7 +91,7 @@ Objects are the main place where multiple pieces of state and behavior are combi
 Inside function bodies, `input` is a reserved name that refers to the full incoming argument struct.
 
 ```tuck
-fn changePlaySpeed({app: PodcastApp, ratio: float}) -> PodcastApp:
+fn changePlaySpeed({app: PodcastApp, ratio: f64}) -> PodcastApp:
   for x in input.app.library:
     x.playSpeed = ratio
   return app

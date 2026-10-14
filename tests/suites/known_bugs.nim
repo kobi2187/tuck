@@ -454,7 +454,7 @@ fn main() -> int:
   t.src """
 task handleConn({conn: int}) -> void:
   on select:
-    | timeout.5s -> {}: return
+    | timeout.5s -> {}: {"x"} echo
 
 fn main() -> int:
   return 0
@@ -1037,8 +1037,8 @@ fn main() -> int:
   # cross-module one, which is also the stdlib's shape: a module per
   # implementation.
   #
-  # The blocker is no longer conformance SELECTION. It is that the bounded
-  # verb's own body calls `reads` unqualified, and two imports exporting that
+  # FIXED 2026-10-12. The blocker was no longer conformance SELECTION. It was
+  # that the bounded verb's own body calls `reads` unqualified, and two imports exporting that
   # name trip the ambiguous-import rule before group dispatch is consulted:
   #
   #   Type Error: 'reads' is exported by 2 imports (sensa, sensb) —
@@ -1060,7 +1060,8 @@ fn one[T: Sensing]({x: T}) -> int:
 
 fn main() -> int:
   let p = {a: 1} A
-  return {x: p} one
+  let q = {b: 1} B
+  return ({x: p} one) + ({x: q} one)
 """
   t.addFile("sensa.tuck", """public:
   A
@@ -1082,8 +1083,8 @@ type B:
 fn reads({self: B}) -> int:
   return 20
 """)
-  t.quietly: t.okCheck("a group bound picks the provider of the RECEIVER's type")
-  t.bugOpen "a group bound picks the provider of the RECEIVER's type"
+  t.quietly: t.hostRuns("a group bound picks the provider of the RECEIVER's type", 21)
+  t.bugFixed "a group bound picks the provider of the RECEIVER's type"
 
   # A type providing nothing at all is still refused — selection by receiver
   # must not turn a genuine non-conformance into silence.
@@ -2075,11 +2076,13 @@ actor Acc [queue: 8]:
   total: int = 0
   done: bool = false
 
+  fn bumpTwice({n: int}) -> void:
+    var b = {n: n} Box
+    b ..bump ..bump
+    total += b.n
+
   on select:
-    | add -> {n: int}:
-      var b = {n: n} Box
-      b ..bump ..bump
-      total += b.n
+    | add -> {n: int}:  {n: n} bumpTwice
     | finish -> {}:     done = true
 
 fn ready() -> bool:

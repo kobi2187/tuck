@@ -8,8 +8,8 @@ tuckˑtypeˑTemperature :: struct {
 }
 validate_tuckˑtypeˑTemperature :: proc(self: tuckˑtypeˑTemperature) {
 	when !#config(tuckNoInvariants, false) {
-		if !((self.celsius >= -273.15)) {
-			rt.tuckInvariantFailed("(self.celsius >= -273.15)", "tuckˑtypeˑTemperature")
+		if !((self.celsius >= -f32(273.15))) {
+			rt.tuckInvariantFailed("(self.celsius >= -f32(273.15))", "tuckˑtypeˑTemperature")
 		}
 	}
 }

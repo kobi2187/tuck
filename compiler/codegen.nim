@@ -700,6 +700,10 @@ proc genUnary(ctx: var CodegenCtx, e: Expr): string =
                 "member reached the expression emitter"
   opStr & ctx.genExpr(e.operand)
 
+proc genCast(ctx: var CodegenCtx, e: Expr): string =
+  ## `x ~u16` / `x ^u32`: Nim's own conversion, `uint16(x)`.
+  genType(e.castType) & "(" & ctx.genExpr(e.castOperand) & ")"
+
 proc genDroppedResult(ctx: var CodegenCtx, s: Expr, stmtCode: string): string =
   ## continue/exit policy: a dropped result routes to the global handler.
   let tn = ctx.freshName("tuckDrop")
@@ -893,6 +897,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkContinue: "continue"
   of exkBinary: ctx.genBinary(e)
   of exkUnary: ctx.genUnary(e)
+  of exkCast: ctx.genCast(e)
   of exkBlock: ctx.genBlock(e, ind)
   of exkIf: ctx.genIf(e, ind)
   of exkAssign: ctx.genExprAssign(e)

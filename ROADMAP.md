@@ -23,7 +23,7 @@ to be the thing most of the queue depends on:
 
 `thoughts/shared/plans/2026-10-12-handoff.md` says what just landed (memory
 rules, the actor liveness channel, R11 cross-module parity), what each cost, the
-traps found, and what is left in the order below. Open bugs: A14, A16; R11's
+traps found, and what is left in the order below. Open bugs: none (A14 and A16 fixed 2026-10-12); R11's
 24-construct scan is `ok` on all three backends except case 06, a deliberate
 refusal.
 
@@ -55,7 +55,7 @@ refusal.
 
 Checked against the compiler at `1d94eae`, not carried over from below. M1,
 M2 (its exit), M3 and M4 except 4.3 are done; the spine's remainder is M2.1
-and M4.3. Open bugs pinned `bugOpen`: A14, A16 — the two
+and M4.3. Open bugs pinned `bugOpen`: none (A14, A16 fixed 2026-10-12) —
 MISSING-FEATURES §A counts.
 
 **Ruled 2026-09-28, later the same day:** R3 (a) — support a one-line `if`
@@ -65,9 +65,14 @@ storage, not a loop; R12 — diagnostic codes per rule, and **arena is to be
 finished** (no longer deferred).
 
 **Waiting on the owner:**
-- R10 — actor arms only, or a task's too (§9.3 keeps a block so an arm can
-  `return`); and whether a bare `return` stays an arm.
-- R12 — `benches/bench_phases`: rework or delete.
+- ~~R10~~ RULED 2026-10-12, actors and tasks alike: an `on select` arm is ONE
+  line or ONE call (the call may sit on the next line), void, and cannot
+  `return` (TK-AC11/12). An actor is a singleton server that lives as long as
+  the program: no shutdown, stop or resume, no `shutdown` arm, no `send
+  shutdown` (TK-AC10). A task returns a race's value from a local set in the
+  arm, after the select. Built; #15 is unblocked.
+- ~~R12 — `benches/bench_phases`: rework or delete.~~ RULED 2026-10-12:
+  delete. Done.
 - ~~Arena — what `alloc` returns~~ ruled 2026-09-29 with the slab proposal,
   built 2026-10-04 (item 9).
 - ~~The ownership rules~~ ruled 2026-10-05, "yes to all" (Q1–Q7); now
@@ -185,7 +190,7 @@ finished** (no longer deferred).
    name the slab it lives in (`type Cell[T, S: slab]`).
 10. M4.3 — actor dispatch lowered (`genActorDispatch` / `genDispatch` /
     `genDDispatch` still build it); needs the message envelope in Tuck first.
-11. A16 / #55 — a fired `timeout` bounds latency.
+11. ~~A16 / #55 — a fired `timeout` bounds latency.~~ Fixed 2026-10-12: `openSource` held the exit open, not the await.
 12. #15 — typed select sources, the task form; unblocks example 16 (meets R10).
 13. #30 — D reads and writes a register through a plain `*ptr`, not
     `volatileLoad`/`volatileStore` (checked on example 11).
@@ -744,6 +749,16 @@ mangle-time index) — that work is not wanted.
 
 ## User ruling (2026-08-24) — numeric conversion is always explicit
 
+**BUILT 2026-10-14 (issue #16, steps 1, 2 and 5).** `x ~T` narrows and `x ^T`
+widens (postfix, `exkCast`); the sigil names the direction and is checked
+(TK-TY40), only numbers cast (TK-TY39). Two different numeric types no longer
+match (`int` is `i64`; there is NO type `float` — ruled 2026-10-14, write `f64` or `f32`, TK-PA19; an unconstrained float literal is an `f64`). A literal takes its place's width —
+operands of `==`/`+`, array fills, record-literal fields, `..field {v}` — and a
+literal or `const` that does not fit is an error, in a cast or a binding
+(TK-TY41), so `~` means "I checked this" wherever the value is known. NOT yet:
+step 3 (`[wrapping]`/`[trapping]` codegen), step 4 (a report of every narrowing
+site), and the `to` word (ruled out for now: sigils only).
+
 **Decided: crossing a numeric type boundary is always written in the source.
 Both directions. No exceptions.**
 
@@ -752,7 +767,7 @@ lists *"implicit conversions"* among the things Tuck deliberately does not
 have. Today `compatible()` lets any numeric primitive match any other, so
 the rule isn't enforced.
 
-```tuck-rejected
+```tuck
 fn setDuty({channel: int, permille: u16}) -> void
 
 let wide: u32 = 70000

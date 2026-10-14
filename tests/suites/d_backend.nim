@@ -433,7 +433,7 @@ fn main() -> int:
   let over = 70000 SafeRPM
   let ok = 1200 SafeRPM
   if over == 65535 SafeRPM:
-    return ok /i 100
+    return (ok ^int) /i 100
   return 1
 """
   t.emitsD "T24: a saturating ctor clamps through the runtime, widened first",
@@ -877,9 +877,11 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task readOrGiveUp({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd          -> {}:  return {code: 1}
-    | timeout {30.ms}  -> {}:  return {code: 2}
+    | read fd          -> {}:  code = 1
+    | timeout {30.ms}  -> {}:  code = 2
+  return {code: code}
 
 fn main() -> int:
   let src = {ms: 500} openSource
@@ -895,9 +897,11 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task readOrGiveUp({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd           -> {}:  return {code: 1}
-    | timeout {100.ms}  -> {}:  return {code: 2}
+    | read fd           -> {}:  code = 1
+    | timeout {100.ms}  -> {}:  code = 2
+  return {code: code}
 
 fn main() -> int:
   let src = {ms: 5} openSource

@@ -9,9 +9,11 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]   # an async read source
 
 task readOrGiveUp({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd          -> {}:  return {code: 1}   # data arrived first
-    | timeout {30.ms}  -> {}:  return {code: 2}   # 30ms deadline fired first
+    | read fd          -> {}:  code = 1   # data arrived first
+    | timeout {30.ms}  -> {}:  code = 2   # 30ms deadline fired first
+  return {code: code}
 
 fn main() -> int:
   let src = {ms: 500} openSource       # data really arrives after 500ms

@@ -149,6 +149,10 @@ proc parseNamedType(p: var Parser, sp: Span): Type =
   ## `Name`, `mod::Name` (#36 — the type-position twin of `mod::fn`), then
   ## optional type arguments or attributes.
   var nameTok = p.advance()
+  if nameTok.value == "float":
+    p.reportError("There is no type `float`: write `f64` (what it meant) or " &
+                  "`f32`. A float's width is a precision and a cost, so it " &
+                  "is always written.", dc = dcPaFloatType)
   var qualifier: seq[string]
   while p.current().kind == tkColonColon and p.peek().kind == tkIdent:
     qualifier.add nameTok.value

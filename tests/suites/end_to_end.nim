@@ -35,7 +35,7 @@ register RCC_CR at 0x40021000:
   HSIRDY: bit 1 [read]
 
 type Temperature:
-  celsius: float
+  celsius: f64
   invariant:
     celsius >= -273.15
 

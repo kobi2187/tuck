@@ -8,11 +8,11 @@ proc tuckˑfnˑplay*(episode: tuckˑtypeˑEpisode, prefs: tuckˑtypeˑPlayerPref
 type tuckˑtypeˑEpisode* = object
   title*: string
   duration*: uint32
-  playSpeed*: float
+  playSpeed*: float64
 
 type tuckˑtypeˑPlayerPrefs* = object
   volume*: int
-  speed*: float
+  speed*: float64
 
 proc tuckˑfnˑdescribe*(title: string, volume: int): string =
   var title = tuckBits(title)

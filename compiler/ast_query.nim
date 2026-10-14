@@ -23,7 +23,7 @@
 # the input), lex and parse both grow 8.9x — linear, as expected — while
 # lowering grows 18.3x and typechecking 14.4x. The gap is these scans. Overall
 # throughput falls from ~140K to ~100K lines/sec across that range
-# (benches/bench_phases.nim reproduces it).
+# (measured 2026-09; the per-phase bench that reproduced it was deleted, R12).
 #
 # Callers that need many lookups should build a table ONCE instead. The type
 # checker already does: typecheck_state.nim fills `fnSigs` and `typeDecls`
@@ -521,7 +521,7 @@ proc implicitTailValue*(body: Expr): Expr =
      exkTripleDot:
     nil
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill, exkCall,
-     exkChain, exkBinary, exkUnary, exkBracket, exkBracketAssign, exkImport,
+     exkChain, exkBinary, exkUnary, exkCast, exkBracket, exkBracketAssign, exkImport,
      exkCombinator, exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
      exkMixinRef, exkDefer, exkFinish, exkAcquire, exkOrdinal, exkValidate,
      exkIfaceCall, exkIfaceIs, exkIfacePayload, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset, exkWrapOk,
@@ -613,7 +613,7 @@ proc inferLitType*(e: Expr): Type =
     case e.litKind
     of lkStr: return Type(kind: tkNamed, name: "str")
     of lkBool: return Type(kind: tkNamed, name: "bool")
-    of lkFloat: return Type(kind: tkNamed, name: "float")
+    of lkFloat: return Type(kind: tkNamed, name: "f64")
     else: return Type(kind: tkNamed, name: "int")
   nil
 

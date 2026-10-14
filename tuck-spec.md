@@ -2221,9 +2221,16 @@ actor UartDriver [queue: 8]:
     uart.flush {txBuf} [io]     # [io] → implicit yield, others can run
 
   on select:
-    | timer.1s   -> {}:  self.heartbeat
-    | shutdown   -> {}:  return    # only way to exit
+    | timer.1s   -> {}:  {} heartbeat
 ```
+
+An actor's `on select` arm is **one line or one call** (the call may sit on the
+next line) and it is **void**: it names no return type, ends nothing and does not
+`return` (TK-AC11, TK-AC12). Work that needs several statements is a member `fn`
+of the actor that the arm calls. An actor is a **singleton server that lives as
+long as the program**: it has no shutdown, stop or resume (TK-AC10). The mailbox
+policy is `on_full`, liveness is `Actor.alive`, and an actor that must stop acting
+holds a flag its arms check.
 
 Any client can ask an actor whether it is alive with `Actor.alive {withinMs: n}`
 or how long it took to answer with `Actor.pingUs {withinMs: n}` (microseconds,
@@ -2415,42 +2422,32 @@ task handleConn({conn: Connection}) -> !void:
   on select:
     | conn.recv   -> {msg}:  msg.process
     | timeout.5s  -> {}:     conn.keepalive
-    | shutdown    -> {}:     return
 ```
 
-**An arm takes a BLOCK, not only a single expression.** The same two spellings
-a `match` arm has: the body on the line, or an indented block under it.
+**An arm is ONE line or ONE call, and void** (R10, ruled 2026-10-12). The call
+may sit on the next line. The arms are the table a reader scans to see what the
+actor or task waits on, so the work belongs in a helper fn the arm calls, not
+in a block under the arm. An arm has no return type and no `return`
+(TK-AC11, TK-AC12), and there is no `shutdown` arm (TK-AC10).
+
+A task that wants a value out of a race sets a local in the arm and returns it
+**after** the select:
 
 ```tuck
-task pull({fd: int}) -> !void [io]:
+task race({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd -> {}:
-      let part = {fd: fd, max: 65536} take
-      {path: path, at: at, data: part} putAt discard
-      Progress send advanced {bytes: part.len}
-    | timeout {20.s} -> {}:
-      return
+    | read fd        -> {}:  code = 1
+    | timeout {5.ms} -> {}:  code = 2
+  return {code: code}
 ```
-
-Forcing a wakeup's work into a helper was the language asking the author to
-decompose for the parser's convenience rather than the reader's — and the
-helper then could not branch the loop, which is the shape a real download loop
-wants.
 
 **A select with ONE arm is a plain await, not a race.** Both single-arm forms
 are legal and lower to straight-line code: a lone `read` awaits that
 descriptor, a lone `timeout` is a sleep.
 
-```tuck
-task readOne({fd: int}) -> {code: int} [io]:
-  on select:
-    | read fd -> {}: return {code: 7}
-```
-
-**Known gap: a fired `timeout` does not bound latency.** The right arm wins and
-the right value comes back, but not until the losing source has completed,
-because awaiting a task drives the scheduler until ALL work finishes rather
-than until THIS task does. Issue #55.
+**A fired `timeout` bounds latency.** The losing source is simply abandoned;
+nothing waits for it (A16, fixed 2026-10-12).
 
 ### 9.4 The Scheduler
 

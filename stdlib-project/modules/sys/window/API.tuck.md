@@ -44,7 +44,7 @@ type EventKind:
   | ekMouseButton
 
 type InputEvent = {seq: i64, kind: EventKind, keyCode: int, pressed: bool}
-type WindowState = {mouseX: float, mouseY: float, heldKeys: u64}
+type WindowState = {mouseX: f64, mouseY: f64, heldKeys: u64}
 
 actor Window [queue: 32]:
   isOpen: bool = false
@@ -62,9 +62,6 @@ actor Window [queue: 32]:
 
   on ackEvents({upTo: i64}) -> void:
     return           # drops every buffered event with seq <= upTo
-
-  on select:
-    | shutdown -> {}: isOpen = false
 ```
 
 ## In use

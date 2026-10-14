@@ -221,7 +221,7 @@ proc genDMsgEnvelope*(ctx: var DCodegenCtx, d: Decl,
     "    " & d.name & "MsgKind " & TagField & ";\n" &
     (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "") & "}\n\n"
 
-proc genDDrain*(d: Decl, hasShutdown: bool): string =
+proc genDDrain*(d: Decl): string =
   ## The actor's coroutine body, as a DrainProc: drain what is waiting and
   ## report whether any work happened. The runtime parks the coroutine when
   ## it returns false and tuckNotifySend wakes it after a send.
@@ -230,11 +230,8 @@ proc genDDrain*(d: Decl, hasShutdown: bool): string =
   ## forever and yields itself, here the runtime owns the loop, so this
   ## returns a bool. Same behaviour, one less place to get the yield wrong.
   let singleton = actorSingletonName(d.name)
-  let finishedGuard = if hasShutdown:
-                        "    if (" & singleton & ".finished) return false;\n"
-                      else: ""
   "__gshared void* " & actorSlotName(d.name) & ";\n\n" &
-    "bool drain_" & d.name & "() {\n" & finishedGuard &
+    "bool drain_" & d.name & "() {\n" &
     "    bool did = false;\n" &
     # The mailbox swaps its two buffers once and then hands each message over
     # in place, so this loop holds no lock and copies nothing — the same
@@ -632,9 +629,8 @@ proc genDSendHelper*(ctx: var DCodegenCtx, d: Decl,
     ");\n}\n\n"
 
 proc genDActorState*(ctx: var DCodegenCtx, d: Decl,
-                    hasShutdown: bool, hasMessages: bool): string =
-  ## The actor's own fields, its mailbox, and — when it can be shut down —
-  ## the flag the drain checks.
+                    hasMessages: bool): string =
+  ## The actor's own fields and its mailbox.
   var fields = ctx.dActorFieldLines(d)
   # No handlers means no envelope type exists, so there is nothing to hold a
   # mailbox OF. Such an actor is a specimen (`actor X: ...`) and emits only
@@ -642,7 +638,6 @@ proc genDActorState*(ctx: var DCodegenCtx, d: Decl,
   if hasMessages:
     fields.add("    rt.Mailbox!(" & d.name & "Msg, " & actorQueueSize(ctx.module, d) &
                ") mailbox;")
-  if hasShutdown: fields.add("    bool finished;")
   if fields.len == 0: fields.add("    // no state")
   "struct " & d.name & " {\n" & fields.join("\n") & "\n}\n\n"
 
@@ -722,23 +717,10 @@ proc genDRegistry*(ctx: var DCodegenCtx, d: Decl): string =
     result.add(ctx.dRegistryRaiseProc(d, v))
 
 proc genDDispatch*(ctx: var DCodegenCtx, d: Decl,
-                  handlers: seq[ActorMsgHandler], shutdownBody: Expr,
-                  hasShutdown: bool): string =
+                  handlers: seq[ActorMsgHandler]): string =
   ## The switch routing an envelope to its handler.
   var cases: seq[string]
   for h in handlers: cases.add(ctx.genDHandlerCase(d, h))
-  if hasShutdown:
-    # Stops the actor rather than adding a message: run the arm's body, then
-    # set the flag the drain checks.
-    var sdBody = ""
-    if shutdownBody != nil:
-      # The shutdown arm reads and writes the actor's own fields just like
-      # any other arm; the checker recorded which bare names are fields.
-      ctx.indent = 3
-      sdBody = ctx.genDStmtOrBlock(shutdownBody)
-      ctx.indent = 0
-    cases.add("        case " & d.name & "MsgKind.msgShutdown:\n" & sdBody &
-              "            self.finished = true;\n            break;\n")
   "void handleMsg_" & d.name & "(ref " & d.name & " self, " & d.name &
     "Msg msg) {\n    final switch (msg." & TagField & ") {\n" & cases.join("") &
     "    }\n}\n\n"
@@ -792,14 +774,13 @@ proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
   ## envelope, state struct, the singleton itself, dispatch, a drain and one
   ## send helper per handler.
   if isActorTemplate(d): return ""   # `public: Box[T]`: a template, not code
-  let (handlers, shutdownBody, hasShutdown) = collectHandlers(d)
+  let handlers = collectHandlers(d)
   var variants: seq[string]
   for h in handlers: variants.add(msgVariantName(h.name))
-  if hasShutdown: variants.add("msgShutdown")
   let hasMessages = variants.len > 0
   if hasMessages:
     result = ctx.genDMsgEnvelope(d, handlers, variants)
-  result.add(ctx.genDActorState(d, hasShutdown, hasMessages))
+  result.add(ctx.genDActorState(d, hasMessages))
   # One instance per declared actor: sends and field reads target it, so
   # `Counter.total` means `counterSingleton.total`.
   result.add("__gshared " & d.name & " " & actorSingletonName(d.name) &
@@ -814,8 +795,8 @@ proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
                     fnEffects: m.fnEffects)
     result.add(ctx.genDFnDecl(copy, memberProcName(d.name, m.name),
                               refSelf = true) & "\n")
-  result.add(ctx.genDDispatch(d, handlers, shutdownBody, hasShutdown))
-  result.add(genDDrain(d, hasShutdown))
+  result.add(ctx.genDDispatch(d, handlers))
+  result.add(genDDrain(d))
   for h in handlers:
     result.add(ctx.genDSendHelper(d, h))
 
@@ -868,6 +849,7 @@ proc leaveReturnContext(ctx: var DCodegenCtx) =
   ctx.retAbsentCapable = false
   ctx.retInnerD = ""
   ctx.retInnerT = nil
+  ctx.providerParams.clear()
 
 proc genDTwinWrapper(ctx: var DCodegenCtx, d: Decl, fnName, tmplStr, retStr,
                      movedP: string, refSelf: bool): string =
@@ -899,6 +881,8 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   # know the payload type to name terr!(T). Restored after the body, since
   # a nested emission may set its own.
   ctx.enterReturnContext(d.fnReturnType)
+  for need in providerNeeds(ctx.module, ctx.realModules, d):
+    ctx.providerParams.incl(need.req)
   # Implicit return: the value flowing at the end of a body is the result.
   # ast_query's shared version, not a private port — the Odin backend kept
   # its own copy and it has since drifted (no matchArmsReturn guard, so a

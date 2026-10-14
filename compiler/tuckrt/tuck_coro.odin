@@ -928,37 +928,16 @@ stop :: proc() {
 }
 
 // --- a demo async source ----------------------------------------------------
-// A REAL non-blocking source: a pipe whose write end is fed by a writer
-// coroutine after `ms` (a reactor-driven sleep, no OS thread — that would
-// fight the coroutine model). So the read fd genuinely becomes readable at
-// `ms`, and a task racing `read fd` against `timeout N` sees the true
-// winner: data if ms < N (read arm), timeout if ms > N. Mirrors
+// A REAL non-blocking source: a task racing `read fd` against `timeout N` sees
+// the true winner — data if ms < N (read arm), timeout if ms > N. Mirrors
 // tuck_async.nim's openSource exactly — the runtimes must agree on what
 // "async" means, or a program's behaviour would depend on which backend
 // built it.
+// A one-shot timerfd armed for `ms`: readable once the deadline passes, with
+// nothing else running. Not a pipe fed by a helper coroutine — that helper
+// held `tuckRun` open until it finished, so a program whose `timeout` had
+// fired still did not exit until the abandoned source's deadline (A16).
 //
-// Odin, unlike Nim, has NO implicit closures — a `proc()` literal cannot
-// read an outer local (verified: `x := 42; f := proc() { fmt.println(x) }`
-// fails "Undeclared name: x"). `context.user_ptr` is Odin's own mechanism
-// for exactly this, and it already threads correctly through THIS runtime's
-// coroutine boundary: newCoroutine snapshots `context` into `co.ctx` at
-// spawn time, and the C trampoline restores it before calling entryPoint —
-// so setting user_ptr right before tuckSpawn hands the writer coroutine
-// its data with no change to the shared coroutine API.
-OpenSourceEnv :: struct {
-	ms: int,
-	wr: linux.Fd,
-}
-
-openSourceWriter :: proc() {
-	env := (^OpenSourceEnv)(context.user_ptr)
-	tuckSleep(env.ms)
-	b: [1]u8 = {1}
-	_, _ = linux.write(env.wr, b[:])
-	linux.close(env.wr)
-	free(env)
-}
-
 // A plain record return, `{fd: int}` — the forwarder codegen emits
 // (Odin's genRtForwarder/forwardRecord) reads a named field off whatever
 // this returns, so a bare int (or Odin's named-return sugar, which is
@@ -966,16 +945,20 @@ openSourceWriter :: proc() {
 // {fd: int} shape std/net's listen/accept already return; reused rather
 // than declaring a second identical struct.
 openSource :: proc(ms: int) -> NetFd {
-	pipes: [2]linux.Fd
-	if linux.pipe2(&pipes, {}) != .NONE do return NetFd{fd = -1}
-	env := new(OpenSourceEnv)
-	env.ms = ms
-	env.wr = pipes[1]
-	saved := context.user_ptr
-	context.user_ptr = env
-	tuckSpawn(openSourceWriter)
-	context.user_ptr = saved
-	return NetFd{fd = int(pipes[0])}
+	tfd, terr := linux.timerfd_create(.MONOTONIC, {})
+	if terr != nil do return NetFd{fd = -1}
+	// an all-zero value DISARMS a timerfd; `ms: 0` means "ready now"
+	spec := linux.ITimer_Spec {
+		value = {
+			time_sec = uint(ms / 1000),
+			time_nsec = ms <= 0 ? 1 : uint((ms % 1000) * 1_000_000),
+		},
+	}
+	if linux.timerfd_settime(tfd, {}, &spec, nil) != nil {
+		linux.close(tfd)
+		return NetFd{fd = -1}
+	}
+	return NetFd{fd = int(tfd)}
 }
 
 // --- task results -----------------------------------------------------------

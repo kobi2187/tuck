@@ -78,6 +78,7 @@ type
                                           ## instead of `old -> new`
     dcPaArenaBlock = "TK-PA18"          ## an arena written as a block
                                           ## (`arena X:` + body), not a decl
+    dcPaFloatType = "TK-PA19"           ## the type `float`: write f64 or f32
 
     # --- TY: type ---------------------------------------------------------
     dcTyMismatch = "TK-TY01"            ## a value does not fit where it flows
@@ -139,6 +140,9 @@ type
     dcTyActorFieldNoInit = "TK-TY35"    ## an actor field with no initialiser
                                         ## that is not `T?`
     dcTyNoneNoPlace = "TK-TY38"         ## `none` where no `T?` is expected
+    dcTyCastNotNumeric = "TK-TY39"      ## `x ~T` / `x ^T` where x or T is not numeric
+    dcTyCastDirection = "TK-TY40"       ## `^` on a conversion that can lose, or `~` on one that cannot
+    dcTyCastOutOfRange = "TK-TY41"      ## `70000 ~u16`: a known value that does not fit
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -177,6 +181,9 @@ type
     dcAcUnknownAttr = "TK-AC07"         ## an actor attribute other than queue and on_full
     dcAcSlabOwner = "TK-AC08"           ## a slab reached by an owner other than its own
     dcAcRefCrossing = "TK-AC09"         ## a slab reference crossing an actor boundary
+    dcAcShutdown = "TK-AC10"            ## a `shutdown` arm, or a send of `shutdown`
+    dcAcArmShape = "TK-AC11"            ## an `on select` arm longer than one line or call
+    dcAcArmReturn = "TK-AC12"           ## an `on select` arm that `return`s
     dcMeSizeCount = "TK-ME01"           ## a pool/arena size or count is not positive
     dcMeArenaInert = "TK-ME02"          ## RETIRED 2026-10-04: the arena is built
     dcMeSlabInValue = "TK-ME03"         ## a slab declared inside an object or mixin
@@ -471,6 +478,25 @@ proc parseExplanation(d: DiagCode): string =
     "the copies share nothing: a `Seq` or `str` element would put one " &
     "buffer in every slot. Fix: a scalar value, named or literal; for other " &
     "elements write the list, or build it with a loop."
+  of dcTyCastNotNumeric:
+    "`x ~T` and `x ^T` convert between NUMERIC types; both the value and " &
+    "the type after the sigil must be numeric (int, i8..i64, u8..u64, usize, " &
+    "f32, f64, float). Strings, records and sums have their own conversions " &
+    "(`parse`, construction), not a cast. Fix: cast a number, or call the " &
+    "conversion that exists for this type."
+  of dcTyCastDirection:
+    "The sigil says which way a conversion goes. `~T` marks a conversion " &
+    "that can LOSE something (narrower, or a sign crossing: `-5` into `u32` " &
+    "is wider in bits and still lossy); `^T` marks one that cannot (u8 to " &
+    "u16, f32 to f64). Writing the wrong one hides the thing a reader " &
+    "greps for. Fix: use the other sigil. A cast of a constant is exempt, " &
+    "because there the compiler checks the value itself (TK-TY41)."
+  of dcTyCastOutOfRange:
+    "A cast of a literal or `const` is CHECKED, not trusted: the compiler " &
+    "knows the value, so `70000 ~u16` is an error and `1200 ~u16` passes " &
+    "silently. `~` therefore means \"I checked this\" wherever the " &
+    "compiler can confirm it, and \"I accept the risk\" only where it cannot " &
+    "see the value. Fix: use a type the value fits, or a smaller value."
   of dcTyNoneNoPlace:
     "`none` is the absent value of a `T?` — no `next` yet, no result, nothing " &
     "found. It names no T itself, so it takes one from where it is written: " &
@@ -517,6 +543,14 @@ proc parseExplanation(d: DiagCode): string =
     "A field given in a construction does not fit the type the declaration " &
     "gives it. This was unchecked: the value rode to codegen and only the " &
     "BACKEND's compiler objected, in generated code the author never wrote."
+  of dcPaFloatType:
+    "There is no type `float`. A float's width is a precision and a cost: on a " &
+    "microcontroller with a single-precision FPU `f32` is native and `f64` is " &
+    "emulated in software, and a bare `float` that silently meant f64 hides " &
+    "both. Every use is `f32` or `f64`, so the places accuracy can be lost are " &
+    "the places you can search for. Fix: write `f64` (what `float` used to " &
+    "mean) or `f32`. A float LITERAL with nothing to take a width from is an " &
+    "f64, and one written where an f32 is expected is an f32."
   of dcPaWordOperator:
     "`mod` and `div` are word-operators in Nim, Pascal and Python; in Tuck " &
     "they are `%` and `/i`. Left alone, a bare word between two operands " &
@@ -817,6 +851,29 @@ proc ruleExplanation(d: DiagCode): string =
     "(`Nodes.get {r}`) instead of the reference; an actor that needs " &
     "references of its own declares its own slab (`slab Nodes = Node` " &
     "inside the actor), whose references its fields may hold."
+  of dcAcShutdown:
+    "An actor is a singleton server that lives as long as the program: it " &
+    "has no shutdown, no stop and no resume. It is started with the program " &
+    "and its mailbox is simply never sent to again when nothing needs it. " &
+    "`shutdown` used to be a reserved arm and a reserved message; it ended " &
+    "the actor, but a `return` written in it (the documented way) did " &
+    "not, and nothing it promised — cleanup, a drained mailbox — was " &
+    "built. Fix: remove the arm, and if the actor must cease to act, give " &
+    "it a flag a message sets and have the other arms check it."
+  of dcAcArmShape:
+    "An `on select` arm — an actor's or a task's — is ONE line or ONE call; " &
+    "the call may sit on the next line. A multi-line arm reads as a handler " &
+    "body hidden in a table of what is waited on, and the table is what a " &
+    "reader scans. Fix: move the work into a fn (an actor's member fn, or a " &
+    "task's helper) and make the arm call it: `| done -> {}: {} finish`."
+  of dcAcArmReturn:
+    "An `on select` arm is void and ends nothing: an actor has no listening " &
+    "loop for it to leave and no caller to hand a value to (a message is " &
+    "fire-and-forget, TK-AC02), and a task returns from the task body, not " &
+    "from a row of the select. Fix: remove the `return`. A task that wants " &
+    "a value out of a race sets a local in the arm and returns it after the " &
+    "select: `var code = 0`, `| read fd -> {}: code = 1`, then " &
+    "`return {code: code}`."
   of dcAcHandlerReturn:
     "A handler declared a return type, but an actor message is " &
     "fire-and-forget (spec 9.1) and there is no reply channel: correlation " &

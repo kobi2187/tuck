@@ -21,8 +21,8 @@ tuckˑfnˑaddTwo :: proc "c" (a: i32, b: i32) -> i32 {
 tuckˑfnˑmain :: proc () {
   tuckˑvˑm := applyOp(Op.OP_MUL, i32(6), i32(7))
   tuckˑvˑc := callBack(tuckˑfnˑaddTwo, i32(40), i32(2))
-  if (tuckˑvˑm == 42) {
-      if (tuckˑvˑc == 1042) {
+  if (tuckˑvˑm == i32(42)) {
+      if (tuckˑvˑc == i32(1042)) {
           sys.exit(0)
       }
   }

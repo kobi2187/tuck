@@ -1,6 +1,7 @@
 # `on select` — an actor waits on receive branches (spec §9.3). Phase B:
-# message arms with typed bindings + a reserved `shutdown` arm that stops the
-# actor. (Timers/timeouts come in a later phase.)
+# message arms with typed bindings. An arm is ONE line or ONE call, and void; an
+# actor is a singleton server that lives as long as the program, so there is no
+# shutdown arm. (Timers/timeouts come in a later phase.)
 
 import scheduler
 
@@ -11,7 +12,6 @@ actor Accumulator [queue: 64]:
   on select:
     | add -> {n: int}:  total += n
     | finish -> {}:     done = true
-    | shutdown -> {}:   total = total
 
 fn ready() -> bool:
   return Accumulator.done

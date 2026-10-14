@@ -51,7 +51,7 @@ tuckˑfnˑdrainOnce :: proc () -> int {
   tuckˑvˑbytes := tuckˑvˑrx.value
   defer rt.tuckDrop(tuckˑvˑbytes)
   tuckˑvˑrx.value = {}
-  if (rt.tuckArrayAt(tuckˑvˑbytes, 511) != 1) {
+  if (rt.tuckArrayAt(tuckˑvˑbytes, 511) != u8(1)) {
       return 0
   }
   tuckˑvˑr := rt.tuckPoolAcquire(&tuckˑpoolˑReadings)

@@ -224,6 +224,7 @@ iterator childSlots*(e: Expr): var Expr =
       yield e.left
       yield e.right
     of exkUnary: yield e.operand
+    of exkCast: yield e.castOperand
     of exkBlock:
       for s in e.stmts.mitems: yield s
     of exkIf:

@@ -421,7 +421,7 @@ proc walkExpr(c: var Check, e: Expr, use: Use) =
   of exkDefer: c.deferDrops(e)
   of exkReset: c.walkReset(e)
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill,
-     exkBracket, exkBracketAssign, exkCall, exkChain, exkBinary, exkUnary,
+     exkBracket, exkBracketAssign, exkCall, exkChain, exkBinary, exkUnary, exkCast,
      exkDiscard, exkTripleDot, exkImport, exkSend, exkAcquire, exkFinish,
      exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
      exkSlabRef, exkArenaRef, exkCombinator, exkOrdinal, exkValidate,

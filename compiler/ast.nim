@@ -377,6 +377,7 @@ type
     exkChain
     exkBinary
     exkUnary
+    exkCast         # `x ~u16` / `x ^u32` — an explicit numeric conversion (issue #16)
     exkBlock
     exkIf
     exkMatch
@@ -614,6 +615,10 @@ type
     of exkUnary:
       unaryOp*: UnaryOp
       operand*: Expr
+    of exkCast:
+      castOperand*: Expr
+      castType*: Type
+      castWiden*: bool    ## written `^T` (widening) rather than `~T` (narrowing)
     of exkBlock:
       stmts*: seq[Expr]
     of exkIf:

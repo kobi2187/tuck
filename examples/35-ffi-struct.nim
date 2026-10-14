@@ -15,7 +15,7 @@ proc makesPoint*(x: int32, y: int32): Point {.importc: "makesPoint", header: "po
 proc tuckˑfnˑmain*(): void =
   var tuckˑvˑp = makesPoint(3'i32, 7'i32)
   var tuckˑvˑr = takesPoint(tuckˑvˑp)
-  if (tuckˑvˑr == 307):
+  if (tuckˑvˑr == 307'i32):
     if true:
       tuck_rt.exit(0)
   tuck_rt.exit(1)

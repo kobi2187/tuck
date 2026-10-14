@@ -58,12 +58,59 @@ proc isFlexible*(t: Type): bool =
 
 const NumericNames* = ["int", "i8", "i16", "i32", "i64",
                        "u8", "u16", "u32", "u64", "usize",
-                       "f32", "f64", "float"].toHashSet
+                       "f32", "f64"].toHashSet
 
 proc isNumeric*(t: Type): bool =
   ## Is `t` one of the builtin numeric types (any width, signed, unsigned or
   ## float)?
   t != nil and t.kind == tkNamed and t.name in NumericNames
+
+type NumInfo* = tuple[isFloat: bool, bits: int, signed: bool]
+
+proc numInfo*(name: string): NumInfo =
+  ## The shape of a builtin numeric type. `int` is the native word and `float`
+  ## is f64 (ruled 2026-08-25); `usize` is 64 bits on every hosted target.
+  case name
+  of "i8": (false, 8, true)
+  of "i16": (false, 16, true)
+  of "i32": (false, 32, true)
+  of "i64", "int": (false, 64, true)
+  of "u8": (false, 8, false)
+  of "u16": (false, 16, false)
+  of "u32": (false, 32, false)
+  of "u64", "usize": (false, 64, false)
+  of "f32": (true, 32, true)
+  else: (true, 64, true)
+
+proc numericCanon*(name: string): string =
+  ## `int` is i64 on every backend (ruled 2026-08-25), so the pair never needs
+  ## a cast between them. (There is no type `float`: write f64 or f32.)
+  if name == "int": "i64" else: name
+
+proc losslessConversion*(src, dst: string): bool =
+  ## Can every value of `src` be held by `dst` unchanged? This decides whether
+  ## the sigil written is `^` (yes) or `~` (no). A sign crossing is never
+  ## lossless: `-5` into `u32` gains bits and still changes.
+  let s = numInfo(src)
+  let d = numInfo(dst)
+  if s.isFloat: return d.isFloat and d.bits >= s.bits
+  if d.isFloat: return s.bits <= (if d.bits == 32: 16 else: 32)
+  if s.signed == d.signed: d.bits >= s.bits
+  elif d.signed: d.bits > s.bits
+  else: false
+
+proc fitsIn*(name: string, v: int): bool =
+  ## Does the integer `v` fit the integer type `name`? A float target takes
+  ## any integer the checker can fold.
+  let n = numInfo(name)
+  if n.isFloat: return true
+  if n.signed:
+    if n.bits >= 64: return true
+    let lim = 1 shl (n.bits - 1)
+    v >= -lim and v < lim
+  else:
+    if v < 0: return false
+    n.bits >= 64 or v < (1 shl n.bits)
 
 proc fail*(msg: string, span: Span) =
   ## Raises a `SemanticError` at `span`. The uncoded form; `fail(dc, ...)`

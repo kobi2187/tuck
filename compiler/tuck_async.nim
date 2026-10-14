@@ -199,18 +199,29 @@ proc tuckSubmitBlocking*(fn: BlockingFn, arg: pointer) =
 # ms < N (read arm), timeout if ms > N. This exercises real suspend/resume:
 # the coroutine parks on the fd, the reactor sees it ready, resumes it.
 
+type TuckItimerspec {.importc: "struct itimerspec", header: "<sys/timerfd.h>".} = object
+  it_interval, it_value: Timespec
+
+proc timerfd_create(clock: cint, flags: cint): cint
+  {.importc, header: "<sys/timerfd.h>".}
+proc timerfd_settime(fd: cint, flags: cint, newValue, oldValue: ptr TuckItimerspec): cint
+  {.importc, header: "<sys/timerfd.h>".}
+
 proc openSource*(ms: int): tuple[fd: int] =
-  ## Open a pipe, arm a writer coroutine to feed one byte after `ms`, and
-  ## return the read fd. The fd becomes readable at `ms` — a real async source.
-  var fds: array[2, cint]
-  discard pipe(fds)
-  let wr = fds[1]
-  tuckSpawnOwned(proc() {.closure, gcsafe.} = ({.cast(gcsafe).}:
-    tuckSleep(ms)
-    var b: byte = 1
-    discard write(wr, addr b, 1)
-    discard close(wr)))
-  (fd: fds[0].int)
+  ## A one-shot timerfd armed for `ms`: readable once the deadline passes, with
+  ## nothing else running. Not a pipe fed by a helper coroutine — that helper
+  ## held `tuckRun` open until it finished, so a program whose `timeout` had
+  ## fired still did not exit until the abandoned source's deadline (A16).
+  let tfd = timerfd_create(CLOCK_MONOTONIC.cint, 0)
+  if tfd < 0: return (fd: -1)
+  var spec: TuckItimerspec
+  spec.it_value.tv_sec = posix.Time(ms div 1000)
+  # an all-zero it_value DISARMS a timerfd; `ms: 0` means "ready now"
+  spec.it_value.tv_nsec = clong(if ms <= 0: 1 else: (ms mod 1000) * 1_000_000)
+  if timerfd_settime(tfd, 0, addr spec, nil) != 0:
+    discard close(tfd)
+    return (fd: -1)
+  (fd: tfd.int)
 
 proc tuckRun*() =
   ## Drive everything — scheduler + I/O reactor — until all tasks finish.

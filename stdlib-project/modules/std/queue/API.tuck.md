@@ -31,9 +31,6 @@ actor DurableQueue [queue: 32]:
 
   on compact() -> void:
     return
-
-  on select:
-    | shutdown -> {}: isOpen = false
 ```
 
 ## In use

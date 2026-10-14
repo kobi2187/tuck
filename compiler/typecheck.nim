@@ -146,9 +146,8 @@
 #   interior of an imported module at all. The cheapest pass is the one that
 #   does not run.
 #
-# MEASURE, DO NOT GUESS: benches/bench_phases.nim times each phase in
-# isolation against a generated program, re-parsing between mutating phases so
-# the work is real.
+# MEASURE, DO NOT GUESS: time each phase in isolation against a generated
+# program, re-parsing between mutating phases so the work is real.
 # ---------------------------------------------------------------------------
 import ast, semantics, lowering, tables, strutils, sets, options
 import resolution
@@ -326,6 +325,14 @@ proc sigForReceiver(tc: TypeChecker, name: string, recvT: Type): FnSig =
     if pt.kind == tkNamed and pt.name in sig.generics: return sig  # accepts any
     if tc.compatible(recvT, pt): return sig
   tc.sigOf(name)
+
+proc sigsAcceptReceiver(tc: TypeChecker, name: string, recvT: Type): bool =
+  ## Does some overload of `name` take `recvT` as its first parameter?
+  for sig in tc.sigsOf(name):
+    if sig.params.len == 0 or sig.params[0].typ == nil: continue
+    let pt = sig.params[0].typ
+    if (pt.kind == tkNamed and pt.name in sig.generics) or
+       tc.compatible(recvT, pt): return true
 
 proc bindPayloadFields(tc: var TypeChecker, fnName: string,
                        params: seq[Param], argStruct: Expr, sp: Span): seq[Expr]
@@ -1720,7 +1727,7 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
 
 const IntegerTypeNames = ["int", "i8", "i16", "i32", "i64",
                           "u8", "u16", "u32", "u64"]
-const FloatTypeNames = ["float", "f32", "f64"]
+const FloatTypeNames = ["f32", "f64"]
 
 type
   Operand = tuple[typ: Type, expr: Expr]
@@ -1810,11 +1817,35 @@ proc synthBoolOp(lt, rt: Type, e: Expr): Type =
            typeName(t), side.span)
   Type(span: e.span, kind: tkNamed, name: "bool")
 
+proc isNumericLiteral(e: Expr): bool =
+  ## `5`, `2.5` or `-5`: a literal with no width of its own.
+  e != nil and
+    ((e.kind == exkLit and e.litKind in {lkInt, lkFloat}) or
+     (e.kind == exkUnary and e.unaryOp == uoNeg and isNumericLiteral(e.operand)))
+
+proc synthOperands(tc: var TypeChecker, e: Expr): (Type, Type) =
+  ## Both operands of a binary expression. A numeric literal takes the type of
+  ## the OTHER operand (`x == 0` on a `u8`, `n + 1` on an `i16`): it has no
+  ## width of its own, and writing `0 ~u8` there would be noise. So the typed
+  ## side goes first and the literal is synthesized under its type; if the
+  ## value does not fit, synthLit says so (TK-TY41).
+  if e.binOp in {boRangeIncl, boRangeExcl, boAnd, boOr, boXor} or
+     isNumericLiteral(e.left) == isNumericLiteral(e.right):
+    return (tc.synthesize(e.left), tc.synthesize(e.right))
+  if isNumericLiteral(e.right):
+    let lt = tc.synthesize(e.left)
+    var rt: Type
+    tc.withExpected(lt): rt = tc.synthesize(e.right)
+    return (lt, rt)
+  let rt = tc.synthesize(e.right)
+  var lt: Type
+  tc.withExpected(rt): lt = tc.synthesize(e.left)
+  (lt, rt)
+
 proc synthBinary(tc: var TypeChecker, e: Expr): Type =
   ## Types a binary expression: both operands first, an unhandled `!T`/`?T`
   ## refused, then the operator family decides the result type.
-  let lt = tc.synthesize(e.left)
-  let rt = tc.synthesize(e.right)
+  let (lt, rt) = tc.synthOperands(e)
   failIfUnhandled(lt, rt, e)
   case e.binOp
   of boAdd, boSub, boMul, boMod: tc.synthArithmetic(lt, rt, e)
@@ -2185,11 +2216,13 @@ proc checkFieldSet(tc: var TypeChecker, step: ChainStep, f: FieldDef,
          "bare value: ..." & f.name & " {" & typeName(f.typ) &
          "} — to set several fields, use a mutator fn", step.span)
   let valExpr = soleFieldValue(step.arg)
-  let vt = tc.synthesize(valExpr)
   # Against the field's DECLARED type: setting an unsupplied field is how the
   # hole gets filled, so the value is matched against what the field will
-  # hold, not against the marker saying it holds nothing yet.
+  # hold, not against the marker saying it holds nothing yet. The same type
+  # rides down to the value, so `..timeout {60}` is a u32 and not an int.
   let want = unwrapUninit(f.typ)
+  var vt: Type
+  tc.withExpected(want): vt = tc.synthesize(valExpr)
   if not tc.compatible(vt, want):
     fail("Type Error: field '" & f.name & "' of " & typeName(recvT) & " is " &
          typeName(want) & " but got " & typeName(vt), valExpr.span)
@@ -2577,25 +2610,36 @@ proc providerBindings(tc: TypeChecker, want: Decl, got: FnSig, concreteT: Type,
       tc.inferBindings(got.params[i].typ, substituteGroup(w.typ, concreteT, binds),
                        got.generics, result, fnName, sp)
 
-proc requirementKey(tc: TypeChecker, member, fnName: string): string =
+proc requirementKey(tc: TypeChecker, member, fnName: string,
+                    concreteT: Type = nil): string =
   ## Which `hashOf` satisfies a bound — the one visible to the module that
   ## DECLARES the bounded fn, not the one visible to the caller. A program may
   ## import two implementations of the same contract; the verb was written
   ## against exactly one of them, and re-resolving at the call site would make
   ## a correct verb unsatisfiable the moment a second implementation is in
   ## scope.
+  ##
+  ## When the declaring module sees the name through TWO imports, neither owns
+  ## it bare and there is no one the verb "was written against": the provider
+  ## is the import whose fn accepts `concreteT` as its receiver (A14).
   let owner =
     if "::" in fnName: fnName.split("::")[0]
     else: tc.bareOwnerOf.getOrDefault(fnName)
   if owner != "" and tc.fnSigs.hasKey(owner & "::" & member):
     return owner & "::" & member
+  if concreteT != nil and not tc.fnSigs.hasKey(member):
+    for imp in tc.ambiguousImports.getOrDefault(member):
+      let qualified = imp & "::" & member
+      if tc.fnSigs.hasKey(qualified) and
+         tc.sigsAcceptReceiver(qualified, concreteT):
+        return qualified
   member
 
 proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
                       binds: Table[string, Type], groupName, paramName,
                       fnName: string, sp: Span) =
   ## One requirement against what `concreteT` actually declares.
-  let key = tc.requirementKey(want.name, fnName)
+  let key = tc.requirementKey(want.name, fnName, concreteT)
   # Tuck has TWO contract mechanisms, split by what they abstract over:
   # `interface` for role objects, which opt in with `satisfies` and compose
   # with `+`; `group` for plain types, which is the generics-facing one a
@@ -2695,7 +2739,7 @@ proc unifyRequirements(tc: TypeChecker, g: Decl, concreteT: Type,
   ## params solved from the concrete type — and only then is the requirement
   ## read off the instantiated signature.
   for want in g.groupMembers:
-    let key = tc.requirementKey(want.name, fnName)
+    let key = tc.requirementKey(want.name, fnName, concreteT)
     if want == nil or want.kind != dkFn or not tc.fnSigs.hasKey(key):
       continue
     let got = tc.sigOf(key)
@@ -3872,9 +3916,12 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
   ## nodes the parser already decided on.
   let calleeName = tc.calleeNameOf(e)
   tc.checkActorCall(e, calleeName)
-  tc.checkAmbiguousImports(e, calleeName)
+  # Group dispatch BEFORE the ambiguity check: a requirement on a bounded type
+  # param is meant to reach whichever provider matches the receiver, so two
+  # imports exporting its name is the situation a group exists for (A14).
   let viaGroup = tc.asGroupRequirement(e, calleeName)
   if viaGroup != nil: return viaGroup
+  tc.checkAmbiguousImports(e, calleeName)
   result = tc.asBuiltinOrEchoCall(e, calleeName)
   if result != nil: return
   result = tc.asNamedCallee(e, calleeName)
@@ -3953,7 +4000,7 @@ proc litTypeName(k: LitKind, value = ""): string =
     if value.len > i64Max.len or
        (value.len == i64Max.len and value > i64Max): "u64"
     else: "int"
-  of lkFloat: "float"
+  of lkFloat: "f64"
   of lkStr: "str"
   of lkBool: "bool"
 
@@ -3997,7 +4044,14 @@ proc synthLit(tc: var TypeChecker, e: Expr): Type =
   ## literal stays `int` and Nim refuses `TuckResult[int] -> TuckResult[int64]`.
   let want = unwrapEffect(tc.resolve(tc.expectedType))
   if want != nil and want.kind == tkNamed and want.name in NumericNames and
-     base in NumericNames:
+     base in NumericNames and
+     (e.litKind == lkInt or want.name in FloatTypeNames):
+    # The literal adopts the place's type, and a value that does not fit it
+    # is an error here, not a silent wrap (issue #16, step 5).
+    let known = evalConstExpr(tc.module, e)
+    if e.litKind == lkInt and known.isSome and not fitsIn(want.name, known.get):
+      fail(dcTyCastOutOfRange, e.litValue & " does not fit " & want.name &
+           "; write a type it fits, or a smaller value", e.span)
     return tc.namedType(want.name, e.span)
   tc.namedType(base, e.span)
 
@@ -4076,13 +4130,30 @@ proc synthVar(tc: var TypeChecker, e: Expr): Type =
   else:
     tc.synthBareVariant(e)
 
-proc synthStruct(tc: var TypeChecker, e: Expr): Type =
-  ## A record literal types field by field.
-  var fs: seq[FieldDef]
+proc recordFieldHints(tc: var TypeChecker): Table[string, Type] =
+  ## The field types of the record the context expects (`-> !{value: u16}`,
+  ## a `{...}` argument), so a bare literal in a field takes that field's
+  ## width instead of defaulting to `int`.
+  let want = tc.resolve(unwrapEffect(tc.expectedType))
+  if want == nil: return
+  let fields = if want.kind == tkRecord: want.fields else: tc.fieldsOf(want)
+  for f in fields:
+    if f.typ != nil: result[f.name] = f.typ
+
+proc synthStructFields(tc: var TypeChecker, e: Expr): seq[FieldDef] =
   for f in e.fields:
     tc.checkFieldValue(f.name, f.value)
-    fs.add(FieldDef(name: f.name, typ: tc.synthFieldValue(f),
-                    span: f.value.span))
+    result.add(FieldDef(name: f.name, typ: tc.synthFieldValue(f),
+                        span: f.value.span))
+
+proc synthStruct(tc: var TypeChecker, e: Expr): Type =
+  ## A record literal types field by field.
+  let hints = tc.recordFieldHints()
+  var fs: seq[FieldDef]
+  if hints.len > 0:
+    tc.withFieldHints(hints): fs = tc.synthStructFields(e)
+  else:
+    fs = tc.synthStructFields(e)
   Type(span: e.span, kind: tkRecord, fields: fs)
 
 proc asContainerWanted(tc: var TypeChecker): Type =
@@ -4211,7 +4282,15 @@ proc synthFill(tc: var TypeChecker, e: Expr): Type =
   let (text, n) = tc.fillCountOf(e)
   failIfFillValueNotSimple(e)
   let v = e.fillValue
-  let elemT = tc.fillIntoWanted(e, text, n, tc.synthesize(v))
+  # The element type the destination wants rides down to the value, so a
+  # literal fill (`[0; 128]` into `Array[128, u8]`) is a u8 and not an int.
+  let place = tc.asContainerWanted()
+  var valueT: Type
+  if place != nil and place.base.name == "Array" and place.args.len == 2:
+    tc.withExpected(place.args[1]): valueT = tc.synthesize(v)
+  else:
+    valueT = tc.synthesize(v)
+  let elemT = tc.fillIntoWanted(e, text, n, valueT)
   if not tc.isFillScalar(elemT):
     fail(dcTyFillValue, "`[v; N]` copies one value into every slot, so its " &
          "element is a number, a bool, a char or an enum — not " &
@@ -4223,6 +4302,36 @@ proc synthUnary(tc: var TypeChecker, e: Expr): Type =
   ## `not` yields bool; every other unary keeps its operand's type.
   let t = tc.synthesize(e.operand)
   if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
+
+proc synthCast(tc: var TypeChecker, e: Expr): Type =
+  ## `x ~u16` / `x ^u32` (issue #16): a numeric conversion written in the
+  ## source. The sigil names the direction and is checked; a cast of a value
+  ## the compiler can fold is checked for range too, so `~` means "I checked
+  ## this" wherever it can be confirmed.
+  let target = e.castType
+  let src = tc.resolve(tc.synthesize(e.castOperand))
+  if not isNumeric(target):
+    fail(dcTyCastNotNumeric, "'" & typeName(target) & "' is not a numeric " &
+         "type, so nothing can be cast to it", e.span)
+  if src != nil and not isFlexible(src) and not isNumeric(src):
+    fail(dcTyCastNotNumeric, "a " & typeName(src) & " is not a number, so " &
+         "it cannot be cast with `" & (if e.castWiden: "^" else: "~") & "`",
+         e.span)
+  let known = evalConstExpr(tc.module, e.castOperand)
+  if known.isSome:
+    if not fitsIn(target.name, known.get):
+      fail(dcTyCastOutOfRange, $known.get & " does not fit " & target.name &
+           "; the cast would change the value", e.span)
+  elif isNumeric(src):
+    let lossless = losslessConversion(src.name, target.name)
+    if e.castWiden and not lossless:
+      fail(dcTyCastDirection, "converting " & src.name & " to " & target.name &
+           " can lose a value, so it is written `~" & target.name & "`", e.span)
+    if not e.castWiden and lossless:
+      fail(dcTyCastDirection, "converting " & src.name & " to " & target.name &
+           " cannot lose anything, so it is written `^" & target.name & "`",
+           e.span)
+  Type(span: e.span, kind: tkNamed, name: target.name)
 
 proc isImplicitReturn(tc: TypeChecker, blk, s: Expr): bool =
   ## The last statement of a fn's body block stands in for its return.
@@ -4853,6 +4962,25 @@ proc synthRaise(tc: var TypeChecker, e: Expr): Type =
   # position has to carry the fn's real return type or it cannot satisfy it.
   tc.currentRet
 
+proc failIfBadSelectArm(arm: SelectArm) =
+  ## TK-AC10..12: an `on select` arm — an actor's or a task's — is a row in a
+  ## table of what is waited on: one line or one call (which may sit on the
+  ## next line), void, and nothing that ends or leaves anything. A task that
+  ## wants a value out of a race sets a local in the arm and returns it AFTER
+  ## the select.
+  if arm.source == "shutdown":
+    fail(dcAcShutdown, "there is no `shutdown` arm: an actor lives as long " &
+         "as the program", arm.span)
+  if arm.body != nil and arm.body.kind == exkBlock and arm.body.stmts.len > 1:
+    fail(dcAcArmShape, "the arm '" & arm.source & "' has " &
+         $arm.body.stmts.len & " statements; an arm is one line or one call. " &
+         "Fix: move them into a member fn and call it", arm.span)
+  if arm.body != nil:
+    for n in arm.body.nodes:
+      if n.kind == exkReturn:
+        fail(dcAcArmReturn, "the arm '" & arm.source & "' returns; an arm is " &
+             "void and ends nothing", n.span)
+
 proc failIfSendToMember(actorDecl: Decl, handler: string) =
   ## TK-AC05: a `send` names a message, and a `fn` in an actor is a member
   ## its own code calls, not a message it receives (A24).
@@ -4865,9 +4993,11 @@ proc failIfSendToMember(actorDecl: Decl, handler: string) =
 proc sendHandlerParams(tc: TypeChecker, actorDecl: Decl, handler: string,
                        found: var bool): seq[Param] =
   ## The params a handler expects. It is an `on <name>` block OR an `on select`
-  ## message arm (spec §9.3); `shutdown` is the reserved control message and
-  ## takes an empty payload.
-  if handler == "shutdown": found = true
+  ## message arm (spec §9.3).
+  if handler == "shutdown":
+    fail(dcAcShutdown, "'" & actorDecl.name & "' cannot be sent `shutdown`: " &
+         "an actor has no shutdown, it lives as long as the program",
+         actorDecl.span)
   failIfSendToMember(actorDecl, handler)
   for h in actorDecl.handlers:
     if found: break
@@ -4947,6 +5077,7 @@ proc synthSelect(tc: var TypeChecker, e: Expr): Type =
   ## bodies; the select's value is a branch outcome — leave it unknown, the
   ## bodies carry the returns.
   for arm in e.selArms:
+    failIfBadSelectArm(arm)
     failIfUnlowerableArm(arm)
     if arm.arg != nil: discard tc.synthesize(arm.arg)
     discard tc.synthesize(arm.body)
@@ -4996,6 +5127,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkCombinator: tc.synthCombinator(e)
   of exkBinary: tc.synthBinary(e)
   of exkUnary: tc.synthUnary(e)
+  of exkCast: tc.synthCast(e)
   of exkBlock: tc.synthBlock(e)
   of exkIf: tc.synthIf(e)
   of exkMatch: tc.synthMatch(e)
@@ -5761,6 +5893,7 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     # checked — a `..` step in one never resolved, a construction was never
     # typed, and each backend printed its own garbled guess.
     for arm in d.selectArms:
+      failIfBadSelectArm(arm)
       tc.checkFnBody(arm.source, arm.binding, nil, arm.body)
   # Exhaustive, so a new DeclKind has to be decided here (CLAUDE.md).
   of dkConst: discard       # bound and checked by bindConsts, before any body

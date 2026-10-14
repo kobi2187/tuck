@@ -6,10 +6,9 @@
 ## comes back. The assertions here use 7 and 90 for exactly that reason: a
 ## number that cannot be confused with an arm index.
 ##
-## The source is `openSource {ms}` (compiler/tuck_async.nim): it opens a pipe,
-## arms a writer coroutine to feed one byte after `ms`, and returns the read fd
-## immediately. So the delay is a real async event, not a blocking call in the
-## caller.
+## The source is `openSource {ms}` (compiler/tuck_async.nim): a one-shot timerfd
+## armed for `ms`, returned at once. So the delay is a real async event, not a
+## blocking call in the caller.
 
 import ../harness
 
@@ -25,9 +24,11 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task race({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd        -> {}: return {code: 70}
-    | timeout {5.ms} -> {}: return {code: 90}
+    | read fd        -> {}: code = 70
+    | timeout {5.ms} -> {}: code = 90
+  return {code: code}
 
 fn main() -> int [io]:
   let slow = {ms: 500} openSource
@@ -45,9 +46,11 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task race({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd          -> {}: return {code: 7}
-    | timeout {900.ms} -> {}: return {code: 3}
+    | read fd          -> {}: code = 7
+    | timeout {900.ms} -> {}: code = 3
+  return {code: code}
 
 fn main() -> int [io]:
   let fast = {ms: 10} openSource
@@ -66,8 +69,10 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task readOne({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd -> {}: return {code: 7}
+    | read fd -> {}: code = 7
+  return {code: code}
 
 fn main() -> int [io]:
   let fast = {ms: 10} openSource
@@ -83,8 +88,102 @@ fn main() -> int [io]:
 import time
 
 task waitABit() -> {code: int} [io]:
+  var code = 0
   on select:
-    | timeout {20.ms} -> {}: return {code: 5}
+    | timeout {20.ms} -> {}: code = 5
+  return {code: code}
+
+fn main() -> int [io]:
+  let r = {} waitABit
+  return r.code
+"""
+  t.hostRuns "a timeout-only select is a sleep, and returns its value", 5
+
+  # A FIRED TIMEOUT BOUNDS LATENCY (A16, fixed 2026-10-12). The right arm won and
+  # the value came back at once — a `{ms: 3000}` source answered 90 after ~9ms —
+  # but the PROCESS then sat in the exit-time `tuckRun()` until the abandoned
+  # source finished, because `openSource` was a pipe fed by a helper coroutine
+  # sleeping `ms`. The await was never the cause. `openSource` is a one-shot
+  # timerfd now: readable at `ms`, nothing for the scheduler to drain.
+  #
+  # Asserted through the harness's own `timeout 10` on a run: a 30 s source
+  # that still held the program open would be killed and report 124. On all
+  # three backends, which had each copied the same helper coroutine.
+  t.src """
+import time
+
+extern:
+  fn openSource({ms: int}) -> {fd: int} [io]
+
+task race({fd: int}) -> {code: int} [io]:
+  var code = 0
+  on select:
+    | read fd        -> {}: code = 70
+    | timeout {5.ms} -> {}: code = 90
+  return {code: code}
+
+fn main() -> int [io]:
+  let slow = {ms: 500} openSource
+  let r = {fd: slow.fd} race
+  return r.code
+"""
+  t.hostRuns "the winning timeout arm's value is returned, not its index", 90
+
+  # ...and the other way: the read wins a 900ms deadline, and 7 is neither
+  # arm's position.
+  t.src """
+import time
+
+extern:
+  fn openSource({ms: int}) -> {fd: int} [io]
+
+task race({fd: int}) -> {code: int} [io]:
+  var code = 0
+  on select:
+    | read fd          -> {}: code = 7
+    | timeout {900.ms} -> {}: code = 3
+  return {code: code}
+
+fn main() -> int [io]:
+  let fast = {ms: 10} openSource
+  let r = {fd: fast.fd} race
+  return r.code
+"""
+  t.hostRuns "the winning read arm's value is returned too", 7
+
+  # A select with ONE arm is a plain await, not a race. Both single-arm forms
+  # used to emit `discard` and throw the arm's body away, so the task answered
+  # with a zero-valued record instead of what the arm returned (issue #56) —
+  # the emitter required BOTH a read and a timeout arm and fell to a marker
+  # otherwise. Each runtime already had tuckAwaitRead and tuckSleep.
+  t.src """
+extern:
+  fn openSource({ms: int}) -> {fd: int} [io]
+
+task readOne({fd: int}) -> {code: int} [io]:
+  var code = 0
+  on select:
+    | read fd -> {}: code = 7
+  return {code: code}
+
+fn main() -> int [io]:
+  let fast = {ms: 10} openSource
+  let r = {fd: fast.fd} readOne
+  return r.code
+"""
+  t.runs "a one-armed select returns its arm's value", 7
+  t.hostRuns "...on every backend", 7
+  t.bugFixed "a one-armed select returns its arm's value"
+
+  # ...and the other single-arm form: a bare deadline, which is a sleep.
+  t.src """
+import time
+
+task waitABit() -> {code: int} [io]:
+  var code = 0
+  on select:
+    | timeout {20.ms} -> {}: code = 5
+  return {code: code}
 
 fn main() -> int [io]:
   let r = {} waitABit
@@ -112,67 +211,85 @@ extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task race({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd        -> {}: return {code: 70}
-    | timeout {5.ms} -> {}: return {code: 90}
+    | read fd        -> {}: code = 70
+    | timeout {5.ms} -> {}: code = 90
+  return {code: code}
 
 fn main() -> int [io]:
   let slow = {ms: 30000} openSource
   let r = {fd: slow.fd} race
   return r.code
 """
-  t.quietly: t.runs("a fired timeout returns without waiting for the loser", 90)
-  t.bugOpen "a fired timeout returns without waiting for the loser"
+  t.quietly: t.hostRuns("a fired timeout returns without waiting for the loser", 90)
+  t.bugFixed "a fired timeout returns without waiting for the loser"
 
-  # An arm takes a BLOCK, not only a single expression. Forcing a wakeup's
-  # work into a helper was the language asking the author to decompose for the
-  # parser's convenience rather than for the reader's — and the helper then
-  # could not branch the loop, which is the shape the web-downloader app hit.
-  #
-  # Same two lines a match arm has used all along (parser_expr.parseMatchArm).
+  # AN ARM IS ONE LINE OR ONE CALL, AND VOID (R10, ruled 2026-10-12). The
+  # table of arms is what a reader scans to see what the task waits on; work
+  # goes in a helper the arm calls, and a value out of the race is a local the
+  # arm sets and the task returns AFTER the select. This replaces the earlier
+  # ruling that an arm took a block (the web-downloader app's shape): the
+  # decomposition it called "for the parser's convenience" is now the language.
   t.src """
 import time
-import console
 
 extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
 task race({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
     | read fd -> {}:
-      {text: "data"} printLine
-      let n = 40
-      let m = n + 2
-      return {code: m}
-    | timeout {900.ms} -> {}:
-      {text: "deadline"} printLine
-      return {code: 9}
+      code = 42
+    | timeout {900.ms} -> {}: code = 9
+  return {code: code}
 
 fn main() -> int [io]:
   let src = {ms: 10} openSource
   let r = {fd: src.fd} race
   return r.code
 """
-  t.hostRuns "a select arm takes a multi-statement block", 42
+  t.hostRuns "an arm may be one line, or one line under it", 42
 
-  # ...and a ONE-ARMED select with a block, which lowers to straight-line
-  # code and so also has to keep Odin's trailing-return rule happy.
   t.src """
+import time
+
 extern:
   fn openSource({ms: int}) -> {fd: int} [io]
 
-task readOne({fd: int}) -> {code: int} [io]:
+task race({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
     | read fd -> {}:
       let a = 3
-      let b = 4
-      return {code: a * b}
+      code = a * 4
+    | timeout {900.ms} -> {}: code = 9
+  return {code: code}
 
 fn main() -> int [io]:
   let src = {ms: 10} openSource
-  let r = {fd: src.fd} readOne
+  let r = {fd: src.fd} race
   return r.code
 """
-  t.hostRuns "...and a one-armed select with a block too", 12
+  t.badCheck "a task arm of two statements is refused (TK-AC11)", "TK-AC11"
+
+  t.src """
+import time
+
+extern:
+  fn openSource({ms: int}) -> {fd: int} [io]
+
+task race({fd: int}) -> {code: int} [io]:
+  on select:
+    | read fd -> {}: return {code: 1}
+    | timeout {900.ms} -> {}: return {code: 9}
+
+fn main() -> int [io]:
+  let src = {ms: 10} openSource
+  let r = {fd: src.fd} race
+  return r.code
+"""
+  t.badCheck "...and a task arm that returns is refused (TK-AC12)", "TK-AC12"
 
   t.finish()

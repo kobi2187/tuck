@@ -713,7 +713,7 @@ proc qualifiedForeignFn(ctx: OdinCodegenCtx, name: string): string =
   ## An unqualified cross-module call (`0 exit` for `sys::exit`). Nim resolves
   ## this itself through the emitted `import`; Odin never merges package
   ## scopes, so the owning package has to be found and spelled out here.
-  if ctx.module.declaresCallable(name): return ""
+  if ctx.module.declaresCallable(name) or name in ctx.providerParams: return ""
   for modName, im in ctx.realModules:
     if im.declaresCallable(name):
       return modName.replace("-", "_") & "." & name
@@ -1080,6 +1080,10 @@ proc genUnary(ctx: var OdinCodegenCtx, e: Expr): string =
               of uoComposition: raiseAssert "codegen_odin: a `+ Type` " &
                 "composition member reached the expression emitter"
   opStr & ctx.genOdinExpr(e.operand)
+
+proc genOdinCast(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `x ~u16` / `x ^u32`: Odin's type conversion, `u16(x)`.
+  ctx.odinType(e.castType) & "(" & ctx.genOdinExpr(e.castOperand) & ")"
 
 proc genDroppedResult(ctx: var OdinCodegenCtx, s: Expr, stmtCode, ind: string): string =
   ## continue/exit policy: a dropped result routes to the global handler.
@@ -1530,6 +1534,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkContinue: "continue"
   of exkBinary: ctx.genBinary(e)
   of exkUnary: ctx.genUnary(e)
+  of exkCast: ctx.genOdinCast(e)
   of exkBlock: ctx.genBlock(e, ind)
   of exkIf: ctx.genIf(e, ind)
   of exkAssign: ctx.genAssign(e)

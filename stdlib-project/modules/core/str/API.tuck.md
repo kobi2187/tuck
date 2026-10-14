@@ -44,7 +44,7 @@ pending:
   fn toLower({t: str}) -> str
   fn toUpper({t: str}) -> str
   fn parseInt({t: str}) -> {value: i64}?
-  fn parseFloat({t: str}) -> {value: float}?
+  fn parseFloat({t: str}) -> {value: f64}?
 ```
 
 ## Notes on individual translations

@@ -787,8 +787,12 @@ return type, with nothing checking it was ever assigned and nothing collecting
 it — the emitted `handleMsg` returns nothing, so it became a discarded local.
 A fn returns with `return`.
 
-`on select` gives message arms plus a reserved `shutdown`. Like any handler it
-lives inside its actor (or task); at the top level only a registry handler,
+`on select` gives an actor its message arms. An arm is **one line or one call**
+(the call may sit on the next line), void, and cannot `return` (`TK-AC11`,
+`TK-AC12`): several statements belong in a member `fn` the arm calls. An actor is
+a singleton server that lives as long as the program, so it has no shutdown,
+stop or resume (`TK-AC10`); the `shutdown` arm and `send shutdown` are gone. Like
+any handler it lives inside its actor (or task); at the top level only a registry handler,
 `on Registry.Event({...}):`, may start with `on` (`TK-PA15`):
 
 ```tuck
@@ -799,7 +803,6 @@ actor Tally [queue: 16]:
   on select:
     | add -> {n: int}:  total += n
     | finish -> {}:     done = true
-    | shutdown -> {}:   total = total
 ```
 
 Run-verified 55 on every backend.
@@ -899,10 +902,16 @@ let r = {base: 21} compute   # bound => awaited
 
 ```tuck
 task readOrGiveUp({fd: int}) -> {code: int} [io]:
+  var code = 0
   on select:
-    | read fd          -> {}:  return {code: 1}
-    | timeout {30.ms}  -> {}:  return {code: 2}
+    | read fd          -> {}:  code = 1
+    | timeout {30.ms}  -> {}:  code = 2
+  return {code: code}
 ```
+
+An arm is one line or one call and is void, in a task as in an actor
+(`TK-AC11`, `TK-AC12`); a value out of the race is a local the arm sets and the
+task returns after the select.
 
 **Both race outcomes are run-verified**, which is the real evidence of genuine
 non-blocking I/O: source at 500ms vs a 30ms deadline → exit 2; source at 5ms vs

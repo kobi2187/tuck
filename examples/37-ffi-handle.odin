@@ -17,7 +17,7 @@ tuckˑfnˑmain :: proc () {
   tuckˑvˑh := counterNew(i32(100))
   tuckˑvˑt := counterBump(tuckˑvˑh, i32(5))
   counterFree(tuckˑvˑh)
-  if (tuckˑvˑt == 105) {
+  if (tuckˑvˑt == i32(105)) {
       sys.exit(0)
   }
   sys.exit(1)

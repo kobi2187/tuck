@@ -28,28 +28,28 @@ zero vectors.
 ## The API
 
 ```tuck
-type Vec2 = {x: float, y: float}
-type Vec3 = {x: float, y: float, z: float}
+type Vec2 = {x: f64, y: f64}
+type Vec3 = {x: f64, y: f64, z: f64}
 type Mat3 = {r0: Vec3, r1: Vec3, r2: Vec3}
 type Aabb2 = {min: Vec2, max: Vec2}
 
 pending:
   fn vAdd({a: Vec2, b: Vec2}) -> Vec2
   fn vSub({a: Vec2, b: Vec2}) -> Vec2
-  fn vScale({a: Vec2, scalar: float}) -> Vec2
+  fn vScale({a: Vec2, scalar: f64}) -> Vec2
   fn v3Add({a: Vec3, b: Vec3}) -> Vec3
   fn v3Sub({a: Vec3, b: Vec3}) -> Vec3
-  fn v3Scale({a: Vec3, scalar: float}) -> Vec3
+  fn v3Scale({a: Vec3, scalar: f64}) -> Vec3
 
-  fn dot({a: Vec2, b: Vec2}) -> float
-  fn dot3({a: Vec3, b: Vec3}) -> float
+  fn dot({a: Vec2, b: Vec2}) -> f64
+  fn dot3({a: Vec3, b: Vec3}) -> f64
   fn cross({a: Vec3, b: Vec3}) -> Vec3
-  fn cross2({a: Vec2, b: Vec2}) -> float
+  fn cross2({a: Vec2, b: Vec2}) -> f64
 
-  fn length({v: Vec2}) -> float
-  fn length3({v: Vec3}) -> float
-  fn lengthSquared({v: Vec2}) -> float
-  fn lengthSquared3({v: Vec3}) -> float
+  fn length({v: Vec2}) -> f64
+  fn length3({v: Vec3}) -> f64
+  fn lengthSquared({v: Vec2}) -> f64
+  fn lengthSquared3({v: Vec3}) -> f64
   fn normalized({v: Vec2}) -> Vec2
   fn normalized3({v: Vec3}) -> Vec3
   fn tryNormalized({v: Vec2}) -> Vec2?
@@ -57,14 +57,14 @@ pending:
 
   fn identity() -> Mat3
   fn translation({delta: Vec2}) -> Mat3
-  fn rotation({radians: float}) -> Mat3
+  fn rotation({radians: f64}) -> Mat3
   fn scaling({factor: Vec2}) -> Mat3
   fn transformPoint({m: Mat3, v: Vec2}) -> Vec2
   fn compose({a: Mat3, b: Mat3}) -> Mat3
 
   fn hasPoint({box: Aabb2, point: Vec2}) -> bool
   fn overlaps({a: Aabb2, b: Aabb2}) -> bool
-  fn rayHits({origin: Vec2, direction: Vec2, box: Aabb2}) -> float?
+  fn rayHits({origin: Vec2, direction: Vec2, box: Aabb2}) -> f64?
 ```
 
 ## In use

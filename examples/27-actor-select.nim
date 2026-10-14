@@ -5,7 +5,7 @@ import scheduler
 proc tuckˑfnˑready*(): bool
 proc tuckˑfnˑmain*(): int
 
-type tuckˑactorˑAccumulatorMsgKind* = enum msgAdd, msgFinish, msgShutdown
+type tuckˑactorˑAccumulatorMsgKind* = enum msgAdd, msgFinish
 type tuckˑactorˑAccumulatorMsg* = object
   tuckTag*: tuckˑactorˑAccumulatorMsgKind
   n*: int
@@ -14,7 +14,6 @@ type tuckˑactorˑAccumulator* = ref object
   total*: int
   done*: bool
   mailbox*: Mailbox[tuckˑactorˑAccumulatorMsg, 64]
-  finished*: bool
 
 let tuckˑactorˑAccumulatorSingleton* = tuckˑactorˑAccumulator(total: 0, done: false)
 
@@ -25,14 +24,10 @@ proc handleMsg*(self: tuckˑactorˑAccumulator, msg: tuckˑactorˑAccumulatorMsg
     self.total = (self.total + n)
   of msgFinish:
     self.done = true
-  of msgShutdown:
-    self.total = self.total
-    self.finished = true
 
 proc draintuckˑactorˑAccumulator(): bool {.gcsafe.} =
   {.cast(gcsafe).}:
     result = false
-    if tuckˑactorˑAccumulatorSingleton.finished: return
     for m in messages(tuckˑactorˑAccumulatorSingleton.mailbox):
       handleMsg(tuckˑactorˑAccumulatorSingleton, m)
       tuckCheckWaiters()

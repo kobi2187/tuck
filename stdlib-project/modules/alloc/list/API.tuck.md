@@ -26,7 +26,7 @@ works today**, verified:
 type Json:
   | JNull
   | JBool({b: bool})
-  | JNum({n: float})
+  | JNum({n: f64})
   | JStr({s: str})
   | JArr({items: Seq[Json]})
   | JObj({keys: Seq[str], vals: Seq[Json]})

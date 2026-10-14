@@ -40,7 +40,7 @@ proc run*(t: var T) =
 import console
 import str
 
-fn describe({id: int, name: str, ratio: float}) -> str:
+fn describe({id: int, name: str, ratio: f64}) -> str:
   return name + "/" + id.toStr + "/" + ratio.toStr
 
 fn main() -> void [io]:

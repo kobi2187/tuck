@@ -92,7 +92,7 @@ type ValueKind:
   | vkFloat
   | vkText
 
-type Value = {kind: ValueKind, asInt: i64, asFloat: float, asText: str}
+type Value = {kind: ValueKind, asInt: i64, asFloat: f64, asText: str}
 type Row = {columns: Seq[Value]}
 type FetchResult = {token: i64, done: bool, row: Row}
 
@@ -114,9 +114,6 @@ actor Db [queue: 32]:
 
   on deleteToken({token: i64}) -> void:
     return
-
-  on select:
-    | shutdown -> {}: isOpen = false
 ```
 
 ## In use

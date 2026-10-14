@@ -14,7 +14,7 @@ type Rounding:
   | Down
   | Up
 
-type Stats = {count: int, mean: float, variance: float, stddev: float, min: float, max: float}
+type Stats = {count: int, mean: f64, variance: f64, stddev: f64, min: f64, max: f64}
 
 pending:
   fn decimal({units: i64, scale: u8}) -> Decimal
@@ -25,13 +25,13 @@ pending:
   fn divDec({a: Decimal, b: Decimal, scale: u8, mode: Rounding}) -> Decimal?
   fn decToStr({d: Decimal}) -> str
 
-  fn describe({samples: Seq[float]}) -> Stats
-  fn percentile({samples: Seq[float], p: float}) -> float?
-  fn sqrtOf({x: float}) -> float
-  fn powOf({base: float, exp: float}) -> float
-  fn lnOf({x: float}) -> float?
-  fn sinOf({x: float}) -> float
-  fn cosOf({x: float}) -> float
+  fn describe({samples: Seq[f64]}) -> Stats
+  fn percentile({samples: Seq[f64], p: f64}) -> f64?
+  fn sqrtOf({x: f64}) -> f64
+  fn powOf({base: f64, exp: f64}) -> f64
+  fn lnOf({x: f64}) -> f64?
+  fn sinOf({x: f64}) -> f64
+  fn cosOf({x: f64}) -> f64
 ```
 
 ## Notes

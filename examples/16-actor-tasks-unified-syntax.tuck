@@ -8,7 +8,6 @@ actor UartDriver [queue: 8]:
 
   on select:                            # wait for any of these
     | timer.1s  -> {}:  self.heartbeat
-    | shutdown  -> {}:  return          # only way to exit an actor
 
 
 # Task — runs to completion, returns a value

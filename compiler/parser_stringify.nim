@@ -118,6 +118,10 @@ proc toString*(e: Expr): string =
     return e.left.toString() & " " & opStr(e.binOp) & " " & e.right.toString()
   of exkUnary:
     return opStr(e.unaryOp) & e.operand.toString()
+  of exkCast:
+    return e.castOperand.toString() & (if e.castWiden: " ^" else: " ~") &
+           (if e.castType != nil and e.castType.kind == tkNamed: e.castType.name
+            else: "T")
   of exkBlock:
     return "block"
   of exkIf:
