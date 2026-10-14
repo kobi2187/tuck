@@ -242,4 +242,30 @@ fn walk({n: int}) -> int:
 """
   t.okCheck "an acyclic stack-bounded fn is fine; recursion elsewhere is not its business"
 
+  t.src """
+import bits
+import math
+
+fn mask({a: u64}) -> u64 [pure, no_alloc]:
+  return {a: a, b: a} bitAnd
+
+fn root({v: f64}) -> f64 [no_alloc]:
+  return {value: v} sqrt
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "annotated std externs are callable from restricted fns"
+
+  t.src """
+import seq
+
+fn grow({xs: Seq[int]}) -> Seq[int] [no_alloc]:
+  return {items: xs, value: 1} push
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an allocating std fn (push) is not no_alloc", "TK-EF03"
+
   t.finish()
