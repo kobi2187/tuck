@@ -210,7 +210,7 @@ fn build({x: int}) -> int:
   t.okCheck "an unrestricted fn may allocate"
 
   t.src """
-fn fact({n: int}) -> int [stack: 256]:
+fn fact({n: int}) -> int [no_recursion]:
   if n < 2:
     return 1
   return n * ({n: n - 1} fact)
@@ -224,7 +224,7 @@ fn ping({n: int}) -> int:
 fn pong({n: int}) -> int:
   return {n: n} ping
 
-fn top({n: int}) -> int [stack: 256]:
+fn top({n: int}) -> int [no_recursion]:
   return {n: n} ping
 """
   t.badCheck "a stack-bounded fn may not reach a cycle", "TK-EF06"
@@ -233,7 +233,7 @@ fn top({n: int}) -> int [stack: 256]:
 fn leaf({n: int}) -> int:
   return n + 1
 
-fn top({n: int}) -> int [stack: 256]:
+fn top({n: int}) -> int [no_recursion]:
   return {n: n} leaf
 
 fn walk({n: int}) -> int:
@@ -326,5 +326,71 @@ fn main() -> int:
       t.no "[pure] reaches the host as noSideEffect by default", outp
     else:
       t.ok "[pure] reaches the host as noSideEffect by default"
+
+  t.src """
+fn walk({n: int}) -> int [recursion: 5]:
+  if n < 1:
+    return 0
+  let m = n - 1
+  return {n: m} walk
+
+fn main() -> int:
+  return {n: 50} walk
+"""
+  t.okCheck "a [recursion: N] fn checks clean"
+  t.emits "recursion: the counter is declared per fn (Nim)", "threadvar"
+  t.emits "recursion: entering past N traps (Nim)", "tuckDepthExceeded"
+  t.emitsOdin "recursion: entering past N traps (Odin)", "rt.tuckDepthExceeded"
+  t.emitsD "recursion: entering past N traps (D)", "rt.tuckDepthExceeded"
+  t.runs "recursion: recursing past N stops with status 1", 1
+  t.outputs "recursion: and says which fn and what limit", "Recursion depth exceeded in walk: limit 5"
+
+  t.src """
+fn walk({n: int}) -> int [recursion: 5]:
+  if n < 1:
+    return 0
+  let m = n - 1
+  return {n: m} walk
+
+fn main() -> int:
+  return {n: 3} walk
+"""
+  t.runs "recursion: recursion within N runs normally", 0
+
+  t.src """
+fn f({n: int}) -> int [stack: 128]:
+  return n
+"""
+  t.badCheck "[stack: N] is retired and says what replaced it", "no_recursion"
+
+  t.src """
+fn f({n: int}) -> int [no_recursion, recursion: 4]:
+  return n
+"""
+  t.badCheck "no_recursion and depth contradict", "TK-EF04"
+
+  t.src """
+fn f({n: int}) -> int [pure, recursion: 4]:
+  return n
+"""
+  t.badCheck "a pure fn cannot carry a depth counter", "TK-EF04"
+
+  t.src """
+fn sq({x: int}) -> int [pure]:
+  return x * x
+
+fn main() -> int:
+  return {x: 3} sq
+"""
+  t.emits "a pure fn is not marked inline by default", "proc tuckˑfnˑsq\\*\\(x: int\\): int \\{\\.noSideEffect\\.\\}"
+  let inl = t.needCmd(@["./tuck", "c", t.curDir / "t.tuck", "-O:inline", "--root:" & t.root])
+  if t.phase != pCollect:
+    let (rc, outp) = t.resultOf(inl)
+    let nimFile = t.curDir / "t.nim"
+    if rc != 0: t.no "-O:inline compiles", outp
+    elif not fileExists(nimFile) or "{.inline, noSideEffect.}" notin readFile(nimFile):
+      t.no "-O:inline marks a small pure fn inline", outp
+    else:
+      t.ok "-O:inline marks a small pure fn inline"
 
   t.finish()

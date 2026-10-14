@@ -53,7 +53,7 @@ type
     emIrqSafe
     emUnsafe
     emMayBlock
-    emStack
+    emNoRecursion
     emPriority
     emPure
 
@@ -1031,6 +1031,7 @@ type
                             # (Nim's or Odin's own spelling), which is why it
                             # stays a string. A seq, not a Table: it holds one
                             # or two entries and rides the msgpack AST cache.
+      fnDepth*: int     # [depth: N] — runtime recursion limit; 0 = none
       isInline*: bool   # `fn inline name(...)` — codegen hint ({.inline.} / [Inline])
       ownedParams*: seq[string] # prepared only (ownership_write, Odin): the
                                 # parameters the body owns (rule P). A call

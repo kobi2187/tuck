@@ -79,7 +79,8 @@ proc genOdinMemberFn*(ctx: var OdinCodegenCtx, m: Decl, objName: string): string
   let copy = Decl(span: m.span, kind: dkFn, name: memberProcName(objName, m.name),
                   id: m.id, fnParams: params,
                   fnReturnType: m.fnReturnType, fnBody: m.fnBody,
-                  fnEffects: m.fnEffects, fnGenerics: m.fnGenerics)
+                  fnEffects: m.fnEffects, fnGenerics: m.fnGenerics,
+                  fnDepth: m.fnDepth)
   # `self` is a POINTER here, so every mention in the body needs a deref —
   # `self^` reads the value and `self^ = x` writes through to the caller.
   let oldPtrSelf = ctx.ptrSelf
@@ -96,7 +97,7 @@ proc genOdinActorMemberFn*(ctx: var OdinCodegenCtx, m: Decl,
                   name: memberProcName(actorName, m.name),
                   fnParams: @[actorSelfParam("^" & actorName, m)] & m.fnParams,
                   fnReturnType: m.fnReturnType, fnBody: m.fnBody,
-                  fnEffects: m.fnEffects)
+                  fnEffects: m.fnEffects, fnDepth: m.fnDepth)
   ctx.genOdinDecl(copy)
 
 proc genPendingStub*(ctx: var OdinCodegenCtx, d: Decl): string =
@@ -370,11 +371,18 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   var bodyStr = ctx.genFnBody(d, retTypeStr, ind)
   for p in writtenParams(d):
     bodyStr = ind & "  " & p & " := " & p & "\n" & bodyStr
+  var depthDecl = ""
+  if d.fnDepth > 0:
+    let v = depthVar(d)
+    depthDecl = ind & "@(thread_local) " & v & ": int\n"
+    bodyStr = ind & "  " & v & " += 1\n" & ind & "  defer " & v & " -= 1\n" &
+      ind & "  if " & v & " > " & $d.fnDepth & " { rt.tuckDepthExceeded(\"" &
+      depthDisplayName(d) & "\", " & $d.fnDepth & ") }\n" & bodyStr
   ctx.movedParam = savedMoved
   ctx.leaveReturnContext()
   ctx.definedVars = savedVars
-  if movedP == "": header & "\n" & bodyStr & "\n" & ind & "}\n"
-  else: ctx.genMovedTwin(d, header, bodyStr, movedP, ind)
+  if movedP == "": depthDecl & header & "\n" & bodyStr & "\n" & ind & "}\n"
+  else: depthDecl & ctx.genMovedTwin(d, header, bodyStr, movedP, ind)
 
 proc genTransitionProcs*(ctx: var OdinCodegenCtx, d: Decl, kindName: string,
                         hasPayload: bool): string =

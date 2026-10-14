@@ -841,3 +841,16 @@ proc nimFnPragmas*(d: Decl): string =
   if d.isInline: ps.add "inline"
   if hostChecks and emPure in d.fnEffects: ps.add "noSideEffect"
   if ps.len > 0: " {." & ps.join(", ") & ".}" else: ""
+
+
+proc depthVar*(d: Decl): string =
+  ## The per-fn recursion counter a `[depth: N]` fn keeps (thread-local, so a
+  ## recursion on one thread never counts another's frames).
+  result = "tuckDepth_"
+  for ch in d.name:
+    if ch in IdentChars and ch != '_': result.add ch
+
+proc depthDisplayName*(d: Decl): string =
+  ## The name a user wrote: the mangler's prefix (`tuckˑfnˑ`) is not theirs.
+  let parts = d.name.split("ˑ")
+  parts[^1]

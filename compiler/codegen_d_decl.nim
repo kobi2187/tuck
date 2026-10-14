@@ -792,7 +792,7 @@ proc genDActor*(ctx: var DCodegenCtx, d: Decl): string =
     let copy = Decl(span: m.span, kind: dkFn, id: m.id, name: m.name,
                     fnParams: @[actorSelfParam(d.name, m)] & m.fnParams,
                     fnReturnType: m.fnReturnType, fnBody: m.fnBody,
-                    fnEffects: m.fnEffects)
+                    fnEffects: m.fnEffects, fnDepth: m.fnDepth)
     result.add(ctx.genDFnDecl(copy, memberProcName(d.name, m.name),
                               refSelf = true) & "\n")
   result.add(ctx.genDDispatch(d, handlers))
@@ -913,8 +913,9 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   # instead of aliasing a live value.
   let movedP = if refSelf or nameOverride != "": "" else: movedFnParam(ctx.res, ctx.module, d)
   let emitName = if movedP != "": movedName(fnName) else: fnName
+  if d.fnDepth > 0: result = "int " & depthVar(d) & ";\n"
   if movedP != "":
-    result = ctx.genDTwinWrapper(d, fnName, tmplStr, retStr, movedP, refSelf)
+    result.add ctx.genDTwinWrapper(d, fnName, tmplStr, retStr, movedP, refSelf)
   result.add(ctx.dVisibility(d) & ctx.dCallConv(d) & retStr & " " & emitName & tmplStr & "(" &
              ctx.genDParams(d.fnParams, refSelf) & ") {\n")
   let savedMoved = ctx.movedParam
@@ -925,6 +926,11 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   for p in d.fnParams:
     ctx.definedVars.incl(p.name)
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
+  if d.fnDepth > 0:
+    let v = depthVar(d)
+    result.add("    " & v & "++;\n    scope(exit) " & v & "--;\n    if (" & v &
+               " > " & $d.fnDepth & ") rt.tuckDepthExceeded(\"" &
+               depthDisplayName(d) & "\", " & $d.fnDepth & ");\n")
   result.add(ctx.genDStmtOrBlock(d.fnBody))
   result.add(dTrailingReturn(d.fnBody, retStr, 1))
   ctx.indent = 0
