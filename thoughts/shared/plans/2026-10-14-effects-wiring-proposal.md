@@ -235,11 +235,25 @@ stub produces *no* derived fact, never an optimistic one.
 4. **Cross-module.** Facts must be recorded in the signature index
    (`SigInfo` gains the derived set) or an import silently loses them.
 
-### 7.4 Deliberately not proposed
+### 7.4 Memoisation is already planned — this work is its prerequisite
 
-Automatic memoisation, automatic parallelisation of calls, and reordering of
-calls on the strength of `pure`. They need aliasing and FFI proofs the language
-does not have. They are listed so they are a decision, not an omission.
+`fn memo name(...)` is the planned ROADMAP **#69**, in the same keyword slot as
+`fn inline` (spec §3.6b), an `optimize.nim` pass that is off unless `-O` names
+it. Its precondition is exactly the **pure** fact derived in §7.1: the compiler
+checks it, the author asks for the transform, and a `fn memo` on a fn that is
+not pure is a compile error naming the effect or state access that breaks it.
+So the "derive `pure`" step in §7.5 is what unblocks #69; nothing else in this
+proposal needs to change for it.
+
+One note for when #69 is built, not a ruling: #69 says it needs "effect-free
+**plus total**". For skipping a *repeated* call with equal arguments, totality
+is not needed for correctness — the first call already returned (a trap or a
+hang would have ended the program), so the second would return the same value.
+`total` is needed only if the transform may *reorder* or *speculate* calls.
+
+Still not proposed: automatic (unrequested) memoisation, auto-parallelisation,
+and reordering calls on the strength of `pure`. They need aliasing and FFI
+proofs the language does not have.
 
 ### 7.5 Order (after §5 steps 1–4)
 
@@ -248,7 +262,8 @@ does not have. They are listed so they are a decision, not an omission.
    is caught by the host.
 3. Debug assertions behind `-d:tuckChecks`.
 4. Mailbox: single-producer lock elision, then the ISR send-site rule.
-5. `-O:inline`, compile-time folding of pure calls.
+5. `-O:inline`, compile-time folding of pure calls, then **#69 `fn memo`**
+   (uses the pure fact from step 1).
 
 ### 7.6 Decisions
 
