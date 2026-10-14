@@ -317,14 +317,14 @@ fn sq({x: int}) -> int [pure]:
 fn main() -> int:
   return {x: 3} sq
 """
-  let hc = t.needCmd(@["./tuck", "c", t.curDir / "t.tuck", "--host-checks", "--root:" & t.root])
+  let hc = t.needCmd(@["./tuck", "c", t.curDir / "t.tuck", "--root:" & t.root])
   if t.phase != pCollect:
     let (rc, outp) = t.resultOf(hc)
     let nimFile = t.curDir / "t.nim"
-    if rc != 0: t.no "--host-checks compiles", outp
+    if rc != 0: t.no "host checks compile", outp
     elif not fileExists(nimFile) or "{.noSideEffect.}" notin readFile(nimFile):
-      t.no "[pure] reaches the host as noSideEffect under --host-checks", outp
+      t.no "[pure] reaches the host as noSideEffect by default", outp
     else:
-      t.ok "[pure] reaches the host as noSideEffect under --host-checks"
+      t.ok "[pure] reaches the host as noSideEffect by default"
 
   t.finish()

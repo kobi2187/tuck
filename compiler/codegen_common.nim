@@ -829,10 +829,10 @@ proc fillElemType*(res: Resolution, e: Expr): Type =
 
 
 var hostChecks*: bool
-  ## `--host-checks`: let the host compiler verify what the effect pass
-  ## derived or was told. Off by default, so a host that disagrees cannot break
-  ## a build that Tuck itself accepts; on, a disagreement is a compiler bug
-  ## caught at build time (proposal §7.3: defence in depth before reliance).
+  ## Let the host compiler verify what the effect pass was told. ON by default
+  ## (`--no-host-checks` opts out): a disagreement is a bug in our analysis or
+  ## runtime, and exposing it is the point (proposal §7.3: defence in depth
+  ## before reliance).
 
 proc nimFnPragmas*(d: Decl): string =
   ## ` {.inline, noSideEffect.}` for a fn, or "". `noSideEffect` is the host's
