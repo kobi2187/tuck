@@ -1,6 +1,15 @@
 # Wiring the other effect markers — proposal, 2026-10-14
 
-Status: **design, nothing built.** Rulings of 2026-10-14 are in §6; §3.5 is the
+Status: **built 2026-10-14** on `claude/effects-mechanism`: families and
+restriction call rule (EF03), combinations (EF04), allocating constructs (EF05),
+`stack` recursion (EF06), ISR send (EF07), derived facts + `tuck effects`,
+annotated std externs, `--host-checks` (Nim `noSideEffect` for `[pure]`).
+**Not built:** D `pure @nogc nothrow` and Odin equivalents (no dmd/odin in the
+session that built the rest, so unverifiable), `-d:tuckChecks` debug
+assertions, single-producer lock elision, cross-module derived facts (the
+signature index carries declared markers only), `-O:inline`, `fn memo` (#69).
+Rulings of 2026-10-14 are in §6; §3.5 is the
+implication table the owner asked for. Original text: **design, nothing built.** Rulings of 2026-10-14 are in §6; §3.5 is the
 implication table the owner asked for.
 
 Follows #14 (the compiler says what to declare or remove, for `[io]`). This is
