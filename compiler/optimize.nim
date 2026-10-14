@@ -43,13 +43,21 @@ type
     ## Each pass is named on the CLI. Keep the string stable once published —
     ## it goes in build scripts.
     opChainInPlace = "chain-inplace"
+    opInline = "inline"
 
 const PassHelp*: array[OptPass, string] = [
   opChainInPlace:
     "a `..mutatorFn` step whose callee is a plain builder is replaced by " &
     "that builder's own field-sets, so the receiver is updated in place " &
-    "instead of copied in, mutated, and copied back"
+    "instead of copied in, mutated, and copied back",
+  opInline:
+    "a small `[pure]` fn is marked inline, so the host compiler may expand " &
+    "it at its call sites (OFF unless named: -O:inline)"
 ]
+
+const InlineBodyLimit = 12
+  ## Nodes in a body. Small enough that expansion cannot bloat the program,
+  ## large enough for the arithmetic helpers this exists for.
 
 proc parseOptPasses*(spec: string): tuple[passes: set[OptPass], bad: string] =
   ## `-O:a,b` → the named passes. `-O:all` turns on everything. An unknown
@@ -249,6 +257,23 @@ proc rewriteChains(e: Expr, fns: Table[string, Decl], m: Module,
 
 # ---------------------------------------------------------------------------
 
+proc inlinePure(mods: seq[Module], hits: var seq[string]) =
+  ## `[pure]` is a checked, declared fact (no capability, no state, only pure
+  ## callees), so a small pure fn is safe to hand to the host as an inlining
+  ## candidate: expansion cannot change what it computes. Skipped: generics,
+  ## fns with a recursion limit (their counter is a side effect) and any fn
+  ## that already says `inline`.
+  for m in mods:
+    for d in m.decls:
+      if d == nil or d.kind != dkFn or d.fnBody == nil or d.isInline: continue
+      if emPure notin d.fnEffects or d.fnGenerics.len > 0 or d.fnDepth > 0:
+        continue
+      var size = 0
+      for n in d.fnBody.nodes: inc size
+      if size > InlineBodyLimit: continue
+      d.isInline = true
+      hits.add "inline: " & d.name & " (" & $size & " nodes)"
+
 proc optimizeProgram*(mods: seq[Module], passes: set[OptPass]): seq[string] =
   ## Run the requested passes over the whole program. Returns one report line
   ## per rewritten site — the caller prints them under `-O:report`, in the
@@ -257,6 +282,8 @@ proc optimizeProgram*(mods: seq[Module], passes: set[OptPass]): seq[string] =
   ##
   ## No pass requested: returns immediately, having touched nothing.
   if passes == {}: return @[]
+
+  if opInline in passes: inlinePure(mods, result)
 
   if opChainInPlace in passes:
     # Whole-program fn table: a chain may name a builder from an imported

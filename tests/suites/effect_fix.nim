@@ -375,4 +375,22 @@ fn f({n: int}) -> int [pure, recursion: 4]:
 """
   t.badCheck "a pure fn cannot carry a depth counter", "TK-EF04"
 
+  t.src """
+fn sq({x: int}) -> int [pure]:
+  return x * x
+
+fn main() -> int:
+  return {x: 3} sq
+"""
+  t.emits "a pure fn is not marked inline by default", "proc tuckˑfnˑsq\\*\\(x: int\\): int \\{\\.noSideEffect\\.\\}"
+  let inl = t.needCmd(@["./tuck", "c", t.curDir / "t.tuck", "-O:inline", "--root:" & t.root])
+  if t.phase != pCollect:
+    let (rc, outp) = t.resultOf(inl)
+    let nimFile = t.curDir / "t.nim"
+    if rc != 0: t.no "-O:inline compiles", outp
+    elif not fileExists(nimFile) or "{.inline, noSideEffect.}" notin readFile(nimFile):
+      t.no "-O:inline marks a small pure fn inline", outp
+    else:
+      t.ok "-O:inline marks a small pure fn inline"
+
   t.finish()

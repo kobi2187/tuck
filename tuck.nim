@@ -754,7 +754,8 @@ when isMainModule:
   # a pass rewrote. An unknown pass name is fatal rather than ignored: a typo
   # in a build script must not quietly mean something other than it says.
   var optPasses: set[OptPass]
-  for p in OptPass: optPasses.incl(p)
+  for p in OptPass:
+    if p != opInline: optPasses.incl(p)   # inline is opt-in: -O:inline
   var optReport = false
   var optExplicit = false      # a -O: naming passes REPLACES the default set
   for o in opts:
