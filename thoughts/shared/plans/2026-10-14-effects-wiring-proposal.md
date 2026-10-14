@@ -8,7 +8,7 @@ annotated std externs, `--host-checks` (Nim `noSideEffect` for `[pure]`).
 session that built the rest, so unverifiable), `-d:tuckChecks` debug
 assertions, single-producer lock elision, cross-module derived facts (the
 signature index carries declared markers only), `-O:inline`, `fn memo` (#69).
-`[stack: N]` was later split into `[no_recursion]` (static) and `[recursion: N]` (runtime limit). Rulings of 2026-10-14 are in §6; §3.5 is the
+`[stack: N]` was later split into `[no_recursion]` (static) and `[recursion: N]` (runtime limit). Ruling 2026-10-14: the mailbox stays as tuned; an ISR cannot send (TK-EF07), and the workaround is for the ISR to set a flag or write a ring that a task or actor drains. No lock-free mailbox. Rulings of 2026-10-14 are in §6; §3.5 is the
 implication table the owner asked for. Original text: **design, nothing built.** Rulings of 2026-10-14 are in §6; §3.5 is the
 implication table the owner asked for.
 
