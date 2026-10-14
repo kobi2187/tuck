@@ -162,7 +162,7 @@ type
     dcEfRestriction = "TK-EF03"         ## a [R] fn calls something not declared [R]
     dcEfCombination = "TK-EF04"         ## markers declared together that exclude or require each other
     dcEfAllocation = "TK-EF05"          ## an allocating construct in a [no_alloc] fn
-    dcEfRecursion = "TK-EF06"           ## a [stack: N] fn that can recurse
+    dcEfRecursion = "TK-EF06"           ## a [no_recursion] fn that can recurse
     dcEfIsrSend = "TK-EF07"             ## a send from an [irq_safe] fn (the mailbox takes a lock)
     dcPeClash = "TK-PE01"               ## `pending:` clashes with a real decl
     dcPoMalformed = "TK-PO01"           ## the errors policy block is malformed
@@ -823,11 +823,11 @@ proc ruleExplanation(d: DiagCode): string =
     "operations (their storage is sized at declaration) and string literals. " &
     "Fix: use an `Array[N, T]` or a pool, or drop `[no_alloc]` from the fn."
   of dcEfRecursion:
-    "`[stack: N]` promises a bounded stack. Frame sizes are not known from " &
+    "`[no_recursion]` promises a bounded stack. Frame sizes are not known from " &
     "source, so the compiler checks the part it can decide: nothing the fn " &
     "calls, directly or through other fns, may call back into a cycle. A " &
     "recursive fn has no static depth bound, so it cannot carry the promise. " &
-    "Fix: make the recursion a loop, or drop `[stack: N]`."
+    "Fix: make the recursion a loop, or use `[recursion: N]` to allow it with a runtime limit, or drop the marker."
   of dcEfIsrSend:
     "A send enqueues into the actor's mailbox, and a mailbox takes a lock. An " &
     "interrupt that preempts the thread holding that lock and then sends " &

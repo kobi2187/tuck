@@ -29,7 +29,7 @@ func effectName*(e: EffectMarker): string =
   of emIrqSafe: "irq_safe"
   of emUnsafe: "unsafe"
   of emMayBlock: "may_block"
-  of emStack: "stack"
+  of emNoRecursion: "no_recursion"
   of emPriority: "priority"
   of emPure: "pure"
 
@@ -48,7 +48,7 @@ func familyOf*(e: EffectMarker): MarkerFamily =
   case e
   of emIo, emMayBlock: mfCapability
   of emNoAlloc, emIrqSafe, emPure: mfRestriction
-  of emUnsafe, emStack, emPriority: mfAttribute
+  of emUnsafe, emNoRecursion, emPriority: mfAttribute
 
 func excludes*(e: EffectMarker): set[EffectMarker] =
   ## Markers that cannot be declared TOGETHER with `e`: an interrupt context
@@ -56,14 +56,14 @@ func excludes*(e: EffectMarker): set[EffectMarker] =
   case e
   of emIrqSafe: {emIo, emMayBlock}
   of emPure: {emIo, emMayBlock}
-  of emIo, emNoAlloc, emUnsafe, emMayBlock, emStack, emPriority: {}
+  of emIo, emNoAlloc, emUnsafe, emMayBlock, emNoRecursion, emPriority: {}
 
 func requires*(e: EffectMarker): set[EffectMarker] =
   ## Markers `e` implies and so must also be WRITTEN (declared, not inferred): an
   ## interrupt cannot take the allocator's lock, so `irq_safe` needs `no_alloc`.
   case e
   of emIrqSafe: {emNoAlloc}
-  of emIo, emNoAlloc, emUnsafe, emMayBlock, emStack, emPriority, emPure: {}
+  of emIo, emNoAlloc, emUnsafe, emMayBlock, emNoRecursion, emPriority, emPure: {}
 
 proc enumDomain*(m: Module, t: Type): seq[string] =
   ## Values of an enumerable decision-table column: bool, or a fieldless sum

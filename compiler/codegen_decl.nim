@@ -163,7 +163,17 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
   ctx.indent = oldIndent
   ctx.leaveReturnContext()
   ctx.definedVars = oldVars
-  return header & "\n" & groupMixins(ctx, d) & bodyStr & "\n"
+  let depthDecl = if d.fnDepth > 0: "var " & depthVar(d) & " {.threadvar.}: int\n"
+                  else: ""
+  let depthIn = if d.fnDepth > 0:
+                  let v = depthVar(d)
+                  let ind = "  ".repeat(ctx.indent + 1)
+                  ind & v & " += 1\n" & ind & "defer: " & v & " -= 1\n" &
+                    ind & "if " & v & " > " & $d.fnDepth &
+                    ": tuckDepthExceeded(\"" & depthDisplayName(d) & "\", " &
+                    $d.fnDepth & ")\n"
+                else: ""
+  return depthDecl & header & "\n" & groupMixins(ctx, d) & depthIn & bodyStr & "\n"
 
 proc genMemberFn*(ctx: var CodegenCtx, m: Decl, objName: string): string =
   ## lowering.normalizeSelf has already given the member its `self`
@@ -185,7 +195,8 @@ proc genMemberFn*(ctx: var CodegenCtx, m: Decl, objName: string): string =
   let copy = Decl(span: m.span, kind: dkFn,
                   name: memberProcName(objName, m.name), fnParams: params,
                   fnReturnType: m.fnReturnType, fnBody: m.fnBody,
-                  fnEffects: m.fnEffects, fnGenerics: m.fnGenerics)
+                  fnEffects: m.fnEffects, fnGenerics: m.fnGenerics,
+                  fnDepth: m.fnDepth)
   ctx.genFnDecl(copy)
 
 proc genActorMemberFn*(ctx: var CodegenCtx, m: Decl, actorName: string): string =
@@ -196,7 +207,7 @@ proc genActorMemberFn*(ctx: var CodegenCtx, m: Decl, actorName: string): string 
                   name: memberProcName(actorName, m.name),
                   fnParams: @[actorSelfParam(actorName, m)] & m.fnParams,
                   fnReturnType: m.fnReturnType, fnBody: m.fnBody,
-                  fnEffects: m.fnEffects)
+                  fnEffects: m.fnEffects, fnDepth: m.fnDepth)
   ctx.genFnDecl(copy)
 
 proc genTransitionProcs*(d: Decl, kindName: string, hasPayload: bool): string =

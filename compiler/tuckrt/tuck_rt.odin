@@ -903,6 +903,14 @@ ObjectPool :: struct($T: typeid, $Count: int) {
 	state:   [Count]CellState, // one per cell; was a u64, capping a pool at 64
 }
 
+tuckDepthExceeded :: proc(name: string, limit: int) {
+	// A `[depth: N]` fn was entered more than N levels deep. Real code, not
+	// `assert`: it must survive a release build. Exit status 1, like
+	// tuckInvariantFailed.
+	fmt.eprintln("Recursion depth exceeded in ", name, ": limit ", limit, sep = "")
+	os.exit(1)
+}
+
 tuckInvariantFailed :: proc(cond, typeName: string) {
 	// An invariant violation (spec 4.7): name the condition and stop — the
 	// same message and exit status as Nim's and D's. NOT `assert`, which

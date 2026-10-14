@@ -619,12 +619,17 @@ fn queuePush({msg: Msg}) -> !void [no_alloc, irq_safe]:
 **Marker set:** `io`, `may_block` (capabilities: a caller must declare what its
 callees do); `no_alloc`, `irq_safe`, `pure` (restrictions: a restricted fn may
 call only fns that declare the same restriction, and its body may hold no
-allocating construct for `no_alloc`); `unsafe`, `stack: N`, `priority: N`
-(attributes: no propagation). `irq_safe` excludes `io` and `may_block` and must
+allocating construct for `no_alloc`); `unsafe`, `no_recursion`, `priority: N`
+(attributes: no propagation); `recursion: N` (a runtime limit, see below). `irq_safe` excludes `io` and `may_block` and must
 also be `no_alloc`. `alloc` is not a marker: `no_alloc` is its negation, and
 absence of `no_alloc` already means "may allocate". `[unsafe]` is a local
 escape: it marks the site, is reported, and does not oblige callers to declare
-anything. `[stack: N]` requires that nothing below the fn can recurse.
+anything. `[no_recursion]` requires that nothing below the fn can recurse
+(checked statically, within the module). `[recursion: N]` is the other choice:
+recursion is allowed, and entering the fn more than N levels deep stops the
+program with a message naming the fn and the limit (exit status 1, kept in
+release builds). The two contradict, so a fn declares one. `[stack: N]` was
+retired: N read as a byte budget, which it never was.
 
 **Declaration is explicit, not inferred.** A function's effect budget is
 exactly the markers written on its own signature — nothing more. Calling a

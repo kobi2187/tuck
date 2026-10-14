@@ -369,20 +369,40 @@ proc checkStackBound(c: Checker, d: Decl) =
   ## TK-EF06: a fn declaring `stack` has a call graph below it with no cycle.
   ## Only fns whose bodies are in this module are followed; an extern or an
   ## imported fn is a leaf here.
-  if emStack notin d.fnEffects or d.fnBody == nil: return
+  if emNoRecursion notin d.fnEffects or d.fnBody == nil: return
   var bodies: Table[string, Decl]
   for x in c.module.allDecls:
     if x.kind == dkFn and x.fnBody != nil: bodies[x.name] = x
   var path: seq[string]
   if c.recursiveFrom(bodies, d.name, path):
     reportError(withCode(dcEfRecursion,
-      "'" & d.name & "' declares [stack] but can recurse (via " &
+      "'" & d.name & "' declares [no_recursion] but can recurse (via " &
       path.join(" -> ") & "), so its depth has no static bound. Fix: turn " &
-      "the recursion into a loop, or drop [stack]"), d.span)
+      "the recursion into a loop, use [recursion: N], or drop [no_recursion]"), d.span)
+
+proc checkRetiredStack(d: Decl) =
+  ## `[stack: N]` was renamed: N read as a byte budget, which it never was.
+  if d.fnReturnType == nil: return
+  for a in d.fnReturnType.attrs:
+    if a.name == "stack":
+      reportError(withCode(dcEfRecursion,
+        "'" & d.name & "' uses [stack: N], which is retired. Fix: write " &
+        "[no_recursion] to forbid recursion below it, or [recursion: N] to allow " &
+        "recursion but trap beyond N nested calls"), d.span)
 
 proc checkMarkerCombinations(d: Decl) =
   ## TK-EF04: markers that exclude each other, and implications that must be
   ## written (`irq_safe` requires `no_alloc`).
+  checkRetiredStack(d)
+  if d.fnDepth > 0 and emNoRecursion in d.fnEffects:
+    reportError(withCode(dcEfCombination,
+      "'" & d.name & "' declares [no_recursion] together with [recursion: " &
+      $d.fnDepth & "]. Fix: [no_recursion] forbids recursion, [recursion: N] " &
+      "allows it up to N; keep one"), d.span)
+  if d.fnDepth > 0 and emPure in d.fnEffects:
+    reportError(withCode(dcEfCombination,
+      "'" & d.name & "' declares [pure] together with [recursion: " & $d.fnDepth &
+      "]; the depth counter is a side effect. Fix: remove one"), d.span)
   for m in d.fnEffects:
     for x in excludes(m):
       if x in d.fnEffects:
@@ -423,7 +443,7 @@ proc verifyFn(c: var Checker, d: Decl) =
   # about it changed nothing.
   let budget = if d.name == "main":
                  Demands(effects: @[emIo, emNoAlloc, emIrqSafe, emUnsafe,
-                                    emMayBlock, emStack, emPriority],
+                                    emMayBlock, emNoRecursion, emPriority],
                          resources: c.everyKind & d.fnResourceKinds)
                else: Demands(effects: d.fnEffects,
                              resources: d.fnResourceKinds)
