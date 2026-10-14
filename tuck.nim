@@ -395,7 +395,17 @@ proc addLoadedEffects(result: var Table[string, seq[EffectMarker]],
   ## under both its bare and its `module::fn` name.
   for lm in loaded:
     for d in lm.m.decls:
-      if d == nil or d.kind != dkFn: continue
+      if d == nil: continue
+      # An `extern:` block's fns are the effects that matter most (`printLine`
+      # is `[io]` there and nowhere else), and they were never recorded, so a
+      # pure fn calling an imported extern checked clean.
+      if d.kind in {dkExtern, dkPending}:
+        for mem in d.mixinMembers:
+          if mem != nil and mem.kind == dkFn:
+            result[mem.name] = mem.fnEffects
+            result[lm.name & "::" & mem.name] = mem.fnEffects
+        continue
+      if d.kind != dkFn: continue
       result[d.name] = d.fnEffects
       result[lm.name & "::" & d.name] = d.fnEffects
 
