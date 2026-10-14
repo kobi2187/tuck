@@ -11,6 +11,7 @@ import actor_mode
 import actor_result
 import numeric_cast
 import overflow
+import effect_fix
 import auto_alias
 import bare_variant
 import cli_smoke
@@ -78,6 +79,7 @@ let registry: seq[Entry] = @[
   ("actor_result",        SuiteProc(actor_result.run),        true),
   ("numeric_cast",        SuiteProc(numeric_cast.run),        true),
   ("overflow",            SuiteProc(overflow.run),            true),
+  ("effect_fix",          SuiteProc(effect_fix.run),          true),
   ("auto_alias",          SuiteProc(auto_alias.run),          false),
   ("bare_variant",        SuiteProc(bare_variant.run),        true),
   ("cli_smoke",           SuiteProc(cli_smoke.run),           false),

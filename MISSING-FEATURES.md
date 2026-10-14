@@ -217,8 +217,16 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   the dead kinds are just misleading. Either make them real keywords or
   delete them. (`tkSymbol` is dead too, and says so: "legacy fallback".)
 
-- **Effect propagation is require-declared, not inferred.** The ruling is
-  implicit propagation; the checker still makes you declare. `ROADMAP.md:26`.
+- **Effect propagation (#14) — RULED 2026-09-13: declared in the code, the
+  compiler helps.** Effects stay written in each fn's bracket so a signature
+  tells you at a glance what the body may do; the compiler computes what is
+  required and says what to write. BUILT 2026-10-14: TK-EF01 points at the call
+  that needs the effect and spells the fix (`'inner' is [io]. Fix: declare [io]
+  on 'outer'`), and TK-EF02 warns about a declared `[io]` nothing in the body
+  needs (silent for `...` stubs and for bodies that suspend without a call).
+  This also closed a hole: the effects of fns declared in an imported `extern:`
+  block were never recorded, so a pure fn calling `printLine` checked clean.
+  Still missing: unused-effect warnings for markers other than `[io]`.
 - **`[may_block]` has no checker meaning.** It parses and propagates. Its real
   job is the `[irq_safe]` treatment — an `[irq_safe]` fn calling a
   `[may_block]` one should be a compile error, exactly as spec §3.7 already

@@ -158,6 +158,7 @@ type
     dcTrIllegal = "TK-TR01"             ## a transition the type does not allow
     dcCnNotConst = "TK-CN01"            ## `const` initialised at runtime
     dcEfBudget = "TK-EF01"              ## callee's effects exceed the caller's
+    dcEfUnused = "TK-EF02"              ## a declared [io] nothing in the body needs
     dcPeClash = "TK-PE01"               ## `pending:` clashes with a real decl
     dcPoMalformed = "TK-PO01"           ## the errors policy block is malformed
     dcSeConstruction = "TK-SE01"        ## a sealed type built outside a transition
@@ -783,7 +784,20 @@ proc ruleExplanation(d: DiagCode): string =
   of dcCnNotConst: "A `const` must be compile-time data."
   of dcEfBudget:
     "A callee's effects must fit inside its caller's declared budget: a pure " &
-    "fn cannot call an `[io]` one."
+    "fn cannot call an `[io]` one. The effects a fn declares are written in " &
+    "its own bracket, so that reading a signature tells you at a glance what " &
+    "the body may do; the compiler works out what is REQUIRED and tells you " &
+    "what to add, naming the call that needs it. Fix: add the effect to the " &
+    "bracket of the fn it names (`fn outer() -> void [io]:`), or stop calling " &
+    "the effectful fn from there."
+  of dcEfUnused:
+    "A fn declares `[io]` but nothing in its body performs I/O, suspends or " &
+    "spawns, so the marker promises a suspend point there is not. Declared " &
+    "effects are read as a promise of what the body MAY do; an effect it never " &
+    "does makes every caller carry it for nothing, and turns the fn into an " &
+    "async one. This is a warning: the build carries on. Fix: remove `[io]` " &
+    "from the bracket. Ignore it only when the signature must match an " &
+    "interface or callback that does declare `[io]`."
   of dcPeClash: "A `pending:` declaration clashes with a real one."
   of dcPoMalformed: "The `errors [policy: ...]` block is malformed."
   of dcSeConstruction:
