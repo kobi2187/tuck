@@ -233,7 +233,7 @@ import time
 actor Tally [queue: 8]:
   n: int = 0
 
-  on add({by: int}):
+  on add({by: int}) [io]:
     {ms: 40} sleepMs
     n += by
 

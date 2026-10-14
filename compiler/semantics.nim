@@ -27,7 +27,7 @@
 # This kind of hidden inter-pass dependency is common in compilers and almost
 # never obvious from the code. When you find one, write it down where the
 # ordering is decided.
-import ast, tables, sets
+import ast, ast_ops, tables, sets, strutils
 import resolution
 import ast_query   # memberCallDecl: which member a call reaches
 import diagnostics  # TK-RS03, the resource half of the propagation rule
@@ -79,7 +79,8 @@ proc getDeclared(c: Checker, name: string): Demands =
 
 # Bidirectional functions
 proc synthesizeExpr(c: var Checker, e: Expr): Demands
-proc checkExpr(c: var Checker, e: Expr, expected: Demands, currentFn: string)
+proc checkExpr(c: var Checker, e: Expr, expected: Demands,
+               currentFn: string): Demands
 
 proc unionEffects(a, b: seq[EffectMarker]): seq[EffectMarker] =
   ## `a` followed by the markers of `b` not already in it — order-preserving,
@@ -162,30 +163,78 @@ proc synthesizeExpr(c: var Checker, e: Expr): Demands =
   elif semLayer.hasCall(e): c.callEffects(semLayer.call(e), res)
   res
 
-proc checkExpr(c: var Checker, e: Expr, expected: Demands, currentFn: string) =
+proc culpritCall(c: var Checker, e: Expr, eff: EffectMarker):
+    tuple[name: string, span: Span] =
+  ## The first call in `e` (source order) whose callee carries `eff` — the one
+  ## that makes the enclosing fn need it, so the error can point at it rather
+  ## than at the whole body.
+  for n in e.nodes:
+    var d = Demands()
+    var call: Expr = nil
+    if n.kind == exkCall: call = n
+    elif semLayer.hasCall(n): call = semLayer.call(n)
+    else: continue
+    c.callEffects(call, d)
+    if eff in d.effects:
+      let name = if call.callee != nil and call.callee.kind == exkVar:
+                   call.callee.name
+                 else: ""
+      return (name, n.span)
+  ("", e.span)
+
+proc checkExpr(c: var Checker, e: Expr, expected: Demands,
+               currentFn: string): Demands =
   ## Reject any effect this expression performs, or resource kind it acquires,
   ## that `currentFn` did not declare. `expected` is that declaration — an [io]
   ## fn may do IO, a fn with no markers may do none, so an undeclared effect
   ## anywhere in the body is an error naming the function that failed to
   ## declare it. §7.4 asks for the identical rule on `[resource: k]`, and gets
-  ## it from the identical code.
-  if e == nil: return
+  ## it from the identical code. Returns what the body actually demands, for
+  ## the caller that wants to say what a bracket declares in vain.
+  if e == nil: return Demands()
 
   # 1. Synthesize the actual demands bottom-up
   let actual = c.synthesizeExpr(e)
+  result = actual
 
-  # 2. Check them top-down against the declared budget
+  # 2. Check them top-down against the declared budget. The compiler already
+  # knows the whole set that is missing and the call that needs each, so it
+  # says what to WRITE, at that call (issue #14: the user declares in the
+  # code; the compiler infers and helps).
+  var missing: seq[string]
+  for eff in actual.effects:
+    if eff notin expected.effects: missing.add effectName(eff)
   for eff in actual.effects:
     if eff notin expected.effects:
+      let (callee, span) = c.culpritCall(e, eff)
       reportError(withCode(dcEfBudget,
         "Expression requires effect [" & effectName(eff) & "], which is " &
-        "not allowed in context of '" & currentFn & "'"), e.span)
+        "not allowed in context of '" & currentFn & "'" &
+        (if callee != "": " — '" & callee & "' is [" & effectName(eff) & "]"
+         else: "") &
+        ". Fix: declare [" & missing.join(", ") & "] on '" & currentFn & "'" &
+        " (`fn " & currentFn & "(...) -> ... [" & missing.join(", ") & "]:`)" &
+        ", or do not call it from there"), span)
   for kind in actual.resources:
     if kind notin expected.resources:
       reportError(withCode(dcRsUndeclared,
         "Expression acquires resource kind '" & kind & "', which '" &
         currentFn & "' does not declare — add `[resource: " & kind &
         "]` to its bracket"), e.span)
+
+proc mayDoIoUnseen(c: Checker, body: Expr): bool =
+  ## Does the body do something that suspends or spawns without calling an
+  ## `[io]` fn by name? Such a body may legitimately need `[io]` although no
+  ## callee declares it, so the unused-effect warning stays quiet for it.
+  for n in body.nodes:
+    case n.kind
+    of exkSelect, exkSend, exkAcquire, exkFinish, exkDefer, exkActorRef,
+       exkTripleDot:   # `...` is a stub: its bracket is the contract to come
+      return true
+    of exkCall:
+      if n.callee != nil and n.callee.kind == exkVar and
+         n.callee.name in c.taskNames: return true
+    else: discard
 
 proc verifyFn(c: var Checker, d: Decl) =
   ## One fn body against its own bracket — `main`'s budget aside, below.
@@ -212,7 +261,13 @@ proc verifyFn(c: var Checker, d: Decl) =
                          resources: c.everyKind & d.fnResourceKinds)
                else: Demands(effects: d.fnEffects,
                              resources: d.fnResourceKinds)
-  c.checkExpr(d.fnBody, budget, d.name)
+  let actual = c.checkExpr(d.fnBody, budget, d.name)
+  # The other direction (issue #14): a declared [io] the body never needs.
+  if d.name != "main" and emIo in d.fnEffects and emIo notin actual.effects and
+     not c.mayDoIoUnseen(d.fnBody):
+    warn(dcEfUnused, "'" & d.name & "' declares [io], but nothing in its " &
+         "body performs I/O, suspends or spawns. Fix: remove [io] from its " &
+         "bracket", d.span.line, d.span.col)
   c.visiting.excl(d.name)
 
 proc verifyMembers(c: var Checker, members: seq[Decl]) =
@@ -235,8 +290,8 @@ proc verifyDecl*(c: var Checker, d: Decl) =
   of dkTask:
     if d.name in c.visiting: return
     c.visiting.incl(d.name)
-    c.checkExpr(d.fnBody, Demands(effects: d.fnEffects,
-                                    resources: d.fnResourceKinds), d.name)
+    discard c.checkExpr(d.fnBody, Demands(effects: d.fnEffects,
+                                           resources: d.fnResourceKinds), d.name)
     c.visiting.excl(d.name)
   of dkActor:
     for h in d.handlers:
@@ -245,7 +300,7 @@ proc verifyDecl*(c: var Checker, d: Decl) =
   of dkType: c.verifyMembers(d.typeMembers)
   of dkMixin: c.verifyMembers(d.mixinMembers)
   of dkStaticAssert:
-    c.checkExpr(d.assertExpr, Demands(), "static_assert")
+    discard c.checkExpr(d.assertExpr, Demands(), "static_assert")
   of dkSelect:
     # NOT CHECKED, knowingly: an `on select` arm has no bracket, so it has no
     # budget to be checked against. Checking it against an empty one would
