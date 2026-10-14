@@ -39,6 +39,7 @@
 # unimplemented, so the program still compiles AND runs. You can sketch an
 # entire design in types, run it end to end, then fill in bodies one at a time.
 # The PENDING block printed after a check is that list.
+import algorithm
 import os, strutils, times, tables, std/json, osproc, std/sets
 import jsony
 import lexer
@@ -114,6 +115,8 @@ run). Writes beside the source file, or into -o:DIR if given.
   -vv            also echo each stage's per-module sub-steps, individually timed
   -O:PASS[,...]  choose optimization passes; `-O:none` disables them all
   --max-complexity:N, --max-fn-lines:N  per-function size budget
+  --report-narrowing  list every `x ~T` cast: where, the types, and whether
+                 the value was confirmed to fit or the risk is the author's
   --actors:MODE  how actors get their CPU: thread (default), single, batch
   --batch-count:N, --batch-timeout:MS  when a staged batch flushes
                  (--actors:batch only)
@@ -607,6 +610,24 @@ proc dumpTree(mods: seq[Module], fmt: string, withSem = false) =
   if withSem: obj["semLayer"] = semLayerJson(mods)
   if fmt == "text": echo obj else: echo pretty(obj)
 
+var reportNarrowing = false
+  ## `--report-narrowing`: list every `~` cast after a successful check.
+
+proc narrowingEntries(): seq[string] =
+  ## One line per narrowing cast the author wrote: where, the two types, and
+  ## whether the compiler confirmed the value fits or the author accepted the
+  ## risk. Sorted by position so a codebase audit reads top to bottom.
+  var sites = takeNarrowSites()
+  sites.sort(proc (a, b: NarrowSite): int =
+    result = cmp(a.module, b.module)
+    if result == 0: result = cmp(a.line, b.line)
+    if result == 0: result = cmp(a.col, b.col))
+  for s in sites:
+    result.add(s.module & ":" & $s.line & ":" &
+               $s.col & ": " & s.src & " -> " & s.dst &
+               (if s.checked: "  [checked: " & s.value & " fits]"
+                else: "  [unproven]"))
+
 proc checkProgram(path: string, needBodies = false,
                   verifyStages = false): seq[LoadedModule] =
   ## The whole front end for one entry file: load the import closure, inject
@@ -647,6 +668,10 @@ proc checkProgram(path: string, needBodies = false,
   updateIndex(parentDir(absolutePath(path)), result, moduleSigs)
   report("PENDING", "unimplemented", pendingEntries(result, sigOnly))
   report("SHORTCUTS", "routed to the global error handler", shortcuts)
+  if reportNarrowing:
+    report("NARROWING", "casts", narrowingEntries())
+  else:
+    discard takeNarrowSites()
   sizeReport(path, result)
 
 when isMainModule:
@@ -804,6 +829,7 @@ when isMainModule:
   # `--release` promotes the size report from a list to a failure. Read here
   # rather than in the build arm because the check runs before it.
   sizeIsError = "--release" in opts
+  reportNarrowing = "--report-narrowing" in opts
   # `-v` = level 1, `-vv` = level 2 (adds per-module sub-steps), `--verbose`
   # = level 1. Whichever flag asks loudest wins if more than one is given.
   for o in opts:
