@@ -226,6 +226,7 @@ proc effectMarkerFromName*(name: string, marker: var EffectMarker): bool =
   of "may_block": marker = emMayBlock
   of "stack": marker = emStack
   of "priority": marker = emPriority
+  of "pure": marker = emPure
   else: return false
   return true
 

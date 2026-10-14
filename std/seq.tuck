@@ -6,8 +6,8 @@ extern:
   # compiler cannot read a body-less fn: `at` hands back the element itself
   # (`[view: items]`: the caller copies it to keep it), `setAt` and `push` store
   # the `value` they are given (`[keeps: value]`). Everything else is read.
-  fn at[T]({items: Seq[T], index: int}) -> T [view: items]
-  fn setAt[T]({items: Seq[T], index: int, value: T}) -> void [keeps: value]
+  fn at[T]({items: Seq[T], index: int}) -> T [view: items, pure, no_alloc]
+  fn setAt[T]({items: Seq[T], index: int, value: T}) -> void [keeps: value, no_alloc]
   # `push` returns the grown seq rather than mutating `items` in place —
   # `at`/`setAt` mutate through a receiver the caller already owns as a
   # `var`, but growing can reallocate, so there is no shared backing store
@@ -29,7 +29,7 @@ extern:
   # The ambiguity sits in a generic body, and Nim does not check one until it
   # is instantiated — so the standalone compile is a false negative and only
   # a program that calls `count` shows it.
-  fn count[T]({items: Seq[T]}) -> int
+  fn count[T]({items: Seq[T]}) -> int [pure, no_alloc]
   # `.len` under its own name, and FULLY GENERIC — `T`, not `Seq[T]` — because
   # it has to answer for a str as well. `[emit:]` points at `getLength`, since
   # a runtime proc called `len` is ambiguous with Nim's own.

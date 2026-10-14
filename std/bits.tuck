@@ -15,12 +15,12 @@
 # is signed, where a right shift is arithmetic (sign-extending) rather than
 # logical, which is almost never what a mask wants.
 extern:
-  fn bitAnd({a: u64, b: u64}) -> u64
-  fn bitOr({a: u64, b: u64}) -> u64
-  fn bitXor({a: u64, b: u64}) -> u64
-  fn bitNot({a: u64}) -> u64
+  fn bitAnd({a: u64, b: u64}) -> u64 [pure, no_alloc]
+  fn bitOr({a: u64, b: u64}) -> u64 [pure, no_alloc]
+  fn bitXor({a: u64, b: u64}) -> u64 [pure, no_alloc]
+  fn bitNot({a: u64}) -> u64 [pure, no_alloc]
   # A shift at or past 64 is 0, not undefined. C leaves `x << 64` undefined
   # and all three backends inherit that from their own codegen, so the runtime
   # guards it once rather than three times.
-  fn shiftLeft({a: u64, by: int}) -> u64
-  fn shiftRight({a: u64, by: int}) -> u64
+  fn shiftLeft({a: u64, by: int}) -> u64 [pure, no_alloc]
+  fn shiftRight({a: u64, by: int}) -> u64 [pure, no_alloc]

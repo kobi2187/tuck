@@ -149,7 +149,7 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
   let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
   # Generic fns pass their type params straight through — Nim monomorphizes
   let genericStr = if d.fnGenerics.len > 0: "[" & d.fnGenerics.join(", ") & "]" else: ""
-  let inlineStr = if d.isInline: " {.inline.}" else: ""
+  let inlineStr = nimFnPragmas(d)
   let header = fnHeaderNim(fnNameSanitized, genericStr, params, retTypeStr,
                            inlineStr,
                            isExportedDecl(ctx.module, d)) & " ="
@@ -1023,7 +1023,7 @@ proc fnForwardDecls*(m: Module): string =
     let ret = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
     let gen = if d.fnGenerics.len > 0: "[" & d.fnGenerics.join(", ") & "]"
               else: ""
-    let inl = if d.isInline: " {.inline.}" else: ""
+    let inl = nimFnPragmas(d)
     result.add(fnHeaderNim(d.name.replace(".", "_"), gen, params, ret, inl,
                            isExportedDecl(m, d)) & "\n")
   if result.len > 0: result.add("\n")

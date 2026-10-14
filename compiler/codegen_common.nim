@@ -826,3 +826,18 @@ proc fillElemType*(res: Resolution, e: Expr): Type =
   ## `[v; N]`'s element type, as the checker settled it (synthFill).
   let t = res.typeFor(e)
   if t != nil and t.kind == tkApp and t.args.len == 2: t.args[1] else: nil
+
+
+var hostChecks*: bool
+  ## Let the host compiler verify what the effect pass was told. ON by default
+  ## (`--no-host-checks` opts out): a disagreement is a bug in our analysis or
+  ## runtime, and exposing it is the point (proposal §7.3: defence in depth
+  ## before reliance).
+
+proc nimFnPragmas*(d: Decl): string =
+  ## ` {.inline, noSideEffect.}` for a fn, or "". `noSideEffect` is the host's
+  ## own check of `[pure]`.
+  var ps: seq[string]
+  if d.isInline: ps.add "inline"
+  if hostChecks and emPure in d.fnEffects: ps.add "noSideEffect"
+  if ps.len > 0: " {." & ps.join(", ") & ".}" else: ""

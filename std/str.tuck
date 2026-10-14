@@ -8,11 +8,11 @@
 extern:
   fn toStr[T]({value: T}) -> str
   fn charAt({s: str, index: int}) -> str
-  fn containsChar({s: str, ch: str}) -> bool
+  fn containsChar({s: str, ch: str}) -> bool [pure, no_alloc]
   fn splitLines({s: str}) -> Seq[str]
   # `ch` is a length-1 str, same convention as charAt's result. Indexing an
   # empty str is a bounds precondition violation, same as at/setAt.
-  fn ord({ch: str}) -> int
+  fn ord({ch: str}) -> int [pure, no_alloc]
   # Concatenating in a loop is O(n^2) — `acc = acc + part` copies the whole
   # string each time, and unlike a Seq append there is no in-place form for
   # the emitters to recognise (measured: 3.5x on Odin for a doubled input).
@@ -25,8 +25,8 @@ extern:
   # These two say what is actually going on, and `byteCount` names what `.len`
   # has always meant for text rather than leaving "how long" ambiguous
   # between bytes and runes.
-  fn byteAt({t: str, index: int}) -> u8
-  fn byteCount({t: str}) -> int
+  fn byteAt({t: str, index: int}) -> u8 [pure, no_alloc]
+  fn byteCount({t: str}) -> int [pure, no_alloc]
   # The one text conversion that cannot be written in Tuck. Correctly rounded
   # decimal-to-binary is a real algorithm, not a fold — every host already
   # ships one, and a hand-rolled version would differ between backends, which

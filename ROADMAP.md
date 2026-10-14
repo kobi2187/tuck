@@ -396,7 +396,7 @@ closure no longer exist in any `codegen_*.nim`.
 
 | # | issue | | size |
 |---|---|---|---|
-| S4.1 | **#64** | wire `[no_alloc]` and `[irq_safe]`. Only `emIo` has checker logic today; #62/#63/#65/#67 all wait on this | M |
+| S4.1 | **#64** | **BUILT 2026-10-14** (`claude/effects-mechanism`): marker families, restriction call rule, TK-EF03..07, derived facts + `tuck effects`, `--host-checks`. Left: D/Odin host attributes, debug assertions, lock elision, cross-module derived facts, `fn memo` (#69). See thoughts/shared/plans/2026-10-14-effects-wiring-proposal.md | M |
 
 ### S5 — Stage-boundary debt
 

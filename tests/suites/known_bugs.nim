@@ -2323,7 +2323,7 @@ object Box:
   fn poke({self: Box}) -> int [io]:
     return 1
 
-fn pure({b: Box}) -> int:
+fn plain({b: Box}) -> int:
   return b.poke
 """
   t.quietly: t.badCheck("an [io] member's effect reaches its caller", "TK-EF01")

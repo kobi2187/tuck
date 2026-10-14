@@ -55,6 +55,7 @@ type
     emMayBlock
     emStack
     emPriority
+    emPure
 
 
   ResourcePolicy* = enum

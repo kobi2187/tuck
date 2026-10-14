@@ -6,4 +6,4 @@
 # against a hostile input. See stdlib-project/modules/core/hash/API.tuck.md
 # for the fuller Hashable design this is a first slice of.
 extern:
-  fn hash({data: str}) -> u64
+  fn hash({data: str}) -> u64 [pure, no_alloc]

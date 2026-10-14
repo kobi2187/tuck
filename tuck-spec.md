@@ -616,7 +616,15 @@ fn queuePush({msg: Msg}) -> !void [no_alloc, irq_safe]:
   ...
 ```
 
-**Initial marker set:** `io`, `alloc`, `no_alloc`, `may_block`, `irq_safe`, `unsafe`
+**Marker set:** `io`, `may_block` (capabilities: a caller must declare what its
+callees do); `no_alloc`, `irq_safe`, `pure` (restrictions: a restricted fn may
+call only fns that declare the same restriction, and its body may hold no
+allocating construct for `no_alloc`); `unsafe`, `stack: N`, `priority: N`
+(attributes: no propagation). `irq_safe` excludes `io` and `may_block` and must
+also be `no_alloc`. `alloc` is not a marker: `no_alloc` is its negation, and
+absence of `no_alloc` already means "may allocate". `[unsafe]` is a local
+escape: it marks the site, is reported, and does not oblige callers to declare
+anything. `[stack: N]` requires that nothing below the fn can recurse.
 
 **Declaration is explicit, not inferred.** A function's effect budget is
 exactly the markers written on its own signature — nothing more. Calling a

@@ -11,5 +11,5 @@ type Temperature:
 actor UartDriver [queue: 8]:
   ...
 
-fn readSensor({port: u8}) -> !{value: u16} [io, irq_safe]:
+fn readSensor({port: u8}) -> !{value: u16} [io]:
   ...
