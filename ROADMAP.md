@@ -749,6 +749,16 @@ mangle-time index) — that work is not wanted.
 
 ## User ruling (2026-08-24) — numeric conversion is always explicit
 
+**BUILT 2026-10-14 (issue #16, steps 1, 2 and 5).** `x ~T` narrows and `x ^T`
+widens (postfix, `exkCast`); the sigil names the direction and is checked
+(TK-TY40), only numbers cast (TK-TY39). Two different numeric types no longer
+match (`int` is `i64`, `float` is `f64`). A literal takes its place's width —
+operands of `==`/`+`, array fills, record-literal fields, `..field {v}` — and a
+literal or `const` that does not fit is an error, in a cast or a binding
+(TK-TY41), so `~` means "I checked this" wherever the value is known. NOT yet:
+step 3 (`[wrapping]`/`[trapping]` codegen), step 4 (a report of every narrowing
+site), and the `to` word (ruled out for now: sigils only).
+
 **Decided: crossing a numeric type boundary is always written in the source.
 Both directions. No exceptions.**
 

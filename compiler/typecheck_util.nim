@@ -82,6 +82,14 @@ proc numInfo*(name: string): NumInfo =
   of "f32": (true, 32, true)
   else: (true, 64, true)
 
+proc numericCanon*(name: string): string =
+  ## `int` is i64 and `float` is f64 on every backend (ruled 2026-08-25), so
+  ## the pair never needs a cast between them.
+  case name
+  of "int": "i64"
+  of "float": "f64"
+  else: name
+
 proc losslessConversion*(src, dst: string): bool =
   ## Can every value of `src` be held by `dst` unchanged? This decides whether
   ## the sigil written is `^` (yes) or `~` (no). A sign crossing is never

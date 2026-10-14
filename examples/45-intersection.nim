@@ -119,7 +119,7 @@ proc tuckˑobjectˑCameraDetectorˑhealthy*(self: tuckˑobjectˑCameraDetector):
   return true
 
 proc tuckˑobjectˑCameraDetectorˑreads*(self: tuckˑobjectˑCameraDetector): int =
-  if (self.confidence > 80):
+  if (self.confidence > 80'u8):
     if true:
       return 3
   return 0

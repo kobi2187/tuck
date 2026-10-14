@@ -433,7 +433,7 @@ fn main() -> int:
   let over = 70000 SafeRPM
   let ok = 1200 SafeRPM
   if over == 65535 SafeRPM:
-    return ok /i 100
+    return (ok ^int) /i 100
   return 1
 """
   t.emitsD "T24: a saturating ctor clamps through the runtime, widened first",

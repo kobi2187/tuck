@@ -67,7 +67,9 @@ proc nominalCompatible*(tc: TypeChecker, a, e: Type): bool =
   # Two different numeric types never match: crossing a numeric boundary is
   # written in the source (`~T` / `^T`, issue #16). A literal does not come
   # through here as the wrong width — synthLit gives it the place's type.
-  if isNumeric(a) and isNumeric(e): return false
+  if isNumeric(a) and isNumeric(e):
+    # `int` and `float` are the native word and f64, not different types.
+    return numericCanon(a.name) == numericCanon(e.name)
   let ra = tc.resolve(a)
   let re = tc.resolve(e)
   if ra != nil and re != nil and (ra.kind == tkSum or re.kind == tkSum):

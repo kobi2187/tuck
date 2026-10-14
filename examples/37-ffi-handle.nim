@@ -16,7 +16,7 @@ proc tuckˑfnˑmain*(): void =
   var tuckˑvˑh = counterNew(100'i32)
   var tuckˑvˑt = counterBump(tuckˑvˑh, 5'i32)
   counterFree(tuckˑvˑh)
-  if (tuckˑvˑt == 105):
+  if (tuckˑvˑt == 105'i32):
     if true:
       tuck_rt.exit(0)
   tuck_rt.exit(1)

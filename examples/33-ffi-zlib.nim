@@ -9,7 +9,7 @@ proc compressBound*(sourceLen: uint64): uint64 {.importc: "compressBound", heade
 
 proc tuckˑfnˑmain*(): void =
   var tuckˑvˑb = compressBound(1000'u64)
-  if (tuckˑvˑb == 1013):
+  if (tuckˑvˑb == 1013'u64):
     if true:
       tuck_rt.exit(0)
   tuck_rt.exit(1)

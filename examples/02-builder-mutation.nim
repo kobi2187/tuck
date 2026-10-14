@@ -20,7 +20,7 @@ proc tuckˑfnˑmain*(): void =
   var tuckˑvˑserver = tuckˑtypeˑServerConfig(port: 0, timeout: 0'u32, running: false)
   tuckˑvˑserver = tuckˑtypeˑServerConfig(port: 80, timeout: 30'u32, running: false)
   tuckˑvˑserver.port = 8080
-  tuckˑvˑserver.timeout = 60
+  tuckˑvˑserver.timeout = 60'u32
   var tuckˑvˑok = tuckˑfnˑstart(tuckˑvˑserver)
   return
 
