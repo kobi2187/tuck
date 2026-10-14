@@ -587,6 +587,10 @@ proc genDUnary(ctx: var DCodegenCtx, e: Expr): string =
   of uoComposition: raiseAssert "codegen_d: a `+ Type` composition " &
     "member reached the expression emitter"
 
+proc genDCast(ctx: var DCodegenCtx, e: Expr): string =
+  ## `x ~u16` / `x ^u32`: a D `cast`, parenthesised so it composes.
+  "cast(" & ctx.dType(e.castType) & ")(" & ctx.genDExpr(e.castOperand) & ")"
+
 proc satisfiersOfD*(ctx: DCodegenCtx, iface: string): seq[Decl] =
   ## Whole-program satisfier set — see codegen_common.satisfiersOf.
   satisfiersOf(ctx.module, ctx.realModules, iface)
@@ -1442,6 +1446,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
       "lowering_chains rewrites every one into statements"
   of exkBinary: ctx.genDBinary(e)
   of exkUnary: ctx.genDUnary(e)
+  of exkCast: ctx.genDCast(e)
   of exkBlock: ctx.genDBlock(e)
   of exkIf: ctx.genDIf(e)
   of exkMatch:

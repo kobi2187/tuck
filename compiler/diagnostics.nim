@@ -139,6 +139,9 @@ type
     dcTyActorFieldNoInit = "TK-TY35"    ## an actor field with no initialiser
                                         ## that is not `T?`
     dcTyNoneNoPlace = "TK-TY38"         ## `none` where no `T?` is expected
+    dcTyCastNotNumeric = "TK-TY39"      ## `x ~T` / `x ^T` where x or T is not numeric
+    dcTyCastDirection = "TK-TY40"       ## `^` on a conversion that can lose, or `~` on one that cannot
+    dcTyCastOutOfRange = "TK-TY41"      ## `70000 ~u16`: a known value that does not fit
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -474,6 +477,25 @@ proc parseExplanation(d: DiagCode): string =
     "the copies share nothing: a `Seq` or `str` element would put one " &
     "buffer in every slot. Fix: a scalar value, named or literal; for other " &
     "elements write the list, or build it with a loop."
+  of dcTyCastNotNumeric:
+    "`x ~T` and `x ^T` convert between NUMERIC types; both the value and " &
+    "the type after the sigil must be numeric (int, i8..i64, u8..u64, usize, " &
+    "f32, f64, float). Strings, records and sums have their own conversions " &
+    "(`parse`, construction), not a cast. Fix: cast a number, or call the " &
+    "conversion that exists for this type."
+  of dcTyCastDirection:
+    "The sigil says which way a conversion goes. `~T` marks a conversion " &
+    "that can LOSE something (narrower, or a sign crossing: `-5` into `u32` " &
+    "is wider in bits and still lossy); `^T` marks one that cannot (u8 to " &
+    "u16, f32 to f64). Writing the wrong one hides the thing a reader " &
+    "greps for. Fix: use the other sigil. A cast of a constant is exempt, " &
+    "because there the compiler checks the value itself (TK-TY41)."
+  of dcTyCastOutOfRange:
+    "A cast of a literal or `const` is CHECKED, not trusted: the compiler " &
+    "knows the value, so `70000 ~u16` is an error and `1200 ~u16` passes " &
+    "silently. `~` therefore means \"I checked this\" wherever the " &
+    "compiler can confirm it, and \"I accept the risk\" only where it cannot " &
+    "see the value. Fix: use a type the value fits, or a smaller value."
   of dcTyNoneNoPlace:
     "`none` is the absent value of a `T?` — no `next` yet, no result, nothing " &
     "found. It names no T itself, so it takes one from where it is written: " &

@@ -1081,6 +1081,10 @@ proc genUnary(ctx: var OdinCodegenCtx, e: Expr): string =
                 "composition member reached the expression emitter"
   opStr & ctx.genOdinExpr(e.operand)
 
+proc genOdinCast(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `x ~u16` / `x ^u32`: Odin's type conversion, `u16(x)`.
+  ctx.odinType(e.castType) & "(" & ctx.genOdinExpr(e.castOperand) & ")"
+
 proc genDroppedResult(ctx: var OdinCodegenCtx, s: Expr, stmtCode, ind: string): string =
   ## continue/exit policy: a dropped result routes to the global handler.
   let tn = ctx.freshName("tuckDrop")
@@ -1530,6 +1534,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkContinue: "continue"
   of exkBinary: ctx.genBinary(e)
   of exkUnary: ctx.genUnary(e)
+  of exkCast: ctx.genOdinCast(e)
   of exkBlock: ctx.genBlock(e, ind)
   of exkIf: ctx.genIf(e, ind)
   of exkAssign: ctx.genAssign(e)

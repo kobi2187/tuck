@@ -586,6 +586,14 @@ proc chainStep(p: var Parser, expr: Expr, sp: Span, done: var bool): Expr =
   of tkDotDot: return p.chainMutation(expr, sp)
   of tkColonColon: return p.chainQualified(expr, sp)
   of tkBake: return p.chainBake(expr, sp)
+  of tkTilde, tkCaret:
+    # `x ~u16` narrows and `x ^u32` widens: a numeric conversion written in
+    # the source, in the author's own code (issue #16). Postfix, so it binds
+    # tighter than any binary operator: `a + b ^int` casts only `b`.
+    let widen = p.current().kind == tkCaret
+    discard p.advance()
+    return Expr(span: sp, kind: exkCast, castOperand: expr,
+                castType: parseTypeHook(p), castWiden: widen)
   of tkLBrace: return Expr(span: sp, kind: exkCall, callee: expr,
                            args: @[p.parsePrimaryExpr()])
   of tkLBracket:

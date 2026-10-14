@@ -58,6 +58,8 @@ type
     tkArrow,      # ->
     tkFatArrow,   # =>
     tkPipe,       # |
+    tkTilde,      # ~  postfix numeric cast: narrowing (issue #16)
+    tkCaret,      # ^  postfix numeric cast: widening (issue #16)
     tkQuestion,   # ?
     tkBang,       # !
     tkBangQuestion,# !?
@@ -555,6 +557,8 @@ proc scanOneChar(L: var Lexer, ch: char) =
   of ',': L.emitOneChar(tkComma, ",")
   of ';': L.emitOneChar(tkSemicolon, ";")
   of '|': L.emitOneChar(tkPipe, "|")
+  of '~': L.emitOneChar(tkTilde, "~")
+  of '^': L.emitOneChar(tkCaret, "^")
   of '?': L.emitOneChar(tkQuestion, "?")
   of '!': L.emitOneChar(tkBang, "!")
   of '=': L.emitOneChar(tkAssign, "=")

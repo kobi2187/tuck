@@ -148,6 +148,7 @@ proc kindUses(res: Resolution, e: Expr): seq[ChildUse] =
   # Arithmetic, comparison, and a concat (which copies the bytes).
   of exkBinary: @[(e.left, uBorrow), (e.right, uBorrow)]
   of exkUnary: @[(e.operand, uBorrow)]
+  of exkCast: @[(e.castOperand, uBorrow)]
   of exkBlock: blockUses(e)
   of exkIf:
     @[(e.cond, uBorrow), (e.thenBranch, uThrough), (e.elseBranch, uThrough)]

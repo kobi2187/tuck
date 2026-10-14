@@ -757,7 +757,7 @@ lists *"implicit conversions"* among the things Tuck deliberately does not
 have. Today `compatible()` lets any numeric primitive match any other, so
 the rule isn't enforced.
 
-```tuck-rejected
+```tuck
 fn setDuty({channel: int, permille: u16}) -> void
 
 let wide: u32 = 70000

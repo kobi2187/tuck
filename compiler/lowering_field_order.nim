@@ -57,6 +57,7 @@ proc pure(res: Resolution, m: Module, e: Expr): bool =
     true
   of exkBinary: pure(res, m, e.left) and pure(res, m, e.right)
   of exkUnary: pure(res, m, e.operand)
+  of exkCast: pure(res, m, e.castOperand)
   else: false
 
 proc rootTaken(res: Resolution, m: Module, v: Expr): string =

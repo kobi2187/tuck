@@ -4245,6 +4245,36 @@ proc synthUnary(tc: var TypeChecker, e: Expr): Type =
   let t = tc.synthesize(e.operand)
   if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
 
+proc synthCast(tc: var TypeChecker, e: Expr): Type =
+  ## `x ~u16` / `x ^u32` (issue #16): a numeric conversion written in the
+  ## source. The sigil names the direction and is checked; a cast of a value
+  ## the compiler can fold is checked for range too, so `~` means "I checked
+  ## this" wherever it can be confirmed.
+  let target = e.castType
+  let src = tc.resolve(tc.synthesize(e.castOperand))
+  if not isNumeric(target):
+    fail(dcTyCastNotNumeric, "'" & typeName(target) & "' is not a numeric " &
+         "type, so nothing can be cast to it", e.span)
+  if src != nil and not isFlexible(src) and not isNumeric(src):
+    fail(dcTyCastNotNumeric, "a " & typeName(src) & " is not a number, so " &
+         "it cannot be cast with `" & (if e.castWiden: "^" else: "~") & "`",
+         e.span)
+  let known = evalConstExpr(tc.module, e.castOperand)
+  if known.isSome:
+    if not fitsIn(target.name, known.get):
+      fail(dcTyCastOutOfRange, $known.get & " does not fit " & target.name &
+           "; the cast would change the value", e.span)
+  elif isNumeric(src):
+    let lossless = losslessConversion(src.name, target.name)
+    if e.castWiden and not lossless:
+      fail(dcTyCastDirection, "converting " & src.name & " to " & target.name &
+           " can lose a value, so it is written `~" & target.name & "`", e.span)
+    if not e.castWiden and lossless:
+      fail(dcTyCastDirection, "converting " & src.name & " to " & target.name &
+           " cannot lose anything, so it is written `^" & target.name & "`",
+           e.span)
+  Type(span: e.span, kind: tkNamed, name: target.name)
+
 proc isImplicitReturn(tc: TypeChecker, blk, s: Expr): bool =
   ## The last statement of a fn's body block stands in for its return.
   blk == tc.bodyBlock and s == blk.stmts[^1] and tc.currentRet != nil
@@ -5039,6 +5069,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkCombinator: tc.synthCombinator(e)
   of exkBinary: tc.synthBinary(e)
   of exkUnary: tc.synthUnary(e)
+  of exkCast: tc.synthCast(e)
   of exkBlock: tc.synthBlock(e)
   of exkIf: tc.synthIf(e)
   of exkMatch: tc.synthMatch(e)
