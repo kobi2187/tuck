@@ -571,39 +571,56 @@ proc holds(c: Checker, facts: Table[string, Facts], callee: Callee,
   of emIrqSafe: f.irqSafe
   else: false
 
+proc callsOf(c: Checker, d: Decl): seq[Callee] =
+  ## Every call in `d`'s body, resolved.
+  for n in d.fnBody.nodes:
+    let call = callOf(n)
+    if call != nil: result.add c.resolveCallee(call)
+
+proc allocates(d: Decl): bool =
+  for n in d.fnBody.nodes:
+    if allocatingConstruct(n) != "": return true
+
 proc derive(c: Checker, d: Decl, state: HashSet[string],
             facts: Table[string, Facts]): Facts =
   ## One round for one fn, against the facts known so far.
   result = facts[d.name]
-  var calls: seq[Callee]
-  var allKnown = true
-  for n in d.fnBody.nodes:
-    let call = callOf(n)
-    if call == nil: continue
-    let callee = c.resolveCallee(call)
-    calls.add callee
-    if callee.kind != ckFn: allKnown = false
+  let calls = c.callsOf(d)
+  let allKnown = calls.allIt(it.kind == ckFn)
   let capFree = result.needs.len == 0 and
                 d.fnEffects.allIt(familyOf(it) != mfCapability)
-  proc all(r: EffectMarker): bool =
-    for x in calls:
-      if not c.holds(facts, x, r): return false
-    true
-  var allocates = false
-  for n in d.fnBody.nodes:
-    if allocatingConstruct(n) != "": allocates = true
+  let stateFree = not touchesState(d, state)
+  proc all(r: EffectMarker): bool = calls.allIt(c.holds(facts, it, r))
   result.noAlloc = emNoAlloc in d.fnEffects or
-                   (not allocates and all(emNoAlloc))
+                   (not allocates(d) and all(emNoAlloc))
   result.pure = emPure in d.fnEffects or
-                (capFree and allKnown and all(emPure) and
-                 not touchesState(d, state))
+                (capFree and allKnown and all(emPure) and stateFree)
   result.irqSafe = emIrqSafe in d.fnEffects or
                    (capFree and result.noAlloc and all(emIrqSafe) and
-                    not touchesState(d, state))
+                    stateFree)
 
 proc cyclic(c: Checker, bodies: Table[string, Decl], name: string): bool =
   var path: seq[string]
   c.recursiveFrom(bodies, name, path)
+
+proc restrictionHolds(f: Facts, r: EffectMarker): bool =
+  case r
+  of emPure: f.pure
+  of emNoAlloc: f.noAlloc
+  else: f.irqSafe
+
+proc settle(c: var Checker, order: seq[Decl], state: HashSet[string],
+            facts: var Table[string, Facts]) =
+  ## Iterate `derive` from "nothing holds" until nothing changes.
+  var changed = true
+  while changed:
+    changed = false
+    for d in order:
+      let nf = c.derive(d, state, facts)
+      let old = facts[d.name]
+      if (nf.pure, nf.noAlloc, nf.irqSafe) != (old.pure, old.noAlloc, old.irqSafe):
+        facts[d.name] = nf
+        changed = true
 
 proc deriveFacts*(c: var Checker): seq[Facts] =
   ## The facts of every top-level fn with a body in the checked module, in
@@ -614,31 +631,17 @@ proc deriveFacts*(c: var Checker): seq[Facts] =
     if d != nil and d.kind == dkFn and d.fnBody != nil and d.name != "main":
       bodies[d.name] = d
       order.add d
-  let state = stateNames(c.module)
   var facts: Table[string, Facts]
   for d in order:
     let needs = c.synthesizeExpr(d.fnBody).effects
     facts[d.name] = Facts(name: d.name, declared: d.fnEffects,
       needs: needs.filterIt(familyOf(it) == mfCapability))
-  var changed = true
-  while changed:
-    changed = false
-    for d in order:
-      let nf = c.derive(d, state, facts)
-      let of0 = facts[d.name]
-      if (nf.pure, nf.noAlloc, nf.irqSafe) != (of0.pure, of0.noAlloc, of0.irqSafe):
-        facts[d.name] = nf
-        changed = true
+  c.settle(order, stateNames(c.module), facts)
   for d in order:
     var f = facts[d.name]
     f.bounded = not c.cyclic(bodies, d.name)
     for r in [emPure, emNoAlloc, emIrqSafe]:
-      let derived = case r
-                    of emPure: f.pure
-                    of emNoAlloc: f.noAlloc
-                    else: f.irqSafe
-      if derived and r notin f.declared and d.name != "main":
-        f.suggest.add r
+      if f.restrictionHolds(r) and r notin f.declared: f.suggest.add r
     result.add f
 
 proc formatFacts*(facts: seq[Facts]): string =
