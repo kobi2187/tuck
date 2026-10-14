@@ -6,6 +6,7 @@
 ## TK-EF01 points at the call that needs the effect and spells the fix, and
 ## TK-EF02 warns about a declared `[io]` nothing in the body needs.
 
+import std/[os, strutils]
 import ../harness
 
 proc run*(t: var T) =
@@ -267,5 +268,32 @@ fn main() -> int:
   return 0
 """
   t.badCheck "an allocating std fn (push) is not no_alloc", "TK-EF03"
+
+  t.src """
+import bits
+
+fn mask({a: u64}) -> u64:
+  return {a: a, b: a} bitAnd
+
+fn twice({a: u64}) -> u64:
+  let m = {a: a} mask
+  return {a: m} mask
+
+fn spin({n: int}) -> int:
+  return {n: n} spin
+
+fn main() -> int:
+  return 0
+"""
+  let ef = t.needCmd(@["./tuck", "ef", t.curDir / "t.tuck", "--root:" & t.root])
+  if t.phase != pCollect:
+    let (rc, outp) = t.resultOf(ef)
+    if rc != 0: t.no "tuck effects runs", outp
+    elif "twice: declares [-]" notin outp or "suggest: add [pure, no_alloc]" notin outp:
+      t.no "derived facts reach through a call chain", outp
+    elif "spin: declares [-], needs [-], derived: -" notin outp:
+      t.no "a recursive fn derives nothing", outp
+    else:
+      t.ok "tuck effects derives pure/no_alloc through calls, none for recursion"
 
   t.finish()

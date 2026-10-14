@@ -150,6 +150,14 @@ did without running the whole build.
 
 `lowering` and `emitting` pick a backend the same way `compile`
 does: Nim by default, or --odin, or --dlang.""",
+  "effects": """tuck effects file.tuck
+tuck ef file.tuck
+
+Check the file, then report, per top-level fn in it: the markers it
+declares, the capabilities its body needs, the restrictions the compiler
+derives it could carry (pure, no_alloc, irq_safe, bounded-depth), and the
+markers you could add. Derived, never inferred silently: add the marker to
+the signature to make it a promise. Unknown callees give no fact.""",
   "explain": """tuck explain CODE
 
 Print what a diagnostic code means and how to fix it, e.g.:
@@ -161,7 +169,7 @@ tuck prints. This is the one command that takes a CODE, not a file."""
 }.toTable
 
 const CommandAliases = {"l": "lex", "p": "parse", "ch": "check",
-                         "c": "compile", "b": "build", "d": "dump",
+                         "c": "compile", "b": "build", "d": "dump", "ef": "effects",
                          "v": "validate"}.toTable
 
 proc printCommandHelp(cmd: string, code = 0) =
@@ -848,6 +856,10 @@ when isMainModule:
   of "check", "ch":
     discard checkProgram(path, verifyStages = verifyStages)
     echo "OK (", elapsedMs(t0), ")"
+  of "effects", "ef":
+    effectReportOn = true
+    discard checkProgram(path, verifyStages = verifyStages)
+    stdout.write effectReportText
   of "ssa":
     # The SSA graph of every body in THIS file (not its imports), with each
     # read's FINAL verdict — what `tests/ssa/*.ssa` pins.

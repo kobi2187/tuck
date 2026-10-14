@@ -27,7 +27,7 @@
 # This kind of hidden inter-pass dependency is common in compilers and almost
 # never obvious from the code. When you find one, write it down where the
 # ordering is decided.
-import ast, ast_ops, tables, sets, strutils
+import ast, ast_ops, tables, sets, strutils, sequtils
 import resolution
 import ast_query   # memberCallDecl: which member a call reaches
 import diagnostics  # TK-RS03, the resource half of the propagation rule
@@ -265,6 +265,7 @@ proc resolveCallee(c: Checker, call: Expr): Callee =
   ## this of every call in a restricted fn; unlike the capability rule it must
   ## know whether the callee is known at all, so an unplaceable name is
   ## `ckUnknown` rather than "declares nothing".
+  if call.kind != exkCall: return Callee(kind: ckUnknown)
   let name = if call.callee != nil and call.callee.kind == exkVar:
                call.callee.name
              else: ""
@@ -525,6 +526,142 @@ proc collectLocal(c: var Checker, m: Module) =
         if k.name notin c.everyKind: c.everyKind.add(k.name)
     else: discard
 
+
+# --- derived facts (proposal §7.1) -------------------------------------------
+#
+# Nothing here is written by the user. For every top-level fn with a body the
+# compiler works out which restrictions it COULD carry, bottom-up over the
+# calls it can see. UNKNOWN => NO FACT: a callee that is not a declared fn, a
+# task, or a fn already derived is never assumed to be safe, and the iteration
+# starts from "nothing holds" so a cycle never proves itself.
+
+type
+  Facts* = object
+    name*: string
+    declared*: seq[EffectMarker]
+    needs*: seq[EffectMarker]    # capabilities the body requires
+    pure*, noAlloc*, irqSafe*, bounded*: bool
+    suggest*: seq[EffectMarker]  # restrictions it satisfies but does not declare
+
+proc stateNames(m: Module): HashSet[string] =
+  ## Names that stand for state outside a fn's own values: a register, a pool,
+  ## slab or arena, an actor. Touching one makes a fn not pure.
+  for d in m.decls:
+    if d != nil and d.kind in {dkRegister, dkPool, dkSlab, dkArena, dkActor,
+                               dkRegistry}:
+      result.incl d.name
+
+proc touchesState(d: Decl, state: HashSet[string]): bool =
+  for n in d.fnBody.nodes:
+    case n.kind
+    of exkSend, exkAcquire, exkFinish, exkSelect: return true
+    of exkVar: (if n.name in state: return true)
+    else: discard
+
+proc holds(c: Checker, facts: Table[string, Facts], callee: Callee,
+           r: EffectMarker): bool =
+  ## Does the callee carry restriction `r`: declared, or derived so far.
+  if callee.kind != ckFn: return false
+  if r in callee.markers: return true
+  if not facts.hasKey(callee.name): return false
+  let f = facts[callee.name]
+  case r
+  of emPure: f.pure
+  of emNoAlloc: f.noAlloc
+  of emIrqSafe: f.irqSafe
+  else: false
+
+proc derive(c: Checker, d: Decl, state: HashSet[string],
+            facts: Table[string, Facts]): Facts =
+  ## One round for one fn, against the facts known so far.
+  result = facts[d.name]
+  var calls: seq[Callee]
+  var allKnown = true
+  for n in d.fnBody.nodes:
+    let call = callOf(n)
+    if call == nil: continue
+    let callee = c.resolveCallee(call)
+    calls.add callee
+    if callee.kind != ckFn: allKnown = false
+  let capFree = result.needs.len == 0 and
+                d.fnEffects.allIt(familyOf(it) != mfCapability)
+  proc all(r: EffectMarker): bool =
+    for x in calls:
+      if not c.holds(facts, x, r): return false
+    true
+  var allocates = false
+  for n in d.fnBody.nodes:
+    if allocatingConstruct(n) != "": allocates = true
+  result.noAlloc = emNoAlloc in d.fnEffects or
+                   (not allocates and all(emNoAlloc))
+  result.pure = emPure in d.fnEffects or
+                (capFree and allKnown and all(emPure) and
+                 not touchesState(d, state))
+  result.irqSafe = emIrqSafe in d.fnEffects or
+                   (capFree and result.noAlloc and all(emIrqSafe) and
+                    not touchesState(d, state))
+
+proc cyclic(c: Checker, bodies: Table[string, Decl], name: string): bool =
+  var path: seq[string]
+  c.recursiveFrom(bodies, name, path)
+
+proc deriveFacts*(c: var Checker): seq[Facts] =
+  ## The facts of every top-level fn with a body in the checked module, in
+  ## source order, at the least fixed point.
+  var bodies: Table[string, Decl]
+  var order: seq[Decl]
+  for d in c.module.decls:
+    if d != nil and d.kind == dkFn and d.fnBody != nil and d.name != "main":
+      bodies[d.name] = d
+      order.add d
+  let state = stateNames(c.module)
+  var facts: Table[string, Facts]
+  for d in order:
+    let needs = c.synthesizeExpr(d.fnBody).effects
+    facts[d.name] = Facts(name: d.name, declared: d.fnEffects,
+      needs: needs.filterIt(familyOf(it) == mfCapability))
+  var changed = true
+  while changed:
+    changed = false
+    for d in order:
+      let nf = c.derive(d, state, facts)
+      let of0 = facts[d.name]
+      if (nf.pure, nf.noAlloc, nf.irqSafe) != (of0.pure, of0.noAlloc, of0.irqSafe):
+        facts[d.name] = nf
+        changed = true
+  for d in order:
+    var f = facts[d.name]
+    f.bounded = not c.cyclic(bodies, d.name)
+    for r in [emPure, emNoAlloc, emIrqSafe]:
+      let derived = case r
+                    of emPure: f.pure
+                    of emNoAlloc: f.noAlloc
+                    else: f.irqSafe
+      if derived and r notin f.declared and d.name != "main":
+        f.suggest.add r
+    result.add f
+
+proc formatFacts*(facts: seq[Facts]): string =
+  ## The `--report-effects` text: per fn, what it declares, needs and could
+  ## carry, then the markers it may add.
+  proc names(ms: seq[EffectMarker]): string =
+    if ms.len == 0: "-" else: ms.mapIt(effectName(it)).join(", ")
+  for f in facts:
+    var derived: seq[string]
+    if f.pure: derived.add "pure"
+    if f.noAlloc: derived.add "no_alloc"
+    if f.irqSafe: derived.add "irq_safe"
+    if f.bounded: derived.add "bounded-depth"
+    result.add f.name & ": declares [" & names(f.declared) & "], needs [" &
+      names(f.needs) & "], derived: " &
+      (if derived.len == 0: "-" else: derived.join(", ")) & "\n"
+    if f.suggest.len > 0:
+      result.add "  suggest: add [" & names(f.suggest) & "]\n"
+
+var effectReportOn*: bool
+  ## Set by `tuck effects`; verifyModuleEffects then leaves its report here.
+var effectReportText*: string
+
 proc verifyModuleEffects*(m: Module,
                           imported: Table[string, seq[EffectMarker]] =
                             initTable[string, seq[EffectMarker]](),
@@ -553,3 +690,4 @@ proc verifyModuleEffects*(m: Module,
   c.collectLocal(m)
   for d in m.decls:
     c.verifyDecl(d)
+  if effectReportOn: effectReportText = formatFacts(c.deriveFacts())
