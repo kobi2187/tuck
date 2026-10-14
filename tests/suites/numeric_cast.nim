@@ -94,4 +94,86 @@ fn main() -> int:
 """
   t.badCheck "...and only to a numeric type", "TK-TY39"
 
+  # --- no implicit conversion (issue #16, step 1) ---------------------------
+  #
+  # The repro from the issue: a u32 of 70000 flowed into a u16 parameter with
+  # no diagnostic and was mangled at the boundary.
+  t.src """
+fn setDuty({channel: int, permille: u16}) -> void:
+  return
+
+fn main() -> int:
+  let wide: u32 = 70000
+  {channel: 1, permille: wide} setDuty
+  return 0
+"""
+  t.badCheck "a u32 into a u16 parameter needs a cast", "expects u16 but got u32"
+
+  t.src """
+fn main() -> int:
+  let b: int = 7
+  let c: u8 = b
+  return 0
+"""
+  t.badCheck "...and so does an int binding into a u8", "expects u8 but got int"
+
+  t.src """
+fn main() -> int:
+  let small: u8 = 7
+  let wide: int = small
+  return 0
+"""
+  t.badCheck "...in the widening direction too: widening is written (`^`)",
+             "expects int but got u8"
+
+  t.src """
+fn main() -> int:
+  let a: u8 = 250
+  let b: u16 = 5
+  let c = a + b
+  return 0
+"""
+  t.badCheck "mixed-width arithmetic is refused", "arithmetic between"
+
+  t.src """
+fn main() -> int:
+  let a: u8 = 250
+  let b: u16 = 5
+  let c = (a ^u16) + b
+  return 0
+"""
+  t.okCheck "...and passes with a cast on one side"
+
+  # A literal has no width of its own: it takes the place's, and a value that
+  # does not fit the place is an error rather than a silent wrap.
+  t.src """
+fn main() -> int:
+  let a: u8 = 5
+  var b: u16 = 7
+  b = b + 1
+  let xs: Array[16, u8] = [0; 16]
+  if a == 0:
+    return 1
+  if a + 1 > 3:
+    return 2
+  return 0
+"""
+  t.okCheck "a literal adopts the width of its place, operand or fill"
+
+  t.src """
+fn main() -> int:
+  let a: u8 = 300
+  return 0
+"""
+  t.badCheck "a literal that does not fit its place is refused (TK-TY41)", "TK-TY41"
+
+  t.src """
+fn main() -> int:
+  let a: u8 = 5
+  if a == 300:
+    return 1
+  return 0
+"""
+  t.badCheck "...in a comparison too", "TK-TY41"
+
   t.finish()

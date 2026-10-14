@@ -64,9 +64,10 @@ proc nominalCompatible*(tc: TypeChecker, a, e: Type): bool =
   ## (spec 2.5) is the whole point for them.
   if a.name == e.name: return true
   if a.name in tc.distinctNames or e.name in tc.distinctNames: return false
-  if isNumeric(a) and isNumeric(e):
-    when defined(strictNumeric): return false     # measure the widening
-    else: return true                             # loose widening for primitives
+  # Two different numeric types never match: crossing a numeric boundary is
+  # written in the source (`~T` / `^T`, issue #16). A literal does not come
+  # through here as the wrong width — synthLit gives it the place's type.
+  if isNumeric(a) and isNumeric(e): return false
   let ra = tc.resolve(a)
   let re = tc.resolve(e)
   if ra != nil and re != nil and (ra.kind == tkSum or re.kind == tkSum):

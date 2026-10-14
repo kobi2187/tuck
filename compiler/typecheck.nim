@@ -1817,11 +1817,35 @@ proc synthBoolOp(lt, rt: Type, e: Expr): Type =
            typeName(t), side.span)
   Type(span: e.span, kind: tkNamed, name: "bool")
 
+proc isNumericLiteral(e: Expr): bool =
+  ## `5`, `2.5` or `-5`: a literal with no width of its own.
+  e != nil and
+    ((e.kind == exkLit and e.litKind in {lkInt, lkFloat}) or
+     (e.kind == exkUnary and e.unaryOp == uoNeg and isNumericLiteral(e.operand)))
+
+proc synthOperands(tc: var TypeChecker, e: Expr): (Type, Type) =
+  ## Both operands of a binary expression. A numeric literal takes the type of
+  ## the OTHER operand (`x == 0` on a `u8`, `n + 1` on an `i16`): it has no
+  ## width of its own, and writing `0 ~u8` there would be noise. So the typed
+  ## side goes first and the literal is synthesized under its type; if the
+  ## value does not fit, synthLit says so (TK-TY41).
+  if e.binOp in {boRangeIncl, boRangeExcl, boAnd, boOr, boXor} or
+     isNumericLiteral(e.left) == isNumericLiteral(e.right):
+    return (tc.synthesize(e.left), tc.synthesize(e.right))
+  if isNumericLiteral(e.right):
+    let lt = tc.synthesize(e.left)
+    var rt: Type
+    tc.withExpected(lt): rt = tc.synthesize(e.right)
+    return (lt, rt)
+  let rt = tc.synthesize(e.right)
+  var lt: Type
+  tc.withExpected(rt): lt = tc.synthesize(e.left)
+  (lt, rt)
+
 proc synthBinary(tc: var TypeChecker, e: Expr): Type =
   ## Types a binary expression: both operands first, an unhandled `!T`/`?T`
   ## refused, then the operator family decides the result type.
-  let lt = tc.synthesize(e.left)
-  let rt = tc.synthesize(e.right)
+  let (lt, rt) = tc.synthOperands(e)
   failIfUnhandled(lt, rt, e)
   case e.binOp
   of boAdd, boSub, boMul, boMod: tc.synthArithmetic(lt, rt, e)
@@ -2192,11 +2216,13 @@ proc checkFieldSet(tc: var TypeChecker, step: ChainStep, f: FieldDef,
          "bare value: ..." & f.name & " {" & typeName(f.typ) &
          "} — to set several fields, use a mutator fn", step.span)
   let valExpr = soleFieldValue(step.arg)
-  let vt = tc.synthesize(valExpr)
   # Against the field's DECLARED type: setting an unsupplied field is how the
   # hole gets filled, so the value is matched against what the field will
-  # hold, not against the marker saying it holds nothing yet.
+  # hold, not against the marker saying it holds nothing yet. The same type
+  # rides down to the value, so `..timeout {60}` is a u32 and not an int.
   let want = unwrapUninit(f.typ)
+  var vt: Type
+  tc.withExpected(want): vt = tc.synthesize(valExpr)
   if not tc.compatible(vt, want):
     fail("Type Error: field '" & f.name & "' of " & typeName(recvT) & " is " &
          typeName(want) & " but got " & typeName(vt), valExpr.span)
@@ -4019,6 +4045,12 @@ proc synthLit(tc: var TypeChecker, e: Expr): Type =
   let want = unwrapEffect(tc.resolve(tc.expectedType))
   if want != nil and want.kind == tkNamed and want.name in NumericNames and
      base in NumericNames:
+    # The literal adopts the place's type, and a value that does not fit it
+    # is an error here, not a silent wrap (issue #16, step 5).
+    let known = evalConstExpr(tc.module, e)
+    if e.litKind == lkInt and known.isSome and not fitsIn(want.name, known.get):
+      fail(dcTyCastOutOfRange, e.litValue & " does not fit " & want.name &
+           "; write a type it fits, or a smaller value", e.span)
     return tc.namedType(want.name, e.span)
   tc.namedType(base, e.span)
 
@@ -4097,13 +4129,30 @@ proc synthVar(tc: var TypeChecker, e: Expr): Type =
   else:
     tc.synthBareVariant(e)
 
-proc synthStruct(tc: var TypeChecker, e: Expr): Type =
-  ## A record literal types field by field.
-  var fs: seq[FieldDef]
+proc recordFieldHints(tc: var TypeChecker): Table[string, Type] =
+  ## The field types of the record the context expects (`-> !{value: u16}`,
+  ## a `{...}` argument), so a bare literal in a field takes that field's
+  ## width instead of defaulting to `int`.
+  let want = tc.resolve(unwrapEffect(tc.expectedType))
+  if want == nil: return
+  let fields = if want.kind == tkRecord: want.fields else: tc.fieldsOf(want)
+  for f in fields:
+    if f.typ != nil: result[f.name] = f.typ
+
+proc synthStructFields(tc: var TypeChecker, e: Expr): seq[FieldDef] =
   for f in e.fields:
     tc.checkFieldValue(f.name, f.value)
-    fs.add(FieldDef(name: f.name, typ: tc.synthFieldValue(f),
-                    span: f.value.span))
+    result.add(FieldDef(name: f.name, typ: tc.synthFieldValue(f),
+                        span: f.value.span))
+
+proc synthStruct(tc: var TypeChecker, e: Expr): Type =
+  ## A record literal types field by field.
+  let hints = tc.recordFieldHints()
+  var fs: seq[FieldDef]
+  if hints.len > 0:
+    tc.withFieldHints(hints): fs = tc.synthStructFields(e)
+  else:
+    fs = tc.synthStructFields(e)
   Type(span: e.span, kind: tkRecord, fields: fs)
 
 proc asContainerWanted(tc: var TypeChecker): Type =
@@ -4232,7 +4281,15 @@ proc synthFill(tc: var TypeChecker, e: Expr): Type =
   let (text, n) = tc.fillCountOf(e)
   failIfFillValueNotSimple(e)
   let v = e.fillValue
-  let elemT = tc.fillIntoWanted(e, text, n, tc.synthesize(v))
+  # The element type the destination wants rides down to the value, so a
+  # literal fill (`[0; 128]` into `Array[128, u8]`) is a u8 and not an int.
+  let place = tc.asContainerWanted()
+  var valueT: Type
+  if place != nil and place.base.name == "Array" and place.args.len == 2:
+    tc.withExpected(place.args[1]): valueT = tc.synthesize(v)
+  else:
+    valueT = tc.synthesize(v)
+  let elemT = tc.fillIntoWanted(e, text, n, valueT)
   if not tc.isFillScalar(elemT):
     fail(dcTyFillValue, "`[v; N]` copies one value into every slot, so its " &
          "element is a number, a bool, a char or an enum — not " &

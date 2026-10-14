@@ -118,7 +118,7 @@ tuckˑobjectˑCameraDetectorˑhealthy :: proc (self: tuckˑobjectˑCameraDetecto
 }
 
 tuckˑobjectˑCameraDetectorˑreads :: proc (self: tuckˑobjectˑCameraDetector) -> int {
-  if (self.confidence > 80) {
+  if (self.confidence > u8(80)) {
       return 3
   }
   return 0

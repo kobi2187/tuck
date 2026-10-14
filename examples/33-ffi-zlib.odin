@@ -11,7 +11,7 @@ foreign z {
 
 tuckˑfnˑmain :: proc () {
   tuckˑvˑb := compressBound(u64(1000))
-  if (tuckˑvˑb == 1013) {
+  if (tuckˑvˑb == u64(1013)) {
       sys.exit(0)
   }
   sys.exit(1)
