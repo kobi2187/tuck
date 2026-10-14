@@ -341,6 +341,13 @@ proc tuckReportUnhandled*(code: uint16, site: string) =
   ## site on stderr and lets the program continue.
   stderr.writeLine("TUCK UNHANDLED: error " & $code & " at " & site)
 
+proc tuckDepthExceeded*(name: string, limit: int) {.noreturn.} =
+  ## A `[depth: N]` fn was entered more than N levels deep. Same exit status
+  ## as an invariant violation, and for the same reason it is real code, not
+  ## an `assert`: it must survive a release build.
+  stderr.writeLine("Recursion depth exceeded in " & name & ": limit " & $limit)
+  quit(1)
+
 proc tuckInvariantFailed*(cond, typeName: string) =
   ## An invariant violation (spec 4.7) — abort naming the condition.
   ##

@@ -866,3 +866,31 @@ proc fillElemType*(res: Resolution, e: Expr): Type =
   ## `[v; N]`'s element type, as the checker settled it (synthFill).
   let t = res.typeFor(e)
   if t != nil and t.kind == tkApp and t.args.len == 2: t.args[1] else: nil
+
+
+var hostChecks*: bool
+  ## Let the host compiler verify what the effect pass was told. ON by default
+  ## (`--no-host-checks` opts out): a disagreement is a bug in our analysis or
+  ## runtime, and exposing it is the point (proposal §7.3: defence in depth
+  ## before reliance).
+
+proc nimFnPragmas*(d: Decl): string =
+  ## ` {.inline, noSideEffect.}` for a fn, or "". `noSideEffect` is the host's
+  ## own check of `[pure]`.
+  var ps: seq[string]
+  if d.isInline: ps.add "inline"
+  if hostChecks and emPure in d.fnEffects: ps.add "noSideEffect"
+  if ps.len > 0: " {." & ps.join(", ") & ".}" else: ""
+
+
+proc depthVar*(d: Decl): string =
+  ## The per-fn recursion counter a `[depth: N]` fn keeps (thread-local, so a
+  ## recursion on one thread never counts another's frames).
+  result = "tuckDepth_"
+  for ch in d.name:
+    if ch in IdentChars and ch != '_': result.add ch
+
+proc depthDisplayName*(d: Decl): string =
+  ## The name a user wrote: the mangler's prefix (`tuckˑfnˑ`) is not theirs.
+  let parts = d.name.split("ˑ")
+  parts[^1]

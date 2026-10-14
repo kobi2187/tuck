@@ -620,6 +620,11 @@ proc parseEffectList*(p: var Parser, tail: var SignatureTail, strict = true) =
       discard p.expect(tkColon)
       tail.keeps.add(p.expectName(
         "Expected the parameter an extern keeps after 'keeps:'").value)
+    elif effName == "recursion":
+      discard p.expect(tkColon)
+      let n = p.expect(tkIntLit, "Expected a call count after 'recursion:'")
+      try: tail.depth = parseInt(n.value)
+      except ValueError: p.reportError("recursion: needs a whole number", effSp.line, effSp.col)
     elif effName == "view":
       discard p.expect(tkColon)
       tail.view = p.expectName(
@@ -1162,7 +1167,7 @@ proc parseSigFn*(p: var Parser, what: string): Decl =
   if p.current().kind == tkNewline: discard p.advance()
   Decl(span: spDecl, kind: dkFn, name: name, fnParams: params,
        fnGenerics: generics, fnGenericBounds: bounds,
-       fnReturnType: retType, fnEffects: sig.effects,
+       fnReturnType: retType, fnEffects: sig.effects, fnDepth: sig.depth,
        fnBody: nil, fnErrorTypes: sig.errTypes, externEmit: sig.emit,
        fnResourceKinds: sig.resources, externKeeps: sig.keeps,
        externView: sig.view)
@@ -1224,6 +1229,7 @@ proc parseFnDecl*(p: var Parser, sp: Span): Decl =
        fnGenericBounds: genericBounds,
        fnParams: params, fnReturnType: retType, fnEffects: sig.effects,
        fnBody: body, fnErrorTypes: sig.errTypes, isInline: isInline,
+       fnDepth: sig.depth,
        fnResourceKinds: sig.resources, isOnHandler: fromOn)
   # `fn f(...) -> T:` whose whole body is `...` IS a pending signature that
   # happens to be written inline, so it becomes one rather than growing a

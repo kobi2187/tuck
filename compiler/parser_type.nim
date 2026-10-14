@@ -6,6 +6,7 @@
 # (e.g. [align: 2]) but nothing calls back into it except the declaration layer.
 import ast
 import ../lexer
+import std/strutils
 import parser_base
 import parser_expr        # attribute values are ordinary expressions
 import parser_stringify   # attr value → string (toString)
@@ -224,8 +225,9 @@ proc effectMarkerFromName*(name: string, marker: var EffectMarker): bool =
   of "irq_safe": marker = emIrqSafe
   of "unsafe": marker = emUnsafe
   of "may_block": marker = emMayBlock
-  of "stack": marker = emStack
+  of "no_recursion": marker = emNoRecursion
   of "priority": marker = emPriority
+  of "pure": marker = emPure
   else: return false
   return true
 
@@ -246,6 +248,7 @@ type
     resources*: seq[string]
     keeps*: seq[string]
     view*: string
+    depth*: int   # [recursion: N] — recursion allowed to N nested calls; 0 = unset
 
 proc takeAttr*(tail: var SignatureTail, name, value: string): bool =
   ## Folds one valued signature attribute into `tail`; false when `name` is
@@ -256,6 +259,9 @@ proc takeAttr*(tail: var SignatureTail, name, value: string): bool =
   of "resource": tail.resources.add(value)  # [resource: udp] §7.4
   of "keeps": tail.keeps.add(value)
   of "view": tail.view = value
+  of "recursion":
+    try: tail.depth = parseInt(value)
+    except ValueError: return false
   else: return false
   true
 

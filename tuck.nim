@@ -153,6 +153,14 @@ did without running the whole build.
 
 `lowering` and `emitting` pick a backend the same way `compile`
 does: Nim by default, or --odin, or --dlang.""",
+  "effects": """tuck effects file.tuck
+tuck ef file.tuck
+
+Check the file, then report, per top-level fn in it: the markers it
+declares, the capabilities its body needs, the restrictions the compiler
+derives it could carry (pure, no_alloc, irq_safe, bounded-depth), and the
+markers you could add. Derived, never inferred silently: add the marker to
+the signature to make it a promise. Unknown callees give no fact.""",
   "explain": """tuck explain CODE
 
 Print what a diagnostic code means and how to fix it, e.g.:
@@ -164,7 +172,7 @@ tuck prints. This is the one command that takes a CODE, not a file."""
 }.toTable
 
 const CommandAliases = {"l": "lex", "p": "parse", "ch": "check",
-                         "c": "compile", "b": "build", "d": "dump",
+                         "c": "compile", "b": "build", "d": "dump", "ef": "effects",
                          "v": "validate"}.toTable
 
 proc printCommandHelp(cmd: string, code = 0) =
@@ -432,6 +440,18 @@ proc importedEffects(loaded: seq[LoadedModule],
   addLoadedEffects(result, loaded)
   addSigOnlyEffects(result, sigOnly)
 
+proc importedPendingNames(loaded: seq[LoadedModule]): HashSet[string] =
+  ## Fns declared in a `pending:` block of any loaded module. Their markers still
+  ## propagate as capabilities, but a RESTRICTED caller ignores them: an unwritten
+  ## body is not a claim either way.
+  for lm in loaded:
+    for d in lm.m.decls:
+      if d != nil and d.kind == dkPending:
+        for mem in d.mixinMembers:
+          if mem != nil and mem.kind == dkFn:
+            result.incl(mem.name)
+            result.incl(lm.name & "::" & mem.name)
+
 proc importedResources(loaded: seq[LoadedModule],
                        sigOnly: Table[string, IndexEntry]):
                          Table[string, seq[string]] =
@@ -530,12 +550,13 @@ proc checkOrDie(path: string, loaded: var seq[LoadedModule],
   let imported = importedEffects(loaded, sigOnly)
   let importedRes = importedResources(loaded, sigOnly)
   let programKinds = declaredResourceKinds(loaded)
+  let pendingNames = importedPendingNames(loaded)
   let t0 = vBegin(psVerifyEffects)
   defer: vEnd(psVerifyEffects, t0)
   try:
     for lm in loaded:
       let ts = epochTime()
-      verifyModuleEffects(lm.m, imported, importedRes, programKinds)
+      verifyModuleEffects(lm.m, imported, importedRes, programKinds, pendingNames)
       vSub(lm.name, ts)
     # Who may touch a slab (TK-AC08/09): whole-program, after typecheck
     # because it reads the checker's stamps (slab ops, slab derefs, callee
@@ -745,6 +766,9 @@ when isMainModule:
   # against ~1 s for the backend build. `--verify-stages` is still accepted,
   # and is now a no-op.
   let verifyStages = "--no-verify-stages" notin opts
+  # ON by default (ruled 2026-10-14): a host compiler that disagrees with the
+  # effect pass exposes a bug in ours. `--no-host-checks` opts out.
+  hostChecks = "--no-host-checks" notin opts
   # Optimization passes (compiler/optimize.nim) are ON by default — a pass
   # that only runs when asked for is a pass nothing exercises, and every one
   # here is required to be semantics-preserving.
@@ -755,7 +779,8 @@ when isMainModule:
   # a pass rewrote. An unknown pass name is fatal rather than ignored: a typo
   # in a build script must not quietly mean something other than it says.
   var optPasses: set[OptPass]
-  for p in OptPass: optPasses.incl(p)
+  for p in OptPass:
+    if p != opInline: optPasses.incl(p)   # inline is opt-in: -O:inline
   var optReport = false
   var optExplicit = false      # a -O: naming passes REPLACES the default set
   for o in opts:
@@ -861,6 +886,10 @@ when isMainModule:
   of "check", "ch":
     discard checkProgram(path, verifyStages = verifyStages)
     echo "OK (", elapsedMs(t0), ")"
+  of "effects", "ef":
+    effectReportOn = true
+    discard checkProgram(path, verifyStages = verifyStages)
+    stdout.write effectReportText
   of "ssa":
     # The SSA graph of every body in THIS file (not its imports), with each
     # read's FINAL verdict — what `tests/ssa/*.ssa` pins.

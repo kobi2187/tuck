@@ -305,6 +305,16 @@ T tuckSatI(T)(long v) if (!__traits(isUnsigned, T))
 /// exit(1), NOT abort(): the same end as Nim's quit(1) and Odin's
 /// os.exit(1), as tuckPoolMisuse and tuckResourceMisuse do (issue #54).
 /// abort() raised SIGABRT (exit 134) where the other two exit 1 (#43).
+/// A `[depth: N]` fn was entered more than N levels deep. Real code, not
+/// `assert`; exit(1) like tuckInvariantFailed.
+void tuckDepthExceeded(string name, long limit)
+{
+    import std.stdio : stderr;
+    import core.stdc.stdlib : exit;
+    stderr.writeln("Recursion depth exceeded in ", name, ": limit ", limit);
+    exit(1);
+}
+
 void tuckInvariantFailed(string cond, string typeName)
 {
     import std.stdio : stderr;

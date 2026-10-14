@@ -27,7 +27,7 @@
 # This kind of hidden inter-pass dependency is common in compilers and almost
 # never obvious from the code. When you find one, write it down where the
 # ordering is decided.
-import ast, ast_ops, tables, sets, strutils
+import ast, ast_ops, tables, sets, strutils, sequtils
 import resolution
 import ast_query   # memberCallDecl: which member a call reaches
 import diagnostics  # TK-RS03, the resource half of the propagation rule
@@ -69,6 +69,7 @@ type
     taskNames: HashSet[string]  # dkTask decl names, built once — see isTask
     everyKind: seq[string]      # every kind the PROGRAM declares — main's budget
     visiting: HashSet[string]
+    pendingNames: HashSet[string]  # imported `pending:` stubs — never a restriction violation
 
 proc getDeclared(c: Checker, name: string): Demands =
   ## What calling `name` demands of its caller; nothing for a name this module
@@ -202,10 +203,14 @@ proc checkExpr(c: var Checker, e: Expr, expected: Demands,
   # says what to WRITE, at that call (issue #14: the user declares in the
   # code; the compiler infers and helps).
   var missing: seq[string]
+  # Only CAPABILITIES are obligations passed up. A restriction is held from the
+  # restricted side (checkRestrictions), and an attribute propagates nowhere;
+  # treating them as obligations rejected a plain fn calling a `[no_alloc]` one.
   for eff in actual.effects:
-    if eff notin expected.effects: missing.add effectName(eff)
+    if familyOf(eff) == mfCapability and eff notin expected.effects:
+      missing.add effectName(eff)
   for eff in actual.effects:
-    if eff notin expected.effects:
+    if familyOf(eff) == mfCapability and eff notin expected.effects:
       let (callee, span) = c.culpritCall(e, eff)
       reportError(withCode(dcEfBudget,
         "Expression requires effect [" & effectName(eff) & "], which is " &
@@ -236,8 +241,189 @@ proc mayDoIoUnseen(c: Checker, body: Expr): bool =
          n.callee.name in c.taskNames: return true
     else: discard
 
+type
+  CalleeKind = enum
+    ckUnknown   ## a name this module cannot place (a constructor, a builtin, a
+                ## `pending` stub): says nothing, so it is never a violation
+    ckTask      ## a spawn: allocates a coroutine and does not run here
+    ckFn        ## a declared fn, extern or member with a known marker set
+
+  Callee = object
+    kind: CalleeKind
+    name: string
+    markers: seq[EffectMarker]
+
+proc callOf(n: Expr): Expr =
+  ## The call a node stands for: an `exkCall`, or a bare nullary name the
+  ## checker stamped with one (spec 2.3, "a bare name IS a call").
+  if n.kind == exkCall: n
+  elif semLayer.hasCall(n): semLayer.call(n)
+  else: nil
+
+proc resolveCallee(c: Checker, call: Expr): Callee =
+  ## Who a call reaches and what that callee DECLARES. The restriction rule asks
+  ## this of every call in a restricted fn; unlike the capability rule it must
+  ## know whether the callee is known at all, so an unplaceable name is
+  ## `ckUnknown` rather than "declares nothing".
+  if call.kind != exkCall: return Callee(kind: ckUnknown)
+  let name = if call.callee != nil and call.callee.kind == exkVar:
+               call.callee.name
+             else: ""
+  if name == "": return Callee(kind: ckUnknown)
+  if name in c.taskNames: return Callee(kind: ckTask, name: name)
+  let member = memberCallDecl(semLayer, c.module, call)
+  if member != nil:
+    return Callee(kind: ckFn, name: member.name, markers: member.fnEffects)
+  if c.declared.hasKey(name) and name notin c.pendingNames:
+    return Callee(kind: ckFn, name: name, markers: c.declared[name].effects)
+  Callee(kind: ckUnknown, name: name)
+
+proc restrictionsOf(markers: seq[EffectMarker]): seq[EffectMarker] =
+  for m in markers:
+    if familyOf(m) == mfRestriction: result.add m
+
+proc failRestriction(fnName: string, r: EffectMarker, callee: Callee, sp: Span) =
+  let rn = effectName(r)
+  if callee.kind == ckTask:
+    reportError(withCode(dcEfRestriction,
+      "'" & fnName & "' is [" & rn & "] but spawns task '" & callee.name &
+      "', and a spawn is not [" & rn & "]. Fix: do not spawn from a [" & rn &
+      "] fn"), sp)
+  reportError(withCode(dcEfRestriction,
+    "'" & fnName & "' is [" & rn & "] but calls '" & callee.name &
+    "', which is not. Fix: declare [" & rn & "] on '" & callee.name &
+    "' if that is true (an extern with no marker is not known to be), or do " &
+    "not call it from a [" & rn & "] fn"), sp)
+
+proc checkIsrSends(d: Decl) =
+  ## TK-EF07: an `irq_safe` fn does not send — the mailbox takes a lock.
+  if emIrqSafe notin d.fnEffects or d.fnBody == nil: return
+  for n in d.fnBody.nodes:
+    if n.kind == exkSend:
+      reportError(withCode(dcEfIsrSend,
+        "'" & d.name & "' is [irq_safe] but sends to an actor, whose mailbox " &
+        "takes a lock an interrupted thread may hold. Fix: set a flag or ring " &
+        "buffer that a task drains, or drop [irq_safe]"), n.span)
+
+proc checkRestrictions(c: Checker, d: Decl) =
+  ## The restriction call rule (TK-EF03): in a fn declaring `no_alloc`,
+  ## `irq_safe` or `pure`, every call must reach a callee that declares it.
+  ## A plain fn calling a restricted one is fine — the rule runs from the
+  ## restricted side only.
+  let restr = restrictionsOf(d.fnEffects)
+  if restr.len == 0 or d.fnBody == nil: return
+  for n in d.fnBody.nodes:
+    let call = callOf(n)
+    if call == nil: continue
+    let callee = c.resolveCallee(call)
+    case callee.kind
+    of ckUnknown: discard
+    of ckTask: failRestriction(d.name, restr[0], callee, n.span)
+    of ckFn:
+      for r in restr:
+        if r notin callee.markers: failRestriction(d.name, r, callee, n.span)
+
+proc allocatingConstruct(n: Expr): string =
+  ## What `n` allocates, or "" if it does not. THE list of allocating syntax
+  ## for `[no_alloc]` (TK-EF05): a new construct that allocates has to be
+  ## classified here. Calls are not listed — the restriction rule sees them.
+  case n.kind
+  of exkList:
+    if seqElem(semLayer.typeFor(n)) != nil: "a Seq literal" else: ""
+  of exkBinary:
+    if isStringConcat(n): "a str concatenation" else: ""
+  else: ""
+
+proc checkNoAlloc(d: Decl) =
+  ## TK-EF05: the body of a `[no_alloc]` fn holds no allocating construct.
+  if emNoAlloc notin d.fnEffects or d.fnBody == nil: return
+  for n in d.fnBody.nodes:
+    let what = allocatingConstruct(n)
+    if what != "":
+      reportError(withCode(dcEfAllocation,
+        "'" & d.name & "' is [no_alloc] but contains " & what &
+        ", which allocates. Fix: use an Array or a pool, or drop [no_alloc]"),
+        n.span)
+
+proc calleeNames(c: Checker, d: Decl): seq[string] =
+  ## The distinct fn names `d`'s body calls (members resolved like any call).
+  if d.fnBody == nil: return
+  for n in d.fnBody.nodes:
+    let call = callOf(n)
+    if call == nil: continue
+    let callee = c.resolveCallee(call)
+    if callee.kind == ckFn and callee.name notin result:
+      result.add callee.name
+
+proc recursiveFrom(c: Checker, bodies: Table[string, Decl], start: string,
+                   seen: var seq[string]): bool =
+  ## Does the call graph below `start` reach a cycle? `seen` is the path.
+  if start in seen: return true
+  if not bodies.hasKey(start): return false
+  seen.add start
+  for next in c.calleeNames(bodies[start]):
+    if c.recursiveFrom(bodies, next, seen): return true
+  seen.setLen(seen.len - 1)
+
+proc checkStackBound(c: Checker, d: Decl) =
+  ## TK-EF06: a fn declaring `stack` has a call graph below it with no cycle.
+  ## Only fns whose bodies are in this module are followed; an extern or an
+  ## imported fn is a leaf here.
+  if emNoRecursion notin d.fnEffects or d.fnBody == nil: return
+  var bodies: Table[string, Decl]
+  for x in c.module.allDecls:
+    if x.kind == dkFn and x.fnBody != nil: bodies[x.name] = x
+  var path: seq[string]
+  if c.recursiveFrom(bodies, d.name, path):
+    reportError(withCode(dcEfRecursion,
+      "'" & d.name & "' declares [no_recursion] but can recurse (via " &
+      path.join(" -> ") & "), so its depth has no static bound. Fix: turn " &
+      "the recursion into a loop, use [recursion: N], or drop [no_recursion]"), d.span)
+
+proc checkRetiredStack(d: Decl) =
+  ## `[stack: N]` was renamed: N read as a byte budget, which it never was.
+  if d.fnReturnType == nil: return
+  for a in d.fnReturnType.attrs:
+    if a.name == "stack":
+      reportError(withCode(dcEfRecursion,
+        "'" & d.name & "' uses [stack: N], which is retired. Fix: write " &
+        "[no_recursion] to forbid recursion below it, or [recursion: N] to allow " &
+        "recursion but trap beyond N nested calls"), d.span)
+
+proc checkMarkerCombinations(d: Decl) =
+  ## TK-EF04: markers that exclude each other, and implications that must be
+  ## written (`irq_safe` requires `no_alloc`).
+  checkRetiredStack(d)
+  if d.fnDepth > 0 and emNoRecursion in d.fnEffects:
+    reportError(withCode(dcEfCombination,
+      "'" & d.name & "' declares [no_recursion] together with [recursion: " &
+      $d.fnDepth & "]. Fix: [no_recursion] forbids recursion, [recursion: N] " &
+      "allows it up to N; keep one"), d.span)
+  if d.fnDepth > 0 and emPure in d.fnEffects:
+    reportError(withCode(dcEfCombination,
+      "'" & d.name & "' declares [pure] together with [recursion: " & $d.fnDepth &
+      "]; the depth counter is a side effect. Fix: remove one"), d.span)
+  for m in d.fnEffects:
+    for x in excludes(m):
+      if x in d.fnEffects:
+        reportError(withCode(dcEfCombination,
+          "'" & d.name & "' declares [" & effectName(m) & "] together with [" &
+          effectName(x) & "], which it excludes. Fix: remove [" &
+          effectName(x) & "] or remove [" & effectName(m) & "]"), d.span)
+    for x in requires(m):
+      if x notin d.fnEffects:
+        reportError(withCode(dcEfCombination,
+          "'" & d.name & "' is [" & effectName(m) & "], which also requires [" &
+          effectName(x) & "]. Fix: add [" & effectName(x) & "] to its bracket"),
+          d.span)
+
 proc verifyFn(c: var Checker, d: Decl) =
   ## One fn body against its own bracket — `main`'s budget aside, below.
+  # A contradictory bracket is a fault of the DECLARATION, so a body-less
+  # signature gets it too.
+  if d != nil:
+    checkMarkerCombinations(d)
+    checkNoAlloc(d)
   if d == nil or d.fnBody == nil or d.name in c.visiting: return
   c.visiting.incl(d.name)
   # main is ASSUMED to touch I/O — the [io] marker distinguishes pure fns
@@ -257,10 +443,13 @@ proc verifyFn(c: var Checker, d: Decl) =
   # about it changed nothing.
   let budget = if d.name == "main":
                  Demands(effects: @[emIo, emNoAlloc, emIrqSafe, emUnsafe,
-                                    emMayBlock, emStack, emPriority],
+                                    emMayBlock, emNoRecursion, emPriority],
                          resources: c.everyKind & d.fnResourceKinds)
                else: Demands(effects: d.fnEffects,
                              resources: d.fnResourceKinds)
+  c.checkRestrictions(d)
+  checkIsrSends(d)
+  c.checkStackBound(d)
   let actual = c.checkExpr(d.fnBody, budget, d.name)
   # The other direction (issue #14): a declared [io] the body never needs.
   if d.name != "main" and emIo in d.fnEffects and emIo notin actual.effects and
@@ -308,7 +497,11 @@ proc verifyDecl*(c: var Checker, d: Decl) =
     # an arm states its effects is a ruling (thoughts/shared/audits,
     # 2026-09-27 F2). Until then an arm is as unchecked as it always was.
     discard
-  of dkExtern, dkPending, dkFnSig, dkInterface, dkGroup:
+  of dkExtern, dkPending:
+    # signatures only: no body, but a bracket can still contradict itself
+    for mem in d.mixinMembers:
+      if mem != nil and mem.kind == dkFn: checkMarkerCombinations(mem)
+  of dkFnSig, dkInterface, dkGroup:
     discard   # signatures only: no body to check
   of dkErrors:
     discard   # the `on unhandled` handler runs from the runtime, not a caller
@@ -364,12 +557,153 @@ proc collectLocal(c: var Checker, m: Module) =
         if k.name notin c.everyKind: c.everyKind.add(k.name)
     else: discard
 
+
+# --- derived facts (proposal §7.1) -------------------------------------------
+#
+# Nothing here is written by the user. For every top-level fn with a body the
+# compiler works out which restrictions it COULD carry, bottom-up over the
+# calls it can see. UNKNOWN => NO FACT: a callee that is not a declared fn, a
+# task, or a fn already derived is never assumed to be safe, and the iteration
+# starts from "nothing holds" so a cycle never proves itself.
+
+type
+  Facts* = object
+    name*: string
+    declared*: seq[EffectMarker]
+    needs*: seq[EffectMarker]    # capabilities the body requires
+    pure*, noAlloc*, irqSafe*, bounded*: bool
+    suggest*: seq[EffectMarker]  # restrictions it satisfies but does not declare
+
+proc stateNames(m: Module): HashSet[string] =
+  ## Names that stand for state outside a fn's own values: a register, a pool,
+  ## slab or arena, an actor. Touching one makes a fn not pure.
+  for d in m.decls:
+    if d != nil and d.kind in {dkRegister, dkPool, dkSlab, dkArena, dkActor,
+                               dkRegistry}:
+      result.incl d.name
+
+proc touchesState(d: Decl, state: HashSet[string]): bool =
+  for n in d.fnBody.nodes:
+    case n.kind
+    of exkSend, exkAcquire, exkFinish, exkSelect: return true
+    of exkVar: (if n.name in state: return true)
+    else: discard
+
+proc holds(c: Checker, facts: Table[string, Facts], callee: Callee,
+           r: EffectMarker): bool =
+  ## Does the callee carry restriction `r`: declared, or derived so far.
+  if callee.kind != ckFn: return false
+  if r in callee.markers: return true
+  if not facts.hasKey(callee.name): return false
+  let f = facts[callee.name]
+  case r
+  of emPure: f.pure
+  of emNoAlloc: f.noAlloc
+  of emIrqSafe: f.irqSafe
+  else: false
+
+proc callsOf(c: Checker, d: Decl): seq[Callee] =
+  ## Every call in `d`'s body, resolved.
+  for n in d.fnBody.nodes:
+    let call = callOf(n)
+    if call != nil: result.add c.resolveCallee(call)
+
+proc allocates(d: Decl): bool =
+  for n in d.fnBody.nodes:
+    if allocatingConstruct(n) != "": return true
+
+proc derive(c: Checker, d: Decl, state: HashSet[string],
+            facts: Table[string, Facts]): Facts =
+  ## One round for one fn, against the facts known so far.
+  result = facts[d.name]
+  let calls = c.callsOf(d)
+  let allKnown = calls.allIt(it.kind == ckFn)
+  let capFree = result.needs.len == 0 and
+                d.fnEffects.allIt(familyOf(it) != mfCapability)
+  let stateFree = not touchesState(d, state)
+  proc all(r: EffectMarker): bool = calls.allIt(c.holds(facts, it, r))
+  result.noAlloc = emNoAlloc in d.fnEffects or
+                   (not allocates(d) and all(emNoAlloc))
+  result.pure = emPure in d.fnEffects or
+                (capFree and allKnown and all(emPure) and stateFree)
+  result.irqSafe = emIrqSafe in d.fnEffects or
+                   (capFree and result.noAlloc and all(emIrqSafe) and
+                    stateFree)
+
+proc cyclic(c: Checker, bodies: Table[string, Decl], name: string): bool =
+  var path: seq[string]
+  c.recursiveFrom(bodies, name, path)
+
+proc restrictionHolds(f: Facts, r: EffectMarker): bool =
+  case r
+  of emPure: f.pure
+  of emNoAlloc: f.noAlloc
+  else: f.irqSafe
+
+proc settle(c: var Checker, order: seq[Decl], state: HashSet[string],
+            facts: var Table[string, Facts]) =
+  ## Iterate `derive` from "nothing holds" until nothing changes.
+  var changed = true
+  while changed:
+    changed = false
+    for d in order:
+      let nf = c.derive(d, state, facts)
+      let old = facts[d.name]
+      if (nf.pure, nf.noAlloc, nf.irqSafe) != (old.pure, old.noAlloc, old.irqSafe):
+        facts[d.name] = nf
+        changed = true
+
+proc deriveFacts*(c: var Checker): seq[Facts] =
+  ## The facts of every top-level fn with a body in the checked module, in
+  ## source order, at the least fixed point.
+  var bodies: Table[string, Decl]
+  var order: seq[Decl]
+  for d in c.module.decls:
+    if d != nil and d.kind == dkFn and d.fnBody != nil and d.name != "main":
+      bodies[d.name] = d
+      order.add d
+  var facts: Table[string, Facts]
+  for d in order:
+    let needs = c.synthesizeExpr(d.fnBody).effects
+    facts[d.name] = Facts(name: d.name, declared: d.fnEffects,
+      needs: needs.filterIt(familyOf(it) == mfCapability))
+  c.settle(order, stateNames(c.module), facts)
+  for d in order:
+    var f = facts[d.name]
+    f.bounded = not c.cyclic(bodies, d.name)
+    for r in [emPure, emNoAlloc, emIrqSafe]:
+      if f.restrictionHolds(r) and r notin f.declared: f.suggest.add r
+    result.add f
+
+proc formatFacts*(facts: seq[Facts]): string =
+  ## The `--report-effects` text: per fn, what it declares, needs and could
+  ## carry, then the markers it may add.
+  proc names(ms: seq[EffectMarker]): string =
+    if ms.len == 0: "-" else: ms.mapIt(effectName(it)).join(", ")
+  for f in facts:
+    var derived: seq[string]
+    if f.pure: derived.add "pure"
+    if f.noAlloc: derived.add "no_alloc"
+    if f.irqSafe: derived.add "irq_safe"
+    if f.bounded: derived.add "bounded-depth"
+    result.add f.name & ": declares [" & names(f.declared) & "], needs [" &
+      names(f.needs) & "], derived: " &
+      (if derived.len == 0: "-" else: derived.join(", ")) & "\n"
+    if f.suggest.len > 0:
+      result.add "  suggest: add [" & names(f.suggest) & "]\n"
+
+var effectReportOn*: bool
+  ## Set by `tuck effects`; verifyModuleEffects then leaves its report here.
+var effectReportText*: string
+
 proc verifyModuleEffects*(m: Module,
                           imported: Table[string, seq[EffectMarker]] =
                             initTable[string, seq[EffectMarker]](),
                           importedRes: Table[string, seq[string]] =
                             initTable[string, seq[string]](),
-                          programKinds: seq[string] = @[]) =
+                          programKinds: seq[string] = @[],
+                          importedPending: HashSet[string] =
+                            initHashSet[string]()) =
   ## Check every declaration in `m` performs only the effects it declares.
   ##
   ## `imported` carries the effects of fns this module IMPORTS, keyed the same
@@ -384,8 +718,10 @@ proc verifyModuleEffects*(m: Module,
   ## its import declared cannot answer "is this kind known" from its own decls
   ## — and `main`, whose budget is every kind, would get an empty one.
   var c = Checker(module: m, declared: initTable[string, Demands](),
-                  visiting: initHashSet[string](), everyKind: programKinds)
+                  visiting: initHashSet[string](), everyKind: programKinds,
+                  pendingNames: importedPending)
   c.collectImported(imported, importedRes)
   c.collectLocal(m)
   for d in m.decls:
     c.verifyDecl(d)
+  if effectReportOn: effectReportText = formatFacts(c.deriveFacts())

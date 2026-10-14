@@ -39,7 +39,7 @@ auditing this compiler, who read a payload binding as a checker bug and nearly
 | 6 | `/` divides | **Not an operator.** `/i` is integer divide, `/f` float. Bare `/` is a parse error. | §7 |
 | 7 | Interfaces are pointers/vtables | **A copying tagged variant.** An interface value OWNS its data; dispatch is a switch on a tag. | §5 |
 | 8 | Actors are objects you construct | **Singletons.** One instance per declared type, no construction, no reference. | §10 |
-| 9 | `[io]` propagates automatically | **You declare it at every level.** An undeclared effect is an error, not an inference: the compiler works out what is required, names the call that needs it and says what to write (`TK-EF01`), and warns about a declared `[io]` nothing needs (`TK-EF02`). | §11 |
+| 9 | `[io]` propagates automatically | **You declare it at every level.** An undeclared effect is an error, not an inference: the compiler works out what is required, names the call that needs it and says what to write (`TK-EF01`), and warns about a declared `[io]` nothing needs (`TK-EF02`). Guide to all the markers: `docs/safety-and-effects.md`. | §11 |
 | 10 | An unhandled event is fine | **Compile error.** Every registry event needs a handler (`TK-RG03`), and one registry per program. | §10, Part 10 |
 | 11 | `self ..field` is banned like any parameter | **Legal for object members and actor fields** — state the callee OWNS. A plain fn whose param is merely NAMED `self` gets no exemption. | §5.1, §7.1 |
 | 12 | Concurrency targets microcontrollers | **Hosted OS today** — stackful minicoro coroutines over `mmap`, epoll/kqueue reactor: a hosted-OS capability (spec §7.1). | §10 |

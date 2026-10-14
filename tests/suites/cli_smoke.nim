@@ -500,7 +500,7 @@ proc caseEffects(w: Work) =
   let bad = d.write("bad.tuck", """
 import lib
 
-fn pure(value: int) -> int:
+fn plain(value: int) -> int:
   return value noisy
 
 fn main() -> void:
