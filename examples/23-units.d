@@ -17,7 +17,7 @@ TRec_done!(bool) tuckˑfnˑdelay(tuckˑtypeˑMilliseconds ms) {
 }
 
 void tuckˑfnˑmain() {
-    TRec_done!(bool) tuckˑvˑr = tuckˑfnˑdelay(tuckˑfnˑms(5L));
+    TRec_done!(bool) tuckˑvˑr = tuckˑfnˑdelay(tuckˑfnˑms(cast(uint)5));
     return;
 }
 

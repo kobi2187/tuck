@@ -107,7 +107,7 @@ bool tuckˑobjectˑCameraDetectorˑhealthy(tuckˑobjectˑCameraDetector self) {
 }
 
 long tuckˑobjectˑCameraDetectorˑreads(tuckˑobjectˑCameraDetector self) {
-    if ((self.confidence > 80L)) {
+    if ((self.confidence > cast(ubyte)80)) {
         return 3L;
     }
     return 0L;
@@ -236,7 +236,7 @@ void tuckˑfnˑreport(Detector d) {
 
 void tuckˑfnˑdrive() {
     tuckˑobjectˑLoopDetector tuckˑvˑloops = tuckˑobjectˑLoopDetector(lane: 1L);
-    tuckˑobjectˑCameraDetector tuckˑvˑcamera = tuckˑobjectˑCameraDetector(confidence: 91L);
+    tuckˑobjectˑCameraDetector tuckˑvˑcamera = tuckˑobjectˑCameraDetector(confidence: cast(ubyte)91);
     tuckˑfnˑreport(Detector(DetectorTag.Detector_is_tuckˑobjectˑCameraDetector, tuckˑobjectˑCameraDetectorVal: tuckˑvˑcamera));
     sendSense_tuckˑactorˑSignals(tuckˑactorˑSignalsSingleton, tuckˑtypeˑDemand.quiet, false);
     tuckˑfnˑreport(Detector(DetectorTag.Detector_is_tuckˑobjectˑLoopDetector, tuckˑobjectˑLoopDetectorVal: tuckˑvˑloops));

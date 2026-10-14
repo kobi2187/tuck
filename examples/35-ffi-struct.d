@@ -14,9 +14,9 @@ extern (C) Point makesPoint(int x, int y);
 
 
 void tuckˑfnˑmain() {
-    Point tuckˑvˑp = makesPoint(3L, 7L);
+    Point tuckˑvˑp = makesPoint(cast(int)3, cast(int)7);
     int tuckˑvˑr = takesPoint(tuckˑvˑp);
-    if ((tuckˑvˑr == 307L)) {
+    if ((tuckˑvˑr == cast(int)307)) {
         sys.exit(0L);
     }
     sys.exit(1L);

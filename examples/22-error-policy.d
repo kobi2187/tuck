@@ -11,10 +11,10 @@ void tuck_unhandled(ushort code, string site) {
 }
 
 rt.TuckResult!(TRec_value!(ushort)) tuckˑfnˑreadSensor(ubyte port) {
-    if ((port > 3L)) {
+    if ((port > cast(ubyte)3)) {
         return rt.terr!(TRec_value!(ushort))(0x2DDC /* badPort */);
     }
-    return rt.tok(TRec_value!(ushort)(value: cast(ushort)(42L)));
+    return rt.tok(TRec_value!(ushort)(value: cast(ushort)(cast(ushort)42)));
 }
 
 long tuckˑfnˑpoll(ubyte port) {

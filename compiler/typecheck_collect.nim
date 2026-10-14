@@ -175,9 +175,10 @@ proc collectTypeDecl*(tc: var TypeChecker, d: Decl) =
     tc.typeDecls[d.name] = d.typeBody
     if d.generics.len > 0:
       tc.typeGenerics[d.name] = d.generics
-    for a in d.typeBody.attrs:
-      if a.name == "distinct":
-        tc.distinctNames.incl(d.name)
+    # Nominal when written `distinct` OR when an overflow mode is attached:
+    # the attribute changes the arithmetic, so it cannot mix with its base.
+    if isDistinctAlias(d.typeBody):
+      tc.distinctNames.incl(d.name)
   tc.collectSigs(d.typeMembers, top = false)
   for m in d.typeMembers:
     if m != nil and m.kind == dkFn: tc.objectMemberFns.incl(m.name)

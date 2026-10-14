@@ -755,11 +755,13 @@ widens (postfix, `exkCast`); the sigil names the direction and is checked
 match (`int` is `i64`; there is NO type `float` — ruled 2026-10-14, write `f64` or `f32`, TK-PA19; an unconstrained float literal is an `f64`). A literal takes its place's width —
 operands of `==`/`+`, array fills, record-literal fields, `..field {v}` — and a
 literal or `const` that does not fit is an error, in a cast or a binding
-(TK-TY41), so `~` means "I checked this" wherever the value is known. Step 4 is built too:
-`tuck ch --report-narrowing` lists every `~` cast (file:line:col, the two types,
-and `[checked: N fits]` for a folded constant or `[unproven]` for the author's
-risk). NOT yet: step 3 (`[wrapping]`/`[trapping]` codegen) and the `to` word
-(ruled out for now: sigils only).
+(TK-TY41), so `~` means "I checked this" wherever the value is known. Step 3 is built too (2026-10-14, suite `overflow`):
+`+ - *` on a narrow integer trap by default, `[wrapping]` wraps, `[trapping]` is
+explicit, identically on all three backends. OPEN DECISION: `[saturating]`
+ARITHMETIC keeps its store-guard design (known_bugs 4b) and is not routed
+through the checked helper; per-operator saturation exists in the runtimes but
+is switched off until it is ruled on. Step 4 (a report of every narrowing site)
+is PR #114. The `to` word is ruled out for now: sigils only.
 
 **Decided: crossing a numeric type boundary is always written in the source.
 Both directions. No exceptions.**

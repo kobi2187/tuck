@@ -1,6 +1,7 @@
 #+feature dynamic-literals
 package main
 
+import rt "./tuckrt"
 import sys "./mod_sys"
 foreign import point "cffi/point.o"
 
@@ -15,7 +16,7 @@ foreign point {
 }
 
 tuckˑfnˑaddTwo :: proc "c" (a: i32, b: i32) -> i32 {
-  return (a + b)
+  return rt.tuckArith(a, b, .Add, .Trap)
 }
 
 tuckˑfnˑmain :: proc () {
@@ -30,5 +31,7 @@ tuckˑfnˑmain :: proc () {
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
 	tuckˑfnˑmain()
+	rt.tuckTrackCheck()
 }

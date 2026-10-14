@@ -13,14 +13,14 @@ extern (C) int callBack(tuckˑfnsigˑBinOp cb, int a, int b);
 
 
 extern (C) int tuckˑfnˑaddTwo(int a, int b) {
-    return (a + b);
+    return rt.tuckArith!(int, rt.OvOp.Add, rt.OvPolicy.Trap)(a, b);
 }
 
 void tuckˑfnˑmain() {
-    int tuckˑvˑm = applyOp(Op.OP_MUL, 6L, 7L);
-    int tuckˑvˑc = callBack(&tuckˑfnˑaddTwo, 40L, 2L);
-    if ((tuckˑvˑm == 42L)) {
-        if ((tuckˑvˑc == 1042L)) {
+    int tuckˑvˑm = applyOp(Op.OP_MUL, cast(int)6, cast(int)7);
+    int tuckˑvˑc = callBack(&tuckˑfnˑaddTwo, cast(int)40, cast(int)2);
+    if ((tuckˑvˑm == cast(int)42)) {
+        if ((tuckˑvˑc == cast(int)1042)) {
             sys.exit(0L);
         }
     }

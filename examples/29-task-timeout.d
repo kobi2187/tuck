@@ -18,7 +18,7 @@ TRec_fd!(long) openSource(long ms) {
 
 TRec_code!(long) tuckˑtaskˑreadOrGiveUp(long fd) {
     long tuckˑvˑcode = 0L;
-    if (rt.tuckAwaitReadOrTimeout(fd, time.tuckˑfnˑms(30L))) {
+    if (rt.tuckAwaitReadOrTimeout(fd, time.tuckˑfnˑms(cast(uint)30))) {
         tuckˑvˑcode = 1L;
     } else {
         tuckˑvˑcode = 2L;

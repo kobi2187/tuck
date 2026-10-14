@@ -124,7 +124,7 @@ void tuckˑfnˑmain() {
     tuckˑtypeˑMqttSession tuckˑvˑfresh = tuckˑtypeˑMqttSession(tuckˑtypeˑMqttSessionKind.Disconnected);
     scope(exit) rt.tuckDrop(tuckˑvˑfresh);
     tuckˑtypeˑSocket tuckˑvˑsocket = tuckˑtypeˑSocket(fd: 3L);
-    tuckˑtypeˑMqttSession tuckˑvˑsession = tuckˑtypeˑMqttSession(kind: tuckˑtypeˑMqttSessionKind.Connected, tuckˑvariantˑconnected: tuckˑtypeˑMqttSession_Connected(socket: tuckˑvˑsocket, keepalive: 60L));
+    tuckˑtypeˑMqttSession tuckˑvˑsession = tuckˑtypeˑMqttSession(kind: tuckˑtypeˑMqttSessionKind.Connected, tuckˑvariantˑconnected: tuckˑtypeˑMqttSession_Connected(socket: tuckˑvˑsocket, keepalive: cast(ushort)60));
     scope(exit) rt.tuckDrop(tuckˑvˑsession);
     return;
 }

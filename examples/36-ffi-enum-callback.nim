@@ -14,7 +14,7 @@ proc applyOp*(op: Op, a: int32, b: int32): int32 {.importc: "applyOp", header: "
 proc callBack*(cb: tuckˑfnsigˑBinOp, a: int32, b: int32): int32 {.importc: "callBack", header: "point.h".}
 
 proc tuckˑfnˑaddTwo*(a: int32, b: int32): int32 =
-  return (a + b)
+  return tuckArith(a, b, ovAdd, ovTrap)
 
 proc tuckˑfnˑmain*(): void =
   var tuckˑvˑm = applyOp(Op.OP_MUL, 6'i32, 7'i32)

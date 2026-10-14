@@ -60,7 +60,7 @@ void tuckˑfnˑplayTrack(T)(T payload) {
 
 
 void tuckˑfnˑmain() {
-    TRec_url_timeout!(string, time.tuckˑtypeˑMilliseconds) tuckˑvˑrequest = TRec_url_timeout!(string, time.tuckˑtypeˑMilliseconds)(url: ("example.com").idup, timeout: time.tuckˑfnˑms(5L));
+    TRec_url_timeout!(string, time.tuckˑtypeˑMilliseconds) tuckˑvˑrequest = TRec_url_timeout!(string, time.tuckˑtypeˑMilliseconds)(url: ("example.com").idup, timeout: time.tuckˑfnˑms(cast(uint)5));
     scope(exit) rt.tuckDrop(tuckˑvˑrequest.url);
     TRec_hasNew_episodes_metadata!(bool, long, string) tuckOwnTmp1 = tuckˑfnˑfetch(tuckˑvˑrequest);
     scope(exit) rt.tuckDrop(tuckOwnTmp1.metadata);

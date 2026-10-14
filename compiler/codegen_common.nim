@@ -259,24 +259,6 @@ proc actorDeclNamed*(m: Module, real: Table[string, Module], name: string): Decl
       if d != nil and d.kind == dkActor and (d.name == name or writtenName(d) == name):
         return d
 
-proc isDistinctAlias*(body: Type): bool =
-  ## Does this alias declare a type the compiler must keep SEPARATE from its
-  ## base? `distinct` says so outright; an overflow mode implies it, because
-  ## the ATTRIBUTE is what changes behaviour (user ruling) and it is
-  ## meaningless on a bare alias — an alias IS its base type and cannot carry
-  ## different arithmetic.
-  ##
-  ## Shared because the two backends had already drifted: codegen.nim matched
-  ## all four names, codegen_odin.nim only "distinct", so `u16 [saturating]`
-  ## emitted `distinct uint16` on Nim and a plain `:: u16` alias on Odin —
-  ## freely mixable with any other u16. Same question, one answer.
-  if body == nil: return false
-  for a in body.attrs:
-    if a.name in ["distinct", "saturating", "wrapping", "trapping"]:
-      return true
-  false
-
-
 proc payloadSumVariant*(m: Module, typeName, variantName: string): Option[VariantDef] =
   ## The named variant of a PAYLOAD-carrying sum type. None when there is no
   ## such type, it carries no payload anywhere, or it has no such variant —
@@ -530,7 +512,7 @@ proc nimModuleName*(name: string): string =
 
 const RtIntrinsicNames* = [
   "tuckAt", "tuckSetAt", "tuckArrayAt", "tuckArraySetAt", "tuckConcat",
-  "tuckSat", "tuckSatI",
+  "tuckSat", "tuckSatI", "tuckArith", "tuckOverflowTrap",
   "tuckSeqBounds", "tuckSeqCopy", "tuckSpawn", "tuckSetArgs",
 ]
   ## Runtime helpers the compiler INTRODUCES — a `xs[i]` lowers to `tuckAt`,
@@ -749,6 +731,64 @@ proc providerFor*(m: Module, real: Table[string, Module], need: ProviderNeed,
   if fits(m): return ("", need.req)
   for modName, other in real:
     if other != m and fits(other): return (modName, need.req)
+
+type OverflowPlan* = object
+  ## How `+ - *` on a value of one type behaves when the result does not fit
+  ## (issue #16, step 3; ROADMAP 2026-08-25 ruling 4). `active` is false for
+  ## the types that get plain arithmetic: bare `int` and `i64` (64 bits is
+  ## enough), floats, and anything that is not an integer.
+  active*: bool
+  policy*: string     ## "Trap" (the default), "Wrap" or "Sat"
+  base*: string       ## the underlying integer: u8, i32, ...
+  named*: string      ## the declared type wrapping it, or "" for the integer itself
+
+const CheckedIntNames = ["i8", "i16", "i32", "u8", "u16", "u32", "u64", "usize"]
+  ## The integers whose arithmetic is checked by default. `int` and `i64` are
+  ## left alone unless the author attached an overflow attribute to a type.
+
+proc overflowAttr(d: Decl): string =
+  ## The policy a type declaration names, or "".
+  for a in d.typeBody.attrs:
+    case a.name
+    of "trapping": return "Trap"
+    of "wrapping": return "Wrap"
+    of "saturating": return "Sat"
+    else: discard
+
+proc typeDeclNamed(m: Module, real: Table[string, Module], name: string): Decl =
+  ## The `type`/`distinct` declaration called `name`, here or in an import.
+  result = m.findDecl(dkType, name)
+  if result != nil: return
+  for _, other in real:
+    result = other.findDecl(dkType, name)
+    if result != nil: return
+
+proc overflowPlan*(m: Module, real: Table[string, Module], t: Type): OverflowPlan =
+  ## The overflow plan for arithmetic whose result has type `t`.
+  if t == nil or t.kind != tkNamed: return
+  if t.name in CheckedIntNames:
+    return OverflowPlan(active: true, policy: "Trap", base: t.name)
+  let d = typeDeclNamed(m, real, t.name)
+  if d == nil or d.typeBody == nil or d.typeBody.kind != tkNamed: return
+  let base = d.typeBody.name
+  let wide = base in ["int", "i64"]
+  if not wide and base notin CheckedIntNames: return
+  let attr = d.overflowAttr()
+  # `[saturating]` keeps its store-guard design (known_bugs 4b): it clamps where
+  # a value is STORED, on a wider intermediate, so `a + b - c` of three 60000s
+  # is 60000 and not the 5535 per-operator clamping would give. The helpers can
+  # saturate per operator, but which semantics is wanted is an open decision.
+  if attr == "Sat": return
+  if attr == "" and wide: return
+  OverflowPlan(active: true, policy: (if attr == "": "Trap" else: attr),
+               base: base, named: t.name)
+
+proc ovOpName*(op: BinOp): string =
+  ## The checked-arithmetic helper's operator enum member (OvOp.Add ...).
+  case op
+  of boAdd: "Add"
+  of boSub: "Sub"
+  else: "Mul"
 
 type ImplVar* = object
   ## One function reference an interface's module keeps (implVarName): the
