@@ -149,7 +149,7 @@ fn sqrt({value: int}) -> int      # C ranked #1: first wall in geometry code
 fn gcd({a: int, b: int}) -> int   # true primitive; lcm composes from it
 fn clamp({value: int, low: int, high: int}) -> int
 fn sign({n: int}) -> int
-fn average({items: Seq[int]}) -> float   # gated on prereq 3
+fn average({items: Seq[int]}) -> f64   # gated on prereq 3
 
 # std/seq
 fn dedup[T]({items: Seq[T]}) -> Seq[T]   # preserves first-seen order

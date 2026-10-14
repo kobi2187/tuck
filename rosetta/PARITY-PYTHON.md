@@ -135,7 +135,7 @@ fn sqrt({value: int}) -> int                                    # math.sqrt() (i
 fn gcd({a: int, b: int}) -> int                                 # math.gcd()               TIER 2
 fn clamp({value: int, low: int, high: int}) -> int              # no direct Python builtin (min(hi,max(lo,v)) idiom) TIER 2
 fn sign({n: int}) -> int                                         # no direct Python builtin ((n>0)-(n<0) idiom) TIER 2
-fn average({items: Seq[int]}) -> float                           # statistics.mean()       TIER 2  # gated on int-division ruling
+fn average({items: Seq[int]}) -> f64                           # statistics.mean()       TIER 2  # gated on int-division ruling
 fn floorDiv({a: int, b: int}) -> int                              # a // b                  TIER 1  # gated on int-division ruling (STANDING PROPOSAL: type-directed `/`)
 fn isEven({n: int}) -> bool                                       # n % 2 == 0              TIER 3
 fn isOdd({n: int}) -> bool                                        # n % 2 != 0              TIER 3
@@ -171,7 +171,7 @@ fn intersect[T]({a: Set[T], b: Set[T]}) -> Set[T]                    # a & b    
 ## std/fmt — presentation, split from std/str (STDLIB-PROPOSAL charter)
 
 ```tuck
-fn toFixed({value: float, places: int}) -> str                    # f"{v:.2f}"               TIER 2
+fn toFixed({value: f64, places: int}) -> str                    # f"{v:.2f}"               TIER 2
 fn padNumber({value: int, width: int}) -> str                       # f"{v:04d}"               TIER 3
 ```
 Rejected from Python: sprintf-style `%`/`.format()`/f-string mini-language

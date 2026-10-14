@@ -17,7 +17,7 @@ type Level:
 type Field:
   | FText({key: str, text: str})
   | FWhole({key: str, whole: i64})
-  | FNumber({key: str, number: float})
+  | FNumber({key: str, number: f64})
   | FYes({key: str, yes: bool})
   | FSpan({key: str, ms: u64})
 

@@ -176,4 +176,27 @@ fn main() -> int:
 """
   t.badCheck "...in a comparison too", "TK-TY41"
 
+  # --- there is no type `float` --------------------------------------------
+  t.src """
+fn half({x: float}) -> float:
+  return x
+"""
+  t.badCheck "the type `float` is gone: write f64 or f32 (TK-PA19)", "TK-PA19"
+
+  t.src """
+fn area({r: f32}) -> f32:
+  let k: f32 = 3.0
+  let wide: f64 = 2.5
+  let narrow = wide ~f32
+  return r * r * k + narrow
+"""
+  t.okCheck "a float literal takes its place's width, and f64 to f32 is a `~`"
+
+  t.src """
+fn main() -> int:
+  let x: u8 = 2.5
+  return 0
+"""
+  t.badCheck "...but a float literal never becomes an integer", "expects u8"
+
   t.finish()

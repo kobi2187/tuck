@@ -47,7 +47,7 @@ pending:
 
   fn newHistogram({name: str}) -> Histogram
   fn addSample({h: Histogram, ms: u64}) -> Histogram
-  fn percentile({h: Histogram, p: float}) -> u64
+  fn percentile({h: Histogram, p: f64}) -> u64
   fn meanMs({h: Histogram}) -> u64
 ```
 

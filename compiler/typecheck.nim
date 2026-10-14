@@ -1727,7 +1727,7 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
 
 const IntegerTypeNames = ["int", "i8", "i16", "i32", "i64",
                           "u8", "u16", "u32", "u64"]
-const FloatTypeNames = ["float", "f32", "f64"]
+const FloatTypeNames = ["f32", "f64"]
 
 type
   Operand = tuple[typ: Type, expr: Expr]
@@ -4000,7 +4000,7 @@ proc litTypeName(k: LitKind, value = ""): string =
     if value.len > i64Max.len or
        (value.len == i64Max.len and value > i64Max): "u64"
     else: "int"
-  of lkFloat: "float"
+  of lkFloat: "f64"
   of lkStr: "str"
   of lkBool: "bool"
 
@@ -4044,7 +4044,8 @@ proc synthLit(tc: var TypeChecker, e: Expr): Type =
   ## literal stays `int` and Nim refuses `TuckResult[int] -> TuckResult[int64]`.
   let want = unwrapEffect(tc.resolve(tc.expectedType))
   if want != nil and want.kind == tkNamed and want.name in NumericNames and
-     base in NumericNames:
+     base in NumericNames and
+     (e.litKind == lkInt or want.name in FloatTypeNames):
     # The literal adopts the place's type, and a value that does not fit it
     # is an error here, not a silent wrap (issue #16, step 5).
     let known = evalConstExpr(tc.module, e)

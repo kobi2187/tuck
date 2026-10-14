@@ -13,14 +13,14 @@ pending:
   fn newDice({seed: u64}) -> Dice
   fn newDiceFromOs() -> Dice [io]
   fn rollRange({d: Dice, low: i64, high: i64}) -> {d: Dice, value: i64}
-  fn rollFloat({d: Dice}) -> {d: Dice, value: float}
-  fn chance({d: Dice, probability: float}) -> {d: Dice, yes: bool}
+  fn rollFloat({d: Dice}) -> {d: Dice, value: f64}
+  fn chance({d: Dice, probability: f64}) -> {d: Dice, yes: bool}
   fn pick[T]({d: Dice, items: Seq[T]}) -> {d: Dice, value: T}?
-  fn pickWeighted[T]({d: Dice, items: Seq[T], weights: Seq[float]}) -> {d: Dice, value: T}?
+  fn pickWeighted[T]({d: Dice, items: Seq[T], weights: Seq[f64]}) -> {d: Dice, value: T}?
   fn shuffle[T]({d: Dice, items: Seq[T]}) -> {d: Dice, items: Seq[T]}
   fn sample[T]({d: Dice, items: Seq[T], count: int}) -> {d: Dice, items: Seq[T]}
   fn fillBytes({d: Dice, count: int}) -> {d: Dice, bytes: Seq[u8]}
-  fn gaussian({d: Dice, mean: float, stddev: float}) -> {d: Dice, value: float}
+  fn gaussian({d: Dice, mean: f64, stddev: f64}) -> {d: Dice, value: f64}
 ```
 
 ## The one thing that gets notably worse in translation

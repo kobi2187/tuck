@@ -78,6 +78,7 @@ type
                                           ## instead of `old -> new`
     dcPaArenaBlock = "TK-PA18"          ## an arena written as a block
                                           ## (`arena X:` + body), not a decl
+    dcPaFloatType = "TK-PA19"           ## the type `float`: write f64 or f32
 
     # --- TY: type ---------------------------------------------------------
     dcTyMismatch = "TK-TY01"            ## a value does not fit where it flows
@@ -542,6 +543,14 @@ proc parseExplanation(d: DiagCode): string =
     "A field given in a construction does not fit the type the declaration " &
     "gives it. This was unchecked: the value rode to codegen and only the " &
     "BACKEND's compiler objected, in generated code the author never wrote."
+  of dcPaFloatType:
+    "There is no type `float`. A float's width is a precision and a cost: on a " &
+    "microcontroller with a single-precision FPU `f32` is native and `f64` is " &
+    "emulated in software, and a bare `float` that silently meant f64 hides " &
+    "both. Every use is `f32` or `f64`, so the places accuracy can be lost are " &
+    "the places you can search for. Fix: write `f64` (what `float` used to " &
+    "mean) or `f32`. A float LITERAL with nothing to take a width from is an " &
+    "f64, and one written where an f32 is expected is an f32."
   of dcPaWordOperator:
     "`mod` and `div` are word-operators in Nim, Pascal and Python; in Tuck " &
     "they are `%` and `/i`. Left alone, a bare word between two operands " &

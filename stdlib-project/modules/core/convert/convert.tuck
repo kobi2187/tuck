@@ -58,7 +58,7 @@ fn toNarrowClamped({x: i64}) -> i32:
     return {value: i32Max} i32
   return {value: x} i32
 
-fn toApprox({x: float}) -> f32:
+fn toApprox({x: f64}) -> f32:
   return {value: x} f32
 
 # --- parsing ---------------------------------------------------------------

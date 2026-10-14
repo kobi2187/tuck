@@ -18,7 +18,7 @@ shape as `std.encoding`'s `Json`**:
 type DynValue:
   | DNull
   | DBool({b: bool})
-  | DNum({n: float})
+  | DNum({n: f64})
   | DText({s: str})
   | DList({items: Seq[DynValue]})
   | DRecord({keys: Seq[str], vals: Seq[DynValue]})

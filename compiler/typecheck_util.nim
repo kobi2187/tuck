@@ -58,7 +58,7 @@ proc isFlexible*(t: Type): bool =
 
 const NumericNames* = ["int", "i8", "i16", "i32", "i64",
                        "u8", "u16", "u32", "u64", "usize",
-                       "f32", "f64", "float"].toHashSet
+                       "f32", "f64"].toHashSet
 
 proc isNumeric*(t: Type): bool =
   ## Is `t` one of the builtin numeric types (any width, signed, unsigned or
@@ -83,12 +83,9 @@ proc numInfo*(name: string): NumInfo =
   else: (true, 64, true)
 
 proc numericCanon*(name: string): string =
-  ## `int` is i64 and `float` is f64 on every backend (ruled 2026-08-25), so
-  ## the pair never needs a cast between them.
-  case name
-  of "int": "i64"
-  of "float": "f64"
-  else: name
+  ## `int` is i64 on every backend (ruled 2026-08-25), so the pair never needs
+  ## a cast between them. (There is no type `float`: write f64 or f32.)
+  if name == "int": "i64" else: name
 
 proc losslessConversion*(src, dst: string): bool =
   ## Can every value of `src` be held by `dst` unchanged? This decides whether

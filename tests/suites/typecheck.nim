@@ -2220,7 +2220,7 @@ fn main() -> void:
   t.okCheck "auto-match on a struct literal argument"
 
   t.src """
-fn f({n: int, x: float}) -> void:
+fn f({n: int, x: f64}) -> void:
   ...
 
 fn main() -> void:
@@ -2228,7 +2228,7 @@ fn main() -> void:
   r f
   return
 """
-  t.okCheck "strict equality distinguishes int from float"
+  t.okCheck "strict equality distinguishes int from f64"
 
   t.src """
 fn f({n: int, m: int}) -> void:

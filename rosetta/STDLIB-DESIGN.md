@@ -110,7 +110,7 @@ fn take[T]({items: Seq[T], count: int}) -> Seq[T]
 fn skip[T]({items: Seq[T], count: int}) -> Seq[T]
 fn min({items: Seq[int]}) -> int
 fn max({items: Seq[int]}) -> int
-fn average({items: Seq[int]}) -> float
+fn average({items: Seq[int]}) -> f64
 fn groupBy[T]({items: Seq[T], keyOf: fn}) -> Map[str, Seq[T]]
 fn sortByField[T]({items: Seq[T], field: fn}) -> Seq[T]  # field: {item: T} -> Ord-comparable; convenience wrapper over sortBy for "sort records by a projection", the single most common real-world sort (batch F f03, f16)
 fn distinctValues[T]({items: Seq[T]}) -> Seq[T]          # order-preserving dedup
@@ -191,7 +191,7 @@ fn startsWith({text: str, prefix: str}) -> bool
 fn endsWith({text: str, suffix: str}) -> bool
 fn parseInt({text: str}) -> !int [io, error: str]        # throws-shaped: caller wants the value or a hard failure
 fn tryParseInt({text: str}) -> ?int                       # TryParse-shaped: caller wants a value or nothing, no error detail
-fn parseFloat({text: str}) -> !float [io, error: str]
+fn parseFloat({text: str}) -> !f64 [io, error: str]
 ```
 
 **`parseInt` vs `tryParseInt` — unlike `get`/`tryGet` above, THIS pair earns
@@ -230,7 +230,7 @@ fn toLower({ch: str}) -> str
 ### std/fmt — Tier 1
 
 ```tuck
-fn toFixed({value: float, decimals: int}) -> str
+fn toFixed({value: f64, decimals: int}) -> str
 fn padLeft({text: str, width: int}) -> str
 fn padRight({text: str, width: int}) -> str
 fn padLeftWith({text: str, width: int, fillChar: str}) -> str    # Tier 2
@@ -245,7 +245,7 @@ fine; see §6.
 
 ```tuck
 # Tier 1
-fn sqrt({value: float}) -> float
+fn sqrt({value: f64}) -> f64
 fn pow({base: int, exp: int}) -> int
 fn abs({value: int}) -> int
 fn min({a: int, b: int}) -> int
@@ -254,9 +254,9 @@ fn max({a: int, b: int}) -> int
 # Tier 2
 fn gcd({a: int, b: int}) -> int
 fn lcm({a: int, b: int}) -> int
-fn floor({value: float}) -> int
-fn ceil({value: float}) -> int
-fn round({value: float}) -> int
+fn floor({value: f64}) -> int
+fn ceil({value: f64}) -> int
+fn round({value: f64}) -> int
 fn clamp({value: int, low: int, high: int}) -> int
 ```
 
@@ -305,7 +305,7 @@ fn joinPath({dir: str, file: str}) -> str                      # f27 — Path.Co
 
 ```tuck
 fn randomInt({low: int, high: int}) -> int [io]     # inclusive low, exclusive high — .NET's Random.Next convention
-fn randomFloat({}) -> float [io]                     # [0.0, 1.0)
+fn randomFloat({}) -> f64 [io]                     # [0.0, 1.0)
 fn randomBool({}) -> bool [io]
 fn seeded({seed: int}) -> void [io]                  # sets the process-global generator's seed, for reproducible tests
 ```

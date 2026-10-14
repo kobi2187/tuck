@@ -5,11 +5,11 @@
 type Episode:
   title: str
   duration: u32
-  playSpeed: float
+  playSpeed: f64
 
 type PlayerPrefs:
   volume: int
-  speed: float
+  speed: f64
 
 fn describe({title: str, volume: int}) -> str:
   return title

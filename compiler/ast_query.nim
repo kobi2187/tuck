@@ -613,7 +613,7 @@ proc inferLitType*(e: Expr): Type =
     case e.litKind
     of lkStr: return Type(kind: tkNamed, name: "str")
     of lkBool: return Type(kind: tkNamed, name: "bool")
-    of lkFloat: return Type(kind: tkNamed, name: "float")
+    of lkFloat: return Type(kind: tkNamed, name: "f64")
     else: return Type(kind: tkNamed, name: "int")
   nil
 

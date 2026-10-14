@@ -168,7 +168,7 @@ fn endsWith({text: str, suffix: str}) -> bool             # str::ends_with
 
 # std/fmt (Rust: std::fmt)
 fn padLeft({text: str, width: int, fill: str}) -> str     # width/fill formatting
-fn toFixed({value: float, places: int}) -> str            # {:.N} precision
+fn toFixed({value: f64, places: int}) -> str            # {:.N} precision
 ```
 
 ## 4. Where Rust's design must NOT be copied — specifics
