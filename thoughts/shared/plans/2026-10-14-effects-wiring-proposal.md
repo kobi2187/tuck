@@ -1,6 +1,7 @@
 # Wiring the other effect markers — proposal, 2026-10-14
 
-Status: **design, nothing built.** Decisions needed are in §6.
+Status: **design, nothing built.** Rulings of 2026-10-14 are in §6; §3.5 is the
+implication table the owner asked for.
 
 Follows #14 (the compiler says what to declare or remove, for `[io]`). This is
 ROADMAP S4.1 / issue #64: only `[io]` has checker logic today; `no_alloc`,
@@ -73,13 +74,15 @@ that is what they are for), and string *literals*.
 The list lives in one place (`allocatingConstructs` in `semantics.nim`) so a
 reviewer can argue with it, and a new construct has to be classified.
 
-**Unknown callees.** A restricted fn that calls an extern or `pending` fn with
-no marker gets the conservative answer: it is not known to be R, so it is
-rejected, with the fix "declare `[no_alloc]` on the extern if it is true". This
-forces the stdlib externs to be annotated once (`sqrt`, `bitAnd`, `nowMs`, …),
-which is the right place for the claim to live. A fn that is *gradually typed*
-(Unknown callee) in a restricted body is also an error: you cannot promise what
-you cannot see. Restrictions are opt-in, so this only bites code that asked.
+**Unknown callees (ruled 2026-10-14).** A restricted fn calling an **extern with
+no marker is rejected**: it is not known to be R, and the fix is "declare
+`[no_alloc]` on the extern if it is true". That forces the stdlib externs to be
+annotated once (`sqrt`, `bitAnd`, `nowMs`, …), which is the right place for the
+claim to live. A call to a **`pending` fn is ignored** (a stub is an unwritten
+body, not a claim; it neither passes nor fails the rule, and the existing
+PENDING report already lists it). A *gradually typed* callee (Unknown) in a
+restricted body is an error: you cannot promise what you cannot see.
+Restrictions are opt-in, so this only bites code that asked.
 
 ### 3.2 Capabilities
 
@@ -95,6 +98,35 @@ conflict with `irq_safe` above. It needs no new walk.
   to bound bytes. (An honest weak check beats a fake strong one.)
 - `priority: N` — configuration for the scheduler/ISR table, not an effect.
   Move out of `EffectMarker`; no propagation.
+
+### 3.5 Combinations and what they imply (the compiler infers, the user declares)
+
+Markers are not independent. Each row is a rule the compiler checks and *says
+out loud*, in the #14 style (declared in code; the compiler names what to add or
+remove). An implication is an **error with a fix**, not a silent addition, so
+the signature still tells the whole truth at a glance.
+
+| declared | the compiler infers | what it tells you |
+|---|---|---|
+| `irq_safe` | excludes `io`, `may_block` | TK-EF04 if you also declare them |
+| `irq_safe` | requires `no_alloc` (an interrupt cannot take the allocator's lock) | "an `[irq_safe]` fn must also be `[no_alloc]`: add it" (TK-EF04) |
+| `irq_safe` | every callee must be `irq_safe` (hence `no_alloc`, not `io`/`may_block`) | TK-EF03 at the offending call, with the callee's missing markers listed |
+| `no_alloc` | every callee `no_alloc`; no allocating construct in the body | TK-EF03 / TK-EF05 |
+| `no_alloc` + `io` | compatible (I/O does not imply allocation) | nothing |
+| `may_block` | excludes `irq_safe`; propagates up like `io` | TK-EF04 on the pair; EF01 for a caller that did not declare it |
+| `io` | propagates up (done, #14) | TK-EF01 / TK-EF02 |
+| `stack: N` | forbids recursion on the call graph below it | TK-EF06 |
+| none of the above on a leaf | **eligible** for `no_alloc` / `irq_safe` if its callees are | hint only, under `--suggest-effects` |
+
+Two inference outputs the compiler can produce for any fn, shown by
+`--suggest-effects` and used in the messages above:
+
+- **required set** — capabilities its body needs (what #14 already reports);
+- **eligible set** — restrictions the body could carry (all callees carry them,
+  no allocating construct), i.e. the promotions an embedded author is looking for.
+
+A violated implication always names the *smallest* fix: the marker to add, the
+marker to remove, or the call to stop making.
 
 ### 3.4 Help, in the #14 spirit
 
@@ -131,16 +163,18 @@ Each message names the call or construct, the fn, and the fix.
 Cross-module: restrictions need the callee's *declared* set across imports, which
 `importedEffects` already carries for capabilities (and now for extern fns, #113).
 
-## 6. Decisions needed
+## 6. Rulings (2026-10-14)
 
-1. **Externs with no marker, under a restriction:** reject (conservative, my
-   recommendation) or assume-safe-with-a-warning?
-2. **`[unsafe]`:** spec §3.7 lists it as an effect, but §4.4 uses it as a *local
-   escape* at a construction site (`X.Connected [unsafe] {..}`). Should a fn that
-   contains such an escape (a) have to declare `[unsafe]`, forcing callers to
-   (propagating, like `io`), or (b) stay local and just be *reported*, like the
-   narrowing report? Recommendation: **(b)** — a contained, audited escape, as in
-   Rust; a propagating `unsafe` makes every caller of anything sealed look unsafe.
-3. **`priority` and `stack`** reclassified as attributes (no propagation)?
-4. **The `alloc` marker** in spec §3.7's initial set is not in the compiler.
-   With `no_alloc` as the restriction it is redundant; drop it from the spec?
+1. **Externs/`pending` under a restriction:** `pending` ignored; an extern with
+   no marker is rejected; compiler infers and reports the combinations and their
+   implications (§3.5).
+2. **`[unsafe]`:** a **local escape, reported**, not a propagating effect. A fn
+   that contains an escape does not force its callers to declare anything; a
+   report (like `--report-narrowing`) lists every site. §3.7 and §4.4 of the spec
+   should say so; the `unsafe` marker leaves the propagating set.
+3. **`stack` and `priority`** are attributes (no propagation).
+4. **`alloc`** is dropped from the spec's marker list; `no_alloc` covers it.
+
+Still open, small: whether `irq_safe` *requires* writing `no_alloc` (as §3.5
+proposes, in keeping with "declared, not inferred") or *implies* it silently.
+Recommendation: require it written.
