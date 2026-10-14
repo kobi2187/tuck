@@ -741,6 +741,7 @@ when isMainModule:
   # against ~1 s for the backend build. `--verify-stages` is still accepted,
   # and is now a no-op.
   let verifyStages = "--no-verify-stages" notin opts
+  hostChecks = "--host-checks" in opts
   # Optimization passes (compiler/optimize.nim) are ON by default — a pass
   # that only runs when asked for is a pass nothing exercises, and every one
   # here is required to be semantics-preserving.

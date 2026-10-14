@@ -163,6 +163,7 @@ type
     dcEfCombination = "TK-EF04"         ## markers declared together that exclude or require each other
     dcEfAllocation = "TK-EF05"          ## an allocating construct in a [no_alloc] fn
     dcEfRecursion = "TK-EF06"           ## a [stack: N] fn that can recurse
+    dcEfIsrSend = "TK-EF07"             ## a send from an [irq_safe] fn (the mailbox takes a lock)
     dcPeClash = "TK-PE01"               ## `pending:` clashes with a real decl
     dcPoMalformed = "TK-PO01"           ## the errors policy block is malformed
     dcSeConstruction = "TK-SE01"        ## a sealed type built outside a transition
@@ -827,6 +828,13 @@ proc ruleExplanation(d: DiagCode): string =
     "calls, directly or through other fns, may call back into a cycle. A " &
     "recursive fn has no static depth bound, so it cannot carry the promise. " &
     "Fix: make the recursion a loop, or drop `[stack: N]`."
+  of dcEfIsrSend:
+    "A send enqueues into the actor's mailbox, and a mailbox takes a lock. An " &
+    "interrupt that preempts the thread holding that lock and then sends " &
+    "would wait for a lock it can never get: a deadlock. So an `[irq_safe]` " &
+    "fn may not send. Fix: have the interrupt set a flag or write a ring " &
+    "buffer that a task or actor drains; a lock-free single-producer mailbox " &
+    "for ISR-only senders is a possible later addition."
   of dcEfUnused:
     "A fn declares `[io]` but nothing in its body performs I/O, suspends or " &
     "spawns, so the marker promises a suspend point there is not. Declared " &

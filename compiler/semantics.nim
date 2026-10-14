@@ -295,6 +295,16 @@ proc failRestriction(fnName: string, r: EffectMarker, callee: Callee, sp: Span) 
     "' if that is true (an extern with no marker is not known to be), or do " &
     "not call it from a [" & rn & "] fn"), sp)
 
+proc checkIsrSends(d: Decl) =
+  ## TK-EF07: an `irq_safe` fn does not send — the mailbox takes a lock.
+  if emIrqSafe notin d.fnEffects or d.fnBody == nil: return
+  for n in d.fnBody.nodes:
+    if n.kind == exkSend:
+      reportError(withCode(dcEfIsrSend,
+        "'" & d.name & "' is [irq_safe] but sends to an actor, whose mailbox " &
+        "takes a lock an interrupted thread may hold. Fix: set a flag or ring " &
+        "buffer that a task drains, or drop [irq_safe]"), n.span)
+
 proc checkRestrictions(c: Checker, d: Decl) =
   ## The restriction call rule (TK-EF03): in a fn declaring `no_alloc`,
   ## `irq_safe` or `pure`, every call must reach a callee that declares it.
@@ -418,6 +428,7 @@ proc verifyFn(c: var Checker, d: Decl) =
                else: Demands(effects: d.fnEffects,
                              resources: d.fnResourceKinds)
   c.checkRestrictions(d)
+  checkIsrSends(d)
   c.checkStackBound(d)
   let actual = c.checkExpr(d.fnBody, budget, d.name)
   # The other direction (issue #14): a declared [io] the body never needs.

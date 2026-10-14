@@ -296,4 +296,35 @@ fn main() -> int:
     else:
       t.ok "tuck effects derives pure/no_alloc through calls, none for recursion"
 
+  t.src """
+actor Counter:
+  total: int = 0
+  on add({n: int}):
+    total += n
+
+fn isr() -> void [irq_safe, no_alloc]:
+  Counter send add {n: 1}
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "an irq_safe fn may not send (the mailbox locks)", "TK-EF07"
+
+  t.src """
+fn sq({x: int}) -> int [pure]:
+  return x * x
+
+fn main() -> int:
+  return {x: 3} sq
+"""
+  let hc = t.needCmd(@["./tuck", "c", t.curDir / "t.tuck", "--host-checks", "--root:" & t.root])
+  if t.phase != pCollect:
+    let (rc, outp) = t.resultOf(hc)
+    let nimFile = t.curDir / "t.nim"
+    if rc != 0: t.no "--host-checks compiles", outp
+    elif not fileExists(nimFile) or "{.noSideEffect.}" notin readFile(nimFile):
+      t.no "[pure] reaches the host as noSideEffect under --host-checks", outp
+    else:
+      t.ok "[pure] reaches the host as noSideEffect under --host-checks"
+
   t.finish()
