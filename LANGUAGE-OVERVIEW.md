@@ -632,6 +632,14 @@ type PacketSeq  = u8  [wrapping]
 type ErrorCount = u32 [trapping]
 ```
 
+**Arithmetic is checked** (issue #16, step 3). `+ - *` on a narrow integer —
+`i8`/`i16`/`i32`, `u8`..`u64`, `usize`, or a type over one — **traps by default**:
+the program stops at the site with exit 1 and `Arithmetic overflow on <type>: <op>`,
+in release builds too, on every backend. `[wrapping]` makes a type wrap
+(`65535 + 1` is 0) and `[trapping]` says the default out loud. `int` and `i64`
+are not checked: 64 bits is enough (ruling 2026-08-25). `+=` is checked like the
+`+` it stands for.
+
 `[saturating]` is fully run-gated on every backend: `70000 SafeRPM` → 65535
 (wrapping would give 4464). **The clamp is a store-guard, not per-operator** —
 `a + b - c` with all 60000 yields 60000, not 5535, because clamping runs on a

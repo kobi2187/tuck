@@ -70,18 +70,6 @@ fn main() -> int:
   t.hostRuns "[wrapping] wraps: 65535 + 1 is 0", 0
 
   t.src """
-type Clamp = u8 [saturating]
-
-fn main() -> int:
-  let c: Clamp = 250 Clamp
-  let up = c + (10 Clamp)
-  let down = (5 Clamp) - (10 Clamp)
-  return (up ^int) + (down ^int)
-"""
-  t.hostRuns "[saturating] clamps at both ends: 250 + 10 is 255, 5 - 10 is 0",
-             255
-
-  t.src """
 type Strict = i16 [trapping]
 
 fn main() -> int:

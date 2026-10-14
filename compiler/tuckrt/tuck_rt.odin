@@ -572,12 +572,16 @@ tuckSat :: proc($T: typeid, v: u64) -> T {
 OvOp :: enum { Add, Sub, Mul }
 OvPolicy :: enum { Trap, Wrap, Sat }
 
-tuckOverflowTrap :: proc(ty, op: string) {
+// Contextless, because arithmetic is emitted inside callbacks with a foreign
+// calling convention (a `"c"` proc has no Odin `context`); the trap makes the
+// context it needs itself.
+tuckOverflowTrap :: proc "contextless" (ty: typeid, op: string) {
+	context = runtime.default_context()
 	fmt.eprintln("Arithmetic overflow on ", ty, ": ", op, sep = "")
 	os.exit(1)
 }
 
-tuckArith :: proc(a, b: $T, $op: OvOp, $pol: OvPolicy) -> T
+tuckArith :: proc "contextless" (a, b: $T, $op: OvOp, $pol: OvPolicy) -> T
 	where intrinsics.type_is_integer(T) {
 	r: T
 	over: bool
@@ -592,7 +596,7 @@ tuckArith :: proc(a, b: $T, $op: OvOp, $pol: OvPolicy) -> T
 		when pol == .Trap {
 			opname := "*"
 			when op == .Add { opname = "+" } else when op == .Sub { opname = "-" }
-			tuckOverflowTrap(fmt.tprint(typeid_of(T)), opname)
+			tuckOverflowTrap(T, opname)
 		} else when pol == .Sat {
 			// Which end the EXACT result is past.
 			when intrinsics.type_is_unsigned(T) {

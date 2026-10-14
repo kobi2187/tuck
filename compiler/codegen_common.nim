@@ -774,6 +774,11 @@ proc overflowPlan*(m: Module, real: Table[string, Module], t: Type): OverflowPla
   let wide = base in ["int", "i64"]
   if not wide and base notin CheckedIntNames: return
   let attr = d.overflowAttr()
+  # `[saturating]` keeps its store-guard design (known_bugs 4b): it clamps where
+  # a value is STORED, on a wider intermediate, so `a + b - c` of three 60000s
+  # is 60000 and not the 5535 per-operator clamping would give. The helpers can
+  # saturate per operator, but which semantics is wanted is an open decision.
+  if attr == "Sat": return
   if attr == "" and wide: return
   OverflowPlan(active: true, policy: (if attr == "": "Trap" else: attr),
                base: base, named: t.name)
