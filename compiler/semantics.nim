@@ -69,6 +69,7 @@ type
     taskNames: HashSet[string]  # dkTask decl names, built once — see isTask
     everyKind: seq[string]      # every kind the PROGRAM declares — main's budget
     visiting: HashSet[string]
+    pendingNames: HashSet[string]  # imported `pending:` stubs — never a restriction violation
 
 proc getDeclared(c: Checker, name: string): Demands =
   ## What calling `name` demands of its caller; nothing for a name this module
@@ -202,10 +203,14 @@ proc checkExpr(c: var Checker, e: Expr, expected: Demands,
   # says what to WRITE, at that call (issue #14: the user declares in the
   # code; the compiler infers and helps).
   var missing: seq[string]
+  # Only CAPABILITIES are obligations passed up. A restriction is held from the
+  # restricted side (checkRestrictions), and an attribute propagates nowhere;
+  # treating them as obligations rejected a plain fn calling a `[no_alloc]` one.
   for eff in actual.effects:
-    if eff notin expected.effects: missing.add effectName(eff)
+    if familyOf(eff) == mfCapability and eff notin expected.effects:
+      missing.add effectName(eff)
   for eff in actual.effects:
-    if eff notin expected.effects:
+    if familyOf(eff) == mfCapability and eff notin expected.effects:
       let (callee, span) = c.culpritCall(e, eff)
       reportError(withCode(dcEfBudget,
         "Expression requires effect [" & effectName(eff) & "], which is " &
@@ -236,8 +241,99 @@ proc mayDoIoUnseen(c: Checker, body: Expr): bool =
          n.callee.name in c.taskNames: return true
     else: discard
 
+type
+  CalleeKind = enum
+    ckUnknown   ## a name this module cannot place (a constructor, a builtin, a
+                ## `pending` stub): says nothing, so it is never a violation
+    ckTask      ## a spawn: allocates a coroutine and does not run here
+    ckFn        ## a declared fn, extern or member with a known marker set
+
+  Callee = object
+    kind: CalleeKind
+    name: string
+    markers: seq[EffectMarker]
+
+proc callOf(n: Expr): Expr =
+  ## The call a node stands for: an `exkCall`, or a bare nullary name the
+  ## checker stamped with one (spec 2.3, "a bare name IS a call").
+  if n.kind == exkCall: n
+  elif semLayer.hasCall(n): semLayer.call(n)
+  else: nil
+
+proc resolveCallee(c: Checker, call: Expr): Callee =
+  ## Who a call reaches and what that callee DECLARES. The restriction rule asks
+  ## this of every call in a restricted fn; unlike the capability rule it must
+  ## know whether the callee is known at all, so an unplaceable name is
+  ## `ckUnknown` rather than "declares nothing".
+  let name = if call.callee != nil and call.callee.kind == exkVar:
+               call.callee.name
+             else: ""
+  if name == "": return Callee(kind: ckUnknown)
+  if name in c.taskNames: return Callee(kind: ckTask, name: name)
+  let member = memberCallDecl(semLayer, c.module, call)
+  if member != nil:
+    return Callee(kind: ckFn, name: member.name, markers: member.fnEffects)
+  if c.declared.hasKey(name) and name notin c.pendingNames:
+    return Callee(kind: ckFn, name: name, markers: c.declared[name].effects)
+  Callee(kind: ckUnknown, name: name)
+
+proc restrictionsOf(markers: seq[EffectMarker]): seq[EffectMarker] =
+  for m in markers:
+    if familyOf(m) == mfRestriction: result.add m
+
+proc failRestriction(fnName: string, r: EffectMarker, callee: Callee, sp: Span) =
+  let rn = effectName(r)
+  if callee.kind == ckTask:
+    reportError(withCode(dcEfRestriction,
+      "'" & fnName & "' is [" & rn & "] but spawns task '" & callee.name &
+      "', and a spawn is not [" & rn & "]. Fix: do not spawn from a [" & rn &
+      "] fn"), sp)
+  reportError(withCode(dcEfRestriction,
+    "'" & fnName & "' is [" & rn & "] but calls '" & callee.name &
+    "', which is not. Fix: declare [" & rn & "] on '" & callee.name &
+    "' if that is true (an extern with no marker is not known to be), or do " &
+    "not call it from a [" & rn & "] fn"), sp)
+
+proc checkRestrictions(c: Checker, d: Decl) =
+  ## The restriction call rule (TK-EF03): in a fn declaring `no_alloc`,
+  ## `irq_safe` or `pure`, every call must reach a callee that declares it.
+  ## A plain fn calling a restricted one is fine — the rule runs from the
+  ## restricted side only.
+  let restr = restrictionsOf(d.fnEffects)
+  if restr.len == 0 or d.fnBody == nil: return
+  for n in d.fnBody.nodes:
+    let call = callOf(n)
+    if call == nil: continue
+    let callee = c.resolveCallee(call)
+    case callee.kind
+    of ckUnknown: discard
+    of ckTask: failRestriction(d.name, restr[0], callee, n.span)
+    of ckFn:
+      for r in restr:
+        if r notin callee.markers: failRestriction(d.name, r, callee, n.span)
+
+proc checkMarkerCombinations(d: Decl) =
+  ## TK-EF04: markers that exclude each other, and implications that must be
+  ## written (`irq_safe` requires `no_alloc`).
+  for m in d.fnEffects:
+    for x in excludes(m):
+      if x in d.fnEffects:
+        reportError(withCode(dcEfCombination,
+          "'" & d.name & "' declares [" & effectName(m) & "] together with [" &
+          effectName(x) & "], which it excludes. Fix: remove [" &
+          effectName(x) & "] or remove [" & effectName(m) & "]"), d.span)
+    for x in requires(m):
+      if x notin d.fnEffects:
+        reportError(withCode(dcEfCombination,
+          "'" & d.name & "' is [" & effectName(m) & "], which also requires [" &
+          effectName(x) & "]. Fix: add [" & effectName(x) & "] to its bracket"),
+          d.span)
+
 proc verifyFn(c: var Checker, d: Decl) =
   ## One fn body against its own bracket — `main`'s budget aside, below.
+  # A contradictory bracket is a fault of the DECLARATION, so a body-less
+  # signature gets it too.
+  if d != nil: checkMarkerCombinations(d)
   if d == nil or d.fnBody == nil or d.name in c.visiting: return
   c.visiting.incl(d.name)
   # main is ASSUMED to touch I/O — the [io] marker distinguishes pure fns
@@ -261,6 +357,7 @@ proc verifyFn(c: var Checker, d: Decl) =
                          resources: c.everyKind & d.fnResourceKinds)
                else: Demands(effects: d.fnEffects,
                              resources: d.fnResourceKinds)
+  c.checkRestrictions(d)
   let actual = c.checkExpr(d.fnBody, budget, d.name)
   # The other direction (issue #14): a declared [io] the body never needs.
   if d.name != "main" and emIo in d.fnEffects and emIo notin actual.effects and
@@ -308,7 +405,11 @@ proc verifyDecl*(c: var Checker, d: Decl) =
     # an arm states its effects is a ruling (thoughts/shared/audits,
     # 2026-09-27 F2). Until then an arm is as unchecked as it always was.
     discard
-  of dkExtern, dkPending, dkFnSig, dkInterface, dkGroup:
+  of dkExtern, dkPending:
+    # signatures only: no body, but a bracket can still contradict itself
+    for mem in d.mixinMembers:
+      if mem != nil and mem.kind == dkFn: checkMarkerCombinations(mem)
+  of dkFnSig, dkInterface, dkGroup:
     discard   # signatures only: no body to check
   of dkErrors:
     discard   # the `on unhandled` handler runs from the runtime, not a caller
@@ -369,7 +470,9 @@ proc verifyModuleEffects*(m: Module,
                             initTable[string, seq[EffectMarker]](),
                           importedRes: Table[string, seq[string]] =
                             initTable[string, seq[string]](),
-                          programKinds: seq[string] = @[]) =
+                          programKinds: seq[string] = @[],
+                          importedPending: HashSet[string] =
+                            initHashSet[string]()) =
   ## Check every declaration in `m` performs only the effects it declares.
   ##
   ## `imported` carries the effects of fns this module IMPORTS, keyed the same
@@ -384,7 +487,8 @@ proc verifyModuleEffects*(m: Module,
   ## its import declared cannot answer "is this kind known" from its own decls
   ## — and `main`, whose budget is every kind, would get an empty one.
   var c = Checker(module: m, declared: initTable[string, Demands](),
-                  visiting: initHashSet[string](), everyKind: programKinds)
+                  visiting: initHashSet[string](), everyKind: programKinds,
+                  pendingNames: importedPending)
   c.collectImported(imported, importedRes)
   c.collectLocal(m)
   for d in m.decls:

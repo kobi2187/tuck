@@ -159,6 +159,8 @@ type
     dcCnNotConst = "TK-CN01"            ## `const` initialised at runtime
     dcEfBudget = "TK-EF01"              ## callee's effects exceed the caller's
     dcEfUnused = "TK-EF02"              ## a declared [io] nothing in the body needs
+    dcEfRestriction = "TK-EF03"         ## a [R] fn calls something not declared [R]
+    dcEfCombination = "TK-EF04"         ## markers declared together that exclude or require each other
     dcPeClash = "TK-PE01"               ## `pending:` clashes with a real decl
     dcPoMalformed = "TK-PO01"           ## the errors policy block is malformed
     dcSeConstruction = "TK-SE01"        ## a sealed type built outside a transition
@@ -790,6 +792,26 @@ proc ruleExplanation(d: DiagCode): string =
     "what to add, naming the call that needs it. Fix: add the effect to the " &
     "bracket of the fn it names (`fn outer() -> void [io]:`), or stop calling " &
     "the effectful fn from there."
+  of dcEfRestriction:
+    "A RESTRICTION marker (`no_alloc`, `irq_safe`, `pure`) is a promise about " &
+    "everything below the fn that declares it: if `isr` is `[irq_safe]`, every " &
+    "fn it calls has to be `[irq_safe]` too, or the promise is false. This is " &
+    "the opposite direction to a capability like `[io]`, which a caller must " &
+    "ADMIT to: a plain fn may call a restricted one freely, and only a " &
+    "restricted fn is held to the rule. The callee has to carry the marker in " &
+    "its own signature — an extern with no marker is not known to be safe, and " &
+    "a spawned task is not safe in an interrupt, nor allocation-free, nor pure. " &
+    "Calls to `pending` stubs are ignored (an unwritten body is not a claim). " &
+    "Fix: declare the marker on the callee if it is true, or stop calling it " &
+    "from there."
+  of dcEfCombination:
+    "Some markers exclude each other, and some imply another that must be " &
+    "written out. An interrupt context cannot do I/O or block, so `irq_safe` " &
+    "cannot be combined with `io` or `may_block`; it also cannot take the " &
+    "allocator's lock, so it must be `no_alloc` as well; a `pure` fn does no " &
+    "I/O and does not block. Implications are written, not inferred, so that a " &
+    "signature tells the whole truth at a glance. Fix: add or remove the " &
+    "marker the message names."
   of dcEfUnused:
     "A fn declares `[io]` but nothing in its body performs I/O, suspends or " &
     "spawns, so the marker promises a suspend point there is not. Declared " &

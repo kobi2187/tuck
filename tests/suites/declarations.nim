@@ -616,13 +616,13 @@ fn main() -> int:
 fn slow({n: int}) -> int [may_block]:
   return n
 
-fn handler({n: int}) -> int [irq_safe]:
+fn handler({n: int}) -> int [irq_safe, no_alloc]:
   return {n: n} slow
 
 fn main() -> int:
   return 0
 """
-  t.badCheck "an irq_safe fn may not call a may_block one", "may_block"
+  t.badCheck "an irq_safe fn may not call a may_block one", "TK-EF03"
 
   t.src """
 fn slow({n: int}) -> int [may_block]:

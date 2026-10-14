@@ -65,4 +65,117 @@ fn main() -> int:
 """
   t.checkSilent "a `...` stub's bracket is its contract, so no warning", "TK-EF02"
 
+  # --- marker families (issue #64): restrictions propagate DOWN --------------
+  #
+  # The effect pass treated every marker as an obligation passed up. That is
+  # right for `io` and backwards for `no_alloc` / `irq_safe` / `pure`: a plain
+  # fn may call a restricted one, and a restricted fn may only call restricted
+  # ones. Both directions were wrong before.
+  t.src """
+fn tiny({x: int}) -> int [no_alloc, irq_safe]:
+  return x + 1
+
+fn normal({x: int}) -> int:
+  return {x: x} tiny
+
+fn main() -> int:
+  return {x: 1} normal
+"""
+  t.okCheck "a plain fn may call a restricted one (was wrongly rejected)"
+
+  t.src """
+fn plain({x: int}) -> int:
+  return x + 1
+
+fn isr({x: int}) -> int [irq_safe, no_alloc]:
+  return {x: x} plain
+
+fn main() -> int:
+  return {x: 1} isr
+"""
+  t.badCheck "a restricted fn calling a plain one is refused (TK-EF03)", "TK-EF03"
+  t.badCheck "...naming the callee and the fix",
+             "calls 'plain', which is not.*Fix: declare \\[irq_safe\\] on 'plain'"
+
+  t.src """
+fn leaf({x: int}) -> int [irq_safe, no_alloc]:
+  return x + 1
+
+fn mid({x: int}) -> int [irq_safe, no_alloc]:
+  return {x: x} leaf
+
+fn main() -> int:
+  return {x: 1} mid
+"""
+  t.okCheck "a chain of restricted fns checks clean"
+
+  t.src """
+fn isr({x: int}) -> int [irq_safe]:
+  return x
+"""
+  t.badCheck "irq_safe must also be no_alloc, and says so (TK-EF04)",
+             "TK-EF04.*requires \\[no_alloc\\].*Fix: add \\[no_alloc\\]"
+
+  t.src """
+fn isr({x: int}) -> int [irq_safe, no_alloc, io]:
+  return x
+"""
+  t.badCheck "irq_safe excludes io (TK-EF04)", "excludes"
+
+  t.src """
+fn p({x: int}) -> int [pure, io]:
+  return x
+"""
+  t.badCheck "pure excludes io", "TK-EF04"
+
+  t.src """
+extern:
+  fn rawRead({n: int}) -> int
+
+fn isr({x: int}) -> int [irq_safe, no_alloc]:
+  return {n: x} rawRead
+"""
+  t.badCheck "an extern with no marker is not known to be restricted (TK-EF03)",
+             "TK-EF03"
+
+  t.src """
+extern:
+  fn rawRead({n: int}) -> int [irq_safe, no_alloc]
+
+fn isr({x: int}) -> int [irq_safe, no_alloc]:
+  return {n: x} rawRead
+"""
+  t.okCheck "...and passes once the extern declares the marker"
+
+  t.src """
+pending:
+  fn later({x: int}) -> int
+
+fn isr({x: int}) -> int [irq_safe, no_alloc]:
+  return x
+"""
+  t.okCheck "a pending stub declared alongside is not itself a violation"
+
+  t.src """
+task worker({x: int}) -> int:
+  return x
+
+fn isr({x: int}) -> int [irq_safe, no_alloc]:
+  let r = {x: x} worker
+  return r
+"""
+  t.badCheck "a restricted fn may not spawn a task", "spawns task"
+
+  t.src """
+fn sq({x: int}) -> int [pure]:
+  return x * x
+
+fn cube({x: int}) -> int [pure]:
+  return x * ({x: x} sq)
+
+fn main() -> int:
+  return {x: 2} cube
+"""
+  t.okCheck "pure calling pure checks clean"
+
   t.finish()

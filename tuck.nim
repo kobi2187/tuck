@@ -429,6 +429,18 @@ proc importedEffects(loaded: seq[LoadedModule],
   addLoadedEffects(result, loaded)
   addSigOnlyEffects(result, sigOnly)
 
+proc importedPendingNames(loaded: seq[LoadedModule]): HashSet[string] =
+  ## Fns declared in a `pending:` block of any loaded module. Their markers still
+  ## propagate as capabilities, but a RESTRICTED caller ignores them: an unwritten
+  ## body is not a claim either way.
+  for lm in loaded:
+    for d in lm.m.decls:
+      if d != nil and d.kind == dkPending:
+        for mem in d.mixinMembers:
+          if mem != nil and mem.kind == dkFn:
+            result.incl(mem.name)
+            result.incl(lm.name & "::" & mem.name)
+
 proc importedResources(loaded: seq[LoadedModule],
                        sigOnly: Table[string, IndexEntry]):
                          Table[string, seq[string]] =
@@ -527,12 +539,13 @@ proc checkOrDie(path: string, loaded: var seq[LoadedModule],
   let imported = importedEffects(loaded, sigOnly)
   let importedRes = importedResources(loaded, sigOnly)
   let programKinds = declaredResourceKinds(loaded)
+  let pendingNames = importedPendingNames(loaded)
   let t0 = vBegin(psVerifyEffects)
   defer: vEnd(psVerifyEffects, t0)
   try:
     for lm in loaded:
       let ts = epochTime()
-      verifyModuleEffects(lm.m, imported, importedRes, programKinds)
+      verifyModuleEffects(lm.m, imported, importedRes, programKinds, pendingNames)
       vSub(lm.name, ts)
     # Who may touch a slab (TK-AC08/09): whole-program, after typecheck
     # because it reads the checker's stamps (slab ops, slab derefs, callee

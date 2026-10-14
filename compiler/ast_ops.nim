@@ -31,6 +31,39 @@ func effectName*(e: EffectMarker): string =
   of emMayBlock: "may_block"
   of emStack: "stack"
   of emPriority: "priority"
+  of emPure: "pure"
+
+type MarkerFamily* = enum
+  ## How a marker PROPAGATES. The effect pass used to treat every marker as an
+  ## obligation passed UP (a callee's markers must be in its caller's), which is
+  ## right for `io` and backwards for `irq_safe`: a plain fn may call a
+  ## restricted one, and a restricted fn may call only restricted ones.
+  mfCapability   ## doing it is something a caller must admit to: callee's ⊆ caller's
+  mfRestriction  ## a promise about everything below: if the caller has it, so must every callee
+  mfAttribute    ## configuration (`stack`, `priority`, ...): no propagation either way
+
+func familyOf*(e: EffectMarker): MarkerFamily =
+  ## The family of a marker. Exhaustive on purpose: a new marker cannot compile
+  ## until it is filed, so it can never be silently inert (issue #64).
+  case e
+  of emIo, emMayBlock: mfCapability
+  of emNoAlloc, emIrqSafe, emPure: mfRestriction
+  of emUnsafe, emStack, emPriority: mfAttribute
+
+func excludes*(e: EffectMarker): set[EffectMarker] =
+  ## Markers that cannot be declared TOGETHER with `e`: an interrupt context
+  ## cannot do I/O or block, and a pure fn does neither.
+  case e
+  of emIrqSafe: {emIo, emMayBlock}
+  of emPure: {emIo, emMayBlock}
+  of emIo, emNoAlloc, emUnsafe, emMayBlock, emStack, emPriority: {}
+
+func requires*(e: EffectMarker): set[EffectMarker] =
+  ## Markers `e` implies and so must also be WRITTEN (declared, not inferred): an
+  ## interrupt cannot take the allocator's lock, so `irq_safe` needs `no_alloc`.
+  case e
+  of emIrqSafe: {emNoAlloc}
+  of emIo, emNoAlloc, emUnsafe, emMayBlock, emStack, emPriority, emPure: {}
 
 proc enumDomain*(m: Module, t: Type): seq[string] =
   ## Values of an enumerable decision-table column: bool, or a fieldless sum
