@@ -208,4 +208,38 @@ fn build({x: int}) -> int:
 """
   t.okCheck "an unrestricted fn may allocate"
 
+  t.src """
+fn fact({n: int}) -> int [stack: 256]:
+  if n < 2:
+    return 1
+  return n * ({n: n - 1} fact)
+"""
+  t.badCheck "a stack-bounded fn may not recurse", "TK-EF06"
+
+  t.src """
+fn ping({n: int}) -> int:
+  return {n: n} pong
+
+fn pong({n: int}) -> int:
+  return {n: n} ping
+
+fn top({n: int}) -> int [stack: 256]:
+  return {n: n} ping
+"""
+  t.badCheck "a stack-bounded fn may not reach a cycle", "TK-EF06"
+
+  t.src """
+fn leaf({n: int}) -> int:
+  return n + 1
+
+fn top({n: int}) -> int [stack: 256]:
+  return {n: n} leaf
+
+fn walk({n: int}) -> int:
+  if n < 1:
+    return 0
+  return {n: n - 1} walk
+"""
+  t.okCheck "an acyclic stack-bounded fn is fine; recursion elsewhere is not its business"
+
   t.finish()

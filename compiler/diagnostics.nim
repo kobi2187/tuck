@@ -162,6 +162,7 @@ type
     dcEfRestriction = "TK-EF03"         ## a [R] fn calls something not declared [R]
     dcEfCombination = "TK-EF04"         ## markers declared together that exclude or require each other
     dcEfAllocation = "TK-EF05"          ## an allocating construct in a [no_alloc] fn
+    dcEfRecursion = "TK-EF06"           ## a [stack: N] fn that can recurse
     dcPeClash = "TK-PE01"               ## `pending:` clashes with a real decl
     dcPoMalformed = "TK-PO01"           ## the errors policy block is malformed
     dcSeConstruction = "TK-SE01"        ## a sealed type built outside a transition
@@ -820,6 +821,12 @@ proc ruleExplanation(d: DiagCode): string =
     "NOT allocation: a fixed `Array`, a stack record, `pool`/`slab`/`arena` " &
     "operations (their storage is sized at declaration) and string literals. " &
     "Fix: use an `Array[N, T]` or a pool, or drop `[no_alloc]` from the fn."
+  of dcEfRecursion:
+    "`[stack: N]` promises a bounded stack. Frame sizes are not known from " &
+    "source, so the compiler checks the part it can decide: nothing the fn " &
+    "calls, directly or through other fns, may call back into a cycle. A " &
+    "recursive fn has no static depth bound, so it cannot carry the promise. " &
+    "Fix: make the recursion a loop, or drop `[stack: N]`."
   of dcEfUnused:
     "A fn declares `[io]` but nothing in its body performs I/O, suspends or " &
     "spawns, so the marker promises a suspend point there is not. Declared " &

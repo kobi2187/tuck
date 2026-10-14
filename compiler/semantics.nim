@@ -334,6 +334,41 @@ proc checkNoAlloc(d: Decl) =
         ", which allocates. Fix: use an Array or a pool, or drop [no_alloc]"),
         n.span)
 
+proc calleeNames(c: Checker, d: Decl): seq[string] =
+  ## The distinct fn names `d`'s body calls (members resolved like any call).
+  if d.fnBody == nil: return
+  for n in d.fnBody.nodes:
+    let call = callOf(n)
+    if call == nil: continue
+    let callee = c.resolveCallee(call)
+    if callee.kind == ckFn and callee.name notin result:
+      result.add callee.name
+
+proc recursiveFrom(c: Checker, bodies: Table[string, Decl], start: string,
+                   seen: var seq[string]): bool =
+  ## Does the call graph below `start` reach a cycle? `seen` is the path.
+  if start in seen: return true
+  if not bodies.hasKey(start): return false
+  seen.add start
+  for next in c.calleeNames(bodies[start]):
+    if c.recursiveFrom(bodies, next, seen): return true
+  seen.setLen(seen.len - 1)
+
+proc checkStackBound(c: Checker, d: Decl) =
+  ## TK-EF06: a fn declaring `stack` has a call graph below it with no cycle.
+  ## Only fns whose bodies are in this module are followed; an extern or an
+  ## imported fn is a leaf here.
+  if emStack notin d.fnEffects or d.fnBody == nil: return
+  var bodies: Table[string, Decl]
+  for x in c.module.allDecls:
+    if x.kind == dkFn and x.fnBody != nil: bodies[x.name] = x
+  var path: seq[string]
+  if c.recursiveFrom(bodies, d.name, path):
+    reportError(withCode(dcEfRecursion,
+      "'" & d.name & "' declares [stack] but can recurse (via " &
+      path.join(" -> ") & "), so its depth has no static bound. Fix: turn " &
+      "the recursion into a loop, or drop [stack]"), d.span)
+
 proc checkMarkerCombinations(d: Decl) =
   ## TK-EF04: markers that exclude each other, and implications that must be
   ## written (`irq_safe` requires `no_alloc`).
@@ -382,6 +417,7 @@ proc verifyFn(c: var Checker, d: Decl) =
                else: Demands(effects: d.fnEffects,
                              resources: d.fnResourceKinds)
   c.checkRestrictions(d)
+  c.checkStackBound(d)
   let actual = c.checkExpr(d.fnBody, budget, d.name)
   # The other direction (issue #14): a declared [io] the body never needs.
   if d.name != "main" and emIo in d.fnEffects and emIo notin actual.effects and
