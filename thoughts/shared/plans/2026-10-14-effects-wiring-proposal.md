@@ -178,3 +178,81 @@ Cross-module: restrictions need the callee's *declared* set across imports, whic
 Still open, small: whether `irq_safe` *requires* writing `no_alloc` (as §3.5
 proposes, in keeping with "declared, not inferred") or *implies* it silently.
 Recommendation: require it written.
+
+## 7. What the combinations let us derive (added 2026-10-14, at the owner's prompting)
+
+Effects are not only checks. Once the compiler knows, per fn *and per block*,
+which capabilities a body needs and which restrictions it could carry, it
+holds **facts** the backends can use — to run faster, to take fewer locks, and
+to check themselves. Nothing in this section is written by the user; these are
+*derived*, shown by `--suggest-effects`/`--report-effects`, and used by passes.
+
+### 7.1 Derived facts
+
+Computed bottom-up over the same call-graph walk the effect pass already does
+(`synthesizeExpr` works on any `Expr`, so a block is as easy as a fn):
+
+| fact | holds when |
+|---|---|
+| **pure** | no capability needed (`io`, `may_block`, `unsafe`-escape), no read or write of actor fields, pool/slab/arena, registers or externs with state |
+| **alloc-free** | `no_alloc` is declared, or every callee is and no allocating construct appears (§3.1) |
+| **isr-context** | declared `irq_safe`, or reachable only from `irq_safe` fns |
+| **bounded-depth** | no recursion below it (needed for `stack: N`) |
+| **single-producer** | every `send` to an actor in the program comes from one execution context (whole-program: the compiler sees all send sites) |
+
+**Unknown ⇒ no fact.** A gradually typed callee, an unmarked extern, or a `pending`
+stub produces *no* derived fact, never an optimistic one.
+
+### 7.2 What each fact buys
+
+| fact | consequence | kind | notes |
+|---|---|---|---|
+| pure / alloc-free / leaf | emit the host's own contract: D `pure @nogc nothrow`, Nim `func` / `{.raises: [].}` | **verification** | the host compiler independently checks our claim; a disagreement is a compiler bug caught at build time. Cheapest and most valuable first step |
+| pure + all-constant arguments | fold the call at compile time (extends `const`'s static evaluation) | speed | needs a compile-time evaluator over pure Tuck |
+| pure small leaf | candidate for an `-O:inline` pass | speed | a second optimiser pass beside `chain-inplace` |
+| alloc-free | drop ownership bookkeeping for heap values in the body (there are none) | speed | measure first; may be nothing |
+| single-producer | lock-free single-producer mailbox for that actor | **less locking** | today the spinlock is compiled away only globally, by `--actors:single`; this does it *per actor* |
+| a send site inside `irq_safe` code | the spinlock is **unsafe** there (an interrupt that preempts the holder deadlocks) | **check + selection** | either TK error "actor X's mailbox takes a lock, so it is not `irq_safe`", or, when the producers are only ISRs and the consumer is one thread, select the lock-free SPSC variant |
+| `stack: N` | debug stack-watermark check at entry | assertion | complements the weak static check (§3.3) |
+| alloc-free | debug allocation-counter check around the call | assertion | catches an extern that lied about `no_alloc` |
+| `irq_safe` entry | debug assert "not on a coroutine / not already in an ISR" | assertion | |
+| a block that is pure and alloc-free (a `for` body) | hand the host a side-effect-free closure so it may unroll / vectorise | speed | later: data-parallel `for` if aliasing is also proven |
+
+### 7.3 Principles
+
+1. **Checks stay checks; speed is opt-in.** A consequence that changes only
+   *verification* (host attributes, debug assertions) can be on by default. A
+   consequence that changes *generated code* is an `-O:` pass, off unless named
+   (`optimize.nim`'s existing rule), with a differential test: same output with
+   and without.
+2. **Debug assertions are not the release-kept traps.** Overflow traps and
+   invariants stay in release builds (2026-08-25 ruling 4/5). These are a separate
+   `-d:tuckChecks` set, stripped in release, because they check the *compiler's*
+   claim, not the program's data.
+3. **Defence in depth before reliance.** The moment codegen depends on a derived
+   fact, a checker bug becomes a miscompile. So the host-attribute cross-check
+   (first row) comes *before* any speed-motivated use.
+4. **Cross-module.** Facts must be recorded in the signature index
+   (`SigInfo` gains the derived set) or an import silently loses them.
+
+### 7.4 Deliberately not proposed
+
+Automatic memoisation, automatic parallelisation of calls, and reordering of
+calls on the strength of `pure`. They need aliasing and FFI proofs the language
+does not have. They are listed so they are a decision, not an omission.
+
+### 7.5 Order (after §5 steps 1–4)
+
+1. Derive the facts and expose them (`--suggest-effects`, `--report-effects`).
+2. Host attributes as a cross-check, with a test that a deliberately false claim
+   is caught by the host.
+3. Debug assertions behind `-d:tuckChecks`.
+4. Mailbox: single-producer lock elision, then the ISR send-site rule.
+5. `-O:inline`, compile-time folding of pure calls.
+
+### 7.6 Decisions
+
+- Host-attribute cross-check **on by default** (recommended: it only adds
+  verification) or behind a flag?
+- ISR send to a locked mailbox: **error** (recommended first, simple and safe) or
+  auto-select the lock-free variant?
