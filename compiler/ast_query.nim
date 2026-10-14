@@ -402,6 +402,26 @@ proc isErrEnumRef*(m: Module, e: Expr): bool =
      e.receiver.kind != exkVar: return false
   m.typeBodyKind(e.receiver.name) == tkSum
 
+proc isDistinctAlias*(body: Type): bool =
+  ## Does this alias declare a type the compiler must keep SEPARATE from its
+  ## base? `distinct` says so outright; an overflow mode implies it, because
+  ## the ATTRIBUTE is what changes behaviour (user ruling) and it is
+  ## meaningless on a bare alias — an alias IS its base type and cannot carry
+  ## different arithmetic.
+  ##
+  ## Shared by the CHECKER and every backend: the backends had already
+  ## drifted from each other (and the checker kept only `distinct` nominal, so
+  ## a `[wrapping]` type lost its name at the first annotation): codegen.nim matched
+  ## all four names, codegen_odin.nim only "distinct", so `u16 [saturating]`
+  ## emitted `distinct uint16` on Nim and a plain `:: u16` alias on Odin —
+  ## freely mixable with any other u16. Same question, one answer.
+  if body == nil: return false
+  for a in body.attrs:
+    if a.name in ["distinct", "saturating", "wrapping", "trapping"]:
+      return true
+  false
+
+
 proc saturatingType*(m: Module, name: string): Type =
   ## The underlying Type of a `[saturating]` declaration, or nil. What makes a
   ## type saturating is the ATTRIBUTE, not the `distinct` keyword — so

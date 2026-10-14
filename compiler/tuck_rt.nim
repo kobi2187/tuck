@@ -223,6 +223,72 @@ proc tuckSatI*[T: SomeSignedInt](v: int64): T {.inline.} =
   elif v < int64(T.low): T.low
   else: T(v)
 
+type
+  OvOp* = enum ovAdd, ovSub, ovMul
+  OvPolicy* = enum ovTrap, ovWrap, ovSat
+
+proc tuckOverflowTrap*(ty, op: string) {.noreturn.} =
+  ## Integer overflow under `[trapping]` — the default for a narrow integer.
+  ## Stops AT the site, naming the type and the operator, in every build:
+  ## a wrong number that keeps travelling is worse than a stopped program
+  ## (ROADMAP ruling 2026-08-25 §4), so this is real code, not an assert.
+  stderr.writeLine("Arithmetic overflow on " & ty & ": " & op)
+  quit(1)
+
+type ArithRes[T] = tuple[r: T, over, high: bool]
+  ## A wrapped result, whether the exact one did not fit, and which end of the
+  ## range the exact result lies past.
+
+proc arithNarrow[T: SomeInteger](a, b: T, op: static OvOp): ArithRes[T] {.inline.} =
+  ## Under 64 bits: widen to int64, which is exact for + - * of two such values.
+  let w = when op == ovAdd: int64(a) + int64(b)
+          elif op == ovSub: int64(a) - int64(b)
+          else: int64(a) * int64(b)
+  (cast[T](w), w < int64(low(T)) or w > int64(high(T)), w > 0)
+
+proc arithWideUnsigned[T: SomeUnsignedInt](a, b: T,
+                                           op: static OvOp): ArithRes[T] {.inline.} =
+  ## 64-bit unsigned: unsigned arithmetic wraps in Nim, so test the result.
+  when op == ovAdd:
+    let r = a + b
+    (r, r < a, true)
+  elif op == ovSub:
+    (a - b, a < b, false)
+  else:
+    let r = a * b
+    (r, a != 0 and r div a != b, true)
+
+proc arithWideSigned[T: SomeSignedInt](a, b: T, op: static OvOp): ArithRes[T] {.inline.} =
+  ## 64-bit signed: wrap through the unsigned type, then test the sign bits.
+  let ua = cast[uint64](a)
+  let ub = cast[uint64](b)
+  when op == ovAdd:
+    let r = cast[T](ua + ub)
+    (r, ((a xor r) and (b xor r)) < 0, b > 0)
+  elif op == ovSub:
+    let r = cast[T](ua - ub)
+    (r, ((a xor b) and (a xor r)) < 0, b < 0)
+  else:
+    let r = cast[T](ua * ub)
+    (r, a != 0 and ((a == T(-1) and b == low(T)) or
+                    (a != T(-1) and r div a != b)), (a < 0) == (b < 0))
+
+proc tuckArith*[T: SomeInteger](a, b: T, op: static OvOp,
+                                pol: static OvPolicy): T {.inline.} =
+  ## `a + b`, `a - b`, `a * b` on a narrow integer, with the overflow policy
+  ## the author's type chose: trap (the default), wrap, or saturate.
+  ## Value semantics, never stripped in release.
+  let res =
+    when sizeof(T) < 8: arithNarrow(a, b, op)
+    elif T is SomeUnsignedInt: arithWideUnsigned(a, b, op)
+    else: arithWideSigned(a, b, op)
+  if res.over:
+    when pol == ovTrap:
+      tuckOverflowTrap($T, when op == ovAdd: "+" elif op == ovSub: "-" else: "*")
+    elif pol == ovSat:
+      return if res.high: high(T) else: low(T)
+  res.r
+
 proc errCode*(name: static string): uint16 =
   ## An error variant's stable 16-bit code, computed at compile time from its
   ## qualified name — the same hash every backend uses, so codes agree.

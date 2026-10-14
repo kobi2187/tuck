@@ -234,6 +234,59 @@ T tuckSat(T)(ulong v) if (__traits(isUnsigned, T))
     return v > cast(ulong) T.max ? T.max : cast(T) v;
 }
 
+/// Checked arithmetic on a narrow integer (issue #16, step 3): `+ - *` with the
+/// overflow policy the author's type chose — trap (the default), wrap or
+/// saturate. Value semantics, never stripped in release.
+enum OvOp { Add, Sub, Mul }
+enum OvPolicy { Trap, Wrap, Sat }
+
+void tuckOverflowTrap(string ty, string op)
+{
+    import std.stdio : stderr;
+    import core.stdc.stdlib : exit;
+    stderr.writeln("Arithmetic overflow on ", ty, ": ", op);
+    exit(1);
+}
+
+T tuckArith(T, OvOp op, OvPolicy pol)(T a, T b)
+{
+    import core.checkedint : adds, addu, subs, subu, muls, mulu;
+    bool over = false;
+    bool high = false;      // on overflow, which end the exact result is past
+    T r;
+    static if (T.sizeof < 8)
+    {
+        long w;
+        static if (op == OvOp.Add) w = cast(long) a + cast(long) b;
+        else static if (op == OvOp.Sub) w = cast(long) a - cast(long) b;
+        else w = cast(long) a * cast(long) b;
+        r = cast(T) w;
+        over = w < cast(long) T.min || w > cast(long) T.max;
+        high = w > 0;
+    }
+    else static if (__traits(isUnsigned, T))
+    {
+        static if (op == OvOp.Add) { r = addu(a, b, over); high = true; }
+        else static if (op == OvOp.Sub) { r = subu(a, b, over); high = false; }
+        else { r = mulu(a, b, over); high = true; }
+    }
+    else
+    {
+        static if (op == OvOp.Add) { r = adds(a, b, over); high = b > 0; }
+        else static if (op == OvOp.Sub) { r = subs(a, b, over); high = b < 0; }
+        else { r = muls(a, b, over); high = (a < 0) == (b < 0); }
+    }
+    if (over)
+    {
+        static if (pol == OvPolicy.Trap)
+            tuckOverflowTrap(T.stringof,
+                             op == OvOp.Add ? "+" : op == OvOp.Sub ? "-" : "*");
+        else static if (pol == OvPolicy.Sat)
+            return high ? T.max : T.min;
+    }
+    return r;
+}
+
 T tuckSatI(T)(long v) if (!__traits(isUnsigned, T))
 {
     if (v > cast(long) T.max) return T.max;

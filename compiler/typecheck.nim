@@ -4586,7 +4586,11 @@ proc synthDeclAssign(tc: var TypeChecker, e: Expr) =
     tc.checkIfaceElems(tc.ifaceElemSlot(e.declType), e.assignVal, what)
     valT = e.declType
   elif e.declType != nil:
-    let want = tc.resolve(e.declType)
+    # A NOMINAL name is kept as written: resolving `Seq16` to its `u16` body
+    # would throw away the very name that says how its arithmetic behaves.
+    let nominal = e.declType.kind == tkNamed and
+                  e.declType.name in tc.distinctNames
+    let want = if nominal: e.declType else: tc.resolve(e.declType)
     tc.check(e.assignVal, want, what)
     valT = want
   else:

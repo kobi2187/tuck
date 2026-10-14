@@ -566,6 +566,50 @@ tuckSat :: proc($T: typeid, v: u64) -> T {
 	return v > u64(max(T)) ? max(T) : T(v)
 }
 
+// Checked arithmetic on a narrow integer (issue #16, step 3): `+ - *` with the
+// overflow policy the author's type chose — trap (the default), wrap, or
+// saturate. Value semantics, so never stripped in a release build.
+OvOp :: enum { Add, Sub, Mul }
+OvPolicy :: enum { Trap, Wrap, Sat }
+
+tuckOverflowTrap :: proc(ty, op: string) {
+	fmt.eprintln("Arithmetic overflow on ", ty, ": ", op, sep = "")
+	os.exit(1)
+}
+
+tuckArith :: proc(a, b: $T, $op: OvOp, $pol: OvPolicy) -> T
+	where intrinsics.type_is_integer(T) {
+	r: T
+	over: bool
+	when op == .Add {
+		r, over = intrinsics.overflow_add(a, b)
+	} else when op == .Sub {
+		r, over = intrinsics.overflow_sub(a, b)
+	} else {
+		r, over = intrinsics.overflow_mul(a, b)
+	}
+	if over {
+		when pol == .Trap {
+			opname := "*"
+			when op == .Add { opname = "+" } else when op == .Sub { opname = "-" }
+			tuckOverflowTrap(fmt.tprint(typeid_of(T)), opname)
+		} else when pol == .Sat {
+			// Which end the EXACT result is past.
+			when intrinsics.type_is_unsigned(T) {
+				when op == .Sub { return T(0) }
+				return max(T)
+			} else {
+				toHigh: bool
+				when op == .Add { toHigh = b > 0 }
+				else when op == .Sub { toHigh = b < 0 }
+				else { toHigh = (a < 0) == (b < 0) }
+				return toHigh ? max(T) : min(T)
+			}
+		}
+	}
+	return r
+}
+
 tuckSatI :: proc($T: typeid, v: i64) -> T {
 	if v > i64(max(T)) do return max(T)
 	if v < i64(min(T)) do return min(T)

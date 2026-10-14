@@ -14,10 +14,10 @@ extern (C) void counterFree(Counter c);
 
 
 void tuckˑfnˑmain() {
-    Counter tuckˑvˑh = counterNew(100L);
-    int tuckˑvˑt = counterBump(tuckˑvˑh, 5L);
+    Counter tuckˑvˑh = counterNew(cast(int)100);
+    int tuckˑvˑt = counterBump(tuckˑvˑh, cast(int)5);
     counterFree(tuckˑvˑh);
-    if ((tuckˑvˑt == 105L)) {
+    if ((tuckˑvˑt == cast(int)105)) {
         sys.exit(0L);
     }
     sys.exit(1L);

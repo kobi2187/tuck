@@ -92,6 +92,17 @@ proc genDLit(e: Expr): string =
     else: e.litValue & "L"
   of lkFloat, lkBool: e.litValue
 
+proc genDLitTyped(ctx: var DCodegenCtx, e: Expr): string =
+  ## A literal, carrying the narrow integer width the checker gave it. A bare
+  ## `10L` is a `long`, and `x + 10L` on a `ubyte` is then "cannot implicitly
+  ## convert long to ubyte" — the checked-arithmetic helper takes both
+  ## operands as the same T, so the literal says which.
+  let t = ctx.res.typeFor(e)
+  if e.litKind == lkInt and t != nil and t.kind == tkNamed and
+     t.name in ["i8", "i16", "i32", "u8", "u16", "u32"]:
+    return "cast(" & ctx.dType(t) & ")" & e.litValue
+  genDLit(e)
+
 const dNarrowNames = ["i8", "i16", "i32", "u8", "u16", "u32", "u64", "f32"]
   ## The Tuck numeric types narrower than (or unsigned against) D's `long`
   ## and `double`, into which a record literal's value is cast explicitly.
@@ -575,6 +586,15 @@ proc genDBinary(ctx: var DCodegenCtx, e: Expr): string =
     return "(" & ctx.genDExpr(e.left) & " ~ " & ctx.genDExpr(e.right) & ")"
   if e.binOp in {boRangeIncl, boRangeExcl}:
     return dUnsupported("a range outside a for loop")
+  if e.binOp in {boAdd, boSub, boMul}:
+    let plan = overflowPlan(ctx.module, ctx.realModules, ctx.res.typeFor(e))
+    if plan.active:
+      let tname = ctx.dType(Type(kind: tkNamed,
+                                 name: (if plan.named != "": plan.named
+                                        else: plan.base)))
+      return "rt.tuckArith!(" & tname & ", rt.OvOp." & ovOpName(e.binOp) &
+             ", rt.OvPolicy." & plan.policy & ")(" & ctx.genDExpr(e.left) &
+             ", " & ctx.genDExpr(e.right) & ")"
   "(" & ctx.genDExpr(e.left) & " " & dBinOp(e.binOp) & " " &
     ctx.genDExpr(e.right) & ")"
 
@@ -1425,7 +1445,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
     let name = if e.kind == exkVar: ctx.genDVarName(e) else: ctx.genDQualified(e)
     return "&" & name
   case e.kind
-  of exkLit: genDLit(e)
+  of exkLit: ctx.genDLitTyped(e)
   of exkVar: ctx.genDVarName(e)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
      exkMixinRef:

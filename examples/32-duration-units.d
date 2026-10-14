@@ -17,8 +17,8 @@ TRec_ok!(bool) tuckˑfnˑbudget(time.tuckˑtypeˑMilliseconds d) {
 }
 
 void tuckˑfnˑmain() {
-    TRec_ok!(bool) tuckˑvˑr = tuckˑfnˑbudget(time.tuckˑfnˑms(5L));
-    long tuckˑvˑn = tuckˑfnˑasInt(time.tuckˑfnˑms(42L));
+    TRec_ok!(bool) tuckˑvˑr = tuckˑfnˑbudget(time.tuckˑfnˑms(cast(uint)5));
+    long tuckˑvˑn = tuckˑfnˑasInt(time.tuckˑfnˑms(cast(uint)42));
     sys.exit(tuckˑvˑn);
 }
 

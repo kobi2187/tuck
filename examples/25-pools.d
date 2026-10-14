@@ -46,14 +46,14 @@ long tuckˑfnˑdrainOnce() {
     ubyte[512] tuckˑvˑbytes = tuckˑvˑrx.value;
     scope(exit) rt.tuckDrop(tuckˑvˑbytes);
     tuckˑvˑrx.value = typeof(tuckˑvˑrx.value).init;
-    if ((rt.tuckArrayAt(tuckˑvˑbytes, 511L) != 1L)) {
+    if ((rt.tuckArrayAt(tuckˑvˑbytes, 511L) != cast(ubyte)1)) {
         return 0L;
     }
     rt.TuckResult!(rt.PoolHandle) tuckˑvˑr = rt.tuckPoolAcquire(tuckˑpoolˑReadings);
     if (!(tuckˑvˑr.status == rt.TuckStatus.Ok)) {
         return 0L;
     }
-    tuckˑtypeˑSensorReading tuckˑvˑreading = tuckˑtypeˑSensorReading(channel: 2L, value: 700L);
+    tuckˑtypeˑSensorReading tuckˑvˑreading = tuckˑtypeˑSensorReading(channel: cast(ubyte)2, value: cast(ushort)700);
     rt.tuckPoolWrite(tuckˑpoolˑReadings, tuckˑvˑr.value, tuckˑvˑreading);
     rt.TuckResult!(tuckˑtypeˑSensorReading) tuckˑvˑback = rt.tuckPoolRead(tuckˑpoolˑReadings, tuckˑvˑr.value);
     rt.tuckPoolRelease(tuckˑpoolˑReadings, tuckˑvˑr.value);
@@ -65,9 +65,9 @@ long tuckˑfnˑdrainOnce() {
 
 long tuckˑfnˑmain() {
     long tuckˑvˑadmitted = 0L;
-    tuckˑvˑadmitted = (tuckˑvˑadmitted + tuckˑfnˑadmit(1L));
-    tuckˑvˑadmitted = (tuckˑvˑadmitted + tuckˑfnˑadmit(2L));
-    tuckˑvˑadmitted = (tuckˑvˑadmitted + tuckˑfnˑadmit(3L));
+    tuckˑvˑadmitted = (tuckˑvˑadmitted + tuckˑfnˑadmit(cast(uint)1));
+    tuckˑvˑadmitted = (tuckˑvˑadmitted + tuckˑfnˑadmit(cast(uint)2));
+    tuckˑvˑadmitted = (tuckˑvˑadmitted + tuckˑfnˑadmit(cast(uint)3));
     long tuckˑvˑdrained = tuckˑfnˑdrainOnce();
     return (tuckˑvˑadmitted + tuckˑvˑdrained);
 }
