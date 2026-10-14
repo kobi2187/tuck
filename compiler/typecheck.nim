@@ -4303,13 +4303,8 @@ proc synthUnary(tc: var TypeChecker, e: Expr): Type =
   let t = tc.synthesize(e.operand)
   if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
 
-proc synthCast(tc: var TypeChecker, e: Expr): Type =
-  ## `x ~u16` / `x ^u32` (issue #16): a numeric conversion written in the
-  ## source. The sigil names the direction and is checked; a cast of a value
-  ## the compiler can fold is checked for range too, so `~` means "I checked
-  ## this" wherever it can be confirmed.
-  let target = e.castType
-  let src = tc.resolve(tc.synthesize(e.castOperand))
+proc failIfCastNotNumeric(e: Expr, target, src: Type) =
+  ## TK-TY39: only a number casts, and only to a numeric type.
   if not isNumeric(target):
     fail(dcTyCastNotNumeric, "'" & typeName(target) & "' is not a numeric " &
          "type, so nothing can be cast to it", e.span)
@@ -4317,20 +4312,43 @@ proc synthCast(tc: var TypeChecker, e: Expr): Type =
     fail(dcTyCastNotNumeric, "a " & typeName(src) & " is not a number, so " &
          "it cannot be cast with `" & (if e.castWiden: "^" else: "~") & "`",
          e.span)
+
+proc failIfCastDirectionWrong(e: Expr, target, src: Type) =
+  ## TK-TY40: `^` marks a conversion that cannot lose, `~` one that can.
+  if not isNumeric(src): return
+  let lossless = losslessConversion(src.name, target.name)
+  if e.castWiden and not lossless:
+    fail(dcTyCastDirection, "converting " & src.name & " to " & target.name &
+         " can lose a value, so it is written `~" & target.name & "`", e.span)
+  if not e.castWiden and lossless:
+    fail(dcTyCastDirection, "converting " & src.name & " to " & target.name &
+         " cannot lose anything, so it is written `^" & target.name & "`",
+         e.span)
+
+proc recordNarrowSite(e: Expr, target, src: Type, known: Option[int]) =
+  ## For `--report-narrowing`: every `~` the author wrote.
+  if e.castWiden: return
+  narrowSites.add((ifaceMatchModule, e.span.line, e.span.col,
+                   (if src != nil and isNumeric(src): src.name else: "?"),
+                   target.name, known.isSome,
+                   (if known.isSome: $known.get else: "")))
+
+proc synthCast(tc: var TypeChecker, e: Expr): Type =
+  ## `x ~u16` / `x ^u32` (issue #16): a numeric conversion written in the
+  ## source. The sigil names the direction and is checked; a cast of a value
+  ## the compiler can fold is checked for range too, so `~` means "I checked
+  ## this" wherever it can be confirmed.
+  let target = e.castType
+  let src = tc.resolve(tc.synthesize(e.castOperand))
+  failIfCastNotNumeric(e, target, src)
   let known = evalConstExpr(tc.module, e.castOperand)
+  recordNarrowSite(e, target, src, known)
   if known.isSome:
     if not fitsIn(target.name, known.get):
       fail(dcTyCastOutOfRange, $known.get & " does not fit " & target.name &
            "; the cast would change the value", e.span)
-  elif isNumeric(src):
-    let lossless = losslessConversion(src.name, target.name)
-    if e.castWiden and not lossless:
-      fail(dcTyCastDirection, "converting " & src.name & " to " & target.name &
-           " can lose a value, so it is written `~" & target.name & "`", e.span)
-    if not e.castWiden and lossless:
-      fail(dcTyCastDirection, "converting " & src.name & " to " & target.name &
-           " cannot lose anything, so it is written `^" & target.name & "`",
-           e.span)
+  else:
+    failIfCastDirectionWrong(e, target, src)
   Type(span: e.span, kind: tkNamed, name: target.name)
 
 proc isImplicitReturn(tc: TypeChecker, blk, s: Expr): bool =
@@ -4586,7 +4604,11 @@ proc synthDeclAssign(tc: var TypeChecker, e: Expr) =
     tc.checkIfaceElems(tc.ifaceElemSlot(e.declType), e.assignVal, what)
     valT = e.declType
   elif e.declType != nil:
-    let want = tc.resolve(e.declType)
+    # A NOMINAL name is kept as written: resolving `Seq16` to its `u16` body
+    # would throw away the very name that says how its arithmetic behaves.
+    let nominal = e.declType.kind == tkNamed and
+                  e.declType.name in tc.distinctNames
+    let want = if nominal: e.declType else: tc.resolve(e.declType)
     tc.check(e.assignVal, want, what)
     valT = want
   else:

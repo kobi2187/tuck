@@ -25,7 +25,7 @@ __gshared rt.SlabChunked!(tuckˑtypeˑEthernetFrame) tuckˑslabˑScratchSpace_Et
 __gshared rt.SlabChunked!(tuckˑtypeˑHeader) tuckˑslabˑScratchSpace_Header = rt.SlabChunked!(tuckˑtypeˑHeader)("ScratchSpace");
 
 long tuckˑfnˑhandle(long len) {
-    ubyte[128] tuckˑvˑraw = rt.tuckFill!(ubyte, 128L)(cast(ubyte)(0L));
+    ubyte[128] tuckˑvˑraw = rt.tuckFill!(ubyte, 128L)(cast(ubyte)(cast(ubyte)0));
     tuckˑtypeˑEthernetFrame tuckˑvˑf = tuckˑtypeˑEthernetFrame(len: len, bytes: tuckˑvˑraw);
     rt.TuckResult!(rt.SlabRef) tuckˑvˑfr = rt.tuckArenaNew(tuckˑslabˑScratchSpace_EthernetFrame, tuckˑarenaˑScratchSpace, 144, tuckˑvˑf);
     if (!(tuckˑvˑfr.status == rt.TuckStatus.Ok)) {

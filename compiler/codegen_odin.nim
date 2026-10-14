@@ -1068,6 +1068,12 @@ proc genBinary(ctx: var OdinCodegenCtx, e: Expr): string =
       let call = sumName & "_eq(" & ctx.genOdinExpr(e.left) & ", " &
                  ctx.genOdinExpr(e.right) & ")"
       return if e.binOp == boEq: call else: "(!" & call & ")"
+  if e.binOp in {boAdd, boSub, boMul}:
+    let plan = overflowPlan(ctx.module, ctx.realModules, ctx.res.typeFor(e))
+    if plan.active:
+      return "rt.tuckArith(" & ctx.genOdinExpr(e.left) & ", " &
+             ctx.genOdinExpr(e.right) & ", ." & ovOpName(e.binOp) & ", ." &
+             plan.policy & ")"
   "(" & ctx.genOdinExpr(e.left) & " " & odinBinOp(e.binOp) & " " &
     ctx.genOdinExpr(e.right) & ")"
 

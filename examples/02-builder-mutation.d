@@ -9,7 +9,7 @@ struct tuckˑtypeˑServerConfig {
 }
 
 tuckˑtypeˑServerConfig tuckˑfnˑwithDefaults(tuckˑtypeˑServerConfig self) {
-    return tuckˑtypeˑServerConfig(port: 80L, timeout: 30L, running: false);
+    return tuckˑtypeˑServerConfig(port: 80L, timeout: cast(uint)30, running: false);
 }
 
 bool tuckˑfnˑstart(tuckˑtypeˑServerConfig self) {
@@ -17,10 +17,10 @@ bool tuckˑfnˑstart(tuckˑtypeˑServerConfig self) {
 }
 
 void tuckˑfnˑmain() {
-    tuckˑtypeˑServerConfig tuckˑvˑserver = tuckˑtypeˑServerConfig(port: 0L, timeout: 0L, running: false);
-    tuckˑvˑserver = tuckˑtypeˑServerConfig(port: 80L, timeout: 30L, running: false);
+    tuckˑtypeˑServerConfig tuckˑvˑserver = tuckˑtypeˑServerConfig(port: 0L, timeout: cast(uint)0, running: false);
+    tuckˑvˑserver = tuckˑtypeˑServerConfig(port: 80L, timeout: cast(uint)30, running: false);
     tuckˑvˑserver.port = 8080L;
-    tuckˑvˑserver.timeout = 60L;
+    tuckˑvˑserver.timeout = cast(uint)60;
     bool tuckˑvˑok = tuckˑfnˑstart(tuckˑvˑserver);
     return;
 }

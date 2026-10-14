@@ -114,8 +114,8 @@ void validate_tuckˑtypeˑVolume(tuckˑtypeˑVolume self)
 {
     version (tuckNoInvariants) {} else
     {
-        if (!((self.level <= 100L)))
-            rt.tuckInvariantFailed("(self.level <= 100L)", "tuckˑtypeˑVolume");
+        if (!((self.level <= cast(ubyte)100)))
+            rt.tuckInvariantFailed("(self.level <= cast(ubyte)100)", "tuckˑtypeˑVolume");
     }
 }
 
@@ -154,7 +154,7 @@ __gshared tuckˑactorˑDecoder tuckˑactorˑDecoderSingleton;
 
 shared static this() {
     tuckˑactorˑDecoderSingleton.state = tuckˑtypeˑPlayerState(tuckˑtypeˑPlayerStateKind.Idle);
-    tuckˑactorˑDecoderSingleton.vol = __validated_tuckˑtypeˑVolume(tuckˑtypeˑVolume(level: 80L));
+    tuckˑactorˑDecoderSingleton.vol = __validated_tuckˑtypeˑVolume(tuckˑtypeˑVolume(level: cast(ubyte)80));
 }
 
 void handleMsg_tuckˑactorˑDecoder(ref tuckˑactorˑDecoder self, tuckˑactorˑDecoderMsg msg) {

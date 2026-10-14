@@ -683,10 +683,33 @@ proc nimBinOp(op: BinOp): string =
   of boRangeIncl: ".."
   of boRangeExcl: "..<"
 
+proc genCheckedArith(ctx: var CodegenCtx, e: Expr, plan: OverflowPlan): string =
+  ## `a + b` on a narrow integer, through the runtime's checked helper so the
+  ## author's overflow policy (trap by default) is what runs — not whatever
+  ## Nim does with a bare `+` (it wraps here, silently).
+  let op = case e.binOp
+           of boAdd: "ovAdd"
+           of boSub: "ovSub"
+           else: "ovMul"
+  let base = genType(Type(kind: tkNamed, name: plan.base))
+  var l = ctx.genExpr(e.left)
+  var r = ctx.genExpr(e.right)
+  if plan.named != "":
+    # a distinct integer: through its base and back
+    l = base & "(" & l & ")"
+    r = base & "(" & r & ")"
+  let call = "tuckArith(" & l & ", " & r & ", " & op & ", ov" &
+             plan.policy & ")"
+  if plan.named != "": genType(Type(kind: tkNamed, name: plan.named)) & "(" & call & ")"
+  else: call
+
 proc genBinary(ctx: var CodegenCtx, e: Expr): string =
   ## A binary expression, parenthesised; `str + str` goes through `tuckConcat`.
   if isStringConcat(e):
     return "tuckConcat(" & ctx.genExpr(e.left) & ", " & ctx.genExpr(e.right) & ")"
+  if e.binOp in {boAdd, boSub, boMul}:
+    let plan = overflowPlan(ctx.module, ctx.realModules, ctx.res.typeFor(e))
+    if plan.active: return ctx.genCheckedArith(e, plan)
   "(" & ctx.genExpr(e.left) & " " & nimBinOp(e.binOp) & " " &
     ctx.genExpr(e.right) & ")"
 

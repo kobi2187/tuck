@@ -9,6 +9,7 @@
 ## The runs assertion builds and runs on every backend: the claim is that all
 ## three convert alike.
 
+import std/[os, strutils]
 import ../harness
 
 proc run*(t: var T) =
@@ -198,5 +199,54 @@ fn main() -> int:
   return 0
 """
   t.badCheck "...but a float literal never becomes an integer", "expects u8"
+
+  # --- the audit report (issue #16, step 4) ---------------------------------
+  #
+  # Every `~` is a place the author accepted a possible loss; the compiler
+  # already knows them all, so `--report-narrowing` lists them: where, the two
+  # types, and whether the value was confirmed to fit (a folded constant) or the
+  # risk is the author's. `^` casts lose nothing and are not listed.
+  t.src """
+import lib
+
+const Limit = 200
+
+fn main() -> int:
+  let wide: u32 = 1200
+  let a = wide ~u16
+  let b = 1200 ~u16
+  let c = Limit ~u8
+  let w: u8 = 3
+  let e = w ^int
+  return {v: 5} clip
+"""
+  t.addFile("lib.tuck", """fn clip({v: int}) -> int:
+  let small = v ~u8
+  return small ^int
+""")
+  let rep = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck",
+                        "--root:" & t.root, "--report-narrowing"])
+  let quiet = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck",
+                          "--root:" & t.root])
+  if t.phase != pCollect:
+    let (rc, outp) = t.resultOf(rep)
+    if rc != 0: t.no "--report-narrowing lists the casts", "exit " & $rc & ": " & outp
+    elif "NARROWING (4 casts):" in outp: t.ok "--report-narrowing counts the `~` casts"
+    else: t.no "--report-narrowing counts the `~` casts", outp
+    if "u32 -> u16  [unproven]" in outp: t.ok "...a variable is unproven"
+    else: t.no "...a variable is unproven", outp
+    if "int -> u16  [checked: 1200 fits]" in outp and
+       "int -> u8  [checked: 200 fits]" in outp:
+      t.ok "...a literal or const is confirmed"
+    else: t.no "...a literal or const is confirmed", outp
+    if "lib.tuck:2:" in outp and "t.tuck:" in outp:
+      t.ok "...in every module, each under its own file"
+    else: t.no "...in every module, each under its own file", outp
+    if "^" in outp.split("NARROWING")[1].split("SIZE")[0]:
+      t.no "...`^` casts are not listed", outp
+    else: t.ok "...`^` casts are not listed"
+    let (qrc, qout) = t.resultOf(quiet)
+    if qrc == 0 and "NARROWING" notin qout: t.ok "...and nothing is printed without the flag"
+    else: t.no "...and nothing is printed without the flag", qout
 
   t.finish()

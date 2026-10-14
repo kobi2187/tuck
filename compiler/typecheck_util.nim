@@ -65,6 +65,24 @@ proc isNumeric*(t: Type): bool =
   ## float)?
   t != nil and t.kind == tkNamed and t.name in NumericNames
 
+type NarrowSite* = tuple[module: string, line, col: int, src, dst: string,
+                         checked: bool, value: string]
+  ## One `x ~T` cast the author wrote (issue #14 sibling, #16 step 4): where, the
+  ## two types, and whether the compiler could confirm the value fits (a folded
+  ## constant) or the author is accepting the risk.
+
+var narrowSites*: seq[NarrowSite]
+  ## Every narrowing cast the checker saw, for `--report-narrowing`. Module-level
+  ## for the same reason `warnings` is: it is recorded from deep in the checker
+  ## and drained once by the driver, which alone knows the file.
+
+proc takeNarrowSites*(): seq[NarrowSite] =
+  ## Hand over what has accumulated (deduplicated: a module checked twice by
+  ## the iface-generics re-check records each site once) and reset.
+  for s in narrowSites:
+    if s notin result: result.add s
+  narrowSites = @[]
+
 type NumInfo* = tuple[isFloat: bool, bits: int, signed: bool]
 
 proc numInfo*(name: string): NumInfo =
