@@ -1760,8 +1760,22 @@ proc widerOperand(lt, rt: Type): Type =
   ## The type an arithmetic result carries.
   if isFlexible(lt): rt else: lt
 
+proc failIfRecordOperand(tc: TypeChecker, lt, rt: Type, e: Expr) =
+  ## TK-TY43: a record is not a number, even a one-field one (`{ms: u64}` from
+  ## `nowMs`). No backend unwraps it, so the checker must not let it through.
+  for (t, side) in operands(lt, rt, e):
+    if isFlexible(t): continue
+    let r = tc.resolve(t)
+    if r != nil and r.kind == tkRecord:
+      var hint = ""
+      if r.fields.len == 1:
+        hint = " — did you mean the field, `x." & r.fields[0].name & "`?"
+      fail(dcTyArithOnRecord, "arithmetic needs numbers, but this operand is " &
+           "a record " & typeName(t) & hint, side.span)
+
 proc synthArithmetic(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
   ## `+ - * %`: both operands must agree; the result has their type.
+  tc.failIfRecordOperand(lt, rt, e)
   tc.failIfMismatched(lt, rt, "arithmetic", e.span)
   widerOperand(lt, rt)
 
@@ -1783,6 +1797,7 @@ proc failIfWrongDivKind(lt, rt: Type, e: Expr) =
 proc synthDivision(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
   ## `/i` and `/f`: the operator must match the operand kind (integer or
   ## float), the operands must agree, and the result has their type.
+  tc.failIfRecordOperand(lt, rt, e)
   failIfWrongDivKind(lt, rt, e)
   tc.failIfMismatched(lt, rt, "division", e.span)
   widerOperand(lt, rt)
@@ -4085,6 +4100,11 @@ proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
     # in value position" case asNamedCallee already trusts at the CALL
     # position (`{fields} TypeName` construction); this is its bare-name
     # sibling, not a new exemption invented for this one call site.
+    if not tc.composing:
+      fail(dcTyTypeAsValue, "'" & e.name & "' is a type, not a value, so " &
+         "`" & e.name & "` alone has nothing to bind. Fix: build a value with " &
+           "a construction, `" & e.name & " {}` (naming each field if it has any)",
+           e.span)
     return tc.namedType(e.name, e.span)
   # Every legitimate shape a bare Capitalized-or-lowercase name can be —
   # local, nullary call, sum variant, registry event, pending marker,
@@ -4300,7 +4320,12 @@ proc synthFill(tc: var TypeChecker, e: Expr): Type =
 
 proc synthUnary(tc: var TypeChecker, e: Expr): Type =
   ## `not` yields bool; every other unary keeps its operand's type.
+  # `+ Type` in a type body names the type to compose: a bare type name is
+  # right THERE and nowhere else (TK-TY42 refuses it as a value).
+  let savedComposing = tc.composing
+  tc.composing = e.unaryOp == uoComposition
   let t = tc.synthesize(e.operand)
+  tc.composing = savedComposing
   if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
 
 proc failIfCastNotNumeric(e: Expr, target, src: Type) =
@@ -6346,7 +6371,13 @@ proc checkIfaceMatchesComplete(mods: seq[tuple[name, path: string, m: Module]]) 
 proc selfRooted(res: Resolution, e: Expr): bool =
   ## Does `e` name `self` or a place inside it — `self.n`, `self.inner`, or
   ## a field written bare (an owner field, Resolution.ownerFields)?
-  let r = assignRoot(e)
+  var r = assignRoot(e)
+  # An element write goes THROUGH the place: `self.cells[i] = v` changes self
+  # as surely as `self.cells = ...` does (issue #100). assignRoot stops at an
+  # index on purpose, so peel the indexing here, where the question is "does
+  # this change the object", not "which variable is written".
+  while r != nil and r.kind == exkBracket:
+    r = assignRoot(r.brReceiver)
   r != nil and r.kind == exkVar and (r.name == "self" or res.isOwnerField(r))
 
 proc writesSelfDirectly(res: Resolution, fn: Decl): bool =

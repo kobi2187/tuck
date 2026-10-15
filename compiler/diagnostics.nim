@@ -143,6 +143,8 @@ type
     dcTyCastNotNumeric = "TK-TY39"      ## `x ~T` / `x ^T` where x or T is not numeric
     dcTyCastDirection = "TK-TY40"       ## `^` on a conversion that can lose, or `~` on one that cannot
     dcTyCastOutOfRange = "TK-TY41"      ## `70000 ~u16`: a known value that does not fit
+    dcTyTypeAsValue = "TK-TY42"         ## a bare type name used as a value (`let k = K`)
+    dcTyArithOnRecord = "TK-TY43"       ## arithmetic on a record, not on a number
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -503,6 +505,18 @@ proc parseExplanation(d: DiagCode): string =
     "silently. `~` therefore means \"I checked this\" wherever the " &
     "compiler can confirm it, and \"I accept the risk\" only where it cannot " &
     "see the value. Fix: use a type the value fits, or a smaller value."
+  of dcTyTypeAsValue:
+    "A type name stands for the type, not for a value of it. `let k = K` has " &
+    "nothing to bind: no backend can build it, so the checker refuses it " &
+    "instead of passing it on (issue #101). A value is built by a " &
+    "construction that names each field: `K {}` for a type with no fields, " &
+    "`K {x: 1}` otherwise."
+  of dcTyArithOnRecord:
+    "`+ - * /i /f` work on numbers. A record is not a number, even one with a " &
+    "single field such as `{ms: u64}` from `nowMs`: it is a one-field record, " &
+    "and no backend will treat it as the number inside. The checker refuses it " &
+    "(issue #103) so that \"check OK\" means \"every backend builds\". " &
+    "Fix: read the field, `b.ms - a.ms`."
   of dcTyNoneNoPlace:
     "`none` is the absent value of a `T?` — no `next` yet, no result, nothing " &
     "found. It names no T itself, so it takes one from where it is written: " &

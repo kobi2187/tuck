@@ -111,6 +111,7 @@ type
     transitionCtx*: bool          # constructing THROUGH transitionTo: sealed
                                   # non-initial variants are legal there
     expectedType*: Type       # the type context expects the expression
+    composing*: bool          # synthesizing the operand of a `+ Type` composition
                                   # currently being synthesized to have (nil
                                   # otherwise) — the checker's one expected-
                                   # type channel, fed from a match arm's
