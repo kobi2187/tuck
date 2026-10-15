@@ -75,7 +75,7 @@ proc asyncMarkDisagrees(e: Expr): bool =
   # extern are one, per TODO.md's callParamsFor/declForType notes) and not
   # what this assertion exists to catch. Only flag a REAL disagreement:
   # a decl edge that exists but does not declare [io].
-  decl != nil and emIo notin decl.fnEffects
+  decl != nil and not hasIo(decl.fnEffects)
 
 proc assertAsyncEffectsConsistent*(mods: seq[Module]) =
   ## After psVerifyEffects: every call site the effect pass marked async

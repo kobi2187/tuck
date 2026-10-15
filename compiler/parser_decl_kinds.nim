@@ -589,15 +589,54 @@ proc parseDistinctDecl*(p: var Parser, sp: Span): Decl =
   if p.current().kind == tkNewline: discard p.advance()
   Decl(span: sp, kind: dkType, name: name, generics: @[], typeBody: aliasType)
 
+proc parseBindingAttr(p: var Parser, tail: var SignatureTail, name: string): bool =
+  ## The valued attributes that name something rather than mark an effect:
+  ## `emit:`, `resource:`, `keeps:`, `view:`. False when `name` is not one.
+  case name
+  of "emit":
+    discard p.expect(tkColon)
+    tail.emit = p.expect(tkStrLit, "Expected proc name string after 'emit:'").value
+  of "resource":
+    discard p.expect(tkColon)
+    tail.resources.add(p.expectName(
+      "Expected a resource kind name after 'resource:'").value)
+  of "keeps":
+    discard p.expect(tkColon)
+    tail.keeps.add(p.expectName(
+      "Expected the parameter an extern keeps after 'keeps:'").value)
+  of "view":
+    discard p.expect(tkColon)
+    tail.view = p.expectName(
+      "Expected the parameter an extern's result is a view into after 'view:'").value
+  else: return false
+  true
+
+proc parseCountOrKind(p: var Parser, tail: var SignatureTail, name: string,
+                      sp: Span): bool =
+  ## `recursion: N` and `io: kind` — an effect marker with an argument.
+  if name == "recursion":
+    discard p.expect(tkColon)
+    let n = p.expect(tkIntLit, "Expected a call count after 'recursion:'")
+    try: tail.depth = parseInt(n.value)
+    except ValueError: p.reportError("recursion: needs a whole number", sp.line, sp.col)
+    return true
+  if name == "io" and p.current().kind == tkColon:
+    discard p.advance()
+    let kindTok = p.expectName("Expected an io kind after 'io:'")
+    var marker: EffectMarker
+    if ioKindMarker(kindTok.value, marker): tail.effects.add(marker)
+    else: tail.badIo = kindTok.value
+    return true
+  false
+
 proc parseEffectList*(p: var Parser, tail: var SignatureTail, strict = true) =
-  ## `[io, may_block]` — the effect markers, with the THREE valued attributes
-  ## that share the bracket folded in: `error:` names the enums a fn may
-  ## raise, `emit:` the exact runtime/C proc name to emit, and `resource:`
-  ## the registry kind an acquire site hands out (§7.4).
+  ## `[io, may_block]` — the effect markers, with the valued attributes that
+  ## share the bracket folded in: `error:` names the enums a fn may raise,
+  ## `emit:` the exact runtime/C proc name to emit, `resource:` the registry
+  ## kind an acquire site hands out (§7.4), `io: kind` and `recursion: N`.
   ##
-  ## The valued three are special-cased rather than being EffectMarkers
-  ## because EffectMarker is a plain enum with nowhere to put a name. That is
-  ## the seam, and `resource:` is simply the third thing to use it.
+  ## The valued ones are special-cased rather than being EffectMarkers
+  ## because EffectMarker is a plain enum with nowhere to put a name.
   ##
   ## `strict` reports an unknown marker. A SIGNATURE block passes false: its
   ## brackets also carry binding attributes the effect vocabulary does not
@@ -609,26 +648,9 @@ proc parseEffectList*(p: var Parser, tail: var SignatureTail, strict = true) =
     let effName = p.expectAttrName("Expected effect marker").value
     if effName == "error":
       p.parseErrorTypes(tail.errTypes)
-    elif effName == "emit":
-      discard p.expect(tkColon)
-      tail.emit = p.expect(tkStrLit, "Expected proc name string after 'emit:'").value
-    elif effName == "resource":
-      discard p.expect(tkColon)
-      tail.resources.add(p.expectName(
-        "Expected a resource kind name after 'resource:'").value)
-    elif effName == "keeps":
-      discard p.expect(tkColon)
-      tail.keeps.add(p.expectName(
-        "Expected the parameter an extern keeps after 'keeps:'").value)
-    elif effName == "recursion":
-      discard p.expect(tkColon)
-      let n = p.expect(tkIntLit, "Expected a call count after 'recursion:'")
-      try: tail.depth = parseInt(n.value)
-      except ValueError: p.reportError("recursion: needs a whole number", effSp.line, effSp.col)
-    elif effName == "view":
-      discard p.expect(tkColon)
-      tail.view = p.expectName(
-        "Expected the parameter an extern's result is a view into after 'view:'").value
+    elif p.parseBindingAttr(tail, effName) or
+         p.parseCountOrKind(tail, effName, effSp):
+      discard
     else:
       var marker: EffectMarker
       if effectMarkerFromName(effName, marker): tail.effects.add(marker)
@@ -1032,6 +1054,10 @@ proc parseSignatureTail*(p: var Parser, retType: Type,
   ## from the attribute bracket.
   harvestEffects(retType, result)
   p.parseEffectList(result, strict)
+  if result.badIo != "":
+    let sp = p.getSpan()
+    p.reportError("'" & result.badIo & "' is not an io kind. The kinds are " &
+                  "net, fs, clock, console, sys: [io: net]", sp.line, sp.col)
 
 proc parseRegistryDecl*(p: var Parser, sp: Span): Decl =
   ## registry Name: | Variant {fields} — global event registry (spec 10)
@@ -1219,6 +1245,19 @@ proc parseFnDecl*(p: var Parser, sp: Span): Decl =
      p.peek(1).kind == tkIdent:
     isInline = true
     discard p.advance()
+  # `fn memo name(...)` / `fn memo(256) name(...)` — cache results by argument.
+  # `memo(` followed by a number is the size; `memo({...})` stays a fn NAMED memo.
+  var isMemo = false
+  var memoSize = 0
+  if p.current().kind == tkIdent and p.current().value == "memo" and
+     (p.peek(1).kind == tkIdent or
+      (p.peek(1).kind == tkLParen and p.peek(2).kind == tkIntLit)):
+    isMemo = true
+    discard p.advance()
+    if p.current().kind == tkLParen:
+      discard p.advance()
+      memoSize = parseInt(p.expect(tkIntLit, "Expected the cache size").value)
+      discard p.expect(tkRParen)
   let name = p.parseQualifiedName()
   let (generics, genericBounds) = p.parseBracketedNames("generic parameter name")
   let params = parseParamList(p)
@@ -1229,7 +1268,7 @@ proc parseFnDecl*(p: var Parser, sp: Span): Decl =
        fnGenericBounds: genericBounds,
        fnParams: params, fnReturnType: retType, fnEffects: sig.effects,
        fnBody: body, fnErrorTypes: sig.errTypes, isInline: isInline,
-       fnDepth: sig.depth,
+       fnDepth: sig.depth, isMemo: isMemo, memoSize: memoSize,
        fnResourceKinds: sig.resources, isOnHandler: fromOn)
   # `fn f(...) -> T:` whose whole body is `...` IS a pending signature that
   # happens to be written inline, so it becomes one rather than growing a

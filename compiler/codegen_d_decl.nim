@@ -867,6 +867,52 @@ proc genDTwinWrapper(ctx: var DCodegenCtx, d: Decl, fnName, tmplStr, retStr,
   result.add("    return " & movedName(fnName) & "(" & argNames.join(", ") &
              ");\n}\n\n")
 
+proc genDMemoWrapper(ctx: var DCodegenCtx, d: Decl, fnName: string): string =
+  ## `fn memo(N) f` in D: module-level state is thread-local by default, so the
+  ## cache is per thread. N direct-mapped slots, or an associative array.
+  let v = memoVar(d)
+  let raw = fnName & MemoRawSuffix
+  let retT = ctx.dType(d.fnReturnType)
+  var fieldDecls, names, params, cmp, assign, init: seq[string]
+  for i, p in d.fnParams:
+    let t = ctx.dType(p.typ)
+    fieldDecls.add t & " k" & $i & ";"
+    names.add p.name
+    params.add t & " " & p.name
+    cmp.add v & "[slot].k" & $i & " == " & p.name
+    assign.add "    " & v & "[slot].k" & $i & " = " & p.name & ";\n"
+    init.add p.name
+  let sig = retT & " " & fnName & "(" & params.join(", ") & ") {\n"
+  let call = raw & "(" & names.join(", ") & ")"
+  let direct = memoDirectSize(d)
+  if direct > 0:
+    let idx = memoIndexExpr(d, proc (n: string, isBool: bool, half: int): string =
+      if isBool: "(" & n & " ? 1 : 0)"
+      elif half > 0: "cast(size_t)(cast(long) " & n & " + " & $half & ")"
+      else: "cast(size_t) " & n)
+    return "struct " & v & "Slot { bool used; " & retT & " r; }\n" & v & "Slot[" &
+      $direct & "] " & v & ";\n" & sig & "    size_t slot = " & idx & ";\n" &
+      "    if (" & v & "[slot].used) return " & v & "[slot].r;\n" &
+      "    auto r = " & call & ";\n    " & v & "[slot].used = true;\n    " & v &
+      "[slot].r = r;\n    return r;\n}\n"
+  if d.memoSize == 0:
+    let keyT = v & "Key"
+    return "struct " & keyT & " { " & fieldDecls.join(" ") & " }\n" &
+      retT & "[" & keyT & "] " & v & ";\n" & sig &
+      "    auto key = " & keyT & "(" & init.join(", ") & ");\n" &
+      "    if (auto hit = key in " & v & ") return *hit;\n" &
+      "    auto r = " & call & ";\n    " & v & "[key] = r;\n    return r;\n}\n"
+  var mix: seq[string]
+  for n in names:
+    mix.add "    h = (h ^ cast(ulong) " & n & ") * 1099511628211UL;\n"
+  return "struct " & v & "Slot { bool used; " & fieldDecls.join(" ") & " " &
+    retT & " r; }\n" & v & "Slot[" & $d.memoSize & "] " & v & ";\n" & sig &
+    "    ulong h = 14695981039346656037UL;\n" & mix.join("") &
+    "    size_t slot = cast(size_t)(h % " & $d.memoSize & ");\n" &
+    "    if (" & v & "[slot].used && " & cmp.join(" && ") & ") return " & v &
+    "[slot].r;\n    auto r = " & call & ";\n    " & v & "[slot].used = true;\n" &
+    assign.join("") & "    " & v & "[slot].r = r;\n    return r;\n}\n"
+
 proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
                 refSelf = false): string =
   ## A fn as D source: a template when generic, the MOVED twin plus its
@@ -876,6 +922,9 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   # identifier character, and the raise proc calls the sanitised name.
   let fnName = if nameOverride != "": nameOverride
                else: dHandlerFnName(d.name)
+  if d.isMemo:
+    return ctx.genDFnDecl(memoRawDecl(d), fnName & MemoRawSuffix) &
+           ctx.genDMemoWrapper(d, fnName)
   let retStr = ctx.dType(d.fnReturnType)
   # A fallible fn wraps every return in the carrier; the arms below need to
   # know the payload type to name terr!(T). Restored after the body, since

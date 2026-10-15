@@ -32,6 +32,11 @@ func effectName*(e: EffectMarker): string =
   of emNoRecursion: "no_recursion"
   of emPriority: "priority"
   of emPure: "pure"
+  of emIoNet: "io: net"
+  of emIoFs: "io: fs"
+  of emIoClock: "io: clock"
+  of emIoConsole: "io: console"
+  of emIoSys: "io: sys"
 
 type MarkerFamily* = enum
   ## How a marker PROPAGATES. The effect pass used to treat every marker as an
@@ -46,24 +51,55 @@ func familyOf*(e: EffectMarker): MarkerFamily =
   ## The family of a marker. Exhaustive on purpose: a new marker cannot compile
   ## until it is filed, so it can never be silently inert (issue #64).
   case e
-  of emIo, emMayBlock: mfCapability
+  of emIo, emMayBlock, emIoNet, emIoFs, emIoClock, emIoConsole, emIoSys:
+    mfCapability
   of emNoAlloc, emIrqSafe, emPure: mfRestriction
   of emUnsafe, emNoRecursion, emPriority: mfAttribute
+
+const IoKinds* = {emIoNet, emIoFs, emIoClock, emIoConsole, emIoSys}
+  ## The kinds `[io: kind]` can name. Closed on purpose (ruled 2026-10-15): a
+  ## typo is a parse error, not a new kind. Adding one is one enum entry here
+  ## and one spelling in `ioKindMarker`.
+
+func ioKindMarker*(kind: string, marker: var EffectMarker): bool =
+  ## `[io: net]` -> emIoNet; false for a name that is not a kind.
+  case kind
+  of "net": marker = emIoNet
+  of "fs": marker = emIoFs
+  of "clock": marker = emIoClock
+  of "console": marker = emIoConsole
+  of "sys": marker = emIoSys
+  else: return false
+  true
+
+func hasIo*(effects: openArray[EffectMarker]): bool =
+  ## Does the set perform I/O of any kind: bare `io` or a named one.
+  for e in effects:
+    if e == emIo or e in IoKinds: return true
+
+func admits*(budget: openArray[EffectMarker], e: EffectMarker): bool =
+  ## May a fn whose bracket is `budget` perform `e`? A bare `[io]` admits every
+  ## kind; a named kind admits only itself, and does NOT admit bare `[io]`
+  ## (the callee may do any kind).
+  for b in budget:
+    if b == e or (b == emIo and e in IoKinds): return true
 
 func excludes*(e: EffectMarker): set[EffectMarker] =
   ## Markers that cannot be declared TOGETHER with `e`: an interrupt context
   ## cannot do I/O or block, and a pure fn does neither.
   case e
-  of emIrqSafe: {emIo, emMayBlock}
-  of emPure: {emIo, emMayBlock}
-  of emIo, emNoAlloc, emUnsafe, emMayBlock, emNoRecursion, emPriority: {}
+  of emIrqSafe: {emIo, emMayBlock} + IoKinds
+  of emPure: {emIo, emMayBlock} + IoKinds
+  of emIo, emNoAlloc, emUnsafe, emMayBlock, emNoRecursion, emPriority,
+     emIoNet, emIoFs, emIoClock, emIoConsole, emIoSys: {}
 
 func requires*(e: EffectMarker): set[EffectMarker] =
   ## Markers `e` implies and so must also be WRITTEN (declared, not inferred): an
   ## interrupt cannot take the allocator's lock, so `irq_safe` needs `no_alloc`.
   case e
   of emIrqSafe: {emNoAlloc}
-  of emIo, emNoAlloc, emUnsafe, emMayBlock, emNoRecursion, emPriority, emPure: {}
+  of emIo, emNoAlloc, emUnsafe, emMayBlock, emNoRecursion, emPriority, emPure,
+     emIoNet, emIoFs, emIoClock, emIoConsole, emIoSys: {}
 
 proc enumDomain*(m: Module, t: Type): seq[string] =
   ## Values of an enumerable decision-table column: bool, or a fieldless sum
@@ -710,3 +746,38 @@ proc substType*(t: Type, subs: Table[string, Type]): Type =
   of tkRename:
     Type(span: t.span, kind: tkRename, attrs: t.attrs,
          underlying: substType(t.underlying, subs), renames: t.renames)
+
+
+# --- fn memo: how big is the input space ------------------------------------
+
+const MemoDirectLimit* = 65536
+  ## An unbounded `fn memo` whose whole input space is at most this big is a
+  ## direct table, not a growing one.
+
+proc memoTypeDomain*(typeName: string): tuple[size: int, half: int] =
+  ## How many values a `fn memo` parameter type has, and the offset that maps
+  ## its smallest value to 0 (half the range for a signed type). size 0 means
+  ## "too many to index by value".
+  case typeName
+  of "bool": (2, 0)
+  of "u8": (256, 0)
+  of "i8": (256, 128)
+  of "u16": (65536, 0)
+  of "i16": (65536, 32768)
+  else: (0, 0)
+
+proc memoDirectSize*(d: Decl): int =
+  ## The size of the table indexed directly by the arguments, or 0 when the
+  ## space is too large (or the signature is not a memo one). With `memo(N)`
+  ## it must fit in N, otherwise the hashed N-slot cache stays; with no size
+  ## it must fit in MemoDirectLimit.
+  if not d.isMemo or d.fnParams.len == 0: return 0
+  var total = 1
+  for p in d.fnParams:
+    if p.typ == nil or p.typ.kind != tkNamed: return 0
+    let dom = memoTypeDomain(p.typ.name)
+    if dom.size == 0: return 0
+    total *= dom.size
+    if total > MemoDirectLimit: return 0
+  let cap = if d.memoSize > 0: d.memoSize else: MemoDirectLimit
+  if total <= cap: total else: 0

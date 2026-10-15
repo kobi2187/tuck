@@ -138,7 +138,7 @@ proc callEffects(c: var Checker, e: Expr, res: var Demands) =
         res = union(res, callee)
         # The [io] marker IS the async annotation: a call to an [io] fn is a
         # suspend point. Flag the call site so codegen emits the async transform.
-        if emIo in callee.effects:
+        if hasIo(callee.effects):
           semLayer.markAsync(e)
 
 proc synthesizeExpr(c: var Checker, e: Expr): Demands =
@@ -207,10 +207,10 @@ proc checkExpr(c: var Checker, e: Expr, expected: Demands,
   # restricted side (checkRestrictions), and an attribute propagates nowhere;
   # treating them as obligations rejected a plain fn calling a `[no_alloc]` one.
   for eff in actual.effects:
-    if familyOf(eff) == mfCapability and eff notin expected.effects:
+    if familyOf(eff) == mfCapability and not admits(expected.effects, eff):
       missing.add effectName(eff)
   for eff in actual.effects:
-    if familyOf(eff) == mfCapability and eff notin expected.effects:
+    if familyOf(eff) == mfCapability and not admits(expected.effects, eff):
       let (callee, span) = c.culpritCall(e, eff)
       reportError(withCode(dcEfBudget,
         "Expression requires effect [" & effectName(eff) & "], which is " &
@@ -380,6 +380,35 @@ proc checkStackBound(c: Checker, d: Decl) =
       path.join(" -> ") & "), so its depth has no static bound. Fix: turn " &
       "the recursion into a loop, use [recursion: N], or drop [no_recursion]"), d.span)
 
+const MemoKeyTypes = ["int", "i8", "i16", "i32", "i64", "u8", "u16", "u32",
+                      "u64", "bool"]
+const MemoResultTypes = ["int", "i8", "i16", "i32", "i64", "u8", "u16", "u32",
+                         "u64", "bool", "f32", "f64"]
+
+proc memoTypeOk(t: Type, allowed: openArray[string]): bool =
+  t != nil and t.kind == tkNamed and t.name in allowed
+
+proc checkMemo(d: Decl) =
+  ## TK-EF08 / TK-EF09: what `fn memo` needs, and the warning for no size.
+  if not d.isMemo: return
+  var why = ""
+  if emPure notin d.fnEffects: why = "it is not declared [pure]"
+  elif d.fnGenerics.len > 0: why = "it is generic"
+  elif not memoTypeOk(d.fnReturnType, MemoResultTypes):
+    why = "its result is not an integer, bool or float"
+  else:
+    for p in d.fnParams:
+      if not memoTypeOk(p.typ, MemoKeyTypes):
+        why = "parameter '" & p.name & "' is not an integer or bool"
+  if why != "":
+    reportError(withCode(dcEfMemo, "'" & d.name & "' is `memo` but " & why &
+      ". Fix: add [pure] and use only integer/bool parameters and a scalar " &
+      "result, or drop memo"), d.span)
+  elif d.memoSize == 0 and memoDirectSize(d) == 0:
+    warn(dcEfMemoUnbounded, "'" & d.name & "' is `memo` with no size, so its " &
+         "cache grows without bound. Fix: give it a size, `fn memo(256) " &
+         d.name & "(...)`", d.span.line, d.span.col)
+
 proc checkRetiredStack(d: Decl) =
   ## `[stack: N]` was renamed: N read as a byte budget, which it never was.
   if d.fnReturnType == nil: return
@@ -423,6 +452,7 @@ proc verifyFn(c: var Checker, d: Decl) =
   # signature gets it too.
   if d != nil:
     checkMarkerCombinations(d)
+    checkMemo(d)
     checkNoAlloc(d)
   if d == nil or d.fnBody == nil or d.name in c.visiting: return
   c.visiting.incl(d.name)
@@ -443,7 +473,8 @@ proc verifyFn(c: var Checker, d: Decl) =
   # about it changed nothing.
   let budget = if d.name == "main":
                  Demands(effects: @[emIo, emNoAlloc, emIrqSafe, emUnsafe,
-                                    emMayBlock, emNoRecursion, emPriority],
+                                    emMayBlock, emNoRecursion, emPriority] &
+                                   toSeq(IoKinds),
                          resources: c.everyKind & d.fnResourceKinds)
                else: Demands(effects: d.fnEffects,
                              resources: d.fnResourceKinds)
@@ -452,7 +483,7 @@ proc verifyFn(c: var Checker, d: Decl) =
   c.checkStackBound(d)
   let actual = c.checkExpr(d.fnBody, budget, d.name)
   # The other direction (issue #14): a declared [io] the body never needs.
-  if d.name != "main" and emIo in d.fnEffects and emIo notin actual.effects and
+  if d.name != "main" and emIo in d.fnEffects and not hasIo(actual.effects) and
      not c.mayDoIoUnseen(d.fnBody):
     warn(dcEfUnused, "'" & d.name & "' declares [io], but nothing in its " &
          "body performs I/O, suspends or spawns. Fix: remove [io] from its " &

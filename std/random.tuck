@@ -10,5 +10,5 @@
 # every signature instead of behind one type name.
 extern:
   fn newDice({seed: u64}) -> {state: u64, inc: u64} [pure, no_alloc]
-  fn newDiceFromOs() -> {state: u64, inc: u64} [io]
+  fn newDiceFromOs() -> {state: u64, inc: u64} [io: sys]
   fn rollRange({state: u64, inc: u64, low: i64, high: i64}) -> {state: u64, inc: u64, value: i64} [pure, no_alloc]
