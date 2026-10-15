@@ -393,4 +393,59 @@ fn main() -> int:
     else:
       t.ok "-O:inline marks a small pure fn inline"
 
+  t.src """
+fn memo(64) fib({n: int}) -> int [pure]:
+  if n < 2:
+    return n
+  let a = n - 1
+  let b = n - 2
+  let x = {n: a} fib
+  let y = {n: b} fib
+  return x + y
+
+fn memo wide({n: int, k: u8}) -> int [pure]:
+  return n + 1
+
+fn main() -> int:
+  let r = {n: 40} fib
+  let w = {n: 3, k: 2} wide
+  return r - 102334155 + w - 4
+"""
+  t.checkSays "an unbounded memo warns that its cache grows (TK-EF09)", "TK-EF09"
+  t.hostRuns "fn memo gives the same answer on every backend (fib 40 is instant)", 0
+  t.emitsD "memo: the D wrapper keeps a thread-local slot table", "Slot\\[64\\]"
+
+  t.src """
+fn memo(8) f({n: int}) -> int:
+  return n
+"""
+  t.badCheck "memo needs [pure]", "TK-EF08"
+
+  t.src """
+fn memo(8) f({s: str}) -> int [pure]:
+  return 1
+"""
+  t.badCheck "memo takes only integer and bool parameters", "TK-EF08"
+
+  t.src """
+fn memo pick({a: i8, flag: bool}) -> int [pure]:
+  let w = a ^int
+  if flag:
+    return 100 + w
+  return w * 2
+
+fn memo(4) tiny({n: u8}) -> int [pure]:
+  return 1
+
+fn main() -> int:
+  let x = {a: -5, flag: true} pick
+  let y = {a: 7, flag: false} pick
+  let z = {a: -5, flag: true} pick
+  let m = {a: -127, flag: false} pick
+  return x + y + z + m + 50
+"""
+  t.checkSilent "a small input space is a direct table, so no unbounded warning", "TK-EF09"
+  t.emits "memo: i8 x bool is a 512-entry table indexed directly", "array\\[512, "
+  t.hostRuns "memo: direct-index tables agree on every backend, signed and bool keys included", 0
+
   t.finish()

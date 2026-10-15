@@ -396,7 +396,7 @@ closure no longer exist in any `codegen_*.nim`.
 
 | # | issue | | size |
 |---|---|---|---|
-| S4.1 | **#64** | **BUILT 2026-10-14** (`claude/effects-mechanism`): marker families, restriction call rule, TK-EF03..07, derived facts + `tuck effects`, `--host-checks`. Left: D/Odin host attributes, debug assertions, lock elision, cross-module derived facts, `fn memo` (#69). See thoughts/shared/plans/2026-10-14-effects-wiring-proposal.md | M |
+| S4.1 | **#64** | **BUILT 2026-10-14** (`claude/effects-mechanism`): marker families, restriction call rule, TK-EF03..07, derived facts + `tuck effects`, `--host-checks`. `fn memo` BUILT (bounded cache, direct tables for small input spaces, unbounded + warning). Left: D/Odin host attributes, debug assertions, lock elision, cross-module derived facts. FUTURE, needs its own design: compile-time evaluation of `[pure]` fns (a `const` table built by a pure fn; folding calls with constant arguments). Constraints already found: the evaluator's arithmetic must match all three backends exactly (traps, wrapping); never precompute a whole input space (memory, and inputs that would trap); a failed evaluation must fall back to run time or be a clear compile error. See thoughts/shared/plans/2026-10-14-effects-wiring-proposal.md | M |
 
 ### S5 — Stage-boundary debt
 

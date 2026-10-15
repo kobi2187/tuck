@@ -883,6 +883,21 @@ proc nimFnPragmas*(d: Decl): string =
   if ps.len > 0: " {." & ps.join(", ") & ".}" else: ""
 
 
+const MemoRawSuffix* = "ˑmemoraw"
+
+proc memoRawDecl*(d: Decl): Decl =
+  ## The body of a `fn memo`, as an ordinary fn under another name. Recursion
+  ## inside it still names the original, so it goes through the cache.
+  new(result)
+  result[] = d[]
+  result.name = d.name & MemoRawSuffix
+  result.isMemo = false
+
+proc memoVar*(d: Decl): string =
+  result = "tuckMemo_"
+  for ch in d.name:
+    if ch in IdentChars and ch != '_': result.add ch
+
 proc depthVar*(d: Decl): string =
   ## The per-fn recursion counter a `[depth: N]` fn keeps (thread-local, so a
   ## recursion on one thread never counts another's frames).
@@ -894,3 +909,15 @@ proc depthDisplayName*(d: Decl): string =
   ## The name a user wrote: the mangler's prefix (`tuckˑfnˑ`) is not theirs.
   let parts = d.name.split("ˑ")
   parts[^1]
+
+
+proc memoIndexExpr*(d: Decl,
+                    offset: proc (name: string, isBool: bool, half: int): string): string =
+  ## The direct-table index of a `fn memo`'s arguments, mixed-radix:
+  ## `((o0) * size1 + o1) * size2 + o2`. `offset` spells one argument's
+  ## 0-based offset in the target language.
+  result = "0"
+  for i, p in d.fnParams:
+    let dom = memoTypeDomain(p.typ.name)
+    let term = offset(p.name, p.typ.name == "bool", dom.half)
+    result = if i == 0: term else: "(" & result & ") * " & $dom.size & " + " & term

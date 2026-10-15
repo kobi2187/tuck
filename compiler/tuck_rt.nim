@@ -5,6 +5,7 @@ import std/typetraits
 import ./tuck_mem
 export tuck_mem   # tuckDrop, tuckMove, tuckCopy, …: what emitted code calls
 import std/strutils
+import std/tables as stdtables
 import std/math as stdmath
 
 type
@@ -340,6 +341,26 @@ proc tuckReportUnhandled*(code: uint16, site: string) =
   ## The default `errors` handler: reports a dropped error's code and call
   ## site on stderr and lets the program continue.
   stderr.writeLine("TUCK UNHANDLED: error " & $code & " at " & site)
+
+type TuckMemoTable*[K, V] = object
+  ## The unbounded `fn memo` cache: every distinct argument list ever seen.
+  t: stdtables.Table[K, V]
+
+proc tuckMemoGet*[K, V](m: var TuckMemoTable[K, V], k: K, v: var V): bool =
+  if m.t.hasKey(k):
+    v = m.t[k]
+    return true
+  false
+
+proc tuckMemoPut*[K, V](m: var TuckMemoTable[K, V], k: K, v: V) =
+  m.t[k] = v
+
+proc tuckMemoMix*[T](h: uint64, v: T): uint64 {.inline.} =
+  ## One argument folded into a `fn memo` slot hash (FNV-1a style). Integers
+  ## and bools only, which is all `fn memo` accepts.
+  when T is bool: (h xor uint64(ord(v))) * 1099511628211'u64
+  elif T is SomeUnsignedInt: (h xor uint64(v)) * 1099511628211'u64
+  else: (h xor cast[uint64](int64(v))) * 1099511628211'u64
 
 proc tuckDepthExceeded*(name: string, limit: int) {.noreturn.} =
   ## A `[depth: N]` fn was entered more than N levels deep. Same exit status
