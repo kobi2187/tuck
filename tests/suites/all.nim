@@ -9,9 +9,6 @@ import ../harness
 import actor_heartbeat
 import actor_mode
 import actor_result
-import numeric_cast
-import overflow
-import effect_fix
 import auto_alias
 import bare_variant
 import cli_smoke
@@ -24,6 +21,7 @@ import declarations
 import diagnostics
 import doc_snippets
 import duplicates
+import effect_fix
 import end_to_end
 import examples
 import extern_impl
@@ -45,13 +43,16 @@ import mangle
 import member_names
 import memory
 import memory_rules
+import numeric_cast
 import object_composition
 import odin_backend
 import optimize
+import overflow
 import owner_fields
 import ownership_rules
 import pointer_containment
 import pools
+import property_tests
 import recursive_types
 import resources
 import resources_rt
@@ -77,9 +78,6 @@ let registry: seq[Entry] = @[
   ("actor_heartbeat",     SuiteProc(actor_heartbeat.run),     false),
   ("actor_mode",          SuiteProc(actor_mode.run),          true),
   ("actor_result",        SuiteProc(actor_result.run),        true),
-  ("numeric_cast",        SuiteProc(numeric_cast.run),        true),
-  ("overflow",            SuiteProc(overflow.run),            true),
-  ("effect_fix",          SuiteProc(effect_fix.run),          true),
   ("auto_alias",          SuiteProc(auto_alias.run),          false),
   ("bare_variant",        SuiteProc(bare_variant.run),        true),
   ("cli_smoke",           SuiteProc(cli_smoke.run),           false),
@@ -92,6 +90,7 @@ let registry: seq[Entry] = @[
   ("diagnostics",         SuiteProc(diagnostics.run),         false),
   ("doc_snippets",        SuiteProc(doc_snippets.run),        false),
   ("duplicates",          SuiteProc(duplicates.run),          true),
+  ("effect_fix",          SuiteProc(effect_fix.run),          false),
   ("end_to_end",          SuiteProc(end_to_end.run),          false),
   ("examples",            SuiteProc(examples.run),            true),
   ("extern_impl",         SuiteProc(extern_impl.run),         false),
@@ -113,13 +112,16 @@ let registry: seq[Entry] = @[
   ("member_names",        SuiteProc(member_names.run),        true),
   ("memory",              SuiteProc(memory.run),              false),
   ("memory_rules",        SuiteProc(memory_rules.run),        false),
+  ("numeric_cast",        SuiteProc(numeric_cast.run),        false),
   ("object_composition",  SuiteProc(object_composition.run),  false),
   ("odin_backend",        SuiteProc(odin_backend.run),        false),
   ("optimize",            SuiteProc(optimize.run),            false),
+  ("overflow",            SuiteProc(overflow.run),            false),
   ("owner_fields",        SuiteProc(owner_fields.run),        false),
   ("ownership_rules",     SuiteProc(ownership_rules.run),     false),
   ("pointer_containment", SuiteProc(pointer_containment.run), true),
   ("pools",               SuiteProc(pools.run),               false),
+  ("property_tests",      SuiteProc(property_tests.run),      false),
   ("recursive_types",     SuiteProc(recursive_types.run),     false),
   ("resources",           SuiteProc(resources.run),           false),
   ("resources_rt",        SuiteProc(resources_rt.run),        false),

@@ -72,6 +72,7 @@ import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
 import compiler/actor_mode
 import compiler/pipeline
+import compiler/proptest
 import compiler/verbose
 import compiler/backend_prepare
 import compiler/resolve_refs
@@ -161,6 +162,13 @@ declares, the capabilities its body needs, the restrictions the compiler
 derives it could carry (pure, no_alloc, irq_safe, bounded-depth), and the
 markers you could add. Derived, never inferred silently: add the marker to
 the signature to make it a promise. Unknown callees give no fact.""",
+  "test": """tuck test file.tuck [--properties] [--cases:N] [--seed:N]
+
+Property tests generated from the program itself (issue #68). Every
+top-level fn that declares no capability effect, takes integer or bool
+parameters and returns a type with an `invariant:` block is called with
+generated arguments (default 200 cases, seeded and repeatable); the
+invariant is the property. A failure names the input.""",
   "explain": """tuck explain CODE
 
 Print what a diagnostic code means and how to fix it, e.g.:
@@ -705,6 +713,50 @@ proc checkProgram(path: string, needBodies = false,
     discard takeNarrowSites()
   sizeReport(path, result)
 
+proc runPropertyTests(path: string, opts: seq[string], verifyStages: bool) =
+  ## `tuck test --properties file.tuck` (issue #68): generated calls of the
+  ## effect-free fns whose return type carries an invariant. One program per
+  ## target, so a failure in one does not hide the rest.
+  var cases = 200
+  var seed = 1'i64
+  for o in opts:
+    if o.startsWith("--cases:"): cases = parseInt(o["--cases:".len .. ^1])
+    if o.startsWith("--seed:"): seed = parseInt(o["--seed:".len .. ^1])
+  let loaded = checkProgram(path, verifyStages = verifyStages)
+  let targets = targetsOf(loaded[^1].m)
+  if targets.len == 0:
+    echo "no property targets: nothing here is an effect-free fn with integer/bool " &
+         "parameters returning a type with an `invariant:`"
+    return
+  let dir = parentDir(absolutePath(path))
+  let base = splitFile(path).name
+  var failures = 0
+  for t in targets:
+    let harnessName = base & "_props_" & t.name
+    let harness = dir / (harnessName & ".tuck")
+    writeFile(harness, harnessFor(base, t, cases, seed))
+    defer:
+      removeFile(harness)
+      removeFile(dir / harnessName)
+    let build = execCmdEx(quoteShell(getAppFilename()) & " b " & quoteShell(harness))
+    if build.exitCode != 0:
+      echo t.name, ": could not build the harness\n", build.output
+      inc failures
+      continue
+    let run = execCmdEx(quoteShell(dir / harnessName))
+    if run.exitCode == 0:
+      echo t.name, ": ", cases, " cases, ", t.returns, " invariant held"
+      continue
+    inc failures
+    var lastCase = ""
+    var detail = ""
+    for line in run.output.splitLines:
+      if line.startsWith("CASE "): lastCase = line["CASE ".len .. ^1]
+      elif line.strip.len > 0: detail = line.strip.replace("tuckˑtypeˑ", "")
+    echo t.name, ": FAILED on ", lastCase
+    echo "  ", detail
+  if failures > 0: quit(1)
+
 when isMainModule:
   # `help`/`-h`/`--help` take an optional COMMAND, never a file — answered
   # before the paramCount check below, which would otherwise treat a bare
@@ -886,6 +938,8 @@ when isMainModule:
   of "check", "ch":
     discard checkProgram(path, verifyStages = verifyStages)
     echo "OK (", elapsedMs(t0), ")"
+  of "test":
+    runPropertyTests(path, opts, verifyStages)
   of "effects", "ef":
     effectReportOn = true
     discard checkProgram(path, verifyStages = verifyStages)

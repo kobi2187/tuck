@@ -224,6 +224,37 @@ default output is unchanged. It skips generic fns and fns with
 
 ---
 
+## 4c. Property tests from the program: `tuck test`
+
+```sh
+tuck test file.tuck --properties [--cases:200] [--seed:1]
+```
+
+You have often already written both halves of a property test. A fn that
+declares no capability effect is safe to call with any input (deterministic,
+nothing to set up or mock), and a return type's `invariant:` block is the
+property. `tuck test` finds every top-level fn that
+
+- declares no `io` or `may_block`,
+- takes only integer and bool parameters, and
+- returns a type that carries an `invariant:`,
+
+calls each with generated arguments (a repeatable stream, half of it leaning on
+edge values such as 0, 1, -1 and the type's bounds), and lets the invariant
+fire:
+
+```
+spanOf: FAILED on spanOf {total: 1, parts: 0, i: 10, have: -1}
+  Invariant violated on Chunk: (self.have >= 0)
+steady: 40 cases, Chunk invariant held
+```
+
+The exit status is 1 when any target fails. A fn that crashes on an input
+(rather than violating the invariant) is reported the same way, with the
+crash text. Records and sum types as parameters are not generated yet.
+
+---
+
 ## 5. Numbers are always named
 
 Tuck never converts between numeric types behind your back, and never picks an
