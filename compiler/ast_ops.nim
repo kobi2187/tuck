@@ -746,3 +746,38 @@ proc substType*(t: Type, subs: Table[string, Type]): Type =
   of tkRename:
     Type(span: t.span, kind: tkRename, attrs: t.attrs,
          underlying: substType(t.underlying, subs), renames: t.renames)
+
+
+# --- fn memo: how big is the input space ------------------------------------
+
+const MemoDirectLimit* = 65536
+  ## An unbounded `fn memo` whose whole input space is at most this big is a
+  ## direct table, not a growing one.
+
+proc memoTypeDomain*(typeName: string): tuple[size: int, half: int] =
+  ## How many values a `fn memo` parameter type has, and the offset that maps
+  ## its smallest value to 0 (half the range for a signed type). size 0 means
+  ## "too many to index by value".
+  case typeName
+  of "bool": (2, 0)
+  of "u8": (256, 0)
+  of "i8": (256, 128)
+  of "u16": (65536, 0)
+  of "i16": (65536, 32768)
+  else: (0, 0)
+
+proc memoDirectSize*(d: Decl): int =
+  ## The size of the table indexed directly by the arguments, or 0 when the
+  ## space is too large (or the signature is not a memo one). With `memo(N)`
+  ## it must fit in N, otherwise the hashed N-slot cache stays; with no size
+  ## it must fit in MemoDirectLimit.
+  if not d.isMemo or d.fnParams.len == 0: return 0
+  var total = 1
+  for p in d.fnParams:
+    if p.typ == nil or p.typ.kind != tkNamed: return 0
+    let dom = memoTypeDomain(p.typ.name)
+    if dom.size == 0: return 0
+    total *= dom.size
+    if total > MemoDirectLimit: return 0
+  let cap = if d.memoSize > 0: d.memoSize else: MemoDirectLimit
+  if total <= cap: total else: 0

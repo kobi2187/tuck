@@ -250,6 +250,47 @@ default output is unchanged. It skips generic fns and fns with
 
 ---
 
+## 4b. Memoization: `fn memo`
+
+```tuck
+fn memo(64) fib({n: int}) -> int [pure]:     # 64-slot cache
+  if n < 2:
+    return n
+  let a = n - 1
+  let b = n - 2
+  return ({n: a} fib) + ({n: b} fib)
+
+fn memo slow({n: int}) -> int [pure]: ...    # no size: warns, cache grows
+```
+
+A `memo` fn remembers its results by argument, so a repeated call with the same
+arguments returns the stored answer. Recursive calls go through the cache,
+which turns the exponential `fib` into a linear one.
+
+- **With a size, `fn memo(N)`:** a fixed table of N slots per thread. A new
+  entry that lands on an occupied slot overwrites it. A forgotten entry only
+  costs a recompute, never a wrong answer, and memory never grows.
+- **Without a size, `fn memo`:** every distinct argument list is kept forever.
+  The compiler warns (`TK-EF09`) because that is a slow leak on a long-running
+  program.
+- **Requirements (`TK-EF08`):** the fn must be `[pure]`, non-generic, take
+  only integer and bool parameters, and return an integer, bool or float.
+  Strings, sequences and references are refused, because equal-looking values
+  are not always equal and a cached copy would have to be owned.
+- **Small input spaces become direct tables.** If every parameter is a `bool`,
+  `u8`, `i8`, `u16` or `i16` and the whole input space is small (at most
+  65,536 combinations, and at most N when you wrote `memo(N)`), the arguments
+  index a table directly: no hashing, no stored keys, no collisions, nothing
+  ever evicted. Such a memo cannot grow, so it gets no TK-EF09 warning. Entries
+  fill on first call, never ahead of time, so an input that would trap is never
+  evaluated unless the program calls it.
+- The cache is per thread, so it needs no lock. That is correct because the fn
+  is pure.
+- It only pays when the fn costs more than hashing its arguments. For `x * x`
+  a memo is slower, which is why it is explicit and never automatic.
+
+---
+
 ## 5. Numbers are always named
 
 Tuck never converts between numeric types behind your back, and never picks an
@@ -382,8 +423,9 @@ language follows.
 
 So you can tell a missing feature from a bug:
 
-- **Memoization** (`fn memo`). The prerequisite, a checked `[pure]`, exists. The
-  keyword and the cache do not.
+- **Compile-time evaluation of pure fns** (a `const` table built by a pure fn,
+  and folding calls with constant arguments). It needs an evaluator for the
+  scalar `[pure]` subset whose arithmetic matches the backends exactly.
 - **Derived facts across modules.** The signature index records declared
   markers only.
 - **D and Odin host attributes** for `pure` / `no_alloc` (Nim has the pure one).
