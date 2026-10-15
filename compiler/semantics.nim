@@ -380,6 +380,35 @@ proc checkStackBound(c: Checker, d: Decl) =
       path.join(" -> ") & "), so its depth has no static bound. Fix: turn " &
       "the recursion into a loop, use [recursion: N], or drop [no_recursion]"), d.span)
 
+const MemoKeyTypes = ["int", "i8", "i16", "i32", "i64", "u8", "u16", "u32",
+                      "u64", "bool"]
+const MemoResultTypes = ["int", "i8", "i16", "i32", "i64", "u8", "u16", "u32",
+                         "u64", "bool", "f32", "f64"]
+
+proc memoTypeOk(t: Type, allowed: openArray[string]): bool =
+  t != nil and t.kind == tkNamed and t.name in allowed
+
+proc checkMemo(d: Decl) =
+  ## TK-EF08 / TK-EF09: what `fn memo` needs, and the warning for no size.
+  if not d.isMemo: return
+  var why = ""
+  if emPure notin d.fnEffects: why = "it is not declared [pure]"
+  elif d.fnGenerics.len > 0: why = "it is generic"
+  elif not memoTypeOk(d.fnReturnType, MemoResultTypes):
+    why = "its result is not an integer, bool or float"
+  else:
+    for p in d.fnParams:
+      if not memoTypeOk(p.typ, MemoKeyTypes):
+        why = "parameter '" & p.name & "' is not an integer or bool"
+  if why != "":
+    reportError(withCode(dcEfMemo, "'" & d.name & "' is `memo` but " & why &
+      ". Fix: add [pure] and use only integer/bool parameters and a scalar " &
+      "result, or drop memo"), d.span)
+  elif d.memoSize == 0:
+    warn(dcEfMemoUnbounded, "'" & d.name & "' is `memo` with no size, so its " &
+         "cache grows without bound. Fix: give it a size, `fn memo(256) " &
+         d.name & "(...)`", d.span.line, d.span.col)
+
 proc checkRetiredStack(d: Decl) =
   ## `[stack: N]` was renamed: N read as a byte budget, which it never was.
   if d.fnReturnType == nil: return
@@ -423,6 +452,7 @@ proc verifyFn(c: var Checker, d: Decl) =
   # signature gets it too.
   if d != nil:
     checkMarkerCombinations(d)
+    checkMemo(d)
     checkNoAlloc(d)
   if d == nil or d.fnBody == nil or d.name in c.visiting: return
   c.visiting.incl(d.name)

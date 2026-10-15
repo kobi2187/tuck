@@ -883,6 +883,21 @@ proc nimFnPragmas*(d: Decl): string =
   if ps.len > 0: " {." & ps.join(", ") & ".}" else: ""
 
 
+const MemoRawSuffix* = "ˑmemoraw"
+
+proc memoRawDecl*(d: Decl): Decl =
+  ## The body of a `fn memo`, as an ordinary fn under another name. Recursion
+  ## inside it still names the original, so it goes through the cache.
+  new(result)
+  result[] = d[]
+  result.name = d.name & MemoRawSuffix
+  result.isMemo = false
+
+proc memoVar*(d: Decl): string =
+  result = "tuckMemo_"
+  for ch in d.name:
+    if ch in IdentChars and ch != '_': result.add ch
+
 proc depthVar*(d: Decl): string =
   ## The per-fn recursion counter a `[depth: N]` fn keeps (thread-local, so a
   ## recursion on one thread never counts another's frames).

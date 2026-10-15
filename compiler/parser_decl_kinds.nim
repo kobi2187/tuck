@@ -1219,6 +1219,19 @@ proc parseFnDecl*(p: var Parser, sp: Span): Decl =
      p.peek(1).kind == tkIdent:
     isInline = true
     discard p.advance()
+  # `fn memo name(...)` / `fn memo(256) name(...)` — cache results by argument.
+  # `memo(` followed by a number is the size; `memo({...})` stays a fn NAMED memo.
+  var isMemo = false
+  var memoSize = 0
+  if p.current().kind == tkIdent and p.current().value == "memo" and
+     (p.peek(1).kind == tkIdent or
+      (p.peek(1).kind == tkLParen and p.peek(2).kind == tkIntLit)):
+    isMemo = true
+    discard p.advance()
+    if p.current().kind == tkLParen:
+      discard p.advance()
+      memoSize = parseInt(p.expect(tkIntLit, "Expected the cache size").value)
+      discard p.expect(tkRParen)
   let name = p.parseQualifiedName()
   let (generics, genericBounds) = p.parseBracketedNames("generic parameter name")
   let params = parseParamList(p)
@@ -1229,7 +1242,7 @@ proc parseFnDecl*(p: var Parser, sp: Span): Decl =
        fnGenericBounds: genericBounds,
        fnParams: params, fnReturnType: retType, fnEffects: sig.effects,
        fnBody: body, fnErrorTypes: sig.errTypes, isInline: isInline,
-       fnDepth: sig.depth,
+       fnDepth: sig.depth, isMemo: isMemo, memoSize: memoSize,
        fnResourceKinds: sig.resources, isOnHandler: fromOn)
   # `fn f(...) -> T:` whose whole body is `...` IS a pending signature that
   # happens to be written inline, so it becomes one rather than growing a
