@@ -149,7 +149,7 @@
 # MEASURE, DO NOT GUESS: time each phase in isolation against a generated
 # program, re-parsing between mutating phases so the work is real.
 # ---------------------------------------------------------------------------
-import ast, semantics, lowering, tables, strutils, sets, options
+import ast, semantics, lowering, tables, strutils, sets, options, algorithm
 import resolution
 import ast_query
 import rewrite   # isLiteralPayload — recognize the wrap the pass introduced
@@ -412,6 +412,13 @@ proc hasVariant(t: Type, name: string): bool =
   for v in t.variants:
     if v.name == name: return true
   false
+
+proc sumTypesOwning(tc: TypeChecker, variant: string): seq[string] =
+  ## EVERY declared sum type that has this variant name, in a stable order.
+  for name, body in tc.typeDecls:
+    if body != nil and body.kind == tkSum and body.hasVariant(variant):
+      result.add name
+  result.sort()
 
 proc sumTypeOwning(tc: TypeChecker, variant: string): string =
   ## The declared sum type that owns this variant name, or "".
@@ -4079,10 +4086,30 @@ proc synthNullaryCall(tc: var TypeChecker, e: Expr): Type =
   setCall(semLayer, e, vc)
   tc.synthesize(vc)
 
+proc sharedVariantType(tc: var TypeChecker, e: Expr, owners: seq[string]): Type =
+  ## A variant name two sum types declare: the expected type decides, else it is
+  ## ambiguous (issue #102). The emitters qualify by the type recorded here.
+  let want = if tc.expectedType != nil: tc.resolve(tc.expectedType) else: nil
+  let wantName = if tc.expectedType != nil and tc.expectedType.kind == tkNamed:
+                   tc.expectedType.name else: ""
+  if want != nil and want.kind == tkSum and wantName in owners:
+    return tc.namedType(wantName, e.span)
+  # A declared type arrives RESOLVED to its body, name lost: match it by identity.
+  if want != nil and want.kind == tkSum:
+    for o in owners:
+      if tc.typeDecls[o] == want: return tc.namedType(o, e.span)
+  fail(dcTyAmbiguousVariant, "'" & e.name & "' is a variant of " &
+       owners.join(" and ") & ", and nothing here says which. Fix: qualify " &
+       "it (`" & owners[0] & "." & e.name & "`) or give the place a type",
+       e.span)
+  afterErrorType(e.span)
+
 proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   ## A bare sum-type variant is a value of its sum type. `Light.Red` is the
   ## qualified form of the same thing, handled by the field-access path.
-  let owner = tc.sumTypeOwning(e.name)
+  let owners = tc.sumTypesOwning(e.name)
+  if owners.len > 1: return tc.sharedVariantType(e, owners)
+  let owner = if owners.len == 1: owners[0] else: ""
   if owner != "": return tc.namedType(owner, e.span)
   let regOwner = registryEventOwner(e.name)
   if regOwner != "": return tc.namedType(regOwner, e.span)

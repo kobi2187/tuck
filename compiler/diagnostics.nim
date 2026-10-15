@@ -145,6 +145,7 @@ type
     dcTyCastOutOfRange = "TK-TY41"      ## `70000 ~u16`: a known value that does not fit
     dcTyTypeAsValue = "TK-TY42"         ## a bare type name used as a value (`let k = K`)
     dcTyArithOnRecord = "TK-TY43"       ## arithmetic on a record, not on a number
+    dcTyAmbiguousVariant = "TK-TY44"    ## a bare variant name two sum types declare, with nothing to decide
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -517,6 +518,13 @@ proc parseExplanation(d: DiagCode): string =
     "and no backend will treat it as the number inside. The checker refuses it " &
     "(issue #103) so that \"check OK\" means \"every backend builds\". " &
     "Fix: read the field, `b.ms - a.ms`."
+  of dcTyAmbiguousVariant:
+    "Two sum types in scope declare a variant of this name, and the place it " &
+    "is written says nothing about which one (no parameter, field, match " &
+    "subject or declared type to take it from). The checker will not pick " &
+    "one for you: the emitted code would, and could pick differently on each " &
+    "backend (issue #102). Fix: qualify it, `Fault.Hungup`, or give the " &
+    "place a type: `let s: Fault = Hungup`."
   of dcTyNoneNoPlace:
     "`none` is the absent value of a `T?` — no `next` yet, no result, nothing " &
     "found. It names no T itself, so it takes one from where it is written: " &

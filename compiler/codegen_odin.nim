@@ -586,6 +586,9 @@ proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
   ## their hashed codes; `_` is Odin's bare `case:`.
   let sumName = payloadSumTypeName(ctx.module, ctx.res.typeFor(e.subject))
   if sumName != "": return ctx.genPayloadUnionMatch(e, sumName)
+  let savedHint = tagOwnerHint
+  tagOwnerHint = hintOf(ctx.res.typeFor(e.subject))
+  defer: tagOwnerHint = savedHint
   let ind = "  ".repeat(ctx.indent)
   let subjectStr = ctx.genOdinExpr(e.subject)
   var cases: seq[string]
@@ -622,6 +625,9 @@ proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
 proc genMatchExpr(ctx: var OdinCodegenCtx, e: Expr): string =
   ## exkMatch in value position: a ternary chain, since Odin has no switch
   ## expression. The subject's text is repeated in every comparison.
+  let savedHint = tagOwnerHint
+  tagOwnerHint = hintOf(ctx.res.typeFor(e.subject))
+  defer: tagOwnerHint = savedHint
   let subjectStr = ctx.genOdinExpr(e.subject)
   var res = ""
   var closing = 0
@@ -729,7 +735,8 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   if e.name in ctx.definedVars: return e.name
   # bare enum tag: qualify with its declared owner (Odin has no module-global
   # enum members the way Nim does)
-  let owner = enumTagOwner(ctx.module, e.name)
+  var owner = ""
+  withTagHint(ctx.res.typeFor(e)): owner = enumTagOwner(ctx.module, e.name)
   if owner != "": return ctx.qualifyEnumOwner(owner) & "." & e.name
   # A variant of an INLINE sum (`state: {Red, Green} = Red`) has no owner to
   # qualify with; Odin's implicit selector names it, the target being typed.
