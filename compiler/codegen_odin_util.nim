@@ -43,17 +43,44 @@ proc errCodeLit*(name: string): string =
 # genPatternStr is NOT here either — same story as repeat/capitalize:
 # ast_query already exports it.
 
+var tagOwnerHint* = ""
+  ## The sum type the surrounding place expects (a `match` subject's type, the
+  ## checker's type for a bare variant). When two sum types declare a tag, the
+  ## owner is THIS one, not whichever is declared first (issue #102).
+
+proc hintOf*(t: Type): string =
+  ## The name to put in `tagOwnerHint` for a place of type `t`.
+  if t != nil and t.kind == tkNamed: t.name else: ""
+
+template withTagHint*(t: Type, body: untyped) =
+  let savedTagHint = tagOwnerHint
+  tagOwnerHint = hintOf(t)
+  try: body
+  finally: tagOwnerHint = savedTagHint
+
+proc ownsTag(d: Decl, tag: string): bool =
+  ## Is `d` a declared sum with a variant called `tag`?
+  if d == nil or d.kind != dkType or d.typeBody == nil or
+     d.typeBody.kind != tkSum: return false
+  for v in d.typeBody.variants:
+    if v.name == tag: return true
+
+proc tagEnumName(d: Decl): string =
+  ## The enum the tags of sum `d` live on: its `<Name>Kind` when any variant
+  ## carries a payload, else the sum itself.
+  for v in d.typeBody.variants:
+    if v.fields.len > 0: return d.name & "Kind"
+  d.name
+
 proc enumTagOwner*(m: Module, tag: string): string =
   ## The declared enum (or its Kind enum) that owns a variant tag, if any.
   ## A payload sum's tags live on its `<Name>Kind` enum, so that is the owner.
-  ## Empty when no declared sum has the tag (an inline sum, say).
+  ## When two sums share the tag, the hinted one wins (issue #102); otherwise
+  ## the first declared. Empty when no declared sum has the tag (an inline sum).
+  if tagOwnerHint != "":
+    for d in m.decls:
+      if d != nil and d.name == tagOwnerHint and d.ownsTag(tag):
+        return d.tagEnumName
   for d in m.decls:
-    if d != nil and d.kind == dkType and d.typeBody != nil and
-       d.typeBody.kind == tkSum:
-      for v in d.typeBody.variants:
-        if v.name == tag:
-          var hasPayload = false
-          for vv in d.typeBody.variants:
-            if vv.fields.len > 0: hasPayload = true
-          return (if hasPayload: d.name & "Kind" else: d.name)
-  return ""
+    if d.ownsTag(tag): return d.tagEnumName
+  ""

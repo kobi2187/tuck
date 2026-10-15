@@ -4,7 +4,7 @@
 # DeclKind) and everything it calls — fn/object/actor/registry/register/
 # mixin/err-handler. Calls INTO codegen.nim's genExpr for fn
 # bodies (one-way: genExpr never calls back into anything here).
-import ast, strutils, sets, tables
+import ast, strutils, sets, tables, sequtils
 import mangle   # mangleName — a requirement's emitted spelling, for `mixin`
 import resolution
 import ast_query
@@ -271,19 +271,34 @@ proc genActorMemberFn*(ctx: var CodegenCtx, m: Decl, actorName: string): string 
                   fnEffects: m.fnEffects, fnDepth: m.fnDepth)
   ctx.genFnDecl(copy)
 
-proc genTransitionProcs*(d: Decl, kindName: string, hasPayload: bool): string =
+proc sharedTags*(m: Module): HashSet[string] =
+  ## Variant names declared by more than one sum type in the module. Nim lets
+  ## an enum field be used bare only while it is unambiguous (issue #102).
+  var seen: HashSet[string]
+  for d in m.decls:
+    if d != nil and d.kind == dkType and d.typeBody != nil and
+       d.typeBody.kind == tkSum:
+      for v in d.typeBody.variants:
+        if v.name in seen: result.incl v.name
+        seen.incl v.name
+
+proc genTransitionProcs*(d: Decl, kindName: string, hasPayload: bool,
+                         shared: HashSet[string] = initHashSet[string]()): string =
   ## The two procs a sum with a `transitions` block gets: `canTransition`, a
   ## pure case over the allowed edges, and `transitionTo`, which raises on a
   ## disallowed edge before assigning.
   var canLines: seq[string]
   canLines.add("proc canTransition*(frm, to: " & kindName & "): bool =")
   canLines.add("  case frm")
+  proc tag(n: string): string =
+    if n in shared: kindName & "." & n else: n
   for v in d.typeBody.variants:
     let allowed = allowedTransitions(d.typeBody, v.name)
     if allowed.len > 0:
-      canLines.add("  of " & v.name & ": to in {" & allowed.join(", ") & "}")
+      canLines.add("  of " & tag(v.name) & ": to in {" &
+                   allowed.mapIt(tag(it)).join(", ") & "}")
     else:
-      canLines.add("  of " & v.name & ": false")
+      canLines.add("  of " & tag(v.name) & ": false")
   var res = canLines.join("\n") & "\n"
   let kindOf = if hasPayload: ".kind" else: ""
   res.add("proc transitionTo*(self: var " & d.name & ", target: " & d.name & ") =\n" &
@@ -388,7 +403,7 @@ proc genSumType*(ctx: var CodegenCtx, d: Decl): string =
     res.add(genSumDrop(d))
   if hasTransitions:
     # transition matrix: pure predicate + checked assignment
-    res.add(genTransitionProcs(d, kindName, hasPayload))
+    res.add(genTransitionProcs(d, kindName, hasPayload, sharedTags(ctx.module)))
   return res
 
 proc genRecordType*(ctx: var CodegenCtx, d: Decl): string =

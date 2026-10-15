@@ -149,7 +149,7 @@
 # MEASURE, DO NOT GUESS: time each phase in isolation against a generated
 # program, re-parsing between mutating phases so the work is real.
 # ---------------------------------------------------------------------------
-import ast, semantics, lowering, tables, strutils, sets, options
+import ast, semantics, lowering, tables, strutils, sets, options, algorithm
 import resolution
 import ast_query
 import rewrite   # isLiteralPayload — recognize the wrap the pass introduced
@@ -412,6 +412,13 @@ proc hasVariant(t: Type, name: string): bool =
   for v in t.variants:
     if v.name == name: return true
   false
+
+proc sumTypesOwning(tc: TypeChecker, variant: string): seq[string] =
+  ## EVERY declared sum type that has this variant name, in a stable order.
+  for name, body in tc.typeDecls:
+    if body != nil and body.kind == tkSum and body.hasVariant(variant):
+      result.add name
+  result.sort()
 
 proc sumTypeOwning(tc: TypeChecker, variant: string): string =
   ## The declared sum type that owns this variant name, or "".
@@ -1760,8 +1767,22 @@ proc widerOperand(lt, rt: Type): Type =
   ## The type an arithmetic result carries.
   if isFlexible(lt): rt else: lt
 
+proc failIfRecordOperand(tc: TypeChecker, lt, rt: Type, e: Expr) =
+  ## TK-TY43: a record is not a number, even a one-field one (`{ms: u64}` from
+  ## `nowMs`). No backend unwraps it, so the checker must not let it through.
+  for (t, side) in operands(lt, rt, e):
+    if isFlexible(t): continue
+    let r = tc.resolve(t)
+    if r != nil and r.kind == tkRecord:
+      var hint = ""
+      if r.fields.len == 1:
+        hint = " — did you mean the field, `x." & r.fields[0].name & "`?"
+      fail(dcTyArithOnRecord, "arithmetic needs numbers, but this operand is " &
+           "a record " & typeName(t) & hint, side.span)
+
 proc synthArithmetic(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
   ## `+ - * %`: both operands must agree; the result has their type.
+  tc.failIfRecordOperand(lt, rt, e)
   tc.failIfMismatched(lt, rt, "arithmetic", e.span)
   widerOperand(lt, rt)
 
@@ -1783,6 +1804,7 @@ proc failIfWrongDivKind(lt, rt: Type, e: Expr) =
 proc synthDivision(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
   ## `/i` and `/f`: the operator must match the operand kind (integer or
   ## float), the operands must agree, and the result has their type.
+  tc.failIfRecordOperand(lt, rt, e)
   failIfWrongDivKind(lt, rt, e)
   tc.failIfMismatched(lt, rt, "division", e.span)
   widerOperand(lt, rt)
@@ -4064,10 +4086,30 @@ proc synthNullaryCall(tc: var TypeChecker, e: Expr): Type =
   setCall(semLayer, e, vc)
   tc.synthesize(vc)
 
+proc sharedVariantType(tc: var TypeChecker, e: Expr, owners: seq[string]): Type =
+  ## A variant name two sum types declare: the expected type decides, else it is
+  ## ambiguous (issue #102). The emitters qualify by the type recorded here.
+  let want = if tc.expectedType != nil: tc.resolve(tc.expectedType) else: nil
+  let wantName = if tc.expectedType != nil and tc.expectedType.kind == tkNamed:
+                   tc.expectedType.name else: ""
+  if want != nil and want.kind == tkSum and wantName in owners:
+    return tc.namedType(wantName, e.span)
+  # A declared type arrives RESOLVED to its body, name lost: match it by identity.
+  if want != nil and want.kind == tkSum:
+    for o in owners:
+      if tc.typeDecls[o] == want: return tc.namedType(o, e.span)
+  fail(dcTyAmbiguousVariant, "'" & e.name & "' is a variant of " &
+       owners.join(" and ") & ", and nothing here says which. Fix: qualify " &
+       "it (`" & owners[0] & "." & e.name & "`) or give the place a type",
+       e.span)
+  afterErrorType(e.span)
+
 proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   ## A bare sum-type variant is a value of its sum type. `Light.Red` is the
   ## qualified form of the same thing, handled by the field-access path.
-  let owner = tc.sumTypeOwning(e.name)
+  let owners = tc.sumTypesOwning(e.name)
+  if owners.len > 1: return tc.sharedVariantType(e, owners)
+  let owner = if owners.len == 1: owners[0] else: ""
   if owner != "": return tc.namedType(owner, e.span)
   let regOwner = registryEventOwner(e.name)
   if regOwner != "": return tc.namedType(regOwner, e.span)
@@ -4085,6 +4127,11 @@ proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
     # in value position" case asNamedCallee already trusts at the CALL
     # position (`{fields} TypeName` construction); this is its bare-name
     # sibling, not a new exemption invented for this one call site.
+    if not tc.composing:
+      fail(dcTyTypeAsValue, "'" & e.name & "' is a type, not a value, so " &
+         "`" & e.name & "` alone has nothing to bind. Fix: build a value with " &
+           "a construction, `" & e.name & " {}` (naming each field if it has any)",
+           e.span)
     return tc.namedType(e.name, e.span)
   # Every legitimate shape a bare Capitalized-or-lowercase name can be —
   # local, nullary call, sum variant, registry event, pending marker,
@@ -4300,7 +4347,12 @@ proc synthFill(tc: var TypeChecker, e: Expr): Type =
 
 proc synthUnary(tc: var TypeChecker, e: Expr): Type =
   ## `not` yields bool; every other unary keeps its operand's type.
+  # `+ Type` in a type body names the type to compose: a bare type name is
+  # right THERE and nowhere else (TK-TY42 refuses it as a value).
+  let savedComposing = tc.composing
+  tc.composing = e.unaryOp == uoComposition
   let t = tc.synthesize(e.operand)
+  tc.composing = savedComposing
   if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
 
 proc failIfCastNotNumeric(e: Expr, target, src: Type) =
@@ -6346,7 +6398,13 @@ proc checkIfaceMatchesComplete(mods: seq[tuple[name, path: string, m: Module]]) 
 proc selfRooted(res: Resolution, e: Expr): bool =
   ## Does `e` name `self` or a place inside it — `self.n`, `self.inner`, or
   ## a field written bare (an owner field, Resolution.ownerFields)?
-  let r = assignRoot(e)
+  var r = assignRoot(e)
+  # An element write goes THROUGH the place: `self.cells[i] = v` changes self
+  # as surely as `self.cells = ...` does (issue #100). assignRoot stops at an
+  # index on purpose, so peel the indexing here, where the question is "does
+  # this change the object", not "which variable is written".
+  while r != nil and r.kind == exkBracket:
+    r = assignRoot(r.brReceiver)
   r != nil and r.kind == exkVar and (r.name == "self" or res.isOwnerField(r))
 
 proc writesSelfDirectly(res: Resolution, fn: Decl): bool =
