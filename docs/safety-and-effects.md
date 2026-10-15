@@ -180,6 +180,14 @@ How to read it:
   never guesses optimistically.
 - A recursive fn derives nothing, and `bounded-depth` is absent for it.
 
+Actor `on` handlers are listed too, as `Actor.handler`. One that declares no
+markers, needs none and reaches no other actor, pool or register is reported
+**isolated**: it can touch nothing but its own actor's state, and the checker
+has already proved it.
+
+Because the output is deterministic (source order), `tuck effects f.tuck >
+effects.txt` checked into a repository turns effect creep into a reviewable diff.
+
 Derived facts are module-local today. A fn imported from another module
 contributes its *declared* markers, not its derived ones.
 
