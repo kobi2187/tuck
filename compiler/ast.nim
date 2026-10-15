@@ -56,6 +56,11 @@ type
     emNoRecursion
     emPriority
     emPure
+    emIoNet       # [io: net]     — appended: the sig-index cache stores ordinals
+    emIoFs        # [io: fs]
+    emIoClock     # [io: clock]
+    emIoConsole   # [io: console]
+    emIoSys       # [io: sys]      — arguments, environment, exit
 
 
   ResourcePolicy* = enum

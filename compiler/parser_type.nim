@@ -248,6 +248,7 @@ type
     resources*: seq[string]
     keeps*: seq[string]
     view*: string
+    badIo*: string   # `[io: <name>]` naming no kind; the parser reports it
     depth*: int   # [recursion: N] — recursion allowed to N nested calls; 0 = unset
 
 proc takeAttr*(tail: var SignatureTail, name, value: string): bool =
@@ -278,7 +279,10 @@ proc harvestEffects*(t: Type, tail: var SignatureTail) =
   var kept: seq[TypeAttr]
   for a in t.attrs:
     var marker: EffectMarker
-    if effectMarkerFromName(a.name, marker): tail.effects.add(marker)
+    if a.name == "io" and a.value != "":
+      if ioKindMarker(a.value, marker): tail.effects.add(marker)
+      else: tail.badIo = a.value
+    elif effectMarkerFromName(a.name, marker): tail.effects.add(marker)
     elif not tail.takeAttr(a.name, a.value): kept.add(a)
   t.attrs = kept
   if t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and

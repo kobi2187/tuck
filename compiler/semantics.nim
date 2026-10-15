@@ -138,7 +138,7 @@ proc callEffects(c: var Checker, e: Expr, res: var Demands) =
         res = union(res, callee)
         # The [io] marker IS the async annotation: a call to an [io] fn is a
         # suspend point. Flag the call site so codegen emits the async transform.
-        if emIo in callee.effects:
+        if hasIo(callee.effects):
           semLayer.markAsync(e)
 
 proc synthesizeExpr(c: var Checker, e: Expr): Demands =
@@ -207,10 +207,10 @@ proc checkExpr(c: var Checker, e: Expr, expected: Demands,
   # restricted side (checkRestrictions), and an attribute propagates nowhere;
   # treating them as obligations rejected a plain fn calling a `[no_alloc]` one.
   for eff in actual.effects:
-    if familyOf(eff) == mfCapability and eff notin expected.effects:
+    if familyOf(eff) == mfCapability and not admits(expected.effects, eff):
       missing.add effectName(eff)
   for eff in actual.effects:
-    if familyOf(eff) == mfCapability and eff notin expected.effects:
+    if familyOf(eff) == mfCapability and not admits(expected.effects, eff):
       let (callee, span) = c.culpritCall(e, eff)
       reportError(withCode(dcEfBudget,
         "Expression requires effect [" & effectName(eff) & "], which is " &
@@ -473,7 +473,8 @@ proc verifyFn(c: var Checker, d: Decl) =
   # about it changed nothing.
   let budget = if d.name == "main":
                  Demands(effects: @[emIo, emNoAlloc, emIrqSafe, emUnsafe,
-                                    emMayBlock, emNoRecursion, emPriority],
+                                    emMayBlock, emNoRecursion, emPriority] &
+                                   toSeq(IoKinds),
                          resources: c.everyKind & d.fnResourceKinds)
                else: Demands(effects: d.fnEffects,
                              resources: d.fnResourceKinds)
@@ -482,7 +483,7 @@ proc verifyFn(c: var Checker, d: Decl) =
   c.checkStackBound(d)
   let actual = c.checkExpr(d.fnBody, budget, d.name)
   # The other direction (issue #14): a declared [io] the body never needs.
-  if d.name != "main" and emIo in d.fnEffects and emIo notin actual.effects and
+  if d.name != "main" and emIo in d.fnEffects and not hasIo(actual.effects) and
      not c.mayDoIoUnseen(d.fnBody):
     warn(dcEfUnused, "'" & d.name & "' declares [io], but nothing in its " &
          "body performs I/O, suspends or spawns. Fix: remove [io] from its " &

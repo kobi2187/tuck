@@ -69,6 +69,32 @@ not declare it. Fix: declare [io] on 'outer'
 The reverse is a warning (`TK-EF02`): declaring `[io]` on a fn whose body never
 needs it makes every caller carry the marker for nothing.
 
+### Which part of the world: `[io: kind]`
+
+`[io]` says "touches the world". A kind says which part:
+
+```tuck
+fn fetch({url: str}) -> !{body: str} [io: net, error: NetError]: ...
+fn save({path: str, data: str}) -> !void [io: fs, error: FsError]: ...
+```
+
+The kinds are `net`, `fs`, `clock`, `console` and `sys` (arguments, environment,
+exit). The list is closed: `[io: banana]` is a parse error that names the kinds,
+so a typo can never become a new kind. Adding a kind is one entry in
+`compiler/ast_ops.nim`.
+
+| a fn declaring | may call |
+|---|---|
+| `[io]` | any I/O fn, of any kind |
+| `[io: net]` | `[io: net]` fns only; not `[io: fs]`, and not bare `[io]` (that one may do any kind) |
+| `[io: net, io: fs]` | both kinds |
+
+So "this library is `[io: net]`, therefore it never writes to disk" is a
+statement the compiler checks. The standard library's fns carry their kind
+(`printLine` is `[io: console]`, `readFile` is `[io: fs]`, `nowMs` is
+`[io: clock]`). A caller that wrote plain `[io]` keeps working. `irq_safe` and
+`pure` exclude every kind. Async lowering treats any kind like `[io]`.
+
 ### Restrictions: `no_alloc`, `irq_safe`, `pure`
 
 ```tuck
