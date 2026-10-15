@@ -251,6 +251,13 @@ which turns the exponential `fib` into a linear one.
   only integer and bool parameters, and return an integer, bool or float.
   Strings, sequences and references are refused, because equal-looking values
   are not always equal and a cached copy would have to be owned.
+- **Small input spaces become direct tables.** If every parameter is a `bool`,
+  `u8`, `i8`, `u16` or `i16` and the whole input space is small (at most
+  65,536 combinations, and at most N when you wrote `memo(N)`), the arguments
+  index a table directly: no hashing, no stored keys, no collisions, nothing
+  ever evicted. Such a memo cannot grow, so it gets no TK-EF09 warning. Entries
+  fill on first call, never ahead of time, so an input that would trap is never
+  evaluated unless the program calls it.
 - The cache is per thread, so it needs no lock. That is correct because the fn
   is pure.
 - It only pays when the fn costs more than hashing its arguments. For `x * x`
@@ -390,6 +397,9 @@ language follows.
 
 So you can tell a missing feature from a bug:
 
+- **Compile-time evaluation of pure fns** (a `const` table built by a pure fn,
+  and folding calls with constant arguments). It needs an evaluator for the
+  scalar `[pure]` subset whose arithmetic matches the backends exactly.
 - **Derived facts across modules.** The signature index records declared
   markers only.
 - **D and Odin host attributes** for `pure` / `no_alloc` (Nim has the pure one).

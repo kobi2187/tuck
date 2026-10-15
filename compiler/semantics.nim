@@ -404,7 +404,7 @@ proc checkMemo(d: Decl) =
     reportError(withCode(dcEfMemo, "'" & d.name & "' is `memo` but " & why &
       ". Fix: add [pure] and use only integer/bool parameters and a scalar " &
       "result, or drop memo"), d.span)
-  elif d.memoSize == 0:
+  elif d.memoSize == 0 and memoDirectSize(d) == 0:
     warn(dcEfMemoUnbounded, "'" & d.name & "' is `memo` with no size, so its " &
          "cache grows without bound. Fix: give it a size, `fn memo(256) " &
          d.name & "(...)`", d.span.line, d.span.col)

@@ -909,3 +909,15 @@ proc depthDisplayName*(d: Decl): string =
   ## The name a user wrote: the mangler's prefix (`tuckˑfnˑ`) is not theirs.
   let parts = d.name.split("ˑ")
   parts[^1]
+
+
+proc memoIndexExpr*(d: Decl,
+                    offset: proc (name: string, isBool: bool, half: int): string): string =
+  ## The direct-table index of a `fn memo`'s arguments, mixed-radix:
+  ## `((o0) * size1 + o1) * size2 + o2`. `offset` spells one argument's
+  ## 0-based offset in the target language.
+  result = "0"
+  for i, p in d.fnParams:
+    let dom = memoTypeDomain(p.typ.name)
+    let term = offset(p.name, p.typ.name == "bool", dom.half)
+    result = if i == 0: term else: "(" & result & ") * " & $dom.size & " + " & term

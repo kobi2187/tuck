@@ -884,6 +884,17 @@ proc genDMemoWrapper(ctx: var DCodegenCtx, d: Decl, fnName: string): string =
     init.add p.name
   let sig = retT & " " & fnName & "(" & params.join(", ") & ") {\n"
   let call = raw & "(" & names.join(", ") & ")"
+  let direct = memoDirectSize(d)
+  if direct > 0:
+    let idx = memoIndexExpr(d, proc (n: string, isBool: bool, half: int): string =
+      if isBool: "(" & n & " ? 1 : 0)"
+      elif half > 0: "cast(size_t)(cast(long) " & n & " + " & $half & ")"
+      else: "cast(size_t) " & n)
+    return "struct " & v & "Slot { bool used; " & retT & " r; }\n" & v & "Slot[" &
+      $direct & "] " & v & ";\n" & sig & "    size_t slot = " & idx & ";\n" &
+      "    if (" & v & "[slot].used) return " & v & "[slot].r;\n" &
+      "    auto r = " & call & ";\n    " & v & "[slot].used = true;\n    " & v &
+      "[slot].r = r;\n    return r;\n}\n"
   if d.memoSize == 0:
     let keyT = v & "Key"
     return "struct " & keyT & " { " & fieldDecls.join(" ") & " }\n" &

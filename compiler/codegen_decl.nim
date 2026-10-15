@@ -149,6 +149,19 @@ proc genMemoWrapper(ctx: var CodegenCtx, d: Decl, header: string): string =
   let call = raw & "(" & names.join(", ") & ")"
   let key = if names.len == 1: names[0] else: "(" & names.join(", ") & ")"
   let keyT = if types.len == 1: types[0] else: "(" & types.join(", ") & ")"
+  let direct = memoDirectSize(d)
+  if direct > 0:
+    let idx = memoIndexExpr(d, proc (n: string, isBool: bool, half: int): string =
+      if isBool: "ord(" & n & ")"
+      elif half > 0: "(int(" & n & ") + " & $half & ")"
+      else: "int(" & n & ")")
+    return "type " & v & "Slot = object\n    used: bool\n    r: " & retT &
+      "\nvar " & v & " {.threadvar.}: array[" & $direct & ", " & v & "Slot]\n" &
+      header & " =\n  {.cast(noSideEffect).}:\n" &
+      "    let slot = " & idx & "\n" &
+      "    if " & v & "[slot].used: return " & v & "[slot].r\n" &
+      "    result = " & call & "\n" &
+      "    " & v & "[slot].used = true\n    " & v & "[slot].r = result\n"
   if d.memoSize == 0:
     return "var " & v & " {.threadvar.}: TuckMemoTable[" & keyT & ", " & retT &
       "]\n" & header & " =\n  {.cast(noSideEffect).}:\n" &

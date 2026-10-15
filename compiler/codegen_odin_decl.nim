@@ -359,6 +359,14 @@ proc genOdinMemoWrapper(ctx: var OdinCodegenCtx, d: Decl, header, retTypeStr: st
     assign.add "s.k" & $i & " = " & p.name
     init.add "k" & $i & " = " & p.name
   let call = raw & "(" & names.join(", ") & ")"
+  let direct = memoDirectSize(d)
+  if direct > 0:
+    let idx = memoIndexExpr(d, proc (n: string, isBool: bool, half: int): string =
+      if half > 0: "(int(" & n & ") + " & $half & ")" else: "int(" & n & ")")
+    return "@(thread_local) " & v & ": [" & $direct & "]struct { used: bool, r: " &
+      retTypeStr & " }\n" & header & "\n\ts := &" & v & "[" & idx & "]\n" &
+      "\tif s.used { return s.r }\n\tr := " & call & "\n" &
+      "\ts.used = true\n\ts.r = r\n\treturn r\n}\n"
   if d.memoSize == 0:
     let keyT = v & "Key"
     return keyT & " :: struct { " & fieldDecls.join(", ") & " }\n" &

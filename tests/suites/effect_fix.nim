@@ -427,4 +427,25 @@ fn memo(8) f({s: str}) -> int [pure]:
 """
   t.badCheck "memo takes only integer and bool parameters", "TK-EF08"
 
+  t.src """
+fn memo pick({a: i8, flag: bool}) -> int [pure]:
+  let w = a ^int
+  if flag:
+    return 100 + w
+  return w * 2
+
+fn memo(4) tiny({n: u8}) -> int [pure]:
+  return 1
+
+fn main() -> int:
+  let x = {a: -5, flag: true} pick
+  let y = {a: 7, flag: false} pick
+  let z = {a: -5, flag: true} pick
+  let m = {a: -127, flag: false} pick
+  return x + y + z + m + 50
+"""
+  t.checkSilent "a small input space is a direct table, so no unbounded warning", "TK-EF09"
+  t.emits "memo: i8 x bool is a 512-entry table indexed directly", "array\\[512, "
+  t.hostRuns "memo: direct-index tables agree on every backend, signed and bool keys included", 0
+
   t.finish()
