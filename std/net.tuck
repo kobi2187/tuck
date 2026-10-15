@@ -17,21 +17,21 @@ type NetError:
 
 extern:
   # Bind a port and start listening. The returned fd is what accept takes.
-  fn listen({port: int}) -> !{fd: int} [io, error: NetError]
+  fn listen({port: int}) -> !{fd: int} [io: net, error: NetError]
 
   # Suspend until a client arrives, then take it. One accepted fd per call.
-  fn accept({fd: int}) -> !{fd: int} [io, error: NetError]
+  fn accept({fd: int}) -> !{fd: int} [io: net, error: NetError]
 
   # Connect to host:port. Suspends until the handshake completes.
-  fn connect({host: str, port: int}) -> !{fd: int} [io, error: NetError]
+  fn connect({host: str, port: int}) -> !{fd: int} [io: net, error: NetError]
 
   # Suspend until data arrives, then take up to `max` bytes. An EMPTY string
   # means the peer closed cleanly — that is not an error, so callers check
   # `.len == 0` rather than matching a variant.
-  fn recv({fd: int, max: int}) -> !{data: str} [io, error: NetError]
+  fn recv({fd: int, max: int}) -> !{data: str} [io: net, error: NetError]
 
   # Send all of it, suspending as needed when the socket's buffer fills.
-  fn send({fd: int, data: str}) -> !{sent: int} [io, error: NetError]
+  fn send({fd: int, data: str}) -> !{sent: int} [io: net, error: NetError]
 
   # Release the fd. Safe to call on an already-failed socket.
-  fn close({fd: int}) -> void [io]
+  fn close({fd: int}) -> void [io: net]

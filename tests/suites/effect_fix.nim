@@ -393,4 +393,67 @@ fn main() -> int:
     else:
       t.ok "-O:inline marks a small pure fn inline"
 
+  t.src """
+extern:
+  fn netSend({n: int}) -> int [io: net]
+  fn diskWrite({n: int}) -> int [io: fs]
+  fn anything({n: int}) -> int [io]
+
+fn sameKind({n: int}) -> int [io: net]:
+  return {n: n} netSend
+
+fn bareCoversAll({n: int}) -> int [io]:
+  let x = {n: n} netSend
+  return {n: x} diskWrite
+
+fn twoKinds({n: int}) -> int [io: net, io: fs]:
+  let x = {n: n} netSend
+  return {n: x} diskWrite
+
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "a kind covers itself; bare [io] covers every kind; kinds combine"
+
+  t.src """
+extern:
+  fn diskWrite({n: int}) -> int [io: fs]
+
+fn wrongKind({n: int}) -> int [io: net]:
+  return {n: n} diskWrite
+"""
+  t.badCheck "[io: net] may not call an [io: fs] fn (TK-EF01)", "\\[io: fs\\]"
+
+  t.src """
+extern:
+  fn anything({n: int}) -> int [io]
+
+fn narrow({n: int}) -> int [io: net]:
+  return {n: n} anything
+"""
+  t.badCheck "a named kind does not admit bare [io] (the callee may do any kind)", "TK-EF01"
+
+  t.src """
+fn f({n: int}) -> int [io: banana]:
+  return n
+"""
+  t.badCheck "an unknown io kind is a parse error naming the kinds", "net, fs, clock, console, sys"
+
+  t.src """
+fn f({n: int}) -> int [irq_safe, no_alloc, io: net]:
+  return n
+"""
+  t.badCheck "irq_safe excludes every io kind (TK-EF04)", "TK-EF04"
+
+  t.src """
+import console
+
+fn say() -> void [io: console]:
+  {text: "x"} printLine
+
+fn wrong() -> void [io: net]:
+  {text: "x"} printLine
+"""
+  t.badCheck "the std console fns are [io: console]", "io: console"
+
   t.finish()
