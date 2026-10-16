@@ -45,6 +45,7 @@ import jsony
 import lexer
 import compiler/ast
 import compiler/parser
+import compiler/describe
 import compiler/validate   # the spec-side grammar, for `tuck validate`
 import compiler/resolution   # the semantic layer, handed to each emit stage
 import compiler/semantics
@@ -154,6 +155,11 @@ did without running the whole build.
 
 `lowering` and `emitting` pick a backend the same way `compile`
 does: Nim by default, or --odin, or --dlang.""",
+  "describe": """tuck describe file.tuck
+
+Print the file's types and fns as INI-style text: record fields, sum
+variants, whether a type has invariants, each fn's params, return type and
+effects. For tools outside the compiler; Tuck code cannot reflect.""",
   "effects": """tuck effects file.tuck
 tuck ef file.tuck
 
@@ -1013,6 +1019,9 @@ when isMainModule:
   of "check", "ch":
     discard checkProgram(path, verifyStages = verifyStages)
     echo "OK (", elapsedMs(t0), ")"
+  of "describe":
+    discard checkProgram(path, verifyStages = verifyStages)
+    stdout.write describeModule(parseOrDie(source))
   of "test":
     runPropertyTests(path, opts, verifyStages)
   of "effects", "ef":

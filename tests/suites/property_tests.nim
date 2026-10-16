@@ -154,4 +154,19 @@ fn make({n: u8}) -> Pos:
       else:
         t.no "a folder is scanned file by file into one report", outp & "\n" & written
 
+  t.src Types & """
+fn spanOf({i: int, have: int}) -> Chunk:
+  return {index: i, first: i, last: i + 5, have: have} Chunk
+"""
+  let desc = t.needCmd(@["./tuck", "describe", t.curDir / "t.tuck", "--root:" & t.root],
+                       verb = vCheck)
+  if t.phase != pCollect:
+    let (_, d) = t.resultOf(desc)
+    if "[type Mode]\nkind = sum\nvariant = Fast" in d and
+       "variant = Rect(w: int, h: int)" in d and "field = x: int" in d and
+       "invariants = yes" in d and "[fn spanOf]\nreturns = Chunk\nparam = i: int" in d:
+      t.ok "describe prints types and fns as INI text"
+    else:
+      t.no "describe prints types and fns as INI text", d
+
   t.finish()

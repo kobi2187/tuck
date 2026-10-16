@@ -59,7 +59,7 @@ proc wrapperArg(t: Type, wrapper: string): Type =
      t.base.name == wrapper and t.args.len == 1: t.args[0]
   else: nil
 
-proc typeText(t: Type): string =
+proc typeText*(t: Type): string =
   ## A type as it is written in a `let x: T`.
   if t == nil: return "int"
   case t.kind
