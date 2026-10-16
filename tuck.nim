@@ -39,7 +39,7 @@
 # unimplemented, so the program still compiles AND runs. You can sketch an
 # entire design in types, run it end to end, then fill in bodies one at a time.
 # The PENDING block printed after a check is that list.
-import algorithm
+import algorithm, sequtils
 import os, strutils, times, tables, std/json, osproc, std/sets
 import jsony
 import lexer
@@ -162,13 +162,17 @@ declares, the capabilities its body needs, the restrictions the compiler
 derives it could carry (pure, no_alloc, irq_safe, bounded-depth), and the
 markers you could add. Derived, never inferred silently: add the marker to
 the signature to make it a promise. Unknown callees give no fact.""",
-  "test": """tuck test file.tuck [--properties] [--cases:N] [--seed:N]
+  "test": """tuck test file-or-folder [--properties] [--cases:N] [--seed:N]
+                    [--except:a,b] [--out:FILE]
 
 Property tests generated from the program itself (issue #68). Every
-top-level fn that declares no capability effect, takes integer or bool
-parameters and returns a type with an `invariant:` block is called with
-generated arguments (default 200 cases, seeded and repeatable); the
-invariant is the property. A failure names the input.""",
+top-level fn that declares no capability effect, takes generatable
+parameters (integers, bool, floats, str, enums, records, payload sums,
+Seq and ? of those) and returns a type with an `invariant:` block is
+called with generated arguments (default 200 cases, seeded and
+repeatable); the invariant is the property. Every failing call is
+printed and written to FILE (default property-failures.txt) as a Tuck
+call with its literals. A folder is scanned file by file.""",
   "explain": """tuck explain CODE
 
 Print what a diagnostic code means and how to fix it, e.g.:
@@ -713,49 +717,100 @@ proc checkProgram(path: string, needBodies = false,
     discard takeNarrowSites()
   sizeReport(path, result)
 
-proc runPropertyTests(path: string, opts: seq[string], verifyStages: bool) =
-  ## `tuck test --properties file.tuck` (issue #68): generated calls of the
-  ## effect-free fns whose return type carries an invariant. One program per
-  ## target, so a failure in one does not hide the rest.
+proc propertyFailureLine(display, detail: string): string =
+  display & "    # " & detail
+
+proc testOneFile(path: string, opts: seq[string], verifyStages: bool) =
+  ## `tuck test file.tuck --properties` for ONE file (issue #68): generated
+  ## calls of the effect-free fns whose return type carries an invariant. The
+  ## harness is built once and run once per case, so every failing input is
+  ## found, not only the first. Failing calls are written, as Tuck calls with
+  ## their literals as generated, to the `--out` file.
   var cases = 200
   var seed = 1'i64
+  var skip = initHashSet[string]()
+  var outFile = "property-failures.txt"
+  let append = "--append" in opts
   for o in opts:
     if o.startsWith("--cases:"): cases = parseInt(o["--cases:".len .. ^1])
-    if o.startsWith("--seed:"): seed = parseInt(o["--seed:".len .. ^1])
+    elif o.startsWith("--seed:"): seed = parseInt(o["--seed:".len .. ^1])
+    elif o.startsWith("--out:"): outFile = o["--out:".len .. ^1]
+    elif o.startsWith("--except:"):
+      for n in o["--except:".len .. ^1].split(','):
+        if n.len > 0: skip.incl n
   let loaded = checkProgram(path, verifyStages = verifyStages)
-  let targets = targetsOf(loaded[^1].m)
+  let m = loaded[^1].m
+  let targets = targetsOf(m, skip)
   if targets.len == 0:
-    echo "no property targets: nothing here is an effect-free fn with integer/bool " &
-         "parameters returning a type with an `invariant:`"
+    echo path, ": no property targets (no effect-free fn with generatable " &
+         "parameters returns a type with an `invariant:`)"
     return
   let dir = parentDir(absolutePath(path))
   let base = splitFile(path).name
-  var failures = 0
+  var report: seq[string]
+  var failedTargets = 0
   for t in targets:
+    let cs = casesFor(m, t, cases, seed)
     let harnessName = base & "_props_" & t.name
     let harness = dir / (harnessName & ".tuck")
-    writeFile(harness, harnessFor(base, t, cases, seed))
+    writeFile(harness, harnessFor(base, cs))
     defer:
       removeFile(harness)
       removeFile(dir / harnessName)
     let build = execCmdEx(quoteShell(getAppFilename()) & " b " & quoteShell(harness))
     if build.exitCode != 0:
       echo t.name, ": could not build the harness\n", build.output
-      inc failures
+      inc failedTargets
       continue
-    let run = execCmdEx(quoteShell(dir / harnessName))
-    if run.exitCode == 0:
+    let bin = quoteShell(dir / harnessName)
+    var failures: seq[string]
+    for i, c in cs:
+      let run = execCmdEx(bin & " " & "x ".repeat(i + 1))
+      if run.exitCode == 0: continue
+      var detail = "failed"
+      for line in run.output.splitLines:
+        if line.strip.len > 0: detail = line.strip.replace("tuckˑtypeˑ", "")
+      let line = propertyFailureLine(c.display, detail)
+      if line notin failures: failures.add line
+    if failures.len == 0:
       echo t.name, ": ", cases, " cases, ", t.returns, " invariant held"
       continue
-    inc failures
-    var lastCase = ""
-    var detail = ""
-    for line in run.output.splitLines:
-      if line.startsWith("CASE "): lastCase = line["CASE ".len .. ^1]
-      elif line.strip.len > 0: detail = line.strip.replace("tuckˑtypeˑ", "")
-    echo t.name, ": FAILED on ", lastCase
-    echo "  ", detail
-  if failures > 0: quit(1)
+    inc failedTargets
+    echo t.name, ": FAILED ", failures.len, " of ", cases, " cases"
+    for f in failures[0 ..< min(3, failures.len)]: echo "  ", f
+    if failures.len > 3: echo "  ... and ", failures.len - 3, " more (see ", outFile, ")"
+    report.add failures
+  if report.len > 0:
+    var f = open(outFile, if append: fmAppend else: fmWrite)
+    f.writeLine "# " & path
+    for l in report: f.writeLine l
+    f.close()
+  if failedTargets > 0: quit(1)
+
+proc runPropertyTests(path: string, opts: seq[string], verifyStages: bool) =
+  ## One file, or every `.tuck` file under a folder. A folder is scanned file
+  ## by file in separate processes, so one that does not check is reported and
+  ## the rest still run.
+  if not dirExists(path):
+    testOneFile(path, opts, verifyStages)
+    return
+  var files: seq[string]
+  for f in walkDirRec(path):
+    if f.endsWith(".tuck") and "_props_" notin f: files.add f
+  files.sort()
+  var outFile = "property-failures.txt"
+  for o in opts:
+    if o.startsWith("--out:"): outFile = o["--out:".len .. ^1]
+  writeFile(outFile, "")
+  var bad = 0
+  for f in files:
+    let r = execCmdEx(quoteShell(getAppFilename()) & " test " & quoteShell(f) &
+                      " --properties --append --out:" & quoteShell(outFile) &
+                      " " & opts.filterIt(not it.startsWith("--out:")).join(" "))
+    stdout.write r.output
+    if r.exitCode != 0: inc bad
+  echo files.len, " files scanned, ", bad, " with failures"
+  if bad > 0: quit(1)
 
 when isMainModule:
   # `help`/`-h`/`--help` take an optional COMMAND, never a file — answered
@@ -783,8 +838,9 @@ when isMainModule:
     echo "  ", explanationOf(dc)
     quit(0)
   let path = paramStr(2)
-  if not fileExists(path): die("tuck: no such file: " & path)
-  let source = readFile(path)
+  if not fileExists(path) and not (cmd == "test" and dirExists(path)):
+    die("tuck: no such file: " & path)
+  let source = if dirExists(path): "" else: readFile(path)
   var opts: seq[string]
   for i in 3 .. paramCount(): opts.add(paramStr(i))
   # `--root:DIR` sets the import search base explicitly, so imports resolve

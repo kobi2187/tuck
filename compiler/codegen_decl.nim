@@ -1069,6 +1069,10 @@ proc sumEqForwardDecls*(m: Module): string =
   for d in m.decls(dkType):
     if d == nil or d.typeBody == nil or d.typeBody.kind != tkSum: continue
     if not sumHasPayload(d.typeBody): continue
+    # An IMPORTED sum is visible here as a copy; its `==` and drop live in the
+    # module that declares it. Forward-declaring them here left a declaration
+    # with no body, so any module importing one failed to build.
+    if d.span.file.startsWith(ImportedTypeMarker & ":"): continue
     result.add("proc `==`*(a, b: " & d.name & "): bool {.noSideEffect.}\n")
     # And its drop: the runtime's generic walk of a Seq[Other] instantiates
     # where it is first used, so a sum's drop has to be visible before any

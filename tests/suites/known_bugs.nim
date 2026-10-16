@@ -3430,4 +3430,25 @@ fn main() -> int:
   t.badCheck "...and with nothing to decide it, it is ambiguous and names both types (#102)", "Fault and Link"
   t.bugFixed "...and with nothing to decide it, it is ambiguous and names both types (#102)"
 
+  # A module importing another that declares a payload sum failed to build on
+  # Nim: the importer forward-declared the imported sum's `==` and drop, which
+  # have no body there. Found while generating property-test harnesses, which
+  # import the module under test.
+  t.src """
+import sumsrc
+
+fn main() -> int:
+  return {a: 2} plain
+"""
+  t.addFile "sumsrc.tuck", """
+type Shape:
+  | Dot
+  | Disc({radius: f64})
+
+fn plain({a: int}) -> int:
+  return a
+"""
+  t.runs "a module importing a payload sum builds (Nim)", 2
+  t.bugFixed "a module importing a payload sum builds (Nim)"
+
   t.finish()

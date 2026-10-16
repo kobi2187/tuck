@@ -302,31 +302,54 @@ which turns the exponential `fib` into a linear one.
 ## 4c. Property tests from the program: `tuck test`
 
 ```sh
-tuck test file.tuck --properties [--cases:200] [--seed:1]
+tuck test file.tuck --properties [--cases:200] [--seed:1] [--except:a,b] [--out:FILE]
+tuck test some/folder --properties        # every .tuck file under it
 ```
 
 You have often already written both halves of a property test. A fn that
 declares no capability effect is safe to call with any input (deterministic,
 nothing to set up or mock), and a return type's `invariant:` block is the
-property. `tuck test` finds every top-level fn that
+property. `tuck test` finds every top-level fn in the file that
 
 - declares no `io` or `may_block`,
-- takes only integer and bool parameters, and
+- takes parameters it can generate (below), and
 - returns a type that carries an `invariant:`,
 
-calls each with generated arguments (a repeatable stream, half of it leaning on
-edge values such as 0, 1, -1 and the type's bounds), and lets the invariant
-fire:
+calls each with generated arguments, and lets the invariant fire. Nothing is
+marked in the source; the only control is the opt-out `--except:name,name`.
+
+**What is generated.** Integers (in their type's range, small for the 32- and
+64-bit types), `bool`, `f32`/`f64`, `str` (a small mixed set including the
+empty string), fieldless enums, records and payload sums built from those,
+`Seq[T]` and `T?` of them. A type that contains itself is not generated.
+Values are chosen freely: a parameter type's own `invariant:` is *not* used to
+steer them, so a generated value that breaks it fails where it is built, which
+is the program's bug being found. The stream is seeded and repeatable, and half
+of the cases lean on edge values (bounds, 0, 1, -1, an empty `Seq`, `none`).
+
+**What you get.** Every case runs on its own, so you see how many fail, not
+just the first:
 
 ```
-spanOf: FAILED on spanOf {total: 1, parts: 0, i: 10, have: -1}
-  Invariant violated on Chunk: (self.have >= 0)
-steady: 40 cases, Chunk invariant held
+flat: FAILED 6 of 30 cases
+  {a: -2000, b: true} flat    # Invariant violated on Result: (self.total >= 0)
+  ... and 3 more (see property-failures.txt)
+fine: 200 cases, Result invariant held
+```
+
+`property-failures.txt` (or `--out:FILE`) holds every distinct failing call as
+a Tuck call with its literals written out, with the violation after the `#`:
+
+```
+# downloader.tuck
+{total: 1, parts: 0, i: 10, have: -1} spanOf    # Invariant violated on Chunk: (self.have >= 0)
+{index: 0, first: 5, last: 3} Chunk ...
 ```
 
 The exit status is 1 when any target fails. A fn that crashes on an input
-(rather than violating the invariant) is reported the same way, with the
-crash text. Records and sum types as parameters are not generated yet.
+(rather than violating the invariant) is reported the same way, with the crash
+text. Parameters that are generic, or of a type the generator does not know,
+leave the fn out.
 
 ---
 
