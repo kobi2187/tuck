@@ -27,7 +27,7 @@ proc declaredEffects*(tc: TypeChecker, fnName: string): seq[EffectMarker]
 
 proc isIoFn*(tc: TypeChecker, name: string): bool =
   ## Reads the signature table, so an imported [io] fn counts too.
-  emIo in tc.declaredEffects(name)
+  hasIo(tc.declaredEffects(name))
 
 proc constCheckField*(tc: TypeChecker, m: Module, cname: string, e: Expr,
                      sp: Span) =

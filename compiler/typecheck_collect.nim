@@ -386,6 +386,6 @@ proc checkFallibleNeedsIo*(name: string, ret: Type, effects: seq[EffectMarker], 
   ## A fn returning `!T` or `!?T` must be marked `[io]`: failure is an effect,
   ## and pure functions are total. Reported against the fn `name` at `span`.
   if ret != nil and isWrapper(ret) and ret.base.name in ["!", "!?"] and
-     emIo notin effects:
+     not hasIo(effects):
     fail("Effect Error: '" & name & "' returns " & typeName(ret) &
          " — fallible functions must be marked [io]; pure functions are total", span)

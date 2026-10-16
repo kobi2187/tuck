@@ -138,7 +138,7 @@ proc callEffects(c: var Checker, e: Expr, res: var Demands) =
         res = union(res, callee)
         # The [io] marker IS the async annotation: a call to an [io] fn is a
         # suspend point. Flag the call site so codegen emits the async transform.
-        if emIo in callee.effects:
+        if hasIo(callee.effects):
           semLayer.markAsync(e)
 
 proc synthesizeExpr(c: var Checker, e: Expr): Demands =
@@ -207,10 +207,10 @@ proc checkExpr(c: var Checker, e: Expr, expected: Demands,
   # restricted side (checkRestrictions), and an attribute propagates nowhere;
   # treating them as obligations rejected a plain fn calling a `[no_alloc]` one.
   for eff in actual.effects:
-    if familyOf(eff) == mfCapability and eff notin expected.effects:
+    if familyOf(eff) == mfCapability and not admits(expected.effects, eff):
       missing.add effectName(eff)
   for eff in actual.effects:
-    if familyOf(eff) == mfCapability and eff notin expected.effects:
+    if familyOf(eff) == mfCapability and not admits(expected.effects, eff):
       let (callee, span) = c.culpritCall(e, eff)
       reportError(withCode(dcEfBudget,
         "Expression requires effect [" & effectName(eff) & "], which is " &
@@ -380,6 +380,35 @@ proc checkStackBound(c: Checker, d: Decl) =
       path.join(" -> ") & "), so its depth has no static bound. Fix: turn " &
       "the recursion into a loop, use [recursion: N], or drop [no_recursion]"), d.span)
 
+const MemoKeyTypes = ["int", "i8", "i16", "i32", "i64", "u8", "u16", "u32",
+                      "u64", "bool"]
+const MemoResultTypes = ["int", "i8", "i16", "i32", "i64", "u8", "u16", "u32",
+                         "u64", "bool", "f32", "f64"]
+
+proc memoTypeOk(t: Type, allowed: openArray[string]): bool =
+  t != nil and t.kind == tkNamed and t.name in allowed
+
+proc checkMemo(d: Decl) =
+  ## TK-EF08 / TK-EF09: what `fn memo` needs, and the warning for no size.
+  if not d.isMemo: return
+  var why = ""
+  if emPure notin d.fnEffects: why = "it is not declared [pure]"
+  elif d.fnGenerics.len > 0: why = "it is generic"
+  elif not memoTypeOk(d.fnReturnType, MemoResultTypes):
+    why = "its result is not an integer, bool or float"
+  else:
+    for p in d.fnParams:
+      if not memoTypeOk(p.typ, MemoKeyTypes):
+        why = "parameter '" & p.name & "' is not an integer or bool"
+  if why != "":
+    reportError(withCode(dcEfMemo, "'" & d.name & "' is `memo` but " & why &
+      ". Fix: add [pure] and use only integer/bool parameters and a scalar " &
+      "result, or drop memo"), d.span)
+  elif d.memoSize == 0 and memoDirectSize(d) == 0:
+    warn(dcEfMemoUnbounded, "'" & d.name & "' is `memo` with no size, so its " &
+         "cache grows without bound. Fix: give it a size, `fn memo(256) " &
+         d.name & "(...)`", d.span.line, d.span.col)
+
 proc checkRetiredStack(d: Decl) =
   ## `[stack: N]` was renamed: N read as a byte budget, which it never was.
   if d.fnReturnType == nil: return
@@ -423,6 +452,7 @@ proc verifyFn(c: var Checker, d: Decl) =
   # signature gets it too.
   if d != nil:
     checkMarkerCombinations(d)
+    checkMemo(d)
     checkNoAlloc(d)
   if d == nil or d.fnBody == nil or d.name in c.visiting: return
   c.visiting.incl(d.name)
@@ -443,7 +473,8 @@ proc verifyFn(c: var Checker, d: Decl) =
   # about it changed nothing.
   let budget = if d.name == "main":
                  Demands(effects: @[emIo, emNoAlloc, emIrqSafe, emUnsafe,
-                                    emMayBlock, emNoRecursion, emPriority],
+                                    emMayBlock, emNoRecursion, emPriority] &
+                                   toSeq(IoKinds),
                          resources: c.everyKind & d.fnResourceKinds)
                else: Demands(effects: d.fnEffects,
                              resources: d.fnResourceKinds)
@@ -452,7 +483,7 @@ proc verifyFn(c: var Checker, d: Decl) =
   c.checkStackBound(d)
   let actual = c.checkExpr(d.fnBody, budget, d.name)
   # The other direction (issue #14): a declared [io] the body never needs.
-  if d.name != "main" and emIo in d.fnEffects and emIo notin actual.effects and
+  if d.name != "main" and emIo in d.fnEffects and not hasIo(actual.effects) and
      not c.mayDoIoUnseen(d.fnBody):
     warn(dcEfUnused, "'" & d.name & "' declares [io], but nothing in its " &
          "body performs I/O, suspends or spawns. Fix: remove [io] from its " &
@@ -573,6 +604,8 @@ type
     needs*: seq[EffectMarker]    # capabilities the body requires
     pure*, noAlloc*, irqSafe*, bounded*: bool
     suggest*: seq[EffectMarker]  # restrictions it satisfies but does not declare
+    handler*: bool               # an actor `on` handler, reported as Actor.name
+    isolated*: bool              # handler: declares nothing, needs nothing, touches no other state
 
 proc stateNames(m: Module): HashSet[string] =
   ## Names that stand for state outside a fn's own values: a register, a pool,
@@ -653,6 +686,22 @@ proc settle(c: var Checker, order: seq[Decl], state: HashSet[string],
         facts[d.name] = nf
         changed = true
 
+proc handlerFacts(c: var Checker, state: HashSet[string]): seq[Facts] =
+  ## Every actor `on` handler. One that declares no markers, needs none and
+  ## reaches no other actor, pool or register can touch nothing but its own
+  ## actor's state: the checker has already proved it (issue #67).
+  for a in c.module.decls:
+    if a == nil or a.kind != dkActor: continue
+    for h in a.handlers:
+      if h.kind != dkFn or not h.isOnHandler or h.fnBody == nil: continue
+      let needs = c.synthesizeExpr(h.fnBody).effects.filterIt(
+        familyOf(it) == mfCapability)
+      var f = Facts(name: a.name & "." & h.name, declared: h.fnEffects,
+                    needs: needs, handler: true)
+      f.isolated = h.fnEffects.len == 0 and needs.len == 0 and
+                   not touchesState(h, state - toHashSet([a.name]))
+      result.add f
+
 proc deriveFacts*(c: var Checker): seq[Facts] =
   ## The facts of every top-level fn with a body in the checked module, in
   ## source order, at the least fixed point.
@@ -674,6 +723,7 @@ proc deriveFacts*(c: var Checker): seq[Facts] =
     for r in [emPure, emNoAlloc, emIrqSafe]:
       if f.restrictionHolds(r) and r notin f.declared: f.suggest.add r
     result.add f
+  result.add c.handlerFacts(stateNames(c.module))
 
 proc formatFacts*(facts: seq[Facts]): string =
   ## The `--report-effects` text: per fn, what it declares, needs and could
@@ -681,6 +731,12 @@ proc formatFacts*(facts: seq[Facts]): string =
   proc names(ms: seq[EffectMarker]): string =
     if ms.len == 0: "-" else: ms.mapIt(effectName(it)).join(", ")
   for f in facts:
+    if f.handler:
+      result.add f.name & ": handler, declares [" & names(f.declared) &
+        "], needs [" & names(f.needs) & "]" &
+        (if f.isolated: ", isolated (touches only its own actor's state)"
+         else: "") & "\n"
+      continue
     var derived: seq[string]
     if f.pure: derived.add "pure"
     if f.noAlloc: derived.add "no_alloc"

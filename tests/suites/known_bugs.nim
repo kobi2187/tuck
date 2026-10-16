@@ -3332,4 +3332,102 @@ fn main() -> int:
   t.quietly: t.emitsOdin("TUCK_TRACK reaches a program that allocates without calling the runtime", "context\\.allocator = rt\\.tuckTrackAllocator\\(\\)")
   t.bugFixed "TUCK_TRACK reaches a program that allocates without calling the runtime"
 
+  # Checker soundness (issues #100-#103, found 2026-10-10): "check OK" must imply
+  # "every backend builds". Each was OK to the checker and rejected by every
+  # backend (or by Nim alone, for #100).
+  t.src """
+object K:
+  fn hi() -> str:
+    return "hi"
+
+fn main() -> int:
+  let k = K
+  return 0
+"""
+  t.badCheck "a bare type name is not a value (#101)", "TK-TY42"
+  t.bugFixed "a bare type name is not a value (#101)"
+
+  t.src """
+import time
+
+fn main() -> int:
+  let a = {} nowMs
+  let b = {} nowMs
+  let d = b - a
+  return 0
+"""
+  t.badCheck "arithmetic on a one-field record is refused (#103)", "TK-TY43"
+  t.bugFixed "arithmetic on a one-field record is refused (#103)"
+
+  t.src """
+object Box:
+  cells: Seq[int]
+  fn put({self: Box, i: int, v: int}):
+    self.cells[i] = v
+
+fn main() -> int:
+  let b = Box {cells: [0, 0, 0]}
+  b.put {i: 1, v: 7}
+  return b.cells[1]
+"""
+  t.badCheck "an element write through self changes the object, so a let is refused (#100)", "TK-TY13"
+  t.bugFixed "an element write through self changes the object, so a let is refused (#100)"
+
+  t.src """
+object Box:
+  cells: Seq[int]
+  fn put({self: Box, i: int, v: int}):
+    self.cells[i] = v
+
+fn main() -> int:
+  var b = Box {cells: [0, 0, 0]}
+  b.put {i: 1, v: 7}
+  return b.cells[1]
+"""
+  t.hostRuns "...and a var receiver builds and runs on every backend (#100)", 7
+  t.bugFixed "...and a var receiver builds and runs on every backend (#100)"
+
+  t.src """
+type Link:
+  | Up
+  | Hungup
+  transitions:
+    Up -> Hungup
+
+type Fault:
+  | Timeout
+  | Hungup
+
+fn describe({f: Fault}) -> int:
+  match f:
+    | Timeout -> return 1
+    | Hungup -> return 5
+
+fn which({l: Link}) -> int:
+  match l:
+    | Up -> return 10
+    | Hungup -> return 20
+
+fn main() -> int:
+  return ({f: Hungup} describe) + ({l: Hungup} which)
+"""
+  t.hostRuns "a variant name two sum types share resolves by the expected type, on every backend (#102)", 25
+  t.bugFixed "a variant name two sum types share resolves by the expected type, on every backend (#102)"
+
+  t.src """
+type Link:
+  | Up
+  | Hungup
+
+type Fault:
+  | Timeout
+  | Hungup
+
+fn main() -> int:
+  let x = Hungup
+  return 0
+"""
+  t.badCheck "...and with nothing to decide it, it is ambiguous and names both types (#102)", "Fault and Link"
+  t.bugFixed "...and with nothing to decide it, it is ambiguous and names both types (#102)"
+
   t.finish()

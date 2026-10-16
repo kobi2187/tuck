@@ -5,13 +5,13 @@ type FsError:
   | IoFailed
 
 extern:
-  fn readFile({path: str}) -> !{content: str} [io, error: FsError]
-  fn writeFile({path: str, content: str}) -> !void [io, error: FsError]
-  fn appendFile({path: str, content: str}) -> !void [io, error: FsError]
-  fn fileExists({path: str}) -> bool [io]
-  fn removeFile({path: str}) -> !void [io, error: FsError]
+  fn readFile({path: str}) -> !{content: str} [io: fs, error: FsError]
+  fn writeFile({path: str, content: str}) -> !void [io: fs, error: FsError]
+  fn appendFile({path: str, content: str}) -> !void [io: fs, error: FsError]
+  fn fileExists({path: str}) -> bool [io: fs]
+  fn removeFile({path: str}) -> !void [io: fs, error: FsError]
   # Idempotent: succeeds if the directory already exists. Creates any
   # missing parent directories (mkdir -p), same as writeFile's own
   # comment on wanting a real init path for any app that bootstraps a
   # store directory.
-  fn makeDir({path: str}) -> !void [io, error: FsError]
+  fn makeDir({path: str}) -> !void [io: fs, error: FsError]

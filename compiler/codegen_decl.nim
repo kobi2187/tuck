@@ -4,7 +4,7 @@
 # DeclKind) and everything it calls — fn/object/actor/registry/register/
 # mixin/err-handler. Calls INTO codegen.nim's genExpr for fn
 # bodies (one-way: genExpr never calls back into anything here).
-import ast, strutils, sets, tables
+import ast, strutils, sets, tables, sequtils
 import mangle   # mangleName — a requirement's emitted spelling, for `mixin`
 import resolution
 import ast_query
@@ -134,6 +134,60 @@ proc leaveReturnContext(ctx: var CodegenCtx) =
   ctx.retInnerT = nil
   ctx.retInvName = ""
 
+proc genMemoWrapper(ctx: var CodegenCtx, d: Decl, header: string): string =
+  ## `fn memo(N) f`: `f` consults a per-thread cache before calling the raw
+  ## body. Bounded: N direct-mapped slots, a collision overwrites. Unbounded:
+  ## a table. The cast is the one place a `[pure]` fn is allowed to write
+  ## state: the cache is invisible to callers (same arguments, same answer).
+  let v = memoVar(d)
+  let raw = d.name.replace(".", "_") & MemoRawSuffix
+  var types, names: seq[string]
+  for p in d.fnParams:
+    types.add genType(p.typ)
+    names.add p.name
+  let retT = genType(d.fnReturnType)
+  let call = raw & "(" & names.join(", ") & ")"
+  let key = if names.len == 1: names[0] else: "(" & names.join(", ") & ")"
+  let keyT = if types.len == 1: types[0] else: "(" & types.join(", ") & ")"
+  let direct = memoDirectSize(d)
+  if direct > 0:
+    let idx = memoIndexExpr(d, proc (n: string, isBool: bool, half: int): string =
+      if isBool: "ord(" & n & ")"
+      elif half > 0: "(int(" & n & ") + " & $half & ")"
+      else: "int(" & n & ")")
+    return "type " & v & "Slot = object\n    used: bool\n    r: " & retT &
+      "\nvar " & v & " {.threadvar.}: array[" & $direct & ", " & v & "Slot]\n" &
+      header & " =\n  {.cast(noSideEffect).}:\n" &
+      "    let slot = " & idx & "\n" &
+      "    if " & v & "[slot].used: return " & v & "[slot].r\n" &
+      "    result = " & call & "\n" &
+      "    " & v & "[slot].used = true\n    " & v & "[slot].r = result\n"
+  if d.memoSize == 0:
+    return "var " & v & " {.threadvar.}: TuckMemoTable[" & keyT & ", " & retT &
+      "]\n" & header & " =\n  {.cast(noSideEffect).}:\n" &
+      "    var hit: " & retT & "\n" &
+      "    if tuckMemoGet(" & v & ", " & key & ", hit): return hit\n" &
+      "    result = " & call & "\n" &
+      "    tuckMemoPut(" & v & ", " & key & ", result)\n"
+  var fields, cmp, mix: seq[string]
+  for i in 0 ..< names.len:
+    fields.add "    k" & $i & ": " & types[i] & "\n"
+    cmp.add v & "[slot].k" & $i & " == " & names[i]
+    mix.add "h = tuckMemoMix(h, " & names[i] & ")"
+  var assign: seq[string]
+  for i in 0 ..< names.len:
+    assign.add "      " & v & "[slot].k" & $i & " = " & names[i] & "\n"
+  return "type " & v & "Slot = object\n    used: bool\n" & fields.join("") &
+    "    r: " & retT & "\nvar " & v & " {.threadvar.}: array[" & $d.memoSize &
+    ", " & v & "Slot]\n" & header & " =\n  {.cast(noSideEffect).}:\n" &
+    "    var h = 14695981039346656037'u64\n    " & mix.join("\n    ") & "\n" &
+    "    let slot = int(h mod " & $d.memoSize & "'u64)\n" &
+    "    if " & v & "[slot].used and " & cmp.join(" and ") &
+    ": return " & v & "[slot].r\n" &
+    "    result = " & call & "\n" &
+    "    " & v & "[slot].used = true\n" & assign.join("").replace("      ", "    ") &
+    "    " & v & "[slot].r = result\n"
+
 proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
   ## A fn as a Nim proc: header (generics, `{.inline.}`, export marker), mixin
   ## grouping, and the body with its tail return made explicit. Sets the ctx's
@@ -141,6 +195,13 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
   ## scope's defined vars afterwards.
   if d.isPending:
     return genPendingStub(d)
+  if d.isMemo:
+    let rawText = ctx.genFnDecl(memoRawDecl(d))
+    let params = nimFnParams(ctx.res, ctx.module, d)
+    let ret = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
+    let header = fnHeaderNim(d.name.replace(".", "_"), "", params, ret,
+                             nimFnPragmas(d), isExportedDecl(ctx.module, d))
+    return rawText & genMemoWrapper(ctx, d, header)
   ctx.currentParams = @[]
   for p in d.fnParams:
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
@@ -210,19 +271,34 @@ proc genActorMemberFn*(ctx: var CodegenCtx, m: Decl, actorName: string): string 
                   fnEffects: m.fnEffects, fnDepth: m.fnDepth)
   ctx.genFnDecl(copy)
 
-proc genTransitionProcs*(d: Decl, kindName: string, hasPayload: bool): string =
+proc sharedTags*(m: Module): HashSet[string] =
+  ## Variant names declared by more than one sum type in the module. Nim lets
+  ## an enum field be used bare only while it is unambiguous (issue #102).
+  var seen: HashSet[string]
+  for d in m.decls:
+    if d != nil and d.kind == dkType and d.typeBody != nil and
+       d.typeBody.kind == tkSum:
+      for v in d.typeBody.variants:
+        if v.name in seen: result.incl v.name
+        seen.incl v.name
+
+proc genTransitionProcs*(d: Decl, kindName: string, hasPayload: bool,
+                         shared: HashSet[string] = initHashSet[string]()): string =
   ## The two procs a sum with a `transitions` block gets: `canTransition`, a
   ## pure case over the allowed edges, and `transitionTo`, which raises on a
   ## disallowed edge before assigning.
   var canLines: seq[string]
   canLines.add("proc canTransition*(frm, to: " & kindName & "): bool =")
   canLines.add("  case frm")
+  proc tag(n: string): string =
+    if n in shared: kindName & "." & n else: n
   for v in d.typeBody.variants:
     let allowed = allowedTransitions(d.typeBody, v.name)
     if allowed.len > 0:
-      canLines.add("  of " & v.name & ": to in {" & allowed.join(", ") & "}")
+      canLines.add("  of " & tag(v.name) & ": to in {" &
+                   allowed.mapIt(tag(it)).join(", ") & "}")
     else:
-      canLines.add("  of " & v.name & ": false")
+      canLines.add("  of " & tag(v.name) & ": false")
   var res = canLines.join("\n") & "\n"
   let kindOf = if hasPayload: ".kind" else: ""
   res.add("proc transitionTo*(self: var " & d.name & ", target: " & d.name & ") =\n" &
@@ -327,7 +403,7 @@ proc genSumType*(ctx: var CodegenCtx, d: Decl): string =
     res.add(genSumDrop(d))
   if hasTransitions:
     # transition matrix: pure predicate + checked assignment
-    res.add(genTransitionProcs(d, kindName, hasPayload))
+    res.add(genTransitionProcs(d, kindName, hasPayload, sharedTags(ctx.module)))
   return res
 
 proc genRecordType*(ctx: var CodegenCtx, d: Decl): string =

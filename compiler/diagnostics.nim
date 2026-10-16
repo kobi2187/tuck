@@ -143,6 +143,9 @@ type
     dcTyCastNotNumeric = "TK-TY39"      ## `x ~T` / `x ^T` where x or T is not numeric
     dcTyCastDirection = "TK-TY40"       ## `^` on a conversion that can lose, or `~` on one that cannot
     dcTyCastOutOfRange = "TK-TY41"      ## `70000 ~u16`: a known value that does not fit
+    dcTyTypeAsValue = "TK-TY42"         ## a bare type name used as a value (`let k = K`)
+    dcTyArithOnRecord = "TK-TY43"       ## arithmetic on a record, not on a number
+    dcTyAmbiguousVariant = "TK-TY44"    ## a bare variant name two sum types declare, with nothing to decide
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -164,6 +167,8 @@ type
     dcEfAllocation = "TK-EF05"          ## an allocating construct in a [no_alloc] fn
     dcEfRecursion = "TK-EF06"           ## a [no_recursion] fn that can recurse
     dcEfIsrSend = "TK-EF07"             ## a send from an [irq_safe] fn (the mailbox takes a lock)
+    dcEfMemo = "TK-EF08"                ## `fn memo` on a fn that cannot be memoized
+    dcEfMemoUnbounded = "TK-EF09"       ## `fn memo` with no size: the cache grows without bound
     dcPeClash = "TK-PE01"               ## `pending:` clashes with a real decl
     dcPoMalformed = "TK-PO01"           ## the errors policy block is malformed
     dcSeConstruction = "TK-SE01"        ## a sealed type built outside a transition
@@ -503,6 +508,25 @@ proc parseExplanation(d: DiagCode): string =
     "silently. `~` therefore means \"I checked this\" wherever the " &
     "compiler can confirm it, and \"I accept the risk\" only where it cannot " &
     "see the value. Fix: use a type the value fits, or a smaller value."
+  of dcTyTypeAsValue:
+    "A type name stands for the type, not for a value of it. `let k = K` has " &
+    "nothing to bind: no backend can build it, so the checker refuses it " &
+    "instead of passing it on (issue #101). A value is built by a " &
+    "construction that names each field: `K {}` for a type with no fields, " &
+    "`K {x: 1}` otherwise."
+  of dcTyArithOnRecord:
+    "`+ - * /i /f` work on numbers. A record is not a number, even one with a " &
+    "single field such as `{ms: u64}` from `nowMs`: it is a one-field record, " &
+    "and no backend will treat it as the number inside. The checker refuses it " &
+    "(issue #103) so that \"check OK\" means \"every backend builds\". " &
+    "Fix: read the field, `b.ms - a.ms`."
+  of dcTyAmbiguousVariant:
+    "Two sum types in scope declare a variant of this name, and the place it " &
+    "is written says nothing about which one (no parameter, field, match " &
+    "subject or declared type to take it from). The checker will not pick " &
+    "one for you: the emitted code would, and could pick differently on each " &
+    "backend (issue #102). Fix: qualify it, `Fault.Hungup`, or give the " &
+    "place a type: `let s: Fault = Hungup`."
   of dcTyNoneNoPlace:
     "`none` is the absent value of a `T?` — no `next` yet, no result, nothing " &
     "found. It names no T itself, so it takes one from where it is written: " &
@@ -835,6 +859,21 @@ proc ruleExplanation(d: DiagCode): string =
     "fn may not send. Fix: have the interrupt set a flag or write a ring " &
     "buffer that a task or actor drains; a lock-free single-producer mailbox " &
     "for ISR-only senders is a possible later addition."
+  of dcEfMemo:
+    "`fn memo` caches a fn's result by its arguments, which is only correct " &
+    "when the same arguments always give the same result. So the fn must be " &
+    "declared `[pure]` (checked: no I/O, no state, only pure callees), take " &
+    "only integer and bool parameters, and return an integer, bool or float. " &
+    "Strings, sequences and references are refused because equal-looking " &
+    "values are not always equal (a handle can name different contents) and " &
+    "a cached copy would have to be owned. Fix: add `[pure]`, or narrow the " &
+    "signature, or drop `memo`."
+  of dcEfMemoUnbounded:
+    "A warning. `fn memo name(...)` has no size, so its cache holds one entry " &
+    "for every distinct argument list ever seen and never shrinks. On a " &
+    "long-running or embedded program that is a slow memory leak. Fix: give " &
+    "it a size, `fn memo(256) name(...)`: a fixed table that forgets old " &
+    "entries instead of growing. A forgotten entry only costs a recompute."
   of dcEfUnused:
     "A fn declares `[io]` but nothing in its body performs I/O, suspends or " &
     "spawns, so the marker promises a suspend point there is not. Declared " &

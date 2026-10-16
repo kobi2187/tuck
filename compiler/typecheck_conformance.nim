@@ -132,7 +132,7 @@ proc checkEffectSubset(want, got: Decl, objName, iname: string) =
   ## Effects may be a SUBSET: an implementation may do less than the contract
   ## permits, never more. Same direction as the caller/callee effect budget.
   for e in got.fnEffects:
-    if e notin want.fnEffects:
+    if not admits(want.fnEffects, e):
       failConformance(objName, iname, want, got,
         "declares effect [" & effectName(e) &
         "], which the contract does not permit (an implementation may do " &

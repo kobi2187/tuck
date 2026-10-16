@@ -344,10 +344,55 @@ proc writtenParams(d: Decl): seq[string] =
     for p in d.fnParams:
       if p.name == r.name and p.name != "self": result.add p.name
 
+proc genOdinMemoWrapper(ctx: var OdinCodegenCtx, d: Decl, header, retTypeStr: string): string =
+  ## `fn memo(N) f` in Odin: N direct-mapped slots in a thread-local array, or
+  ## a thread-local map when unbounded. See genMemoWrapper in codegen_decl.
+  let v = memoVar(d)
+  let fname = d.name.replace(".", "_")
+  let raw = fname & MemoRawSuffix
+  var fieldDecls, names, params, cmp, assign, init: seq[string]
+  for i, p in d.fnParams:
+    let t = ctx.odinType(p.typ)
+    fieldDecls.add "k" & $i & ": " & t
+    names.add p.name
+    cmp.add "s.k" & $i & " == " & p.name
+    assign.add "s.k" & $i & " = " & p.name
+    init.add "k" & $i & " = " & p.name
+  let call = raw & "(" & names.join(", ") & ")"
+  let direct = memoDirectSize(d)
+  if direct > 0:
+    let idx = memoIndexExpr(d, proc (n: string, isBool: bool, half: int): string =
+      if half > 0: "(int(" & n & ") + " & $half & ")" else: "int(" & n & ")")
+    return "@(thread_local) " & v & ": [" & $direct & "]struct { used: bool, r: " &
+      retTypeStr & " }\n" & header & "\n\ts := &" & v & "[" & idx & "]\n" &
+      "\tif s.used { return s.r }\n\tr := " & call & "\n" &
+      "\ts.used = true\n\ts.r = r\n\treturn r\n}\n"
+  if d.memoSize == 0:
+    let keyT = v & "Key"
+    return keyT & " :: struct { " & fieldDecls.join(", ") & " }\n" &
+      "@(thread_local) " & v & ": map[" & keyT & "]" & retTypeStr & "\n" &
+      header & "\n\tkey := " & keyT & "{" & init.join(", ") & "}\n" &
+      "\tif cached, ok := " & v & "[key]; ok { return cached }\n" &
+      "\tr := " & call & "\n\t" & v & "[key] = r\n\treturn r\n}\n"
+  var mix: seq[string]
+  for p in d.fnParams: mix.add "\th = (h ~ u64(" & p.name & ")) * 1099511628211\n"
+  return "@(thread_local) " & v & ": [" & $d.memoSize & "]struct { used: bool, " &
+    fieldDecls.join(", ") & ", r: " & retTypeStr & " }\n" &
+    header & "\n\th: u64 = 14695981039346656037\n" & mix.join("") &
+    "\ts := &" & v & "[int(h % " & $d.memoSize & ")]\n" &
+    "\tif s.used && " & cmp.join(" && ") & " { return s.r }\n" &
+    "\tr := " & call & "\n\ts.used = true\n\t" & assign.join("\n\t") &
+    "\n\ts.r = r\n\treturn r\n}\n"
+
 proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## An ordinary fn. A pending fn is a stub, and leaves before any of this
   ## runs. (A decision table arrives here already lowered to a plain body.)
   if d.isPending: return ctx.genPendingStub(d)
+  if d.isMemo:
+    let rawText = ctx.genOdinFnDecl(memoRawDecl(d))
+    let ret = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
+    return rawText & ctx.genOdinMemoWrapper(
+      d, ctx.fnHeader(d, ret, "  ".repeat(ctx.indent)), ret)
   ctx.currentParams = @[]
   for p in d.fnParams:
     ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))

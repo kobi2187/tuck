@@ -393,4 +393,139 @@ fn main() -> int:
     else:
       t.ok "-O:inline marks a small pure fn inline"
 
+  t.src """
+actor Counter [queue: 8]:
+  total: int = 0
+  on add({n: int}):
+    total += n
+
+actor Logger [queue: 8]:
+  seen: int = 0
+  on note({n: int}):
+    Counter send add {n: n}
+extern:
+  fn netSend({n: int}) -> int [io: net]
+  fn diskWrite({n: int}) -> int [io: fs]
+  fn anything({n: int}) -> int [io]
+
+fn sameKind({n: int}) -> int [io: net]:
+  return {n: n} netSend
+
+fn bareCoversAll({n: int}) -> int [io]:
+  let x = {n: n} netSend
+  return {n: x} diskWrite
+
+fn twoKinds({n: int}) -> int [io: net, io: fs]:
+  let x = {n: n} netSend
+  return {n: x} diskWrite
+
+fn main() -> int:
+  return 0
+"""
+  let hand = t.needCmd(@["./tuck", "ef", t.curDir / "t.tuck", "--root:" & t.root])
+  if t.phase != pCollect:
+    let (rc, outp) = t.resultOf(hand)
+    if rc != 0: t.no "tuck effects lists actor handlers", outp
+    elif "Counter.add: handler, declares [-], needs [-], isolated" notin outp:
+      t.no "a handler that touches only its own state is reported isolated", outp
+    elif "Logger.note: handler, declares [-], needs [-]\n" notin outp:
+      t.no "a handler that sends to another actor is not isolated", outp
+    else:
+      t.ok "tuck effects reports isolated handlers (issue #67)"
+  t.okCheck "a kind covers itself; bare [io] covers every kind; kinds combine"
+
+  t.src """
+extern:
+  fn diskWrite({n: int}) -> int [io: fs]
+
+fn wrongKind({n: int}) -> int [io: net]:
+  return {n: n} diskWrite
+"""
+  t.badCheck "[io: net] may not call an [io: fs] fn (TK-EF01)", "\\[io: fs\\]"
+
+  t.src """
+extern:
+  fn anything({n: int}) -> int [io]
+
+fn narrow({n: int}) -> int [io: net]:
+  return {n: n} anything
+"""
+  t.badCheck "a named kind does not admit bare [io] (the callee may do any kind)", "TK-EF01"
+
+  t.src """
+fn f({n: int}) -> int [io: banana]:
+  return n
+"""
+  t.badCheck "an unknown io kind is a parse error naming the kinds", "net, fs, clock, console, sys"
+
+  t.src """
+fn f({n: int}) -> int [irq_safe, no_alloc, io: net]:
+  return n
+"""
+  t.badCheck "irq_safe excludes every io kind (TK-EF04)", "TK-EF04"
+
+  t.src """
+import console
+
+fn say() -> void [io: console]:
+  {text: "x"} printLine
+
+fn wrong() -> void [io: net]:
+  {text: "x"} printLine
+"""
+  t.badCheck "the std console fns are [io: console]", "io: console"
+fn memo(64) fib({n: int}) -> int [pure]:
+  if n < 2:
+    return n
+  let a = n - 1
+  let b = n - 2
+  let x = {n: a} fib
+  let y = {n: b} fib
+  return x + y
+
+fn memo wide({n: int, k: u8}) -> int [pure]:
+  return n + 1
+
+fn main() -> int:
+  let r = {n: 40} fib
+  let w = {n: 3, k: 2} wide
+  return r - 102334155 + w - 4
+"""
+  t.checkSays "an unbounded memo warns that its cache grows (TK-EF09)", "TK-EF09"
+  t.hostRuns "fn memo gives the same answer on every backend (fib 40 is instant)", 0
+  t.emitsD "memo: the D wrapper keeps a thread-local slot table", "Slot\\[64\\]"
+
+  t.src """
+fn memo(8) f({n: int}) -> int:
+  return n
+"""
+  t.badCheck "memo needs [pure]", "TK-EF08"
+
+  t.src """
+fn memo(8) f({s: str}) -> int [pure]:
+  return 1
+"""
+  t.badCheck "memo takes only integer and bool parameters", "TK-EF08"
+
+  t.src """
+fn memo pick({a: i8, flag: bool}) -> int [pure]:
+  let w = a ^int
+  if flag:
+    return 100 + w
+  return w * 2
+
+fn memo(4) tiny({n: u8}) -> int [pure]:
+  return 1
+
+fn main() -> int:
+  let x = {a: -5, flag: true} pick
+  let y = {a: 7, flag: false} pick
+  let z = {a: -5, flag: true} pick
+  let m = {a: -127, flag: false} pick
+  return x + y + z + m + 50
+"""
+  t.checkSilent "a small input space is a direct table, so no unbounded warning", "TK-EF09"
+  t.emits "memo: i8 x bool is a 512-entry table indexed directly", "array\\[512, "
+  t.hostRuns "memo: direct-index tables agree on every backend, signed and bool keys included", 0
+
   t.finish()

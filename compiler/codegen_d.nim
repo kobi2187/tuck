@@ -27,7 +27,7 @@ import lowering                # getFieldsForType
 # module: the record-shape hash (so both backends name a shape alike) and the
 # enum a bare tag belongs to. Neither is Odin-specific; if a third consumer
 # appears they should move to a backend-neutral module.
-from codegen_odin_util import enumTagOwner
+from codegen_odin_util import enumTagOwner, tagOwnerHint, hintOf, withTagHint
 from mangle import mangleName
 import ./codegen_d_ctx
 
@@ -835,7 +835,8 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
   if isInputRef(e, ctx.currentParams): return ctx.genDInputPayload()
   if ctx.res.isOwnerField(e): return "self." & e.name
   if e.name notin ctx.definedVars:
-    let tag = ctx.qualifyEnumTag(e.name)
+    var tag = ""
+    withTagHint(ctx.res.typeFor(e)): tag = ctx.qualifyEnumTag(e.name)
     if tag != "": return tag
     let co = constOrigin(ctx.module, ctx.realModules, e.name)
     if co != "": return dAlias(co) & "." & e.name   # R11, A33
@@ -1332,6 +1333,9 @@ proc genDMatchStmt(ctx: var DCodegenCtx, e: Expr): string =
   ## rather than the emitter trusting it. An arm set WITH a wildcard cannot
   ## be `final` (D rejects a default there), so those emit a plain switch.
   if e.subject == nil: return dUnsupported("decision table (T24)")
+  let savedHint = tagOwnerHint
+  tagOwnerHint = hintOf(ctx.res.typeFor(e.subject))
+  defer: tagOwnerHint = savedHint
   # An error match dispatches on a u16, and `final switch` is enum-only in D
   # — so it is a plain switch, which then REQUIRES a default arm.
   let errM = isErrMatch(e)
@@ -1352,6 +1356,9 @@ proc genDMatchExpr(ctx: var DCodegenCtx, e: Expr): string =
   ## ternary, keeps the exhaustiveness check and reads as the same table the
   ## statement form does.
   if e.subject == nil: return dUnsupported("decision table in value position")
+  let savedHint = tagOwnerHint
+  tagOwnerHint = hintOf(ctx.res.typeFor(e.subject))
+  defer: tagOwnerHint = savedHint
   let kw = if hasWildArm(e): "switch" else: "final switch"
   let subj = ctx.dMatchSubject(e)
   let narrowKey = ctx.genDExpr(e.subject)

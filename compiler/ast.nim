@@ -56,6 +56,11 @@ type
     emNoRecursion
     emPriority
     emPure
+    emIoNet       # [io: net]     — appended: the sig-index cache stores ordinals
+    emIoFs        # [io: fs]
+    emIoClock     # [io: clock]
+    emIoConsole   # [io: console]
+    emIoSys       # [io: sys]      — arguments, environment, exit
 
 
   ResourcePolicy* = enum
@@ -1031,6 +1036,8 @@ type
                             # (Nim's or Odin's own spelling), which is why it
                             # stays a string. A seq, not a Table: it holds one
                             # or two entries and rides the msgpack AST cache.
+      isMemo*: bool     # `fn memo(N) name(...)` — results cached by arguments
+      memoSize*: int    # N slots; 0 = unbounded (warned)
       fnDepth*: int     # [depth: N] — runtime recursion limit; 0 = none
       isInline*: bool   # `fn inline name(...)` — codegen hint ({.inline.} / [Inline])
       ownedParams*: seq[string] # prepared only (ownership_write, Odin): the

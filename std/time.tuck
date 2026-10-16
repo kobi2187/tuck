@@ -18,7 +18,7 @@ fn s(value: u32) -> Seconds:
   value Seconds
 
 extern:
-  fn nowMs() -> {ms: u64} [io, no_alloc]
+  fn nowMs() -> {ms: u64} [io: clock, no_alloc]
   # Not [may_block]: this is a reactor timer, so it suspends only the calling
   # task. Everything else keeps running.
-  fn sleepMs({ms: u32}) -> void [io, no_alloc]
+  fn sleepMs({ms: u32}) -> void [io: clock, no_alloc]

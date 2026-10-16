@@ -8,6 +8,6 @@ type IoError:
   | IoFailed
 
 extern:
-  fn print({text: str}) -> void [io]
-  fn printLine({text: str}) -> void [io]
-  fn readLine() -> !{line: str} [io, error: IoError]
+  fn print({text: str}) -> void [io: console]
+  fn printLine({text: str}) -> void [io: console]
+  fn readLine() -> !{line: str} [io: console, error: IoError]
