@@ -169,4 +169,14 @@ fn spanOf({i: int, have: int}) -> Chunk:
     else:
       t.no "describe prints types and fns as INI text", d
 
+  let tuckDesc = t.needCmd(@["sh", "-c", "./tuck describe " & t.curDir / "t.tuck" &
+                             " --tuck --root:" & t.root & " > " & t.curDir / "desc.tuck" &
+                             " && ./tuck ch " & t.curDir / "desc.tuck" & " --root:" & t.root &
+                             " && grep -c 'descParams' " & t.curDir / "desc.tuck"],
+                           verb = vCheck)
+  if t.phase != pCollect:
+    let (rc, d) = t.resultOf(tuckDesc)
+    if rc == 0 and "OK" in d: t.ok "describe --tuck writes a module that is itself valid Tuck"
+    else: t.no "describe --tuck writes a module that is itself valid Tuck", d
+
   t.finish()

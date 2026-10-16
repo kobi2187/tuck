@@ -159,7 +159,11 @@ does: Nim by default, or --odin, or --dlang.""",
 
 Print the file's types and fns as INI-style text: record fields, sum
 variants, whether a type has invariants, each fn's params, return type and
-effects. For tools outside the compiler; Tuck code cannot reflect.""",
+effects. For tools outside the compiler; Tuck code cannot reflect.
+
+  --tuck   print a Tuck module instead: row types (DescType, DescField,
+           DescVariant, DescFn, DescParam) and typed const tables
+           (descTypes, ...), for a tool written in Tuck to import.""",
   "effects": """tuck effects file.tuck
 tuck ef file.tuck
 
@@ -1021,7 +1025,8 @@ when isMainModule:
     echo "OK (", elapsedMs(t0), ")"
   of "describe":
     discard checkProgram(path, verifyStages = verifyStages)
-    stdout.write describeModule(parseOrDie(source))
+    let dm = parseOrDie(source)
+    stdout.write (if "--tuck" in opts: describeTuck(dm) else: describeModule(dm))
   of "test":
     runPropertyTests(path, opts, verifyStages)
   of "effects", "ef":
