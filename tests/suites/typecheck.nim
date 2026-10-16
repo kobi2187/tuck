@@ -1243,7 +1243,7 @@ type Server:
 
 const s = {port: 80} Server
 """
-  t.badCheck "const cannot hold a record construction (ref semantics)", "record"
+  t.okCheck "a const may hold a named record construction (#126)"
 
   t.src """
 const K = {1} mystery

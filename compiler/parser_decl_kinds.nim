@@ -488,12 +488,35 @@ proc parseCompositionDecl*(p: var Parser, sp: Span): Decl =
        expr: Expr(span: sp, kind: exkUnary, unaryOp: uoComposition,
                   operand: target))
 
+proc constNamedBy(stated: Type, e: Expr): Expr =
+  ## `const p: P = {x: 3}` states what the literal is, so the literal becomes
+  ## the construction `{x: 3} P`; `Seq[P]` / `Array[N, P]` do it per element.
+  ## Anything else is left to the checker, which holds the value to `stated`.
+  if stated == nil or e == nil: return e
+  if stated.kind == tkNamed and e.kind == exkStruct:
+    return Expr(span: e.span, kind: exkCall,
+                callee: Expr(span: e.span, kind: exkVar, name: stated.name),
+                args: @[e])
+  if stated.kind == tkApp and e.kind == exkList and stated.args.len > 0:
+    result = e
+    let el = stated.args[^1]
+    for i in 0 ..< result.items.len:
+      result.items[i] = constNamedBy(el, result.items[i])
+    return
+  e
+
 proc parseConstDecl*(p: var Parser, sp: Span): Decl =
   ## `const name = <compile-time data>` — a declaration, not a statement.
   discard p.advance()
   let name = p.expect(tkIdent, "Expected constant name after 'const'").value
+  var stated: Type
+  if p.current().kind == tkColon:
+    discard p.advance()
+    stated = p.parseType()
   discard p.expect(tkAssign)
-  Decl(span: sp, kind: dkConst, name: name, constVal: p.parseExpr())
+  let val = p.parseExpr()
+  Decl(span: sp, kind: dkConst, name: name, constType: stated,
+       constVal: constNamedBy(stated, val))
 
 proc parseSatisfyTargets*(p: var Parser,
                           renames: var seq[(string, string, string)]): seq[string] =

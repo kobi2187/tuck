@@ -44,10 +44,6 @@ proc constCheckCallee*(tc: TypeChecker, m: Module, cname, callee: string,
   ## pure fn. The record combinators are not here any more — they are
   ## exkCombinator nodes, allowed by their own arm in constCheck.
   if tc.distinctNames.contains(callee): return  # base conversion
-  if tc.typeDecls.hasKey(callee) and tc.typeDecls[callee].kind == tkRecord:
-    fail("Const Error: 'const " & cname & "' cannot hold a record " &
-         "construction (records are reference values) — use a plain struct " &
-         "literal", sp)
   if tc.isIoFn(callee):
     fail("Const Error: 'const " & cname & "' must be pure — '" & callee &
          "' is [io]", sp)
@@ -67,8 +63,8 @@ proc constCheckCall*(tc: TypeChecker, m: Module, cname: string, e: Expr,
 proc constCheck*(tc: TypeChecker, m: Module, cname: string, e: Expr, sp: Span) =
   ## Reject what a const cannot be. Nim-static semantics: arbitrary PURE
   ## computation, evaluated at compile time by the backend's const evaluator,
-  ## so this forbids only what would break there — [io] calls, record-type
-  ## constructions (records are reference values), and unknown callees.
+  ## so this forbids only what would break there — [io] calls and unknown
+  ## callees. A record construction is data (#126).
   if e == nil: return
   case e.kind
   of exkLit, exkQualified: discard  # literals; :fn refs

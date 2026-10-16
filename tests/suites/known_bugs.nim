@@ -3451,4 +3451,56 @@ fn plain({a: int}) -> int:
   t.runs "a module importing a payload sum builds (Nim)", 2
   t.bugFixed "a module importing a payload sum builds (Nim)"
 
+  # --- consts as data tables (#125, #126, #127) -----------------------------
+  t.src """
+import constsrc
+
+fn main() -> int:
+  var n = 0
+  for s in names:
+    n = n + 1
+  return n
+"""
+  t.addFile "constsrc.tuck", """
+const names = ["a", "b", "c"]
+"""
+  t.runs "an imported const is readable as a value (#125)", 3
+  t.bugFixed "an imported const is readable as a value (#125)"
+
+  t.src """
+type P:
+  x: int
+  y: i64
+
+const one: P = {x: 3, y: 4}
+const many: Seq[P] = [{x: 1, y: 2}, {x: 5, y: 6}]
+const wide: i64 = 7
+
+fn main() -> int:
+  var n = 0
+  for q in many:
+    n = n + q.x
+  let w: i64 = wide
+  let sum = one.y + w
+  let small = sum ^int
+  return n + one.x + small
+"""
+  t.runs "a const states its type, and a record literal takes it (#126)", 20
+  t.bugFixed "a const states its type, and a record literal takes it (#126)"
+
+  t.src """
+type P:
+  x: i64
+
+fn take({p: P}) -> i64:
+  return p.x
+
+fn main() -> int:
+  let q = {x: 3}
+  let r = {p: q} take
+  return 0
+"""
+  t.badCheck "an unnamed record in a variable is refused where a named one is wanted (#127)", "TK-TY45"
+  t.bugFixed "an unnamed record in a variable is refused where a named one is wanted (#127)"
+
   t.finish()
