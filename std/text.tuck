@@ -1,0 +1,65 @@
+# std/text — splitting and parsing, written in Tuck on std/str's byte reads.
+#
+# `split` copies one byte at a time, so it is linear in the input apart from
+# the per-piece appends; fine for the line- and field-sized strings tools
+# read. `parseInt` is an honest fold over digits and refuses what does not
+# fit an i64 rather than wrapping.
+import str
+import seq
+
+fn matchesAt({t: str, at: str, pos: int}) -> bool:
+  let n = {t: at} byteCount
+  var i = 0
+  for i < n:
+    let a = {t: t, index: pos + i} byteAt
+    let b = {t: at, index: i} byteAt
+    if a != b:
+      return false
+    i = i + 1
+  return true
+
+# `t` cut at every occurrence of `at`. An empty `at` cuts nothing: the whole
+# of `t` is the one piece. Adjacent separators give empty pieces.
+fn split({t: str, at: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  var piece = ""
+  var i = 0
+  let n = {t: t} byteCount
+  let w = {t: at} byteCount
+  for i < n:
+    let hit = w > 0 and i + w <= n and {t: t, at: at, pos: i} matchesAt
+    if hit:
+      out = {items: out, value: piece} push
+      piece = ""
+      i = i + w
+    else:
+      piece = piece + {s: t, index: i} charAt
+      i = i + 1
+  return {items: out, value: piece} push
+
+# A decimal integer with an optional leading `-` or `+`; none for anything
+# else (empty, stray characters, more digits than an i64 holds).
+fn parseInt({t: str}) -> i64?:
+  let n = {t: t} byteCount
+  if n == 0 or n > 19:
+    return none
+  var i = 0
+  var neg = false
+  let first = {t: t, index: 0} byteAt
+  if first == 45 or first == 43:
+    neg = first == 45
+    i = 1
+  if i == n:
+    return none
+  var acc: i64 = 0
+  for i < n:
+    let b = {t: t, index: i} byteAt
+    if b < 48 or b > 57:
+      return none
+    let diff = b - 48
+    let d = diff ^i64
+    acc = acc * 10 + d
+    i = i + 1
+  if neg:
+    return -acc
+  return acc

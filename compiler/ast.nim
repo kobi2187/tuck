@@ -217,6 +217,7 @@ type
       paramNames*: seq[string]
     of tkRecord:
       fields*: seq[FieldDef]
+      anonLiteral*: bool  ## typed from a bare `{...}` literal, no type name (TK-TY45)
     of tkSum:
       variants*: seq[VariantDef]
       transitions*: seq[Transition]
@@ -1114,6 +1115,7 @@ type
         ## spelling. Empty on every other expression declaration.
     of dkConst:
       constVal*: Expr
+      constType*: Type  ## `const name: T = ...` — the stated type, or nil
     of dkRegister:
       regAddress*: string
       regFields*: seq[FieldDef]

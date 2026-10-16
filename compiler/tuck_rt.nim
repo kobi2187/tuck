@@ -1322,7 +1322,7 @@ proc hasRoom*[T; Cap: static int](mb: var Mailbox[T, Cap]): bool =
 #
 # Imported HERE rather than at the facade below because the blocking externs
 # route through tuck_async.tuckSubmitBlocking — see readLine.
-import std/[os, times, syncio, sysrand]
+import std/[os, times, syncio, sysrand, algorithm, osproc]
 import ./tuck_async
 from std/posix import nil
 
@@ -1510,6 +1510,14 @@ proc fileExists*(path: string): bool =
   ## filesystem. Paying a thread handoff and a pipe round-trip for it would
   ## cost more than the call.
   os.fileExists(path)
+
+proc listDir*(path: string): seq[string] =
+  ## The names (not paths) of what is directly inside `path`, sorted; empty
+  ## when `path` is missing or not a directory. Like fileExists, a metadata
+  ## lookup: not offloaded.
+  if not os.dirExists(path): return @[]
+  for _, p in os.walkDir(path, relative = true): result.add p
+  algorithm.sort(result)
 
 proc makeDir*(path: string): TuckResult[tuple[]] =
   ## NOT offloaded, same rationale as fileExists. Idempotent by an explicit
@@ -1734,6 +1742,11 @@ proc send*(fd: int, data: string): TuckResult[tuple[sent: int]] =
 proc close*(fd: int) =
   ## Closes an fd. Errors are ignored: there is nothing a caller can do.
   discard posix.close(cint(fd))
+
+proc runCommand*(line: string): int =
+  ## Runs `line` through the shell, output going where the program's own
+  ## goes, and returns its exit code. Blocks the caller until it ends.
+  osproc.execCmd(line)
 
 proc argCount*(): tuple[count: int] =
   ## How many command-line arguments were passed, not counting the program.

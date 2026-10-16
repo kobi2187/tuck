@@ -146,6 +146,7 @@ type
     dcTyTypeAsValue = "TK-TY42"         ## a bare type name used as a value (`let k = K`)
     dcTyArithOnRecord = "TK-TY43"       ## arithmetic on a record, not on a number
     dcTyAmbiguousVariant = "TK-TY44"    ## a bare variant name two sum types declare, with nothing to decide
+    dcTyAnonToNamed = "TK-TY45"         ## an anonymous record value passed where a named record is expected
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -527,6 +528,14 @@ proc parseExplanation(d: DiagCode): string =
     "one for you: the emitted code would, and could pick differently on each " &
     "backend (issue #102). Fix: qualify it, `Fault.Hungup`, or give the " &
     "place a type: `let s: Fault = Hungup`."
+  of dcTyAnonToNamed:
+    "A record value written without a type name, kept in a variable or read " &
+    "from a field, is an anonymous record. It is not a value of the named " &
+    "record that has the same fields: the generated code for Nim would be " &
+    "handed a different type (issue #127). A record literal written right " &
+    "where the named type is wanted is fine, because the place names the " &
+    "type. Fix: build the value with the type, `{x: 3} P`, or state it on " &
+    "the binding (`let q: P = ...`, `const q: P = ...`)."
   of dcTyNoneNoPlace:
     "`none` is the absent value of a `T?` — no `next` yet, no result, nothing " &
     "found. It names no T itself, so it takes one from where it is written: " &

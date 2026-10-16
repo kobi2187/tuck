@@ -1494,6 +1494,26 @@ TuckResult!TuckUnit writeFile(string path, string content)
 /// offloaded either: a stat is a metadata lookup, microseconds on any live
 /// filesystem, and paying a thread handoff plus a pipe round-trip would
 /// cost more than the call — mirrors the Nim and Odin runtimes.
+string[] listDir(string path)
+{
+    import std.file : dirEntries, isDir, exists, SpanMode;
+    import std.path : baseName;
+    import std.algorithm : sort;
+    string[] names;
+    if (!exists(path) || !isDir(path)) return names;
+    foreach (e; dirEntries(path, SpanMode.shallow)) names ~= baseName(e.name);
+    sort(names);
+    return names;
+}
+
+/// Runs `line` through the shell, output going where the program's own goes;
+/// returns its exit code.
+long runCommand(string line)
+{
+    import std.process : spawnShell, wait;
+    return wait(spawnShell(line));
+}
+
 bool fileExists(string path)
 {
     import std.file : exists;
