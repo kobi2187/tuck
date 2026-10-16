@@ -720,27 +720,75 @@ proc checkProgram(path: string, needBodies = false,
 proc propertyFailureLine(display, detail: string): string =
   display & "    # " & detail
 
+type PropertyOpts = object
+  cases: int
+  seed: int64
+  skip: HashSet[string]
+  outFile: string
+  append: bool
+
+proc parsePropertyOpts(opts: seq[string]): PropertyOpts =
+  result = PropertyOpts(cases: 200, seed: 1, skip: initHashSet[string](),
+                        outFile: "property-failures.txt",
+                        append: "--append" in opts)
+  for o in opts:
+    if o.startsWith("--cases:"): result.cases = parseInt(o["--cases:".len .. ^1])
+    elif o.startsWith("--seed:"): result.seed = parseInt(o["--seed:".len .. ^1])
+    elif o.startsWith("--out:"): result.outFile = o["--out:".len .. ^1]
+    elif o.startsWith("--except:"):
+      for n in o["--except:".len .. ^1].split(','):
+        if n.len > 0: result.skip.incl n
+
+proc failureDetail(output: string): string =
+  ## The last non-empty line a failing case printed, mangling removed.
+  result = "failed"
+  for line in output.splitLines:
+    if line.strip.len > 0: result = line.strip.replace("tuckˑtypeˑ", "")
+
+proc runCasesOf(bin: string, cs: seq[Case]): seq[string] =
+  ## Run the harness once per case (the case number is the argument COUNT) and
+  ## return the distinct failing calls, each with its violation.
+  for i, c in cs:
+    let run = execCmdEx(bin & " " & "x ".repeat(i + 1))
+    if run.exitCode == 0: continue
+    let line = propertyFailureLine(c.display, failureDetail(run.output))
+    if line notin result: result.add line
+
+proc testOneTarget(m: Module, t: Target, base, dir: string,
+                   o: PropertyOpts, report: var seq[string]): bool =
+  ## Build and run one target's harness. True when the target failed.
+  let cs = casesFor(m, t, o.cases, o.seed)
+  let harnessName = base & "_props_" & t.name
+  let harness = dir / (harnessName & ".tuck")
+  writeFile(harness, harnessFor(base, cs))
+  defer:
+    removeFile(harness)
+    removeFile(dir / harnessName)
+  let build = execCmdEx(quoteShell(getAppFilename()) & " b " & quoteShell(harness))
+  if build.exitCode != 0:
+    echo t.name, ": could not build the harness\n", build.output
+    return true
+  let failures = runCasesOf(quoteShell(dir / harnessName), cs)
+  if failures.len == 0:
+    echo t.name, ": ", o.cases, " cases, ", t.returns, " invariant held"
+    return false
+  echo t.name, ": FAILED ", failures.len, " of ", o.cases, " cases"
+  for f in failures[0 ..< min(3, failures.len)]: echo "  ", f
+  if failures.len > 3:
+    echo "  ... and ", failures.len - 3, " more (see ", o.outFile, ")"
+  report.add failures
+  true
+
 proc testOneFile(path: string, opts: seq[string], verifyStages: bool) =
   ## `tuck test file.tuck --properties` for ONE file (issue #68): generated
   ## calls of the effect-free fns whose return type carries an invariant. The
-  ## harness is built once and run once per case, so every failing input is
-  ## found, not only the first. Failing calls are written, as Tuck calls with
-  ## their literals as generated, to the `--out` file.
-  var cases = 200
-  var seed = 1'i64
-  var skip = initHashSet[string]()
-  var outFile = "property-failures.txt"
-  let append = "--append" in opts
-  for o in opts:
-    if o.startsWith("--cases:"): cases = parseInt(o["--cases:".len .. ^1])
-    elif o.startsWith("--seed:"): seed = parseInt(o["--seed:".len .. ^1])
-    elif o.startsWith("--out:"): outFile = o["--out:".len .. ^1]
-    elif o.startsWith("--except:"):
-      for n in o["--except:".len .. ^1].split(','):
-        if n.len > 0: skip.incl n
+  ## harness is built once per target and run once per case, so every failing
+  ## input is found, not only the first. Failing calls are written, as Tuck
+  ## calls with their literals as generated, to the `--out` file.
+  let o = parsePropertyOpts(opts)
   let loaded = checkProgram(path, verifyStages = verifyStages)
   let m = loaded[^1].m
-  let targets = targetsOf(m, skip)
+  let targets = targetsOf(m, o.skip)
   if targets.len == 0:
     echo path, ": no property targets (no effect-free fn with generatable " &
          "parameters returns a type with an `invariant:`)"
@@ -750,38 +798,9 @@ proc testOneFile(path: string, opts: seq[string], verifyStages: bool) =
   var report: seq[string]
   var failedTargets = 0
   for t in targets:
-    let cs = casesFor(m, t, cases, seed)
-    let harnessName = base & "_props_" & t.name
-    let harness = dir / (harnessName & ".tuck")
-    writeFile(harness, harnessFor(base, cs))
-    defer:
-      removeFile(harness)
-      removeFile(dir / harnessName)
-    let build = execCmdEx(quoteShell(getAppFilename()) & " b " & quoteShell(harness))
-    if build.exitCode != 0:
-      echo t.name, ": could not build the harness\n", build.output
-      inc failedTargets
-      continue
-    let bin = quoteShell(dir / harnessName)
-    var failures: seq[string]
-    for i, c in cs:
-      let run = execCmdEx(bin & " " & "x ".repeat(i + 1))
-      if run.exitCode == 0: continue
-      var detail = "failed"
-      for line in run.output.splitLines:
-        if line.strip.len > 0: detail = line.strip.replace("tuckˑtypeˑ", "")
-      let line = propertyFailureLine(c.display, detail)
-      if line notin failures: failures.add line
-    if failures.len == 0:
-      echo t.name, ": ", cases, " cases, ", t.returns, " invariant held"
-      continue
-    inc failedTargets
-    echo t.name, ": FAILED ", failures.len, " of ", cases, " cases"
-    for f in failures[0 ..< min(3, failures.len)]: echo "  ", f
-    if failures.len > 3: echo "  ... and ", failures.len - 3, " more (see ", outFile, ")"
-    report.add failures
+    if testOneTarget(m, t, base, dir, o, report): inc failedTargets
   if report.len > 0:
-    var f = open(outFile, if append: fmAppend else: fmWrite)
+    var f = open(o.outFile, if o.append: fmAppend else: fmWrite)
     f.writeLine "# " & path
     for l in report: f.writeLine l
     f.close()

@@ -77,6 +77,29 @@ proc declBody(m: Module, name: string): Type =
   let d = m.findDecl(dkType, name)
   if d == nil: nil else: d.typeBody
 
+proc supported(m: Module, t: Type, seen: seq[string], inSeq = false): bool
+
+proc fieldsSupported(m: Module, fields: seq[FieldDef], seen: seq[string],
+                     inSeq: bool): bool =
+  for f in fields:
+    if not supported(m, f.typ, seen, inSeq): return false
+  true
+
+proc bodySupported(m: Module, body: Type, seen: seq[string], inSeq: bool): bool =
+  ## A declared record or sum. In a `Seq` neither may need a call to be built.
+  case body.kind
+  of tkRecord:
+    not inSeq and fieldsSupported(m, body.fields, seen, inSeq)
+  of tkSum:
+    for v in body.variants:
+      if inSeq and v.fields.len > 0: return false
+      if not fieldsSupported(m, v.fields, seen, inSeq): return false
+    true
+  else: false
+
+proc isPlainScalar(name: string): bool =
+  name == "bool" or name == "str" or isFloat(name) or intDomain(name).ok
+
 proc supported(m: Module, t: Type, seen: seq[string], inSeq = false): bool =
   ## Can a value of `t` be generated? Scalars, str, enums, records and payload
   ## sums of those, and `Seq`/`?` of them. A type that contains itself is not
@@ -87,40 +110,31 @@ proc supported(m: Module, t: Type, seen: seq[string], inSeq = false): bool =
   let opt = wrapperArg(t, "?")
   if opt != nil: return supported(m, opt, seen, inSeq)
   if t.kind != tkNamed: return false
-  if t.name == "bool" or t.name == "str" or isFloat(t.name) or
-     intDomain(t.name).ok: return true
+  if isPlainScalar(t.name): return true
   if t.name in seen: return false
   let body = declBody(m, t.name)
-  if body == nil: return false
-  let deeper = seen & @[t.name]
-  case body.kind
-  of tkRecord:
-    if inSeq: return false   # a record is built by a call, as a payload sum is
-    for f in body.fields:
-      if not supported(m, f.typ, deeper, inSeq): return false
-    true
-  of tkSum:
-    for v in body.variants:
-      if inSeq and v.fields.len > 0: return false   # a sum is built by a call
-      for f in v.fields:
-        if not supported(m, f.typ, deeper, inSeq): return false
-    true
-  else: false
+  body != nil and bodySupported(m, body, seen & @[t.name], inSeq)
+
+proc isCandidateFn(d: Decl, skip: HashSet[string]): bool =
+  ## A top-level fn with a body, parameters, no generics and no capability effect.
+  if d == nil or d.kind != dkFn or d.fnBody == nil or d.name == "main": return false
+  if d.name in skip or d.fnGenerics.len > 0 or d.fnParams.len == 0: return false
+  not (emIo in d.fnEffects or emMayBlock in d.fnEffects)
+
+proc isTargetFn(m: Module, d: Decl, skip: HashSet[string]): bool =
+  if not isCandidateFn(d, skip): return false
+  let rt = d.fnReturnType
+  if rt == nil or rt.kind != tkNamed or not hasInvariants(m, rt.name): return false
+  for p in d.fnParams:
+    if not supported(m, p.typ, @[]): return false
+  true
 
 proc targetsOf*(m: Module, skip: HashSet[string]): seq[Target] =
   ## Top-level fns with no capability effects, parameters of generatable types
   ## and a return type that carries an invariant. `skip` is the `--except` list.
   for d in m.decls:
-    if d == nil or d.kind != dkFn or d.fnBody == nil or d.name == "main": continue
-    if d.name in skip or d.fnGenerics.len > 0 or d.fnParams.len == 0: continue
-    if emIo in d.fnEffects or emMayBlock in d.fnEffects: continue
-    let rt = d.fnReturnType
-    if rt == nil or rt.kind != tkNamed or not hasInvariants(m, rt.name): continue
-    var ok = true
-    for p in d.fnParams:
-      if not supported(m, p.typ, @[]): ok = false
-    if not ok: continue
-    var t = Target(name: d.name, returns: rt.name)
+    if not isTargetFn(m, d, skip): continue
+    var t = Target(name: d.name, returns: d.fnReturnType.name)
     for p in d.fnParams: t.params.add (p.name, p.typ)
     result.add t
 
