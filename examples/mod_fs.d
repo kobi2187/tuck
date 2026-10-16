@@ -32,4 +32,8 @@ rt.TuckResult!(rt.TuckUnit) makeDir(string path) {
     return rt.makeDir(path);
 }
 
+string[] listDir(string path) {
+    return rt.listDir(path);
+}
+
 

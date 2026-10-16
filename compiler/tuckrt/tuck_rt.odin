@@ -14,6 +14,8 @@ package tuckrt
 import "core:fmt"
 import "core:math"
 import "core:os"
+import "core:c/libc"
+import "core:slice"
 import "core:strconv"
 import "base:intrinsics"
 import "base:runtime"
@@ -1563,6 +1565,21 @@ fileExists :: proc(path: string) -> bool {
 	return os.exists(path)
 }
 
+// The names directly inside `path`, sorted; empty when it is missing or not a
+// directory. Each name is a fresh copy: the caller owns, and frees, them.
+listDir :: proc(path: string) -> [dynamic]string {
+	result := make([dynamic]string)
+	fd, err := os.open(path)
+	if err != nil do return result
+	defer os.close(fd)
+	infos, derr := os.read_dir(fd, -1, context.allocator)
+	if derr != nil do return result
+	defer os.file_info_slice_delete(infos, context.allocator)
+	for info in infos do append(&result, strings.clone(info.name))
+	slice.sort(result[:])
+	return result
+}
+
 // Idempotent by an explicit existence check, same as the Nim runtime, so
 // all three backends agree on the same contract rather than relying on
 // each platform's own already-exists behavior for mkdir -p.
@@ -1806,6 +1823,16 @@ close :: proc(fd: int) {
 }
 
 // --- std/sys ---
+
+// Runs `line` through the shell, output going where the program's own goes;
+// returns its exit code (128 + signal when it was killed).
+runCommand :: proc(line: string) -> int {
+	cmd := strings.clone_to_cstring(line)
+	defer delete(cmd)
+	status := int(libc.system(cmd))
+	if status & 0x7f == 0 do return (status >> 8) & 0xff
+	return 128 + (status & 0x7f)
+}
 
 argCount :: proc() -> ArgCount {
 	// Tuck counts arguments the way Nim's paramCount does: excluding argv[0].

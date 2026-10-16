@@ -15,3 +15,6 @@ extern:
   # comment on wanting a real init path for any app that bootstraps a
   # store directory.
   fn makeDir({path: str}) -> !void [io: fs, error: FsError]
+  # The names (not paths) directly inside `path`, sorted; empty when `path` is
+  # missing or not a directory.
+  fn listDir({path: str}) -> Seq[str] [io: fs]
