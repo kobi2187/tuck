@@ -3772,7 +3772,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.okCheck "A58: arithmetic on float literals adopts the f32 it is compared with"
-  t.bugOpen "A58: arithmetic on float literals adopts the f32 it is compared with"
+  t.bugFixed "A58: arithmetic on float literals adopts the f32 it is compared with"
 
   # A59. An integer literal in a `send` payload does not adopt the handler's
   # field type, though the same literal in a call does.
@@ -3789,7 +3789,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.okCheck "A59: an integer literal in a send payload adopts the handler's field type"
-  t.bugOpen "A59: an integer literal in a send payload adopts the handler's field type"
+  t.bugFixed "A59: an integer literal in a send payload adopts the handler's field type"
 
   # A60. A local reused by name in a later sibling scope inherits the earlier
   # one's ownership state: the second `h` is pushed AND dropped, so the Seq

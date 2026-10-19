@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (12)
+## A. Open bugs (10)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks

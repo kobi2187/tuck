@@ -1840,10 +1840,12 @@ proc synthBoolOp(lt, rt: Type, e: Expr): Type =
   Type(span: e.span, kind: tkNamed, name: "bool")
 
 proc isNumericLiteral(e: Expr): bool =
-  ## `5`, `2.5` or `-5`: a literal with no width of its own.
+  ## `5`, `2.5`, `-5` or `0.5 + 0.25`: a value with no width of its own.
   e != nil and
     ((e.kind == exkLit and e.litKind in {lkInt, lkFloat}) or
-     (e.kind == exkUnary and e.unaryOp == uoNeg and isNumericLiteral(e.operand)))
+     (e.kind == exkUnary and e.unaryOp == uoNeg and isNumericLiteral(e.operand)) or
+     (e.kind == exkBinary and e.binOp in {boAdd, boSub, boMul, boDivInt, boDivFloat} and
+      isNumericLiteral(e.left) and isNumericLiteral(e.right)))
 
 proc synthOperands(tc: var TypeChecker, e: Expr): (Type, Type) =
   ## Both operands of a binary expression. A numeric literal takes the type of
@@ -2995,13 +2997,6 @@ proc checkWholeBind(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
     fail("Type Error: argument to '" & fnName & "' expects " &
          typeName(expected) & " but got " & typeName(t), arg.span)
 
-proc isNumericLiteralExpr(e: Expr): bool =
-  ## A bare number, or a negated one: `27`, `-0.5`.
-  if e == nil: return false
-  if e.kind == exkLit: return e.litKind in {lkInt, lkFloat}
-  e.kind == exkUnary and e.operand != nil and e.operand.kind == exkLit and
-    e.operand.litKind in {lkInt, lkFloat}
-
 proc paramNamed(sig: FnSig, name: string): Type =
   for p in sig.params:
     if p.name == name: return p.typ
@@ -3023,12 +3018,12 @@ proc adoptBoundLiterals(tc: var TypeChecker, fnName: string, sig: FnSig,
   if sig.generics.len == 0: return
   var local = initTable[string, Type]()
   for i, f in arg.fields:
-    if isNumericLiteralExpr(f.value): continue
+    if isNumericLiteral(f.value): continue
     let pt = sig.paramNamed(f.name)
     if pt != nil:
       tc.inferBindings(pt, fields[i].typ, sig.generics, local, fnName, fields[i].span)
   for i, f in arg.fields:
-    if not isNumericLiteralExpr(f.value): continue
+    if not isNumericLiteral(f.value): continue
     let bound = boundNumeric(sig, sig.paramNamed(f.name), local)
     if bound != nil:
       tc.withExpected(bound): fields[i].typ = tc.synthesize(f.value)
@@ -5169,7 +5164,8 @@ proc checkSendField(tc: var TypeChecker, e: Expr, p: Param,
   ## One handler param must be supplied by the payload, at a matching type.
   for f in given:
     if f.name != p.name: continue
-    let ft = tc.synthesize(f.value)
+    var ft: Type
+    tc.withExpected(p.typ): ft = tc.synthesize(f.value)
     if p.typ != nil and not tc.compatible(ft, p.typ):
       fail("Type Error: send field '" & p.name & "' expects " &
            typeName(p.typ) & " but got " & typeName(ft), f.value.span)
