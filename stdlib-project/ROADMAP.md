@@ -41,7 +41,9 @@ blocks compile in. Without the flag nothing changes: the blessed `std/` is used.
 | sys | env (defaults, PATH split, `$VAR` expansion) | yes | pass | pass | not run |
 | std | math (Decimal, statistics, float functions), chrono (pure calendar; no zone database), perf (stopwatch, counter, histogram), testing (results, report), i18n (case folding, edit distance, words, graphemes, Latin-1 normalization), queue (append-only log over std/fs) | yes | pass | pass | not run |
 | alloc | deque, list, map, set, string, vec | yes | pass | pass | not run |
-| std | encoding (JSON print/access written, Nim passes; parser, base64, CSV not started) | partial | pass | **blocked: #134** | |
+| std | encoding (JSON print/access; parser, base64, CSV not started), crypto (SHA-256, HMAC-SHA256, constant-time compare), log (formats, levels, `ConsoleSink`), regex (parser, compiler, backtracking VM, find/replace/split/glob), net-http (URLs, percent-encoding, queries, request/response text, headers, cookies), cli (command tree, parser, usage, table, ANSI) | partial | pass | pass | not run |
+| platform | dsp (biquad, moving average, RMS), watchdog (actor: configure, start, feed, check, stop) | yes | pass | pass | not run |
+| sys | process (`ExitStatus`, `statusOf`, `run` over `runCommand`) | yes | pass | pass | not run |
 | core | slice, mem (designs say fold away); ptr, atomic, sync-cell, simd | no | | | |
 | alloc | allocator, box, rc, fmt | no | | | |
 | sys, std, platform | everything else | no | | | |
@@ -54,31 +56,17 @@ blocks compile in. Without the flag nothing changes: the blessed `std/` is used.
 | `alloc.deque` did not check: a local stated `Seq[T]` inside a generic fn lost its `T`, so `{items: xs} Ring` said "cannot infer generic parameter 'T'" | the checker (`bodyGenerics`) |
 | `core.str.text.split` crashed on Odin when called from another module with a literal: the callee frees its text, and the importer read an imported fn as body-less so never made the argument an owned copy | the ownership pass (`Resolution.fnBodies`) |
 | a module imported by file name could not be selected | the flag itself |
+| list literals, generic payload literals, float-literal arithmetic and `send` payload literals did not adopt the expected width (#135, #136, #140, #141) | the checker |
+| `x = f(x)` wiped the variable; sibling-scope locals shared an ownership fate; a `let` repeated across match arms did not build (#139, #142, #143) | the ownership pass and the emitters |
+| a module named `fmt` collided with Odin's `core:fmt` (#149); a local made from a const Seq moved the const (#146); an index literal took the float type around it (#147); `if` with a void call and an assignment (#148) | the Odin emitter, the ownership pass, the checker |
 
 Regression guards for the two compiler fixes are in `tests/suites/known_bugs.nim`.
 
-## Skipped, waiting on a compiler fix
-A module that hit a compiler bug is left where it stopped, the bug is filed, and the next
-module is started. No workaround is written into a module. Finish these after the fixes:
-
-* `std.encoding`: #134 (`_` arm over a payload sum, Odin).
-* `sys.process`: #143 (the same `let` name in two match arms). `ExitStatus`, `statusOf`,
-  `run` over `runCommand` are written.
-* `std.net-http`: #142 (a local reused by name across scopes; Odin segfault). Passes on Nim.
-  URLs, percent-encoding, queries, request and response text, headers and cookies are written.
-* `platform.watchdog`: #141 (a literal in a `send` payload). The actor (configure, start, feed,
-  check, stop) is written.
-* `platform.dsp`: #135 (float list literals, also noted there) and #140 (arithmetic on float
-  literals vs `f32`). Biquad, moving average and RMS are written; the checks that build
-  `Seq[f32]` from a list could not be.
-* `std.regex`: #139 (`x = f(x)` wiping a Seq in a loop), and #138 on Odin. Parser, compiler to
-  a program, backtracking VM, find/replace/split/glob are written.
-* `std.log`: #138 (Odin build of a `str` field returned from a payload-sum match), #137
-  (effect of an [io] interface call). Formats, levels and `ConsoleSink` are written; Nim passes.
-* `std.cli`: #136 (a literal pushed onto `Seq[u8]`). Parser, usage, table and colour are
-  written (the interactive prompts and progress are host-backed and not started).
-* `std.crypto`: #135 (`Seq[u8]`/`Seq[u64]` list literals). SHA-256, HMAC-SHA256 and a
-  constant-time compare are written; the round-constant table cannot be.
+## Skipped modules
+None. Every module that was set aside for a compiler bug has been finished, and the
+bugs are fixed (`known_bugs.nim` A48-A66; one is still open, #145). Not started inside the
+finished modules: `std.cli` prompts and progress (host-backed), `std.encoding` parser,
+base64 and CSV.
 
 ## Next, in order
 
