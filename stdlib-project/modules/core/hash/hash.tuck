@@ -28,9 +28,18 @@ fn fnvPrime() -> u64:
 # One step of the fold: mix the byte in, THEN multiply. That order is what
 # makes it FNV-1a rather than FNV-1, and it is the reason the low bits of the
 # input reach the high bits of the digest.
+#
+# The multiply is the whole point of the hash and it OVERFLOWS by design, so it
+# is done in a type that says so: u64 traps on overflow by default, and a
+# digest that trapped would not be a digest.
+type Wrapped = u64 [wrapping]
+
 fn fnvStep({acc: u64, octet: u64}) -> u64:
   let mixed = {a: acc, b: octet} bitXor
-  return mixed * fnvPrime
+  let m = {value: mixed} Wrapped
+  let prime = {value: fnvPrime} Wrapped
+  let product = m * prime
+  return {value: product} u64
 
 fn hashBytes({data: Seq[u8]}) -> u64:
   var h = fnvOffsetBasis

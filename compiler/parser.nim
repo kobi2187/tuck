@@ -192,14 +192,14 @@ proc parseWhenDecl(p: var Parser, sp: Span): Decl =
   ## later, in modules.resolveWhenBlocks — see the dkWhen comment in ast.nim
   ## for why that has to be a separate, uncached pass.
   discard p.advance()  # eat 'when'
-  let targetWord = p.expect(tkIdent, "Expected 'TARGET' after 'when' — " &
-    "'when' only supports 'when TARGET == \"...\":'").value
-  if targetWord != "TARGET":
-    p.reportError("'when' only supports 'when TARGET == \"...\":' — got " &
-                  "'when " & targetWord & "'")
-  discard p.expect(tkEq, "Expected '==' after 'when TARGET'")
+  let targetWord = p.expect(tkIdent, "Expected 'TARGET' or 'STDLIB' after " &
+    "'when' — 'when' only supports 'when TARGET == \"...\":'").value
+  if targetWord notin ["TARGET", "STDLIB"]:
+    p.reportError("'when' only supports 'when TARGET == \"...\":' and " &
+                  "'when STDLIB == \"...\":' — got 'when " & targetWord & "'")
+  discard p.expect(tkEq, "Expected '==' after 'when " & targetWord & "'")
   let valTok = p.expect(tkStrLit,
-    "Expected a string literal naming the target, e.g. " &
+    "Expected a string literal naming the setting's value, e.g. " &
     "when TARGET == \"stm32f4\":")
   discard p.expect(tkColon)
   discard p.expect(tkNewline)
@@ -211,7 +211,8 @@ proc parseWhenDecl(p: var Parser, sp: Span): Decl =
   p.indentedBlock:
     p.failIfNotTopLevelStart()
     members.add(p.parseDecl())
-  Decl(span: sp, kind: dkWhen, name: "when", whenTargetValue: valTok.value,
+  Decl(span: sp, kind: dkWhen, name: "when", whenVar: targetWord,
+       whenTargetValue: valTok.value,
        whenDecls: members)
 
 proc contextualDecl(p: var Parser, sp: Span, handled: var bool): Decl =

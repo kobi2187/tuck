@@ -45,6 +45,9 @@ proc calleeOf*(res: Resolution, m: Module, call: Expr): Decl =
   if result == nil and call.callee != nil and call.callee.kind == exkVar:
     result = m.findFn(call.callee.name)
     if result == nil: result = res.externs.getOrDefault(call.callee.name)
+    # A fn another module declares: found by name, unless two modules share it.
+    if result == nil and call.callee.name notin res.ambiguousFns:
+      result = res.fnBodies.getOrDefault(call.callee.name)
   if result != nil and result.kind notin {dkFn, dkTask}: result = nil
 
 proc paramFed(d: Decl, a: ArgOf): string =

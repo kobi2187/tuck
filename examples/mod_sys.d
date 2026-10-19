@@ -30,4 +30,8 @@ void exit(long code) {
     rt.exit(code);
 }
 
+long runCommand(string line) {
+    return rt.runCommand(line);
+}
+
 

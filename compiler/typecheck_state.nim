@@ -217,6 +217,10 @@ type
                                       # [error: ...] enums of the fn that
                                       # produced them (match r.err typing)
     loopDepth*: int               # break/continue legality (innermost loop only)
+    bodyGenerics*: Table[string, Type]  # the enclosing generic fn's `T` ->
+                                      # `<typeparam:T>`: a stated local type
+                                      # `let xs: Seq[T]` is read through it, as a
+                                      # param's type is
     varVariants*: Table[string, seq[string]]  # spec 4.4b: per-var possible-
                                       # variant SET for transitions-declared
                                       # types (Type@Variant). Forked/unioned

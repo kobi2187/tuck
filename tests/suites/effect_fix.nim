@@ -403,6 +403,22 @@ actor Logger [queue: 8]:
   seen: int = 0
   on note({n: int}):
     Counter send add {n: n}
+
+fn main() -> int:
+  return 0
+"""
+  let hand = t.needCmd(@["./tuck", "ef", t.curDir / "t.tuck", "--root:" & t.root])
+  if t.phase != pCollect:
+    let (rc, outp) = t.resultOf(hand)
+    if rc != 0: t.no "tuck effects lists actor handlers", outp
+    elif "Counter.add: handler, declares [-], needs [-], isolated" notin outp:
+      t.no "a handler that touches only its own state is reported isolated", outp
+    elif "Logger.note: handler, declares [-], needs [-]\n" notin outp:
+      t.no "a handler that sends to another actor is not isolated", outp
+    else:
+      t.ok "tuck effects reports isolated handlers (issue #67)"
+
+  t.src """
 extern:
   fn netSend({n: int}) -> int [io: net]
   fn diskWrite({n: int}) -> int [io: fs]
@@ -422,16 +438,6 @@ fn twoKinds({n: int}) -> int [io: net, io: fs]:
 fn main() -> int:
   return 0
 """
-  let hand = t.needCmd(@["./tuck", "ef", t.curDir / "t.tuck", "--root:" & t.root])
-  if t.phase != pCollect:
-    let (rc, outp) = t.resultOf(hand)
-    if rc != 0: t.no "tuck effects lists actor handlers", outp
-    elif "Counter.add: handler, declares [-], needs [-], isolated" notin outp:
-      t.no "a handler that touches only its own state is reported isolated", outp
-    elif "Logger.note: handler, declares [-], needs [-]\n" notin outp:
-      t.no "a handler that sends to another actor is not isolated", outp
-    else:
-      t.ok "tuck effects reports isolated handlers (issue #67)"
   t.okCheck "a kind covers itself; bare [io] covers every kind; kinds combine"
 
   t.src """
@@ -474,6 +480,8 @@ fn wrong() -> void [io: net]:
   {text: "x"} printLine
 """
   t.badCheck "the std console fns are [io: console]", "io: console"
+
+  t.src """
 fn memo(64) fib({n: int}) -> int [pure]:
   if n < 2:
     return n

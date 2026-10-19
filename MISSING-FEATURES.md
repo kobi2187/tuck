@@ -22,11 +22,37 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (0)
+## A. Open bugs (4)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
+
+**A48–A51 (issues #129–#132) — found building the property tester and dogfooding the stdlib
+(2026-10-19).** Pins: `known_bugs`, "A48: …" to "A51: …".
+- **A48 — a sum-typed binding is refused at a call.** `let a: A = X` then
+  `{a: a} f` with `f({a: A})` is "'a' expects sum type but got A". The stated
+  type resolves to the sum's body, name lost, and the param check compares kinds.
+- **A49 — a bare record literal returned as a named invariant type.**
+  `fn make(..) -> Pos: return {n: n}` checks OK; the Nim build fails because the
+  validator is handed an unnamed tuple. Same class as TK-TY45 (#127), at the
+  return position. Fix shape: the checker either names the literal from the
+  return type or refuses it, as it now does for a variable.
+- **A50 — `std/random` has no Odin or D runtime.** `newDice`, `newDiceFromOs`,
+  `rollRange` exist in `tuck_rt.nim` only; "check OK" does not mean every
+  backend builds. A scan of every `std` extern against the three runtimes finds
+  nothing else missing except `std/net` on D (`listen`, `accept`, `connect`,
+  `recv`; ROADMAP S3.3, `42-net-echo` cannot link).
+- **A51 — the minimum of a signed type cannot be written.** `-128` for `i8` is
+  "128 does not fit i8": the minus applies after the range check. `core.convert`
+  notes the same for `i64` ("no literal spelling").
+
+Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
+parse error (imports are one flat name; the stdlib designs use dotted names, so
+`--stdlib` matches by file name); an `.odin` file per program must have its own
+directory (Odin builds the directory as one package); a call cannot nest in a
+payload (TK-PA13) and an empty `[]` needs a typed binding (TK-TY20), both by
+design.
 
 **A27–A37 — constructs that do not cross a module boundary (R11 scan,
 2026-09-28).** A25, A26, A27, A28, A29, A30, A31, A32, A33, A34, A35, A36, A37 and A47 are fixed; their pins are

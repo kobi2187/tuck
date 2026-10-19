@@ -3430,4 +3430,187 @@ fn main() -> int:
   t.badCheck "...and with nothing to decide it, it is ambiguous and names both types (#102)", "Fault and Link"
   t.bugFixed "...and with nothing to decide it, it is ambiguous and names both types (#102)"
 
+  # A module importing another that declares a payload sum failed to build on
+  # Nim: the importer forward-declared the imported sum's `==` and drop, which
+  # have no body there. Found while generating property-test harnesses, which
+  # import the module under test.
+  t.src """
+import sumsrc
+
+fn main() -> int:
+  return {a: 2} plain
+"""
+  t.addFile "sumsrc.tuck", """
+type Shape:
+  | Dot
+  | Disc({radius: f64})
+
+fn plain({a: int}) -> int:
+  return a
+"""
+  t.runs "a module importing a payload sum builds (Nim)", 2
+  t.bugFixed "a module importing a payload sum builds (Nim)"
+
+  # --- consts as data tables (#125, #126, #127) -----------------------------
+  t.src """
+import constsrc
+
+fn main() -> int:
+  var n = 0
+  for s in names:
+    n = n + 1
+  return n
+"""
+  t.addFile "constsrc.tuck", """
+const names = ["a", "b", "c"]
+"""
+  t.runs "an imported const is readable as a value (#125)", 3
+  t.bugFixed "an imported const is readable as a value (#125)"
+
+  t.src """
+type P:
+  x: int
+  y: i64
+
+const one: P = {x: 3, y: 4}
+const many: Seq[P] = [{x: 1, y: 2}, {x: 5, y: 6}]
+const wide: i64 = 7
+
+fn main() -> int:
+  var n = 0
+  for q in many:
+    n = n + q.x
+  let w: i64 = wide
+  let sum = one.y + w
+  let small = sum ^int
+  return n + one.x + small
+"""
+  t.runs "a const states its type, and a record literal takes it (#126)", 20
+  t.bugFixed "a const states its type, and a record literal takes it (#126)"
+
+  t.src """
+type P:
+  x: i64
+
+fn take({p: P}) -> i64:
+  return p.x
+
+fn main() -> int:
+  let q = {x: 3}
+  let r = {p: q} take
+  return 0
+"""
+  t.badCheck "an unnamed record in a variable is refused where a named one is wanted (#127)", "TK-TY45"
+  t.bugFixed "an unnamed record in a variable is refused where a named one is wanted (#127)"
+
+  # --- found dogfooding stdlib-project (issue #105) -------------------------
+  # A stated local type naming the enclosing generic fn's `T` was a stranger to
+  # the checker: building a generic value from it said "cannot infer
+  # generic parameter 'T'".
+  t.src """
+import seq
+
+type Ring[T]:
+  items: Seq[T]
+
+fn rebuilt[T]({r: Ring[T]}) -> Ring[T]:
+  var xs: Seq[T] = []
+  xs = {items: xs, value: r.items[0]} push
+  let back = {items: xs} Ring
+  return back
+
+fn main() -> int:
+  let a: Seq[int] = [4, 5]
+  let r = {items: a} Ring
+  let q = {r: r} rebuilt
+  return q.items[0]
+"""
+  t.runs "a local stated as Seq[T] in a generic fn builds a generic value (stdlib dogfooding)", 4
+  t.bugFixed "a local stated as Seq[T] in a generic fn builds a generic value (stdlib dogfooding)"
+
+  # A literal handed to a fn in ANOTHER module that consumes its argument was
+  # freed by the callee on Odin: the importer read the callee as body-less.
+  t.src """
+import keeper
+import seq
+
+fn main() -> int [io]:
+  let parts = {t: "kept"} keep
+  return {items: parts} count
+"""
+  t.addFile "keeper.tuck", """
+import seq
+
+fn keep({t: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  out = {items: out, value: t} push
+  return out
+"""
+  t.hostRuns "a literal passed to another module's consuming fn is owned by the callee", 1
+  t.bugFixed "a literal passed to another module's consuming fn is owned by the callee"
+
+  # --- open: found while building the property tester and dogfooding the
+  # stdlib (2026-10-19). Each is written as the CORRECT behaviour. ----------
+
+  # A48. A binding whose type is STATED as a payload sum is refused where a
+  # value of that sum is wanted: "'a' expects sum type but got A".
+  t.src """
+type A:
+  | X
+  | Y
+
+fn f({a: A}) -> int:
+  return 1
+
+fn main() -> int:
+  let a: A = X
+  return {a: a} f
+"""
+  t.quietly: t.runs "A48: a binding stated as a sum type passes to a param of that sum", 1
+  t.bugOpen "A48: a binding stated as a sum type passes to a param of that sum"
+
+  # A49. Returning a bare record literal from a fn whose return type is a named
+  # record with an `invariant:` checks OK and then fails the Nim build: the
+  # validator is handed an unnamed tuple. The same class as TK-TY45, at the
+  # return position.
+  t.src """
+type Pos:
+  n: int
+  invariant:
+    n >= 0
+
+fn make({n: int}) -> Pos:
+  return {n: n}
+
+fn main() -> int:
+  let p = {n: 3} make
+  return p.n
+"""
+  t.quietly: t.runs "A49: a bare record literal returned as a named invariant type builds", 3
+  t.bugOpen "A49: a bare record literal returned as a named invariant type builds"
+
+  # A50. std/random has a Nim runtime only: `check` passes and the Odin and D
+  # builds fail ("'newDice' is not declared by 'rt'").
+  t.src """
+import random
+
+fn main() -> int:
+  let d = {seed: 7} newDice
+  let r = {state: d.state, inc: d.inc, low: 1, high: 6} rollRange
+  return r.value ^int
+"""
+  t.quietly: t.hostRuns "A50: std/random builds and runs on every backend", 5
+  t.bugOpen "A50: std/random builds and runs on every backend"
+
+  # A51. The minimum of a signed type has no spelling: the minus is applied
+  # after the literal is range-checked, so `-128` is "128 does not fit i8".
+  # (core.convert works around it for i64: "no literal spelling".)
+  t.src """
+fn main() -> int:
+  let x: i8 = -128
+  return 0
+"""
+  t.quietly: t.okCheck "A51: the minimum of a signed type can be written"
+  t.bugOpen "A51: the minimum of a signed type can be written"
+
   t.finish()

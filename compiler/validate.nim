@@ -215,6 +215,10 @@ let tuckGrammar = peg("module", st: Stats):
                ("tkDotDot " * name * ?structLit) |
                ("tkColonColon " * name) |
                ("tkBake " * structLit) |
+               # `x ~u16` narrows and `x ^u32` widens (issue #16): a numeric
+               # conversion, postfix, so it binds tighter than any binary
+               # operator. The target is a type, as the parser reads it.
+               (("tkTilde " | "tkCaret ") * typeExpr) |
                # `alias(old -> new, ...)` — the one parenthesised argument
                # list in a language with no paren calls. `alias` itself lexes
                # as a plain identifier, so this is a continuation, not a

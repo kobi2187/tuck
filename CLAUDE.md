@@ -66,6 +66,7 @@ reason the modes exist.
 ./tuck c  file.tuck        # compile — emit one target: Nim, --odin, or --dlang
 ./tuck b  file.tuck        # build   — emit and link a binary
 ./tuck explain TK-TY15     # what a diagnostic means, and how to fix it
+./tuck b f.tuck --stdlib:stdlib-project   # build against stdlib-project's modules instead of std/
 ```
 
 When a construct behaves oddly, `./tuck p --ast` **first**. Gradual typing means

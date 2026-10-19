@@ -8,6 +8,7 @@ import resolution
 import typecheck_state
 import typecheck_util
 import ast_query
+import name_prefix
 
 proc namedType*(tc: TypeChecker, name: string, span: Span): Type
 proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true)
@@ -19,6 +20,16 @@ proc failIfPendingClash*(tc: TypeChecker, d: Decl) =
   ## error whichever declaration the checker reaches first.
   fail("Pending Error: '" & d.name &
        "' is implemented — remove it from the pending block", d.span)
+
+proc recordFnBody(d: Decl) =
+  ## A top-level fn with a body joins the program-wide table the ownership
+  ## rules read for calls into other modules. Under both spellings: the
+  ## checker sees `split`, the ownership pass the mangled `tuckˑfnˑsplit` the
+  ## same declaration is renamed to.
+  if d.fnBody == nil or d.isExtern: return
+  for key in [d.name, prefixed(d.name, nkFn)]:
+    if key notin semLayer.fnBodies: semLayer.fnBodies[key] = d
+    elif semLayer.fnBodies[key] != d: semLayer.ambiguousFns.incl key
 
 proc collectFnSig*(tc: var TypeChecker, d: Decl, top: bool) =
   ## A fn joins the signature catalog, and is indexed so a resolved call can
@@ -34,6 +45,7 @@ proc collectFnSig*(tc: var TypeChecker, d: Decl, top: bool) =
       break
   indexDecl(semLayer, d)
   if d.isExtern and d.name notin semLayer.externs: semLayer.externs[d.name] = d
+  if top: recordFnBody(d)
   tc.addFnDecl(d.name, d)
   # NOT pending: a pending fn emits a generic one-payload stub
   # (genPendingStub), so its real params are ({payload: T},) — nothing like its

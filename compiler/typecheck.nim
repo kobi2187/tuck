@@ -2362,6 +2362,20 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
   for step in e.steps.mitems:
     tc.checkChainStep(step, e, result, recvT, fields)
 
+proc failIfAnonymousForNamed(tc: TypeChecker, e: Expr, actual, expected: Type,
+                             what: string) =
+  ## A variable or field holding an ANONYMOUS record is not a value of a named
+  ## record with the same fields on the Nim backend (#127): "check OK" must mean
+  ## every backend builds. A literal at the place is fine, since the place
+  ## names the type and the backend builds it as that type.
+  if e.kind notin {exkVar, exkField} or actual == nil or expected == nil: return
+  if actual.kind != tkRecord or expected.kind != tkNamed: return
+  let d = tc.typeDecls.getOrDefault(expected.name, nil)
+  if d == nil or d.kind != tkRecord or not actual.anonLiteral: return
+  fail(dcTyAnonToNamed, what & " expects " & expected.name & " but got a " &
+       "record with no type name. Fix: build it with the type, `{...} " &
+       expected.name & "`, or state the type where it is bound", e.span)
+
 proc check(tc: var TypeChecker, e: Expr, expected: Type, what: string) =
   ## Checking mode: synthesize `e` with `expected` pushed as context, then
   ## require the result to be compatible with it. `what` names the position
@@ -2373,6 +2387,7 @@ proc check(tc: var TypeChecker, e: Expr, expected: Type, what: string) =
   if not tc.compatible(actual, expected):
     fail("Type Error: " & what & " expects " & typeName(expected) &
          " but got " & typeName(actual), e.span)
+  tc.failIfAnonymousForNamed(e, actual, expected, what)
 
 # --- Generics: simple substitution, Nim/C# style. No variance, no HKTs. ---
 # Type params are inferred at the call site by unifying declared param types
@@ -3119,6 +3134,7 @@ proc checkNamedField(tc: var TypeChecker, fnName: string, p: Param,
   if not tc.compatible(af.typ, p.typ):
     fail("Type Error: field '" & p.name & "' of call to '" & fnName &
          "' expects " & typeName(p.typ) & " but got " & typeName(af.typ), af.span)
+  tc.failIfAnonymousForNamed(payloadFieldExpr(e, af.name), af.typ, p.typ, what)
   tc.failIfCalleeReadsHole(fnName, p.name, af)
 
 proc claimByName(tc: var TypeChecker, fnName: string, params: seq[Param],
@@ -3257,6 +3273,8 @@ proc checkPositionalArgs(tc: var TypeChecker, fnName: string,
     if not tc.compatible(t, params[i].typ):
       fail("Type Error: argument " & $(i+1) & " to '" & fnName & "' expects " &
            typeName(params[i].typ) & " but got " & typeName(t), e.args[i].span)
+    tc.failIfAnonymousForNamed(e.args[i], t, params[i].typ,
+                               "argument " & $(i+1) & " to '" & fnName & "'")
     tc.markIfPlainIntoOptional(e.args[i], t, params[i].typ)
 
 proc checkCallArgs(tc: var TypeChecker, fnName: string, sig: FnSig, e: Expr,
@@ -4133,6 +4151,11 @@ proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
            "a construction, `" & e.name & " {}` (naming each field if it has any)",
            e.span)
     return tc.namedType(e.name, e.span)
+  # A const another module declared (#125): its value is plain data, so its
+  # type is what that literal synthesizes to here. Codegen already qualifies
+  # the reference (`constOrigin`).
+  let imported = constDeclFor(tc.module, e.name)
+  if imported != nil: return tc.synthesize(imported.constVal)
   # Every legitimate shape a bare Capitalized-or-lowercase name can be —
   # local, nullary call, sum variant, registry event, pending marker,
   # declared type/object name, inline sum variant inside a match arm — is
@@ -4201,7 +4224,7 @@ proc synthStruct(tc: var TypeChecker, e: Expr): Type =
     tc.withFieldHints(hints): fs = tc.synthStructFields(e)
   else:
     fs = tc.synthStructFields(e)
-  Type(span: e.span, kind: tkRecord, fields: fs)
+  Type(span: e.span, kind: tkRecord, fields: fs, anonLiteral: true)
 
 proc asContainerWanted(tc: var TypeChecker): Type =
   ## The expected type, when it is the `Seq[T]` / `Array[N, T]` a list literal
@@ -4662,7 +4685,10 @@ proc synthDeclAssign(tc: var TypeChecker, e: Expr) =
                   e.declType.name in tc.distinctNames
     let want = if nominal: e.declType else: tc.resolve(e.declType)
     tc.check(e.assignVal, want, what)
-    valT = want
+    # The NAME is bound at the type with the enclosing fn's `T` made the
+    # named type parameter a param's type would be, so building a generic
+    # value from it binds `T` rather than reading a stranger called `T`.
+    valT = if tc.bodyGenerics.len > 0: substType(want, tc.bodyGenerics) else: want
   else:
     valT = tc.synthesize(e.assignVal)
   tc.bindName(e.target.name, valT, e.isMutable, span = e.span, site = e)
@@ -5540,6 +5566,8 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
   # is rechecked by the backend.
   var gsub = initTable[string, Type]()
   for g in generics: gsub[g] = typeParamNamed(Span(), g)
+  let savedGenerics = tc.bodyGenerics
+  tc.bodyGenerics = gsub
 
   let savedVariants = tc.varVariants
   let prevBody = tc.bodyBlock
@@ -5562,6 +5590,7 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
   tc.currentRet = nil
   tc.currentFn = ""
   tc.varVariants = savedVariants
+  tc.bodyGenerics = savedGenerics
   tc.failIfUninspected()
   tc.popScope()
 
@@ -6046,7 +6075,12 @@ proc bindConsts*(tc: var TypeChecker, m: Module) =
   for d in m.decls:
     if d != nil and d.kind == dkConst:
       constCheck(tc, m, d.name, d.constVal, d.span)
-      tc.bindName(d.name, tc.synthesize(d.constVal), false)
+      if d.constType != nil:
+        let want = tc.resolve(d.constType)
+        tc.check(d.constVal, want, "'" & d.name & "'")
+        tc.bindName(d.name, want, false)
+      else:
+        tc.bindName(d.name, tc.synthesize(d.constVal), false)
 
 proc failIfBadQualifiedType(m: Module, t: Type) =
   ## `mod::Name` must name a type that module declares and this one imports.
