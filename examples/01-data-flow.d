@@ -2,46 +2,20 @@ module _01_data_flow;
 
 import rt = tuck_rt;
 import std.stdio : writeln, stderr;
+import tuckˑmodˑshapes_01_data_flow = mod_shapes_01_data_flow;
 import tuckˑmodˑtime = mod_time;
 
-struct TRec_hasNew_episodes_metadata(T_hasNew, T_episodes, T_metadata) {
-    T_hasNew hasNew;
-    T_episodes episodes;
-    T_metadata metadata;
-}
-
-struct TRec_episodes(T_episodes) {
-    T_episodes episodes;
-}
-
-struct TRec_url_timeout(T_url, T_timeout) {
-    T_url url;
-    T_timeout timeout;
-}
-
-struct TRec_trackId_title_durationMs(T_trackId, T_title, T_durationMs) {
-    T_trackId trackId;
-    T_title title;
-    T_durationMs durationMs;
-}
-
-struct TRec_id_name_length(T_id, T_name, T_length) {
-    T_id id;
-    T_name name;
-    T_length length;
-}
-
-TRec_hasNew_episodes_metadata!(bool, long, string) tuckˑfnˑfetch(T)(T payload) {
+tuckˑmodˑshapes_01_data_flow.TRec_hasNew_episodes_metadata!(bool, long, string) tuckˑfnˑfetch(T)(T payload) {
     stderr.writeln("TUCK PENDING: fetch invoked (not implemented)");
     return typeof(return).init;
 }
 
-TRec_episodes!(long) tuckˑfnˑparse(T)(T payload) {
+tuckˑmodˑshapes_01_data_flow.TRec_episodes!(long) tuckˑfnˑparse(T)(T payload) {
     stderr.writeln("TUCK PENDING: parse invoked (not implemented)");
     return typeof(return).init;
 }
 
-TRec_episodes!(long) tuckˑfnˑselectEpisodes(T)(T payload) {
+tuckˑmodˑshapes_01_data_flow.TRec_episodes!(long) tuckˑfnˑselectEpisodes(T)(T payload) {
     stderr.writeln("TUCK PENDING: selectEpisodes invoked (not implemented)");
     return typeof(return).init;
 }
@@ -60,20 +34,20 @@ void tuckˑfnˑplayTrack(T)(T payload) {
 
 
 void tuckˑfnˑmain() {
-    TRec_url_timeout!(string, tuckˑmodˑtime.tuckˑtypeˑMilliseconds) tuckˑvˑrequest = TRec_url_timeout!(string, tuckˑmodˑtime.tuckˑtypeˑMilliseconds)(url: ("example.com").idup, timeout: tuckˑmodˑtime.tuckˑfnˑms(cast(uint)5));
+    tuckˑmodˑshapes_01_data_flow.TRec_url_timeout!(string, tuckˑmodˑtime.tuckˑtypeˑMilliseconds) tuckˑvˑrequest = tuckˑmodˑshapes_01_data_flow.TRec_url_timeout!(string, tuckˑmodˑtime.tuckˑtypeˑMilliseconds)(url: ("example.com").idup, timeout: tuckˑmodˑtime.tuckˑfnˑms(cast(uint)5));
     scope(exit) rt.tuckDrop(tuckˑvˑrequest.url);
-    TRec_hasNew_episodes_metadata!(bool, long, string) tuckOwnTmp1 = tuckˑfnˑfetch(tuckˑvˑrequest);
+    tuckˑmodˑshapes_01_data_flow.TRec_hasNew_episodes_metadata!(bool, long, string) tuckOwnTmp1 = tuckˑfnˑfetch(tuckˑvˑrequest);
     scope(exit) rt.tuckDrop(tuckOwnTmp1.metadata);
-    TRec_episodes!(long) tuckˑvˑresponse = tuckˑfnˑselectEpisodes(tuckˑfnˑparse(tuckOwnTmp1));
-    TRec_hasNew_episodes_metadata!(bool, long, string) tuckˑvˑfeed = tuckˑfnˑfetch("https://example.com/feed");
+    tuckˑmodˑshapes_01_data_flow.TRec_episodes!(long) tuckˑvˑresponse = tuckˑfnˑselectEpisodes(tuckˑfnˑparse(tuckOwnTmp1));
+    tuckˑmodˑshapes_01_data_flow.TRec_hasNew_episodes_metadata!(bool, long, string) tuckˑvˑfeed = tuckˑfnˑfetch("https://example.com/feed");
     scope(exit) rt.tuckDrop(tuckˑvˑfeed.metadata);
     if (tuckˑvˑfeed.hasNew) {
         tuckˑfnˑprocess(tuckˑvˑfeed.episodes);
     } else {
         tuckˑfnˑlog(tuckˑvˑfeed.metadata);
     }
-    TRec_trackId_title_durationMs!(long, string, long) tuckˑvˑexternalTrack = TRec_trackId_title_durationMs!(long, string, long)(trackId: 101L, title: ("Deep Dive").idup, durationMs: 212000L);
-    TRec_id_name_length!(long, string, long) tuckˑvˑnormalizedTrack = TRec_id_name_length!(long, string, long)(id: tuckˑvˑexternalTrack.trackId, name: tuckˑvˑexternalTrack.title, length: tuckˑvˑexternalTrack.durationMs);
+    tuckˑmodˑshapes_01_data_flow.TRec_trackId_title_durationMs!(long, string, long) tuckˑvˑexternalTrack = tuckˑmodˑshapes_01_data_flow.TRec_trackId_title_durationMs!(long, string, long)(trackId: 101L, title: ("Deep Dive").idup, durationMs: 212000L);
+    tuckˑmodˑshapes_01_data_flow.TRec_id_name_length!(long, string, long) tuckˑvˑnormalizedTrack = tuckˑmodˑshapes_01_data_flow.TRec_id_name_length!(long, string, long)(id: tuckˑvˑexternalTrack.trackId, name: tuckˑvˑexternalTrack.title, length: tuckˑvˑexternalTrack.durationMs);
     scope(exit) rt.tuckDrop(tuckˑvˑnormalizedTrack.name);
     tuckˑfnˑplayTrack(tuckˑvˑnormalizedTrack);
     return;

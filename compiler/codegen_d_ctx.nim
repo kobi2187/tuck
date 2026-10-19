@@ -3,6 +3,7 @@
 # The D backend's codegen context and type emission. No genDExpr/genDDecl
 # calls here — pure state and type translation, safe to split from the
 # recursive expression/decl codegen in codegen_d.nim.
+import shape_pool
 import name_prefix
 import ast, tables, sets, strutils
 import ast_query
@@ -55,6 +56,7 @@ type
     modPrefix*: string     # library modules prefix hoisted names
     realModules*: ModuleMap
     used*: ModuleUse      # the modules this file reached through: its imports
+    shapes*: ShapePool    # the program's shared record shapes; nil for one module
     moduleName*: string
     tmpCounter*: int
     currentParams*: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
@@ -388,30 +390,37 @@ proc recStructNameD*(ctx: var DCodegenCtx, fields: seq[FieldDef],
     typeStrs.add(ctx.dType(f.typ))
     nameParts.add(f.name)
   let args = "!(" & typeStrs.join(", ") & ")"
-  if owner != NoModule and owner != ctx.module.id:
+  let pooled = ctx.shapes != nil
+  if not pooled and owner != NoModule and owner != ctx.module.id:
     return ctx.pkgQualifierD(owner) & "TRec_" & moduleSlug(owner) & "_" &
            nameParts.join("_") & args
-  let name = "TRec_" & ctx.modPrefix & nameParts.join("_")
-  if name notin ctx.recShapes:
-    ctx.recShapes[name] = name
+  let name = "TRec_" & (if pooled: "" else: ctx.modPrefix) & nameParts.join("_")
+  let known = if pooled: name in ctx.shapes.defs else: name in ctx.recShapes
+  if not known:
     var params: seq[string]
     for f in fields: params.add("T_" & f.name)
     var res = "struct " & name & "(" & params.join(", ") & ") {\n"
     for i, f in fields:
       res.add("    " & params[i] & " " & f.name & ";\n")
     res.add("}")
-    ctx.hoisted.add(res)
-  name & args
+    if pooled: ctx.shapes.defs[name] = res
+    else:
+      ctx.recShapes[name] = name
+      ctx.hoisted.add(res)
+  # In a program of several modules every shape lives in one module, so two
+  # modules naming a shape name one type (#145).
+  let home = if pooled: ctx.pkgQualifierD(moduleId(ctx.shapes.module)) else: ""
+  home & name & args
 
 proc newDCtx*(m: Module, realModules: ModuleMap,
              moduleName: string, res: Resolution,
-             modPrefix = ""): DCodegenCtx =
+             modPrefix = "", shapes: ShapePool = nil): DCodegenCtx =
   ## A fresh D emission context for module `m`, with its decl index built up
   ## front and the `errors` policy read off the module. `modPrefix` is set for
   ## library modules, whose hoisted names must not collide with the entry's.
   result = DCodegenCtx(definedVars: initHashSet[string](), indent: 0,
                        module: m, realModules: realModules,
                        moduleName: moduleName, modPrefix: modPrefix,
-                       idx: buildDeclIndex(m), res: res, used: newModuleUse())
+                       idx: buildDeclIndex(m), res: res, used: newModuleUse(), shapes: shapes)
   for d in m.decls:
     if d != nil and d.kind == dkErrors: result.errPolicy = d.policyName

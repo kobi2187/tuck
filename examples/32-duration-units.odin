@@ -1,19 +1,16 @@
 #+feature dynamic-literals
 package main
 
+import tuckˑmodˑshapes_32_duration_units "./mod_shapes_32_duration_units"
 import tuckˑmodˑsys "./mod_sys"
 import tuckˑmodˑtime "./mod_time"
-
-TRec_ok :: struct ($T_ok: typeid) {
-	ok: T_ok,
-}
 
 tuckˑfnˑasInt :: proc (d: tuckˑmodˑtime.tuckˑtypeˑMilliseconds) -> int {
   return 42
 }
 
-tuckˑfnˑbudget :: proc (d: tuckˑmodˑtime.tuckˑtypeˑMilliseconds) -> TRec_ok(bool) {
-  return TRec_ok(bool){ok = true}
+tuckˑfnˑbudget :: proc (d: tuckˑmodˑtime.tuckˑtypeˑMilliseconds) -> tuckˑmodˑshapes_32_duration_units.TRec_ok(bool) {
+  return tuckˑmodˑshapes_32_duration_units.TRec_ok(bool){ok = true}
 }
 
 tuckˑfnˑmain :: proc () {

@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (1)
+## A. Open bugs (0)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -97,6 +97,8 @@ it in.
   `d = {state: 1, inc: 3}`: each module hoists its own struct for an anonymous
   record, so Odin sees `TRec_random_state_inc` and `TRec_state_inc`. check and
   Nim are fine. Found rewriting `std/random` in Tuck.
+  Fixed: a program of several modules declares every record shape once, in a
+  generated module (`tuck_shapes`) the others reach like any module.
 
 - **A63 (issue #146) — a local made from a module const Seq was a move of the
   const.** `var state = table` emitted `tuckMove(table)`, which Nim refuses.

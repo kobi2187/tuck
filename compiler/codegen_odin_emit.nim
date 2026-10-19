@@ -5,6 +5,7 @@
 # flags/entry point into one Odin source file. The public entry points
 # (`emitOdin`/`emitOdinModule`) sit above genOdinDecl/genOdinExpr in the
 # import order, same shape as codegen_emit.nim for the Nim backend.
+import shape_pool
 import ast, ast_ops, strutils, tables, algorithm, sets
 import resolution
 import ast_query
@@ -72,13 +73,22 @@ proc moduleImports(ctx: OdinCodegenCtx, dirPrefix: string): seq[string] =
     result.add("import " & moduleAlias(id) & " \"" & dirPrefix & "mod_" &
                moduleSlug(id) & "\"")
 
+proc emitOdinShapes*(pool: ShapePool): string =
+  ## The generated module holding the program's record shapes (ShapesModule),
+  ## or "" when no module asked for one.
+  if pool == nil or pool.defs.len == 0: return ""
+  result = odinFeatures & "package tuck_" & pool.module & "\n\n"
+  for _, def in pool.defs: result.add(def & "\n\n")
+
 proc emitOdinModule*(name: string, m: Module, res: Resolution,
-                     realModules = initTable[ModuleId, Module]()): string =
+                     realModules = initTable[ModuleId, Module](),
+                     shapes: ShapePool = nil): string =
   ## An imported Tuck module as its own Odin package (`package tuck_<name>`,
   ## in `mod_<name>/`): only the imports its body actually references, then the
   ## hoisted types, then its declarations. No entry point.
   let pkg = name.replace("-", "_")
-  var ctx = newOdinCtx(m, realModules, name, res, modPrefix = pkg & "_")
+  var ctx = newOdinCtx(m, realModules, name, res, modPrefix = pkg & "_",
+                       shapes = shapes)
   var (body, _) = ctx.emitBody(m)
   if hasRunningActors(m): body.add(ctx.genOdinActorsBoot(m) & "\n")
   # Odin package names are GLOBAL, not scoped to their directory, so a Tuck
@@ -317,7 +327,7 @@ const odinPackage = odinFeatures & "package main\n\n"
 
 proc emitOdin*(m: Module, res: Resolution,
                realModules = initTable[ModuleId, Module](),
-               moduleName = "main"): string =
+               moduleName = "main", shapes: ShapePool = nil): string =
   ## `res` is the semantic layer typechecking produced. Taking it as an
   ## argument is the point: this stage cannot run before the one that fills
   ## it, and now the signature says so instead of a comment on checkOrDie.
@@ -325,7 +335,7 @@ proc emitOdin*(m: Module, res: Resolution,
   # keyed by fn name alone, so a later module's marking overwrote an earlier
   # one's; they are keyed by module now (analysis_provenance.summaries), and
   # everything the emitter needs was decided in backend_prepare.
-  var ctx = newOdinCtx(m, realModules, moduleName, res)
+  var ctx = newOdinCtx(m, realModules, moduleName, res, shapes = shapes)
   let (body, mains) = ctx.emitBody(m)
   result = odinPackage
   # The entry point reaches through modules too (boot, register, slab release),

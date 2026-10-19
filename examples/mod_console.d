@@ -1,10 +1,7 @@
 module mod_console;
 
 import rt = tuck_rt;
-
-struct TRec_console_line(T_line) {
-    T_line line;
-}
+import tuckˑmodˑshapes_41_tostr_concat = mod_shapes_41_tostr_concat;
 
 enum tuckˑtypeˑIoError { EndOfInput, IoFailed }
 
@@ -16,8 +13,8 @@ void printLine(string text) {
     rt.printLine(text);
 }
 
-rt.TuckResult!(TRec_console_line!(string)) readLine() {
-    return rt.readLine!(rt.TuckResult!(TRec_console_line!(string)))();
+rt.TuckResult!(tuckˑmodˑshapes_41_tostr_concat.TRec_line!(string)) readLine() {
+    return rt.readLine!(rt.TuckResult!(tuckˑmodˑshapes_41_tostr_concat.TRec_line!(string)))();
 }
 
 

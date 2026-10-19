@@ -3867,7 +3867,7 @@ fn main() -> int:
   return d.inc ~int
 """
   t.quietly: t.hostRuns "A62: a local record literal assigned over another module's anonymous record builds on every backend", 3
-  t.bugOpen "A62: a local record literal assigned over another module's anonymous record builds on every backend"
+  t.bugFixed "A62: a local record literal assigned over another module's anonymous record builds on every backend"
 
   # A63. A local made from a module const Seq was emitted as a MOVE of the
   # const, which Nim refuses ("immutable, not 'var'"). A const is owned by

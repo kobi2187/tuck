@@ -56,6 +56,7 @@ import compiler/complexity
 import compiler/typecheck
 import compiler/mangle
 import compiler/codegen_common  # nimEntryStem: the ENTRY module's file stem
+import compiler/shape_pool
                                  # needs the same shadowing check an import
                                  # already gets — see the outName fix below
 import compiler/codegen_emit  # emitNim: genDecl/genExpr sit below this in
@@ -1264,6 +1265,8 @@ when isMainModule:
         assertTreeIds("odin lowering", odTree.modules)
       block:
         let t0 = vBegin(psEmitting)
+        # A program of several modules declares its record shapes once.
+        let shapes = if odProg.len > 1: newShapePool(base) else: nil
         for lm in odProg[0 ..< odProg.high]:
           let ts = epochTime()
           # Odin packages are DIRECTORIES: an imported module becomes
@@ -1271,13 +1274,18 @@ when isMainModule:
           let modDir = outDir / ("mod_" & moduleSlug(lm.id))
           createDir(modDir)
           let modOdPath = modDir / (moduleSlug(lm.id) & ".odin")
-          writeFile(modOdPath, emitOdinModule(lm.name, lm.m, semLayer, odReal))
+          writeFile(modOdPath, emitOdinModule(lm.name, lm.m, semLayer, odReal, shapes))
           echo "wrote ", modOdPath
           vSub(lm.name, ts)
         let tsEntry = epochTime()
         let odPath = outDir / (base & ".odin")
-        writeFile(odPath, emitOdin(odProg[^1].m, semLayer, odReal, base))
+        writeFile(odPath, emitOdin(odProg[^1].m, semLayer, odReal, base, shapes))
         echo "wrote ", odPath
+        let shapesOdin = emitOdinShapes(shapes)
+        if shapesOdin != "":
+          createDir(outDir / ("mod_" & shapes.module))
+          writeFile(outDir / ("mod_" & shapes.module) / (shapes.module & ".odin"),
+                    shapesOdin)
         vSub(odProg[^1].name, tsEntry)
         vEnd(psEmitting, t0)
       # The emitted package imports `./tuckrt`, so the runtime rides along.
@@ -1320,16 +1328,19 @@ when isMainModule:
         assertTreeIds("d lowering", dTree.modules)
       block:
         let t0 = vBegin(psEmitting)
+        let shapes = if dProg.len > 1: newShapePool(base) else: nil
         for lm in dProg[0 ..< dProg.high]:
           let ts = epochTime()
           let modDPath = outDir / ("mod_" & moduleSlug(lm.id) & ".d")
-          writeFile(modDPath, emitDModule(lm.name, lm.m, semLayer, dReal))
+          writeFile(modDPath, emitDModule(lm.name, lm.m, semLayer, dReal, shapes))
           echo "wrote ", modDPath
           vSub(lm.name, ts)
         let tsEntry = epochTime()
         let dPath = outDir / (base & ".d")
-        writeFile(dPath, emitD(dProg[^1].m, semLayer, dReal, base))
+        writeFile(dPath, emitD(dProg[^1].m, semLayer, dReal, base, shapes))
         echo "wrote ", dPath
+        let shapesD = emitDShapes(shapes)
+        if shapesD != "": writeFile(outDir / ("mod_" & shapes.module & ".d"), shapesD)
         vSub(dProg[^1].name, tsEntry)
         vEnd(psEmitting, t0)
       # A vendored `.c` an extern block binds: compile it to an object the

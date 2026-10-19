@@ -4,6 +4,7 @@
 # lookups. No genOdinExpr/genOdinDecl calls here — pure state and type
 # translation, safe to split from the recursive expression/decl codegen
 # in codegen_odin.nim.
+import shape_pool
 import name_prefix
 import ast, tables, sets, strutils
 import ast_query
@@ -42,6 +43,7 @@ type
     errPolicy*: string     # from the errors declaration; "" = strict
     realModules*: ModuleMap  # imported modules emitted as own Odin files
     used*: ModuleUse         # the modules this package reached through: its imports
+    shapes*: ShapePool       # the program's shared record shapes; nil for one module
     staticAsserts*: seq[string]  # collected into one `static this()` block
     actorInits*: seq[string]     # `singleton.field = v`, run by the entry
                                  # point before any actor starts (#87)
@@ -99,9 +101,10 @@ proc recStructName*(ctx: var OdinCodegenCtx, fields: seq[FieldDef]): string =
     typeStrs.add(ctx.odinType(f.typ))
     nameParts.add(f.name)
   let args = "(" & typeStrs.join(", ") & ")"
-  let name = "TRec_" & ctx.modPrefix & nameParts.join("_")
-  if name notin ctx.recShapes:
-    ctx.recShapes[name] = name
+  let pooled = ctx.shapes != nil
+  let name = "TRec_" & (if pooled: "" else: ctx.modPrefix) & nameParts.join("_")
+  let known = if pooled: name in ctx.shapes.defs else: name in ctx.recShapes
+  if not known:
     var params: seq[string]
     for f in fields: params.add("$T_" & f.name)
     var decl: seq[string]
@@ -110,8 +113,15 @@ proc recStructName*(ctx: var OdinCodegenCtx, fields: seq[FieldDef]): string =
     for i, f in fields:
       res.add("\t" & f.name & ": T_" & f.name & ",\n")
     res.add("}")
-    ctx.hoisted.add(res)
-  return name & args
+    if pooled: ctx.shapes.defs[name] = res
+    else:
+      ctx.recShapes[name] = name
+      ctx.hoisted.add(res)
+  # In a program of several modules every shape lives in one module, so two
+  # modules naming a shape name one type.
+  let home = if pooled: ctx.used.moduleQualifier(ctx.module.id, moduleId(ctx.shapes.module))
+             else: ""
+  return home & name & args
 
 proc isOddBitWidth*(name: string): bool =
   ## `u2`, `u12` — a width a decision table produced that no machine type has.
@@ -350,13 +360,13 @@ proc satisfiersOf*(ctx: OdinCodegenCtx, iface: string): seq[Decl] =
 
 proc newOdinCtx*(m: Module, realModules: ModuleMap,
                 moduleName: string, res: Resolution,
-                modPrefix = ""): OdinCodegenCtx =
+                modPrefix = "", shapes: ShapePool = nil): OdinCodegenCtx =
   ## indent 0: Odin declarations are top-level in a package, with no enclosing
   ## class around them.
   result = OdinCodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m,
                           realModules: realModules, moduleName: moduleName,
                           modPrefix: modPrefix, res: res,
-                          used: newModuleUse())
+                          used: newModuleUse(), shapes: shapes)
   for d in m.decls:
     if d != nil and d.kind == dkErrors:
       result.errPolicy = d.policyName

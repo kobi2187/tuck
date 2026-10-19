@@ -3,6 +3,7 @@ module _42_net_echo;
 import rt = tuck_rt;
 import tuckˑmodˑnet = mod_net;
 import tuckˑmodˑscheduler = mod_scheduler;
+import tuckˑmodˑshapes_42_net_echo = mod_shapes_42_net_echo;
 
 enum tuckˑactorˑResultMsgKind { msgPut }
 
@@ -53,9 +54,9 @@ void sendPut_tuckˑactorˑResult(ref tuckˑactorˑResult self, long c) {
 
 
 void tuckˑtaskˑserve(long lfd) {
-    rt.TuckResult!(tuckˑmodˑnet.TRec_net_fd!(long)) tuckˑvˑc = tuckˑmodˑnet.accept(lfd);
+    rt.TuckResult!(tuckˑmodˑshapes_42_net_echo.TRec_fd!(long)) tuckˑvˑc = tuckˑmodˑnet.accept(lfd);
     if ((tuckˑvˑc.status == rt.TuckStatus.Ok)) {
-        rt.TuckResult!(tuckˑmodˑnet.TRec_net_data!(string)) tuckOwnTmp1 = tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256L);
+        rt.TuckResult!(tuckˑmodˑshapes_42_net_echo.TRec_data!(string)) tuckOwnTmp1 = tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256L);
         scope(exit) rt.tuckDrop(tuckOwnTmp1);
         tuckOwnTmp1;
         tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "pong");
@@ -65,10 +66,10 @@ void tuckˑtaskˑserve(long lfd) {
 }
 
 void tuckˑtaskˑclient(long port) {
-    rt.TuckResult!(tuckˑmodˑnet.TRec_net_fd!(long)) tuckˑvˑc = tuckˑmodˑnet.connect("127.0.0.1", port);
+    rt.TuckResult!(tuckˑmodˑshapes_42_net_echo.TRec_fd!(long)) tuckˑvˑc = tuckˑmodˑnet.connect("127.0.0.1", port);
     if ((tuckˑvˑc.status == rt.TuckStatus.Ok)) {
         tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "ping");
-        rt.TuckResult!(tuckˑmodˑnet.TRec_net_data!(string)) tuckˑvˑr = tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256L);
+        rt.TuckResult!(tuckˑmodˑshapes_42_net_echo.TRec_data!(string)) tuckˑvˑr = tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256L);
         scope(exit) rt.tuckDrop(tuckˑvˑr);
         tuckˑmodˑnet.close(tuckˑvˑc.value.fd);
         if ((tuckˑvˑr.status == rt.TuckStatus.Ok)) {
@@ -89,7 +90,7 @@ bool tuckˑfnˑdone() {
 }
 
 long tuckˑfnˑmain() {
-    rt.TuckResult!(tuckˑmodˑnet.TRec_net_fd!(long)) tuckˑvˑl = tuckˑmodˑnet.listen(34593L);
+    rt.TuckResult!(tuckˑmodˑshapes_42_net_echo.TRec_fd!(long)) tuckˑvˑl = tuckˑmodˑnet.listen(34593L);
     if ((tuckˑvˑl.status == rt.TuckStatus.Ok)) {
         rt.tuckSpawnJob(&tuckˑtaskˑserve, tuckˑvˑl.value.fd);
         rt.tuckSpawnJob(&tuckˑtaskˑclient, 34593L);

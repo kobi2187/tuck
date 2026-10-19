@@ -3,27 +3,24 @@ module _14_task;
 import rt = tuck_rt;
 import std.stdio : writeln, stderr;
 import tuckˑmodˑhttp = mod_http;
-
-struct TRec_feed(T_feed) {
-    T_feed feed;
-}
+import tuckˑmodˑshapes_14_task = mod_shapes_14_task;
 
 struct tuckˑtypeˑFeed {
     long episodes;
 }
 
-TRec_feed!(tuckˑtypeˑFeed) tuckˑfnˑparse(T)(T payload) {
+tuckˑmodˑshapes_14_task.TRec_feed!(tuckˑtypeˑFeed) tuckˑfnˑparse(T)(T payload) {
     stderr.writeln("TUCK PENDING: parse invoked (not implemented)");
     return typeof(return).init;
 }
 
 
-rt.TuckResult!(TRec_feed!(tuckˑtypeˑFeed)) tuckˑtaskˑfetchFeed(string url) {
-    rt.TuckResult!(tuckˑmodˑhttp.TRec_http_body!(string)) tuckˑvˑresp = tuckˑmodˑhttp.tuckˑfnˑget(url);
+rt.TuckResult!(tuckˑmodˑshapes_14_task.TRec_feed!(tuckˑtypeˑFeed)) tuckˑtaskˑfetchFeed(string url) {
+    rt.TuckResult!(tuckˑmodˑshapes_14_task.TRec_body!(string)) tuckˑvˑresp = tuckˑmodˑhttp.tuckˑfnˑget(url);
     scope(exit) rt.tuckDrop(tuckˑvˑresp);
     if ((tuckˑvˑresp.status == rt.TuckStatus.Ok)) {
         return rt.tok(tuckˑfnˑparse(tuckˑvˑresp.value.body));
     }
-    return rt.terr!(TRec_feed!(tuckˑtypeˑFeed))(cast(ushort)(tuckˑvˑresp.err));
+    return rt.terr!(tuckˑmodˑshapes_14_task.TRec_feed!(tuckˑtypeˑFeed))(cast(ushort)(tuckˑvˑresp.err));
 }
 

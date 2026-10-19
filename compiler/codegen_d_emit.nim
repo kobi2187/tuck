@@ -5,6 +5,7 @@
 # entry point into one D source file. The public entry points
 # (`emitD`/`emitDModule`) sit above genDDecl/genDExpr in the import order,
 # same shape as codegen_emit.nim / codegen_odin_emit.nim.
+import shape_pool
 import ast, strutils, tables, sets
 import resolution
 import ast_query
@@ -196,14 +197,23 @@ proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
   else:
     result = "void main" & head & drive & "}\n"
 
+proc emitDShapes*(pool: ShapePool): string =
+  ## The generated module holding the program's record shapes (ShapesModule),
+  ## or "" when no module asked for one.
+  if pool == nil or pool.defs.len == 0: return ""
+  result = "module mod_" & pool.module & ";\n\n"
+  for _, def in pool.defs: result.add(def & "\n\n")
+
 proc emitDModule*(name: string, m: Module, res: Resolution,
-                  realModules = initTable[ModuleId, Module]()): string =
+                  realModules = initTable[ModuleId, Module](),
+                  shapes: ShapePool = nil): string =
   ## A library module (import target): file mod_<name>.d, module mod_<name>.
   ## The import alias at the use site keeps the Tuck name, so calls read
   ## `console.printLine` — and the mod_ prefix keeps a Tuck module called
   ## `std` or `core` from colliding with D's own top-level packages.
   let alias = name.replace("-", "_")
-  var ctx = newDCtx(m, realModules, name, res, modPrefix = alias & "_")
+  var ctx = newDCtx(m, realModules, name, res, modPrefix = alias & "_",
+                    shapes = shapes)
   var (body, _) = ctx.emitDBody(m)
   if hasRunningActors(m): body.add(ctx.genDActorsBoot(m) & "\n")
   result = "module mod_" & alias & ";\n\n"
@@ -217,12 +227,12 @@ proc emitDModule*(name: string, m: Module, res: Resolution,
 
 proc emitD*(m: Module, res: Resolution,
             realModules = initTable[ModuleId, Module](),
-            moduleName = "main"): string =
+            moduleName = "main", shapes: ShapePool = nil): string =
   ## The entry module: declarations, then D's own `main` calling tuck_main.
   ## `res` is the semantic layer typechecking produced. Taking it as an
   ## argument is the point: this stage cannot run before the one that fills
   ## it, and now the signature says so instead of a comment on checkOrDie.
-  var ctx = newDCtx(m, realModules, moduleName, res)
+  var ctx = newDCtx(m, realModules, moduleName, res, shapes = shapes)
   let (body, mains) = ctx.emitDBody(m)
   result = "module " & dModuleName(moduleName) & ";\n\n"
   # The entry point qualifies through modules too (boot, register, slabs), so

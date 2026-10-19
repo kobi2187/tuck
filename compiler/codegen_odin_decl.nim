@@ -609,7 +609,7 @@ proc genRecordType*(ctx: var OdinCodegenCtx, d: Decl): string =
   # them (Resolution.ownerFields), so they print as `self.<name>`.
   var checkCtx = OdinCodegenCtx(definedVars: initHashSet[string](), indent: 0,
                                 module: ctx.module, realModules: ctx.realModules,
-                                res: ctx.res, used: ctx.used)
+                                res: ctx.res, used: ctx.used, shapes: ctx.shapes)
   for member in d.typeMembers:
     if member.kind == dkExpr:
       # A test and a runtime call, NOT `assert`: `-disable-assert` strips
@@ -716,7 +716,8 @@ proc newHandlerCtx*(ctx: OdinCodegenCtx, d: Decl): OdinCodegenCtx =
   result = OdinCodegenCtx(definedVars: initHashSet[string](),
                           indent: ctx.indent + 1,
                           module: ctx.module, realModules: ctx.realModules,
-                          errPolicy: ctx.errPolicy, res: ctx.res, used: ctx.used)
+                          errPolicy: ctx.errPolicy, res: ctx.res, used: ctx.used,
+                          shapes: ctx.shapes)
 
 proc adoptHandlerCtx*(ctx: var OdinCodegenCtx, hctx: OdinCodegenCtx) =
   ## Anything the handler bodies hoisted belongs to the enclosing file.
