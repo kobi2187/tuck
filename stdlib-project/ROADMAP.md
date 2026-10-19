@@ -61,6 +61,8 @@ A module that hit a compiler bug is left where it stopped, the bug is filed, and
 module is started. No workaround is written into a module. Finish these after the fixes:
 
 * `std.encoding`: #134 (`_` arm over a payload sum, Odin).
+* `std.net-http`: #142 (a local reused by name across scopes; Odin segfault). Passes on Nim.
+  URLs, percent-encoding, queries, request and response text, headers and cookies are written.
 * `platform.watchdog`: #141 (a literal in a `send` payload). The actor (configure, start, feed,
   check, stop) is written.
 * `platform.dsp`: #135 (float list literals, also noted there) and #140 (arithmetic on float

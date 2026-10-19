@@ -3791,4 +3791,39 @@ fn main() -> int:
   t.quietly: t.okCheck "A59: an integer literal in a send payload adopts the handler's field type"
   t.bugOpen "A59: an integer literal in a send payload adopts the handler's field type"
 
+  # A60. A local reused by name in a later sibling scope inherits the earlier
+  # one's ownership state: the second `h` is pushed AND dropped, so the Seq
+  # holds freed strings (Odin segfault). Found writing std.net-http.
+  t.src """
+import seq
+import str
+
+type H:
+  name: str
+  value: str
+
+fn maybe({s: str}) -> str?:
+  if s == "":
+    return none
+  return s
+
+fn main() -> int:
+  var first = "x"
+  if first == "x":
+    let h = {s: "abc"} maybe
+    if h.ok:
+      first = h.value
+  var hs: Seq[H] = []
+  for i in 0 .. 2:
+    let n = "k" + "ey"
+    let h = {name: n, value: "v"} H
+    hs = {items: hs, value: h} push
+  var total = 0
+  for i in 0 .. hs.len - 1:
+    total = total + {t: hs[i].name} byteCount
+  return total
+"""
+  t.quietly: t.hostRuns "A60: a local reused by name in a later scope is owned independently", 9
+  t.bugOpen "A60: a local reused by name in a later scope is owned independently"
+
   t.finish()

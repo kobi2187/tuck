@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (12)
+## A. Open bugs (13)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -81,6 +81,12 @@ it in.
 - **A59 (issue #141) — a literal in a `send` payload does not adopt the handler's
   field type.** `W send set {ms: 100}` with `on set({ms: u32})` is "expects u32 but
   got int"; the same literal in a call is fine. Found writing `platform.watchdog`.
+
+- **A60 (issue #142) — a local reused by name in a later scope inherits the
+  earlier one's ownership state.** A `str?` named `h` in one block and a
+  record named `h` in a later one: the second is pushed and also dropped, so the
+  Seq holds freed strings (Odin segfault; Nim is fine). Found writing
+  `std.net-http`.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
