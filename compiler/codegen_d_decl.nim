@@ -8,6 +8,7 @@ import ast, strutils, sets, tables
 import resolution
 import ast_query
 import codegen_common
+import name_prefix
 import codegen_d_ctx
 from mangle import mangleName
 import ./codegen_d
@@ -683,14 +684,12 @@ proc genDRegister*(ctx: DCodegenCtx, m: Module): string =
   result = "void " & RegisterProc & "() {\n"
   for h in foreignHandlers(m):
     let reg = ctx.res.registryOfHandler(h)
-    let origin = if reg == nil: "" else:
-      declOrigin(m, ctx.realModules, reg.name, {dkRegistry})
-    let pre = if origin == "": "" else: dAlias(origin) & "."
+    let pre = if reg == nil: "" else:
+      ctx.pkgQualifierD(declOrigin(m, ctx.realModules, reg.name, {dkRegistry}))
     result.add("    " & pre & ctx.res.handlerListOf(h) & " ~= &" &
                dHandlerFnName(h.name) & ";\n")
   for (iface, o) in movedSatisfiers(m):
-    let origin = moduleDeclaringType(m, iface.name)
-    let pre = if origin == "": "" else: dAlias(origin) & "."
+    let pre = ctx.pkgQualifierD(moduleDeclaringType(m, iface.name))
     for mem in iface.ifaceMembers:
       if mem == nil or mem.kind != dkFn: continue
       result.add("    " & pre & implVarName(iface.name, mem.name, o.name) & " = &" &
@@ -1113,7 +1112,7 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   if d == nil: return ""
   # Imported type decls are injected for checking only; the origin module
   # emits them (mirrors codegen.nim:1756 / codegen_odin.nim:2234).
-  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.span.file.startsWith(ImportedTypeMarker):
+  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.origin != NoModule:
     return ""
   case d.kind
   of dkType: (if d.hoistedTo != "": "" else: ctx.genDTypeDecl(d))

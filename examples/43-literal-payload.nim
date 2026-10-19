@@ -1,6 +1,6 @@
 {.experimental: "codeReordering".}
 import "../compiler/tuck_rt"
-import sys
+import sys as tuckˑmodˑsys
 
 proc tuckˑfnˑdouble*(value: int): int
 proc tuckˑfnˑaddTen*(value: int): int
@@ -16,5 +16,5 @@ proc tuckˑfnˑmain*(): void =
   var tuckˑvˑa = tuckˑfnˑdouble(5)
   var tuckˑvˑb = tuckˑfnˑaddTen(tuckˑfnˑdouble(10))
   var tuckˑvˑtotal = (tuckˑvˑa + tuckˑvˑb)
-  sys.exit(tuckˑvˑtotal)
+  tuckˑmodˑsys.exit(tuckˑvˑtotal)
 

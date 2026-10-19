@@ -33,7 +33,7 @@
 #
 # (Not `mangle_name.nim`: to Nim that module name IS `mangleName`, the proc
 # every emitter imports from `mangle` — the same folding, one level up.)
-import strutils
+import strutils, sets
 import ast
 
 type NameKind* = enum
@@ -55,6 +55,7 @@ type NameKind* = enum
   nkRegister = "register"
   nkRegistry = "registry"
   nkVariant = "variant"    ## the tag field of a payload-carrying sum variant
+  nkModule = "mod"         ## the name an imported module is reached by
 
 const KindSeparator = "ˑ"   ## U+02D1: a letter to every host, never to Tuck
 const MangledPrefix* = "tuck" & KindSeparator
@@ -85,6 +86,28 @@ proc joinedName*(owner, part: string): string =
 proc prefixed*(name: string, kind: NameKind): string =
   ## `name` spelled as a `kind`.
   MangledPrefix & $kind & KindSeparator & name
+
+proc moduleSlug*(id: ModuleId): string =
+  ## The module's name as a file or directory stem: `mod_<slug>` on disk, the
+  ## part of `moduleAlias` after the prefix. A hyphen is not an identifier
+  ## character in any host.
+  nameOf(id).replace("-", "_")
+
+proc moduleAlias*(id: ModuleId): string =
+  ## What an imported module is CALLED in the emitted code: the import alias,
+  ## and the qualifier of everything reached through it. Spelled like any other
+  ## generated name, so a module called `fmt`, `os` or `seq` never meets the
+  ## host's package or type of that name (#149). A hyphen is not an identifier
+  ## character in any host, so it becomes an underscore.
+  prefixed(moduleSlug(id), nkModule)
+
+proc moduleQualifier*(used: ModuleUse, own, id: ModuleId): string =
+  ## `<alias>.` for something module `id` declares, as written in module `own`;
+  ## "" when it is `own`'s own. Asking is the record of the use: the file
+  ## imports each module a qualifier was spelled for, and no other.
+  if id == NoModule or id == own: return ""
+  used.ids.incl id
+  moduleAlias(id) & "."
 
 proc declKind*(d: Decl): NameKind =
   ## The word a declaration's mangled name carries: exactly what it is. Asked

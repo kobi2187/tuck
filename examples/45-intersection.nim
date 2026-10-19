@@ -1,6 +1,6 @@
 {.experimental: "codeReordering".}
 import "../compiler/tuck_rt"
-import scheduler
+import scheduler as tuckˑmodˑscheduler
 
 proc tuckˑdecisionˑnextPhase*(current: tuckˑtypeˑPhase, demand: tuckˑtypeˑDemand, preempt: bool): tuckˑtypeˑPhase
 proc tuckˑfnˑIntersection_PhaseChanged*(to: uint8): void

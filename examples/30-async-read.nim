@@ -1,7 +1,7 @@
 {.experimental: "codeReordering".}
 import "../compiler/tuck_rt"
 export tuck_rt
-import time
+import time as tuckˑmodˑtime
 
 proc tuckˑfnˑmain*(): int
 

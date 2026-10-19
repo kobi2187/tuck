@@ -1,6 +1,6 @@
 {.experimental: "codeReordering".}
 import "../compiler/tuck_rt"
-import scheduler
+import scheduler as tuckˑmodˑscheduler
 
 proc tuckˑdecisionˑroute*(nal: tuckˑtypeˑNalKind, configured: bool, midFrame: bool): tuckˑtypeˑAction
 proc tuckˑfnˑcapture*(want: int): int

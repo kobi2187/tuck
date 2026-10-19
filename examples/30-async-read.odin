@@ -3,7 +3,7 @@ package main
 
 import "core:os"
 import rt "./tuckrt"
-import time "./mod_time"
+import tuckˑmodˑtime "./mod_time"
 
 TRec_fd :: struct ($T_fd: typeid) {
 	fd: T_fd,
@@ -33,7 +33,7 @@ openSource :: proc(ms: int) -> TRec_fd(int) {
 
 tuckˑtaskˑreadOrGiveUp :: proc(fd: int) -> TRec_code(int) {
   tuckˑvˑcode := 0
-  if rt.tuckAwaitReadOrTimeout(fd, int(time.tuckˑfnˑms(u32(100)))) {
+  if rt.tuckAwaitReadOrTimeout(fd, int(tuckˑmodˑtime.tuckˑfnˑms(u32(100)))) {
     tuckˑvˑcode = 1
   } else {
     tuckˑvˑcode = 2

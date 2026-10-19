@@ -1027,7 +1027,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   ## One top-level declaration. Every DeclKind is named, so a new one fails
   ## to compile here until it is decided (CLAUDE.md).
   if d == nil: return ""
-  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.span.file.startsWith(ImportedTypeMarker):
+  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.origin != NoModule:
     return ""  # defined in its own module; the Nim import brings it in
   case d.kind
   of dkFn: ctx.genFnDecl(d)
@@ -1072,7 +1072,7 @@ proc sumEqForwardDecls*(m: Module): string =
     # An IMPORTED sum is visible here as a copy; its `==` and drop live in the
     # module that declares it. Forward-declaring them here left a declaration
     # with no body, so any module importing one failed to build.
-    if d.span.file.startsWith(ImportedTypeMarker & ":"): continue
+    if d.origin != NoModule: continue
     result.add("proc `==`*(a, b: " & d.name & "): bool {.noSideEffect.}\n")
     # And its drop: the runtime's generic walk of a Seq[Other] instantiates
     # where it is first used, so a sum's drop has to be visible before any

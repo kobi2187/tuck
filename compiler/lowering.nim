@@ -444,7 +444,7 @@ proc lowerTailReturns(m: Module) =
     elif d.kind == dkTask and d.fnBody != nil and returnsValue(d.fnReturnType):
       injectTailReturn(d.fnBody)
 
-proc lowerModule*(res: Resolution, m: Module, real: Table[string, Module]) =
+proc lowerModule*(res: Resolution, m: Module, real: ModuleMap) =
   ## Rewrite a module in place into the simpler form the backends expect.
   ## `real` is the rest of the program — an object in another module that
   ## satisfies an interface is an arm of every dispatch through it.

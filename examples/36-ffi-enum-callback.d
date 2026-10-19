@@ -1,7 +1,7 @@
 module _36_ffi_enum_callback;
 
 import rt = tuck_rt;
-import sys = mod_sys;
+import tuckˑmodˑsys = mod_sys;
 
 alias tuckˑfnsigˑBinOp = extern (C) int function(int a, int b);
 
@@ -21,10 +21,10 @@ void tuckˑfnˑmain() {
     int tuckˑvˑc = callBack(&tuckˑfnˑaddTwo, cast(int)40, cast(int)2);
     if ((tuckˑvˑm == cast(int)42)) {
         if ((tuckˑvˑc == cast(int)1042)) {
-            sys.exit(0L);
+            tuckˑmodˑsys.exit(0L);
         }
     }
-    sys.exit(1L);
+    tuckˑmodˑsys.exit(1L);
 }
 
 int main(string[] args) {

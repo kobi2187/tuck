@@ -1,7 +1,7 @@
 module _29_task_timeout;
 
 import rt = tuck_rt;
-import time = mod_time;
+import tuckˑmodˑtime = mod_time;
 
 struct TRec_fd(T_fd) {
     T_fd fd;
@@ -18,7 +18,7 @@ TRec_fd!(long) openSource(long ms) {
 
 TRec_code!(long) tuckˑtaskˑreadOrGiveUp(long fd) {
     long tuckˑvˑcode = 0L;
-    if (rt.tuckAwaitReadOrTimeout(fd, time.tuckˑfnˑms(cast(uint)30))) {
+    if (rt.tuckAwaitReadOrTimeout(fd, tuckˑmodˑtime.tuckˑfnˑms(cast(uint)30))) {
         tuckˑvˑcode = 1L;
     } else {
         tuckˑvˑcode = 2L;

@@ -97,7 +97,7 @@ proc dispatchArm(res: Resolution, e: Expr, s: Decl,
   DispatchArm(satisfier: s.name, bindName: PayloadBind, call: call,
               writesBack: writesSelf(res, mem))
 
-proc lowerOne(res: Resolution, m: Module, real: Table[string, Module],
+proc lowerOne(res: Resolution, m: Module, real: ModuleMap,
               e: Expr) =
   ## Replace an interface call IN PLACE, so every parent keeps its pointer.
   let ic = res.ifaceCallOf(e)
@@ -116,7 +116,7 @@ proc lowerOne(res: Resolution, m: Module, real: Table[string, Module],
   if w.objName != "": res.markWrap(node, w.objName, w.iface)
   e[] = node[]
 
-proc lowerIn(res: Resolution, m: Module, real: Table[string, Module],
+proc lowerIn(res: Resolution, m: Module, real: ModuleMap,
              e: Expr) =
   ## Lowers every interface call under `e`, children first, so an argument
   ## that is itself an interface call is replaced before its parent copies it.
@@ -126,7 +126,7 @@ proc lowerIn(res: Resolution, m: Module, real: Table[string, Module],
     lowerOne(res, m, real, e)
 
 proc lowerIfaceCalls*(res: Resolution, m: Module,
-                      real: Table[string, Module]) =
+                      real: ModuleMap) =
   ## Every interface call in every body of this backend's copy of the module.
   ## `real` is the rest of the program: an object in another module that
   ## satisfies the interface is an arm too.

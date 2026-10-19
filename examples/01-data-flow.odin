@@ -3,7 +3,7 @@ package main
 
 import "core:fmt"
 import rt "./tuckrt"
-import time "./mod_time"
+import tuckˑmodˑtime "./mod_time"
 
 TRec_hasNew_episodes_metadata :: struct ($T_hasNew: typeid, $T_episodes: typeid, $T_metadata: typeid) {
 	hasNew: T_hasNew,
@@ -61,7 +61,7 @@ tuckˑfnˑplayTrack :: proc(payload: $T) {
 
 
 tuckˑfnˑmain :: proc () {
-  tuckˑvˑrequest := TRec_url_timeout(string, time.tuckˑtypeˑMilliseconds){url = rt.tuckStrOwned("example.com"), timeout = time.tuckˑfnˑms(u32(5))}
+  tuckˑvˑrequest := TRec_url_timeout(string, tuckˑmodˑtime.tuckˑtypeˑMilliseconds){url = rt.tuckStrOwned("example.com"), timeout = tuckˑmodˑtime.tuckˑfnˑms(u32(5))}
   defer rt.tuckDrop(tuckˑvˑrequest.url)
   tuckOwnTmp1 := tuckˑfnˑfetch(tuckˑvˑrequest)
   defer rt.tuckDrop(tuckOwnTmp1.metadata)

@@ -1,19 +1,19 @@
 {.experimental: "codeReordering".}
 import "../compiler/tuck_rt"
-import fs
-import console
+import fs as tuckˑmodˑfs
+import console as tuckˑmodˑconsole
 
 proc tuckˑfnˑmain*(): void
 
 proc tuckˑfnˑmain*(): void =
-  var tuckˑvˑw = fs.writeFile("/tmp/tuck-demo.txt", "hello from tuck")
+  var tuckˑvˑw = tuckˑmodˑfs.writeFile("/tmp/tuck-demo.txt", "hello from tuck")
   if tuckˑvˑw.ok:
     if true:
-      var tuckˑvˑr = fs.readFile("/tmp/tuck-demo.txt")
+      var tuckˑvˑr = tuckˑmodˑfs.readFile("/tmp/tuck-demo.txt")
       defer: tuckDrop(tuckˑvˑr)
       if tuckˑvˑr.ok:
         if true:
-          console.printLine(tuckˑvˑr.value.content)
+          tuckˑmodˑconsole.printLine(tuckˑvˑr.value.content)
           return
-  console.printLine("stdlib demo failed")
+  tuckˑmodˑconsole.printLine("stdlib demo failed")
 

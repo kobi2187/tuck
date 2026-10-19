@@ -3,8 +3,8 @@ package main
 
 import "core:os"
 import rt "./tuckrt"
-import scheduler "./mod_scheduler"
-import net "./mod_net"
+import tuckˑmodˑnet "./mod_net"
+import tuckˑmodˑscheduler "./mod_scheduler"
 
 tuckˑactorˑResultMsgKind :: enum { msgPut }
 tuckˑactorˑResultMsg :: struct {
@@ -47,24 +47,24 @@ sendPut_tuckˑactorˑResult :: proc(self: ^tuckˑactorˑResult, c: int) {
 }
 
 tuckˑtaskˑserve :: proc(lfd: int) {
-  tuckˑvˑc := net.accept(lfd)
+  tuckˑvˑc := tuckˑmodˑnet.accept(lfd)
   if (tuckˑvˑc.status == .Ok) {
-      tuckOwnTmp1 := net.recv(tuckˑvˑc.value.fd, 256)
+      tuckOwnTmp1 := tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256)
       defer rt.tuckDrop(tuckOwnTmp1)
       _ = tuckOwnTmp1
-      _ = net.send(tuckˑvˑc.value.fd, "pong")
-      net.close(tuckˑvˑc.value.fd)
+      _ = tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "pong")
+      tuckˑmodˑnet.close(tuckˑvˑc.value.fd)
   }
   return
 }
 
 tuckˑtaskˑclient :: proc(port: int) {
-  tuckˑvˑc := net.connect("127.0.0.1", port)
+  tuckˑvˑc := tuckˑmodˑnet.connect("127.0.0.1", port)
   if (tuckˑvˑc.status == .Ok) {
-      _ = net.send(tuckˑvˑc.value.fd, "ping")
-      tuckˑvˑr := net.recv(tuckˑvˑc.value.fd, 256)
+      _ = tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "ping")
+      tuckˑvˑr := tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256)
       defer rt.tuckDrop(tuckˑvˑr)
-      net.close(tuckˑvˑc.value.fd)
+      tuckˑmodˑnet.close(tuckˑvˑc.value.fd)
       if (tuckˑvˑr.status == .Ok) {
           if (tuckˑvˑr.value.data == "pong") {
               sendPut_tuckˑactorˑResult(&tuckˑactorˑResultSingleton, 42)
@@ -83,13 +83,13 @@ tuckˑfnˑdone :: proc () -> bool {
 }
 
 tuckˑfnˑmain :: proc () -> int {
-  tuckˑvˑl := net.listen(34593)
+  tuckˑvˑl := tuckˑmodˑnet.listen(34593)
   if (tuckˑvˑl.status == .Ok) {
       tuckˑtaskˑserve(tuckˑvˑl.value.fd)
       tuckˑtaskˑclient(34593)
       rt.tuckWaitOn(tuckˑactorˑResultSlot, tuckˑfnˑdone)
-      net.close(tuckˑvˑl.value.fd)
-      scheduler.stop()
+      tuckˑmodˑnet.close(tuckˑvˑl.value.fd)
+      tuckˑmodˑscheduler.stop()
       return tuckˑactorˑResultSingleton.code
   }
   return 1

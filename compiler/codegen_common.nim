@@ -228,7 +228,7 @@ proc slabLabel*(d: Decl): string =
   ## slab, the arena's (`TUCK SLAB [Frame]: stale reference ...`).
   if d.slabArena != "": d.slabArena else: actorLabel(d, d.name)
 
-proc arenaOfSlab*(m: Module, real: Table[string, Module], slab: Decl): Decl =
+proc arenaOfSlab*(m: Module, real: ModuleMap, slab: Decl): Decl =
   ## The arena `slab` is the slab of for one element type, or nil.
   if slab == nil or slab.slabArena == "": return nil
   for d in m.decls(dkArena):
@@ -248,7 +248,7 @@ proc arenaResetProc*(arena: string): string =
   ## Each arena's generated reset: every slab of it, and its budget.
   arena & "_reset"
 
-proc actorDeclNamed*(m: Module, real: Table[string, Module], name: string): Decl =
+proc actorDeclNamed*(m: Module, real: ModuleMap, name: string): Decl =
   ## The actor a send names, declared in this module or one it imports.
   for d in m.decls:
     if d != nil and d.kind == dkActor and (d.name == name or writtenName(d) == name):
@@ -317,13 +317,13 @@ const ActorsBootProc* = "tuckActorsBoot"
   ## the entry cannot do itself — the drain and the slot live in that package
   ## (A18, A32). The slab release (`SlabsReleaseProc`) is the same shape.
 
-proc actorBootModules*(m: Module, real: Table[string, Module]): seq[string] =
-  ## The other modules of the program that declare a running actor, sorted.
-  for modName, other in real:
-    if other != m and hasRunningActors(other): result.add modName
-  result.sort()
+proc actorBootModules*(m: Module, real: ModuleMap): seq[ModuleId] =
+  ## The other modules of the program that declare a running actor, by name.
+  for id, other in real:
+    if other.id != m.id and hasRunningActors(other): result.add id
+  result.sort(cmpByName)
 
-proc programRunsActors*(m: Module, real: Table[string, Module]): bool =
+proc programRunsActors*(m: Module, real: ModuleMap): bool =
   ## Does any module of the program, this one included, run an actor?
   hasRunningActors(m) or actorBootModules(m, real).len > 0
 
@@ -354,17 +354,12 @@ proc declOf(module: Module, typeName: string): Decl =
     if namesType(d, typeName): return d
   nil
 
-proc importOrigin(d: Decl): string =
-  ## The module an IMPORTED type decl came from, or "" if it's not
-  ## imported (declared locally, or `d` is nil).
-  if d == nil or not d.span.file.startsWith(ImportedTypeMarker & ":"): return ""
-  d.span.file[ImportedTypeMarker.len + 1 .. ^1]
-
 proc originModuleOf(module: Module, moduleName, enumName: string): string =
   ## Which module "owns" this enum, for namespacing its error ids —
-  ## the enum's origin module if imported, else the current module.
-  let origin = importOrigin(declOf(module, enumName))
-  if origin != "": origin else: moduleName
+  ## the enum's origin module if imported, else the current module. The name,
+  ## because it is hashed into the error id.
+  let d = declOf(module, enumName)
+  if d != nil and d.origin != NoModule: nameOf(d.origin) else: moduleName
 
 proc formatErrId(origin, enumName, variant: string): string =
   ## Error ids hash over "module/Enum.Variant" (spec: namespaced so two
@@ -464,19 +459,21 @@ proc recordFieldNames*(res: Resolution, module: Module,
   if not hasKnownFields(t): return @[]
   fieldNames(getFieldsForType(res, module, t))
 
-const NimShadowingModuleNames* = [
+const NimShadowingEntryStems* = [
   "seq", "string", "int", "float", "bool", "byte", "char", "set", "array",
   "range", "ref", "ptr", "cstring", "openArray", "varargs", "pointer",
 ]
-  ## Tuck module names that would shadow a Nim TYPE if imported under their
-  ## own name. `import seq` binds the module symbol to `seq`, and the next
-  ## `seq[tuck_Entry[K, V]]` in that file is "cannot instantiate the 'seq'
-  ## module". Only these are aliased: Nim merges module scopes, so an
-  ## unnecessary alias would break every `module::fn` call site, which is
-  ## exactly what a blanket aliasing pass did.
+  ## File stems the ENTRY module cannot keep. Nim binds a module's own name in
+  ## its scope, so an entry file `seq.nim` cannot write `seq[T]`. This is about
+  ## the entry's file name only: an imported module is reached through its
+  ## `moduleAlias`, which cannot shadow anything.
+
+proc nimEntryStem*(base: string): string =
+  ## The emitted file stem for the entry module.
+  if base in NimShadowingEntryStems: "tuck_mod_" & base else: base
 
 proc recordArgFields*(res: Resolution, m: Module,
-                      real: Table[string, Module], e: Expr): Option[seq[string]] =
+                      real: ModuleMap, e: Expr): Option[seq[string]] =
   ## A call whose one argument is a VARIABLE standing for its payload (`p fn`
   ## with `p: {a, b}`): the field of it that feeds each param, in param order
   ## (`call_args.fieldFor`). Printed `f(p.a, p.b)`.
@@ -503,12 +500,6 @@ proc recordArgFields*(res: Resolution, m: Module,
     if f notin fields: return none(seq[string])
     picked.add f
   some(picked)
-
-proc nimModuleName*(name: string): string =
-  ## What an imported Tuck module is CALLED in the emitted Nim — its own name,
-  ## unless that name would shadow a builtin type. The import and every
-  ## qualified use go through this one proc so they cannot disagree.
-  if name in NimShadowingModuleNames: "tuck_mod_" & name else: name
 
 const RtIntrinsicNames* = [
   "tuckAt", "tuckSetAt", "tuckArrayAt", "tuckArraySetAt", "tuckConcat",
@@ -676,7 +667,7 @@ type ProviderNeed* = object
   param*: string     # the bounded type parameter, `T` in `[T: Sized]`
   paramIdx*: int     # a fn parameter whose type is exactly `param`
 
-proc findGroup(m: Module, real: Table[string, Module], name: string): Decl =
+proc findGroup(m: Module, real: ModuleMap, name: string): Decl =
   result = m.findDecl(dkGroup, name)
   if result != nil: return
   for _, other in real:
@@ -689,7 +680,7 @@ proc paramNamed(f: Decl, typeParam: string): int =
     if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == typeParam: return k
   -1
 
-proc needsOfBound(home: Module, real: Table[string, Module], bound: Type,
+proc needsOfBound(home: Module, real: ModuleMap, bound: Type,
                   param: string, idx: int): seq[ProviderNeed] =
   ## What one bound on type parameter `param` asks of the module declaring the
   ## fn: each requirement of a plain group that module does not itself declare.
@@ -702,7 +693,7 @@ proc needsOfBound(home: Module, real: Table[string, Module], bound: Type,
     if not home.declaresFn(req):
       result.add ProviderNeed(req: req, member: mem, param: param, paramIdx: idx)
 
-proc providerNeeds*(home: Module, real: Table[string, Module], f: Decl): seq[ProviderNeed] =
+proc providerNeeds*(home: Module, real: ModuleMap, f: Decl): seq[ProviderNeed] =
   ## The providers `f` (declared in `home`) is passed. Only a plain bound on a
   ## type parameter that a parameter names outright, by a group without type
   ## parameters of its own; anything else keeps resolving by name.
@@ -713,24 +704,24 @@ proc providerNeeds*(home: Module, real: Table[string, Module], f: Decl): seq[Pro
     for b in f.fnGenericBounds[i]:
       result.add needsOfBound(home, real, b, g, idx)
 
-proc fnHome*(m: Module, real: Table[string, Module], name: string): Option[Module] =
+proc fnHome*(m: Module, real: ModuleMap, name: string): Option[Module] =
   ## The module declaring the fn `name`: this one, else another of the program.
   if m.declaresFn(name): return some(m)
   for _, other in real:
     if other.declaresFn(name): return some(other)
 
-proc providerFor*(m: Module, real: Table[string, Module], need: ProviderNeed,
-                  selfType: string): tuple[module, name: string] =
+proc providerFor*(m: Module, real: ModuleMap, need: ProviderNeed,
+                  selfType: string): tuple[module: ModuleId, name: string] =
   ## The fn named by the requirement whose first parameter is `selfType`: this
-  ## module's, else another's. `module` is "" for this one.
+  ## module's, else another's. `module` is NoModule for this one.
   proc fits(mod2: Module): bool =
     for d in mod2.decls(dkFn):
       if d.name == need.req and d.fnParams.len > 0 and d.fnParams[0].typ != nil and
          d.fnParams[0].typ.kind == tkNamed and d.fnParams[0].typ.name == selfType:
         return true
-  if fits(m): return ("", need.req)
-  for modName, other in real:
-    if other != m and fits(other): return (modName, need.req)
+  if fits(m): return (NoModule, need.req)
+  for id, other in real:
+    if other.id != m.id and fits(other): return (id, need.req)
 
 type OverflowPlan* = object
   ## How `+ - *` on a value of one type behaves when the result does not fit
@@ -755,7 +746,7 @@ proc overflowAttr(d: Decl): string =
     of "saturating": return "Sat"
     else: discard
 
-proc typeDeclNamed(m: Module, real: Table[string, Module], name: string): Decl =
+proc typeDeclNamed(m: Module, real: ModuleMap, name: string): Decl =
   ## The `type`/`distinct` declaration called `name`, here or in an import.
   result = m.findDecl(dkType, name)
   if result != nil: return
@@ -763,7 +754,7 @@ proc typeDeclNamed(m: Module, real: Table[string, Module], name: string): Decl =
     result = other.findDecl(dkType, name)
     if result != nil: return
 
-proc overflowPlan*(m: Module, real: Table[string, Module], t: Type): OverflowPlan =
+proc overflowPlan*(m: Module, real: ModuleMap, t: Type): OverflowPlan =
   ## The overflow plan for arithmetic whose result has type `t`.
   if t == nil or t.kind != tkNamed: return
   if t.name in CheckedIntNames:
@@ -814,11 +805,11 @@ proc isSelfType*(t: Type): bool =
 proc registersAnything*(m: Module): bool =
   foreignHandlers(m).len > 0 or movedSatisfiers(m).len > 0
 
-proc registerModules*(m: Module, real: Table[string, Module]): seq[string] =
-  ## The other modules of the program that have something to register, sorted.
-  for modName, other in real:
-    if other != m and registersAnything(other): result.add modName
-  result.sort()
+proc registerModules*(m: Module, real: ModuleMap): seq[ModuleId] =
+  ## The other modules of the program that have something to register, by name.
+  for id, other in real:
+    if other.id != m.id and registersAnything(other): result.add id
+  result.sort(cmpByName)
 
 proc hasForeignHandlers*(res: Resolution, m: Module, d: Decl,
                          v: VariantDef): bool =

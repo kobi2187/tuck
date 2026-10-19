@@ -3,7 +3,7 @@ package main
 
 import "core:fmt"
 import rt "./tuckrt"
-import http "./mod_http"
+import tuckˑmodˑhttp "./mod_http"
 
 TRec_feed :: struct ($T_feed: typeid) {
 	feed: T_feed,
@@ -20,7 +20,7 @@ tuckˑfnˑparse :: proc(payload: $T) -> TRec_feed(tuckˑtypeˑFeed) {
 
 
 tuckˑtaskˑfetchFeed :: proc(url: string) -> rt.TuckResult(TRec_feed(tuckˑtypeˑFeed)) {
-  tuckˑvˑresp := http.tuckˑfnˑget(url)
+  tuckˑvˑresp := tuckˑmodˑhttp.tuckˑfnˑget(url)
   defer rt.tuckDrop(tuckˑvˑresp)
   if (tuckˑvˑresp.status == .Ok) {
       return rt.tok(tuckˑfnˑparse(tuckˑvˑresp.value.body))

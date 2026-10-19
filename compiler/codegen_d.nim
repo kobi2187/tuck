@@ -20,6 +20,7 @@ import resolution
 import ast_query
 import twin_calls  # which calls take the moved twin — decided in prepare
 import codegen_common
+import name_prefix
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import decl_index
 import lowering                # getFieldsForType
@@ -39,26 +40,25 @@ import ./codegen_d_ctx
 proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string
 proc isFnRefD(ctx: DCodegenCtx, e: Expr): bool
 proc genDMatchStmt(ctx: var DCodegenCtx, e: Expr): string
-proc importDeclaring(ctx: DCodegenCtx, name: string): string =
-  ## The imported module that declares `name` as a callable, or "" when this
+proc importDeclaring(ctx: DCodegenCtx, name: string): ModuleId =
+  ## The imported module that declares `name` as a callable, or NoModule when this
   ## module declares it (local wins) or nobody does. D has no cross-module
   ## scope merge, so every foreign call has to be qualified — three separate
   ## copies of this search had grown before it was named once.
   if name == "" or ctx.module.declaresCallable(name) or
-     name in ctx.providerParams: return ""
-  for modName, im in ctx.realModules:
-    if im.declaresCallable(name): return modName
-  ""
+     name in ctx.providerParams: return NoModule
+  for id, im in ctx.realModules:
+    if im.declaresCallable(name): return id
+  NoModule
 
 proc genDQualified(ctx: DCodegenCtx, e: Expr): string =
   ## An imported module's fn is always `alias.name`. Local declarations win;
   ## only a name this module does not declare is searched for.
   let modName = if e.modulePath.len > 0: e.modulePath[0] else: ""
   if modName == "":
-    let owner = ctx.importDeclaring(e.qualName)
-    return if owner == "": e.qualName else: dAlias(owner) & "." & e.qualName
-  if modName in ctx.realModules:
-    return dAlias(modName) & "." & e.qualName
+    return ctx.pkgQualifierD(ctx.importDeclaring(e.qualName)) & e.qualName
+  if e.qualModule in ctx.realModules:
+    return ctx.pkgQualifierD(e.qualModule) & e.qualName
   # not an imported Tuck module: a foreign namespace, flattened by the
   # mangler into one name
   modName & "_" & e.qualName
@@ -274,7 +274,7 @@ proc resolveDCallee(ctx: var DCodegenCtx, e: Expr): string =
   ## Nim's own resolution here and needs no such step.)
   if e.callee != nil and e.callee.kind == exkVar:
     let owner = ctx.importDeclaring(e.callee.name)
-    if owner != "": return dAlias(owner) & "." & e.callee.name
+    if owner != NoModule: return ctx.pkgQualifierD(owner) & e.callee.name
   # A fn reference in CALLEE position is not a value: `&f` is how D spells
   # taking its address, and `&f(x)` parses as taking the address of the
   # RESULT — "cannot take address of expression because it is not an
@@ -370,8 +370,7 @@ proc dActorPkg(ctx: DCodegenCtx, actor: string): string =
   ## "<alias>." when another module declares the actor, else "" (R11, A32 —
   ## as a pool is qualified). Its singleton, slot and send helpers are that
   ## module's.
-  let origin = actorOrigin(ctx.module, ctx.realModules, actor)
-  if origin == "": "" else: dAlias(origin) & "."
+  ctx.pkgQualifierD(actorOrigin(ctx.module, ctx.realModules, actor))
 
 proc genDActorMember(ctx: var DCodegenCtx, e: Expr): string =
   ## `Actor.waitUntil {pred: :p}` -> `rt.tuckWaitOn(<Actor>Slot, p)`, and
@@ -390,8 +389,7 @@ proc dMemberCallee(ctx: DCodegenCtx, e: Expr): string =
   ## imported (R11, A25); "" when `e` is not a member call.
   let member = memberCallee(ctx.res, ctx.module, e)
   if member == "": return ""
-  let origin = memberCalleeModule(ctx.res, ctx.module, e)
-  (if origin != "": dAlias(origin) & "." else: "") & member
+  ctx.pkgQualifierD(memberCalleeModule(ctx.res, ctx.module, e)) & member
 
 proc genDActorCall(ctx: var DCodegenCtx, e: Expr): string =
   ## The two actor-shaped calls, or "": `Actor.waitOn`, and a call to the
@@ -426,7 +424,7 @@ proc dProviderArgs(ctx: var DCodegenCtx, e: Expr): seq[string] =
     if t == nil or t.kind != tkNamed: continue
     let (modName, name) = providerFor(ctx.module, ctx.realModules, need, t.name)
     if name != "":
-      result.add((if modName == "": "" else: dAlias(modName) & ".") & name)
+      result.add(ctx.pkgQualifierD(modName) & name)
 
 proc templateCall(ctx: var DCodegenCtx, e: Expr, calleeStr: string,
                   args: seq[string]): string =
@@ -635,7 +633,7 @@ proc genDInterfaceWrap(ctx: var DCodegenCtx, e: Expr,
 proc genDPoolOp(ctx: var DCodegenCtx, e: Expr): string =
   ## A pool operation: `codegen_common.poolOpProc`, the pool by `ref`.
   let origin = declOrigin(ctx.module, ctx.realModules, e.poolRef.refName, {dkPool})
-  let pre = if origin == "": "" else: dAlias(origin) & "."   # R11, A36
+  let pre = ctx.pkgQualifierD(origin)   # R11, A36
   var args = @[pre & e.poolRef.refName]
   for a in e.poolOperands: args.add ctx.genDExpr(a)
   "rt." & poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
@@ -643,14 +641,12 @@ proc genDPoolOp(ctx: var DCodegenCtx, e: Expr): string =
 proc dSlab(ctx: var DCodegenCtx, name: string): string =
   ## A slab, qualified by its module's alias when another module declares it
   ## (R11, A36 — as a pool is). The runtime takes it by `ref`.
-  let origin = declOrigin(ctx.module, ctx.realModules, name, {dkSlab})
-  (if origin == "": "" else: dAlias(origin) & ".") & name
+  ctx.pkgQualifierD(declOrigin(ctx.module, ctx.realModules, name, {dkSlab})) & name
 
 proc dArena(ctx: var DCodegenCtx, name: string): string =
   ## An arena, qualified by its module's alias when another module declares
   ## it (R11, as a slab is).
-  let origin = declOrigin(ctx.module, ctx.realModules, name, {dkArena})
-  (if origin == "": "" else: dAlias(origin) & ".") & name
+  ctx.pkgQualifierD(declOrigin(ctx.module, ctx.realModules, name, {dkArena})) & name
 
 proc genDSlabOp(ctx: var DCodegenCtx, e: Expr): string =
   ## A slab operation (slab proposal, section 3); D overloads `tuckSlabNew`
@@ -776,9 +772,9 @@ proc genDField(ctx: var DCodegenCtx, e: Expr): string =
   # the variant emitted as a bare `tuck_Order.Before` and dmd reported an
   # undefined identifier, while the call beside it was correctly qualified.
   if e.receiver != nil and e.receiver.kind == exkVar:
-    let owner = moduleDeclaringType(ctx.module, e.receiver.name)
-    if owner != "":
-      return dAlias(owner) & "." & e.receiver.name & "." & e.fieldName
+    let pkg = ctx.pkgQualifierD(moduleDeclaringType(ctx.module, e.receiver.name))
+    if pkg != "":
+      return pkg & e.receiver.name & "." & e.fieldName
   ctx.genDFieldRead(e)
 
 proc genDInputPayload(ctx: var DCodegenCtx): string =
@@ -810,9 +806,7 @@ proc qualifyEnumTag*(ctx: DCodegenCtx, name: string): string =
   # whose origin to look up is that name minus the suffix.
   let typeName = if owner.endsWith("Kind"): owner[0 ..< owner.len - 4]
                  else: owner
-  let origin = moduleDeclaringType(ctx.module, typeName)
-  if origin == "": owner & "." & name
-  else: dAlias(origin) & "." & owner & "." & name
+  ctx.pkgQualifierD(moduleDeclaringType(ctx.module, typeName)) & owner & "." & name
 
 proc isFnRefD(ctx: DCodegenCtx, e: Expr): bool =
   ## A `:fnRef` filling a callback slot — a declared fn named as a VALUE
@@ -839,7 +833,7 @@ proc genDVarName(ctx: var DCodegenCtx, e: Expr): string =
     withTagHint(ctx.res.typeFor(e)): tag = ctx.qualifyEnumTag(e.name)
     if tag != "": return tag
     let co = constOrigin(ctx.module, ctx.realModules, e.name)
-    if co != "": return dAlias(co) & "." & e.name   # R11, A33
+    if co != NoModule: return ctx.pkgQualifierD(co) & e.name   # R11, A33
   e.name
 
 proc genDCopy(ctx: var DCodegenCtx, e: Expr): string =
@@ -852,14 +846,13 @@ proc genDCopy(ctx: var DCodegenCtx, e: Expr): string =
   of cpDeep: "rt.tuckCopy(" & valStr & ")"
   of cpStatic: "(" & valStr & ").idup"     # a str's own bytes, to drop
 
-proc callOwnerModule(ctx: DCodegenCtx, e: Expr): string =
-  ## The imported module a call resolves into, or "" for a local one. A
+proc callOwnerModule(ctx: DCodegenCtx, e: Expr): ModuleId =
+  ## The imported module a call resolves into, or NoModule for a local one. A
   ## record shape in that call's RESULT is declared over there, so naming
   ## its type here has to go through the module (see recStructNameD).
-  if e == nil or e.kind != exkCall or e.callee == nil: return ""
-  if e.callee.kind == exkQualified and e.callee.modulePath.len > 0 and
-     e.callee.modulePath[0] in ctx.realModules:
-    return e.callee.modulePath[0]
+  if e == nil or e.kind != exkCall or e.callee == nil: return NoModule
+  if e.callee.kind == exkQualified and e.callee.qualModule in ctx.realModules:
+    return e.callee.qualModule
   let bare = case e.callee.kind
              of exkVar: e.callee.name
              of exkQualified: e.callee.qualName
@@ -901,7 +894,7 @@ proc declTypeForValue(ctx: var DCodegenCtx, target, val: Expr): string =
   let ctorT = ctx.ctorDeclType(val)
   if ctorT != "": return ctorT
   let owner = ctx.callOwnerModule(val)
-  if owner != "" and t != nil:
+  if owner != NoModule and t != nil:
     let payload = bangInner(t)
     if payload != nil and payload.kind == tkRecord:
       return "rt.TuckResult!(" &

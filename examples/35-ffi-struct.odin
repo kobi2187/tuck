@@ -1,7 +1,7 @@
 #+feature dynamic-literals
 package main
 
-import sys "./mod_sys"
+import tuckˑmodˑsys "./mod_sys"
 foreign import point "cffi/point.o"
 
 Point :: struct {
@@ -19,9 +19,9 @@ tuckˑfnˑmain :: proc () {
   tuckˑvˑp := makesPoint(i32(3), i32(7))
   tuckˑvˑr := takesPoint(tuckˑvˑp)
   if (tuckˑvˑr == i32(307)) {
-      sys.exit(0)
+      tuckˑmodˑsys.exit(0)
   }
-  sys.exit(1)
+  tuckˑmodˑsys.exit(1)
 }
 
 main :: proc() {

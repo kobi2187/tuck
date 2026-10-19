@@ -26,7 +26,7 @@
 import options, tables
 import ast, ast_ops, ast_query, resolution
 
-proc knownParams*(res: Resolution, m: Module, real: Table[string, Module],
+proc knownParams*(res: Resolution, m: Module, real: ModuleMap,
                   e: Expr): Option[seq[string]] =
   ## The params the callee declares, in order — or none when the compiler
   ## never resolved it: pending stubs, distinct-type constructors,
@@ -37,8 +37,8 @@ proc knownParams*(res: Resolution, m: Module, real: Table[string, Module],
   ## no arguments. The two used to be one empty list, which handed
   ## `{a: 1, b: 2} g` to a `g()` as `g(1, 2)` on every backend.
   if e.callee != nil and e.callee.kind == exkQualified and
-     e.callee.modulePath.len > 0 and e.callee.modulePath[0] in real:
-    let d = real[e.callee.modulePath[0]].findFn(e.callee.qualName)
+     e.callee.qualModule in real:
+    let d = real[e.callee.qualModule].findFn(e.callee.qualName)
     return if d == nil: none(seq[string]) else: some(d.paramNames())
   let recorded = res.knownCallParams(e)
   if recorded.isSome: return recorded
@@ -76,7 +76,7 @@ proc calleeText(e: Expr): string =
   of exkQualified: e.callee.qualName
   else: "a " & $e.callee.kind
 
-proc missingParam(res: Resolution, m: Module, real: Table[string, Module],
+proc missingParam(res: Resolution, m: Module, real: ModuleMap,
                   e: Expr): string =
   ## The first param this payload call has no value for, or "".
   let known = knownParams(res, m, real, e)
@@ -101,7 +101,7 @@ proc argsFor*(res: Resolution, e: Expr, params: seq[string]): seq[Expr] =
     doAssert v != nil, incompleteMessage(e, param)
     result.add v
 
-proc payloadArgs*(res: Resolution, m: Module, real: Table[string, Module],
+proc payloadArgs*(res: Resolution, m: Module, real: ModuleMap,
                   e: Expr): seq[Expr] =
   ## A payload call's arguments, in the callee's parameter order; with the
   ## callee unresolved, the payload's field values as written. What every
@@ -111,7 +111,7 @@ proc payloadArgs*(res: Resolution, m: Module, real: Table[string, Module],
   for f in e.args[0].fields: result.add f.value
 
 proc assertCallsComplete*(res: Resolution, m: Module,
-                          real: Table[string, Module]) =
+                          real: ModuleMap) =
   ## After lowering: every payload call has a value for each param its
   ## callee declares. Visits the calls the checker STAMPED beside the tree
   ## (`res.call`) as well as the tree's own — the stamped one is what an

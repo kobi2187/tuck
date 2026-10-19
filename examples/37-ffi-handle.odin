@@ -1,7 +1,7 @@
 #+feature dynamic-literals
 package main
 
-import sys "./mod_sys"
+import tuckˑmodˑsys "./mod_sys"
 foreign import point "cffi/point.o"
 
 Counter :: rawptr
@@ -18,9 +18,9 @@ tuckˑfnˑmain :: proc () {
   tuckˑvˑt := counterBump(tuckˑvˑh, i32(5))
   counterFree(tuckˑvˑh)
   if (tuckˑvˑt == i32(105)) {
-      sys.exit(0)
+      tuckˑmodˑsys.exit(0)
   }
-  sys.exit(1)
+  tuckˑmodˑsys.exit(1)
 }
 
 main :: proc() {

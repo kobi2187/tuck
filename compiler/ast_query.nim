@@ -267,7 +267,7 @@ proc findFn*(m: Module, name: string): Decl =
 proc isImportedCopy*(d: Decl): bool =
   ## Is `d` an importer's copy of another module's type or object
   ## (modules.injectImportedTypes)? Its origin checks and emits it.
-  d != nil and d.span.file.startsWith(ImportedTypeMarker & ":")
+  d != nil and d.origin != NoModule
 
 proc declaresFn*(m: Module, name: string): bool {.inline.} =
   ## Does this module declare a fn by this name (wherever it sits)?
@@ -773,19 +773,19 @@ proc memberCallee*(res: Resolution, m: Module, e: Expr): string =
     return ""
   memberCalleeOf(m, memberOwner(m, memberRecvType(res, e)), e.callee.name)
 
-proc moduleDeclaringType*(module: Module, name: string): string
+proc moduleDeclaringType*(module: Module, name: string): ModuleId
 
-proc memberCalleeModule*(res: Resolution, m: Module, e: Expr): string =
+proc memberCalleeModule*(res: Resolution, m: Module, e: Expr): ModuleId =
   ## The module declaring the object a member call's receiver is, when that
   ## is another module (an imported object, R11), else "" — what Odin and D
   ## qualify the member proc with.
-  if memberCallee(res, m, e) == "": return ""
+  if memberCallee(res, m, e) == "": return NoModule
   let owner = memberOwner(m, memberRecvType(res, e))
   # An object whose DATA moved to a generated module (iface_hoist) still has
   # its members here: they are this module's, not the generated one's.
   for d in m.decls:
     if d != nil and d.kind == dkObject and d.name == owner and
-       not d.span.file.startsWith(ImportedTypeMarker & ":"): return ""
+       not isImportedCopy(d): return NoModule
   moduleDeclaringType(m, owner)
 
 proc callWritesSelf*(res: Resolution, m: Module, e: Expr): bool =
@@ -1122,14 +1122,15 @@ proc implementingName*(obj: Decl, iface, member: string): string =
     if i == iface and old == member: return renamed
   member
 
-proc moduleDeclaringType*(module: Module, name: string): string =
-  ## The imported module a TYPE came from, or "" when this module declares it.
+proc moduleDeclaringType*(module: Module, name: string): ModuleId =
+  ## The imported module a TYPE came from, or NoModule when this module
+  ## declares it.
   ##
   ## `injectImportedTypes` makes an imported type visible unqualified by
-  ## inserting a COPY into the importer's own decl list, stamped with
-  ## `ImportedTypeMarker & ":" & origin` in its span. So the importer holds
-  ## both kinds and the marker is the only thing telling them apart — asking
-  ## `findDecl` whether the type is local answers "yes" for both.
+  ## inserting a COPY into the importer's own decl list, stamped with its
+  ## `origin`. So the importer holds both kinds and the stamp is the only thing
+  ## telling them apart — asking `findDecl` whether the type is local answers
+  ## "yes" for both.
   ##
   ## The D backend already qualified foreign CALLABLES (importDeclaring —
   ## "D has no cross-module scope merge, so every foreign call has to be
@@ -1147,10 +1148,9 @@ proc moduleDeclaringType*(module: Module, name: string): string =
     if d == nil or d.kind notin {dkType, dkObject, dkInterface} or d.name != name: continue
     # A type whose data moved to a generated module (iface_hoist) is declared
     # here but lives there.
-    if d.hoistedTo != "" and not isImportedCopy(d): return d.hoistedTo
-    if not d.span.file.startsWith(ImportedTypeMarker & ":"): return ""
-    return d.span.file[ImportedTypeMarker.len + 1 .. ^1]
-  ""
+    if d.hoistedTo != "" and not isImportedCopy(d): return moduleId(d.hoistedTo)
+    return d.origin
+  NoModule
 
 type ActorMsgHandler* = object
   ## An actor's receive branch, gathered from BOTH `on <name>` blocks AND `on
@@ -1162,7 +1162,7 @@ type ActorMsgHandler* = object
   body*: Expr
 
 
-proc satisfiersOf*(module: Module, realModules: Table[string, Module],
+proc satisfiersOf*(module: Module, realModules: ModuleMap,
                    iface: string): seq[Decl] =
   ## Every object declaring `satisfies iface`, across the WHOLE PROGRAM.
   ##
@@ -1210,37 +1210,37 @@ proc isWrappedType*(t: Type): bool =
   t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
     t.base.name in ["!", "?", "!?"]
 
-proc declOrigin*(m: Module, real: Table[string, Module], name: string,
-                 kinds: set[DeclKind]): string =
-  ## The OTHER module declaring `name` (as emitted) as one of `kinds`, or ""
-  ## when `m` declares it or no module does. For a declaration that is not
+proc declOrigin*(m: Module, real: ModuleMap, name: string,
+                 kinds: set[DeclKind]): ModuleId =
+  ## The OTHER module declaring `name` (as emitted) as one of `kinds`, or
+  ## NoModule when `m` declares it or no module does. For a declaration that is not
   ## injected into an importer, which Odin and D must then qualify with its
   ## module at every reference (R11).
   for d in m.decls:
-    if d != nil and d.kind in kinds and d.name == name: return ""
-  for modName, other in real:
-    if other == m: continue
+    if d != nil and d.kind in kinds and d.name == name: return NoModule
+  for id, other in real:
+    if other.id == m.id: continue
     for d in other.decls:
-      if d != nil and d.kind in kinds and d.name == name: return modName
-  ""
+      if d != nil and d.kind in kinds and d.name == name: return id
+  NoModule
 
-proc actorOrigin*(m: Module, real: Table[string, Module], name: string): string =
-  ## The OTHER module declaring the actor `name`, or "" when `m` does. The
+proc actorOrigin*(m: Module, real: ModuleMap, name: string): ModuleId =
+  ## The OTHER module declaring the actor `name`, or NoModule when `m` does. The
   ## importer holds a body-less copy of an imported actor (modules.importedCopy),
   ## which is not a declaration: declOrigin would take it for one. Odin and D
   ## qualify each reference to the singleton, its slot and its send helpers
   ## with this (R11, A32).
   for d in m.decls:
     if d != nil and d.kind == dkActor and d.name == name and
-       not isImportedCopy(d): return ""
-  for modName, other in real:
-    if other == m: continue
+       not isImportedCopy(d): return NoModule
+  for id, other in real:
+    if other.id == m.id: continue
     for d in other.decls:
       if d != nil and d.kind == dkActor and d.name == name and
-         not isImportedCopy(d): return modName
-  ""
+         not isImportedCopy(d): return id
+  NoModule
 
-proc declAnywhere*(m: Module, real: Table[string, Module], name: string,
+proc declAnywhere*(m: Module, real: ModuleMap, name: string,
                    kind: DeclKind): Decl =
   ## The declaration `name` (as emitted) of `kind`, in `m` or the module that
   ## declares it — what declOrigin names, as the decl itself.
@@ -1250,7 +1250,7 @@ proc declAnywhere*(m: Module, real: Table[string, Module], name: string,
     result = other.findDecl(kind, name)
     if result != nil: return
 
-proc constOrigin*(m: Module, real: Table[string, Module], name: string): string =
+proc constOrigin*(m: Module, real: ModuleMap, name: string): ModuleId =
   ## The module declaring an imported const. Not injected — the importer's
   ## own const may shadow it — so Nim exports it and Odin and D qualify each
   ## reference (A33).

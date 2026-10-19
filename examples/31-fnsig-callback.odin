@@ -2,7 +2,7 @@
 package main
 
 import rt "./tuckrt"
-import sys "./mod_sys"
+import tuckˑmodˑsys "./mod_sys"
 
 tuckˑfnsigˑAdder :: proc (a: int, b: int) -> int
 
@@ -18,7 +18,7 @@ tuckˑfnˑmain :: proc () {
   tuckˑvˑc := tuckˑtypeˑCalc{add = tuckˑfnˑplus}
   defer rt.tuckDrop(tuckˑvˑc.add)
   tuckˑvˑr := tuckˑvˑc.add(40, 2)
-  sys.exit(tuckˑvˑr)
+  tuckˑmodˑsys.exit(tuckˑvˑr)
 }
 
 main :: proc() {

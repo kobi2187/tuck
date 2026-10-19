@@ -2,7 +2,7 @@
 package main
 
 import rt "./tuckrt"
-import sys "./mod_sys"
+import tuckˑmodˑsys "./mod_sys"
 foreign import point "cffi/point.o"
 
 tuckˑfnsigˑBinOp :: proc "c" (a: i32, b: i32) -> i32
@@ -24,10 +24,10 @@ tuckˑfnˑmain :: proc () {
   tuckˑvˑc := callBack(tuckˑfnˑaddTwo, i32(40), i32(2))
   if (tuckˑvˑm == i32(42)) {
       if (tuckˑvˑc == i32(1042)) {
-          sys.exit(0)
+          tuckˑmodˑsys.exit(0)
       }
   }
-  sys.exit(1)
+  tuckˑmodˑsys.exit(1)
 }
 
 main :: proc() {

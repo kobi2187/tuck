@@ -1,7 +1,7 @@
 {.experimental: "codeReordering".}
 import "../compiler/tuck_rt"
-import net
-import scheduler
+import net as tuckˑmodˑnet
+import scheduler as tuckˑmodˑscheduler
 
 proc tuckˑfnˑdone*(): bool
 proc tuckˑfnˑmain*(): int
@@ -39,24 +39,24 @@ proc registerActortuckˑactorˑResult*() =
   tuckˑactorˑResultSlot = tuckStartActor(draintuckˑactorˑResult)
 
 proc tuckˑtaskˑserve*(lfd: int): void =
-  var tuckˑvˑc = net.accept(lfd)
+  var tuckˑvˑc = tuckˑmodˑnet.accept(lfd)
   if tuckˑvˑc.ok:
     if true:
-      var tuckOwnTmp1 = net.recv(tuckˑvˑc.value.fd, 256)
+      var tuckOwnTmp1 = tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256)
       defer: tuckDrop(tuckOwnTmp1)
       discard tuckOwnTmp1
-      discard net.send(tuckˑvˑc.value.fd, "pong")
-      net.close(tuckˑvˑc.value.fd)
+      discard tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "pong")
+      tuckˑmodˑnet.close(tuckˑvˑc.value.fd)
   return
 
 proc tuckˑtaskˑclient*(port: int): void =
-  var tuckˑvˑc = net.connect("127.0.0.1", port)
+  var tuckˑvˑc = tuckˑmodˑnet.connect("127.0.0.1", port)
   if tuckˑvˑc.ok:
     if true:
-      discard net.send(tuckˑvˑc.value.fd, "ping")
-      var tuckˑvˑr = net.recv(tuckˑvˑc.value.fd, 256)
+      discard tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "ping")
+      var tuckˑvˑr = tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256)
       defer: tuckDrop(tuckˑvˑr)
-      net.close(tuckˑvˑc.value.fd)
+      tuckˑmodˑnet.close(tuckˑvˑc.value.fd)
       if tuckˑvˑr.ok:
         if true:
           if (tuckˑvˑr.value.data == "pong"):
@@ -75,14 +75,14 @@ proc tuckˑfnˑdone*(): bool =
   return tuckˑactorˑResultSingleton.ready
 
 proc tuckˑfnˑmain*(): int =
-  var tuckˑvˑl = net.listen(34593)
+  var tuckˑvˑl = tuckˑmodˑnet.listen(34593)
   if tuckˑvˑl.ok:
     if true:
       tuckSpawnJob(tuckˑtaskˑserve, tuckˑvˑl.value.fd)
       tuckSpawnJob(tuckˑtaskˑclient, 34593)
       tuckWaitOn(tuckˑactorˑResultSlot, tuckˑfnˑdone)
-      net.close(tuckˑvˑl.value.fd)
-      scheduler.stop()
+      tuckˑmodˑnet.close(tuckˑvˑl.value.fd)
+      tuckˑmodˑscheduler.stop()
       return tuckˑactorˑResultSingleton.code
   return 1
 

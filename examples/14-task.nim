@@ -1,6 +1,6 @@
 {.experimental: "codeReordering".}
 import "../compiler/tuck_rt"
-import http
+import http as tuckˑmodˑhttp
 
 type tuckˑtypeˑFeed* = object
   episodes*: int
@@ -10,7 +10,7 @@ proc tuckˑfnˑparse*[T](payload: T): tuple[feed: tuckˑtypeˑFeed] =
 
 
 proc tuckˑtaskˑfetchFeed*(url: string): TuckResult[tuple[feed: tuckˑtypeˑFeed]] =
-  var tuckˑvˑresp = http.tuckˑfnˑget(url)
+  var tuckˑvˑresp = tuckˑmodˑhttp.tuckˑfnˑget(url)
   defer: tuckDrop(tuckˑvˑresp)
   if tuckˑvˑresp.ok:
     if true:

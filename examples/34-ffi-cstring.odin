@@ -2,8 +2,8 @@
 package main
 
 import rt "./tuckrt"
-import sys "./mod_sys"
-import console "./mod_console"
+import tuckˑmodˑconsole "./mod_console"
+import tuckˑmodˑsys "./mod_sys"
 foreign import z "system:z"
 import shim "./shim"
 
@@ -20,12 +20,12 @@ foreign z {
 tuckˑfnˑmain :: proc () {
   tuckˑvˑv := zlibVersion()
   defer rt.tuckDrop(tuckˑvˑv)
-  console.printLine(tuckˑvˑv)
+  tuckˑmodˑconsole.printLine(tuckˑvˑv)
   tuckˑvˑb := compressBound(u64(1000))
   if (tuckˑvˑb == u64(1013)) {
-      sys.exit(0)
+      tuckˑmodˑsys.exit(0)
   }
-  sys.exit(1)
+  tuckˑmodˑsys.exit(1)
 }
 
 main :: proc() {

@@ -2,7 +2,7 @@ module _01_data_flow;
 
 import rt = tuck_rt;
 import std.stdio : writeln, stderr;
-import time = mod_time;
+import tuckˑmodˑtime = mod_time;
 
 struct TRec_hasNew_episodes_metadata(T_hasNew, T_episodes, T_metadata) {
     T_hasNew hasNew;
@@ -60,7 +60,7 @@ void tuckˑfnˑplayTrack(T)(T payload) {
 
 
 void tuckˑfnˑmain() {
-    TRec_url_timeout!(string, time.tuckˑtypeˑMilliseconds) tuckˑvˑrequest = TRec_url_timeout!(string, time.tuckˑtypeˑMilliseconds)(url: ("example.com").idup, timeout: time.tuckˑfnˑms(cast(uint)5));
+    TRec_url_timeout!(string, tuckˑmodˑtime.tuckˑtypeˑMilliseconds) tuckˑvˑrequest = TRec_url_timeout!(string, tuckˑmodˑtime.tuckˑtypeˑMilliseconds)(url: ("example.com").idup, timeout: tuckˑmodˑtime.tuckˑfnˑms(cast(uint)5));
     scope(exit) rt.tuckDrop(tuckˑvˑrequest.url);
     TRec_hasNew_episodes_metadata!(bool, long, string) tuckOwnTmp1 = tuckˑfnˑfetch(tuckˑvˑrequest);
     scope(exit) rt.tuckDrop(tuckOwnTmp1.metadata);

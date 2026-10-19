@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import str
+import str as tuckˑmodˑstr
 
 proc tuckˑfnˑmain*(): int
 

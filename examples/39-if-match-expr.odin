@@ -1,7 +1,7 @@
 #+feature dynamic-literals
 package main
 
-import sys "./mod_sys"
+import tuckˑmodˑsys "./mod_sys"
 
 tuckˑtypeˑColor :: enum { Red, Green, Blue }
 
@@ -16,12 +16,12 @@ tuckˑfnˑmain :: proc () {
       if (tuckˑvˑcode == 2) {
           if (tuckˑvˑname == 20) {
               if (tuckˑvˑscaled == 200) {
-                  sys.exit(0)
+                  tuckˑmodˑsys.exit(0)
               }
           }
       }
   }
-  sys.exit(1)
+  tuckˑmodˑsys.exit(1)
 }
 
 main :: proc() {
