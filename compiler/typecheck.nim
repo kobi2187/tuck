@@ -4887,6 +4887,21 @@ proc isErrorDotRef(v: Expr): bool =
   v != nil and v.kind == exkField and v.receiver != nil and
     v.receiver.kind == exkVar and v.receiver.name == "Error"
 
+proc failIfBareForInvariantType(tc: TypeChecker, value: Expr, ret: Type,
+                                what: string) =
+  ## A type with an `invariant:` block is built through its constructor, which
+  ## runs the validator; a bare `{...}` returned where one is wanted skips it
+  ## and the Nim build is handed an unnamed tuple (#130). The constructor is
+  ## written out: `return {n: n} Pos`.
+  if value.kind != exkStruct or ret == nil or ret.kind != tkNamed: return
+  let d = tc.typeDeclsByName.getOrDefault(ret.name, nil)
+  if d == nil: return
+  for m in d.members:
+    if m.kind == dkExpr:
+      fail(dcTyAnonToNamed, what & " is a " & ret.name & ", which has an " &
+           "invariant, so it must be built with its constructor. Fix: write " &
+           "`{...} " & ret.name & "`", value.span)
+
 proc checkReturnValue(tc: var TypeChecker, e: Expr) =
   ## `return [d, c]` where the fn returns Seq[Animal]: the list literal takes
   ## its element type from the first item, so it must be wrapped element by
@@ -4902,6 +4917,7 @@ proc checkReturnValue(tc: var TypeChecker, e: Expr) =
     discard tc.synthesize(e.returnVal)
     return
   let what = "return value of '" & tc.currentFn & "'"
+  tc.failIfBareForInvariantType(e.returnVal, tc.currentRet, what)
   let retIface = tc.ifaceElemSlot(tc.currentRet)
   if retIface != "" and e.returnVal.kind == exkList:
     tc.checkIfaceElems(retIface, e.returnVal, what)

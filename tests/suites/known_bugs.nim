@@ -3586,8 +3586,10 @@ fn main() -> int:
   let p = {n: 3} make
   return p.n
 """
-  t.quietly: t.runs "A49: a bare record literal returned as a named invariant type builds", 3
-  t.bugOpen "A49: a bare record literal returned as a named invariant type builds"
+  # Ruled: the constructor is written out (`{n: n} Pos`), so a bare literal
+  # returned as a type with an invariant is refused rather than built.
+  t.quietly: t.badCheck "A49: a bare record literal returned as a named invariant type is refused", "constructor"
+  t.bugFixed "A49: a bare record literal returned as a named invariant type is refused"
 
   # A50. std/random has a Nim runtime only: `check` passes and the Odin and D
   # builds fail ("'newDice' is not declared by 'rt'").

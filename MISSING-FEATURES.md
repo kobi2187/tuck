@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (10)
+## A. Open bugs (9)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -36,8 +36,8 @@ it in.
 - **A49 — a bare record literal returned as a named invariant type.**
   `fn make(..) -> Pos: return {n: n}` checks OK; the Nim build fails because the
   validator is handed an unnamed tuple. Same class as TK-TY45 (#127), at the
-  return position. Fix shape: the checker either names the literal from the
-  return type or refuses it, as it now does for a variable.
+  return position. Ruled: the constructor is written out, so the checker refuses
+  the bare literal (TK-TY45). Fixed.
 - **A50 — `std/random` has no Odin or D runtime.** `newDice`, `newDiceFromOs`,
   `rollRange` exist in `tuck_rt.nim` only; "check OK" does not mean every
   backend builds. A scan of every `std` extern against the three runtimes finds
