@@ -36,9 +36,9 @@ blocks compile in. Without the flag nothing changes: the blessed `std/` is used.
 
 | Tier | Module | Tuck | Nim | Odin | D |
 |---|---|---|---|---|---|
-| core | array, cmp, convert, geom, hash, iter, num, str (`text`) | yes | pass | pass | not run |
+| core | array, cmp, convert, error, fmt, geom, hash, iter, num, str (`text`), types | yes | pass | pass | not run |
 | alloc | deque, list, map, set, string, vec | yes | pass | pass | not run |
-| core | types, slice, fmt, mem, ptr, atomic, sync-cell, error, simd | no | | | |
+| core | slice, mem (designs say fold away); ptr, atomic, sync-cell, simd | no | | | |
 | alloc | allocator, box, rc, fmt | no | | | |
 | sys, std, platform | everything else | no | | | |
 
