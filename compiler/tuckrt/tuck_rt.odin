@@ -631,6 +631,14 @@ pow :: proc(base, exp: f64) -> f64 {
 	return math.pow(base, exp)
 }
 
+sin :: proc(value: f64) -> f64 {
+	return math.sin(value)
+}
+
+cos :: proc(value: f64) -> f64 {
+	return math.cos(value)
+}
+
 // std/hash — FNV-1a, 64-bit. Same algorithm as errCode above (32-bit,
 // compile-time-oriented); this is the runtime, arbitrary-length variant.
 hash :: proc(data: string) -> u64 {

@@ -352,6 +352,18 @@ double pow(double base, double exp)
     return stdPow(base, exp);
 }
 
+double sin(double value)
+{
+    import std.math : stdSin = sin;
+    return stdSin(value);
+}
+
+double cos(double value)
+{
+    import std.math : stdCos = cos;
+    return stdCos(value);
+}
+
 // std/hash — FNV-1a, 64-bit. Same algorithm as errCode above (32-bit);
 // this is the runtime, arbitrary-length variant.
 ulong hash(string data)

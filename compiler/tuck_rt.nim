@@ -1854,6 +1854,12 @@ proc sqrt*(value: float64): float64 =
 proc pow*(base, exp: float64): float64 =
   ## `base` raised to `exp`.
   stdmath.pow(base, exp)
+proc sin*(value: float64): float64 =
+  ## Sine of an angle in radians.
+  stdmath.sin(value)
+proc cos*(value: float64): float64 =
+  ## Cosine of an angle in radians.
+  stdmath.cos(value)
 
 # std/hash — FNV-1a, 64-bit. Same algorithm as errCode above (32-bit,
 # compile-time only); this is the runtime, arbitrary-length variant.

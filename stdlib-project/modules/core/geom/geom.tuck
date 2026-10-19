@@ -1,0 +1,305 @@
+# core.geom — vectors, a 3x3 transform matrix and axis-aligned boxes.
+#
+# Freestanding and pure: plain records and functions, no allocator, no OS.
+# Tuck has no operator overloading and free functions do not overload, so the
+# verbs are named (`vAdd`, `dot`, `dot3`); the `3` suffix is the spelling for
+# the 3-D form, not a workaround.
+#
+# `sin` and `cos` are std/math externs: a correctly rounded sine is a real
+# algorithm and a hand-written one would differ between backends.
+#
+# `normalized` of a zero-length vector is a program error at the call site (a
+# fallible return needs [io]); `tryNormalized` is the form that says no.
+import math
+
+type Vec2:
+  x: f64
+  y: f64
+
+type Vec3:
+  x: f64
+  y: f64
+  z: f64
+
+type Mat3:
+  r0: Vec3
+  r1: Vec3
+  r2: Vec3
+
+type Aabb2:
+  lo: Vec2
+  hi: Vec2
+
+# --- Vec2 -------------------------------------------------------------------
+fn vAdd({a: Vec2, b: Vec2}) -> Vec2:
+  return {x: a.x + b.x, y: a.y + b.y} Vec2
+
+fn vSub({a: Vec2, b: Vec2}) -> Vec2:
+  return {x: a.x - b.x, y: a.y - b.y} Vec2
+
+fn vScale({a: Vec2, scalar: f64}) -> Vec2:
+  return {x: a.x * scalar, y: a.y * scalar} Vec2
+
+fn dot({a: Vec2, b: Vec2}) -> f64:
+  return a.x * b.x + a.y * b.y
+
+# The z component of the 3-D cross product: positive when `b` is
+# counter-clockwise of `a`.
+fn cross2({a: Vec2, b: Vec2}) -> f64:
+  return a.x * b.y - a.y * b.x
+
+fn lengthSquared({v: Vec2}) -> f64:
+  return v.x * v.x + v.y * v.y
+
+fn length({v: Vec2}) -> f64:
+  let sq = {v: v} lengthSquared
+  return {value: sq} sqrt
+
+fn normalized({v: Vec2}) -> Vec2:
+  let len = {v: v} length
+  return {x: v.x /f len, y: v.y /f len} Vec2
+
+fn tryNormalized({v: Vec2}) -> Vec2?:
+  let len = {v: v} length
+  if len == 0.0:
+    return none
+  return {x: v.x /f len, y: v.y /f len} Vec2
+
+# --- Vec3 -------------------------------------------------------------------
+fn v3Add({a: Vec3, b: Vec3}) -> Vec3:
+  return {x: a.x + b.x, y: a.y + b.y, z: a.z + b.z} Vec3
+
+fn v3Sub({a: Vec3, b: Vec3}) -> Vec3:
+  return {x: a.x - b.x, y: a.y - b.y, z: a.z - b.z} Vec3
+
+fn v3Scale({a: Vec3, scalar: f64}) -> Vec3:
+  return {x: a.x * scalar, y: a.y * scalar, z: a.z * scalar} Vec3
+
+fn dot3({a: Vec3, b: Vec3}) -> f64:
+  return a.x * b.x + a.y * b.y + a.z * b.z
+
+fn cross({a: Vec3, b: Vec3}) -> Vec3:
+  let x = a.y * b.z - a.z * b.y
+  let y = a.z * b.x - a.x * b.z
+  let z = a.x * b.y - a.y * b.x
+  return {x: x, y: y, z: z} Vec3
+
+fn lengthSquared3({v: Vec3}) -> f64:
+  return v.x * v.x + v.y * v.y + v.z * v.z
+
+fn length3({v: Vec3}) -> f64:
+  let sq = {v: v} lengthSquared3
+  return {value: sq} sqrt
+
+fn normalized3({v: Vec3}) -> Vec3:
+  let len = {v: v} length3
+  return {x: v.x /f len, y: v.y /f len, z: v.z /f len} Vec3
+
+fn tryNormalized3({v: Vec3}) -> Vec3?:
+  let len = {v: v} length3
+  if len == 0.0:
+    return none
+  return {x: v.x /f len, y: v.y /f len, z: v.z /f len} Vec3
+
+# --- Mat3: 2-D transforms in homogeneous coordinates --------------------------
+fn row({x: f64, y: f64, z: f64}) -> Vec3:
+  return {x: x, y: y, z: z} Vec3
+
+fn identity() -> Mat3:
+  let a = {x: 1.0, y: 0.0, z: 0.0} row
+  let b = {x: 0.0, y: 1.0, z: 0.0} row
+  let c = {x: 0.0, y: 0.0, z: 1.0} row
+  return {r0: a, r1: b, r2: c} Mat3
+
+fn translation({delta: Vec2}) -> Mat3:
+  let a = {x: 1.0, y: 0.0, z: delta.x} row
+  let b = {x: 0.0, y: 1.0, z: delta.y} row
+  let c = {x: 0.0, y: 0.0, z: 1.0} row
+  return {r0: a, r1: b, r2: c} Mat3
+
+fn rotation({radians: f64}) -> Mat3:
+  let c = {value: radians} cos
+  let s = {value: radians} sin
+  let a = {x: c, y: 0.0 - s, z: 0.0} row
+  let b = {x: s, y: c, z: 0.0} row
+  let d = {x: 0.0, y: 0.0, z: 1.0} row
+  return {r0: a, r1: b, r2: d} Mat3
+
+fn scaling({factor: Vec2}) -> Mat3:
+  let a = {x: factor.x, y: 0.0, z: 0.0} row
+  let b = {x: 0.0, y: factor.y, z: 0.0} row
+  let c = {x: 0.0, y: 0.0, z: 1.0} row
+  return {r0: a, r1: b, r2: c} Mat3
+
+fn transformPoint({m: Mat3, v: Vec2}) -> Vec2:
+  let x = m.r0.x * v.x + m.r0.y * v.y + m.r0.z
+  let y = m.r1.x * v.x + m.r1.y * v.y + m.r1.z
+  return {x: x, y: y} Vec2
+
+# `a` applied AFTER `b`: compose(a, b) maps a point through b, then a.
+fn column({m: Mat3, index: int}) -> Vec3:
+  if index == 0:
+    return {x: m.r0.x, y: m.r1.x, z: m.r2.x} Vec3
+  if index == 1:
+    return {x: m.r0.y, y: m.r1.y, z: m.r2.y} Vec3
+  return {x: m.r0.z, y: m.r1.z, z: m.r2.z} Vec3
+
+# A row vector times a matrix: each component is the row dotted with a column.
+fn rowTimes({r: Vec3, m: Mat3}) -> Vec3:
+  let c0 = {m: m, index: 0} column
+  let c1 = {m: m, index: 1} column
+  let c2 = {m: m, index: 2} column
+  let x = {a: r, b: c0} dot3
+  let y = {a: r, b: c1} dot3
+  let z = {a: r, b: c2} dot3
+  return {x: x, y: y, z: z} row
+
+fn compose({a: Mat3, b: Mat3}) -> Mat3:
+  let r0 = {r: a.r0, m: b} rowTimes
+  let r1 = {r: a.r1, m: b} rowTimes
+  let r2 = {r: a.r2, m: b} rowTimes
+  return {r0: r0, r1: r1, r2: r2} Mat3
+
+# --- Aabb2 ------------------------------------------------------------------
+fn hasPoint({box: Aabb2, point: Vec2}) -> bool:
+  return point.x >= box.lo.x and point.x <= box.hi.x and point.y >= box.lo.y and point.y <= box.hi.y
+
+fn overlaps({a: Aabb2, b: Aabb2}) -> bool:
+  return a.lo.x <= b.hi.x and b.lo.x <= a.hi.x and a.lo.y <= b.hi.y and b.lo.y <= a.hi.y
+
+# --- the module's own checks: the exit code names the first that fails -------
+fn near({a: f64, b: f64}) -> bool:
+  let d = a - b
+  return d < 0.000001 and d > 0.0 - 0.000001
+
+fn checkVec2() -> int:
+  let a = {x: 3.0, y: 4.0} Vec2
+  let b = {x: 1.0, y: 2.0} Vec2
+  let sum = {a: a, b: b} vAdd
+  if sum.x != 4.0 or sum.y != 6.0:
+    return 1
+  let diff = {a: a, b: b} vSub
+  if diff.x != 2.0 or diff.y != 2.0:
+    return 2
+  let big = {a: a, scalar: 2.0} vScale
+  if big.x != 6.0 or big.y != 8.0:
+    return 3
+  if {a: a, b: b} dot != 11.0:
+    return 4
+  if {a: a, b: b} cross2 != 2.0:
+    return 5
+  if {v: a} length != 5.0:
+    return 6
+  return 0
+
+fn checkNormalize() -> int:
+  let a = {x: 3.0, y: 4.0} Vec2
+  let n = {v: a} normalized
+  let nl = {v: n} length
+  if not {a: nl, b: 1.0} near:
+    return 7
+  let zero = {x: 0.0, y: 0.0} Vec2
+  let t = {v: zero} tryNormalized
+  if t.ok:
+    return 8
+  let some = {v: a} tryNormalized
+  if not some.ok:
+    return 9
+  return 0
+
+fn checkVec3() -> int:
+  let x = {x: 1.0, y: 0.0, z: 0.0} Vec3
+  let y = {x: 0.0, y: 1.0, z: 0.0} Vec3
+  let z = {a: x, b: y} cross
+  if z.x != 0.0 or z.y != 0.0 or z.z != 1.0:
+    return 10
+  if {a: x, b: y} dot3 != 0.0:
+    return 11
+  let v = {x: 2.0, y: 3.0, z: 6.0} Vec3
+  if {v: v} length3 != 7.0:
+    return 12
+  let s = {a: v, scalar: 2.0} v3Scale
+  let d = {a: s, b: v} v3Sub
+  if d.x != 2.0 or d.y != 3.0 or d.z != 6.0:
+    return 13
+  let e = {a: d, b: v} v3Add
+  if e.z != 12.0:
+    return 14
+  let zero = {x: 0.0, y: 0.0, z: 0.0} Vec3
+  let t = {v: zero} tryNormalized3
+  if t.ok:
+    return 15
+  return 0
+
+fn checkMat() -> int:
+  let p = {x: 2.0, y: 3.0} Vec2
+  let id = identity
+  let same = {m: id, v: p} transformPoint
+  if same.x != 2.0 or same.y != 3.0:
+    return 16
+  let delta = {x: 10.0, y: 20.0} Vec2
+  let t = {delta: delta} translation
+  let moved = {m: t, v: p} transformPoint
+  if moved.x != 12.0 or moved.y != 23.0:
+    return 17
+  let factor = {x: 2.0, y: 3.0} Vec2
+  let sc = {factor: factor} scaling
+  let grown = {m: sc, v: p} transformPoint
+  if grown.x != 4.0 or grown.y != 9.0:
+    return 18
+  return checkRotate
+
+fn checkRotate() -> int:
+  let quarter = {radians: 1.5707963267948966} rotation
+  let p = {x: 1.0, y: 0.0} Vec2
+  let r = {m: quarter, v: p} transformPoint
+  let rx = {a: r.x, b: 0.0} near
+  let ry = {a: r.y, b: 1.0} near
+  if not rx or not ry:
+    return 19
+  let delta = {x: 5.0, y: 0.0} Vec2
+  let t = {delta: delta} translation
+  let both = {a: t, b: quarter} compose
+  let q = {m: both, v: p} transformPoint
+  let qx = {a: q.x, b: 5.0} near
+  let qy = {a: q.y, b: 1.0} near
+  if not qx or not qy:
+    return 20
+  return 0
+
+fn checkBoxes() -> int:
+  let lo = {x: 0.0, y: 0.0} Vec2
+  let hi = {x: 5.0, y: 5.0} Vec2
+  let box = {lo: lo, hi: hi} Aabb2
+  let inside = {x: 1.0, y: 1.0} Vec2
+  let outside = {x: 9.0, y: 1.0} Vec2
+  if not {box: box, point: inside} hasPoint:
+    return 21
+  if {box: box, point: outside} hasPoint:
+    return 22
+  let lo2 = {x: 4.0, y: 4.0} Vec2
+  let hi2 = {x: 8.0, y: 8.0} Vec2
+  let other = {lo: lo2, hi: hi2} Aabb2
+  if not {a: box, b: other} overlaps:
+    return 23
+  let lo3 = {x: 6.0, y: 6.0} Vec2
+  let hi3 = {x: 7.0, y: 7.0} Vec2
+  let apart = {lo: lo3, hi: hi3} Aabb2
+  if {a: box, b: apart} overlaps:
+    return 24
+  return 0
+
+fn main() -> int:
+  let v2 = checkVec2
+  if v2 != 0:
+    return v2
+  let nm = checkNormalize
+  if nm != 0:
+    return nm
+  let v3 = checkVec3
+  if v3 != 0:
+    return v3
+  let mt = checkMat
+  if mt != 0:
+    return mt
+  return checkBoxes
