@@ -23,6 +23,7 @@ import "core:mem"
 import "core:strings"
 import "core:sys/linux"
 import "core:time"
+import "core:crypto"
 
 // !T is a result, ?T is an option: absence is a first-class state, not a
 // reserved error code. !T uses Ok/Err, ?T uses Ok/Absent, !?T may be any.
@@ -1868,6 +1869,17 @@ exit :: proc(code: int) {
 }
 
 // --- std/time ---
+
+OsSeed :: struct {
+	seed: u64,
+}
+
+// std/random's one shim: eight bytes of the operating system's entropy.
+osSeed :: proc() -> OsSeed {
+	buf: [8]u8
+	crypto.rand_bytes(buf[:])
+	return OsSeed{seed = (^u64)(&buf[0])^}
+}
 
 nowMs :: proc() -> NowMs {
 	return NowMs{ms = u64(time.to_unix_nanoseconds(time.now()) / 1_000_000)}

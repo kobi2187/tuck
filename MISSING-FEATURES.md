@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (2)
+## A. Open bugs (1)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -91,6 +91,12 @@ it in.
 - **A61 (issue #143) — the same `let` name in two match arms fails to build on
   Nim and Odin.** The second is emitted as an assignment to a variable declared
   in the other arm's scope. Same family as A60. Found writing `sys.process`.
+
+- **A62 (issue #145) — a local record literal assigned over another module's
+  anonymous record fails the Odin build.** `var d = {seed: 7} newDice` then
+  `d = {state: 1, inc: 3}`: each module hoists its own struct for an anonymous
+  record, so Odin sees `TRec_random_state_inc` and `TRec_state_inc`. check and
+  Nim are fine. Found rewriting `std/random` in Tuck.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so

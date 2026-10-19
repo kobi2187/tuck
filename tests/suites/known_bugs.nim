@@ -3602,7 +3602,7 @@ fn main() -> int:
   return r.value ^int
 """
   t.quietly: t.hostRuns "A50: std/random builds and runs on every backend", 5
-  t.bugOpen "A50: std/random builds and runs on every backend"
+  t.bugFixed "A50: std/random builds and runs on every backend"
 
   # A51. The minimum of a signed type has no spelling: the minus is applied
   # after the literal is range-checked, so `-128` is "128 does not fit i8".
@@ -3702,7 +3702,7 @@ fn main() -> int:
   return k.len
 """
   t.quietly: t.hostRuns "A56: a str field returned from a payload-sum match arm builds on every backend", 2
-  t.bugOpen "A56: a str field returned from a payload-sum match arm builds on every backend"
+  t.bugFixed "A56: a str field returned from a payload-sum match arm builds on every backend"
 
   # A57. `caps = f(caps)` on a Seq in a loop whose other arm copies `caps` into
   # a pushed record: the emitter stores the result, then resets the variable as
@@ -3854,5 +3854,19 @@ fn main() -> int:
 """
   t.quietly: t.hostRuns "A61: the same let name in two match arms builds on every backend", 2
   t.bugFixed "A61: the same let name in two match arms builds on every backend"
+
+  # A62. A local record literal assigned to a variable holding ANOTHER module's
+  # anonymous record: each module hoists its own struct for it, and Odin sees
+  # two types. check and Nim are fine. Found rewriting std/random in Tuck.
+  t.src """
+import random
+
+fn main() -> int:
+  var d = {seed: 7} newDice
+  d = {state: 1, inc: 3}
+  return d.inc ~int
+"""
+  t.quietly: t.hostRuns "A62: a local record literal assigned over another module's anonymous record builds on every backend", 3
+  t.bugOpen "A62: a local record literal assigned over another module's anonymous record builds on every backend"
 
   t.finish()

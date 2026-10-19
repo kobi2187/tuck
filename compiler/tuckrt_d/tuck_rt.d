@@ -1610,6 +1610,15 @@ void exit(long code)
 // std/time — the wall clock, and a sleep. Until the coroutine runtime lands
 // there are no other tasks to keep running, so a blocking sleep IS the
 // reactor semantics for a single-task program.
+// std/random's one shim: the operating system's entropy, as 64 bits.
+R osSeed(R)()
+{
+    import std.random : unpredictableSeed;
+    ulong hi = unpredictableSeed;
+    ulong lo = unpredictableSeed;
+    return tuckRec!(R, "seed")((hi << 32) | lo);
+}
+
 R nowMs(R)()
 {
     import std.datetime.systime : Clock;

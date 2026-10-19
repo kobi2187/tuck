@@ -563,7 +563,14 @@ proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
   var wild = false
   for arm in e.arms:
     if arm.pattern != nil and arm.pattern.kind == pkWild: wild = true
-  ind & (if wild: "#partial switch" else: "switch") & " v in " & subjectStr & "\n" &
+  # An arm that moves a field out resets it through the capture, which Odin
+  # only lets a by-address capture do (#138).
+  var resets = false
+  for arm in e.arms:
+    if arm.body != nil:
+      for n in arm.body.nodes:
+        if n.kind == exkReset: resets = true
+  ind & (if wild: "#partial switch" else: "switch") & (if resets: " &v in " else: " v in ") & subjectStr & "\n" &
     ind & "{\n" & cases.join("\n") & "\n" & ind & "}"
 
 proc detectMatchPatterns(e: Expr, ctx: var OdinCodegenCtx): tuple[errMatch, hasWild, overEnum: bool] =

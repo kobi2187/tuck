@@ -1783,69 +1783,13 @@ proc sleepMs*(ms: uint32) =
   if inCoroutine(): tuckSleep(int(ms))
   else: os.sleep(int(ms))   # no scheduler to yield to
 
-# std/random — PCG32 (O'Neill 2014). State is threaded through every call
-# as plain fields (state, inc), not an object: see std/random.tuck's header
-# for why a named cross-boundary type isn't an option today.
-const pcgMult = 6364136223846793005'u64
-
-proc pcgStep(state, inc: uint64): tuple[state: uint64, value: uint32] =
-  ## One PCG32 step: the next state, and the 32-bit output of the current one.
-  let newState = state * pcgMult + inc
-  let xorshifted = uint32(((state shr 18) xor state) shr 27)
-  let rot = int(state shr 59)
-  let value = (xorshifted shr rot) or (xorshifted shl ((-rot) and 31))
-  (state: newState, value: value)
-
-proc newDice*(seed: uint64): tuple[state: uint64, inc: uint64] =
-  ## A PCG32 generator seeded with `seed`: the stream is derived from the seed,
-  ## and the state is warmed up by two steps.
-  let inc = (seed shl 1) or 1'u64
-  let (warm, _) = pcgStep(0'u64, inc)
-  let (state, _) = pcgStep(warm + seed, inc)
-  (state: state, inc: inc)
-
-proc newDiceFromOs*(): tuple[state: uint64, inc: uint64] =
-  ## A PCG32 generator seeded from the OS's cryptographic random source.
+# std/random — the generator itself is Tuck (std/random.tuck); only the OS
+# entropy read is a shim.
+proc osSeed*(): tuple[seed: uint64] =
   var seed: uint64
   let bytes = sysrand.urandom(sizeof(seed))
   copyMem(addr seed, unsafeAddr bytes[0], sizeof(seed))
-  newDice(seed)
-
-proc rollRange*(state, inc: uint64, low, high: int64):
-    tuple[state: uint64, inc: uint64, value: int64] =
-  ## The next value in `low .. high` (inclusive, `low <= high`) and the
-  ## advanced state. Every value in the span is equally likely: a draw in
-  ## the partial bucket at the top of the draw's range is rejected and drawn
-  ## again (PCG's bounded_rand), where reducing it modulo the span would
-  ## favour the low values. A span wider than 2^32 draws 64 bits from two
-  ## steps. The span is computed in wrapping uint64, so the full i64 range —
-  ## span 2^64, which wraps to 0 — is a plain 64-bit draw rather than the
-  ## overflow `high - low + 1` was.
-  var s = state
-  template next32(): uint64 =
-    ## One PCG32 output, advancing `s`.
-    let (ns, v) = pcgStep(s, inc)
-    s = ns
-    uint64(v)
-  template next64(): uint64 =
-    ## Two PCG32 outputs as one 64-bit draw.
-    let hi = next32()
-    (hi shl 32) or next32()
-  let span = cast[uint64](high) - cast[uint64](low) + 1'u64
-  var r: uint64
-  if span == 0:
-    r = next64()
-  elif span <= (1'u64 shl 32):
-    let threshold = ((1'u64 shl 32) - span) mod span
-    r = next32()
-    while r < threshold: r = next32()
-    r = r mod span
-  else:
-    let threshold = (0'u64 - span) mod span
-    r = next64()
-    while r < threshold: r = next64()
-    r = r mod span
-  (state: s, inc: inc, value: cast[int64](cast[uint64](low) + r))
+  (seed: seed)
 
 # std/math — elementary float functions, direct passthroughs to Nim's own.
 proc sqrt*(value: float64): float64 =
