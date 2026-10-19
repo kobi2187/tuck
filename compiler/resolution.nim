@@ -182,11 +182,11 @@ proc isPoolHandleType*(m: Module, name: string): bool =
     if d.name == pool or d.name == prefixed(pool, nkPool): return true
   return false
 
-proc isImportedPoolHandle*(m: Module, real: Table[string, Module],
+proc isImportedPoolHandle*(m: Module, real: ModuleMap,
                            name: string): bool =
   ## The handle type of a pool some OTHER module declares (R11, A36).
   for other in real.values:
-    if other != m and isPoolHandleType(other, name): return true
+    if other.id != m.id and isPoolHandleType(other, name): return true
 
 proc resourceHandleName*(kind: string): string =
   ## The per-kind handle type's name (spec §7.4). Capitalized, because it IS a
@@ -217,31 +217,35 @@ proc declaresResources*(m: Module): bool =
     if d != nil and d.kind == dkResources and d.resKinds.len > 0: return true
   false
 
-proc slabsOf(m: Module, real: Table[string, Module], reportedOnly: bool):
-    seq[tuple[origin, name: string]] =
-  ## Every slab the program declares, with the module declaring it, "" for
-  ## the entry module's own, which Odin and D qualify by (R11).
+proc slabsOf(m: Module, real: ModuleMap, reportedOnly: bool):
+    seq[tuple[origin: ModuleId, name: string]] =
+  ## Every slab the program declares, with the module declaring it, NoModule
+  ## for the entry module's own, which Odin and D qualify by (R11).
   for d in m.decls:
     if d != nil and d.kind == dkSlab and not (reportedOnly and d.slabLeaksOk):
-      result.add ("", d.name)
-  var imported: seq[tuple[origin, name: string]]
-  for modName, other in real:
-    if other == m: continue
+      result.add (NoModule, d.name)
+  var imported: seq[tuple[origin: ModuleId, name: string]]
+  for id, other in real:
+    if other.id == m.id: continue
     for d in other.decls:
       if d != nil and d.kind == dkSlab and not (reportedOnly and d.slabLeaksOk):
-        imported.add (modName, d.name)
-  result.add imported.sorted   # the table's order is its hashing's
+        imported.add (id, d.name)
+  # by module name, as the strings sorted before: the table's order is its hashing's
+  imported.sort(proc (a, b: tuple[origin: ModuleId, name: string]): int =
+    result = cmpByName(a.origin, b.origin)
+    if result == 0: result = cmp(a.name, b.name))
+  result.add imported
 
-proc reportedSlabs*(m: Module, real: Table[string, Module]):
-    seq[tuple[origin, name: string]] =
+proc reportedSlabs*(m: Module, real: ModuleMap):
+    seq[tuple[origin: ModuleId, name: string]] =
   ## The slabs whose unfreed cells the exit reports (slab proposal Q3): every
   ## one the program declares, as emitted, but those marked `[leaks: ok]`.
   ## The entry points call `tuckSlabReport` on each, after main and whatever
   ## runs after it, before the process exits.
   slabsOf(m, real, reportedOnly = true)
 
-proc allSlabs*(m: Module, real: Table[string, Module]):
-    seq[tuple[origin, name: string]] =
+proc allSlabs*(m: Module, real: ModuleMap):
+    seq[tuple[origin: ModuleId, name: string]] =
   ## Every slab, `[leaks: ok]` ones included: what the exit hands back under
   ## the tracker, since a slab lives until exit by design either way.
   slabsOf(m, real, reportedOnly = false)

@@ -1,7 +1,7 @@
 module _38_division;
 
 import rt = tuck_rt;
-import sys = mod_sys;
+import tuckˑmodˑsys = mod_sys;
 
 void tuckˑfnˑmain() {
     long tuckˑvˑq = (7L / 2L);
@@ -11,11 +11,11 @@ void tuckˑfnˑmain() {
     if ((tuckˑvˑq == 3L)) {
         if ((tuckˑvˑbudget == 12L)) {
             if ((tuckˑvˑr > 3.4)) {
-                sys.exit(0L);
+                tuckˑmodˑsys.exit(0L);
             }
         }
     }
-    sys.exit(1L);
+    tuckˑmodˑsys.exit(1L);
 }
 
 int main(string[] args) {

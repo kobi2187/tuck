@@ -1,7 +1,7 @@
 module _35_ffi_struct;
 
 import rt = tuck_rt;
-import sys = mod_sys;
+import tuckˑmodˑsys = mod_sys;
 
 extern (C) struct Point {
     int x;
@@ -17,9 +17,9 @@ void tuckˑfnˑmain() {
     Point tuckˑvˑp = makesPoint(cast(int)3, cast(int)7);
     int tuckˑvˑr = takesPoint(tuckˑvˑp);
     if ((tuckˑvˑr == cast(int)307)) {
-        sys.exit(0L);
+        tuckˑmodˑsys.exit(0L);
     }
-    sys.exit(1L);
+    tuckˑmodˑsys.exit(1L);
 }
 
 int main(string[] args) {

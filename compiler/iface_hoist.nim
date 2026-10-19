@@ -194,7 +194,7 @@ proc hoistSatisfierData*(prog: var seq[LoadedModule]) =
   if sats.len == 0: return
   let (moved, kept) = collectMoved(prog, idx, sats)
   let at = sats[0].obj.span
-  let g = variantsModule(prog, idx, moved, kept, at)
+  var g = variantsModule(prog, idx, moved, kept, at)
   # Everything but the generated module's own dependencies imports it.
   let own = depsOf(prog, idx, kept)
   for lm in prog.mitems:
@@ -205,5 +205,6 @@ proc hoistSatisfierData*(prog: var seq[LoadedModule]) =
     let copy = importedCopy(s.obj, VariantsModule)
     copy.hoistedTo = VariantsModule
     prog[idx[s.iface]].m.decls.insert(copy, 0)
+  g.id = moduleId(VariantsModule)
   prog.add LoadedModule(name: VariantsModule, path: "", m: g)
   prog = dependencyFirst(prog)

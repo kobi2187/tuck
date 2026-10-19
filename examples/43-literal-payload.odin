@@ -1,7 +1,7 @@
 #+feature dynamic-literals
 package main
 
-import sys "./mod_sys"
+import tuckˑmodˑsys "./mod_sys"
 
 tuckˑfnˑdouble :: proc (value: int) -> int {
   return (value * 2)
@@ -15,7 +15,7 @@ tuckˑfnˑmain :: proc () {
   tuckˑvˑa := tuckˑfnˑdouble(5)
   tuckˑvˑb := tuckˑfnˑaddTen(tuckˑfnˑdouble(10))
   tuckˑvˑtotal := (tuckˑvˑa + tuckˑvˑb)
-  sys.exit(tuckˑvˑtotal)
+  tuckˑmodˑsys.exit(tuckˑvˑtotal)
 }
 
 main :: proc() {

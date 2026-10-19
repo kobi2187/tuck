@@ -1,5 +1,5 @@
 {.experimental: "codeReordering".}
-import scheduler
+import scheduler as tuckˑmodˑscheduler
 
 proc tuckˑfnˑdone*(): bool
 proc tuckˑfnˑmain*(): int
@@ -45,6 +45,6 @@ proc tuckˑfnˑdone*(): bool =
 proc tuckˑfnˑmain*(): int =
   tuckSpawnJob(tuckˑtaskˑfire)
   tuckWaitOn(tuckˑactorˑSinkSlot, tuckˑfnˑdone)
-  scheduler.stop()
+  tuckˑmodˑscheduler.stop()
   return tuckˑactorˑSinkSingleton.hits
 

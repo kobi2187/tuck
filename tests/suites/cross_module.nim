@@ -57,16 +57,16 @@ fn smaller[T]({a: T, b: T}) -> T:
 """)
   t.okCheck "a type and a generic fn cross a module boundary"
   t.emitsOdin "Odin reaches the imported type through its package",
-              r"cmp\.tuckˑtypeˑOrder\.Before"
-  t.emitsD "D reaches it through its import alias", r"cmp\.tuckˑtypeˑOrder\.Before"
+              r"tuckˑmodˑcmp\.tuckˑtypeˑOrder\.Before"
+  t.emitsD "D reaches it through its import alias", r"tuckˑmodˑcmp\.tuckˑtypeˑOrder\.Before"
   t.hostBuilds "...and every backend's host compiler accepts the pair"
   t.runs "...and the imported flip and generic min both work", 0
 
   # The match-arm labels are a second value position, reached by a different
   # path (enumTagOwner, which answers a bare owner name), and were bare too.
   t.emitsOdin "an imported sum's match labels are qualified as well",
-              r"case cmp\.tuckˑtypeˑOrder\."
-  t.emitsD "...on D as well", r"case cmp\.tuckˑtypeˑOrder\."
+              r"case tuckˑmodˑcmp\.tuckˑtypeˑOrder\."
+  t.emitsD "...on D as well", r"case tuckˑmodˑcmp\.tuckˑtypeˑOrder\."
 
   # --- a fn reference filling an imported module's fnsig slot ---------------
   # Four separate gaps, each hiding the next. The parser dropped the module
@@ -99,7 +99,7 @@ fn pick[T]({a: T, b: T, better: Better[T]}) -> T:
 """)
   t.okCheck "a fn reference fills an imported module's generic fnsig slot"
   t.emitsD "D takes the address of the qualified fn, not a no-arg call",
-           r"&provider\.tuckˑfnˑfirstWins"
+           r"&tuckˑmodˑprovider\.tuckˑfnˑfirstWins"
   t.hostBuilds "...and every backend builds it"
   t.runs "...and the imported callback is the one invoked", 0
 
@@ -1069,5 +1069,36 @@ on AppEvents.Low({left: int}) [io]:
   {text: "lib"} console::printLine
 """)
   t.hostRuns "A47: handlers in the registry's module and in an importer both run", 0, "(?s)lib.*importer|importer.*lib"
+
+  # --- a module is reached by its id, so no name can meet the host's -------
+  # Modules called after a package or module of the host (Odin's core:os,
+  # core:math, core:strings; Nim's os, math, strutils; D's std) are imported
+  # under a generated alias, never under their own name (#149).
+  t.src """
+import os
+import math
+import strings
+
+fn main() -> int:
+  let a = {x: 3} os::twice
+  let b = {x: a} math::twice
+  let c = {x: b} strings::twice
+  return c
+"""
+  t.addFile("os.tuck", """fn twice({x: int}) -> int:
+  return x + x
+""")
+  t.addFile("math.tuck", """fn twice({x: int}) -> int:
+  return x + x
+""")
+  t.addFile("strings.tuck", """fn twice({x: int}) -> int:
+  return x + x
+""")
+  t.okCheck "modules named like host packages check"
+  t.emitsOdin "Odin imports each under its generated alias", r"import tuckˑmodˑos "
+  t.emitsD "D imports each under its generated alias", r"import tuckˑmodˑmath = mod_math;"
+  t.emits "Nim imports each under its generated alias", r"import strings as tuckˑmodˑstrings"
+  t.hostBuilds "...and every backend's host compiler accepts them"
+  t.runs "...and they compute through the right module", 24
 
   t.finish()

@@ -1,8 +1,8 @@
 module _42_net_echo;
 
 import rt = tuck_rt;
-import scheduler = mod_scheduler;
-import net = mod_net;
+import tuckˑmodˑnet = mod_net;
+import tuckˑmodˑscheduler = mod_scheduler;
 
 enum tuckˑactorˑResultMsgKind { msgPut }
 
@@ -53,24 +53,24 @@ void sendPut_tuckˑactorˑResult(ref tuckˑactorˑResult self, long c) {
 
 
 void tuckˑtaskˑserve(long lfd) {
-    rt.TuckResult!(net.TRec_net_fd!(long)) tuckˑvˑc = net.accept(lfd);
+    rt.TuckResult!(tuckˑmodˑnet.TRec_net_fd!(long)) tuckˑvˑc = tuckˑmodˑnet.accept(lfd);
     if ((tuckˑvˑc.status == rt.TuckStatus.Ok)) {
-        rt.TuckResult!(net.TRec_net_data!(string)) tuckOwnTmp1 = net.recv(tuckˑvˑc.value.fd, 256L);
+        rt.TuckResult!(tuckˑmodˑnet.TRec_net_data!(string)) tuckOwnTmp1 = tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256L);
         scope(exit) rt.tuckDrop(tuckOwnTmp1);
         tuckOwnTmp1;
-        net.send(tuckˑvˑc.value.fd, "pong");
-        net.close(tuckˑvˑc.value.fd);
+        tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "pong");
+        tuckˑmodˑnet.close(tuckˑvˑc.value.fd);
     }
     return;
 }
 
 void tuckˑtaskˑclient(long port) {
-    rt.TuckResult!(net.TRec_net_fd!(long)) tuckˑvˑc = net.connect("127.0.0.1", port);
+    rt.TuckResult!(tuckˑmodˑnet.TRec_net_fd!(long)) tuckˑvˑc = tuckˑmodˑnet.connect("127.0.0.1", port);
     if ((tuckˑvˑc.status == rt.TuckStatus.Ok)) {
-        net.send(tuckˑvˑc.value.fd, "ping");
-        rt.TuckResult!(net.TRec_net_data!(string)) tuckˑvˑr = net.recv(tuckˑvˑc.value.fd, 256L);
+        tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "ping");
+        rt.TuckResult!(tuckˑmodˑnet.TRec_net_data!(string)) tuckˑvˑr = tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256L);
         scope(exit) rt.tuckDrop(tuckˑvˑr);
-        net.close(tuckˑvˑc.value.fd);
+        tuckˑmodˑnet.close(tuckˑvˑc.value.fd);
         if ((tuckˑvˑr.status == rt.TuckStatus.Ok)) {
             if ((tuckˑvˑr.value.data == "pong")) {
                 sendPut_tuckˑactorˑResult(tuckˑactorˑResultSingleton, 42L);
@@ -89,13 +89,13 @@ bool tuckˑfnˑdone() {
 }
 
 long tuckˑfnˑmain() {
-    rt.TuckResult!(net.TRec_net_fd!(long)) tuckˑvˑl = net.listen(34593L);
+    rt.TuckResult!(tuckˑmodˑnet.TRec_net_fd!(long)) tuckˑvˑl = tuckˑmodˑnet.listen(34593L);
     if ((tuckˑvˑl.status == rt.TuckStatus.Ok)) {
         rt.tuckSpawnJob(&tuckˑtaskˑserve, tuckˑvˑl.value.fd);
         rt.tuckSpawnJob(&tuckˑtaskˑclient, 34593L);
         rt.tuckWaitOn(tuckˑactorˑResultSlot, &tuckˑfnˑdone);
-        net.close(tuckˑvˑl.value.fd);
-        scheduler.stop();
+        tuckˑmodˑnet.close(tuckˑvˑl.value.fd);
+        tuckˑmodˑscheduler.stop();
         return tuckˑactorˑResultSingleton.code;
     }
     return 1L;

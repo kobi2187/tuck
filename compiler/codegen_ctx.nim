@@ -42,7 +42,7 @@ type
       ## breaks that cycle without unmarking anything.
     inTask*: bool          # emitting a task body — [io] calls become async yields
     errPolicy*: string     # from the errors declaration; "" = strict
-    realModules*: Table[string, Module]  # imported modules emitted as own Nim files
+    realModules*: ModuleMap  # imported modules emitted as own Nim files
     currentParams*: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
     moduleName*: string    # error codes hash over "module/Enum.Variant"
     idx: DeclIndex         # decl_index, shared by all three backends; read
@@ -129,7 +129,7 @@ proc fieldType*(ctx: var CodegenCtx, parent: string, f: FieldDef): string =
       return enumName
   return genType(f.typ)
 
-proc newCodegenCtx*(m: Module, realModules: Table[string, Module],
+proc newCodegenCtx*(m: Module, realModules: ModuleMap,
                    moduleName: string, res: Resolution): CodegenCtx =
   ## A fresh Nim emission context for module `m`. The module's `errors`
   ## declaration, if any, sets the error policy every fn body is printed under.

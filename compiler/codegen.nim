@@ -43,6 +43,7 @@ import ast, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
+import name_prefix
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_type   # genType: Tuck type -> Nim type text
 import ./ast_query
@@ -69,7 +70,7 @@ proc genQualified(ctx: CodegenCtx, e: Expr): string =
     let cb = cCallbackSig(ctx.module)
     if cb != "": return "cast[" & cb & "](" & e.qualName & ")"
     return e.qualName
-  elif modName in ctx.realModules: nimModuleName(modName) & "." & e.qualName
+  elif e.qualModule in ctx.realModules: moduleAlias(e.qualModule) & "." & e.qualName
   else: modName & "_" & e.qualName
 
 proc genExpr*(ctx: var CodegenCtx, e: Expr): string

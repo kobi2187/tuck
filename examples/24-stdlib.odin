@@ -2,20 +2,20 @@
 package main
 
 import rt "./tuckrt"
-import fs "./mod_fs"
-import console "./mod_console"
+import tuckˑmodˑconsole "./mod_console"
+import tuckˑmodˑfs "./mod_fs"
 
 tuckˑfnˑmain :: proc () {
-  tuckˑvˑw := fs.writeFile("/tmp/tuck-demo.txt", "hello from tuck")
+  tuckˑvˑw := tuckˑmodˑfs.writeFile("/tmp/tuck-demo.txt", "hello from tuck")
   if (tuckˑvˑw.status == .Ok) {
-      tuckˑvˑr := fs.readFile("/tmp/tuck-demo.txt")
+      tuckˑvˑr := tuckˑmodˑfs.readFile("/tmp/tuck-demo.txt")
       defer rt.tuckDrop(tuckˑvˑr)
       if (tuckˑvˑr.status == .Ok) {
-          console.printLine(tuckˑvˑr.value.content)
+          tuckˑmodˑconsole.printLine(tuckˑvˑr.value.content)
           return
       }
   }
-  console.printLine("stdlib demo failed")
+  tuckˑmodˑconsole.printLine("stdlib demo failed")
 }
 
 main :: proc() {

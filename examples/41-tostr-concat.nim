@@ -1,8 +1,8 @@
 {.experimental: "codeReordering".}
 import "../compiler/tuck_rt"
-import str
-import console
-import sys
+import str as tuckˑmodˑstr
+import console as tuckˑmodˑconsole
+import sys as tuckˑmodˑsys
 
 proc tuckˑfnˑmain*(): void
 

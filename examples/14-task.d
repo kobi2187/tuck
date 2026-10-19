@@ -2,7 +2,7 @@ module _14_task;
 
 import rt = tuck_rt;
 import std.stdio : writeln, stderr;
-import http = mod_http;
+import tuckˑmodˑhttp = mod_http;
 
 struct TRec_feed(T_feed) {
     T_feed feed;
@@ -19,7 +19,7 @@ TRec_feed!(tuckˑtypeˑFeed) tuckˑfnˑparse(T)(T payload) {
 
 
 rt.TuckResult!(TRec_feed!(tuckˑtypeˑFeed)) tuckˑtaskˑfetchFeed(string url) {
-    rt.TuckResult!(http.TRec_http_body!(string)) tuckˑvˑresp = http.tuckˑfnˑget(url);
+    rt.TuckResult!(tuckˑmodˑhttp.TRec_http_body!(string)) tuckˑvˑresp = tuckˑmodˑhttp.tuckˑfnˑget(url);
     scope(exit) rt.tuckDrop(tuckˑvˑresp);
     if ((tuckˑvˑresp.status == rt.TuckStatus.Ok)) {
         return rt.tok(tuckˑfnˑparse(tuckˑvˑresp.value.body));

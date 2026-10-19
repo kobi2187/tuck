@@ -120,7 +120,7 @@ proc checkErrCodeCollisions*(mods: seq[tuple[name, path: string, m: Module]]) =
   var seen = initTable[uint16, string]()
   for (name, path, m) in mods:
     for d in m.sumTypes():
-      if d.span.file.startsWith(ImportedTypeMarker): continue  # origin owns it
+      if d.origin != NoModule: continue  # origin owns it
       for v in d.typeBody.variants:
         if v.fields.len > 0: continue  # error enums are fieldless
         let full = name & "/" & d.name & "." & v.name

@@ -8,6 +8,7 @@ import ast, strutils, sets, tables
 import resolution
 import ast_query
 import codegen_common
+import name_prefix
 import codegen_d_ctx
 from mangle import mangleName
 import ./codegen_d
@@ -683,14 +684,12 @@ proc genDRegister*(ctx: DCodegenCtx, m: Module): string =
   result = "void " & RegisterProc & "() {\n"
   for h in foreignHandlers(m):
     let reg = ctx.res.registryOfHandler(h)
-    let origin = if reg == nil: "" else:
-      declOrigin(m, ctx.realModules, reg.name, {dkRegistry})
-    let pre = if origin == "": "" else: dAlias(origin) & "."
+    let pre = if reg == nil: "" else:
+      ctx.pkgQualifierD(declOrigin(m, ctx.realModules, reg.name, {dkRegistry}))
     result.add("    " & pre & ctx.res.handlerListOf(h) & " ~= &" &
                dHandlerFnName(h.name) & ";\n")
   for (iface, o) in movedSatisfiers(m):
-    let origin = moduleDeclaringType(m, iface.name)
-    let pre = if origin == "": "" else: dAlias(origin) & "."
+    let pre = ctx.pkgQualifierD(moduleDeclaringType(m, iface.name))
     for mem in iface.ifaceMembers:
       if mem == nil or mem.kind != dkFn: continue
       result.add("    " & pre & implVarName(iface.name, mem.name, o.name) & " = &" &
@@ -1106,6 +1105,18 @@ proc genDResourceTables(d: Decl): string =
                resourceTableName(d.resKinds[i].name) & ");\n")
   result.add("}\n")
 
+proc genDConst(ctx: var DCodegenCtx, d: Decl): string =
+  ## A literal is a true compile-time constant (`enum` is D's word for one);
+  ## structured data becomes an immutable module-level value. The stated type
+  ## (`const t: Seq[u64] = [1, 2]`) is the const's type: the initializer's own
+  ## would be `long[]`.
+  let stated = if d.constType != nil: ctx.dType(d.constType) & " " else: ""
+  let value = ctx.genDExpr(d.constVal)
+  if d.constVal != nil and d.constVal.kind == exkLit:
+    "enum " & stated & d.name & " = " & value & ";\n"
+  else:
+    "immutable " & stated & d.name & " = " & value & ";\n"
+
 proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   ## The D backend's declaration dispatch: one arm per DeclKind, no `else`, so
   ## a new kind fails to compile here until this backend handles it. Imported
@@ -1113,7 +1124,7 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   if d == nil: return ""
   # Imported type decls are injected for checking only; the origin module
   # emits them (mirrors codegen.nim:1756 / codegen_odin.nim:2234).
-  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.span.file.startsWith(ImportedTypeMarker):
+  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.origin != NoModule:
     return ""
   case d.kind
   of dkType: (if d.hoistedTo != "": "" else: ctx.genDTypeDecl(d))
@@ -1154,13 +1165,7 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   of dkActor: ctx.genDActor(d)
   of dkTask: ctx.genDTaskDecl(d)
   of dkExpr: ""   # top-level statements are collected by emitBody
-  of dkConst:
-    # A literal is a true compile-time constant (`enum` is D's word for
-    # one); structured data becomes an immutable module-level value.
-    if d.constVal != nil and d.constVal.kind == exkLit:
-      "enum " & d.name & " = " & ctx.genDExpr(d.constVal) & ";\n"
-    else:
-      "immutable " & d.name & " = " & ctx.genDExpr(d.constVal) & ";\n"
+  of dkConst: ctx.genDConst(d)
   of dkRegister: ctx.genDRegister(d)
   of dkStaticAssert:
     # D checks this at COMPILE time, natively — the identical construct.

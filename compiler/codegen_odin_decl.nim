@@ -609,7 +609,7 @@ proc genRecordType*(ctx: var OdinCodegenCtx, d: Decl): string =
   # them (Resolution.ownerFields), so they print as `self.<name>`.
   var checkCtx = OdinCodegenCtx(definedVars: initHashSet[string](), indent: 0,
                                 module: ctx.module, realModules: ctx.realModules,
-                                res: ctx.res)
+                                res: ctx.res, used: ctx.used)
   for member in d.typeMembers:
     if member.kind == dkExpr:
       # A test and a runtime call, NOT `assert`: `-disable-assert` strips
@@ -716,7 +716,7 @@ proc newHandlerCtx*(ctx: OdinCodegenCtx, d: Decl): OdinCodegenCtx =
   result = OdinCodegenCtx(definedVars: initHashSet[string](),
                           indent: ctx.indent + 1,
                           module: ctx.module, realModules: ctx.realModules,
-                          errPolicy: ctx.errPolicy, res: ctx.res)
+                          errPolicy: ctx.errPolicy, res: ctx.res, used: ctx.used)
 
 proc adoptHandlerCtx*(ctx: var OdinCodegenCtx, hctx: OdinCodegenCtx) =
   ## Anything the handler bodies hoisted belongs to the enclosing file.
@@ -912,14 +912,12 @@ proc genOdinRegister*(ctx: OdinCodegenCtx, m: Module): string =
   result = RegisterProc & " :: proc() {\n"
   for h in foreignHandlers(m):
     let reg = ctx.res.registryOfHandler(h)
-    let origin = if reg == nil: "" else:
-      declOrigin(m, ctx.realModules, reg.name, {dkRegistry})
-    let pre = if origin == "": "" else: origin.replace("-", "_") & "."
+    let pre = if reg == nil: "" else:
+      ctx.pkgQualifier(declOrigin(m, ctx.realModules, reg.name, {dkRegistry}))
     result.add("\tappend(&" & pre & ctx.res.handlerListOf(h) & ", " &
                handlerProcName(h) & ")\n")
   for (iface, o) in movedSatisfiers(m):
-    let origin = moduleDeclaringType(m, iface.name)
-    let pre = if origin == "": "" else: origin.replace("-", "_") & "."
+    let pre = ctx.pkgQualifier(moduleDeclaringType(m, iface.name))
     for mem in iface.ifaceMembers:
       if mem == nil or mem.kind != dkFn: continue
       result.add("\t" & pre & implVarName(iface.name, mem.name, o.name) & " = " &
@@ -1445,7 +1443,7 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## One top-level declaration. Every DeclKind is named, so a new one fails
   ## to compile here until it is decided (CLAUDE.md).
   if d == nil: return ""
-  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.span.file.startsWith(ImportedTypeMarker):
+  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.origin != NoModule:
     return ""  # defined in its own module; that module's Odin file has it
   let ind = "  ".repeat(ctx.indent)
   case d.kind

@@ -23,14 +23,20 @@ proc stdlibArg(t: T): string =
 
 proc tuckAbs(t: T): string = absolutePath(tuckExe)
 
-proc moduleScript(t: T, tier, dirName, name: string, odin: bool): string =
+proc moduleScript(t: T, tier, dirName, name: string, backend: string): string =
   ## Copy the module to its own directory, build it against the project
-  ## stdlib, run it: the module's exit code is the script's.
-  let dir = t.curDir / name & (if odin: "-odin" else: "")
+  ## stdlib, run it: the module's exit code is the script's. `backend` is
+  ## "", "odin" or "dlang".
+  let dir = t.curDir / name & (if backend == "": "" else: "-" & backend)
   let src = t.root / "stdlib-project" / "modules" / tier / dirName / name & ".tuck"
-  let bin = if odin: "m_odin" else: "m"
+  let (flag, bin) = case backend
+                    of "odin": ("--odin ", "m_odin")
+                    of "dlang": ("--dlang ", "m_d")
+                    else: ("", "m")
+  # dmd may live outside PATH (the harness knows where); the driver needs it on it.
+  let dmdPath = if backend == "dlang": "PATH=" & parentDir(findDmd()) & ":$PATH " else: ""
   "mkdir -p " & dir & " && cp " & src & " " & dir / "m.tuck" & " && cd " & dir &
-    " && " & tuckAbs(t) & " b m.tuck " & (if odin: "--odin " else: "") &
+    " && " & dmdPath & tuckAbs(t) & " b m.tuck " & flag &
     stdlibArg(t) & " --root:" & t.root & " > build.log 2>&1 && ./" & bin
 
 proc run*(t: var T) =
@@ -88,12 +94,15 @@ fn main() -> int:
       else: t.no "`when STDLIB == \"NAME\":` compiles in only the chosen block", $rc4 & " " & o4
 
   # --- the modules ----------------------------------------------------------
-  var nim, odin: seq[(string, int)]
+  var nim, odin, dlang: seq[(string, int)]
+  let haveD = findDmd().len > 0
   for (tier, dirName, name) in Modules:
-    nim.add (name, t.needCmd(@["sh", "-c", moduleScript(t, tier, dirName, name, false)], verb = vRun))
-    odin.add (name, t.needCmd(@["sh", "-c", moduleScript(t, tier, dirName, name, true)], verb = vRun))
+    nim.add (name, t.needCmd(@["sh", "-c", moduleScript(t, tier, dirName, name, "")], verb = vRun))
+    odin.add (name, t.needCmd(@["sh", "-c", moduleScript(t, tier, dirName, name, "odin")], verb = vRun))
+    if haveD:
+      dlang.add (name, t.needCmd(@["sh", "-c", moduleScript(t, tier, dirName, name, "dlang")], verb = vRun))
   if t.phase != pCollect:
-    for (label, runs) in [("Nim", nim), ("Odin", odin)]:
+    for (label, runs) in [("Nim", nim), ("Odin", odin), ("D", dlang)]:
       for (name, idx) in runs:
         let title = "stdlib-project " & name & "'s own checks pass on " & label
         if t.skippedCmd(idx): t.skip title; continue

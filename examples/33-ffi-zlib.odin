@@ -1,7 +1,7 @@
 #+feature dynamic-literals
 package main
 
-import sys "./mod_sys"
+import tuckˑmodˑsys "./mod_sys"
 foreign import z "system:z"
 
 @(default_calling_convention="c")
@@ -12,9 +12,9 @@ foreign z {
 tuckˑfnˑmain :: proc () {
   tuckˑvˑb := compressBound(u64(1000))
   if (tuckˑvˑb == u64(1013)) {
-      sys.exit(0)
+      tuckˑmodˑsys.exit(0)
   }
-  sys.exit(1)
+  tuckˑmodˑsys.exit(1)
 }
 
 main :: proc() {

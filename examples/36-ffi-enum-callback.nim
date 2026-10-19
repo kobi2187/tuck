@@ -1,7 +1,7 @@
 {.experimental: "codeReordering".}
 import "../compiler/tuck_rt"
 {.compile: "cffi/point.c".}
-import sys
+import sys as tuckˑmodˑsys
 
 proc tuckˑfnˑaddTwo*(a: int32, b: int32): int32
 proc tuckˑfnˑmain*(): void

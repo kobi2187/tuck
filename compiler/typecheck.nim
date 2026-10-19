@@ -6164,7 +6164,7 @@ proc failIfBadQualifiedType(m: Module, t: Type) =
   for c in t.children: failIfBadQualifiedType(m, c)
   if t.kind != tkNamed or t.qualifier.len == 0: return
   let written = t.qualifier.join("::") & "::" & t.name
-  let origin = moduleDeclaringType(m, t.name)
+  let origin = nameOf(moduleDeclaringType(m, t.name))
   let named = t.qualifier[^1]
   if origin == named or origin == t.qualifier.join("/"): return
   let why =
@@ -6486,8 +6486,8 @@ proc checkIfaceMatchesComplete(mods: seq[tuple[name, path: string, m: Module]]) 
   ## (`satisfies` may be attached from outside), and each one is a value the
   ## match can be handed.
   if ifaceMatches.len == 0: return
-  var real = initTable[string, Module]()
-  for (name, path, m) in mods: real[name] = m
+  var real = initTable[ModuleId, Module]()
+  for (_, _, m) in mods: real[m.id] = m
   for rec in ifaceMatches:
     if rec.catchAll: continue
     var missing: seq[string]
@@ -6592,7 +6592,7 @@ proc computeSelfWriters(mods: seq[tuple[name, path: string, m: Module]]): HashSe
 
 proc callWritesSelf(call: MemberCall, writers: HashSet[NodeId],
                     mods: seq[tuple[name, path: string, m: Module]],
-                    real: Table[string, Module]): bool =
+                    real: ModuleMap): bool =
   ## Does this call run a member that changes `self`? Through an interface
   ## value: when ANY satisfier's implementation of it does.
   if call.member != nil: return call.member.id in writers
@@ -6652,8 +6652,8 @@ proc checkSelfWrites(mods: seq[tuple[name, path: string, m: Module]]) =
   var writers = computeSelfWriters(mods)
   addHoistedWriters(mods, writers)
   semLayer.selfWriters = writers
-  var real = initTable[string, Module]()
-  for (name, path, m) in mods: real[name] = m
+  var real = initTable[ModuleId, Module]()
+  for (_, _, m) in mods: real[m.id] = m
   for call in memberCalls:
     if call.recvKind == rkVar: continue
     if not callWritesSelf(call, writers, mods, real): continue

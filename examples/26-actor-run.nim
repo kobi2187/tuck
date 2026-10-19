@@ -1,6 +1,6 @@
 {.experimental: "codeReordering".}
 import "../compiler/tuck_rt"
-import scheduler
+import scheduler as tuckˑmodˑscheduler
 
 proc tuckˑfnˑsumReady*(): bool
 proc tuckˑfnˑmain*(): int
