@@ -607,11 +607,18 @@ proc genRecordType*(ctx: var OdinCodegenCtx, d: Decl): string =
   var invariantChecks: seq[string]
   # The predicate's bare names are the type's fields; the checker recorded
   # them (Resolution.ownerFields), so they print as `self.<name>`.
-  var checkCtx = OdinCodegenCtx(definedVars: initHashSet[string](), indent: 0,
-                                module: ctx.module, realModules: ctx.realModules,
-                                res: ctx.res, used: ctx.used, shapes: ctx.shapes)
+  # Built only for a type that has an invariant: the context holds the module
+  # by value, so making one copies every declaration (once per type, that made
+  # the emit quadratic in the number of types, #23).
+  var checkCtx: OdinCodegenCtx
+  var checkCtxMade = false
   for member in d.typeMembers:
     if member.kind == dkExpr:
+      if not checkCtxMade:
+        checkCtx = OdinCodegenCtx(definedVars: initHashSet[string](), indent: 0,
+                                  module: ctx.module, realModules: ctx.realModules,
+                                  res: ctx.res, used: ctx.used, shapes: ctx.shapes)
+        checkCtxMade = true
       # A test and a runtime call, NOT `assert`: `-disable-assert` strips
       # those, which would undo the ruling that invariants survive a release
       # build (2026-08-25, ruling 5). `tuckNoInvariants` is the one opt-out,

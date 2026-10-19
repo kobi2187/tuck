@@ -56,12 +56,11 @@ proc buildDeclIndex*(m: Module): DeclIndex =
     case d.kind
     of dkObject:
       result.recordNames.incl(d.name)
-      if hasInvariants(m, d.name): result.invariantTypes.incl(d.name)
     of dkType:
       if d.typeBody != nil and d.typeBody.kind == tkRecord:
         result.recordNames.incl(d.name)
-      if hasInvariants(m, d.name): result.invariantTypes.incl(d.name)
-      let sat = saturatingType(m, d.name)
+      if declHasInvariants(d): result.invariantTypes.incl(d.name)
+      let sat = declSaturatingType(d)
       if sat != nil: result.saturating[d.name] = sat
     of dkTask: result.taskNames.incl(d.name)
     of dkFn, dkActor, dkMixin, dkExtern, dkPending, dkPool, dkSlab, dkArena, dkFnSig, dkRegistry,

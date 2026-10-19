@@ -338,13 +338,16 @@ proc paramTypes*(d: Decl): seq[Type] =
   ## A callable's parameter types, in order; empty for nil.
   for p in d.params(): result.add(p.typ)
 
-proc hasInvariants*(m: Module, name: string): bool =
-  ## A declared type carrying an `invariant:` block (stored as a dkExpr member).
-  let d = m.findDecl(dkType, name)
+proc declHasInvariants*(d: Decl): bool =
+  ## A type declaration carrying an `invariant:` block (stored as dkExpr members).
   if d == nil: return false
   for member in d.typeMembers:
     if member.kind == dkExpr: return true
   false
+
+proc hasInvariants*(m: Module, name: string): bool =
+  ## A declared type carrying an `invariant:` block.
+  declHasInvariants(m.findDecl(dkType, name))
 
 proc validatesItself*(m: Module, e: Expr): bool =
   ## Does emitting this expression ALREADY validate its own invariants?
@@ -422,16 +425,19 @@ proc isDistinctAlias*(body: Type): bool =
   false
 
 
+proc declSaturatingType*(d: Decl): Type =
+  ## The underlying Type of a `[saturating]` type declaration, or nil.
+  if d == nil or d.typeBody == nil or d.typeBody.kind != tkNamed: return nil
+  for a in d.typeBody.attrs:
+    if a.name == "saturating": return d.typeBody
+  nil
+
 proc saturatingType*(m: Module, name: string): Type =
   ## The underlying Type of a `[saturating]` declaration, or nil. What makes a
   ## type saturating is the ATTRIBUTE, not the `distinct` keyword — so
   ## `type X = u16 [saturating]` and `distinct X = u16 [saturating]` are the
   ## same thing (user ruling). Each backend spells the base type itself.
-  let d = m.findDecl(dkType, name)
-  if d == nil or d.typeBody == nil or d.typeBody.kind != tkNamed: return nil
-  for a in d.typeBody.attrs:
-    if a.name == "saturating": return d.typeBody
-  nil
+  declSaturatingType(m.findDecl(dkType, name))
 
 proc isValueIf*(e: Expr): bool
 
