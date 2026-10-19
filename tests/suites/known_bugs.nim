@@ -3549,4 +3549,68 @@ fn keep({t: str}) -> Seq[str]:
   t.hostRuns "a literal passed to another module's consuming fn is owned by the callee", 1
   t.bugFixed "a literal passed to another module's consuming fn is owned by the callee"
 
+  # --- open: found while building the property tester and dogfooding the
+  # stdlib (2026-10-19). Each is written as the CORRECT behaviour. ----------
+
+  # A48. A binding whose type is STATED as a payload sum is refused where a
+  # value of that sum is wanted: "'a' expects sum type but got A".
+  t.src """
+type A:
+  | X
+  | Y
+
+fn f({a: A}) -> int:
+  return 1
+
+fn main() -> int:
+  let a: A = X
+  return {a: a} f
+"""
+  t.quietly: t.runs "A48: a binding stated as a sum type passes to a param of that sum", 1
+  t.bugOpen "A48: a binding stated as a sum type passes to a param of that sum"
+
+  # A49. Returning a bare record literal from a fn whose return type is a named
+  # record with an `invariant:` checks OK and then fails the Nim build: the
+  # validator is handed an unnamed tuple. The same class as TK-TY45, at the
+  # return position.
+  t.src """
+type Pos:
+  n: int
+  invariant:
+    n >= 0
+
+fn make({n: int}) -> Pos:
+  return {n: n}
+
+fn main() -> int:
+  let p = {n: 3} make
+  return p.n
+"""
+  t.quietly: t.runs "A49: a bare record literal returned as a named invariant type builds", 3
+  t.bugOpen "A49: a bare record literal returned as a named invariant type builds"
+
+  # A50. std/random has a Nim runtime only: `check` passes and the Odin and D
+  # builds fail ("'newDice' is not declared by 'rt'").
+  t.src """
+import random
+
+fn main() -> int:
+  let d = {seed: 7} newDice
+  let r = {state: d.state, inc: d.inc, low: 1, high: 6} rollRange
+  return r.value ^int
+"""
+  t.quietly: t.hostRuns "A50: std/random builds and runs on every backend", 5
+  t.bugOpen "A50: std/random builds and runs on every backend"
+
+  # A51. The minimum of a signed type has no spelling: the minus is applied
+  # after the literal is range-checked, so `-128` is "128 does not fit i8".
+  # (core.convert works around it for i64: "no literal spelling".)
+  t.src """
+fn main() -> int:
+  let x: i8 = -128
+  return 0
+"""
+  t.quietly: t.okCheck "A51: the minimum of a signed type can be written"
+  t.bugOpen "A51: the minimum of a signed type can be written"
+
   t.finish()
