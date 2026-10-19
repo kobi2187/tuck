@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (11)
+## A. Open bugs (12)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -77,6 +77,10 @@ it in.
 - **A58 (issue #140) — arithmetic on float literals does not adopt `f32`.**
   `d < 0.5 + 0.25` is "comparison between f32 and f64"; a lone literal and a
   negative literal are fine. Found writing `platform.dsp`.
+
+- **A59 (issue #141) — a literal in a `send` payload does not adopt the handler's
+  field type.** `W send set {ms: 100}` with `on set({ms: u32})` is "expects u32 but
+  got int"; the same literal in a call is fine. Found writing `platform.watchdog`.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so

@@ -61,6 +61,8 @@ A module that hit a compiler bug is left where it stopped, the bug is filed, and
 module is started. No workaround is written into a module. Finish these after the fixes:
 
 * `std.encoding`: #134 (`_` arm over a payload sum, Odin).
+* `platform.watchdog`: #141 (a literal in a `send` payload). The actor (configure, start, feed,
+  check, stop) is written.
 * `platform.dsp`: #135 (float list literals, also noted there) and #140 (arithmetic on float
   literals vs `f32`). Biquad, moving average and RMS are written; the checks that build
   `Seq[f32]` from a list could not be.

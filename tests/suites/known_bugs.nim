@@ -3774,4 +3774,21 @@ fn main() -> int:
   t.quietly: t.okCheck "A58: arithmetic on float literals adopts the f32 it is compared with"
   t.bugOpen "A58: arithmetic on float literals adopts the f32 it is compared with"
 
+  # A59. An integer literal in a `send` payload does not adopt the handler's
+  # field type, though the same literal in a call does.
+  t.src """
+import scheduler
+
+actor W [queue: 4]:
+  t: u32 = 0
+  on set({ms: u32}):
+    t = ms
+
+fn main() -> int:
+  W send set {ms: 100}
+  return 0
+"""
+  t.quietly: t.okCheck "A59: an integer literal in a send payload adopts the handler's field type"
+  t.bugOpen "A59: an integer literal in a send payload adopts the handler's field type"
+
   t.finish()
