@@ -1,0 +1,132 @@
+# std.testing — outcomes, a report, and assertions that return results.
+#
+# `check` cannot see its own expression (Tuck has no user-facing templates), so
+# every assertion takes a `what: str` and RETURNS a Result instead of printing:
+# a test is a function from nothing to Results, and the report is a fold over
+# them. That keeps the whole module pure and testable; printing a Report is one
+# call to std/console.
+import seq
+import str
+import console
+
+type Outcome:
+  | Passed
+  | Failed
+  | Skipped
+
+type Result:
+  name: str
+  outcome: Outcome
+  message: str
+  elapsedMs: u64
+
+type Report:
+  results: Seq[Result]
+  passed: int
+  failed: int
+  skipped: int
+
+fn okResult({name: str}) -> Result:
+  return {name: name, outcome: Outcome.Passed, message: "", elapsedMs: 0} Result
+
+fn failResult({name: str, message: str}) -> Result:
+  return {name: name, outcome: Outcome.Failed, message: message, elapsedMs: 0} Result
+
+fn skipResult({name: str, why: str}) -> Result:
+  return {name: name, outcome: Outcome.Skipped, message: why, elapsedMs: 0} Result
+
+# --- assertions -----------------------------------------------------------------
+fn check({ok: bool, what: str}) -> Result:
+  if ok:
+    return {name: what} okResult
+  return {name: what, message: "check failed"} failResult
+
+fn expectEq[T]({got: T, want: T, what: str}) -> Result:
+  if got == want:
+    return {name: what} okResult
+  let g = {value: got} toStr
+  let w = {value: want} toStr
+  return {name: what, message: "got " + g + ", want " + w} failResult
+
+# --- reports ----------------------------------------------------------------------
+fn summarize({results: Seq[Result]}) -> Report:
+  var p = 0
+  var f = 0
+  var s = 0
+  for i in 0 .. results.len - 1:
+    match results[i].outcome:
+      Passed: p = p + 1
+      Failed: f = f + 1
+      Skipped: s = s + 1
+  return {results: results, passed: p, failed: f, skipped: s} Report
+
+fn allPassed({r: Report}) -> bool:
+  return r.failed == 0
+
+fn outcomeMark({o: Outcome}) -> str:
+  match o:
+    Passed: return "PASS"
+    Failed: return "FAIL"
+    Skipped: return "SKIP"
+
+fn formatReport({r: Report}) -> str:
+  var lines: Seq[str] = []
+  for i in 0 .. r.results.len - 1:
+    let res = r.results[i]
+    let mark = {o: res.outcome} outcomeMark
+    var line = mark + "  " + res.name
+    if res.message != "":
+      line = line + " (" + res.message + ")"
+    lines = {items: lines, value: line} push
+  let p = {value: r.passed} toStr
+  let f = {value: r.failed} toStr
+  let s = {value: r.skipped} toStr
+  lines = {items: lines, value: p + " passed, " + f + " failed, " + s + " skipped"} push
+  return {parts: lines, sep: "\n"} joinStr
+
+fn show({r: Report}) -> void [io]:
+  let text = {r: r} formatReport
+  {text: text} printLine
+
+fn checkAssertions() -> int:
+  let a = {ok: true, what: "yes"} check
+  if a.outcome != Outcome.Passed:
+    return 1
+  let b = {ok: false, what: "no"} check
+  if b.outcome != Outcome.Failed or b.message != "check failed":
+    return 2
+  let c = {got: 3, want: 3, what: "ints"} expectEq
+  if c.outcome != Outcome.Passed:
+    return 3
+  let d = {got: 3, want: 4, what: "ints differ"} expectEq
+  if d.outcome != Outcome.Failed or d.message != "got 3, want 4":
+    return 4
+  let e = {got: "a", want: "a", what: "strs"} expectEq
+  if e.outcome != Outcome.Passed:
+    return 5
+  return 0
+
+fn checkReport() -> int:
+  var rs: Seq[Result] = []
+  let one = {name: "one"} okResult
+  let two = {name: "two", message: "boom"} failResult
+  let three = {name: "three", why: "slow"} skipResult
+  rs = {items: rs, value: one} push
+  rs = {items: rs, value: two} push
+  rs = {items: rs, value: three} push
+  let report = {results: rs} summarize
+  if report.passed != 1 or report.failed != 1 or report.skipped != 1:
+    return 6
+  if {r: report} allPassed:
+    return 7
+  let text = {r: report} formatReport
+  let want = "PASS  one\nFAIL  two (boom)\nSKIP  three (slow)\n1 passed, 1 failed, 1 skipped"
+  if text != want:
+    return 8
+  return 0
+
+fn main() -> int:
+  let a = checkAssertions
+  if a != 0:
+    return a
+  return checkReport
