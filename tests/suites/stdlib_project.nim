@@ -15,7 +15,7 @@ const Modules = [
   ("alloc", "deque", "deque"), ("alloc", "list", "list"), ("alloc", "map", "map"),
   ("alloc", "set", "set"), ("alloc", "string", "string"), ("alloc", "vec", "vec"),
   ("core", "array", "array"), ("core", "cmp", "cmp"), ("core", "convert", "convert"),
-  ("core", "error", "error"), ("core", "fmt", "fmt"), ("core", "geom", "geom"), ("core", "hash", "hash"), ("core", "iter", "iter"), ("core", "num", "num"), ("core", "types", "types"), ("std", "math", "math"), ("std", "chrono", "chrono"), ("std", "perf", "perf"), ("std", "testing", "testing"),
+  ("core", "error", "error"), ("core", "fmt", "fmt"), ("core", "geom", "geom"), ("core", "hash", "hash"), ("core", "iter", "iter"), ("core", "num", "num"), ("core", "types", "types"), ("std", "math", "math"), ("std", "chrono", "chrono"), ("std", "i18n", "i18n"), ("std", "perf", "perf"), ("std", "testing", "testing"),
   ("core", "str", "text")]
 
 proc stdlibArg(t: T): string =

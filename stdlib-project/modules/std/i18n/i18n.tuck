@@ -1,0 +1,379 @@
+# std.i18n — text operations that work on characters, not bytes.
+#
+# Everything here runs over runes (core.str.text), so a multi-byte character is
+# one step. This is the pure core, with the Unicode data it can carry in
+# code:
+#
+#   * case folding covers ASCII, Latin-1, Greek and Cyrillic simple folds;
+#   * normalization covers the Latin-1 letters that have a precomposed form
+#     (À to ÿ over the combining grave, acute, circumflex, tilde, diaeresis,
+#     ring and cedilla);
+#   * grapheme clusters join combining marks, zero-width joiners, variation
+#     selectors and skin-tone modifiers;
+#   * `compareLocale` folds case and compares code points; a locale's own
+#     tailoring (Swedish å, Turkish dotless i) needs collation tables this
+#     module does not carry.
+#
+# The full Unicode tables are data, not code, and would be a separate file.
+import seq
+import str
+import text
+import cmp
+
+type NormalForm:
+  | Composed
+  | Decomposed
+
+type Locale:
+  id: str
+
+# --- case folding ------------------------------------------------------------------
+fn foldRune({r: u32}) -> u32:
+  if r >= 65 and r <= 90:
+    return r + 32
+  if r >= 192 and r <= 222 and r != 215:
+    return r + 32
+  if r >= 913 and r <= 937:
+    return r + 32
+  if r >= 1040 and r <= 1071:
+    return r + 32
+  if r >= 1024 and r <= 1039:
+    return r + 80
+  return r
+
+fn foldCase({t: str}) -> str:
+  let rs = {t: t} runes
+  var out: Seq[u32] = []
+  for i in 0 .. rs.len - 1:
+    let f = {r: rs[i]} foldRune
+    out = {items: out, value: f} push
+  return {rs: out} fromRunes
+
+# --- distance ----------------------------------------------------------------------
+fn minOf3({a: int, b: int, c: int}) -> int:
+  var m = a
+  if b < m:
+    m = b
+  if c < m:
+    m = c
+  return m
+
+# Levenshtein distance over runes: the fewest single-character insertions,
+# deletions and substitutions that turn `a` into `b`.
+fn editDistance({a: str, b: str}) -> int:
+  let x = {t: a} runes
+  let y = {t: b} runes
+  var prev: Seq[int] = []
+  for j in 0 .. y.len:
+    prev = {items: prev, value: j} push
+  for i in 1 .. x.len:
+    var row: Seq[int] = []
+    row = {items: row, value: i} push
+    for j in 1 .. y.len:
+      var cost = 1
+      if x[i - 1] == y[j - 1]:
+        cost = 0
+      let best = {a: prev[j] + 1, b: row[j - 1] + 1, c: prev[j - 1] + cost} minOf3
+      row = {items: row, value: best} push
+    prev = row
+  return prev[y.len]
+
+# --- words and graphemes -------------------------------------------------------------
+fn isWordRune({r: u32}) -> bool:
+  if r >= 48 and r <= 57:
+    return true
+  if r >= 65 and r <= 90:
+    return true
+  if r >= 97 and r <= 122:
+    return true
+  if r == 95:
+    return true
+  if r < 128:
+    return false
+  if r == 215 or r == 247:
+    return false
+  if r >= 8192 and r <= 8303:
+    return false
+  if r >= 12288 and r <= 12351:
+    return false
+  return true
+
+fn wordsOf({t: str, loc: Locale}) -> Seq[str]:
+  let rs = {t: t} runes
+  var words: Seq[str] = []
+  var cur: Seq[u32] = []
+  for i in 0 .. rs.len - 1:
+    if {r: rs[i]} isWordRune:
+      cur = {items: cur, value: rs[i]} push
+    elif cur.len > 0:
+      let w = {rs: cur} fromRunes
+      words = {items: words, value: w} push
+      cur = []
+  if cur.len > 0:
+    let w = {rs: cur} fromRunes
+    words = {items: words, value: w} push
+  return words
+
+# Does this rune attach to the one before it?
+fn extendsCluster({r: u32}) -> bool:
+  if r >= 768 and r <= 879:
+    return true
+  if r == 8205 or r == 65039:
+    return true
+  return r >= 127995 and r <= 127999
+
+# User-perceived characters: a base rune plus everything that attaches to it,
+# and whatever follows a zero-width joiner.
+fn graphemesOf({t: str}) -> Seq[str]:
+  let rs = {t: t} runes
+  var out: Seq[str] = []
+  var cur: Seq[u32] = []
+  var joined = false
+  for i in 0 .. rs.len - 1:
+    let r = rs[i]
+    if cur.len > 0 and not joined and not {r: r} extendsCluster:
+      let g = {rs: cur} fromRunes
+      out = {items: out, value: g} push
+      cur = []
+    joined = r == 8205
+    cur = {items: cur, value: r} push
+  if cur.len > 0:
+    let g = {rs: cur} fromRunes
+    out = {items: out, value: g} push
+  return out
+
+# --- comparison ------------------------------------------------------------------------
+# Fold case, then compare code point by code point; a shorter prefix sorts first.
+# Equal after folding is Same, even when the raw strings differ.
+fn compareLocale({loc: Locale, a: str, b: str}) -> Order:
+  let fa = {t: a} foldCase
+  let fb = {t: b} foldCase
+  let x = {t: fa} runes
+  let y = {t: fb} runes
+  var i = 0
+  for i < x.len and i < y.len:
+    if x[i] < y[i]:
+      return Order.Before
+    if x[i] > y[i]:
+      return Order.After
+    i = i + 1
+  if x.len < y.len:
+    return Order.Before
+  if x.len > y.len:
+    return Order.After
+  return Order.Same
+
+# --- normalization (Latin-1 letters) -----------------------------------------------------
+# For the upper-case letters U+00C0 .. U+00DD: the base letter and the combining
+# mark that make them, by position. `?` marks a code point with no such split
+# (Æ, Ð, ×, Ø). The lower-case letters are the same table, 32 higher.
+const baseLetters: str = "AAAAAA?CEEEEIIII?NOOOOO??UUUUY"
+const markLetters: str = "gactdr?sgacdgacd?tgactd??gacda"
+
+# g grave, a acute, c circumflex, t tilde, d diaeresis, r ring, s cedilla.
+fn markLetter({mark: u32}) -> str:
+  if mark == 768:
+    return "g"
+  if mark == 769:
+    return "a"
+  if mark == 770:
+    return "c"
+  if mark == 771:
+    return "t"
+  if mark == 776:
+    return "d"
+  if mark == 778:
+    return "r"
+  if mark == 807:
+    return "s"
+  return "?"
+
+fn markRune({letter: str}) -> u32:
+  if letter == "g":
+    return 768
+  if letter == "a":
+    return 769
+  if letter == "c":
+    return 770
+  if letter == "t":
+    return 771
+  if letter == "d":
+    return 776
+  if letter == "r":
+    return 778
+  return 807
+
+type Split:
+  base: u32
+  mark: u32
+
+# The precomposed letter for `base` + `mark`, or absent.
+fn composeOf({base: u32, mark: u32}) -> u32?:
+  var lower = false
+  var upper = base
+  if base >= 97 and base <= 122:
+    lower = true
+    upper = base - 32
+  if upper < 65 or upper > 90:
+    return none
+  let want = {mark: mark} markLetter
+  for i in 0 .. 29:
+    let b = {s: baseLetters, index: i} charAt
+    let m = {s: markLetters, index: i} charAt
+    let code = {ch: b} ord
+    if m == want and {value: upper} int == code:
+      var cp = 192 + i
+      if lower:
+        cp = cp + 32
+      return {value: cp} u32
+  return none
+
+# The base letter and mark a precomposed Latin-1 letter splits into, or absent.
+fn splitOf({r: u32}) -> Split?:
+  var i = -1
+  var lower = false
+  if r >= 192 and r <= 221:
+    i = {value: r} int - 192
+  elif r >= 224 and r <= 253:
+    i = {value: r} int - 224
+    lower = true
+  elif r == 255:
+    return {base: 121, mark: 776} Split
+  if i < 0:
+    return none
+  let b = {s: baseLetters, index: i} charAt
+  let m = {s: markLetters, index: i} charAt
+  if b == "?":
+    return none
+  let code = {ch: b} ord
+  var base = {value: code} u32
+  if lower:
+    base = base + 32
+  let mark = {letter: m} markRune
+  return {base: base, mark: mark} Split
+
+fn isMarkRune({r: u32}) -> bool:
+  return r >= 768 and r <= 879
+
+fn composed({rs: Seq[u32]}) -> Seq[u32]:
+  var out: Seq[u32] = []
+  var i = 0
+  for i < rs.len:
+    if i + 1 < rs.len and {r: rs[i + 1]} isMarkRune:
+      let c = {base: rs[i], mark: rs[i + 1]} composeOf
+      if c.ok:
+        out = {items: out, value: c.value} push
+        i = i + 2
+        continue
+    out = {items: out, value: rs[i]} push
+    i = i + 1
+  return out
+
+fn decomposed({rs: Seq[u32]}) -> Seq[u32]:
+  var out: Seq[u32] = []
+  for i in 0 .. rs.len - 1:
+    let s = {r: rs[i]} splitOf
+    if s.ok:
+      out = {items: out, value: s.value.base} push
+      out = {items: out, value: s.value.mark} push
+    else:
+      out = {items: out, value: rs[i]} push
+  return out
+
+fn normalize({t: str, form: NormalForm}) -> str:
+  let rs = {t: t} runes
+  match form:
+    Composed:
+      let split = {rs: rs} decomposed
+      let c = {rs: split} composed
+      return {rs: c} fromRunes
+    Decomposed:
+      let d = {rs: rs} decomposed
+      return {rs: d} fromRunes
+
+fn isNormalized({t: str, form: NormalForm}) -> bool:
+  let n = {t: t, form: form} normalize
+  return n == t
+
+# --- the module's own checks: the exit code names the first that fails -----------------
+fn checkDistance() -> int:
+  if {a: "kitten", b: "sitting"} editDistance != 3:
+    return 1
+  if {a: "", b: "abc"} editDistance != 3:
+    return 2
+  if {a: "same", b: "same"} editDistance != 0:
+    return 3
+  if {a: "café", b: "cafe"} editDistance != 1:
+    return 4
+  return 0
+
+fn checkFold() -> int:
+  if {t: "HeLLo"} foldCase != "hello":
+    return 5
+  if {t: "ÀÉÎ"} foldCase != "àéî":
+    return 6
+  if {t: "ΑΒΓ"} foldCase != "αβγ":
+    return 7
+  if {t: "ПРИВЕТ"} foldCase != "привет":
+    return 8
+  return 0
+
+fn checkWords() -> int:
+  let loc = {id: "en"} Locale
+  let w = {t: "Hello, wörld! 42 times", loc: loc} wordsOf
+  if w.len != 4 or w[0] != "Hello" or w[1] != "wörld" or w[3] != "times":
+    return 9
+  return 0
+
+fn checkGraphemes() -> int:
+  let g = {t: "aéx"} graphemesOf
+  if g.len != 3:
+    return 10
+  let plain = {t: "abc"} graphemesOf
+  if plain.len != 3:
+    return 11
+  return 0
+
+fn checkCompare() -> int:
+  let loc = {id: "en"} Locale
+  if {loc: loc, a: "apple", b: "Banana"} compareLocale != Order.Before:
+    return 12
+  if {loc: loc, a: "HELLO", b: "hello"} compareLocale != Order.Same:
+    return 13
+  if {loc: loc, a: "abc", b: "ab"} compareLocale != Order.After:
+    return 14
+  return 0
+
+fn checkNormalize() -> int:
+  let precomposed = "café"
+  let split = {t: precomposed, form: NormalForm.Decomposed} normalize
+  if {t: split} runeCount != 5:
+    return 15
+  let back = {t: split, form: NormalForm.Composed} normalize
+  if back != precomposed:
+    return 16
+  if not {t: precomposed, form: NormalForm.Composed} isNormalized:
+    return 17
+  if {t: precomposed, form: NormalForm.Decomposed} isNormalized:
+    return 18
+  if {t: "ÿ", form: NormalForm.Decomposed} normalize == "ÿ":
+    return 19
+  return 0
+
+fn main() -> int:
+  let a = checkDistance
+  if a != 0:
+    return a
+  let b = checkFold
+  if b != 0:
+    return b
+  let c = checkWords
+  if c != 0:
+    return c
+  let d = checkGraphemes
+  if d != 0:
+    return d
+  let e = checkCompare
+  if e != 0:
+    return e
+  return checkNormalize
