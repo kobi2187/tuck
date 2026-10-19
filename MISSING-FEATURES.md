@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (10)
+## A. Open bugs (11)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -73,6 +73,10 @@ it in.
   emitter stores the result and then resets the variable as moved-from (Nim
   `tuckStore(caps, f(tuckMove(caps)))` then `tuckReset(caps)`; Odin trips an
   index assertion). Found writing `std.regex`'s VM (stdlib-project).
+
+- **A58 (issue #140) — arithmetic on float literals does not adopt `f32`.**
+  `d < 0.5 + 0.25` is "comparison between f32 and f64"; a lone literal and a
+  negative literal are fine. Found writing `platform.dsp`.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so

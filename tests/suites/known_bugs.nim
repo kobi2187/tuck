@@ -3762,4 +3762,16 @@ fn main() -> int:
   t.quietly: t.hostRuns "A57: x = f(x) on a Seq in a loop keeps the new value", 9
   t.bugOpen "A57: x = f(x) on a Seq in a loop keeps the new value"
 
+  # A58. Arithmetic on float literals is typed f64 before it meets an f32:
+  # `d < 0.5 + 0.25` is "comparison between f32 and f64".
+  t.src """
+fn sum({d: f32}) -> bool:
+  return d < 0.5 + 0.25
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.okCheck "A58: arithmetic on float literals adopts the f32 it is compared with"
+  t.bugOpen "A58: arithmetic on float literals adopts the f32 it is compared with"
+
   t.finish()

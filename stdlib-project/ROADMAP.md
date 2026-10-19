@@ -60,6 +60,9 @@ A module that hit a compiler bug is left where it stopped, the bug is filed, and
 module is started. No workaround is written into a module. Finish these after the fixes:
 
 * `std.encoding`: #134 (`_` arm over a payload sum, Odin).
+* `platform.dsp`: #135 (float list literals, also noted there) and #140 (arithmetic on float
+  literals vs `f32`). Biquad, moving average and RMS are written; the checks that build
+  `Seq[f32]` from a list could not be.
 * `std.regex`: #139 (`x = f(x)` wiping a Seq in a loop), and #138 on Odin. Parser, compiler to
   a program, backtracking VM, find/replace/split/glob are written.
 * `std.log`: #138 (Odin build of a `str` field returned from a payload-sum match), #137
