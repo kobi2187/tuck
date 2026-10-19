@@ -51,7 +51,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
 proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): string =
   ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
   ## call is not a record variable standing for its payload.
-  let fields = recordArgFields(ctx.res, ctx.module, ctx.realModules, e)
+  let fields = recordArgFields(ctx.res, ctx.module, e)
   if fields.isNone: return ""
   let recv = ctx.genOdinExpr(e.args[0])
   var parts: seq[string]
@@ -227,7 +227,7 @@ proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
   ## A payload's arguments are call_args.payloadArgs's, printed; anything
   ## else as written.
   let args = if e.isPayloadCall:
-               payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+               payloadArgs(ctx.res, ctx.module, e)
              else: e.args
   for a in args: result.add(ctx.genOdinExpr(a))
 
@@ -374,7 +374,7 @@ proc providerArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
   let found = fnHome(ctx.module, ctx.realModules, e.callee.name)
   if found.isNone: return
   let home = found.get
-  let args = if e.isPayloadCall: payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+  let args = if e.isPayloadCall: payloadArgs(ctx.res, ctx.module, e)
              else: e.args
   for need in providerNeeds(home, ctx.realModules, home.findFn(e.callee.name)):
     if need.paramIdx >= args.len: continue

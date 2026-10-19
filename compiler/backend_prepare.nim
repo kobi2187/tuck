@@ -175,7 +175,7 @@ proc prepareCommon(prog: seq[LoadedModule], semLayer: Resolution): BackendTree =
     # param, but it runs before lowering, and lowering builds and rewrites
     # calls. Asserted here, after the last pass that can, so no emitter is
     # ever handed a call with a hole to fill in its own way.
-    assertCallsComplete(semLayer, lm.m, result.real)
+    assertCallsComplete(semLayer, lm.m)
     typeResolvedCalls(semLayer, lm.m)          # a resolved call has a type
     dumpUses(semLayer, lm.m)                   # TUCK_DEBUG_OWN=uses (rule U)
     # 7. DECISIONS BECOME NODES. Last, because every pass above reads the

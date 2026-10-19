@@ -370,12 +370,6 @@ proc errNameFor*(module: Module, moduleName, enumName, variant: string): string 
   ## The namespaced error id for one variant of a (possibly imported) enum.
   formatErrId(originModuleOf(module, moduleName, enumName), enumName, variant)
 
-proc lookupFnParams*(m: Module, name: string): seq[string] =
-  ## Member fns (mixin buckets, manager types, externs) have concrete
-  ## exploded params. Pending fns stay excluded: their stub takes one
-  ## generic payload.
-  m.findFn(name).paramNames()
-
 # The built-in members every actor answers, as the checker registered them
 # (`collectSigs` / `collectHeartbeatSigs`) -> the runtime proc each backend
 # prints. One table, so the three backends cannot disagree about which member
@@ -472,8 +466,7 @@ proc nimEntryStem*(base: string): string =
   ## The emitted file stem for the entry module.
   if base in NimShadowingEntryStems: "tuck_mod_" & base else: base
 
-proc recordArgFields*(res: Resolution, m: Module,
-                      real: ModuleMap, e: Expr): Option[seq[string]] =
+proc recordArgFields*(res: Resolution, m: Module, e: Expr): Option[seq[string]] =
   ## A call whose one argument is a VARIABLE standing for its payload (`p fn`
   ## with `p: {a, b}`): the field of it that feeds each param, in param order
   ## (`call_args.fieldFor`). Printed `f(p.a, p.b)`.
@@ -489,7 +482,7 @@ proc recordArgFields*(res: Resolution, m: Module,
   if e.args.len != 1 or e.args[0].kind != exkVar or
      memberCallee(res, m, e) != "":
     return none(seq[string])
-  let known = knownParams(res, m, real, e)
+  let known = knownParams(res, m, e)
   if known.isNone: return none(seq[string])
   if known.get.len == 0: return some(newSeq[string]())
   let fields = recordFieldNames(res, m, res.typeFor(e.args[0]))

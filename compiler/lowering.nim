@@ -154,18 +154,11 @@ proc flattenRegistryRaise(e: Expr) =
                                       eventNameNode.name))
   e.args = payloadArgs
 
-proc memberParams(res: Resolution, e: Expr, inner: Expr, m: Module): seq[string] =
-  ## The member fn's parameter names, in order.
-  ##
-  ## The checker does not record callParams for a MEMBER call (finding F2 in
-  ## the stage-boundary audit), so fall back to the declaration. `findFn` does
-  ## NOT see object members — it walks top-level, mixin and extern fns —
-  ## whereas `allFns` yields exactly the set whose bodies lowering rewrites.
+proc memberParams(res: Resolution, e, inner: Expr): seq[string] =
+  ## The member fn's parameter names, in order, as the checker recorded them:
+  ## against the call as written, else against the call it resolved to.
   result = res.callParamsFor(e)
-  if result.len > 0 or inner.callee.kind != exkVar: return
-  for d in m.allFns():
-    if d.name == inner.callee.name:
-      return d.paramNames()
+  if result.len == 0: result = res.callParamsFor(inner)
 
 proc payloadArgsForMember(res: Resolution, e: Expr, params: seq[string]): seq[Expr] =
   ## The payload's fields, ordered to match the member's params and SKIPPING
@@ -201,7 +194,7 @@ proc flattenMemberCallPayload(res: Resolution, e: Expr, m: Module) =
   if inner == nil or inner.callee == nil: return
   var merged: seq[Expr]
   if inner.args.len > 0: merged.add(inner.args[0])   # the receiver
-  let params = memberParams(res, e, inner, m)
+  let params = memberParams(res, e, inner)
   if params.len > 0 and e.args.len == 1 and e.args[0].kind == exkStruct:
     merged.add(payloadArgsForMember(res, e, params))
   else:

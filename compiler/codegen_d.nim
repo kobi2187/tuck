@@ -154,7 +154,7 @@ proc genDCallArgs(ctx: var DCodegenCtx, e: Expr): seq[string] =
   ## A call's arguments: a payload's as call_args.payloadArgs orders them,
   ## printed; anything else as written.
   let args = if e.isPayloadCall:
-               payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+               payloadArgs(ctx.res, ctx.module, e)
              else: e.args
   for a in args: result.add(ctx.genDExpr(a))
 
@@ -162,7 +162,7 @@ proc explodeRecordArgD(ctx: var DCodegenCtx, e: Expr,
                        calleeStr: string): string =
   ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
   ## call is not a record variable standing for its payload.
-  let fields = recordArgFields(ctx.res, ctx.module, ctx.realModules, e)
+  let fields = recordArgFields(ctx.res, ctx.module, e)
   if fields.isNone: return ""
   let recv = ctx.genDExpr(e.args[0])
   var parts: seq[string]
@@ -416,7 +416,7 @@ proc dProviderArgs(ctx: var DCodegenCtx, e: Expr): seq[string] =
   let found = fnHome(ctx.module, ctx.realModules, e.callee.name)
   if found.isNone: return
   let home = found.get
-  let args = if e.isPayloadCall: payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+  let args = if e.isPayloadCall: payloadArgs(ctx.res, ctx.module, e)
              else: e.args
   for need in providerNeeds(home, ctx.realModules, home.findFn(e.callee.name)):
     if need.paramIdx >= args.len: continue
@@ -438,7 +438,7 @@ proc templateCall(ctx: var DCodegenCtx, e: Expr, calleeStr: string,
   if providers.len > 0 and parts.len == 0:
     let found = fnHome(ctx.module, ctx.realModules, e.callee.name)
     let f = found.get.findFn(e.callee.name)
-    let argEs = if e.isPayloadCall: payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+    let argEs = if e.isPayloadCall: payloadArgs(ctx.res, ctx.module, e)
                 else: e.args
     for g in f.fnGenerics:
       for k, p in f.fnParams:
