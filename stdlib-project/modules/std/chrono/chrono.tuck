@@ -1,0 +1,372 @@
+# std.chrono — calendar dates and times of day, as plain distinct records.
+#
+# Date, TimeOfDay and DateTime are separate, non-interchangeable types: a
+# wall-clock reading means nothing until a zone is attached, and subtracting
+# two readings across a DST boundary gives nonsense.
+#
+# This module is the pure calendar. It has no time-zone database and no clock:
+# `today`/`inZone` need both and belong to a host-backed module. What is here
+# is proleptic Gregorian arithmetic (days since 1970-01-01, weekday, adding a
+# Period, the length of a month) and fixed-offset conversion to and from Unix
+# milliseconds. The day-count algorithms are Howard Hinnant's civil-date ones.
+import seq
+import str
+import text
+import convert
+
+type Weekday:
+  | Mon
+  | Tue
+  | Wed
+  | Thu
+  | Fri
+  | Sat
+  | Sun
+
+type Date:
+  year: i32
+  month: u8
+  day: u8
+
+type TimeOfDay:
+  hour: u8
+  minute: u8
+  second: u8
+  nano: u32
+
+type DateTime:
+  date: Date
+  time: TimeOfDay
+
+# Calendar-relative, not elapsed: "one month later" is not a fixed number of
+# milliseconds.
+type Period:
+  years: i32
+  months: i32
+  days: i32
+
+# --- plain-int helpers (all calendar math runs in int) --------------------------
+fn yearOf({d: Date}) -> int:
+  return {value: d.year} int
+
+fn monthOf({d: Date}) -> int:
+  return {value: d.month} int
+
+fn dayOf({d: Date}) -> int:
+  return {value: d.day} int
+
+fn mkDate({year: int, month: int, day: int}) -> Date:
+  let y = {value: year} i32
+  let m = {value: month} u8
+  let d = {value: day} u8
+  return {year: y, month: m, day: d} Date
+
+# Floor division and modulo: the ones calendars want for negative values.
+fn floorDiv({a: int, b: int}) -> int:
+  let q = a /i b
+  if (a % b != 0) and ((a < 0) != (b < 0)):
+    return q - 1
+  return q
+
+fn floorMod({a: int, b: int}) -> int:
+  let q = {a: a, b: b} floorDiv
+  return a - q * b
+
+fn isLeap({year: int}) -> bool:
+  if year % 400 == 0:
+    return true
+  if year % 100 == 0:
+    return false
+  return year % 4 == 0
+
+fn daysInMonth({year: int, month: int}) -> int:
+  if month == 2:
+    if {year: year} isLeap:
+      return 29
+    return 28
+  if month == 4 or month == 6 or month == 9 or month == 11:
+    return 30
+  return 31
+
+# --- days since 1970-01-01 -------------------------------------------------------
+fn daysFromCivil({year: int, month: int, day: int}) -> int:
+  var y = year
+  if month <= 2:
+    y = y - 1
+  let era = {a: y, b: 400} floorDiv
+  let yoe = y - era * 400
+  var shifted = month - 3
+  if month <= 2:
+    shifted = month + 9
+  let doy = (153 * shifted + 2) /i 5 + day - 1
+  let doe = yoe * 365 + yoe /i 4 - yoe /i 100 + doy
+  return era * 146097 + doe - 719468
+
+fn civilFromDays({days: int}) -> Date:
+  let z = days + 719468
+  let era = {a: z, b: 146097} floorDiv
+  let doe = z - era * 146097
+  let yoe = (doe - doe /i 1460 + doe /i 36524 - doe /i 146096) /i 365
+  let doy = doe - (365 * yoe + yoe /i 4 - yoe /i 100)
+  let mp = (5 * doy + 2) /i 153
+  let d = doy - (153 * mp + 2) /i 5 + 1
+  var m = mp + 3
+  if mp >= 10:
+    m = mp - 9
+  var y = yoe + era * 400
+  if m <= 2:
+    y = y + 1
+  return {year: y, month: m, day: d} mkDate
+
+fn toDays({d: Date}) -> int:
+  let y = {d: d} yearOf
+  let m = {d: d} monthOf
+  let dd = {d: d} dayOf
+  return {year: y, month: m, day: dd} daysFromCivil
+
+fn daysBetween({start: Date, to: Date}) -> int:
+  let a = {d: start} toDays
+  let b = {d: to} toDays
+  return b - a
+
+fn weekdayOf({d: Date}) -> Weekday:
+  let n = {d: d} toDays
+  let w = {a: n + 3, b: 7} floorMod
+  match w:
+    0: return Weekday.Mon
+    1: return Weekday.Tue
+    2: return Weekday.Wed
+    3: return Weekday.Thu
+    4: return Weekday.Fri
+    5: return Weekday.Sat
+    _: return Weekday.Sun
+
+# --- Period -----------------------------------------------------------------------
+# Years and months first (the day is clamped to the new month's length: 31 Jan
+# plus a month is 28/29 Feb), then days.
+fn addPeriod({d: Date, p: Period}) -> Date:
+  let y = {d: d} yearOf
+  let m = {d: d} monthOf
+  let dd = {d: d} dayOf
+  let py = {value: p.years} int
+  let pm = {value: p.months} int
+  let pd = {value: p.days} int
+  let total = y * 12 + (m - 1) + py * 12 + pm
+  let ny = {a: total, b: 12} floorDiv
+  let nm = {a: total, b: 12} floorMod + 1
+  let len = {year: ny, month: nm} daysInMonth
+  var nd = dd
+  if nd > len:
+    nd = len
+  let base = {year: ny, month: nm, day: nd} daysFromCivil
+  return {days: base + pd} civilFromDays
+
+fn atTime({d: Date, t: TimeOfDay}) -> DateTime:
+  return {date: d, time: t} DateTime
+
+# --- Unix milliseconds, UTC and fixed offsets ---------------------------------------
+fn secondsOfDay({t: TimeOfDay}) -> int:
+  let h = {value: t.hour} int
+  let m = {value: t.minute} int
+  let s = {value: t.second} int
+  return h * 3600 + m * 60 + s
+
+# Milliseconds since 1970-01-01T00:00:00Z for a wall-clock reading `offsetSec`
+# seconds ahead of UTC.
+fn toUnixMs({moment: DateTime, offsetSec: int}) -> int:
+  let days = {d: moment.date} toDays
+  let secs = {t: moment.time} secondsOfDay
+  let nanoMs = {value: moment.time.nano} int /i 1000000
+  return (days * 86400 + secs - offsetSec) * 1000 + nanoMs
+
+fn fromUnixMs({atMs: int}) -> DateTime:
+  let days = {a: atMs, b: 86400000} floorDiv
+  let rest = {a: atMs, b: 86400000} floorMod
+  let secs = rest /i 1000
+  let ms = rest % 1000
+  let d = {days: days} civilFromDays
+  let h = {value: secs /i 3600} u8
+  let mi = {value: (secs % 3600) /i 60} u8
+  let s = {value: secs % 60} u8
+  let nano = {value: ms * 1000000} u32
+  let t = {hour: h, minute: mi, second: s, nano: nano} TimeOfDay
+  return {date: d, time: t} DateTime
+
+# --- text ---------------------------------------------------------------------------
+fn digits({n: int, width: int}) -> str:
+  var s = {value: n} toStr
+  for {t: s} byteCount < width:
+    s = "0" + s
+  return s
+
+# "2026-08-19"; absent for anything that is not a real calendar date.
+fn parseDate({t: str}) -> Date?:
+  let parts = {t: t, at: "-"} split
+  if parts.len != 3:
+    return none
+  let y = {t: parts[0]} parseInt
+  let m = {t: parts[1]} parseInt
+  let d = {t: parts[2]} parseInt
+  if not y.ok:
+    return none
+  if not m.ok:
+    return none
+  if not d.ok:
+    return none
+  let yi = {value: y.value} int
+  let mi = {value: m.value} int
+  let di = {value: d.value} int
+  if mi < 1 or mi > 12:
+    return none
+  let len = {year: yi, month: mi} daysInMonth
+  if di < 1 or di > len:
+    return none
+  return {year: yi, month: mi, day: di} mkDate
+
+# Tokens: yyyy, MM, dd. Everything else is copied.
+fn formatDate({d: Date, pattern: str}) -> str:
+  var parts: Seq[str] = []
+  var i = 0
+  let n = {t: pattern} byteCount
+  for i < n:
+    if {t: pattern, at: i, what: "yyyy"} matchesAt:
+      let yv = {d: d} yearOf
+      let y = {n: yv, width: 4} digits
+      parts = {items: parts, value: y} push
+      i = i + 4
+    elif {t: pattern, at: i, what: "MM"} matchesAt:
+      let mv = {d: d} monthOf
+      let m = {n: mv, width: 2} digits
+      parts = {items: parts, value: m} push
+      i = i + 2
+    elif {t: pattern, at: i, what: "dd"} matchesAt:
+      let dv = {d: d} dayOf
+      let dd = {n: dv, width: 2} digits
+      parts = {items: parts, value: dd} push
+      i = i + 2
+    else:
+      let c = {s: pattern, index: i} charAt
+      parts = {items: parts, value: c} push
+      i = i + 1
+  return {parts: parts, sep: ""} joinStr
+
+# --- the module's own checks: the exit code names the first that fails ----------------
+fn isDate({d: Date, year: int, month: int, day: int}) -> bool:
+  return {d: d} yearOf == year and {d: d} monthOf == month and {d: d} dayOf == day
+
+fn checkCalendar() -> int:
+  if not {year: 2000} isLeap or {year: 1900} isLeap or not {year: 2024} isLeap:
+    return 1
+  if {year: 2023, month: 2} daysInMonth != 28 or {year: 2024, month: 2} daysInMonth != 29:
+    return 2
+  if {year: 2024, month: 4} daysInMonth != 30 or {year: 2024, month: 12} daysInMonth != 31:
+    return 3
+  if {year: 1970, month: 1, day: 1} daysFromCivil != 0:
+    return 4
+  if {year: 2000, month: 3, day: 1} daysFromCivil != 11017:
+    return 5
+  if {year: 1969, month: 12, day: 31} daysFromCivil != -1:
+    return 6
+  return checkRoundTrip
+
+fn checkRoundTrip() -> int:
+  var n = -800000
+  for n < 800000:
+    let d = {days: n} civilFromDays
+    if {d: d} toDays != n:
+      return 7
+    n = n + 997
+  return checkWeekdays
+
+fn checkWeekdays() -> int:
+  let epoch = {year: 1970, month: 1, day: 1} mkDate
+  if {d: epoch} weekdayOf != Weekday.Thu:
+    return 8
+  let leap = {year: 2024, month: 2, day: 29} mkDate
+  if {d: leap} weekdayOf != Weekday.Thu:
+    return 9
+  let sunday = {year: 2026, month: 8, day: 23} mkDate
+  if {d: sunday} weekdayOf != Weekday.Sun:
+    return 10
+  let a = {year: 2024, month: 1, day: 1} mkDate
+  let b = {year: 2025, month: 1, day: 1} mkDate
+  if {start: a, to: b} daysBetween != 366:
+    return 11
+  if {start: b, to: a} daysBetween != -366:
+    return 12
+  return 0
+
+fn checkPeriod() -> int:
+  let jan31 = {year: 2023, month: 1, day: 31} mkDate
+  let month = {years: 0, months: 1, days: 0} Period
+  let feb = {d: jan31, p: month} addPeriod
+  if not {d: feb, year: 2023, month: 2, day: 28} isDate:
+    return 13
+  let year = {years: 1, months: 0, days: 0} Period
+  let leapDay = {year: 2024, month: 2, day: 29} mkDate
+  let next = {d: leapDay, p: year} addPeriod
+  if not {d: next, year: 2025, month: 2, day: 28} isDate:
+    return 14
+  let back = {years: 0, months: -2, days: 0} Period
+  let nov = {d: jan31, p: back} addPeriod
+  if not {d: nov, year: 2022, month: 11, day: 30} isDate:
+    return 15
+  let days = {years: 0, months: 0, days: 40} Period
+  let later = {d: jan31, p: days} addPeriod
+  if not {d: later, year: 2023, month: 3, day: 12} isDate:
+    return 16
+  return 0
+
+fn checkText() -> int:
+  let p = {t: "2026-08-19"} parseDate
+  if not p.ok:
+    return 17
+  if not {d: p.value, year: 2026, month: 8, day: 19} isDate:
+    return 18
+  let bad = {t: "2026-02-30"} parseDate
+  if bad.ok:
+    return 19
+  let junk = {t: "nope"} parseDate
+  if junk.ok:
+    return 20
+  let month13 = {t: "2026-13-01"} parseDate
+  if month13.ok:
+    return 21
+  if {d: p.value, pattern: "dd/MM/yyyy"} formatDate != "19/08/2026":
+    return 22
+  if {d: p.value, pattern: "yyyy-MM-dd"} formatDate != "2026-08-19":
+    return 23
+  return 0
+
+fn checkUnix() -> int:
+  let d = {year: 2001, month: 9, day: 9} mkDate
+  let h = {value: 1} u8
+  let m = {value: 46} u8
+  let s = {value: 40} u8
+  let t = {hour: h, minute: m, second: s, nano: 0} TimeOfDay
+  let moment = {d: d, t: t} atTime
+  if {moment: moment, offsetSec: 0} toUnixMs != 1000000000000:
+    return 24
+  if {moment: moment, offsetSec: 3600} toUnixMs != 999996400000:
+    return 25
+  let back = {atMs: 1000000000000} fromUnixMs
+  if not {d: back.date, year: 2001, month: 9, day: 9} isDate:
+    return 26
+  if back.time.hour != h or back.time.minute != m or back.time.second != s:
+    return 27
+  let before = {atMs: -1} fromUnixMs
+  if not {d: before.date, year: 1969, month: 12, day: 31} isDate:
+    return 28
+  return 0
+
+fn main() -> int:
+  let c = checkCalendar
+  if c != 0:
+    return c
+  let p = checkPeriod
+  if p != 0:
+    return p
+  let t = checkText
+  if t != 0:
+    return t
+  return checkUnix
