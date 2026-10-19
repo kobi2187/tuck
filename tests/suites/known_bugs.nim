@@ -3702,4 +3702,64 @@ fn main() -> int:
   t.quietly: t.hostRuns "A56: a str field returned from a payload-sum match arm builds on every backend", 2
   t.bugOpen "A56: a str field returned from a payload-sum match arm builds on every backend"
 
+  # A57. `caps = f(caps)` on a Seq in a loop whose other arm copies `caps` into
+  # a pushed record: the emitter stores the result, then resets the variable as
+  # "moved from", wiping it. Wrong result on Nim and Odin. Found writing
+  # std.regex's VM.
+  t.src """
+import seq
+
+type Thread:
+  pc: int
+  caps: Seq[int]
+
+type Run:
+  ok: bool
+  caps: Seq[int]
+
+fn withCap({caps: Seq[int], slot: int, value: int}) -> Seq[int]:
+  var c = caps
+  {items: c, index: slot, value: value} setAt
+  return c
+
+fn pushThread({threads: Seq[Thread], pc: int, caps: Seq[int]}) -> Seq[Thread]:
+  let t = {pc: pc, caps: caps} Thread
+  return {items: threads, value: t} push
+
+fn execute({start: Seq[int]}) -> Run:
+  var threads: Seq[Thread] = []
+  threads = {threads: threads, pc: 0, caps: start} pushThread
+  for threads.len > 0:
+    let top = threads.len - 1
+    let t = threads[top]
+    var rest: Seq[Thread] = []
+    for i in 0 .. top - 1:
+      rest = {items: rest, value: threads[i]} push
+    threads = rest
+    var pc = t.pc
+    var caps = t.caps
+    for true:
+      if pc == 8:
+        return {ok: true, caps: caps} Run
+      elif pc == 3:
+        threads = {threads: threads, pc: 9, caps: caps} pushThread
+        pc = pc + 1
+      elif pc == 5:
+        caps = {caps: caps, slot: 1, value: 9} withCap
+        pc = pc + 1
+      else:
+        pc = pc + 1
+  let nothing: Seq[int] = []
+  return {ok: false, caps: nothing} Run
+
+fn main() -> int:
+  var first: Seq[int] = []
+  first = {items: first, value: 1} push
+  first = {items: first, value: 2} push
+  let r = {start: first} execute
+  return r.caps[1]
+"""
+  t.quietly: t.hostRuns "A57: x = f(x) on a Seq in a loop keeps the new value", 9
+  t.bugOpen "A57: x = f(x) on a Seq in a loop keeps the new value"
+
   t.finish()

@@ -60,6 +60,8 @@ A module that hit a compiler bug is left where it stopped, the bug is filed, and
 module is started. No workaround is written into a module. Finish these after the fixes:
 
 * `std.encoding`: #134 (`_` arm over a payload sum, Odin).
+* `std.regex`: #139 (`x = f(x)` wiping a Seq in a loop), and #138 on Odin. Parser, compiler to
+  a program, backtracking VM, find/replace/split/glob are written.
 * `std.log`: #138 (Odin build of a `str` field returned from a payload-sum match), #137
   (effect of an [io] interface call). Formats, levels and `ConsoleSink` are written; Nim passes.
 * `std.cli`: #136 (a literal pushed onto `Seq[u8]`). Parser, usage, table and colour are

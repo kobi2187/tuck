@@ -1,0 +1,747 @@
+# std.regex — a small backtracking regular-expression engine, in Tuck.
+#
+# Syntax: literals, `.`, classes `[a-z]` `[^0-9]`, `\d \w \s` (and their
+# capitals), `* + ? {m} {m,} {m,n}`, alternation `|`, groups `( )`, anchors
+# `^ $`, and the escapes `\n \t \\` and `\` before any punctuation. ASCII only.
+#
+# A pattern compiles to a program of instructions; a backtracking VM runs it
+# with an explicit threads and a STEP BUDGET. A pattern that would take longer
+# than the budget reports "too complex" instead of hanging, which is the
+# TooComplex variant the design asked for. (There is no handle: a compiled
+# Regex is a plain value, so nothing here is [io].)
+import seq
+import str
+import text
+
+type Node:
+  | NChar({c: int})
+  | NAny
+  | NClass({neg: bool, ranges: Seq[int]})
+  | NCat({items: Seq[Node]})
+  | NAlt({left: Node, right: Node})
+  | NRepeat({body: Node, low: int, high: int})
+  | NGroup({body: Node, index: int})
+  | NBol
+  | NEol
+
+# One VM instruction. `op`: 0 char, 1 any, 2 class, 3 split, 4 jump, 5 save,
+# 6 line start, 7 line end, 8 match. `x`/`y` are the operands (a char code, jump
+# targets, a capture slot); `neg`/`ranges` describe a class (lo, hi pairs).
+type Inst:
+  op: int
+  x: int
+  y: int
+  neg: bool
+  ranges: Seq[int]
+
+type Regex:
+  prog: Seq[Inst]
+  groups: int
+  caseless: bool
+
+type Match:
+  start: int
+  stop: int
+  text: str
+
+# --- parsing ------------------------------------------------------------------
+type Parsed:
+  node: Node
+  pos: int
+  groups: int
+
+fn peek({pat: str, pos: int}) -> int:
+  if pos >= {t: pat} byteCount:
+    return -1
+  let b = {t: pat, index: pos} byteAt
+  return {value: b} int
+
+fn isDigit({c: int}) -> bool:
+  return c >= 48 and c <= 57
+
+# The ranges (lo, hi pairs) a class escape stands for.
+fn escapeRanges({c: int}) -> Seq[int]:
+  var r: Seq[int] = []
+  if c == 100 or c == 68:
+    r = {items: r, value: 48} push
+    r = {items: r, value: 57} push
+  elif c == 119 or c == 87:
+    for pair in [48, 57, 65, 90, 95, 95, 97, 122]:
+      r = {items: r, value: pair} push
+  else:
+    for pair in [32, 32, 9, 13]:
+      r = {items: r, value: pair} push
+  return r
+
+fn isClassEscape({c: int}) -> bool:
+  return c == 100 or c == 68 or c == 119 or c == 87 or c == 115 or c == 83
+
+fn isNegatedEscape({c: int}) -> bool:
+  return c == 68 or c == 87 or c == 83
+
+# A literal for the character after a backslash.
+fn escapedChar({c: int}) -> int:
+  if c == 110:
+    return 10
+  if c == 116:
+    return 9
+  if c == 114:
+    return 13
+  return c
+
+fn single({node: Node, pos: int, groups: int}) -> Parsed?:
+  return {node: node, pos: pos, groups: groups} Parsed
+
+fn parseClass({pat: str, pos: int, groups: int}) -> Parsed?:
+  var p = pos
+  var neg = false
+  if {pat: pat, pos: p} peek == 94:
+    neg = true
+    p = p + 1
+  var ranges: Seq[int] = []
+  var first = true
+  for true:
+    let c = {pat: pat, pos: p} peek
+    if c < 0:
+      return none
+    if c == 93 and not first:
+      p = p + 1
+      break
+    first = false
+    p = p + 1
+    var lo = c
+    if c == 92:
+      let e = {pat: pat, pos: p} peek
+      if e < 0:
+        return none
+      p = p + 1
+      if {c: e} isClassEscape:
+        let more = {c: e} escapeRanges
+        for k in 0 .. more.len - 1:
+          ranges = {items: ranges, value: more[k]} push
+        continue
+      lo = {c: e} escapedChar
+    var hi = lo
+    let dash = {pat: pat, pos: p} peek
+    let after = {pat: pat, pos: p + 1} peek
+    if dash == 45 and after >= 0 and after != 93:
+      hi = after
+      p = p + 2
+    ranges = {items: ranges, value: lo} push
+    ranges = {items: ranges, value: hi} push
+  let node = {neg: neg, ranges: ranges} Node.NClass
+  return {node: node, pos: p, groups: groups} single
+
+fn parseAtom({pat: str, pos: int, groups: int}) -> Parsed?:
+  let c = {pat: pat, pos: pos} peek
+  if c < 0:
+    return none
+  if c == 40:
+    let index = groups + 1
+    let inner = {pat: pat, pos: pos + 1, groups: index} parseAlt
+    if not inner.ok:
+      return none
+    if {pat: pat, pos: inner.value.pos} peek != 41:
+      return none
+    let g = {body: inner.value.node, index: index} Node.NGroup
+    return {node: g, pos: inner.value.pos + 1, groups: inner.value.groups} single
+  if c == 91:
+    return {pat: pat, pos: pos + 1, groups: groups} parseClass
+  if c == 46:
+    return {node: Node.NAny, pos: pos + 1, groups: groups} single
+  if c == 94:
+    return {node: Node.NBol, pos: pos + 1, groups: groups} single
+  if c == 36:
+    return {node: Node.NEol, pos: pos + 1, groups: groups} single
+  if c == 92:
+    let e = {pat: pat, pos: pos + 1} peek
+    if e < 0:
+      return none
+    if {c: e} isClassEscape:
+      let rs = {c: e} escapeRanges
+      let negated = {c: e} isNegatedEscape
+      let cls = {neg: negated, ranges: rs} Node.NClass
+      return {node: cls, pos: pos + 2, groups: groups} single
+    let ch = {c: e} escapedChar
+    let lit = {c: ch} Node.NChar
+    return {node: lit, pos: pos + 2, groups: groups} single
+  if c == 42 or c == 43 or c == 63 or c == 41 or c == 124:
+    return none
+  let lit = {c: c} Node.NChar
+  return {node: lit, pos: pos + 1, groups: groups} single
+
+# A count after `{`: digits, returned with the position after them; -1 = none.
+type Count:
+  value: int
+  pos: int
+
+fn readCount({pat: str, pos: int}) -> Count:
+  var p = pos
+  var n = 0
+  var any = false
+  for true:
+    let d = {pat: pat, pos: p} peek
+    if not {c: d} isDigit:
+      break
+    n = n * 10 + d - 48
+    p = p + 1
+    any = true
+  if not any:
+    return {value: -1, pos: pos} Count
+  return {value: n, pos: p} Count
+
+fn repeated({node: Node, low: int, high: int}) -> Node:
+  return {body: node, low: low, high: high} Node.NRepeat
+
+# `{m}`, `{m,}` or `{m,n}` after an atom; absent when it is not one.
+fn parseBraces({pat: str, pos: int, node: Node, groups: int}) -> Parsed?:
+  let lo = {pat: pat, pos: pos + 1} readCount
+  if lo.value < 0:
+    return none
+  var p = lo.pos
+  var high = lo.value
+  if {pat: pat, pos: p} peek == 44:
+    let hi = {pat: pat, pos: p + 1} readCount
+    p = hi.pos
+    high = hi.value
+  if {pat: pat, pos: p} peek != 125:
+    return none
+  let r = {node: node, low: lo.value, high: high} repeated
+  return {node: r, pos: p + 1, groups: groups} single
+
+fn parseRepeat({pat: str, pos: int, groups: int}) -> Parsed?:
+  let atom = {pat: pat, pos: pos, groups: groups} parseAtom
+  if not atom.ok:
+    return none
+  let q = {pat: pat, pos: atom.value.pos} peek
+  let node = atom.value.node
+  let next = atom.value.pos + 1
+  let g = atom.value.groups
+  if q == 42:
+    let r = {node: node, low: 0, high: -1} repeated
+    return {node: r, pos: next, groups: g} single
+  if q == 43:
+    let r = {node: node, low: 1, high: -1} repeated
+    return {node: r, pos: next, groups: g} single
+  if q == 63:
+    let r = {node: node, low: 0, high: 1} repeated
+    return {node: r, pos: next, groups: g} single
+  if q == 123:
+    let braces = {pat: pat, pos: atom.value.pos, node: node, groups: g} parseBraces
+    if braces.ok:
+      return braces
+  return atom
+
+fn parseCat({pat: str, pos: int, groups: int}) -> Parsed?:
+  var items: Seq[Node] = []
+  var p = pos
+  var g = groups
+  for true:
+    let c = {pat: pat, pos: p} peek
+    if c < 0 or c == 124 or c == 41:
+      break
+    let one = {pat: pat, pos: p, groups: g} parseRepeat
+    if not one.ok:
+      return none
+    items = {items: items, value: one.value.node} push
+    p = one.value.pos
+    g = one.value.groups
+  let node = {items: items} Node.NCat
+  return {node: node, pos: p, groups: g} single
+
+fn parseAlt({pat: str, pos: int, groups: int}) -> Parsed?:
+  let left = {pat: pat, pos: pos, groups: groups} parseCat
+  if not left.ok:
+    return none
+  if {pat: pat, pos: left.value.pos} peek != 124:
+    return left
+  let right = {pat: pat, pos: left.value.pos + 1, groups: left.value.groups} parseAlt
+  if not right.ok:
+    return none
+  let alt = {left: left.value.node, right: right.value.node} Node.NAlt
+  return {node: alt, pos: right.value.pos, groups: right.value.groups} single
+
+# --- compiling to a program -----------------------------------------------------
+fn inst({op: int, x: int, y: int}) -> Inst:
+  let nothing: Seq[int] = []
+  return {op: op, x: x, y: y, neg: false, ranges: nothing} Inst
+
+fn classInst({neg: bool, ranges: Seq[int]}) -> Inst:
+  return {op: 2, x: 0, y: 0, neg: neg, ranges: ranges} Inst
+
+fn pushInst({prog: Seq[Inst], op: int, x: int, y: int}) -> Seq[Inst]:
+  let i = {op: op, x: x, y: y} inst
+  return {items: prog, value: i} push
+
+fn pushClass({prog: Seq[Inst], neg: bool, ranges: Seq[int]}) -> Seq[Inst]:
+  let i = {neg: neg, ranges: ranges} classInst
+  return {items: prog, value: i} push
+
+# `prog` with the instruction at `at` replaced (a jump target known only later).
+fn patched({prog: Seq[Inst], at: int, op: int, x: int, y: int}) -> Seq[Inst]:
+  var out = prog
+  let i = {op: op, x: x, y: y} inst
+  {items: out, index: at, value: i} setAt
+  return out
+
+fn emitAll({prog: Seq[Inst], items: Seq[Node]}) -> Seq[Inst]:
+  var out = prog
+  for i in 0 .. items.len - 1:
+    out = {prog: out, node: items[i]} emit
+  return out
+
+fn emitAlt({prog: Seq[Inst], left: Node, right: Node}) -> Seq[Inst]:
+  var out = prog
+  let s = out.len
+  out = {prog: out, op: 3, x: 0, y: 0} pushInst
+  out = {prog: out, node: left} emit
+  let j = out.len
+  out = {prog: out, op: 4, x: 0, y: 0} pushInst
+  let rightStart = out.len
+  out = {prog: out, node: right} emit
+  let end = out.len
+  out = {prog: out, at: s, op: 3, x: s + 1, y: rightStart} patched
+  out = {prog: out, at: j, op: 4, x: end, y: 0} patched
+  return out
+
+# `body{low,high}`: `low` copies, then either a loop (high = -1) or
+# `high - low` optional copies.
+fn emitRepeat({prog: Seq[Inst], body: Node, low: int, high: int}) -> Seq[Inst]:
+  var out = prog
+  for i in 0 .. low - 1:
+    out = {prog: out, node: body} emit
+  if high < 0:
+    let s = out.len
+    out = {prog: out, op: 3, x: 0, y: 0} pushInst
+    out = {prog: out, node: body} emit
+    out = {prog: out, op: 4, x: s, y: 0} pushInst
+    let end = out.len
+    out = {prog: out, at: s, op: 3, x: s + 1, y: end} patched
+    return out
+  var splits: Seq[int] = []
+  for i in 0 .. high - low - 1:
+    splits = {items: splits, value: out.len} push
+    out = {prog: out, op: 3, x: 0, y: 0} pushInst
+    out = {prog: out, node: body} emit
+  let end = out.len
+  for i in 0 .. splits.len - 1:
+    let at = splits[i]
+    out = {prog: out, at: at, op: 3, x: at + 1, y: end} patched
+  return out
+
+fn emit({prog: Seq[Inst], node: Node}) -> Seq[Inst]:
+  var out = prog
+  match node:
+    NChar:
+      out = {prog: out, op: 0, x: node.c, y: 0} pushInst
+    NAny:
+      out = {prog: out, op: 1, x: 0, y: 0} pushInst
+    NClass:
+      out = {prog: out, neg: node.neg, ranges: node.ranges} pushClass
+    NCat:
+      out = {prog: out, items: node.items} emitAll
+    NAlt:
+      out = {prog: out, left: node.left, right: node.right} emitAlt
+    NRepeat:
+      out = {prog: out, body: node.body, low: node.low, high: node.high} emitRepeat
+    NGroup:
+      out = {prog: out, op: 5, x: node.index * 2, y: 0} pushInst
+      out = {prog: out, node: node.body} emit
+      out = {prog: out, op: 5, x: node.index * 2 + 1, y: 0} pushInst
+    NBol:
+      out = {prog: out, op: 6, x: 0, y: 0} pushInst
+    NEol:
+      out = {prog: out, op: 7, x: 0, y: 0} pushInst
+  return out
+
+# The pattern as a program, or absent when it is not a valid pattern.
+fn tryCompile({pattern: str, caseless: bool}) -> Regex?:
+  let parsed = {pat: pattern, pos: 0, groups: 0} parseAlt
+  if not parsed.ok:
+    return none
+  if parsed.value.pos != {t: pattern} byteCount:
+    return none
+  var prog: Seq[Inst] = []
+  prog = {prog: prog, op: 5, x: 0, y: 0} pushInst
+  prog = {prog: prog, node: parsed.value.node} emit
+  prog = {prog: prog, op: 5, x: 1, y: 0} pushInst
+  prog = {prog: prog, op: 8, x: 0, y: 0} pushInst
+  return {prog: prog, groups: parsed.value.groups, caseless: caseless} Regex
+
+# --- running a program ---------------------------------------------------------
+fn lowerOf({c: int}) -> int:
+  if c >= 65 and c <= 90:
+    return c + 32
+  return c
+
+fn sameChar({a: int, b: int, caseless: bool}) -> bool:
+  if caseless:
+    let x = {c: a} lowerOf
+    let y = {c: b} lowerOf
+    return x == y
+  return a == b
+
+fn inRanges({ranges: Seq[int], c: int}) -> bool:
+  var i = 0
+  for i + 1 < ranges.len:
+    if c >= ranges[i] and c <= ranges[i + 1]:
+      return true
+    i = i + 2
+  return false
+
+fn classHas({ins: Inst, c: int, caseless: bool}) -> bool:
+  var hit = {ranges: ins.ranges, c: c} inRanges
+  if not hit and caseless:
+    let lower = {c: c} lowerOf
+    hit = {ranges: ins.ranges, c: lower} inRanges
+    if not hit and lower != c:
+      hit = false
+    if not hit and c >= 97 and c <= 122:
+      hit = {ranges: ins.ranges, c: c - 32} inRanges
+  if ins.neg:
+    return not hit
+  return hit
+
+type Thread:
+  pc: int
+  pos: int
+  caps: Seq[int]
+
+# What a run found. `tooComplex` is a budget overrun, not "no match".
+type Run:
+  ok: bool
+  caps: Seq[int]
+  tooComplex: bool
+
+fn failed() -> Run:
+  let nothing: Seq[int] = []
+  return {ok: false, caps: nothing, tooComplex: false} Run
+
+fn overran() -> Run:
+  let nothing: Seq[int] = []
+  return {ok: false, caps: nothing, tooComplex: true} Run
+
+fn blankCaps({groups: int}) -> Seq[int]:
+  var c: Seq[int] = []
+  for i in 0 .. (groups + 1) * 2 - 1:
+    c = {items: c, value: -1} push
+  return c
+
+fn withCap({caps: Seq[int], slot: int, value: int}) -> Seq[int]:
+  var c = caps
+  {items: c, index: slot, value: value} setAt
+  return c
+
+fn pushThread({threads: Seq[Thread], pc: int, pos: int, caps: Seq[int]}) -> Seq[Thread]:
+  let t = {pc: pc, pos: pos, caps: caps} Thread
+  return {items: threads, value: t} push
+
+# Run `re` against `subject` starting at `start`. `whole`: only a match that
+# ends at the end of the subject counts. At most `budget` instructions.
+fn execute({re: Regex, subject: str, start: int, whole: bool, budget: int}) -> Run:
+  let n = {t: subject} byteCount
+  var threads: Seq[Thread] = []
+  let first = {groups: re.groups} blankCaps
+  threads = {threads: threads, pc: 0, pos: start, caps: first} pushThread
+  var steps = 0
+  for threads.len > 0:
+    let top = threads.len - 1
+    let t = threads[top]
+    var rest: Seq[Thread] = []
+    for i in 0 .. top - 1:
+      rest = {items: rest, value: threads[i]} push
+    threads = rest
+    var pc = t.pc
+    var pos = t.pos
+    var caps = t.caps
+    for true:
+      steps = steps + 1
+      if steps > budget:
+        return overran
+      let ins = re.prog[pc]
+      if ins.op == 8:
+        if whole and pos != n:
+          break
+        return {ok: true, caps: caps, tooComplex: false} Run
+      elif ins.op == 0:
+        if pos >= n:
+          break
+        let b = {t: subject, index: pos} byteAt
+        let c = {value: b} int
+        if not {a: ins.x, b: c, caseless: re.caseless} sameChar:
+          break
+        pc = pc + 1
+        pos = pos + 1
+      elif ins.op == 1:
+        if pos >= n:
+          break
+        pc = pc + 1
+        pos = pos + 1
+      elif ins.op == 2:
+        if pos >= n:
+          break
+        let b = {t: subject, index: pos} byteAt
+        let c = {value: b} int
+        if not {ins: ins, c: c, caseless: re.caseless} classHas:
+          break
+        pc = pc + 1
+        pos = pos + 1
+      elif ins.op == 3:
+        threads = {threads: threads, pc: ins.y, pos: pos, caps: caps} pushThread
+        pc = ins.x
+      elif ins.op == 4:
+        pc = ins.x
+      elif ins.op == 5:
+        caps = {caps: caps, slot: ins.x, value: pos} withCap
+        pc = pc + 1
+      elif ins.op == 6:
+        if pos != 0:
+          break
+        pc = pc + 1
+      else:
+        if pos != n:
+          break
+        pc = pc + 1
+  return failed
+
+# --- searching -------------------------------------------------------------------
+const stepBudget: int = 200000
+
+# The first position at or after `start` where the regex matches.
+fn search({re: Regex, subject: str, start: int}) -> Run:
+  let n = {t: subject} byteCount
+  var s = start
+  for s <= n:
+    let r = {re: re, subject: subject, start: s, whole: false, budget: stepBudget} execute
+    if r.ok or r.tooComplex:
+      return r
+    s = s + 1
+  return failed
+
+fn matchAt({subject: str, caps: Seq[int], which: int}) -> Match?:
+  let a = caps[which * 2]
+  let b = caps[which * 2 + 1]
+  if a < 0 or b < 0:
+    return none
+  let piece = {t: subject, start: a, stop: b} slice
+  if not piece.ok:
+    return none
+  return {start: a, stop: b, text: piece.value} Match
+
+fn findFirst({re: Regex, subject: str}) -> Match?:
+  let r = {re: re, subject: subject, start: 0} search
+  if not r.ok:
+    return none
+  return {subject: subject, caps: r.caps, which: 0} matchAt
+
+# Group `index` (0 is the whole match) of the first match.
+fn groupOf({re: Regex, subject: str, index: int}) -> Match?:
+  if index < 0 or index > re.groups:
+    return none
+  let r = {re: re, subject: subject, start: 0} search
+  if not r.ok:
+    return none
+  return {subject: subject, caps: r.caps, which: index} matchAt
+
+fn findAll({re: Regex, subject: str}) -> Seq[Match]:
+  var out: Seq[Match] = []
+  let n = {t: subject} byteCount
+  var at = 0
+  for at <= n:
+    let r = {re: re, subject: subject, start: at} search
+    if not r.ok:
+      break
+    let m = {subject: subject, caps: r.caps, which: 0} matchAt
+    if not m.ok:
+      break
+    out = {items: out, value: m.value} push
+    at = m.value.stop
+    if m.value.stop == m.value.start:
+      at = at + 1
+  return out
+
+# Does the WHOLE subject match?
+fn matches({re: Regex, subject: str}) -> bool:
+  let r = {re: re, subject: subject, start: 0, whole: true, budget: stepBudget} execute
+  return r.ok
+
+# Did the search give up on the step budget rather than answer?
+fn gaveUp({re: Regex, subject: str}) -> bool:
+  let r = {re: re, subject: subject, start: 0} search
+  return r.tooComplex
+
+fn replaceAll({re: Regex, subject: str, replacement: str}) -> str:
+  let found = {re: re, subject: subject} findAll
+  var parts: Seq[str] = []
+  var at = 0
+  for i in 0 .. found.len - 1:
+    let m = found[i]
+    let before = {t: subject, start: at, stop: m.start} slice
+    if before.ok:
+      parts = {items: parts, value: before.value} push
+    parts = {items: parts, value: replacement} push
+    at = m.stop
+  let n = {t: subject} byteCount
+  let tail = {t: subject, start: at, stop: n} slice
+  if tail.ok:
+    parts = {items: parts, value: tail.value} push
+  return {parts: parts, sep: ""} joinStr
+
+fn splitBy({re: Regex, subject: str}) -> Seq[str]:
+  let found = {re: re, subject: subject} findAll
+  var parts: Seq[str] = []
+  var at = 0
+  for i in 0 .. found.len - 1:
+    let m = found[i]
+    if m.stop > m.start:
+      let before = {t: subject, start: at, stop: m.start} slice
+      if before.ok:
+        parts = {items: parts, value: before.value} push
+      at = m.stop
+  let n = {t: subject} byteCount
+  let tail = {t: subject, start: at, stop: n} slice
+  if tail.ok:
+    parts = {items: parts, value: tail.value} push
+  return parts
+
+# A glob as a pattern: `*` any run without a slash, `**` any run, `?` one
+# non-slash character, the rest literal. Anchored at both ends.
+fn fromGlob({glob: str}) -> Regex?:
+  var out = "^"
+  var i = 0
+  let n = {t: glob} byteCount
+  for i < n:
+    let c = {s: glob, index: i} charAt
+    if c == "*":
+      if {t: glob, at: i, what: "**"} matchesAt:
+        out = out + ".*"
+        i = i + 2
+      else:
+        out = out + "[^/]*"
+        i = i + 1
+    elif c == "?":
+      out = out + "[^/]"
+      i = i + 1
+    elif {t: ".+()[]{}|^$\\", what: c} text::has:
+      out = out + "\\" + c
+      i = i + 1
+    else:
+      out = out + c
+      i = i + 1
+  out = out + "$"
+  return {pattern: out, caseless: false} tryCompile
+
+# --- the module's own checks: the exit code names the first that fails -------------
+# For the checks: a pattern known to be valid. A bad one yields an empty program,
+# which the checks then fail on, rather than reading an absent value.
+fn compiled({pattern: str}) -> Regex:
+  let r = {pattern: pattern, caseless: false} tryCompile
+  if r.ok:
+    return r.value
+  let empty: Seq[Inst] = []
+  return {prog: empty, groups: 0, caseless: false} Regex
+
+fn first({pattern: str, subject: str}) -> str:
+  let re = {pattern: pattern} compiled
+  let m = {re: re, subject: subject} findFirst
+  if not m.ok:
+    return "<none>"
+  return m.value.text
+
+fn checkBasics() -> int:
+  if {pattern: "abc", subject: "xxabcxx"} first != "abc":
+    return 1
+  if {pattern: "a.c", subject: "xxaZcxx"} first != "aZc":
+    return 2
+  if {pattern: "ab*c", subject: "abbbc"} first != "abbbc":
+    return 3
+  if {pattern: "ab+c", subject: "ac"} first != "<none>":
+    return 4
+  if {pattern: "colou?r", subject: "the color"} first != "color":
+    return 5
+  if {pattern: "cat|dog", subject: "hotdog"} first != "dog":
+    return 6
+  if {pattern: "^abc", subject: "xabc"} first != "<none>":
+    return 7
+  if {pattern: "abc$", subject: "xabc"} first != "abc":
+    return 8
+  return checkClasses
+
+fn checkClasses() -> int:
+  if {pattern: "[a-c]+", subject: "xxabcabcxx"} first != "abcabc":
+    return 9
+  if {pattern: "[^0-9]+", subject: "12ab34"} first != "ab":
+    return 10
+  if {pattern: "\\d+", subject: "ab123c"} first != "123":
+    return 11
+  if {pattern: "\\w+", subject: "  hello_1 "} first != "hello_1":
+    return 12
+  if {pattern: "\\s+", subject: "a  b"} first != "  ":
+    return 13
+  if {pattern: "a{2,3}", subject: "aaaa"} first != "aaa":
+    return 14
+  if {pattern: "a{2}", subject: "caab"} first != "aa":
+    return 15
+  if {pattern: "(ab)+", subject: "xababab"} first != "ababab":
+    return 16
+  return checkApi
+
+fn checkApi() -> int:
+  let digits = {pattern: "\\d+"} compiled
+  let all = {re: digits, subject: "a1b22c333"} findAll
+  if all.len != 3 or all[2].text != "333" or all[1].start != 3:
+    return 17
+  if not {re: digits, subject: "12345"} matches:
+    return 18
+  if {re: digits, subject: "12a45"} matches:
+    return 19
+  let swapped = {re: digits, subject: "a1b22", replacement: "#"} replaceAll
+  if swapped != "a#b#":
+    return 20
+  let comma = {pattern: ", *"} compiled
+  let parts = {re: comma, subject: "a, b,c,  d"} splitBy
+  if parts.len != 4 or parts[0] != "a" or parts[3] != "d":
+    return 21
+  let pair = {pattern: "(\\w+)=(\\d+)"} compiled
+  let g = {re: pair, subject: "set limit=42 now", index: 2} groupOf
+  if not g.ok:
+    return 22
+  if g.value.text != "42":
+    return 23
+  let whole = {re: pair, subject: "set limit=42 now", index: 0} groupOf
+  if not whole.ok:
+    return 24
+  if whole.value.text != "limit=42":
+    return 24
+  return checkEdges
+
+fn checkEdges() -> int:
+  let bad = {pattern: "(ab", caseless: false} tryCompile
+  let star = {pattern: "*a", caseless: false} tryCompile
+  if bad.ok or star.ok:
+    return 25
+  let loud = {pattern: "HeLLo", caseless: true} tryCompile
+  if not loud.ok:
+    return 26
+  let m = {re: loud.value, subject: "say hello"} findFirst
+  if not m.ok:
+    return 27
+  let glob = {glob: "src/*.tuck"} fromGlob
+  if not glob.ok:
+    return 28
+  if not {re: glob.value, subject: "src/a.tuck"} matches:
+    return 29
+  if {re: glob.value, subject: "src/x/a.tuck"} matches:
+    return 30
+  let deep = {glob: "src/**.tuck"} fromGlob
+  if not deep.ok:
+    return 31
+  if not {re: deep.value, subject: "src/x/a.tuck"} matches:
+    return 32
+  let nasty = {pattern: "(a*)*b"} compiled
+  if not {re: nasty, subject: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac"} gaveUp:
+    return 33
+  return 0
+
+fn main() -> int:
+  return checkBasics

@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (9)
+## A. Open bugs (10)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -68,6 +68,11 @@ it in.
 - **A56 (issue #138) — `return f.key` from a payload-sum match arm fails the Odin
   build** ("Cannot assign to 'v.key'"): the moved-from field is cleared through an
   immutable type-switch capture. Found writing `std.log`.
+
+- **A57 (issue #139) — `x = f(x)` on a Seq in a loop wipes the new value.** The
+  emitter stores the result and then resets the variable as moved-from (Nim
+  `tuckStore(caps, f(tuckMove(caps)))` then `tuckReset(caps)`; Odin trips an
+  index assertion). Found writing `std.regex`'s VM (stdlib-project).
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
