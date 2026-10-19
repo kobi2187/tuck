@@ -38,6 +38,7 @@ blocks compile in. Without the flag nothing changes: the blessed `std/` is used.
 |---|---|---|---|---|---|
 | core | array, cmp, convert, error, fmt, geom, hash, iter, num, str (`text`), types | yes | pass | pass | not run |
 | alloc | deque, list, map, set, string, vec | yes | pass | pass | not run |
+| std | encoding (JSON print/access written, Nim passes; parser, base64, CSV not started) | partial | pass | **blocked: #134** | |
 | core | slice, mem (designs say fold away); ptr, atomic, sync-cell, simd | no | | | |
 | alloc | allocator, box, rc, fmt | no | | | |
 | sys, std, platform | everything else | no | | | |
@@ -52,6 +53,12 @@ blocks compile in. Without the flag nothing changes: the blessed `std/` is used.
 | a module imported by file name could not be selected | the flag itself |
 
 Regression guards for the two compiler fixes are in `tests/suites/known_bugs.nim`.
+
+## Skipped, waiting on a compiler fix
+A module that hit a compiler bug is left where it stopped, the bug is filed, and the next
+module is started. No workaround is written into a module. Finish these after the fixes:
+
+* `std.encoding`: #134 (`_` arm over a payload sum, Odin).
 
 ## Next, in order
 

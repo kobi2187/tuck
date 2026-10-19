@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (4)
+## A. Open bugs (5)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -46,6 +46,11 @@ it in.
 - **A51 — the minimum of a signed type cannot be written.** `-128` for `i8` is
   "128 does not fit i8": the minus applies after the range check. `core.convert`
   notes the same for `i64` ("no literal spelling").
+
+- **A52 (issue #134) — a `_` arm over a payload sum fails the Odin build.** The
+  emitted `switch v in j` ends in a bare `case:` and Odin reports "Unhandled
+  switch cases"; it needs `#partial switch`. Found writing `std.encoding`
+  (stdlib-project), which is skipped until this is fixed.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so

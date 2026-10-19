@@ -3613,4 +3613,25 @@ fn main() -> int:
   t.quietly: t.okCheck "A51: the minimum of a signed type can be written"
   t.bugOpen "A51: the minimum of a signed type can be written"
 
+  # A52. A `_` arm in a match over a payload sum emits an Odin type switch Odin
+  # rejects ("Unhandled switch cases"); check and Nim are fine. Found writing
+  # std.encoding for stdlib-project.
+  t.src """
+type J:
+  | JNull
+  | JNum({n: int})
+  | JStr({s: str})
+
+fn num({j: J}) -> int:
+  match j:
+    JNum: return j.n
+    _: return 0
+
+fn main() -> int:
+  let a = {n: 7} J.JNum
+  return {j: a} num
+"""
+  t.quietly: t.hostRuns "A52: a `_` arm in a match over a payload sum builds on every backend", 7
+  t.bugOpen "A52: a `_` arm in a match over a payload sum builds on every backend"
+
   t.finish()
