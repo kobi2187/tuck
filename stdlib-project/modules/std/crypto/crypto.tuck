@@ -1,0 +1,296 @@
+# std.crypto — SHA-256, HMAC-SHA256 and a constant-time comparison, in pure Tuck.
+#
+# A 32-bit word is held in a u64 and masked back to 32 bits after every add or
+# rotate, so no step can overflow (u64 arithmetic traps) and nothing needs a
+# wrapping type. The bit operations are std/bits externs: Tuck has no bitwise
+# operators.
+#
+# NOT in this module, and not pretended: a cipher (`seal`/`unseal`), a
+# passphrase KDF, or secret scrubbing. Keys here are plain `Seq[u8]`, which
+# print and linger like any value; the design records that as the largest
+# security gap of the translation (it needs a language answer for zero-on-drop,
+# not a library one).
+import bits
+import seq
+import str
+
+const mask32: u64 = 4294967295
+
+const roundK: Seq[u64] = [
+  1116352408, 1899447441, 3049323471, 3921009573,
+  961987163, 1508970993, 2453635748, 2870763221,
+  3624381080, 310598401, 607225278, 1426881987,
+  1925078388, 2162078206, 2614888103, 3248222580,
+  3835390401, 4022224774, 264347078, 604807628,
+  770255983, 1249150122, 1555081692, 1996064986,
+  2554220882, 2821834349, 2952996808, 3210313671,
+  3336571891, 3584528711, 113926993, 338241895,
+  666307205, 773529912, 1294757372, 1396182291,
+  1695183700, 1986661051, 2177026350, 2456956037,
+  2730485921, 2820302411, 3259730800, 3345764771,
+  3516065817, 3600352804, 4094571909, 275423344,
+  430227734, 506948616, 659060556, 883997877,
+  958139571, 1322822218, 1537002063, 1747873779,
+  1955562222, 2024104815, 2227730452, 2361852424,
+  2428436474, 2756734187, 3204031479, 3329325298]
+
+const initialState: Seq[u64] = [
+  1779033703, 3144134277, 1013904242, 2773480762,
+  1359893119, 2600822924, 528734635, 1541459225]
+
+fn and32({a: u64, b: u64}) -> u64:
+  let both = {a: a, b: b} bitAnd
+  return {a: both, b: mask32} bitAnd
+
+fn add32({a: u64, b: u64}) -> u64:
+  let sum = a + b
+  return {a: sum, b: mask32} bitAnd
+
+fn not32({a: u64}) -> u64:
+  let flipped = {a: a} bitNot
+  return {a: flipped, b: mask32} bitAnd
+
+fn rotr({x: u64, n: int}) -> u64:
+  let right = {a: x, by: n} shiftRight
+  let left = {a: x, by: 32 - n} shiftLeft
+  let both = {a: right, b: left} bitOr
+  return {a: both, b: mask32} bitAnd
+
+fn xor3({a: u64, b: u64, c: u64}) -> u64:
+  let ab = {a: a, b: b} bitXor
+  return {a: ab, b: c} bitXor
+
+fn choose({x: u64, y: u64, z: u64}) -> u64:
+  let xy = {a: x, b: y} and32
+  let nx = {a: x} not32
+  let nz = {a: nx, b: z} and32
+  return {a: xy, b: nz} bitXor
+
+fn majority({x: u64, y: u64, z: u64}) -> u64:
+  let xy = {a: x, b: y} and32
+  let xz = {a: x, b: z} and32
+  let yz = {a: y, b: z} and32
+  return {a: xy, b: xz, c: yz} xor3
+
+fn bigSigma0({x: u64}) -> u64:
+  let a = {x: x, n: 2} rotr
+  let b = {x: x, n: 13} rotr
+  let c = {x: x, n: 22} rotr
+  return {a: a, b: b, c: c} xor3
+
+fn bigSigma1({x: u64}) -> u64:
+  let a = {x: x, n: 6} rotr
+  let b = {x: x, n: 11} rotr
+  let c = {x: x, n: 25} rotr
+  return {a: a, b: b, c: c} xor3
+
+fn smallSigma0({x: u64}) -> u64:
+  let a = {x: x, n: 7} rotr
+  let b = {x: x, n: 18} rotr
+  let c = {a: x, by: 3} shiftRight
+  return {a: a, b: b, c: c} xor3
+
+fn smallSigma1({x: u64}) -> u64:
+  let a = {x: x, n: 17} rotr
+  let b = {x: x, n: 19} rotr
+  let c = {a: x, by: 10} shiftRight
+  return {a: a, b: b, c: c} xor3
+
+# The message padded to a multiple of 64 bytes: a 1 bit, zeros, then the
+# message length in bits as 8 big-endian bytes.
+fn padded({data: Seq[u8]}) -> Seq[u8]:
+  var out = data
+  out = {items: out, value: 128} push
+  for out.len % 64 != 56:
+    out = {items: out, value: 0} push
+  let bitLen = {value: data.len} u64 * 8
+  for i in 0 .. 7:
+    let shifted = {a: bitLen, by: (7 - i) * 8} shiftRight
+    let low = {a: shifted, b: 255} bitAnd
+    let b = {value: low} u8
+    out = {items: out, value: b} push
+  return out
+
+# Word `i` of a block starting at `at`: 4 big-endian bytes.
+fn wordAt({bytes: Seq[u8], at: int}) -> u64:
+  let b0 = {value: bytes[at]} u64
+  let b1 = {value: bytes[at + 1]} u64
+  let b2 = {value: bytes[at + 2]} u64
+  let b3 = {value: bytes[at + 3]} u64
+  let hi = {a: b0, by: 24} shiftLeft
+  let mid = {a: b1, by: 16} shiftLeft
+  let lo = {a: b2, by: 8} shiftLeft
+  return hi + mid + lo + b3
+
+# The 64-word message schedule for the block at `at`.
+fn schedule({bytes: Seq[u8], at: int}) -> Seq[u64]:
+  var w: Seq[u64] = []
+  for i in 0 .. 15:
+    let word = {bytes: bytes, at: at + i * 4} wordAt
+    w = {items: w, value: word} push
+  for i in 16 .. 63:
+    let s1 = {x: w[i - 2]} smallSigma1
+    let s0 = {x: w[i - 15]} smallSigma0
+    let a = {a: s1, b: w[i - 7]} add32
+    let b = {a: s0, b: w[i - 16]} add32
+    let word = {a: a, b: b} add32
+    w = {items: w, value: word} push
+  return w
+
+# One compression: the 8 state words advanced by the block at `at`.
+fn compress({state: Seq[u64], bytes: Seq[u8], at: int}) -> Seq[u64]:
+  let w = {bytes: bytes, at: at} schedule
+  var a = state[0]
+  var b = state[1]
+  var c = state[2]
+  var d = state[3]
+  var e = state[4]
+  var f = state[5]
+  var g = state[6]
+  var h = state[7]
+  for i in 0 .. 63:
+    let s1 = {x: e} bigSigma1
+    let ch = {x: e, y: f, z: g} choose
+    let t1a = {a: h, b: s1} add32
+    let t1b = {a: ch, b: roundK[i]} add32
+    let t1c = {a: t1a, b: t1b} add32
+    let t1 = {a: t1c, b: w[i]} add32
+    let s0 = {x: a} bigSigma0
+    let mj = {x: a, y: b, z: c} majority
+    let t2 = {a: s0, b: mj} add32
+    h = g
+    g = f
+    f = e
+    e = {a: d, b: t1} add32
+    d = c
+    c = b
+    b = a
+    a = {a: t1, b: t2} add32
+  var next: Seq[u64] = []
+  let mixed = [a, b, c, d, e, f, g, h]
+  for i in 0 .. 7:
+    let word = {a: state[i], b: mixed[i]} add32
+    next = {items: next, value: word} push
+  return next
+
+fn sha256({data: Seq[u8]}) -> Seq[u8]:
+  let bytes = {data: data} padded
+  var state = initialState
+  var at = 0
+  for at < bytes.len:
+    state = {state: state, bytes: bytes, at: at} compress
+    at = at + 64
+  var out: Seq[u8] = []
+  for i in 0 .. 7:
+    for j in 0 .. 3:
+      let shifted = {a: state[i], by: (3 - j) * 8} shiftRight
+      let low = {a: shifted, b: 255} bitAnd
+      let b = {value: low} u8
+      out = {items: out, value: b} push
+  return out
+
+# HMAC (RFC 2104) over SHA-256: a key longer than the 64-byte block is hashed
+# first, a shorter one zero-padded; the message is wrapped in an inner and an
+# outer hash under the key xor 0x36 and 0x5c.
+fn hmacSha256({key: Seq[u8], data: Seq[u8]}) -> Seq[u8]:
+  var k = key
+  if k.len > 64:
+    k = {data: k} sha256
+  for k.len < 64:
+    k = {items: k, value: 0} push
+  var inner = {key: k, mask: 54} maskKey
+  var outer = {key: k, mask: 92} maskKey
+  for i in 0 .. data.len - 1:
+    inner = {items: inner, value: data[i]} push
+  let innerHash = {data: inner} sha256
+  for i in 0 .. innerHash.len - 1:
+    outer = {items: outer, value: innerHash[i]} push
+  return {data: outer} sha256
+
+# A 64-byte key with every byte xor `mask`.
+fn maskKey({key: Seq[u8], mask: u64}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  for i in 0 .. 63:
+    let x = {value: key[i]} u64
+    let y = {a: x, b: mask} bitXor
+    let b = {value: y} u8
+    out = {items: out, value: b} push
+  return out
+
+# True when the two are byte-for-byte equal, taking the same time whatever
+# differs: every byte is compared and the differences are accumulated, instead
+# of stopping at the first.
+fn sameSecret({a: Seq[u8], b: Seq[u8]}) -> bool:
+  if a.len != b.len:
+    return false
+  var diff: u64 = 0
+  for i in 0 .. a.len - 1:
+    let x = {value: a[i]} u64
+    let y = {value: b[i]} u64
+    let d = {a: x, b: y} bitXor
+    diff = {a: diff, b: d} bitOr
+  return diff == 0
+
+# Lower-case hex of a byte string, for printing digests.
+fn toHex({bytes: Seq[u8]}) -> str:
+  var parts: Seq[str] = []
+  for i in 0 .. bytes.len - 1:
+    let v = {value: bytes[i]} int
+    let hi = {s: "0123456789abcdef", index: v /i 16} charAt
+    let lo = {s: "0123456789abcdef", index: v % 16} charAt
+    parts = {items: parts, value: hi} push
+    parts = {items: parts, value: lo} push
+  return {parts: parts, sep: ""} joinStr
+
+fn bytesOf({t: str}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  for i in 0 .. {t: t} byteCount - 1:
+    let b = {t: t, index: i} byteAt
+    out = {items: out, value: b} push
+  return out
+
+fn hexOfSha({t: str}) -> str:
+  let bytes = {t: t} bytesOf
+  let digest = {data: bytes} sha256
+  return {bytes: digest} toHex
+
+fn checkSha() -> int:
+  if {t: ""} hexOfSha != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855":
+    return 1
+  if {t: "abc"} hexOfSha != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad":
+    return 2
+  # 56 bytes: the padding spills into a second block.
+  let two = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+  if {t: two} hexOfSha != "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1":
+    return 3
+  return 0
+
+fn checkHmac() -> int:
+  let key = {t: "key"} bytesOf
+  let msg = {t: "The quick brown fox jumps over the lazy dog"} bytesOf
+  let tag = {key: key, data: msg} hmacSha256
+  if {bytes: tag} toHex != "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8":
+    return 4
+  return 0
+
+fn checkSame() -> int:
+  let a = {t: "secret"} bytesOf
+  let b = {t: "secret"} bytesOf
+  let c = {t: "secreT"} bytesOf
+  let d = {t: "secre"} bytesOf
+  if not {a: a, b: b} sameSecret:
+    return 5
+  if {a: a, b: c} sameSecret:
+    return 6
+  if {a: a, b: d} sameSecret:
+    return 7
+  return 0
+
+fn main() -> int:
+  let s = checkSha
+  if s != 0:
+    return s
+  let h = checkHmac
+  if h != 0:
+    return h
+  return checkSame

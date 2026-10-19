@@ -3634,4 +3634,15 @@ fn main() -> int:
   t.quietly: t.hostRuns "A52: a `_` arm in a match over a payload sum builds on every backend", 7
   t.bugOpen "A52: a `_` arm in a match over a payload sum builds on every backend"
 
+  # A53. Integer literals in a list do not adopt the expected element type:
+  # `Seq[u8] = [1, 2]` is "got Seq[int]" although `u8 = 1` is fine. Found
+  # writing std.crypto's round-constant table.
+  t.src """
+fn main() -> int:
+  let ys: Seq[u8] = [1, 2]
+  return ys.len
+"""
+  t.quietly: t.runs "A53: a list of integer literals takes the expected element type", 2
+  t.bugOpen "A53: a list of integer literals takes the expected element type"
+
   t.finish()

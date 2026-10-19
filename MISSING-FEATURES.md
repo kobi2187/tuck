@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (5)
+## A. Open bugs (6)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -51,6 +51,11 @@ it in.
   emitted `switch v in j` ends in a bare `case:` and Odin reports "Unhandled
   switch cases"; it needs `#partial switch`. Found writing `std.encoding`
   (stdlib-project), which is skipped until this is fixed.
+
+- **A53 (issue #135) — a list of integer literals does not adopt the expected
+  element type.** `let ys: Seq[u8] = [1, 2]` is "got Seq[int]", though
+  `let x: u8 = 1` is fine. A table of byte or word constants cannot be written
+  as a list. Found writing `std.crypto` (stdlib-project), skipped until fixed.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so

@@ -60,6 +60,8 @@ A module that hit a compiler bug is left where it stopped, the bug is filed, and
 module is started. No workaround is written into a module. Finish these after the fixes:
 
 * `std.encoding`: #134 (`_` arm over a payload sum, Odin).
+* `std.crypto`: #135 (`Seq[u8]`/`Seq[u64]` list literals). SHA-256, HMAC-SHA256 and a
+  constant-time compare are written; the round-constant table cannot be.
 
 ## Next, in order
 
