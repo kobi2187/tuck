@@ -1237,12 +1237,14 @@ proc bitConsts*(bf: BitFieldInfo, ind: string): seq[string] =
                "_WIDTH)) - 1")
 
 proc bitGetter*(bf: BitFieldInfo, regName, ind: string): string =
-  ## A range reads as a masked u32; a single bit reads as a bool.
+  ## A range reads as a masked u32; a single bit reads as a bool. Every access
+  ## to the register is volatile (base:intrinsics).
+  let load = "intrinsics.volatile_load(" & regName & ")"
   let body = if bf.isRange:
-               "return (" & regName & "^ >> u32(" & bf.prefix & "_SHIFT)) & " &
+               "return (" & load & " >> u32(" & bf.prefix & "_SHIFT)) & " &
                  bf.prefix & "_MASK"
              else:
-               "return (" & regName & "^ & (u32(1) << u32(" & bf.prefix &
+               "return (" & load & " & (u32(1) << u32(" & bf.prefix &
                  "_SHIFT))) != 0"
   let retT = if bf.isRange: "u32" else: "bool"
   ind & bf.prefix & "_get :: proc() -> " & retT & " {\n" &
@@ -1251,17 +1253,19 @@ proc bitGetter*(bf: BitFieldInfo, regName, ind: string): string =
 proc bitSetter*(bf: BitFieldInfo, regName, ind: string): string =
   ## A range clears its mask before OR-ing the shifted value in; a single bit
   ## sets or clears one mask.
+  let load = "intrinsics.volatile_load(" & regName & ")"
+  let store = "intrinsics.volatile_store(" & regName & ", "
   if bf.isRange:
     return ind & bf.prefix & "_set :: proc(value: u32) {\n" &
            ind & "\tshifted := (value & " & bf.prefix & "_MASK) << u32(" &
              bf.prefix & "_SHIFT)\n" &
-           ind & "\t" & regName & "^ = (" & regName & "^ &~ (" & bf.prefix &
-             "_MASK << u32(" & bf.prefix & "_SHIFT))) | shifted\n" &
+           ind & "\t" & store & "(" & load & " &~ (" & bf.prefix &
+             "_MASK << u32(" & bf.prefix & "_SHIFT))) | shifted)\n" &
            ind & "}\n"
   ind & bf.prefix & "_set :: proc(on: bool) {\n" &
     ind & "\tmask := u32(1) << u32(" & bf.prefix & "_SHIFT)\n" &
-    ind & "\tif on { " & regName & "^ |= mask } else { " & regName &
-      "^ &~= mask }\n" & ind & "}\n"
+    ind & "\tif on { " & store & load & " | mask) } else { " & store &
+      load & " &~ mask) }\n" & ind & "}\n"
 
 proc genRegister*(ctx: OdinCodegenCtx, d: Decl, ind: string): string =
   ## Memory-mapped register. Every backend now lowers this the same way —

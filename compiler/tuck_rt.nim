@@ -1783,6 +1783,14 @@ proc sleepMs*(ms: uint32) =
   if inCoroutine(): tuckSleep(int(ms))
   else: os.sleep(int(ms))   # no scheduler to yield to
 
+# Memory-mapped registers (spec 8): every access is a volatile load or store, so
+# the optimiser cannot cache a read across statements or drop a write.
+proc tuckVolatileLoad*(p: ptr uint32): uint32 {.inline.} =
+  {.emit: "`result` = *(volatile NU32*)`p`;".}
+
+proc tuckVolatileStore*(p: ptr uint32, v: uint32) {.inline.} =
+  {.emit: "*(volatile NU32*)`p` = `v`;".}
+
 # std/random — the generator itself is Tuck (std/random.tuck); only the OS
 # entropy read is a shim.
 proc osSeed*(): tuple[seed: uint64] =

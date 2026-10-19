@@ -732,12 +732,14 @@ proc nimBitConsts*(bf: BitFieldInfo): string =
                "_WIDTH) - 1\n")
 
 proc nimBitGetter*(bf: BitFieldInfo, regName: string): string =
-  ## A range reads as a masked uint32; a single bit reads as a bool.
+  ## A range reads as a masked uint32; a single bit reads as a bool. Every
+  ## access to the register is volatile (tuck_rt.tuckVolatileLoad/Store).
+  let load = "tuck_rt.tuckVolatileLoad(" & regName & ")"
   let body = if bf.isRange:
-               "  (" & regName & "[] shr " & bf.prefix & "_SHIFT) and " &
+               "  (" & load & " shr " & bf.prefix & "_SHIFT) and " &
                  bf.prefix & "_MASK\n"
              else:
-               "  (" & regName & "[] and (1'u32 shl " & bf.prefix &
+               "  (" & load & " and (1'u32 shl " & bf.prefix &
                  "_SHIFT)) != 0\n"
   let retT = if bf.isRange: "uint32" else: "bool"
   "proc " & bf.prefix & "_get*(): " & retT & " {.inline.} =\n" & body
@@ -745,16 +747,18 @@ proc nimBitGetter*(bf: BitFieldInfo, regName: string): string =
 proc nimBitSetter*(bf: BitFieldInfo, regName: string): string =
   ## A range clears its mask before OR-ing the shifted value in; a single bit
   ## sets or clears one mask.
+  let load = "tuck_rt.tuckVolatileLoad(" & regName & ")"
+  let store = "tuck_rt.tuckVolatileStore(" & regName & ", "
   if bf.isRange:
     return "proc " & bf.prefix & "_set*(value: uint32) {.inline.} =\n" &
            "  let shifted = (value and " & bf.prefix & "_MASK) shl " &
              bf.prefix & "_SHIFT\n" &
-           "  " & regName & "[] = (" & regName & "[] and not (" & bf.prefix &
-             "_MASK shl " & bf.prefix & "_SHIFT)) or shifted\n"
+           "  " & store & "(" & load & " and not (" & bf.prefix &
+             "_MASK shl " & bf.prefix & "_SHIFT)) or shifted)\n"
   "proc " & bf.prefix & "_set*(value: bool) {.inline.} =\n" &
     "  let mask = 1'u32 shl " & bf.prefix & "_SHIFT\n" &
-    "  if value: " & regName & "[] = " & regName & "[] or mask\n" &
-    "  else: " & regName & "[] = " & regName & "[] and not mask\n"
+    "  if value: " & store & load & " or mask)\n" &
+    "  else: " & store & load & " and not mask)\n"
 
 proc rtPolicyName*(p: ResourcePolicy): string =
   ## The runtime enum's spelling. Exhaustive rather than derived, for the same

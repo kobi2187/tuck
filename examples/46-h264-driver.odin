@@ -2,6 +2,7 @@
 package main
 
 import "core:os"
+import "base:intrinsics"
 import rt "./tuckrt"
 
 tuckˑregisterˑVI_CTRL := cast(^u32)(uintptr(0x50000000))
@@ -9,27 +10,27 @@ tuckˑregisterˑVI_CTRL_ENABLE_SHIFT :: 0
 tuckˑregisterˑVI_CTRL_FRAME_DONE_SHIFT :: 1
 tuckˑregisterˑVI_CTRL_OVERRUN_SHIFT :: 2
 tuckˑregisterˑVI_CTRL_ENABLE_get :: proc() -> bool {
-	return (tuckˑregisterˑVI_CTRL^ & (u32(1) << u32(tuckˑregisterˑVI_CTRL_ENABLE_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑVI_CTRL) & (u32(1) << u32(tuckˑregisterˑVI_CTRL_ENABLE_SHIFT))) != 0
 }
 tuckˑregisterˑVI_CTRL_ENABLE_set :: proc(on: bool) {
 	mask := u32(1) << u32(tuckˑregisterˑVI_CTRL_ENABLE_SHIFT)
-	if on { tuckˑregisterˑVI_CTRL^ |= mask } else { tuckˑregisterˑVI_CTRL^ &~= mask }
+	if on { intrinsics.volatile_store(tuckˑregisterˑVI_CTRL, intrinsics.volatile_load(tuckˑregisterˑVI_CTRL) | mask) } else { intrinsics.volatile_store(tuckˑregisterˑVI_CTRL, intrinsics.volatile_load(tuckˑregisterˑVI_CTRL) &~ mask) }
 }
 tuckˑregisterˑVI_CTRL_FRAME_DONE_get :: proc() -> bool {
-	return (tuckˑregisterˑVI_CTRL^ & (u32(1) << u32(tuckˑregisterˑVI_CTRL_FRAME_DONE_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑVI_CTRL) & (u32(1) << u32(tuckˑregisterˑVI_CTRL_FRAME_DONE_SHIFT))) != 0
 }
 tuckˑregisterˑVI_CTRL_OVERRUN_get :: proc() -> bool {
-	return (tuckˑregisterˑVI_CTRL^ & (u32(1) << u32(tuckˑregisterˑVI_CTRL_OVERRUN_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑVI_CTRL) & (u32(1) << u32(tuckˑregisterˑVI_CTRL_OVERRUN_SHIFT))) != 0
 }
 
 tuckˑregisterˑVI_DMA := cast(^u32)(uintptr(0x50000010))
 tuckˑregisterˑVI_DMA_ARMED_SHIFT :: 0
 tuckˑregisterˑVI_DMA_ARMED_get :: proc() -> bool {
-	return (tuckˑregisterˑVI_DMA^ & (u32(1) << u32(tuckˑregisterˑVI_DMA_ARMED_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑVI_DMA) & (u32(1) << u32(tuckˑregisterˑVI_DMA_ARMED_SHIFT))) != 0
 }
 tuckˑregisterˑVI_DMA_ARMED_set :: proc(on: bool) {
 	mask := u32(1) << u32(tuckˑregisterˑVI_DMA_ARMED_SHIFT)
-	if on { tuckˑregisterˑVI_DMA^ |= mask } else { tuckˑregisterˑVI_DMA^ &~= mask }
+	if on { intrinsics.volatile_store(tuckˑregisterˑVI_DMA, intrinsics.volatile_load(tuckˑregisterˑVI_DMA) | mask) } else { intrinsics.volatile_store(tuckˑregisterˑVI_DMA, intrinsics.volatile_load(tuckˑregisterˑVI_DMA) &~ mask) }
 }
 
 tuckˑregisterˑDEC_CTRL := cast(^u32)(uintptr(0x50001000))
@@ -37,17 +38,17 @@ tuckˑregisterˑDEC_CTRL_START_SHIFT :: 0
 tuckˑregisterˑDEC_CTRL_BUSY_SHIFT :: 1
 tuckˑregisterˑDEC_CTRL_ERR_SHIFT :: 2
 tuckˑregisterˑDEC_CTRL_START_get :: proc() -> bool {
-	return (tuckˑregisterˑDEC_CTRL^ & (u32(1) << u32(tuckˑregisterˑDEC_CTRL_START_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑDEC_CTRL) & (u32(1) << u32(tuckˑregisterˑDEC_CTRL_START_SHIFT))) != 0
 }
 tuckˑregisterˑDEC_CTRL_START_set :: proc(on: bool) {
 	mask := u32(1) << u32(tuckˑregisterˑDEC_CTRL_START_SHIFT)
-	if on { tuckˑregisterˑDEC_CTRL^ |= mask } else { tuckˑregisterˑDEC_CTRL^ &~= mask }
+	if on { intrinsics.volatile_store(tuckˑregisterˑDEC_CTRL, intrinsics.volatile_load(tuckˑregisterˑDEC_CTRL) | mask) } else { intrinsics.volatile_store(tuckˑregisterˑDEC_CTRL, intrinsics.volatile_load(tuckˑregisterˑDEC_CTRL) &~ mask) }
 }
 tuckˑregisterˑDEC_CTRL_BUSY_get :: proc() -> bool {
-	return (tuckˑregisterˑDEC_CTRL^ & (u32(1) << u32(tuckˑregisterˑDEC_CTRL_BUSY_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑDEC_CTRL) & (u32(1) << u32(tuckˑregisterˑDEC_CTRL_BUSY_SHIFT))) != 0
 }
 tuckˑregisterˑDEC_CTRL_ERR_get :: proc() -> bool {
-	return (tuckˑregisterˑDEC_CTRL^ & (u32(1) << u32(tuckˑregisterˑDEC_CTRL_ERR_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑDEC_CTRL) & (u32(1) << u32(tuckˑregisterˑDEC_CTRL_ERR_SHIFT))) != 0
 }
 
 tuckˑpoolˑFrameBuffers: rt.ObjectPool([4096]u8, 4)

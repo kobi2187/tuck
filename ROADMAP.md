@@ -197,8 +197,10 @@ finished** (no longer deferred).
     `genDDispatch` still build it); needs the message envelope in Tuck first.
 11. ~~A16 / #55 — a fired `timeout` bounds latency.~~ Fixed 2026-10-12: `openSource` held the exit open, not the await.
 12. #15 — typed select sources, the task form; unblocks example 16 (meets R10).
-13. #30 — D reads and writes a register through a plain `*ptr`, not
-    `volatileLoad`/`volatileStore` (checked on example 11).
+13. ~~#30 — registers read and written through a plain pointer.~~ Fixed 2026-10-19 on
+    all three backends (Nim `tuckVolatileLoad/Store`, Odin `intrinsics.volatile_*`, D
+    `core.volatile`). Left of #30: D's `[saturating]` is an `alias`, and D concatenates
+    with `~`.
 14. #64 — wire `[no_alloc]` and `[irq_safe]`.
 15. #22 / #23 — `callParamsFor` gaps; quadratic emit.
 16. S3.3 — D runtime networking: `42-net-echo` cannot link `listen`/`accept`. L.
@@ -391,7 +393,7 @@ closure no longer exist in any `codegen_*.nim`.
 | # | issue | | size |
 |---|---|---|---|
 | S3.1 | **#43** | ~~Odin invariant guard~~ **DONE 2026-09-26**: guarded by `tuckNoInvariants` (`#config`), a runtime call not `assert` (which `-disable-assert` stripped), the same message and exit 1 on all three (D aborted, 134). **DONE 2026-09-28** (R9 = b): `tuck build --no-invariants` sets the define on each backend (Nim `-d:`, Odin `-define:`, D `-version=`); `cli_smoke` runs it on all three | M |
-| S3.2 | **#30** | D: volatile registers, `[saturating]`, `tuckConcat` | M |
+| S3.2 | **#30** | D: ~~volatile registers~~ (done 2026-10-19, all three backends), `[saturating]`, `tuckConcat` | M |
 | S3.3 | — | the D runtime has no networking; `42-net-echo` cannot link | L |
 | S3.4 | **#31** | the flake is Odin's own LLVM verifier; pin the Odin version | S |
 | S3.5 | — | **runtime speed parity, found by `benches/memory` (2026-09-25).** Memory is flat on all three; TIME is not: copy_loop Nim 12 ms vs Odin 97 vs D 372; chain Nim 4.6x Odin; overwrite/transfer D 8–11x the others. Causes unconfirmed — see `benches/SCORES.md`, which also has the same programs with the collectors OFF | M |
@@ -1094,7 +1096,7 @@ and those must stay green.
 | Effects | 3.7 | switch to implicit propagation (ruling above) |
 | ~~Beef backend~~ | — | REMOVED 2026-07-28. Frozen since the Odin backend landed, never compile-verified here (no BeefBuild), and every new construct meant a third unchecked emitter arm. Odin is the second backend |
 | Odin backend | — | 2026-09-12: 39 examples compile-gated, 17 run-gated on exit codes; coroutine runtime over minicoro; full C FFI parity; offload worker + std/net mirrored. Known gap: a task WITH ARGUMENTS is not spawned as a coroutine |
-| D backend | — | 2026-09-12: 42 examples compile-gated, 17 run-gated on exit codes, own 994-line suite. Emits `alias T = base` where Nim/Odin emit `distinct`, and concatenates with native `~` rather than a runtime `tuckConcat`. Registers are not `volatile` |
+| D backend | — | 2026-09-12: 42 examples compile-gated, 17 run-gated on exit codes, own 994-line suite. Emits `alias T = base` where Nim/Odin emit `distinct`, and concatenates with native `~` rather than a runtime `tuckConcat`. Registers are not `volatile` (fixed 2026-10-19) |
 | C FFI | — | DONE 2026-07-28: functions, cstring, structs by value, enums with explicit values, callbacks, opaque handles — all run-verified against a real C library on BOTH backends. `lib:` links a system library or a vendored `.c` |
 | Control flow loops | 2.6/3.6b | DONE 2026-07-19: unified for (cond/iter/indexed), loop, break/continue (innermost, depth-checked), spaced-`..` ranges (Nim convention), fn inline ({.inline.}/[Inline]). Runtime-verified exit-17 smoke both backends. No labels ever (ruling); value-returning main = process exit code |
 

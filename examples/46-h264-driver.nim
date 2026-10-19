@@ -47,39 +47,39 @@ const tuckˑregisterˑVI_CTRL_ENABLE_SHIFT = 0
 const tuckˑregisterˑVI_CTRL_FRAME_DONE_SHIFT = 1
 const tuckˑregisterˑVI_CTRL_OVERRUN_SHIFT = 2
 proc tuckˑregisterˑVI_CTRL_ENABLE_get*(): bool {.inline.} =
-  (tuckˑregisterˑVI_CTRL[] and (1'u32 shl tuckˑregisterˑVI_CTRL_ENABLE_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑVI_CTRL) and (1'u32 shl tuckˑregisterˑVI_CTRL_ENABLE_SHIFT)) != 0
 proc tuckˑregisterˑVI_CTRL_ENABLE_set*(value: bool) {.inline.} =
   let mask = 1'u32 shl tuckˑregisterˑVI_CTRL_ENABLE_SHIFT
-  if value: tuckˑregisterˑVI_CTRL[] = tuckˑregisterˑVI_CTRL[] or mask
-  else: tuckˑregisterˑVI_CTRL[] = tuckˑregisterˑVI_CTRL[] and not mask
+  if value: tuck_rt.tuckVolatileStore(tuckˑregisterˑVI_CTRL, tuck_rt.tuckVolatileLoad(tuckˑregisterˑVI_CTRL) or mask)
+  else: tuck_rt.tuckVolatileStore(tuckˑregisterˑVI_CTRL, tuck_rt.tuckVolatileLoad(tuckˑregisterˑVI_CTRL) and not mask)
 proc tuckˑregisterˑVI_CTRL_FRAME_DONE_get*(): bool {.inline.} =
-  (tuckˑregisterˑVI_CTRL[] and (1'u32 shl tuckˑregisterˑVI_CTRL_FRAME_DONE_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑVI_CTRL) and (1'u32 shl tuckˑregisterˑVI_CTRL_FRAME_DONE_SHIFT)) != 0
 proc tuckˑregisterˑVI_CTRL_OVERRUN_get*(): bool {.inline.} =
-  (tuckˑregisterˑVI_CTRL[] and (1'u32 shl tuckˑregisterˑVI_CTRL_OVERRUN_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑVI_CTRL) and (1'u32 shl tuckˑregisterˑVI_CTRL_OVERRUN_SHIFT)) != 0
 
 var tuckˑregisterˑVI_DMA = cast[ptr uint32](0x50000010)
 const tuckˑregisterˑVI_DMA_ARMED_SHIFT = 0
 proc tuckˑregisterˑVI_DMA_ARMED_get*(): bool {.inline.} =
-  (tuckˑregisterˑVI_DMA[] and (1'u32 shl tuckˑregisterˑVI_DMA_ARMED_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑVI_DMA) and (1'u32 shl tuckˑregisterˑVI_DMA_ARMED_SHIFT)) != 0
 proc tuckˑregisterˑVI_DMA_ARMED_set*(value: bool) {.inline.} =
   let mask = 1'u32 shl tuckˑregisterˑVI_DMA_ARMED_SHIFT
-  if value: tuckˑregisterˑVI_DMA[] = tuckˑregisterˑVI_DMA[] or mask
-  else: tuckˑregisterˑVI_DMA[] = tuckˑregisterˑVI_DMA[] and not mask
+  if value: tuck_rt.tuckVolatileStore(tuckˑregisterˑVI_DMA, tuck_rt.tuckVolatileLoad(tuckˑregisterˑVI_DMA) or mask)
+  else: tuck_rt.tuckVolatileStore(tuckˑregisterˑVI_DMA, tuck_rt.tuckVolatileLoad(tuckˑregisterˑVI_DMA) and not mask)
 
 var tuckˑregisterˑDEC_CTRL = cast[ptr uint32](0x50001000)
 const tuckˑregisterˑDEC_CTRL_START_SHIFT = 0
 const tuckˑregisterˑDEC_CTRL_BUSY_SHIFT = 1
 const tuckˑregisterˑDEC_CTRL_ERR_SHIFT = 2
 proc tuckˑregisterˑDEC_CTRL_START_get*(): bool {.inline.} =
-  (tuckˑregisterˑDEC_CTRL[] and (1'u32 shl tuckˑregisterˑDEC_CTRL_START_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑDEC_CTRL) and (1'u32 shl tuckˑregisterˑDEC_CTRL_START_SHIFT)) != 0
 proc tuckˑregisterˑDEC_CTRL_START_set*(value: bool) {.inline.} =
   let mask = 1'u32 shl tuckˑregisterˑDEC_CTRL_START_SHIFT
-  if value: tuckˑregisterˑDEC_CTRL[] = tuckˑregisterˑDEC_CTRL[] or mask
-  else: tuckˑregisterˑDEC_CTRL[] = tuckˑregisterˑDEC_CTRL[] and not mask
+  if value: tuck_rt.tuckVolatileStore(tuckˑregisterˑDEC_CTRL, tuck_rt.tuckVolatileLoad(tuckˑregisterˑDEC_CTRL) or mask)
+  else: tuck_rt.tuckVolatileStore(tuckˑregisterˑDEC_CTRL, tuck_rt.tuckVolatileLoad(tuckˑregisterˑDEC_CTRL) and not mask)
 proc tuckˑregisterˑDEC_CTRL_BUSY_get*(): bool {.inline.} =
-  (tuckˑregisterˑDEC_CTRL[] and (1'u32 shl tuckˑregisterˑDEC_CTRL_BUSY_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑDEC_CTRL) and (1'u32 shl tuckˑregisterˑDEC_CTRL_BUSY_SHIFT)) != 0
 proc tuckˑregisterˑDEC_CTRL_ERR_get*(): bool {.inline.} =
-  (tuckˑregisterˑDEC_CTRL[] and (1'u32 shl tuckˑregisterˑDEC_CTRL_ERR_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑDEC_CTRL) and (1'u32 shl tuckˑregisterˑDEC_CTRL_ERR_SHIFT)) != 0
 
 var tuckˑpoolˑFrameBuffers* = ObjectPool[array[4096, uint8], 4]()
 proc tuckˑdecisionˑroute*(nal: tuckˑtypeˑNalKind, configured: bool, midFrame: bool): tuckˑtypeˑAction =

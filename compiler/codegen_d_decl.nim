@@ -64,12 +64,14 @@ proc dBitConsts*(bf: BitFieldInfo): string =
                "_WIDTH) - 1;\n")
 
 proc dBitGetter*(bf: BitFieldInfo, regName: string): string =
-  ## A range reads as a masked uint; a single bit reads as a bool.
+  ## A range reads as a masked uint; a single bit reads as a bool. Every access
+  ## to the register is volatile (core.volatile).
+  let load = "volatileLoad(" & regName & ")"
   let body = if bf.isRange:
-               "return (*" & regName & " >> " & bf.prefix & "_SHIFT) & " &
+               "return (" & load & " >> " & bf.prefix & "_SHIFT) & " &
                  bf.prefix & "_MASK;"
              else:
-               "return (*" & regName & " & (1u << " & bf.prefix &
+               "return (" & load & " & (1u << " & bf.prefix &
                  "_SHIFT)) != 0;"
   let retT = if bf.isRange: "uint" else: "bool"
   retT & " " & bf.prefix & "_get() {\n    " & body & "\n}\n"
@@ -77,15 +79,17 @@ proc dBitGetter*(bf: BitFieldInfo, regName: string): string =
 proc dBitSetter*(bf: BitFieldInfo, regName: string): string =
   ## A range clears its mask before OR-ing the shifted value in; a single bit
   ## sets or clears one mask.
+  let load = "volatileLoad(" & regName & ")"
+  let store = "volatileStore(" & regName & ", "
   if bf.isRange:
     return "void " & bf.prefix & "_set(uint value) {\n" &
            "    uint shifted = (value & " & bf.prefix & "_MASK) << " &
              bf.prefix & "_SHIFT;\n" &
-           "    *" & regName & " = (*" & regName & " & ~(" & bf.prefix &
-             "_MASK << " & bf.prefix & "_SHIFT)) | shifted;\n}\n"
+           "    " & store & "(" & load & " & ~(" & bf.prefix &
+             "_MASK << " & bf.prefix & "_SHIFT)) | shifted);\n}\n"
   "void " & bf.prefix & "_set(bool value) {\n" &
-    "    if (value) *" & regName & " |= (1u << " & bf.prefix & "_SHIFT);\n" &
-    "    else *" & regName & " &= ~(1u << " & bf.prefix & "_SHIFT);\n}\n"
+    "    if (value) " & store & load & " | (1u << " & bf.prefix & "_SHIFT));\n" &
+    "    else " & store & load & " & ~(1u << " & bf.prefix & "_SHIFT));\n}\n"
 
 proc implVarDecls(ctx: var DCodegenCtx, d: Decl, sats: seq[Decl]): string =
   ## Satisfiers whose members live in a module this one cannot import: one
@@ -538,11 +542,9 @@ proc genDRegister*(ctx: var DCodegenCtx, d: Decl): string =
   ## a macro to hand the layout to; Nim's dropped its own in 2026-09. The DECODING is
   ## shared (ast_query.decodeBitField); only the spelling is here.
   ##
-  ## `volatile` in spirit: the pointer is shared with hardware. D has no
-  ## volatile qualifier — core.volatile's volatileLoad/Store are the
-  ## supported spelling — so an optimiser is free to cache a read across
-  ## statements. Correct for the examples, and a real embedded target should
-  ## route these through core.volatile.
+  ## Every access is volatile: the pointer is shared with hardware, and D has
+  ## no volatile qualifier — core.volatile's volatileLoad/Store are the
+  ## supported spelling (imported by dImports when the accessors use them).
   var consts: seq[string]
   var accessors: seq[string]
   for f in d.regFields:

@@ -100,6 +100,7 @@ proc emitOdinModule*(name: string, m: Module, res: Resolution,
   # This file lives in mod_<pkg>/, so siblings are one level up.
   var imports: seq[string]
   if "fmt.println(" in body: imports.add("import \"core:fmt\"")
+  if "intrinsics.volatile_" in body: imports.add("import \"base:intrinsics\"")
   if "rt." in body: imports.add("import rt \"../tuckrt\"")
   imports.add(ctx.moduleImports("../"))
   # C libraries bound by extern blocks. `foreign import` is only legal at
@@ -174,6 +175,8 @@ proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
     result.add("import \"core:fmt\"")
   if shouldImportOs(m, body):
     result.add("import \"core:os\"")
+  if "intrinsics.volatile_" in body:
+    result.add("import \"base:intrinsics\"")
   # The entry point's slab reports and releases name the runtime and each
   # slab's package, though the body may name neither (genEntryPoint).
   let slabPkgs = slabPackages(m, realModules)

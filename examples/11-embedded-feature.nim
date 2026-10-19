@@ -48,18 +48,18 @@ const tuckˑregisterˑRCC_CR_HSITRIM_SHIFT = 3
 const tuckˑregisterˑRCC_CR_HSITRIM_WIDTH = 7 - 3 + 1
 const tuckˑregisterˑRCC_CR_HSITRIM_MASK = (1'u32 shl tuckˑregisterˑRCC_CR_HSITRIM_WIDTH) - 1
 proc tuckˑregisterˑRCC_CR_HSION_get*(): bool {.inline.} =
-  (tuckˑregisterˑRCC_CR[] and (1'u32 shl tuckˑregisterˑRCC_CR_HSION_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑRCC_CR) and (1'u32 shl tuckˑregisterˑRCC_CR_HSION_SHIFT)) != 0
 proc tuckˑregisterˑRCC_CR_HSION_set*(value: bool) {.inline.} =
   let mask = 1'u32 shl tuckˑregisterˑRCC_CR_HSION_SHIFT
-  if value: tuckˑregisterˑRCC_CR[] = tuckˑregisterˑRCC_CR[] or mask
-  else: tuckˑregisterˑRCC_CR[] = tuckˑregisterˑRCC_CR[] and not mask
+  if value: tuck_rt.tuckVolatileStore(tuckˑregisterˑRCC_CR, tuck_rt.tuckVolatileLoad(tuckˑregisterˑRCC_CR) or mask)
+  else: tuck_rt.tuckVolatileStore(tuckˑregisterˑRCC_CR, tuck_rt.tuckVolatileLoad(tuckˑregisterˑRCC_CR) and not mask)
 proc tuckˑregisterˑRCC_CR_HSIRDY_get*(): bool {.inline.} =
-  (tuckˑregisterˑRCC_CR[] and (1'u32 shl tuckˑregisterˑRCC_CR_HSIRDY_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑRCC_CR) and (1'u32 shl tuckˑregisterˑRCC_CR_HSIRDY_SHIFT)) != 0
 proc tuckˑregisterˑRCC_CR_HSITRIM_get*(): uint32 {.inline.} =
-  (tuckˑregisterˑRCC_CR[] shr tuckˑregisterˑRCC_CR_HSITRIM_SHIFT) and tuckˑregisterˑRCC_CR_HSITRIM_MASK
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑRCC_CR) shr tuckˑregisterˑRCC_CR_HSITRIM_SHIFT) and tuckˑregisterˑRCC_CR_HSITRIM_MASK
 proc tuckˑregisterˑRCC_CR_HSITRIM_set*(value: uint32) {.inline.} =
   let shifted = (value and tuckˑregisterˑRCC_CR_HSITRIM_MASK) shl tuckˑregisterˑRCC_CR_HSITRIM_SHIFT
-  tuckˑregisterˑRCC_CR[] = (tuckˑregisterˑRCC_CR[] and not (tuckˑregisterˑRCC_CR_HSITRIM_MASK shl tuckˑregisterˑRCC_CR_HSITRIM_SHIFT)) or shifted
+  tuck_rt.tuckVolatileStore(tuckˑregisterˑRCC_CR, (tuck_rt.tuckVolatileLoad(tuckˑregisterˑRCC_CR) and not (tuckˑregisterˑRCC_CR_HSITRIM_MASK shl tuckˑregisterˑRCC_CR_HSITRIM_SHIFT)) or shifted)
 
 proc tuckˑfnˑprocessISR*(event: tuckˑtypeˑSensorEvent): void =
   discard

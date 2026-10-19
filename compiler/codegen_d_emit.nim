@@ -110,6 +110,8 @@ proc dImports*(ctx: DCodegenCtx, body, mains: string,
   for lib in ctx.cLibs:
     if not (lib.endsWith(".o") or lib.endsWith(".a") or "/" in lib):
       result.add("pragma(lib, \"" & lib & "\");")
+  if usesSymbol(code, "volatileLoad") or usesSymbol(code, "volatileStore"):
+    result.add("import core.volatile : volatileLoad, volatileStore;")
   var stdioSyms: seq[string]
   for sym in ["writeln", "stderr"]:
     if usesSymbol(code, sym): stdioSyms.add(sym)
