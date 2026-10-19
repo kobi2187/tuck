@@ -1860,6 +1860,9 @@ proc sin*(value: float64): float64 =
 proc cos*(value: float64): float64 =
   ## Cosine of an angle in radians.
   stdmath.cos(value)
+proc ln*(value: float64): float64 =
+  ## Natural logarithm; the caller has already ruled out zero and negatives.
+  stdmath.ln(value)
 
 # std/hash — FNV-1a, 64-bit. Same algorithm as errCode above (32-bit,
 # compile-time only); this is the runtime, arbitrary-length variant.

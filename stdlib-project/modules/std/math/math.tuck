@@ -1,0 +1,421 @@
+# std.math — exact decimals, single-pass statistics, and the elementary float
+# functions.
+#
+# This module SHADOWS std/math under --stdlib, so it re-declares the externs
+# std/math declares (sqrt, pow, sin, cos, ln): a correctly rounded one is a
+# real algorithm and a hand-written one would differ between backends, so they
+# stay host shims. Everything else is Tuck.
+#
+# Decimal is exact money math: units and a scale (digits after the point).
+# Arithmetic is i64 and TRAPS on overflow rather than wrapping, which is the
+# right failure for money. Division is the one operation that can be
+# non-terminating, so the caller says where to stop and how to round.
+import seq
+import str
+import text
+import convert
+import iter
+
+extern:
+  fn sqrt({value: f64}) -> f64 [pure, no_alloc]
+  fn pow({base: f64, exp: f64}) -> f64 [pure, no_alloc]
+  fn sin({value: f64}) -> f64 [pure, no_alloc]
+  fn cos({value: f64}) -> f64 [pure, no_alloc]
+  fn ln({value: f64}) -> f64 [pure, no_alloc]
+
+type Decimal:
+  units: i64
+  scale: u8
+
+type Rounding:
+  | HalfUp
+  | HalfEven
+  | Down
+  | Up
+
+# Population statistics: variance divides by size, not size - 1. (The field is
+# `size`, not `count`: fields and fns share the call namespace, and seq has a
+# `count` fn.)
+type Stats:
+  size: int
+  mean: f64
+  variance: f64
+  stddev: f64
+  min: f64
+  max: f64
+
+# --- float functions ----------------------------------------------------------
+fn sqrtOf({x: f64}) -> f64:
+  return {value: x} sqrt
+
+fn powOf({base: f64, exp: f64}) -> f64:
+  return {base: base, exp: exp} pow
+
+fn sinOf({x: f64}) -> f64:
+  return {value: x} sin
+
+fn cosOf({x: f64}) -> f64:
+  return {value: x} cos
+
+# ln of zero or a negative has no answer; absence says so better than NaN.
+fn lnOf({x: f64}) -> f64?:
+  if x <= 0.0:
+    return none
+  return {value: x} ln
+
+# --- Decimal ------------------------------------------------------------------
+fn decimal({units: i64, scale: u8}) -> Decimal:
+  return {units: units, scale: scale} Decimal
+
+fn scaleOf({d: Decimal}) -> int:
+  return {value: d.scale} int
+
+fn pow10({n: int}) -> i64:
+  var r: i64 = 1
+  for i in 0 .. n - 1:
+    r = r * 10
+  return r
+
+fn maxOf({a: int, b: int}) -> int:
+  if a > b:
+    return a
+  return b
+
+# `d` brought up to `scale` digits (never down: that would lose some).
+fn widened({d: Decimal, scale: int}) -> i64:
+  let diff = scale - {d: d} scaleOf
+  let factor = {n: diff} pow10
+  return d.units * factor
+
+# The scale both operands share once aligned, and each operand's units there.
+fn commonScale({a: Decimal, b: Decimal}) -> int:
+  let sa = {d: a} scaleOf
+  let sb = {d: b} scaleOf
+  return {a: sa, b: sb} maxOf
+
+fn addDec({a: Decimal, b: Decimal}) -> Decimal:
+  let s = {a: a, b: b} commonScale
+  let ua = {d: a, scale: s} widened
+  let ub = {d: b, scale: s} widened
+  let sc = {value: s} u8
+  return {units: ua + ub, scale: sc} Decimal
+
+fn subDec({a: Decimal, b: Decimal}) -> Decimal:
+  let s = {a: a, b: b} commonScale
+  let ua = {d: a, scale: s} widened
+  let ub = {d: b, scale: s} widened
+  let sc = {value: s} u8
+  return {units: ua - ub, scale: sc} Decimal
+
+fn mulDec({a: Decimal, b: Decimal}) -> Decimal:
+  let sa = {d: a} scaleOf
+  let sb = {d: b} scaleOf
+  let sc = {value: sa + sb} u8
+  return {units: a.units * b.units, scale: sc} Decimal
+
+fn absI({x: i64}) -> i64:
+  if x < 0:
+    return 0 - x
+  return x
+
+# The quotient `q` of num/den with remainder `r`, rounded as `mode` says. The
+# remainder is what was cut off: Down keeps q, Up moves away from zero on any
+# remainder, and the Half modes look at whether the remainder reached half the
+# divisor (HalfEven sends an exact half to the even neighbour).
+fn rounded({q: i64, r: i64, den: i64, negative: bool, mode: Rounding}) -> i64:
+  if r == 0:
+    return q
+  var away = false
+  let twice = 2 * {x: r} absI
+  let half = {x: den} absI
+  match mode:
+    Down: away = false
+    Up: away = true
+    HalfUp: away = twice >= half
+    HalfEven: away = twice > half or (twice == half and q % 2 != 0)
+  if not away:
+    return q
+  if negative:
+    return q - 1
+  return q + 1
+
+# a / b with `scale` digits after the point, or absent when b is zero.
+fn divDec({a: Decimal, b: Decimal, scale: u8, mode: Rounding}) -> Decimal?:
+  if b.units == 0:
+    return none
+  let e = {value: scale} int + {d: b} scaleOf - {d: a} scaleOf
+  var num = a.units
+  var den = b.units
+  if e >= 0:
+    num = num * {n: e} pow10
+  else:
+    den = den * {n: 0 - e} pow10
+  let negative = (num < 0) != (den < 0)
+  let q = num /i den
+  let r = num % den
+  let out = {q: q, r: r, den: den, negative: negative, mode: mode} rounded
+  return {units: out, scale: scale} Decimal
+
+fn digitsPadded({n: i64, width: int}) -> str:
+  var s = {value: n} toStr
+  for {t: s} byteCount < width:
+    s = "0" + s
+  return s
+
+fn decToStr({d: Decimal}) -> str:
+  let sc = {d: d} scaleOf
+  let mag = {x: d.units} absI
+  let body = {n: mag, width: sc + 1} digitsPadded
+  var out = body
+  if sc > 0:
+    let total = {t: body} byteCount
+    let cut = total - sc
+    let whole = {t: body, start: 0, stop: cut} slice
+    let frac = {t: body, start: cut, stop: total} slice
+    if whole.ok:
+      if frac.ok:
+        out = whole.value + "." + frac.value
+  if d.units < 0:
+    return "-" + out
+  return out
+
+# --- parsing ------------------------------------------------------------------
+# "12.345", "-0.5", "7": the digits with the point removed, and how many came
+# after it. None for anything else (empty, two points, stray characters).
+fn parseDecimal({t: str}) -> Decimal?:
+  let dot = {t: t, what: "."} text::find
+  var digits = t
+  var scale = 0
+  if dot.ok:
+    let whole = {t: t, start: 0, stop: dot.value} slice
+    let total = {t: t} byteCount
+    let frac = {t: t, start: dot.value + 1, stop: total} slice
+    if not whole.ok:
+      return none
+    if not frac.ok:
+      return none
+    scale = {t: frac.value} byteCount
+    digits = whole.value + frac.value
+  if scale > 18:
+    return none
+  let units = {t: digits} parseInt
+  if not units.ok:
+    return none
+  let sc = {value: scale} u8
+  return {units: units.value, scale: sc} Decimal
+
+# --- statistics ---------------------------------------------------------------
+# Welford's single pass: one traversal gives count, mean, variance, min, max.
+fn describe({samples: Seq[f64]}) -> Stats:
+  var n = 0
+  var mean = 0.0
+  var m2 = 0.0
+  var lo = 0.0
+  var hi = 0.0
+  for i in 0 .. samples.len - 1:
+    let x = samples[i]
+    n = n + 1
+    let delta = x - mean
+    mean = mean + delta /f {value: n} asF64
+    m2 = m2 + delta * (x - mean)
+    if n == 1 or x < lo:
+      lo = x
+    if n == 1 or x > hi:
+      hi = x
+  var variance = 0.0
+  if n > 0:
+    variance = m2 /f {value: n} asF64
+  let sd = {value: variance} sqrt
+  return {size: n, mean: mean, variance: variance, stddev: sd, min: lo, max: hi} Stats
+
+fn asF64({value: int}) -> f64:
+  return {value: value} f64
+
+# The p-th percentile (0..100) by linear interpolation between neighbours; absent
+# for no samples or p out of range.
+fn percentile({samples: Seq[f64], p: f64}) -> f64?:
+  if samples.len == 0 or p < 0.0 or p > 100.0:
+    return none
+  let sorted = {items: samples} sort
+  let last = {value: sorted.len - 1} asF64
+  let rank = p /f 100.0 * last
+  let lo = rank ~int
+  var hi = lo
+  if hi < sorted.len - 1:
+    hi = lo + 1
+  let frac = rank - {value: lo} asF64
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * frac
+
+# --- the module's own checks: the exit code names the first that fails ---------
+fn dec({units: i64, scale: int}) -> Decimal:
+  let sc = {value: scale} u8
+  return {units: units, scale: sc} Decimal
+
+fn checkArith() -> int:
+  let a = {units: 15, scale: 1} dec
+  let b = {units: 225, scale: 2} dec
+  let sum = {a: a, b: b} addDec
+  if {d: sum} decToStr != "3.75":
+    return 1
+  let big = {units: 500, scale: 2} dec
+  let one = {units: 1, scale: 2} dec
+  let diff = {a: big, b: one} subDec
+  if {d: diff} decToStr != "4.99":
+    return 2
+  let c = {units: 25, scale: 1} dec
+  let prod = {a: a, b: c} mulDec
+  if {d: prod} decToStr != "3.75":
+    return 3
+  return 0
+
+fn checkDivide() -> int:
+  let one = {units: 1, scale: 0} dec
+  let three = {units: 3, scale: 0} dec
+  let third = {a: one, b: three, scale: 4, mode: Rounding.HalfUp} divDec
+  if not third.ok:
+    return 4
+  if {d: third.value} decToStr != "0.3333":
+    return 5
+  let two = {units: 2, scale: 0} dec
+  let up = {a: two, b: three, scale: 2, mode: Rounding.HalfUp} divDec
+  let down = {a: two, b: three, scale: 2, mode: Rounding.Down} divDec
+  let away = {a: two, b: three, scale: 2, mode: Rounding.Up} divDec
+  if not up.ok:
+    return 6
+  if not down.ok:
+    return 6
+  if not away.ok:
+    return 6
+  if {d: up.value} decToStr != "0.67" or {d: down.value} decToStr != "0.66":
+    return 7
+  if {d: away.value} decToStr != "0.67":
+    return 8
+  let zero = {units: 0, scale: 0} dec
+  let nothing = {a: one, b: zero, scale: 2, mode: Rounding.Down} divDec
+  if nothing.ok:
+    return 9
+  return checkTies
+
+fn checkTies() -> int:
+  let five = {units: 5, scale: 0} dec
+  let seven = {units: 7, scale: 0} dec
+  let two = {units: 2, scale: 0} dec
+  let neg = {units: -5, scale: 0} dec
+  let a = {a: five, b: two, scale: 0, mode: Rounding.HalfEven} divDec
+  let b = {a: seven, b: two, scale: 0, mode: Rounding.HalfEven} divDec
+  let c = {a: five, b: two, scale: 0, mode: Rounding.HalfUp} divDec
+  let d = {a: neg, b: two, scale: 0, mode: Rounding.HalfUp} divDec
+  let e = {a: neg, b: two, scale: 0, mode: Rounding.HalfEven} divDec
+  if not a.ok:
+    return 10
+  if not b.ok:
+    return 10
+  if not c.ok:
+    return 10
+  if not d.ok:
+    return 10
+  if not e.ok:
+    return 10
+  if a.value.units != 2 or b.value.units != 4 or c.value.units != 3:
+    return 11
+  if d.value.units != -3 or e.value.units != -2:
+    return 12
+  return 0
+
+fn checkText() -> int:
+  let p = {t: "12.345"} parseDecimal
+  if not p.ok:
+    return 13
+  if p.value.units != 12345 or p.value.scale != 3:
+    return 14
+  let n = {t: "-0.5"} parseDecimal
+  if not n.ok:
+    return 15
+  if {d: n.value} decToStr != "-0.5":
+    return 16
+  let whole = {t: "7"} parseDecimal
+  if not whole.ok:
+    return 17
+  if {d: whole.value} decToStr != "7":
+    return 18
+  let bad = {t: "abc"} parseDecimal
+  let twice = {t: "1.2.3"} parseDecimal
+  if bad.ok or twice.ok:
+    return 19
+  return 0
+
+fn near({a: f64, b: f64}) -> bool:
+  let d = a - b
+  return d < 0.000001 and d > 0.0 - 0.000001
+
+fn checkStats() -> int:
+  var xs: Seq[f64] = []
+  for v in [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]:
+    xs = {items: xs, value: v} push
+  let s = {samples: xs} describe
+  if s.size != 8 or s.mean != 5.0 or s.variance != 4.0 or s.stddev != 2.0:
+    return 20
+  if s.min != 2.0 or s.max != 9.0:
+    return 21
+  let empty: Seq[f64] = []
+  let e = {samples: empty} describe
+  if e.size != 0 or e.mean != 0.0:
+    return 22
+  return checkPercentile
+
+fn checkPercentile() -> int:
+  var xs: Seq[f64] = []
+  for v in [5.0, 1.0, 4.0, 2.0, 3.0]:
+    xs = {items: xs, value: v} push
+  let mid = {samples: xs, p: 50.0} percentile
+  let lo = {samples: xs, p: 0.0} percentile
+  let hi = {samples: xs, p: 100.0} percentile
+  let q = {samples: xs, p: 25.0} percentile
+  if not mid.ok:
+    return 23
+  if not lo.ok:
+    return 23
+  if not hi.ok:
+    return 23
+  if not q.ok:
+    return 23
+  if mid.value != 3.0 or lo.value != 1.0 or hi.value != 5.0 or q.value != 2.0:
+    return 24
+  let bad = {samples: xs, p: 101.0} percentile
+  if bad.ok:
+    return 25
+  return 0
+
+fn checkFloats() -> int:
+  let zeroLn = {x: 0.0} lnOf
+  if zeroLn.ok:
+    return 26
+  let one = {x: 1.0} lnOf
+  if not one.ok:
+    return 27
+  if one.value != 0.0:
+    return 28
+  if {base: 2.0, exp: 10.0} powOf != 1024.0:
+    return 29
+  if {x: 16.0} sqrtOf != 4.0:
+    return 30
+  let s = {x: 0.0} sinOf
+  let c = {x: 0.0} cosOf
+  if s != 0.0 or c != 1.0:
+    return 31
+  return 0
+
+fn main() -> int:
+  let a = checkArith
+  if a != 0:
+    return a
+  let d = checkDivide
+  if d != 0:
+    return d
+  let t = checkText
+  if t != 0:
+    return t
+  let s = checkStats
+  if s != 0:
+    return s
+  return checkFloats

@@ -364,6 +364,12 @@ double cos(double value)
     return stdCos(value);
 }
 
+double ln(double value)
+{
+    import std.math : stdLog = log;
+    return stdLog(value);
+}
+
 // std/hash — FNV-1a, 64-bit. Same algorithm as errCode above (32-bit);
 // this is the runtime, arbitrary-length variant.
 ulong hash(string data)
