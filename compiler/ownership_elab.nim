@@ -691,5 +691,8 @@ proc copiesRead*(res: Resolution, ps: Places, v: Expr): bool =
     return false                                   # a temporary moves
   if res.isOwnerField(v): return true              # an actor's field
   let root = rootOf(pathOf(v))
-  if root notin ps.all: return false               # not a place at all
+  if root notin ps.all:
+    # A module const is read in place and owned by nobody: a local made from
+    # it holds a copy (#146).
+    return ps.m.findDecl(dkConst, root) != nil
   root notin ps.owned or not res.isLastUse(v)

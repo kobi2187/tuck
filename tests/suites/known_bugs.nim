@@ -3869,4 +3869,77 @@ fn main() -> int:
   t.quietly: t.hostRuns "A62: a local record literal assigned over another module's anonymous record builds on every backend", 3
   t.bugOpen "A62: a local record literal assigned over another module's anonymous record builds on every backend"
 
+  # A63. A local made from a module const Seq was emitted as a MOVE of the
+  # const, which Nim refuses ("immutable, not 'var'"). A const is owned by
+  # nobody, so the local holds a copy. Found finishing std.crypto.
+  t.src """
+import seq
+
+const table: Seq[u64] = [1, 2, 3]
+
+fn main() -> int:
+  var state = table
+  state = {items: state, value: 4} push
+  return state.len + table.len
+"""
+  t.quietly: t.hostRuns "A63: a local made from a module const Seq holds a copy", 7
+  t.bugFixed "A63: a local made from a module const Seq holds a copy"
+
+  # A64. An index literal adopted the expected type of the place around it:
+  # in `{a: m[0], b: 1.0} near` (a: f32) the 0 became an f32 and indexing was
+  # refused. The index is an int whatever the field wants. Found finishing
+  # platform.dsp.
+  t.src """
+import seq
+
+fn near({a: f32, b: f32}) -> bool:
+  return a == b
+
+fn main() -> int:
+  let m: Seq[f32] = [1.0, 2.0]
+  let ok = {a: m[0], b: 1.0} near
+  if ok:
+    return 1
+  return 0
+"""
+  t.quietly: t.runs "A64: an index literal stays an int inside a float-typed payload field", 1
+  t.bugFixed "A64: an index literal stays an int inside a float-typed payload field"
+
+  # A65. An `if` with a `-> void` call in one branch and an assignment in the
+  # other was refused ("void vs unit"). Both are statements. Found finishing
+  # std.regex.
+  t.src """
+import seq
+
+fn main() -> int:
+  var s: Seq[int] = [1, 2]
+  if s.len > 5:
+    {items: s, index: 0, value: 9} setAt
+  else:
+    s = {items: s, value: 3} push
+  return s.len
+"""
+  t.quietly: t.runs "A65: an if may hold a void call in one branch and an assignment in the other", 3
+  t.bugFixed "A65: an if may hold a void call in one branch and an assignment in the other"
+
+  # A66. A Tuck module named `fmt` (or `os`) collided with Odin's core package
+  # of that name: "Redeclaration of 'fmt'". The core packages are imported as
+  # odin_fmt / odin_os when the program has such a module. Found finishing
+  # std.cli.
+  t.src """
+import fmt
+
+fn main() -> int:
+  let s = {body: "ab", width: 4, alignRight: false} pad
+  return {t: s} byteLen
+"""
+  t.addFile("fmt.tuck", """fn pad({body: str, width: int, alignRight: bool}) -> str:
+  return body + "  "
+
+fn byteLen({t: str}) -> int:
+  return 4
+""")
+  t.quietly: t.hostRuns "A66: a Tuck module named fmt builds on every backend", 4
+  t.bugFixed "A66: a Tuck module named fmt builds on every backend"
+
   t.finish()

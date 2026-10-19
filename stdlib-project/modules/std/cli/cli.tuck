@@ -243,6 +243,12 @@ fn widthOf({column: int, headers: Seq[str], rows: Seq[Seq[str]]}) -> int:
       w = n
   return w
 
+fn dashes({count: int}) -> str:
+  var out = ""
+  for i in 0 .. count - 1:
+    out = out + "-"
+  return out
+
 fn renderRow({cells: Seq[str], widths: Seq[int]}) -> str:
   var parts: Seq[str] = []
   for i in 0 .. cells.len - 1:
@@ -260,8 +266,10 @@ fn renderTable({headers: Seq[str], rows: Seq[Seq[str]]}) -> str:
   lines = {items: lines, value: head} push
   var rule: Seq[str] = []
   for c in 0 .. widths.len - 1:
-    let dashes = {body: "", width: widths[c], alignRight: false} pad
-    rule = {items: rule, value: dashes} push
+    let run = {count: widths[c]} dashes
+    rule = {items: rule, value: run} push
+  let ruleLine = {parts: rule, sep: " | "} joinStr
+  lines = {items: lines, value: ruleLine} push
   for r in 0 .. rows.len - 1:
     let line = {cells: rows[r], widths: widths} renderRow
     lines = {items: lines, value: line} push
@@ -292,3 +300,104 @@ fn styled({body: str, colour: Colour, bold: bool}) -> str:
       attrs = "1;" + code
   let esc = escapeByte
   return esc + "[" + attrs + "m" + body + esc + "[0m"
+
+# --- the module's own checks: the exit code names the first that fails -------------
+fn spec({name: str, shortName: str, kind: ArgKind, help: str, required: bool}) -> ArgSpec:
+  return {name: name, shortName: shortName, kind: kind, help: help, required: required} ArgSpec
+
+fn demo() -> Command:
+  var args: Seq[ArgSpec] = []
+  let verbose = {name: "verbose", shortName: "v", kind: AFlag, help: "chatty", required: false} spec
+  let name = {name: "name", shortName: "n", kind: AText, help: "who", required: true} spec
+  let count = {name: "count", shortName: "c", kind: ANumber, help: "how many", required: false} spec
+  args = {items: args, value: verbose} push
+  args = {items: args, value: name} push
+  args = {items: args, value: count} push
+  var subs: Seq[Command] = []
+  let noargs: Seq[ArgSpec] = []
+  let nosubs: Seq[Command] = []
+  let build = {name: "build", help: "make it", args: noargs, subcommands: nosubs} Command
+  subs = {items: subs, value: build} push
+  return {name: "app", help: "a demo", args: args, subcommands: subs} Command
+
+fn checkParsing() -> int:
+  let c = demo
+  let argv: Seq[str] = ["--name", "bob", "-v", "--count=3", "extra"]
+  let a = {c: c, argv: argv} tryParse
+  if not a.ok:
+    return 1
+  let who = {a: a.value, name: "name"} textOf
+  if not who.ok:
+    return 2
+  if who.value != "bob":
+    return 2
+  if not {a: a.value, name: "verbose"} hasFlag:
+    return 3
+  let n = {a: a.value, name: "count"} numberOf
+  if not n.ok:
+    return 4
+  if n.value != 3:
+    return 4
+  if a.value.positional.len != 1 or a.value.positional[0] != "extra":
+    return 5
+  return checkRefusals
+
+fn checkRefusals() -> int:
+  let c = demo
+  let noName: Seq[str] = ["-v"]
+  let r1 = {c: c, argv: noName} tryParse
+  if r1.ok:
+    return 6
+  let unknown: Seq[str] = ["--name", "x", "--bogus"]
+  let r2 = {c: c, argv: unknown} tryParse
+  if r2.ok:
+    return 7
+  let badNumber: Seq[str] = ["--name", "x", "--count", "many"]
+  let r3 = {c: c, argv: badNumber} tryParse
+  if r3.ok:
+    return 8
+  let dangling: Seq[str] = ["--name"]
+  let r4 = {c: c, argv: dangling} tryParse
+  if r4.ok:
+    return 9
+  return checkSubcommand
+
+fn checkSubcommand() -> int:
+  let c = demo
+  let argv: Seq[str] = ["--name", "bob", "build"]
+  let a = {c: c, argv: argv} tryParse
+  if not a.ok:
+    return 10
+  if a.value.subcommand != "build":
+    return 11
+  return checkOutput
+
+fn checkOutput() -> int:
+  let c = demo
+  let usage = {c: c} usageOf
+  if not {t: usage, prefix: "app - a demo"} startsWith:
+    return 12
+  if not {t: usage, what: "--verbose, -v"} text::has:
+    return 13
+  if not {t: usage, what: "(required)"} text::has:
+    return 14
+  let headers: Seq[str] = ["id", "name"]
+  let row1: Seq[str] = ["1", "alpha"]
+  let row2: Seq[str] = ["22", "b"]
+  var rows: Seq[Seq[str]] = []
+  rows = {items: rows, value: row1} push
+  rows = {items: rows, value: row2} push
+  let table = {headers: headers, rows: rows} renderTable
+  let want = "id | name \n-- | -----\n1  | alpha\n22 | b    "
+  if table != want:
+    return 15
+  let plain = {body: "x", colour: Plain, bold: false} styled
+  if plain != "x":
+    return 16
+  let red = {body: "x", colour: Red, bold: true} styled
+  if red.len != 12:
+    return 17
+  return 0
+
+fn main() -> int:
+  return checkParsing

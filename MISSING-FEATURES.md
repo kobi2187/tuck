@@ -98,6 +98,25 @@ it in.
   record, so Odin sees `TRec_random_state_inc` and `TRec_state_inc`. check and
   Nim are fine. Found rewriting `std/random` in Tuck.
 
+- **A63 (issue #146) — a local made from a module const Seq was a move of the
+  const.** `var state = table` emitted `tuckMove(table)`, which Nim refuses.
+  `copiesRead` took a non-local root for a temporary. Fixed: a module const's
+  read copies. Found finishing `std.crypto`.
+
+- **A64 (issue #147) — an index literal adopted the expected type of the place
+  around it.** `{a: m[0], b: 1.0} near` with `a: f32` read the `0` as an `f32`
+  ("index must be int"). Fixed: an index is synthesized under an expected
+  `int`. Found finishing `platform.dsp`.
+
+- **A65 (issue #148) — an `if` with a void call in one branch and an assignment
+  in the other was refused ("void vs unit").** Fixed: both are "no value".
+  Found finishing `std.regex`.
+
+- **A66 (issue #149) — a Tuck module named `fmt` or `os` collided with Odin's
+  core package.** "Redeclaration of 'fmt'" on the Odin build. Fixed: the core
+  packages are imported as `odin_fmt` / `odin_os` when the program has such a
+  module. Found finishing `std.cli`.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

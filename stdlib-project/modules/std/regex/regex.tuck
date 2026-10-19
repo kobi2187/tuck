@@ -432,9 +432,17 @@ fn withCap({caps: Seq[int], slot: int, value: int}) -> Seq[int]:
   {items: c, index: slot, value: value} setAt
   return c
 
-fn pushThread({threads: Seq[Thread], pc: int, pos: int, caps: Seq[int]}) -> Seq[Thread]:
+# The pending threads are a pile held in a Seq with a separate live count `sp`:
+# a pop only lowers `sp` and a push overwrites the slot above it, so neither
+# touches the other threads.
+fn spawn({pile: Seq[Thread], sp: int, pc: int, pos: int, caps: Seq[int]}) -> Seq[Thread]:
   let t = {pc: pc, pos: pos, caps: caps} Thread
-  return {items: threads, value: t} push
+  var s = pile
+  if sp < s.len:
+    {items: s, index: sp, value: t} setAt
+  else:
+    s = {items: s, value: t} push
+  return s
 
 # Run `re` against `subject` starting at `start`. `whole`: only a match that
 # ends at the end of the subject counts. At most `budget` instructions.
@@ -442,15 +450,12 @@ fn execute({re: Regex, subject: str, start: int, whole: bool, budget: int}) -> R
   let n = {t: subject} byteCount
   var threads: Seq[Thread] = []
   let first = {groups: re.groups} blankCaps
-  threads = {threads: threads, pc: 0, pos: start, caps: first} pushThread
+  threads = {pile: threads, sp: 0, pc: 0, pos: start, caps: first} spawn
+  var sp = 1
   var steps = 0
-  for threads.len > 0:
-    let top = threads.len - 1
-    let t = threads[top]
-    var rest: Seq[Thread] = []
-    for i in 0 .. top - 1:
-      rest = {items: rest, value: threads[i]} push
-    threads = rest
+  for sp > 0:
+    sp = sp - 1
+    let t = threads[sp]
     var pc = t.pc
     var pos = t.pos
     var caps = t.caps
@@ -487,7 +492,8 @@ fn execute({re: Regex, subject: str, start: int, whole: bool, budget: int}) -> R
         pc = pc + 1
         pos = pos + 1
       elif ins.op == 3:
-        threads = {threads: threads, pc: ins.y, pos: pos, caps: caps} pushThread
+        threads = {pile: threads, sp: sp, pc: ins.y, pos: pos, caps: caps} spawn
+        sp = sp + 1
         pc = ins.x
       elif ins.op == 4:
         pc = ins.x

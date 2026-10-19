@@ -63,6 +63,18 @@ proc runtimeUsers*(m: Module, actorNames: var seq[string],
     if runsActor(d): actorNames.add(d.name)
     elif d.kind == dkTask: hasTasks = true
 
+proc aliasCoreImports(text: string, real: Table[string, Module]): string =
+  ## A Tuck module called `fmt` or `os` is imported as `fmt`/`os`, which is
+  ## also what the emitted code calls Odin's core packages (#149). When the
+  ## program has such a module the core packages go by `odin_fmt`/`odin_os`.
+  result = text
+  if "fmt" in real:
+    result = result.replace("import \"core:fmt\"", "import odin_fmt \"core:fmt\"")
+      .replace("fmt.println(", "odin_fmt.println(")
+  if "os" in real:
+    result = result.replace("import \"core:os\"", "import odin_os \"core:os\"")
+      .replace("os.exit(", "odin_os.exit(")
+
 proc emitOdinModule*(name: string, m: Module, res: Resolution,
                      realModules = initTable[string, Module]()): string =
   ## An imported Tuck module as its own Odin package (`package tuck_<name>`,
@@ -80,7 +92,7 @@ proc emitOdinModule*(name: string, m: Module, res: Resolution,
   if name == VariantsModule: res.add(variantsHeader(m, "//"))
   # This file lives in mod_<pkg>/, so siblings are one level up.
   var imports: seq[string]
-  if "fmt." in body: imports.add("import \"core:fmt\"")
+  if "fmt.println(" in body: imports.add("import \"core:fmt\"")
   if "rt." in body: imports.add("import rt \"../tuckrt\"")
   for modName in realModules.keys:
     let dep = modName.replace("-", "_")
@@ -99,16 +111,16 @@ proc emitOdinModule*(name: string, m: Module, res: Resolution,
   for h in ctx.hoisted:
     res.add(h & "\n\n")
   res.add(body)
-  res
+  aliasCoreImports(res, realModules)
 
 proc shouldImportFmt(body, mains: string): bool =
   ## Check if fmt import is needed.
-  "fmt." in body or "fmt." in mains
+  "fmt.println(" in body or "fmt.println(" in mains
 
 proc shouldImportOs(m: Module, body: string): bool =
   ## Check if os import is needed.
   let mainFn = mainDecl(m)
-  (mainFn != nil and mainFn.returnsValue) or "os." in body
+  (mainFn != nil and mainFn.returnsValue) or "os.exit(" in body
 
 proc slabPackages(m: Module, real: Table[string, Module]): seq[string] =
   ## The modules declaring slabs, "" for the entry module's own. The entry
@@ -334,3 +346,4 @@ proc emitOdin*(m: Module, res: Resolution,
     result.add(h & "\n\n")
   result.add(body)
   result.add(ctx.genEntryPoint(m, body, mains))
+  result = aliasCoreImports(result, realModules)

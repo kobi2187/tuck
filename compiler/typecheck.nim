@@ -1920,11 +1920,17 @@ proc synthBranches(tc: var TypeChecker, e: Expr, guard: string): (Type, Type) =
   tc.varVariants = mergeVariants(thenVariants, tc.varVariants)
   (thenT, elseT)
 
+proc isNoValue(t: Type): bool =
+  ## `void` or `unit`: a statement's type. A call to a `-> void` fn and an
+  ## assignment are both statements, so an `if` may have one of each (#148).
+  t != nil and t.kind == tkNamed and t.name in ["void", "unit"]
+
 proc synthIf(tc: var TypeChecker, e: Expr): Type =
   ## Branches that produce values must agree on the type.
   tc.checkCondition(e.cond, e.span)
   let (thenT, elseT) = tc.synthBranches(e, tc.okGuardName(e.cond))
   if e.elseBranch != nil and not isFlexible(thenT) and not isFlexible(elseT) and
+     not (isNoValue(thenT) and isNoValue(elseT)) and
      not tc.compatible(thenT, elseT) and not tc.compatible(elseT, thenT):
     fail("Type Error: if branches produce different types: " &
          typeName(thenT) & " vs " & typeName(elseT), e.span)
@@ -5442,7 +5448,10 @@ proc resolveIndex(tc: var TypeChecker, br: Expr, value: Expr,
     fail("Type Error: indexing takes exactly one index, got " &
          $br.brArgs.len, sp)
   let idx = br.brArgs[0]
-  let idxT = tc.synthesize(idx)
+  # The index is an int whatever the element or the place around it wants: the
+  # expected type of `{a: m[0]} near` is f32, and the 0 must not adopt it.
+  var idxT: Type
+  tc.withExpected(tc.namedType("int", sp)): idxT = tc.synthesize(idx)
   if not isFlexible(idxT) and not (idxT.kind == tkNamed and idxT.name == "int"):
     fail("Type Error: index must be int, got " & typeName(idxT), idx.span)
   var fields = @[("items", br.brReceiver), ("index", idx)]

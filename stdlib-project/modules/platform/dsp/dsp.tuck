@@ -76,9 +76,7 @@ fn near({a: f32, b: f32}) -> bool:
   return d < 0.0001 and d > -0.0001
 
 fn checkAverage() -> int:
-  var xs: Seq[f32] = []
-  for v in [1.0, 2.0, 3.0, 4.0, 5.0]:
-    xs = {items: xs, value: v} push
+  let xs: Seq[f32] = [1.0, 2.0, 3.0, 4.0, 5.0]
   let m = {samples: xs, window: 2} movingAverage
   if m.len != 5:
     return 1
@@ -89,9 +87,7 @@ fn checkAverage() -> int:
   return 0
 
 fn checkRms() -> int:
-  var xs: Seq[f32] = []
-  for v in [3.0, 4.0]:
-    xs = {items: xs, value: v} push
+  let xs: Seq[f32] = [3.0, 4.0]
   let r = {samples: xs} rmsOf
   if not {a: r, b: 3.5355339} near:
     return 4
@@ -103,9 +99,7 @@ fn checkRms() -> int:
 fn checkBiquad() -> int:
   # A pass-through filter (b0 = 1, the rest 0) returns its input unchanged.
   let f = {b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0} biquad
-  var xs: Seq[f32] = []
-  for v in [0.5, -1.0, 2.0]:
-    xs = {items: xs, value: v} push
+  let xs: Seq[f32] = [0.5, -1.0, 2.0]
   let ys = {f: f, samples: xs} biquadRun
   if ys.len != 3 or ys[1] != -1.0 or ys[2] != 2.0:
     return 6
