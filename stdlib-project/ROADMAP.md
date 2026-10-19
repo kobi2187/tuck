@@ -37,6 +37,7 @@ blocks compile in. Without the flag nothing changes: the blessed `std/` is used.
 | Tier | Module | Tuck | Nim | Odin | D |
 |---|---|---|---|---|---|
 | core | array, cmp, convert, error, fmt, geom, hash, iter, num, str (`text`), types | yes | pass | pass | not run |
+| platform | power (sleep depths, wake sources), boot (regions, lookup, overlap) | yes | pass | pass | not run |
 | std | math (Decimal, statistics, float functions), chrono (pure calendar; no zone database), perf (stopwatch, counter, histogram), testing (results, report), i18n (case folding, edit distance, words, graphemes, Latin-1 normalization), queue (append-only log over std/fs) | yes | pass | pass | not run |
 | alloc | deque, list, map, set, string, vec | yes | pass | pass | not run |
 | std | encoding (JSON print/access written, Nim passes; parser, base64, CSV not started) | partial | pass | **blocked: #134** | |

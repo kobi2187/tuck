@@ -1,0 +1,139 @@
+# platform.boot — the memory regions a part has, and questions about them.
+#
+# The regions come from a board table (the devicetree or an SVD import); this
+# module is the lookup and the checks over a table, not the table. Whether a
+# PersistentRam region has already been initialised is a hardware read and a
+# hardware write, which the board layer owns: a fresh boot must not assume RAM
+# is zero where the part keeps it across a reset.
+import seq
+import str
+
+type RegionKind:
+  | Flash
+  | Ram
+  | PersistentRam
+  | Peripheral
+
+type Region:
+  name: str
+  kind: RegionKind
+  base: u32
+  size: u32
+
+fn region({name: str, kind: RegionKind, base: u32, size: u32}) -> Region:
+  return {name: name, kind: kind, base: base, size: size} Region
+
+# One past the last address, as a wider integer so a region ending at the top
+# of the 32-bit space does not overflow.
+fn endOf({r: Region}) -> u64:
+  let b = {value: r.base} u64
+  let s = {value: r.size} u64
+  return b + s
+
+fn regionOf({regions: Seq[Region], name: str}) -> Region?:
+  for i in 0 .. regions.len - 1:
+    if regions[i].name == name:
+      return regions[i]
+  return none
+
+# Which region holds this address?
+fn regionAt({regions: Seq[Region], address: u32}) -> Region?:
+  let a = {value: address} u64
+  for i in 0 .. regions.len - 1:
+    let lo = {value: regions[i].base} u64
+    let hi = {r: regions[i]} endOf
+    if a >= lo and a < hi:
+      return regions[i]
+  return none
+
+fn overlaps({a: Region, b: Region}) -> bool:
+  let aLo = {value: a.base} u64
+  let bLo = {value: b.base} u64
+  let aHi = {r: a} endOf
+  let bHi = {r: b} endOf
+  return aLo < bHi and bLo < aHi
+
+# Names of the first pair of regions that overlap, or absent for a sound table.
+fn firstOverlap({regions: Seq[Region]}) -> str?:
+  for i in 0 .. regions.len - 1:
+    for j in i + 1 .. regions.len - 1:
+      if {a: regions[i], b: regions[j]} overlaps:
+        return regions[i].name + "/" + regions[j].name
+  return none
+
+fn keepsAcrossReset({r: Region}) -> bool:
+  match r.kind:
+    Flash: return true
+    PersistentRam: return true
+    Ram: return false
+    Peripheral: return false
+
+fn board() -> Seq[Region]:
+  var rs: Seq[Region] = []
+  let flash = {name: "flash", kind: RegionKind.Flash, base: 134217728, size: 1048576} region
+  let ram = {name: "ram", kind: RegionKind.Ram, base: 536870912, size: 131072} region
+  let keep = {name: "keep", kind: RegionKind.PersistentRam, base: 1073741824, size: 4096} region
+  rs = {items: rs, value: flash} push
+  rs = {items: rs, value: ram} push
+  rs = {items: rs, value: keep} push
+  return rs
+
+fn checkLookup() -> int:
+  let rs = board
+  let ram = {regions: rs, name: "ram"} regionOf
+  if not ram.ok:
+    return 1
+  if ram.value.size != 131072:
+    return 2
+  let nope = {regions: rs, name: "dma"} regionOf
+  if nope.ok:
+    return 3
+  let at = {regions: rs, address: 536870920} regionAt
+  if not at.ok:
+    return 4
+  if at.value.name != "ram":
+    return 5
+  let gap = {regions: rs, address: 4} regionAt
+  if gap.ok:
+    return 6
+  return 0
+
+fn checkOverlap() -> int:
+  let rs = board
+  let clean = {regions: rs} firstOverlap
+  if clean.ok:
+    return 7
+  let extra = {name: "dma", kind: RegionKind.Ram, base: 536870912, size: 64} region
+  let bad = {items: rs, value: extra} push
+  let found = {regions: bad} firstOverlap
+  if not found.ok:
+    return 8
+  if found.value != "ram/dma":
+    return 9
+  let top = {name: "top", kind: RegionKind.Flash, base: 4294967040, size: 256} region
+  if {r: top} endOf != 4294967296:
+    return 10
+  return 0
+
+fn checkPersist() -> int:
+  let rs = board
+  let keep = {regions: rs, name: "keep"} regionOf
+  let ram = {regions: rs, name: "ram"} regionOf
+  if not keep.ok:
+    return 11
+  if not ram.ok:
+    return 11
+  if not {r: keep.value} keepsAcrossReset:
+    return 12
+  if {r: ram.value} keepsAcrossReset:
+    return 13
+  return 0
+
+fn main() -> int:
+  let a = checkLookup
+  if a != 0:
+    return a
+  let b = checkOverlap
+  if b != 0:
+    return b
+  return checkPersist

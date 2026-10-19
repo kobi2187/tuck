@@ -1,0 +1,115 @@
+# platform.power — sleep depths, wake sources, and choosing between them.
+#
+# The hardware calls (`enterSleep`, `lastWakeReason`, the clock tree) are
+# vendor-specific and belong to a board layer that implements them. This is the
+# part that is only logic: which depth honours every wake source a program asked
+# for. "Ask first, then choose" — there is no silent downgrade.
+import seq
+
+type SleepDepth:
+  | Light
+  | Deep
+  | Coldest
+
+type WakeKind:
+  | ByTimer
+  | ByGpio
+  | ByRtc
+  | ByBusTraffic
+  | ColdStart
+
+type WakeSource:
+  kind: WakeKind
+  pin: int
+  afterMs: u32
+
+type WakeReason:
+  kind: WakeKind
+  pin: int
+
+# 0 = Light, 1 = Deep, 2 = Coldest: the order a depth is compared in.
+fn depthRank({d: SleepDepth}) -> int:
+  match d:
+    Light: return 0
+    Deep: return 1
+    Coldest: return 2
+
+fn depthOfRank({rank: int}) -> SleepDepth:
+  if rank <= 0:
+    return SleepDepth.Light
+  if rank == 1:
+    return SleepDepth.Deep
+  return SleepDepth.Coldest
+
+# The deepest depth at which a source can still wake the part. A bus peripheral
+# loses its clock below Light, a pin wake needs the pin logic kept alive (Deep),
+# and a timer or the RTC survives everything. A cold start is a reset, so it
+# asks nothing of the sleep itself.
+fn deepestFor1({kind: WakeKind}) -> SleepDepth:
+  match kind:
+    ByTimer: return SleepDepth.Coldest
+    ByRtc: return SleepDepth.Coldest
+    ColdStart: return SleepDepth.Coldest
+    ByGpio: return SleepDepth.Deep
+    ByBusTraffic: return SleepDepth.Light
+
+# The deepest depth that honours EVERY source: the shallowest of their limits.
+# With no sources nothing can wake the part, so no depth is safe to leave.
+fn deepestFor({sources: Seq[WakeSource]}) -> SleepDepth?:
+  if sources.len == 0:
+    return none
+  var limit = 2
+  for i in 0 .. sources.len - 1:
+    let d = {kind: sources[i].kind} deepestFor1
+    let r = {d: d} depthRank
+    if r < limit:
+      limit = r
+  return {rank: limit} depthOfRank
+
+fn source({kind: WakeKind, pin: int, afterMs: u32}) -> WakeSource:
+  return {kind: kind, pin: pin, afterMs: afterMs} WakeSource
+
+fn reasonOf({s: WakeSource}) -> WakeReason:
+  return {kind: s.kind, pin: s.pin} WakeReason
+
+fn checkDepth() -> int:
+  var srcs: Seq[WakeSource] = []
+  let timer = {kind: WakeKind.ByTimer, pin: 0, afterMs: 5000} source
+  srcs = {items: srcs, value: timer} push
+  let a = {sources: srcs} deepestFor
+  if not a.ok:
+    return 1
+  if a.value != SleepDepth.Coldest:
+    return 2
+  let button = {kind: WakeKind.ByGpio, pin: 7, afterMs: 0} source
+  srcs = {items: srcs, value: button} push
+  let b = {sources: srcs} deepestFor
+  if not b.ok:
+    return 3
+  if b.value != SleepDepth.Deep:
+    return 4
+  let bus = {kind: WakeKind.ByBusTraffic, pin: 0, afterMs: 0} source
+  srcs = {items: srcs, value: bus} push
+  let c = {sources: srcs} deepestFor
+  if not c.ok:
+    return 5
+  if c.value != SleepDepth.Light:
+    return 6
+  let empty: Seq[WakeSource] = []
+  let d = {sources: empty} deepestFor
+  if d.ok:
+    return 7
+  return 0
+
+fn checkReason() -> int:
+  let button = {kind: WakeKind.ByGpio, pin: 7, afterMs: 0} source
+  let r = {s: button} reasonOf
+  if r.pin != 7 or r.kind != WakeKind.ByGpio:
+    return 8
+  return 0
+
+fn main() -> int:
+  let a = checkDepth
+  if a != 0:
+    return a
+  return checkReason
