@@ -60,6 +60,8 @@ A module that hit a compiler bug is left where it stopped, the bug is filed, and
 module is started. No workaround is written into a module. Finish these after the fixes:
 
 * `std.encoding`: #134 (`_` arm over a payload sum, Odin).
+* `std.cli`: #136 (a literal pushed onto `Seq[u8]`). Parser, usage, table and colour are
+  written (the interactive prompts and progress are host-backed and not started).
 * `std.crypto`: #135 (`Seq[u8]`/`Seq[u64]` list literals). SHA-256, HMAC-SHA256 and a
   constant-time compare are written; the round-constant table cannot be.
 

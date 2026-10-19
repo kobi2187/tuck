@@ -3645,4 +3645,17 @@ fn main() -> int:
   t.quietly: t.runs "A53: a list of integer literals takes the expected element type", 2
   t.bugOpen "A53: a list of integer literals takes the expected element type"
 
+  # A54. A literal pushed onto a Seq[u8] binds T twice: `T` is u8 from `items`,
+  # then int from the literal, instead of the literal adopting the binding.
+  t.src """
+import seq
+
+fn main() -> int:
+  var b: Seq[u8] = []
+  b = {items: b, value: 27} push
+  return b.len
+"""
+  t.quietly: t.runs "A54: a literal pushed onto a Seq[u8] adopts the element type", 1
+  t.bugOpen "A54: a literal pushed onto a Seq[u8] adopts the element type"
+
   t.finish()

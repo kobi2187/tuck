@@ -1,0 +1,294 @@
+# std.cli — a declarative command tree, an argument parser over it, usage text,
+# tables and ANSI styling.
+#
+# A Command is plain data (`subcommands: Seq[Command]` recurses through Seq),
+# so the parser and `usageOf` are ordinary recursive functions over it, with no
+# macro. Parsing returns `?`: a bad command line is an absent answer.
+#
+# Not here: prompts (`ask`, `askSecret`, `confirm`), progress bars and
+# `isTerminal`. Those read and write the terminal, so they are host-backed and
+# belong to a pass that adds the console externs they need.
+import seq
+import str
+import text
+import convert
+import fmt
+
+type ArgKind:
+  | AFlag
+  | AText
+  | ANumber
+
+type ArgSpec:
+  name: str
+  shortName: str
+  kind: ArgKind
+  help: str
+  required: bool
+
+type Command:
+  name: str
+  help: str
+  args: Seq[ArgSpec]
+  subcommands: Seq[Command]
+
+type Entry:
+  key: str
+  value: str
+
+# `subcommand` is the name chosen, "" when none was.
+type Args:
+  values: Seq[Entry]
+  positional: Seq[str]
+  subcommand: str
+
+type Colour:
+  | Plain
+  | Red
+  | Green
+  | Yellow
+  | Blue
+
+# --- lookup -------------------------------------------------------------------
+fn specNamed({c: Command, name: str}) -> ArgSpec?:
+  for i in 0 .. c.args.len - 1:
+    if c.args[i].name == name:
+      return c.args[i]
+  return none
+
+fn specShort({c: Command, letter: str}) -> ArgSpec?:
+  for i in 0 .. c.args.len - 1:
+    if c.args[i].shortName == letter:
+      return c.args[i]
+  return none
+
+fn subcommandNamed({c: Command, name: str}) -> Command?:
+  for i in 0 .. c.subcommands.len - 1:
+    if c.subcommands[i].name == name:
+      return c.subcommands[i]
+  return none
+
+fn textOf({a: Args, name: str}) -> str?:
+  for i in 0 .. a.values.len - 1:
+    if a.values[i].key == name:
+      return a.values[i].value
+  return none
+
+fn numberOf({a: Args, name: str}) -> i64?:
+  let t = {a: a, name: name} textOf
+  if not t.ok:
+    return none
+  return {t: t.value} parseInt
+
+fn hasFlag({a: Args, name: str}) -> bool:
+  let t = {a: a, name: name} textOf
+  return t.ok
+
+# --- parsing ------------------------------------------------------------------
+fn isNumber({t: str}) -> bool:
+  let n = {t: t} parseInt
+  return n.ok
+
+# Does `spec` accept `value`? A flag takes none; a number must parse.
+fn accepts({spec: ArgSpec, value: str}) -> bool:
+  match spec.kind:
+    AFlag: return false
+    AText: return true
+    ANumber: return {t: value} isNumber
+
+fn isFlag({spec: ArgSpec}) -> bool:
+  match spec.kind:
+    AFlag: return true
+    AText: return false
+    ANumber: return false
+
+# Every required argument of `c` present in `a`.
+fn requiredPresent({c: Command, a: Args}) -> bool:
+  for i in 0 .. c.args.len - 1:
+    if c.args[i].required:
+      if not {a: a, name: c.args[i].name} hasFlag:
+        return false
+  return true
+
+fn withEntry({a: Args, key: str, value: str}) -> Args:
+  let e = {key: key, value: value} Entry
+  let grown = {items: a.values, value: e} push
+  return {values: grown, positional: a.positional, subcommand: a.subcommand} Args
+
+fn withPositional({a: Args, word: str}) -> Args:
+  let grown = {items: a.positional, value: word} push
+  return {values: a.values, positional: grown, subcommand: a.subcommand} Args
+
+# Parse `argv` (the program name already removed) against `c`. `--name value`,
+# `--name=value`, `-s value`, bare words as positionals; a first bare word that
+# names a subcommand hands the rest of the line to that subcommand.
+fn tryParse({c: Command, argv: Seq[str]}) -> Args?:
+  let empty: Seq[Entry] = []
+  let words: Seq[str] = []
+  var a = {values: empty, positional: words, subcommand: ""} Args
+  var i = 0
+  for i < argv.len:
+    let arg = argv[i]
+    i = i + 1
+    if {t: arg, prefix: "--"} startsWith:
+      let argLen = {t: arg} byteCount
+      let body = {t: arg, start: 2, stop: argLen} slice
+      if not body.ok:
+        return none
+      var name = body.value
+      var attached = ""
+      var hasAttached = false
+      let eq = {t: body.value, what: "="} text::find
+      if eq.ok:
+        let n = {t: body.value, start: 0, stop: eq.value} slice
+        let bodyLen = {t: body.value} byteCount
+        let v = {t: body.value, start: eq.value + 1, stop: bodyLen} slice
+        if not n.ok:
+          return none
+        if not v.ok:
+          return none
+        name = n.value
+        attached = v.value
+        hasAttached = true
+      let spec = {c: c, name: name} specNamed
+      if not spec.ok:
+        return none
+      if {spec: spec.value} isFlag:
+        a = {a: a, key: name, value: "true"} withEntry
+      else:
+        var value = attached
+        if not hasAttached:
+          if i >= argv.len:
+            return none
+          value = argv[i]
+          i = i + 1
+        if not {spec: spec.value, value: value} accepts:
+          return none
+        a = {a: a, key: name, value: value} withEntry
+    elif {t: arg, prefix: "-"} startsWith and {t: arg} byteCount == 2:
+      let letter = {s: arg, index: 1} charAt
+      let spec = {c: c, letter: letter} specShort
+      if not spec.ok:
+        return none
+      if {spec: spec.value} isFlag:
+        a = {a: a, key: spec.value.name, value: "true"} withEntry
+      else:
+        if i >= argv.len:
+          return none
+        let value = argv[i]
+        i = i + 1
+        if not {spec: spec.value, value: value} accepts:
+          return none
+        a = {a: a, key: spec.value.name, value: value} withEntry
+    else:
+      let sub = {c: c, name: arg} subcommandNamed
+      if sub.ok:
+        if a.positional.len == 0:
+          let rest = {items: argv, start: i} tailFrom
+          let inner = {c: sub.value, argv: rest} tryParse
+          if not inner.ok:
+            return none
+          return {a: a, inner: inner.value, name: arg} merged
+      a = {a: a, word: arg} withPositional
+  if not {c: c, a: a} requiredPresent:
+    return none
+  return a
+
+fn tailFrom({items: Seq[str], start: int}) -> Seq[str]:
+  var out: Seq[str] = []
+  for i in start .. items.len - 1:
+    out = {items: out, value: items[i]} push
+  return out
+
+# The outer line's own entries first, then the subcommand's.
+fn merged({a: Args, inner: Args, name: str}) -> Args:
+  var vals = a.values
+  for i in 0 .. inner.values.len - 1:
+    vals = {items: vals, value: inner.values[i]} push
+  var pos = a.positional
+  for i in 0 .. inner.positional.len - 1:
+    pos = {items: pos, value: inner.positional[i]} push
+  return {values: vals, positional: pos, subcommand: name} Args
+
+# --- usage ----------------------------------------------------------------------
+fn flagText({spec: ArgSpec}) -> str:
+  var s = "--" + spec.name
+  if {t: spec.shortName} byteCount > 0:
+    s = s + ", -" + spec.shortName
+  return s
+
+fn usageOf({c: Command}) -> str:
+  var lines: Seq[str] = []
+  lines = {items: lines, value: c.name + " - " + c.help} push
+  for i in 0 .. c.args.len - 1:
+    let spec = c.args[i]
+    let flag = {spec: spec} flagText
+    let left = {body: flag, width: 18, alignRight: false} pad
+    var line = "  " + left + spec.help
+    if spec.required:
+      line = line + " (required)"
+    lines = {items: lines, value: line} push
+  for i in 0 .. c.subcommands.len - 1:
+    let sub = c.subcommands[i]
+    let left = {body: sub.name, width: 18, alignRight: false} pad
+    lines = {items: lines, value: "  " + left + sub.help} push
+  return {parts: lines, sep: "\n"} joinStr
+
+# --- tables and colour ------------------------------------------------------------
+fn widthOf({column: int, headers: Seq[str], rows: Seq[Seq[str]]}) -> int:
+  var w = {t: headers[column]} byteCount
+  for r in 0 .. rows.len - 1:
+    let n = {t: rows[r][column]} byteCount
+    if n > w:
+      w = n
+  return w
+
+fn renderRow({cells: Seq[str], widths: Seq[int]}) -> str:
+  var parts: Seq[str] = []
+  for i in 0 .. cells.len - 1:
+    let cell = {body: cells[i], width: widths[i], alignRight: false} pad
+    parts = {items: parts, value: cell} push
+  return {parts: parts, sep: " | "} joinStr
+
+fn renderTable({headers: Seq[str], rows: Seq[Seq[str]]}) -> str:
+  var widths: Seq[int] = []
+  for c in 0 .. headers.len - 1:
+    let w = {column: c, headers: headers, rows: rows} widthOf
+    widths = {items: widths, value: w} push
+  var lines: Seq[str] = []
+  let head = {cells: headers, widths: widths} renderRow
+  lines = {items: lines, value: head} push
+  var rule: Seq[str] = []
+  for c in 0 .. widths.len - 1:
+    let dashes = {body: "", width: widths[c], alignRight: false} pad
+    rule = {items: rule, value: dashes} push
+  for r in 0 .. rows.len - 1:
+    let line = {cells: rows[r], widths: widths} renderRow
+    lines = {items: lines, value: line} push
+  return {parts: lines, sep: "\n"} joinStr
+
+fn escapeByte() -> str:
+  var b: Seq[u8] = []
+  b = {items: b, value: 27} push
+  return {bytes: b} fromBytes
+
+fn colourCode({colour: Colour}) -> str:
+  match colour:
+    Plain: return ""
+    Red: return "31"
+    Green: return "32"
+    Yellow: return "33"
+    Blue: return "34"
+
+# ANSI-styled text: "\e[1;31mtext\e[0m". Plain, not bold: the text unchanged.
+fn styled({body: str, colour: Colour, bold: bool}) -> str:
+  let code = {colour: colour} colourCode
+  if code == "" and not bold:
+    return body
+  var attrs = code
+  if bold:
+    attrs = "1"
+    if code != "":
+      attrs = "1;" + code
+  let esc = escapeByte
+  return esc + "[" + attrs + "m" + body + esc + "[0m"
