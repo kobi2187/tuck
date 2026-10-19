@@ -1,0 +1,79 @@
+# sys.process — running a command and reading how it ended.
+#
+# `ExitStatus` is the point of this module: a process either exited with a code
+# or was killed by a signal, never both, and a `match` must say what it does
+# for each. The only host call underneath is `runCommand` (std/sys), which runs a
+# shell line to completion and returns one integer, so that is what `run`
+# offers. Spawning with pipes, a pid handle, `wait` and `signalTo` need more
+# host calls than exist yet.
+#
+# By the POSIX shell convention a status of 128 + N means "killed by signal N";
+# anything below 128 is an exit code.
+import sys
+import seq
+import str
+
+type ExitStatus:
+  | Exited({code: int})
+  | Signaled({sig: int})
+
+fn statusOf({raw: int}) -> ExitStatus:
+  if raw > 128 and raw < 256:
+    return {sig: raw - 128} ExitStatus.Signaled
+  return {code: raw} ExitStatus.Exited
+
+fn succeeded({s: ExitStatus}) -> bool:
+  match s:
+    Exited: return s.code == 0
+    Signaled: return false
+
+fn describe({s: ExitStatus}) -> str:
+  match s:
+    Exited:
+      let n = {value: s.code} toStr
+      return "exited " + n
+    Signaled:
+      let n = {value: s.sig} toStr
+      return "killed by signal " + n
+
+# Run `line` through the shell, wait for it, and report how it ended. Output
+# goes where the program's own goes.
+fn run({line: str}) -> ExitStatus [io]:
+  let raw = {line: line} runCommand
+  return {raw: raw} statusOf
+
+fn checkStatus() -> int:
+  let ok = {raw: 0} statusOf
+  if not {s: ok} succeeded:
+    return 1
+  let failed = {raw: 3} statusOf
+  if {s: failed} succeeded:
+    return 2
+  let killed = {raw: 137} statusOf
+  if {s: killed} succeeded:
+    return 3
+  if {s: killed} describe != "killed by signal 9":
+    return 4
+  if {s: failed} describe != "exited 3":
+    return 5
+  match killed:
+    Exited: return 6
+    Signaled:
+      if killed.sig != 9:
+        return 7
+  return 0
+
+fn checkRun() -> int [io]:
+  let fine = {line: "true"} run
+  if not {s: fine} succeeded:
+    return 8
+  let bad = {line: "exit 3"} run
+  if {s: bad} describe != "exited 3":
+    return 9
+  return 0
+
+fn main() -> int [io]:
+  let a = checkStatus
+  if a != 0:
+    return a
+  return checkRun

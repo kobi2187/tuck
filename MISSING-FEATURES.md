@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (13)
+## A. Open bugs (14)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -87,6 +87,10 @@ it in.
   record named `h` in a later one: the second is pushed and also dropped, so the
   Seq holds freed strings (Odin segfault; Nim is fine). Found writing
   `std.net-http`.
+
+- **A61 (issue #143) — the same `let` name in two match arms fails to build on
+  Nim and Odin.** The second is emitted as an assignment to a variable declared
+  in the other arm's scope. Same family as A60. Found writing `sys.process`.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so

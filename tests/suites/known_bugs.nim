@@ -3826,4 +3826,31 @@ fn main() -> int:
   t.quietly: t.hostRuns "A60: a local reused by name in a later scope is owned independently", 9
   t.bugOpen "A60: a local reused by name in a later scope is owned independently"
 
+  # A61. The same `let` name in two match arms: the second is emitted as an
+  # assignment to a variable declared in the other arm's scope, so both
+  # backends fail to build. Found writing sys.process.
+  t.src """
+import str
+
+type S:
+  | A({x: int})
+  | B({y: int})
+
+fn name({s: S}) -> str:
+  match s:
+    A:
+      let n = {value: s.x} toStr
+      return "a" + n
+    B:
+      let n = {value: s.y} toStr
+      return "b" + n
+
+fn main() -> int:
+  let v = {y: 7} S.B
+  let text = {s: v} name
+  return {t: text} byteCount
+"""
+  t.quietly: t.hostRuns "A61: the same let name in two match arms builds on every backend", 2
+  t.bugOpen "A61: the same let name in two match arms builds on every backend"
+
   t.finish()

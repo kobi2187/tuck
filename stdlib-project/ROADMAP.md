@@ -38,6 +38,7 @@ blocks compile in. Without the flag nothing changes: the blessed `std/` is used.
 |---|---|---|---|---|---|
 | core | array, cmp, convert, error, fmt, geom, hash, iter, num, str (`text`), types | yes | pass | pass | not run |
 | platform | power (sleep depths, wake sources), boot (regions, lookup, overlap) | yes | pass | pass | not run |
+| sys | env (defaults, PATH split, `$VAR` expansion) | yes | pass | pass | not run |
 | std | math (Decimal, statistics, float functions), chrono (pure calendar; no zone database), perf (stopwatch, counter, histogram), testing (results, report), i18n (case folding, edit distance, words, graphemes, Latin-1 normalization), queue (append-only log over std/fs) | yes | pass | pass | not run |
 | alloc | deque, list, map, set, string, vec | yes | pass | pass | not run |
 | std | encoding (JSON print/access written, Nim passes; parser, base64, CSV not started) | partial | pass | **blocked: #134** | |
@@ -61,6 +62,8 @@ A module that hit a compiler bug is left where it stopped, the bug is filed, and
 module is started. No workaround is written into a module. Finish these after the fixes:
 
 * `std.encoding`: #134 (`_` arm over a payload sum, Odin).
+* `sys.process`: #143 (the same `let` name in two match arms). `ExitStatus`, `statusOf`,
+  `run` over `runCommand` are written.
 * `std.net-http`: #142 (a local reused by name across scopes; Odin segfault). Passes on Nim.
   URLs, percent-encoding, queries, request and response text, headers and cookies are written.
 * `platform.watchdog`: #141 (a literal in a `send` payload). The actor (configure, start, feed,
