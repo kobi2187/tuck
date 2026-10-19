@@ -548,7 +548,9 @@ proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
   ctx.unionBind = "v"
   for arm in e.arms:
     let patStr = genPatternStr(arm.pattern)
+    let armVars = ctx.definedVars     # each arm is its own scope (#143)
     let bodyStr = ctx.genOdinExpr(arm.body)
+    ctx.definedVars = armVars
     let caseLabel = if patStr == "_": "case:"
                     else: "case " & sumName & "_" & patStr & ":"
     if arm.body != nil and arm.body.kind == exkBlock:
@@ -597,7 +599,9 @@ proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
   let (errMatch, hasWild, overEnum) = detectMatchPatterns(e, ctx)
   for arm in e.arms:
     let patStr = genPatternStr(arm.pattern)
+    let armVars = ctx.definedVars     # each arm is its own scope (#143)
     let bodyStr = ctx.genOdinExpr(arm.body)
+    ctx.definedVars = armVars
     var caseVal = ""
     if arm.pattern != nil and arm.pattern.kind == pkVar and
        "." in arm.pattern.name:

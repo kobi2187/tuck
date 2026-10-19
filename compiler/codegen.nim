@@ -1144,6 +1144,8 @@ proc processMatchArm(ctx: var CodegenCtx, arm: MatchArm, patStr: var string,
     narrowedKey = subjectRecvStr
     ctx.matchNarrowed[narrowedKey] = arm.pattern.name
   let armHead = matchArmHead(arm.pattern, patStr)
+  let armVars = ctx.definedVars       # each arm is its own scope (#143)
+  defer: ctx.definedVars = armVars
   var result: string
   if arm.body != nil and arm.body.kind == exkBlock:
     let oldIndent = ctx.indent

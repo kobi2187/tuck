@@ -3826,7 +3826,7 @@ fn main() -> int:
   return total
 """
   t.quietly: t.hostRuns "A60: a local reused by name in a later scope is owned independently", 9
-  t.bugOpen "A60: a local reused by name in a later scope is owned independently"
+  t.bugFixed "A60: a local reused by name in a later scope is owned independently"
 
   # A61. The same `let` name in two match arms: the second is emitted as an
   # assignment to a variable declared in the other arm's scope, so both
@@ -3853,6 +3853,6 @@ fn main() -> int:
   return {t: text} byteCount
 """
   t.quietly: t.hostRuns "A61: the same let name in two match arms builds on every backend", 2
-  t.bugOpen "A61: the same let name in two match arms builds on every backend"
+  t.bugFixed "A61: the same let name in two match arms builds on every backend"
 
   t.finish()
