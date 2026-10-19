@@ -198,6 +198,16 @@ proc refVerdict(tc: TypeChecker, a, e: Type): FnRefVerdict =
   if a.kind == tkFunc: return tc.fnRefVerdict(a, e)
   vUndecided
 
+proc sameSum(tc: TypeChecker, a, b: Type): bool =
+  ## Two views of one sum type: its declared body, reached by name or direct.
+  a != nil and b != nil and a.kind == tkSum and a == b
+
+proc sumViewsMatch(tc: TypeChecker, a, e: Type): bool =
+  ## One side a sum's name, the other its body (either way round).
+  if a.kind == tkNamed: tc.sameSum(tc.resolve(a), e)
+  elif e.kind == tkNamed: tc.sameSum(a, tc.resolve(e))
+  else: false
+
 proc compatible*(tc: TypeChecker, actual, expected: Type): bool =
   ## May a value of `actual` flow where `expected` is wanted?
   var a, e: Type
@@ -210,6 +220,9 @@ proc compatible*(tc: TypeChecker, actual, expected: Type): bool =
   if isFlexible(a) or isFlexible(e): return true
   if a.kind == tkNamed and e.kind == tkNamed:
     return tc.nominalCompatible(a, e)
+  # A binding STATED as a sum (`let a: A = X`) is the sum's name, and a param
+  # typed `A` can arrive resolved to the sum's body: the same sum (#129).
+  if tc.sumViewsMatch(a, e): return true
   let verdict = tc.refVerdict(a, e)
   if verdict != vUndecided: return verdict == vYes
   let eFields = if e.kind == tkRecord: e.fields else: tc.fieldsOf(e)

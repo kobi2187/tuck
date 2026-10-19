@@ -3567,7 +3567,7 @@ fn main() -> int:
   return {a: a} f
 """
   t.quietly: t.runs "A48: a binding stated as a sum type passes to a param of that sum", 1
-  t.bugOpen "A48: a binding stated as a sum type passes to a param of that sum"
+  t.bugFixed "A48: a binding stated as a sum type passes to a param of that sum"
 
   # A49. Returning a bare record literal from a fn whose return type is a named
   # record with an `invariant:` checks OK and then fails the Nim build: the
@@ -3613,7 +3613,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.okCheck "A51: the minimum of a signed type can be written"
-  t.bugOpen "A51: the minimum of a signed type can be written"
+  t.bugFixed "A51: the minimum of a signed type can be written"
 
   # A52. A `_` arm in a match over a payload sum emits an Odin type switch Odin
   # rejects ("Unhandled switch cases"); check and Nim are fine. Found writing
@@ -3634,7 +3634,7 @@ fn main() -> int:
   return {j: a} num
 """
   t.quietly: t.hostRuns "A52: a `_` arm in a match over a payload sum builds on every backend", 7
-  t.bugOpen "A52: a `_` arm in a match over a payload sum builds on every backend"
+  t.bugFixed "A52: a `_` arm in a match over a payload sum builds on every backend"
 
   # A53. Integer literals in a list do not adopt the expected element type:
   # `Seq[u8] = [1, 2]` is "got Seq[int]" although `u8 = 1` is fine. Found
@@ -3682,7 +3682,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.badCheck "A55: calling an [io] interface method needs [io]", "io"
-  t.bugOpen "A55: calling an [io] interface method needs [io]"
+  t.bugFixed "A55: calling an [io] interface method needs [io]"
 
   # A56. `return f.key` from a payload-sum match arm: the Odin emitter clears the
   # moved-from field through an immutable type-switch capture.

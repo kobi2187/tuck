@@ -559,7 +559,11 @@ proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
       cases.add(ind & caseLabel & " " & bodyStr & ";")
   ctx.indent = oldIndent
   ctx.unionBind = savedBind
-  ind & "switch " & "v" & " in " & subjectStr & "\n" &
+  # A `_` arm leaves variants unnamed, which a full switch rejects (#134).
+  var wild = false
+  for arm in e.arms:
+    if arm.pattern != nil and arm.pattern.kind == pkWild: wild = true
+  ind & (if wild: "#partial switch" else: "switch") & " v in " & subjectStr & "\n" &
     ind & "{\n" & cases.join("\n") & "\n" & ind & "}"
 
 proc detectMatchPatterns(e: Expr, ctx: var OdinCodegenCtx): tuple[errMatch, hasWild, overEnum: bool] =
@@ -1096,7 +1100,14 @@ proc genUnary(ctx: var OdinCodegenCtx, e: Expr): string =
               of uoNot: "!"
               of uoComposition: raiseAssert "codegen_odin: a `+ Type` " &
                 "composition member reached the expression emitter"
-  opStr & ctx.genOdinExpr(e.operand)
+  let operand = ctx.genOdinExpr(e.operand)
+  # `-i8(128)` overflows the constant before the minus applies; the minimum
+  # of a signed type is written `i8(-128)` (#132).
+  if e.unaryOp == uoNeg and e.operand.kind == exkLit and e.operand.litKind == lkInt:
+    let open = operand.find('(')
+    if open > 0 and operand.endsWith(")"):
+      return operand[0 .. open] & "-" & operand[open + 1 .. ^1]
+  opStr & operand
 
 proc genOdinCast(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `x ~u16` / `x ^u32`: Odin's type conversion, `u16(x)`.

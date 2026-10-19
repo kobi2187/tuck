@@ -110,6 +110,7 @@ type
                                   # is the implicit return, not a discard
     transitionCtx*: bool          # constructing THROUGH transitionTo: sealed
                                   # non-initial variants are legal there
+    negatedLit*: bool         # the literal being typed is the operand of a unary minus
     expectedType*: Type       # the type context expects the expression
     composing*: bool          # synthesizing the operand of a `+ Type` composition
                                   # currently being synthesized to have (nil

@@ -4123,7 +4123,8 @@ proc synthLit(tc: var TypeChecker, e: Expr): Type =
     # The literal adopts the place's type, and a value that does not fit it
     # is an error here, not a silent wrap (issue #16, step 5).
     let known = evalConstExpr(tc.module, e)
-    if e.litKind == lkInt and known.isSome and not fitsIn(want.name, known.get):
+    let value = if known.isSome and tc.negatedLit: -known.get else: known.get(0)
+    if e.litKind == lkInt and known.isSome and not fitsIn(want.name, value):
       fail(dcTyCastOutOfRange, e.litValue & " does not fit " & want.name &
            "; write a type it fits, or a smaller value", e.span)
     return tc.namedType(want.name, e.span)
@@ -4416,7 +4417,11 @@ proc synthUnary(tc: var TypeChecker, e: Expr): Type =
   # right THERE and nowhere else (TK-TY42 refuses it as a value).
   let savedComposing = tc.composing
   tc.composing = e.unaryOp == uoComposition
+  # `-128` is one number: the minimum of an i8 is writable (#132).
+  let savedNeg = tc.negatedLit
+  tc.negatedLit = e.unaryOp == uoNeg and e.operand != nil and e.operand.kind == exkLit
   let t = tc.synthesize(e.operand)
+  tc.negatedLit = savedNeg
   tc.composing = savedComposing
   if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
 

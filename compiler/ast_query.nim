@@ -741,6 +741,28 @@ proc memberCallDecl*(res: Resolution, m: Module, e: Expr): Decl =
     return nil
   memberDeclOf(m, memberOwner(m, memberRecvType(res, e)), e.callee.name)
 
+proc memberCallShape(e: Expr): bool =
+  ## Is `e` NOT a call with a named callee and a receiver in args[0]?
+  e == nil or e.kind != exkCall or e.callee == nil or
+    e.callee.kind != exkVar or e.args.len < 1 or e.args[0] == nil
+
+proc ifaceMemberNamed(d: Decl, callee: string): Decl =
+  for mem in d.ifaceMembers:
+    if mem != nil and mem.kind == dkFn and
+       (mem.name == callee or prefixed(mem.name, nkFn) == callee):
+      return mem
+
+proc ifaceMemberDecl*(res: Resolution, m: Module, e: Expr): Decl =
+  ## The requirement a call through an INTERFACE value reaches (`s.emit` with
+  ## `s: Sink`): the body-less sig the contract declares, whose effects every
+  ## satisfier must keep. nil when the receiver is not an interface.
+  if memberCallShape(e): return nil
+  let recvT = memberRecvType(res, e)
+  if recvT == nil or recvT.kind != tkNamed: return nil
+  for d in m.decls:
+    if d != nil and d.kind == dkInterface and d.name == recvT.name:
+      return ifaceMemberNamed(d, e.callee.name)
+
 proc memberCallee*(res: Resolution, m: Module, e: Expr): string =
   ## The qualified name of the member fn a call reaches — `tuckˑobjectˑDogˑnoise`
   ## for `noise(d)` with `d: Dog` — or "" when it is not a member call. Every

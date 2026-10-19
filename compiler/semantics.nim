@@ -130,7 +130,9 @@ proc callEffects(c: var Checker, e: Expr, res: var Demands) =
         # bare-name lookup cannot find (members are not top-level names) —
         # so an [io] member looked pure to its callers, and a call to it was
         # never marked as a suspend point.
-        let member = memberCallDecl(semLayer, c.module, e)
+        let member = block:
+          let own = memberCallDecl(semLayer, c.module, e)
+          if own != nil: own else: ifaceMemberDecl(semLayer, c.module, e)
         let callee = if member != nil:
                        Demands(effects: member.fnEffects,
                                resources: member.fnResourceKinds)
