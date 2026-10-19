@@ -1,0 +1,258 @@
+# std.log — structured records, two formats, and the sink contract.
+#
+# A Record is data; a LogSink decides what to do with one. Formatting is pure
+# (`formatText`, `formatJson`), so it is tested without a terminal; only
+# `ConsoleSink.emit` writes, through std/console.
+#
+# `fail` is the error-level verb: `error` is reserved (the `[error: E]` effect
+# attribute), and the parse error for it names no collision.
+import seq
+import str
+import text
+import console
+import chrono
+
+type Level:
+  | Trace
+  | Debug
+  | Info
+  | Warn
+  | Error
+
+type Field:
+  | FText({key: str, text: str})
+  | FWhole({key: str, whole: i64})
+  | FNumber({key: str, number: f64})
+  | FYes({key: str, yes: bool})
+  | FSpan({key: str, ms: u64})
+
+type Record:
+  atMs: u64
+  level: Level
+  msg: str
+  fields: Seq[Field]
+
+interface LogSink:
+  fn emit({self: Self, r: Record}) -> void [io]
+  fn accepts({self: Self, level: Level}) -> bool
+
+fn levelRank({level: Level}) -> int:
+  match level:
+    Trace: return 0
+    Debug: return 1
+    Info: return 2
+    Warn: return 3
+    Error: return 4
+
+fn levelName({level: Level}) -> str:
+  match level:
+    Trace: return "trace"
+    Debug: return "debug"
+    Info: return "info"
+    Warn: return "warn"
+    Error: return "error"
+
+# Is a record at `level` kept by a sink whose floor is `minLevel`?
+fn atLeast({level: Level, minLevel: Level}) -> bool:
+  let a = {level: level} levelRank
+  let b = {level: minLevel} levelRank
+  return a >= b
+
+# --- fields -------------------------------------------------------------------
+fn fieldKey({f: Field}) -> str:
+  match f:
+    FText: return f.key
+    FWhole: return f.key
+    FNumber: return f.key
+    FYes: return f.key
+    FSpan: return f.key
+
+fn yesNo({b: bool}) -> str:
+  if b:
+    return "true"
+  return "false"
+
+# The value as bare text (what `key=value` shows).
+fn fieldValue({f: Field}) -> str:
+  match f:
+    FText: return f.text
+    FWhole: return {value: f.whole} toStr
+    FNumber: return {value: f.number} toStr
+    FYes: return {b: f.yes} yesNo
+    FSpan: return {value: f.ms} toStr + "ms"
+
+fn quoteIfNeeded({s: str}) -> str:
+  if {t: s, what: " "} text::has or {t: s} isEmpty:
+    return "\"" + s + "\""
+  return s
+
+fn fieldText({f: Field}) -> str:
+  let k = {f: f} fieldKey
+  let v = {f: f} fieldValue
+  let shown = {s: v} quoteIfNeeded
+  return k + "=" + shown
+
+# --- formats ------------------------------------------------------------------
+# "2026-08-19T01:02:03.004Z" for a Unix time in milliseconds.
+fn stamp({atMs: u64}) -> str:
+  let ms = {value: atMs} int
+  let moment = {atMs: ms} fromUnixMs
+  let d = moment.date
+  let day = {d: d, pattern: "yyyy-MM-dd"} formatDate
+  let hn = {value: moment.time.hour} int
+  let mn = {value: moment.time.minute} int
+  let sn = {value: moment.time.second} int
+  let h = {n: hn, width: 2} digits
+  let mi = {n: mn, width: 2} digits
+  let s = {n: sn, width: 2} digits
+  let frac = {n: ms % 1000, width: 3} digits
+  return day + "T" + h + ":" + mi + ":" + s + "." + frac + "Z"
+
+fn formatText({r: Record}) -> str:
+  var parts: Seq[str] = []
+  let moment = {atMs: r.atMs} stamp
+  let lvl = {level: r.level} levelName
+  parts = {items: parts, value: moment} push
+  parts = {items: parts, value: lvl} push
+  parts = {items: parts, value: r.msg} push
+  for i in 0 .. r.fields.len - 1:
+    let one = {f: r.fields[i]} fieldText
+    parts = {items: parts, value: one} push
+  return {parts: parts, sep: " "} joinStr
+
+# --- JSON lines ---------------------------------------------------------------
+fn jsonEscape({s: str}) -> str:
+  var parts: Seq[str] = []
+  for i in 0 .. {t: s} byteCount - 1:
+    let c = {s: s, index: i} charAt
+    if c == "\"":
+      parts = {items: parts, value: "\\\""} push
+    elif c == "\\":
+      parts = {items: parts, value: "\\\\"} push
+    elif c == "\n":
+      parts = {items: parts, value: "\\n"} push
+    else:
+      parts = {items: parts, value: c} push
+  return {parts: parts, sep: ""} joinStr
+
+fn jsonString({s: str}) -> str:
+  let inner = {s: s} jsonEscape
+  return "\"" + inner + "\""
+
+# A field's JSON value: text is quoted, the rest are bare.
+fn fieldJson({f: Field}) -> str:
+  match f:
+    FText: return {s: f.text} jsonString
+    FWhole: return {value: f.whole} toStr
+    FNumber: return {value: f.number} toStr
+    FYes: return {b: f.yes} yesNo
+    FSpan: return {value: f.ms} toStr
+
+fn formatJson({r: Record}) -> str:
+  var parts: Seq[str] = []
+  let moment = {atMs: r.atMs} stamp
+  let lvl = {level: r.level} levelName
+  let m = {s: r.msg} jsonString
+  let ts = {s: moment} jsonString
+  let ls = {s: lvl} jsonString
+  parts = {items: parts, value: "\"time\":" + ts} push
+  parts = {items: parts, value: "\"level\":" + ls} push
+  parts = {items: parts, value: "\"msg\":" + m} push
+  for i in 0 .. r.fields.len - 1:
+    let name = {f: r.fields[i]} fieldKey
+    let k = {s: name} jsonString
+    let v = {f: r.fields[i]} fieldJson
+    parts = {items: parts, value: k + ":" + v} push
+  let inner = {parts: parts, sep: ","} joinStr
+  return "{" + inner + "}"
+
+# --- a sink that writes to the terminal ---------------------------------------
+object ConsoleSink:
+  satisfies LogSink
+  minLevel: Level
+  json: bool
+
+  fn emit({self: ConsoleSink, r: Record}) -> void [io]:
+    if self.json:
+      let line = {r: r} formatJson
+      {text: line} printLine
+    else:
+      let line = {r: r} formatText
+      {text: line} printLine
+
+  fn accepts({self: ConsoleSink, level: Level}) -> bool:
+    return {level: level, minLevel: self.minLevel} atLeast
+
+fn newTextSink({minLevel: Level}) -> ConsoleSink:
+  return {minLevel: minLevel, json: false} ConsoleSink
+
+fn newJsonSink({minLevel: Level}) -> ConsoleSink:
+  return {minLevel: minLevel, json: true} ConsoleSink
+
+fn record({atMs: u64, level: Level, msg: str, fields: Seq[Field]}) -> Record:
+  return {atMs: atMs, level: level, msg: msg, fields: fields} Record
+
+# The level verbs: emit when the sink wants it. `fail`, not `error` (reserved).
+fn log({sink: LogSink, level: Level, msg: str, fields: Seq[Field], atMs: u64}) -> void [io]:
+  if sink.accepts {level: level}:
+    let r = {atMs: atMs, level: level, msg: msg, fields: fields} record
+    sink.emit {r: r}
+
+fn checkLevels() -> int:
+  if not {level: Level.Warn, minLevel: Level.Info} atLeast:
+    return 1
+  if {level: Level.Debug, minLevel: Level.Info} atLeast:
+    return 2
+  return 0
+
+fn checkText() -> int:
+  var fields: Seq[Field] = []
+  let user = {key: "user", text: "ann lee"} Field.FText
+  let n = {key: "n", whole: 3} Field.FWhole
+  let ok = {key: "ok", yes: true} Field.FYes
+  let took = {key: "took", ms: 12} Field.FSpan
+  fields = {items: fields, value: user} push
+  fields = {items: fields, value: n} push
+  fields = {items: fields, value: ok} push
+  fields = {items: fields, value: took} push
+  let r = {atMs: 1000000000000, level: Level.Warn, msg: "slow", fields: fields} record
+  let line = {r: r} formatText
+  if line != "2001-09-09T01:46:40.000Z warn slow user=\"ann lee\" n=3 ok=true took=12ms":
+    return 3
+  return 0
+
+fn checkJson() -> int:
+  var fields: Seq[Field] = []
+  let user = {key: "user", text: "a\"b"} Field.FText
+  let n = {key: "n", whole: 3} Field.FWhole
+  fields = {items: fields, value: user} push
+  fields = {items: fields, value: n} push
+  let r = {atMs: 1000000000000, level: Level.Info, msg: "hi", fields: fields} record
+  let line = {r: r} formatJson
+  let want = "{\"time\":\"2001-09-09T01:46:40.000Z\",\"level\":\"info\",\"msg\":\"hi\",\"user\":\"a\\\"b\",\"n\":3}"
+  if line != want:
+    return 4
+  return 0
+
+fn checkSink() -> int [io]:
+  let sink = {minLevel: Level.Info} newTextSink
+  if sink.accepts {level: Level.Debug}:
+    return 5
+  if not sink.accepts {level: Level.Error}:
+    return 6
+  let nothing: Seq[Field] = []
+  let r = {atMs: 0, level: Level.Info, msg: "checked", fields: nothing} record
+  sink.emit {r: r}
+  return 0
+
+fn main() -> int [io]:
+  let a = checkLevels
+  if a != 0:
+    return a
+  let b = checkText
+  if b != 0:
+    return b
+  let c = checkJson
+  if c != 0:
+    return c
+  return checkSink

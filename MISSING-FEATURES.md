@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (7)
+## A. Open bugs (9)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -61,6 +61,13 @@ it in.
   `{items: b, value: 27} push` is "bound to both u8 and int": the literal does
   not adopt the already-bound `T`. Same family as A53. Found writing `std.cli`
   (stdlib-project), skipped until fixed.
+
+- **A55 (issue #137) — an [io] interface method is not counted as I/O.** A fn
+  without `[io]` that calls one passes the effect check, and a fn with `[io]` that
+  does nothing else gets TK-EF02. Found writing `std.log`.
+- **A56 (issue #138) — `return f.key` from a payload-sum match arm fails the Odin
+  build** ("Cannot assign to 'v.key'"): the moved-from field is cleared through an
+  immutable type-switch capture. Found writing `std.log`.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so

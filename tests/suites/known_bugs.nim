@@ -3658,4 +3658,48 @@ fn main() -> int:
   t.quietly: t.runs "A54: a literal pushed onto a Seq[u8] adopts the element type", 1
   t.bugOpen "A54: a literal pushed onto a Seq[u8] adopts the element type"
 
+  # A55. A call through an [io] interface method is not counted as I/O: a fn
+  # without [io] that makes one passes the effect check.
+  t.src """
+import console
+
+interface Sink:
+  fn emit({self: Self, n: int}) -> void [io]
+
+object Out:
+  satisfies Sink
+  tag: int
+
+  fn emit({self: Out, n: int}) -> void [io]:
+    {text: "x"} printLine
+
+fn quiet({s: Sink}) -> void:
+  s.emit {n: 1}
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A55: calling an [io] interface method needs [io]", "io"
+  t.bugOpen "A55: calling an [io] interface method needs [io]"
+
+  # A56. `return f.key` from a payload-sum match arm: the Odin emitter clears the
+  # moved-from field through an immutable type-switch capture.
+  t.src """
+type F:
+  | FText({key: str, text: str})
+  | FNum({key: str, n: int})
+
+fn keyOf({f: F}) -> str:
+  match f:
+    FText: return f.key
+    FNum: return f.key
+
+fn main() -> int:
+  let a = {key: "ab", n: 3} F.FNum
+  let k = {f: a} keyOf
+  return k.len
+"""
+  t.quietly: t.hostRuns "A56: a str field returned from a payload-sum match arm builds on every backend", 2
+  t.bugOpen "A56: a str field returned from a payload-sum match arm builds on every backend"
+
   t.finish()
