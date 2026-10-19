@@ -2995,6 +2995,44 @@ proc checkWholeBind(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
     fail("Type Error: argument to '" & fnName & "' expects " &
          typeName(expected) & " but got " & typeName(t), arg.span)
 
+proc isNumericLiteralExpr(e: Expr): bool =
+  ## A bare number, or a negated one: `27`, `-0.5`.
+  if e == nil: return false
+  if e.kind == exkLit: return e.litKind in {lkInt, lkFloat}
+  e.kind == exkUnary and e.operand != nil and e.operand.kind == exkLit and
+    e.operand.litKind in {lkInt, lkFloat}
+
+proc paramNamed(sig: FnSig, name: string): Type =
+  for p in sig.params:
+    if p.name == name: return p.typ
+
+proc boundNumeric(sig: FnSig, pt: Type, local: Table[string, Type]): Type =
+  ## The numeric type a bare type-parameter `pt` is already bound to, or nil.
+  if pt == nil or pt.kind != tkNamed or pt.name notin sig.generics: return nil
+  let bound = local.getOrDefault(pt.name)
+  if bound != nil and bound.kind == tkNamed and bound.name in NumericNames: bound
+  else: nil
+
+proc adoptBoundLiterals(tc: var TypeChecker, fnName: string, sig: FnSig,
+                        arg: Expr, fields: var seq[ArgField]) =
+  ## A generic fn's literal payload field takes the type its parameter was
+  ## already bound to by ANOTHER field: `{items: bytes, value: 27} push` with
+  ## `bytes: Seq[u8]` makes the 27 a `u8`, instead of binding `T` to `u8` and to
+  ## `int` (#136). The non-literal fields bind first; then each bare numeric
+  ## literal whose parameter is exactly a bound type parameter is retyped.
+  if sig.generics.len == 0: return
+  var local = initTable[string, Type]()
+  for i, f in arg.fields:
+    if isNumericLiteralExpr(f.value): continue
+    let pt = sig.paramNamed(f.name)
+    if pt != nil:
+      tc.inferBindings(pt, fields[i].typ, sig.generics, local, fnName, fields[i].span)
+  for i, f in arg.fields:
+    if not isNumericLiteralExpr(f.value): continue
+    let bound = boundNumeric(sig, sig.paramNamed(f.name), local)
+    if bound != nil:
+      tc.withExpected(bound): fields[i].typ = tc.synthesize(f.value)
+
 proc payloadFields(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
                    bindings: var Table[string, Type],
                    shapeKnown: var bool): seq[ArgField] =
@@ -3008,6 +3046,7 @@ proc payloadFields(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
     tc.withFieldHints(hints):
       for f in arg.fields:
         result.add((f.name, tc.synthFieldValue(f), f.value.span))
+    tc.adoptBoundLiterals(fnName, sig, arg, result)
     return
   let t = tc.synthesize(arg)
   if isFlexible(t): return
@@ -4280,8 +4319,16 @@ proc synthList(tc: var TypeChecker, e: Expr): Type =
   ## the type of the sequence"). That used to pass the checker and fail at
   ## the Nim compile; it is TK-TY20 now.
   var elemT: Type = nil
+  # A list going into a `Seq[u8]` / `Array[N, f32]` place hands each item the
+  # ELEMENT type, so a bare literal takes the width the place wants (#135).
+  let wanted = tc.asContainerWanted()
+  let elemWant = if wanted != nil: wanted.args[^1] else: nil
   for item in e.items:
-    let t = tc.synthesize(item)
+    var t: Type
+    if elemWant != nil:
+      tc.withExpected(elemWant): t = tc.synthesize(item)
+    else:
+      t = tc.synthesize(item)
     if isFlexible(elemT): elemT = t
   let (baseName, sizeArg) = tc.determineListBase(e, elemT)
   if isFlexible(elemT) and e.items.len == 0:

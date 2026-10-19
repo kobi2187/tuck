@@ -3643,7 +3643,7 @@ fn main() -> int:
   return ys.len
 """
   t.quietly: t.runs "A53: a list of integer literals takes the expected element type", 2
-  t.bugOpen "A53: a list of integer literals takes the expected element type"
+  t.bugFixed "A53: a list of integer literals takes the expected element type"
 
   # A54. A literal pushed onto a Seq[u8] binds T twice: `T` is u8 from `items`,
   # then int from the literal, instead of the literal adopting the binding.
@@ -3656,7 +3656,7 @@ fn main() -> int:
   return b.len
 """
   t.quietly: t.runs "A54: a literal pushed onto a Seq[u8] adopts the element type", 1
-  t.bugOpen "A54: a literal pushed onto a Seq[u8] adopts the element type"
+  t.bugFixed "A54: a literal pushed onto a Seq[u8] adopts the element type"
 
   # A55. A call through an [io] interface method is not counted as I/O: a fn
   # without [io] that makes one passes the effect check.
