@@ -36,14 +36,14 @@ blocks compile in. Without the flag nothing changes: the blessed `std/` is used.
 
 | Tier | Module | Tuck | Nim | Odin | D |
 |---|---|---|---|---|---|
-| core | array, cmp, convert, error, fmt, geom, hash, iter, num, str (`text`), types | yes | pass | pass | not run |
-| platform | power (sleep depths, wake sources), boot (regions, lookup, overlap) | yes | pass | pass | not run |
-| sys | env (defaults, PATH split, `$VAR` expansion) | yes | pass | pass | not run |
-| std | math (Decimal, statistics, float functions), chrono (pure calendar; no zone database), perf (stopwatch, counter, histogram), testing (results, report), i18n (case folding, edit distance, words, graphemes, Latin-1 normalization), queue (append-only log over std/fs) | yes | pass | pass | not run |
-| alloc | deque, list, map, set, string, vec | yes | pass | pass | not run |
-| std | encoding (JSON print/access; parser, base64, CSV not started), crypto (SHA-256, HMAC-SHA256, constant-time compare), log (formats, levels, `ConsoleSink`), regex (parser, compiler, backtracking VM, find/replace/split/glob), net-http (URLs, percent-encoding, queries, request/response text, headers, cookies), cli (command tree, parser, usage, table, ANSI) | partial | pass | pass | not run |
-| platform | dsp (biquad, moving average, RMS), watchdog (actor: configure, start, feed, check, stop) | yes | pass | pass | not run |
-| sys | process (`ExitStatus`, `statusOf`, `run` over `runCommand`) | yes | pass | pass | not run |
+| core | array, cmp, convert, error, fmt, geom, hash, iter, num, str (`text`), types | yes | pass | pass | pass |
+| platform | power (sleep depths, wake sources), boot (regions, lookup, overlap) | yes | pass | pass | pass |
+| sys | env (defaults, PATH split, `$VAR` expansion) | yes | pass | pass | pass |
+| std | math (Decimal, statistics, float functions), chrono (pure calendar; no zone database), perf (stopwatch, counter, histogram), testing (results, report), i18n (case folding, edit distance, words, graphemes, Latin-1 normalization), queue (append-only log over std/fs) | yes | pass | pass | pass |
+| alloc | deque, list, map, set, string, vec | yes | pass | pass | pass |
+| std | encoding (JSON print/access; parser, base64, CSV not started), crypto (SHA-256, HMAC-SHA256, constant-time compare), log (formats, levels, `ConsoleSink`), regex (parser, compiler, backtracking VM, find/replace/split/glob), net-http (URLs, percent-encoding, queries, request/response text, headers, cookies), cli (command tree, parser, usage, table, ANSI) | partial | pass | pass | pass |
+| platform | dsp (biquad, moving average, RMS), watchdog (actor: configure, start, feed, check, stop) | yes | pass | pass | pass |
+| sys | process (`ExitStatus`, `statusOf`, `run` over `runCommand`) | yes | pass | pass | pass |
 | core | slice, mem (designs say fold away); ptr, atomic, sync-cell, simd | no | | | |
 | alloc | allocator, box, rc, fmt | no | | | |
 | sys, std, platform | everything else | no | | | |
@@ -70,8 +70,7 @@ base64 and CSV.
 
 ## Next, in order
 
-1. **D backend.** Run each module's checks under D wherever `dmd` is installed (the
-   harness's `hostRuns` already knows how); CI has D 2.112.0. Expect findings.
+1. **D backend** runs every module's checks too (`tests/suites/stdlib_project.nim`, where `dmd` is installed; CI has D 2.112.0). Keep it green as modules are added.
 2. **Layer-0 gaps** the existing modules already want: `core.fmt` (the string-building
    pieces `alloc.string` stands in for), `core.error`, then `core.slice`/`core.mem`.
    Build order follows `stdlib-layers.md`: lowest layer first.
