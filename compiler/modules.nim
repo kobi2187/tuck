@@ -53,7 +53,7 @@
 # answer is worse than no cache, because the failure surfaces later as a
 # baffling type error in code the user did not touch.
 # ---------------------------------------------------------------------------
-import os, strutils, hashes, sets, tables, times
+import os, strutils, hashes, sets, tables, times, algorithm, sequtils
 import msgpack4nim
 import ast, parser, rewrite
 import generic_actors   # generic actors expand BEFORE the checker sees them
@@ -339,6 +339,14 @@ var projectRoot*: string = ""
 # closed: nothing platform-specific compiles in unless a target is named).
 var buildTarget*: string = ""
 
+# The build's STDLIB (`--stdlib:NAME`, issue #105): the name `when STDLIB ==
+# "...":` is compared against, and the root of the tree whose modules shadow
+# `std/` on the import path. Both empty = the blessed stdlib, `std/`.
+var buildStdlib*: string = ""
+var stdlibRoot*: string = ""
+var stdlibIndexCache: Table[string, string]
+var stdlibIndexBuilt = false
+
 proc whenDeclsFor(d: Decl, target: string): seq[Decl] =
   ## What `d` contributes to the module once `when` is resolved: an ordinary
   ## decl contributes itself; a MATCHING `when` block contributes its inner
@@ -348,7 +356,8 @@ proc whenDeclsFor(d: Decl, target: string): seq[Decl] =
   ## not exist here).
   if d == nil: return @[]
   if d.kind != dkWhen: return @[d]
-  if d.whenTargetValue == target: d.whenDecls else: @[]
+  let current = if d.whenVar == "STDLIB": buildStdlib else: target
+  if d.whenTargetValue == current: d.whenDecls else: @[]
 
 proc resolveWhenBlocks*(m: var Module, target: string) =
   ## spec §8.3: gate `when TARGET == "value":` blocks against the build's
@@ -366,12 +375,63 @@ proc resolveWhenBlocks*(m: var Module, target: string) =
   for d in m.decls: resolved.add(whenDeclsFor(d, target))
   m.decls = resolved
 
+proc selectStdlib*(spec: string) =
+  ## `--stdlib:NAME`. A directory path names itself; a bare name is looked up
+  ## as `NAME/modules` (then `NAME`) beside the compiler or the project root,
+  ## which is how `--stdlib:stdlib-project` finds that tree. Raises
+  ## ModuleError when nothing matches, listing what was tried.
+  var tried: seq[string]
+  var roots: seq[string]
+  if dirExists(spec): roots.add spec
+  for base in [projectRoot, getAppDir(), getAppDir() / ".."]:
+    if base == "": continue
+    roots.add base / spec / "modules"
+    roots.add base / spec
+  for r in roots:
+    tried.add r
+    if dirExists(r):
+      stdlibRoot = r
+      # The name `when STDLIB == "..."` sees: the directory's own, or its
+      # parent's when it is the conventional `<name>/modules`.
+      let named = absolutePath(spec.strip(trailing = true, chars = {'/'}))
+      buildStdlib = if named.extractFilename == "modules": named.parentDir.extractFilename
+                    else: named.extractFilename
+      stdlibIndexBuilt = false
+      return
+  raise newException(ModuleError,
+    "stdlib '" & spec & "' not found: tried " & tried.join(", "))
+
+proc stdlibIndex(): Table[string, string] =
+  ## Module name -> file for every `.tuck` under the selected stdlib root: the
+  ## file's base name is the name it is imported by. Sorted, so a name two
+  ## files share resolves the same way on every run. Build products (`mod_*`,
+  ## `tuckrt*`) and hidden directories are not modules.
+  if stdlibIndexBuilt: return stdlibIndexCache
+  stdlibIndexCache.clear()
+  var files: seq[string]
+  for f in walkDirRec(stdlibRoot):
+    if not f.endsWith(".tuck"): continue
+    let parts = f.relativePath(stdlibRoot).split(DirSep)
+    if parts.anyIt(it.startsWith("mod_") or it.startsWith("tuckrt") or
+                   it.startsWith(".")): continue
+    files.add f
+  files.sort()
+  for f in files:
+    let name = f.extractFilename.changeFileExt("")
+    if name notin stdlibIndexCache: stdlibIndexCache[name] = f
+  stdlibIndexBuilt = true
+  stdlibIndexCache
+
 proc resolveImport*(importerPath, module: string): string =
   ## Import resolution: the importer's directory first, then the stdlib
   ## (--root flag, TUCK_STDLIB env var, or std/ next to the compiler binary).
   ## The first candidate that exists wins; none existing is a ModuleError
   ## listing every path tried.
   var candidates = @[importerPath.parentDir / (module & ".tuck")]
+  # A selected stdlib shadows `std/`: choosing it is the point of the flag.
+  if stdlibRoot != "":
+    let idx = stdlibIndex()
+    if module in idx: candidates.add idx[module]
   if projectRoot != "":
     candidates.add(projectRoot / (module & ".tuck"))
     candidates.add(projectRoot / "std" / (module & ".tuck"))

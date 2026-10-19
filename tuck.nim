@@ -112,6 +112,7 @@ run). Writes beside the source file, or into -o:DIR if given.
   -o:DIR       output directory
   --root:DIR   import search base (for std/ and sibling modules)
   --target:NAME  select which `when TARGET == "NAME":` blocks compile in
+  --stdlib:NAME  choose the standard library: a directory or `stdlib-project`
   --no-verify-stages  skip the pipeline-invariant assertions (on by default)
   -v, --verbose  echo before/after every pipeline stage, with its own timing
   -vv            also echo each stage's per-module sub-steps, individually timed
@@ -236,6 +237,10 @@ options:
   -o:DIR        (compile/build) output directory (default: next to source)
   --root:DIR    import search base for std/ and sibling modules (any command);
                 lets imports resolve regardless of cwd or binary location
+  --stdlib:NAME choose the standard library (any command): a directory, or
+                a name found beside the compiler such as `stdlib-project`.
+                Its modules (matched by file name) shadow std/, and
+                `when STDLIB == "NAME":` blocks compile in. Default: std/.
   --target:NAME selects which `when TARGET == "NAME":` blocks compile in
                 (spec §8.3; any command). Unset = every such block is dropped.
   --no-verify-stages (check/compile/build) skip the assertions that a tree
@@ -883,6 +888,13 @@ when isMainModule:
   # which compiler backend runs.
   for o in opts:
     if o.startsWith("--target:"): buildTarget = o[9 .. ^1]
+  # `--stdlib:NAME` (issue #105): a directory, or the name of one beside the
+  # compiler (`stdlib-project`). Its modules shadow `std/` by file name, and
+  # `when STDLIB == "NAME":` blocks compile in. Absent = the blessed `std/`.
+  for o in opts:
+    if o.startsWith("--stdlib:"):
+      try: selectStdlib(o[9 .. ^1])
+      except ModuleError as e: die("tuck: " & e.msg)
   # A build targets exactly ONE backend: Nim by default, or --odin, or
   # --dlang — mutually exclusive, never additive. Nim used to emit
   # unconditionally regardless of these flags; getting a second backend's

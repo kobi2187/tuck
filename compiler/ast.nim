@@ -1061,6 +1061,7 @@ type
                                 # publicNames already holds the EXPANDED name,
                                 # so every export check works on identifiers
     of dkWhen:
+      whenVar*: string          # the build setting compared: `TARGET` or `STDLIB`
       whenTargetValue*: string  # the string literal on the RHS of `TARGET ==`
       whenDecls*: seq[Decl]     # top-level declarations gated by this block
     of dkInterface:

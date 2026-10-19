@@ -8,6 +8,11 @@
 ledger and the per-feature status table; both remain authoritative for what
 was DECIDED. This section is the only thing that says what to do NEXT.
 
+**Stdlib dogfooding (2026-10-19):** `--stdlib:stdlib-project` builds against the 13
+modules under `stdlib-project/modules/`; their checks run on Nim and Odin in the
+`stdlib_project` suite. State, findings and the next steps are in
+`stdlib-project/ROADMAP.md`.
+
 Ordering rule, set by the user:
 
 > priority to finish features, and higher priority for the SSA fixing mem

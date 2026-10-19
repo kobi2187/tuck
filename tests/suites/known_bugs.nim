@@ -3503,4 +3503,50 @@ fn main() -> int:
   t.badCheck "an unnamed record in a variable is refused where a named one is wanted (#127)", "TK-TY45"
   t.bugFixed "an unnamed record in a variable is refused where a named one is wanted (#127)"
 
+  # --- found dogfooding stdlib-project (issue #105) -------------------------
+  # A stated local type naming the enclosing generic fn's `T` was a stranger to
+  # the checker: building a generic value from it said "cannot infer
+  # generic parameter 'T'".
+  t.src """
+import seq
+
+type Ring[T]:
+  items: Seq[T]
+
+fn rebuilt[T]({r: Ring[T]}) -> Ring[T]:
+  var xs: Seq[T] = []
+  xs = {items: xs, value: r.items[0]} push
+  let back = {items: xs} Ring
+  return back
+
+fn main() -> int:
+  let a: Seq[int] = [4, 5]
+  let r = {items: a} Ring
+  let q = {r: r} rebuilt
+  return q.items[0]
+"""
+  t.runs "a local stated as Seq[T] in a generic fn builds a generic value (stdlib dogfooding)", 4
+  t.bugFixed "a local stated as Seq[T] in a generic fn builds a generic value (stdlib dogfooding)"
+
+  # A literal handed to a fn in ANOTHER module that consumes its argument was
+  # freed by the callee on Odin: the importer read the callee as body-less.
+  t.src """
+import keeper
+import seq
+
+fn main() -> int [io]:
+  let parts = {t: "kept"} keep
+  return {items: parts} count
+"""
+  t.addFile "keeper.tuck", """
+import seq
+
+fn keep({t: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  out = {items: out, value: t} push
+  return out
+"""
+  t.hostRuns "a literal passed to another module's consuming fn is owned by the callee", 1
+  t.bugFixed "a literal passed to another module's consuming fn is owned by the callee"
+
   t.finish()

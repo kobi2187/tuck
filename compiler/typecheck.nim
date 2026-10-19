@@ -4685,7 +4685,10 @@ proc synthDeclAssign(tc: var TypeChecker, e: Expr) =
                   e.declType.name in tc.distinctNames
     let want = if nominal: e.declType else: tc.resolve(e.declType)
     tc.check(e.assignVal, want, what)
-    valT = want
+    # The NAME is bound at the type with the enclosing fn's `T` made the
+    # named type parameter a param's type would be, so building a generic
+    # value from it binds `T` rather than reading a stranger called `T`.
+    valT = if tc.bodyGenerics.len > 0: substType(want, tc.bodyGenerics) else: want
   else:
     valT = tc.synthesize(e.assignVal)
   tc.bindName(e.target.name, valT, e.isMutable, span = e.span, site = e)
@@ -5563,6 +5566,8 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
   # is rechecked by the backend.
   var gsub = initTable[string, Type]()
   for g in generics: gsub[g] = typeParamNamed(Span(), g)
+  let savedGenerics = tc.bodyGenerics
+  tc.bodyGenerics = gsub
 
   let savedVariants = tc.varVariants
   let prevBody = tc.bodyBlock
@@ -5585,6 +5590,7 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
   tc.currentRet = nil
   tc.currentFn = ""
   tc.varVariants = savedVariants
+  tc.bodyGenerics = savedGenerics
   tc.failIfUninspected()
   tc.popScope()
 

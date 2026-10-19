@@ -38,6 +38,14 @@ type
       ## wins. A call into another module resolves to a signature, not a
       ## declaration, and the ownership rules read what an extern declares
       ## it keeps (`[keeps: x]`, `[view: x]`) off the declaration itself.
+    fnBodies*: Table[string, Decl]
+      ## Every top-level Tuck fn WITH a body the program declares, by name. A
+      ## call into another module resolves to a signature, so the ownership
+      ## rules would read an imported fn as body-less and never learn that it
+      ## consumes an argument (a literal passed to it was freed by the callee).
+      ## First wins; a name two modules declare is in `ambiguousFns` and is
+      ## left unresolved rather than guessed.
+    ambiguousFns*: HashSet[string]
     declOf*: Table[NodeId, NodeId]     # referring node -> declaration id
     # Whole-program name -> Decl, for the five kinds a bare Capitalized name
     # can reference OUTRIGHT (not through `decls`/`declOf`, which are
