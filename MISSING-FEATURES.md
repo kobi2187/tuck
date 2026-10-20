@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (0)
+## A. Open bugs (1)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -118,6 +118,12 @@ it in.
   core package.** "Redeclaration of 'fmt'" on the Odin build. Fixed: the core
   packages are imported as `odin_fmt` / `odin_os` when the program has such a
   module. Found finishing `std.cli`.
+
+- **A67 (issue #155) — `toStr` of an integral float prints differently per
+  backend.** `{value: 1.0} toStr` is `1.0` on Nim, `1` on Odin and D: the text of
+  a float is whatever each host does, and nothing in the spec rules. Needs a
+  ruling (suggested: shortest round-trip text with `.0` kept), then one rule in
+  all three runtimes. Found writing the JSON parser for `std.encoding`.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so

@@ -3942,4 +3942,18 @@ fn byteLen({t: str}) -> int:
   t.quietly: t.hostRuns "A66: a Tuck module named fmt builds on every backend", 4
   t.bugFixed "A66: a Tuck module named fmt builds on every backend"
 
+  # A67. `toStr` of an integral float prints "1.0" on Nim and "1" on Odin and D:
+  # the text of a float is whatever each host does, and the spec says nothing.
+  # The pin asserts the Nim text (".0" kept, so a float stays visibly one) on
+  # every backend; the ruling is open (issue #155). Found writing std.encoding.
+  t.src """
+import str
+
+fn main() -> int:
+  let s = {value: 1.0} toStr
+  return {t: s} byteCount
+"""
+  t.quietly: t.hostRuns "A67: an integral float prints the same text on every backend", 3
+  t.bugOpen "A67: an integral float prints the same text on every backend"
+
   t.finish()
