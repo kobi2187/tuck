@@ -384,6 +384,8 @@ proc providerArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
     if name != "":
       result.add(ctx.pkgQualifier(modName) & name)
 
+proc qualifiedForeignFn(ctx: OdinCodegenCtx, name: string): string
+
 proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A call in Odin, trying the special shapes first: `waitOn`, a sum
   ## variant, a member or combinator call. A member call passes `&receiver`,
@@ -398,6 +400,13 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
     # dispatch holds, so it is passed as is.
     return actorMember & "(" & (@["self"] & ctx.genCallArgs(e)).join(", ") & ")"
   var calleeStr = ctx.genOdinExpr(e.callee)
+  if e.callee.kind == exkVar and not ctx.res.hasCall(e.callee):
+    # A parameter that is not callable cannot be the callee: the name is a fn
+    # it shadows (`len`, beside `xs.len`).
+    for p in ctx.currentParams:
+      if p.name == e.callee.name and (p.typ == nil or p.typ.kind != tkFunc):
+        let foreign = ctx.qualifiedForeignFn(p.name)
+        if foreign != "": calleeStr = foreign
   let member = memberCallee(ctx.res, ctx.module, e)
   if member != "":
     # An imported object's member lives in its own package (R11, A25).

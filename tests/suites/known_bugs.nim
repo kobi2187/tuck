@@ -3956,4 +3956,33 @@ fn main() -> int:
   t.quietly: t.hostRuns "A67: an integral float prints the same text on every backend", 3
   t.bugOpen "A67: an integral float prints the same text on every backend"
 
+  # A68. A local named like a fn captured the fn's call: `xs.len` beside
+  # `let len = 2` mangled the callee to the local (issue #156). Found writing
+  # std.compress. The mangler now reads a stamped call's callee in the fn
+  # namespace.
+  t.src """
+import seq
+
+fn main() -> int:
+  var xs: Seq[int] = [1, 2, 3]
+  let len = 2
+  return xs.len + len
+"""
+  t.quietly: t.hostRuns "A68: a local named like a fn does not capture a call to it", 5
+  t.bugFixed "A68: a local named like a fn does not capture a call to it"
+
+  # the same capture through a PARAMETER (Odin printed the param as the callee)
+  t.src """
+import seq
+
+fn cb({data: Seq[int], len: int}) -> int:
+  return data.len + len
+
+fn main() -> int:
+  var xs: Seq[int] = [1, 2, 3]
+  return {data: xs, len: 2} cb
+"""
+  t.quietly: t.hostRuns "A68b: a parameter named like a fn does not capture a call to it", 5
+  t.bugFixed "A68b: a parameter named like a fn does not capture a call to it"
+
   t.finish()

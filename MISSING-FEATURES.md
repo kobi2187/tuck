@@ -125,6 +125,11 @@ it in.
   ruling (suggested: shortest round-trip text with `.0` kept), then one rule in
   all three runtimes. Found writing the JSON parser for `std.encoding`.
 
+- **A68 (issue #156) — a local named like a fn captured the call to it.**
+  `xs.len + len` with `let len = 2` built `len(xs) + len` calling the local.
+  Fixed: the mangler reads a checker-stamped call's callee in the fn namespace, and the Odin emitter does not take a non-callable parameter for the callee.
+  Found writing `std.compress`.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own
