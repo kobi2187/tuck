@@ -1,0 +1,142 @@
+# sys.files — the file operations programs reach for, over std/fs.
+#
+# `std/fs` reads and writes whole files; this adds the usual conveniences on
+# top, in Tuck: lines in and out, copying, writing under folders that may not
+# exist yet, and full paths for a folder's entries. Failure is the FsError of
+# the underlying call, passed through.
+#
+# Not here: telling a folder from a file. `std/fs.listDir` is empty for a
+# missing folder, an empty folder and a plain file alike, so a recursive walk
+# cannot be written honestly until the runtime offers an is-a-folder test.
+import fs
+import seq
+import str
+import text
+import path
+
+# The lines of a file, without their line ends (`\n` or `\r\n`). A final line
+# end does not make a final empty line.
+fn textLines({text: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  let raw = {t: text, at: "\n"} split
+  for i in 0 .. raw.len - 1:
+    var line = raw[i]
+    if {t: line, suffix: "\r"} endsWith:
+      let cut = {t: line} byteCount - 1
+      let head = {t: line, start: 0, stop: cut} slice
+      if head.ok:
+        line = head.value
+    out = {items: out, value: line} push
+  if out.len > 0 and out[out.len - 1] == "":
+    let shorter = {items: out} withoutLast
+    return shorter
+  return out
+
+fn withoutLast({items: Seq[str]}) -> Seq[str]:
+  var out: Seq[str] = []
+  for i in 0 .. items.len - 2:
+    out = {items: out, value: items[i]} push
+  return out
+
+# Every line followed by `\n`.
+fn joinLines({lines: Seq[str]}) -> str:
+  var out = ""
+  for i in 0 .. lines.len - 1:
+    out = out + lines[i] + "\n"
+  return out
+
+fn readLines({path: str}) -> !{lines: Seq[str]} [io: fs, error: FsError]:
+  let r = {path: path} readFile
+  if not r.ok:
+    err r.err
+  let parts = {text: r.value.content} textLines
+  return {lines: parts}
+
+fn writeLines({path: str, lines: Seq[str]}) -> !void [io: fs, error: FsError]:
+  let body = {lines: lines} joinLines
+  let w = {path: path, content: body} writeFile
+  if not w.ok:
+    err w.err
+
+# `writeFile`, creating the folders above `path` first.
+fn writeFileIn({path: str, content: str}) -> !void [io: fs, error: FsError]:
+  let dir = {p: path} parent
+  let made = {path: dir} makeDir
+  if not made.ok:
+    err made.err
+  let w = {path: path, content: content} writeFile
+  if not w.ok:
+    err w.err
+
+fn copyFile({src: str, dst: str}) -> !void [io: fs, error: FsError]:
+  let r = {path: src} readFile
+  if not r.ok:
+    err r.err
+  let w = {path: dst, content: r.value.content} writeFileIn
+  if not w.ok:
+    err w.err
+
+# The entries of a folder as paths under it, sorted as `listDir` sorts them.
+fn entriesOf({dir: str}) -> Seq[str] [io: fs]:
+  let names = {path: dir} listDir
+  var out: Seq[str] = []
+  for i in 0 .. names.len - 1:
+    let full = {base: dir, rel: names[i]} join
+    out = {items: out, value: full} push
+  return out
+
+# --- checks ---------------------------------------------------------------------
+fn checkLines() -> int [io: fs]:
+  let a = {text: "one\ntwo\r\nthree\n"} textLines
+  if a.len != 3 or a[1] != "two" or a[2] != "three":
+    return 1
+  let b = {text: "x\n\ny"} textLines
+  if b.len != 3 or b[1] != "":
+    return 2
+  let c = {text: ""} textLines
+  if c.len != 0:
+    return 3
+  let d = {lines: ["a", "b"]} joinLines
+  if d != "a\nb\n":
+    return 4
+  return checkDisk
+
+fn checkDisk() -> int [io: fs]:
+  let root = "/tmp/tuck-files-check"
+  let file = {base: root, rel: "deep/er/notes.txt"} join
+  let one: Seq[str] = ["alpha", "beta", "gamma"]
+  let made = {path: file, content: "x"} writeFileIn
+  if not made.ok:
+    return 10
+  let w2 = {path: file, lines: one} writeLines
+  if not w2.ok:
+    return 11
+  let r = {path: file} readLines
+  if not r.ok:
+    return 12
+  if r.value.lines.len != 3 or r.value.lines[2] != "gamma":
+    return 13
+  let copy = {base: root, rel: "other/copy.txt"} join
+  let c = {src: file, dst: copy} copyFile
+  if not c.ok:
+    return 14
+  let r2 = {path: copy} readLines
+  if not r2.ok:
+    return 15
+  if r2.value.lines.len != 3 or r2.value.lines[0] != "alpha":
+    return 16
+  let missing = {path: root + "/nope.txt"} readLines
+  if missing.ok:
+    return 17
+  let inside = {dir: root + "/other"} entriesOf
+  if inside.len != 1 or inside[0] != root + "/other/copy.txt":
+    return 18
+  let gone1 = {path: file} removeFile
+  let gone2 = {path: copy} removeFile
+  if not gone1.ok or not gone2.ok:
+    return 19
+  return 0
+
+fn main() -> int [io: fs]:
+  let a = checkLines
+  return a
