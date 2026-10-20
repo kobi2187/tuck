@@ -6,6 +6,26 @@ import rt "./tuckrt"
 import tuckˑmodˑnet "./mod_net"
 import tuckˑmodˑscheduler "./mod_scheduler"
 
+SpawnEnv_tuckˑtaskˑserve :: struct {
+	lfd: int,
+}
+
+spawn_tuckˑtaskˑserve :: proc() {
+	e := (^SpawnEnv_tuckˑtaskˑserve)(context.user_ptr)
+	tuckˑtaskˑserve(e.lfd)
+	free(e)
+}
+
+SpawnEnv_tuckˑtaskˑclient :: struct {
+	port: int,
+}
+
+spawn_tuckˑtaskˑclient :: proc() {
+	e := (^SpawnEnv_tuckˑtaskˑclient)(context.user_ptr)
+	tuckˑtaskˑclient(e.port)
+	free(e)
+}
+
 tuckˑactorˑResultMsgKind :: enum { msgPut }
 tuckˑactorˑResultMsg :: struct {
 	tuckTag: tuckˑactorˑResultMsgKind,
@@ -85,8 +105,18 @@ tuckˑfnˑdone :: proc () -> bool {
 tuckˑfnˑmain :: proc () -> int {
   tuckˑvˑl := tuckˑmodˑnet.listen(34593)
   if (tuckˑvˑl.status == .Ok) {
-      tuckˑtaskˑserve(tuckˑvˑl.value.fd)
-      tuckˑtaskˑclient(34593)
+      env0 := new(SpawnEnv_tuckˑtaskˑserve)
+      env0.lfd = tuckˑvˑl.value.fd
+      savedCtx0 := context.user_ptr
+      context.user_ptr = env0
+      rt.tuckSpawn(spawn_tuckˑtaskˑserve)
+      context.user_ptr = savedCtx0
+      env1 := new(SpawnEnv_tuckˑtaskˑclient)
+      env1.port = 34593
+      savedCtx1 := context.user_ptr
+      context.user_ptr = env1
+      rt.tuckSpawn(spawn_tuckˑtaskˑclient)
+      context.user_ptr = savedCtx1
       rt.tuckWaitOn(tuckˑactorˑResultSlot, tuckˑfnˑdone)
       tuckˑmodˑnet.close(tuckˑvˑl.value.fd)
       tuckˑmodˑscheduler.stop()

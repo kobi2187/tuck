@@ -43,7 +43,7 @@ blocks compile in. Without the flag nothing changes: the blessed `std/` is used.
 | alloc | deque, list, map, set, string, vec | yes | pass | pass | pass |
 | std | encoding (JSON print/access/parser, base64, hex, CSV), compress (CRC-32, Adler-32, inflate of all block kinds, fixed-Huffman LZ77 deflate, zlib, gzip; no Zstd), archive (tar/ustar pack and unpack, 100-byte names), random (PCG32: ranges, floats, shuffle, sample, weighted pick, gaussian), crypto (SHA-256, HMAC-SHA256, constant-time compare), log (formats, levels, `ConsoleSink`), regex (parser, compiler, backtracking VM, find/replace/split/glob), net-http (URLs, percent-encoding, queries, request/response text, headers, cookies), cli (command tree, parser, usage, table, ANSI) | partial | pass | pass | pass |
 | platform | dsp (biquad, moving average, RMS), watchdog (actor: configure, start, feed, check, stop) | yes | pass | pass | pass |
-| sys | process (`ExitStatus`, `statusOf`, `run` over `runCommand`), path (normalize, join, parent, base name, extension, relative paths), clock (distinct wall-clock Timestamp, saturating `since`, ISO 8601 format/parse with offsets, human durations; no monotonic Instant until the runtime has one), stream (sys.io: `Source`/`Sink` groups, read-all/exact/line and copy generic over them, in-memory providers; module named `stream` because `io` is reserved), files (file reader and sink providers for those groups, lines in and out, copy, write under new folders, folder entries as paths; no recursive walk until the runtime can tell a folder from a file) | yes | pass | pass | pass |
+| sys | process (`ExitStatus`, `statusOf`, `run` over `runCommand`), path (normalize, join, parent, base name, extension, relative paths), clock (distinct wall-clock Timestamp, saturating `since`, ISO 8601 format/parse with offsets, human durations; no monotonic Instant until the runtime has one), stream (sys.io: `Source`/`Sink` groups, read-all/exact/line and copy generic over them, in-memory providers; module named `stream` because `io` is reserved), socket (sys.net: `TcpStream` as `Source`/`Sink` over std/net, `dial`/`serve`/`acceptOne`; Nim and Odin only, the D runtime has no networking), files (file reader and sink providers for those groups, lines in and out, copy, write under new folders, folder entries as paths; no recursive walk until the runtime can tell a folder from a file) | yes | pass | pass | pass |
 | core | slice, mem (designs say fold away); ptr, atomic, sync-cell, simd | no | | | |
 | alloc | allocator, box, rc, fmt | no | | | |
 | sys, std, platform | everything else | no | | | |
@@ -64,7 +64,7 @@ Regression guards for the two compiler fixes are in `tests/suites/known_bugs.nim
 
 ## Skipped modules
 None. Every module that was set aside for a compiler bug has been finished, and the
-bugs are fixed (`known_bugs.nim` A48-A75; one is still open, #155). Not started inside the
+bugs are fixed (`known_bugs.nim` A48-A76; one is still open, #155). Not started inside the
 finished modules: `std.cli` prompts and progress (host-backed), `std.compress` dynamic-Huffman
 encoder and Zstd.
 

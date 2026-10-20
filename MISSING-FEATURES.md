@@ -174,6 +174,13 @@ it in.
   generic parameter 'K'". Fixed: a letter the enclosing generic fn also uses is
   that fn's own parameter. Found writing `sys.io`.
 
+- **A76 (issue #165) — Odin ran a task called with arguments on the main
+  context.** Only a nullary task, or a bound `let r = {args} task`, was spawned
+  as a coroutine, so `examples/42-net-echo` panicked "cannot await outside a
+  coroutine" on its first socket call. Fixed: a task with arguments called as a
+  statement is spawned through the same per-signature env and wrapper
+  (`context.user_ptr`) as the bound form. Found writing `sys.net`.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

@@ -1251,13 +1251,67 @@ proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string 
             slotVar & ")")
   lines.join("\n")
 
+proc isTaskArgsSpawn(ctx: var OdinCodegenCtx, s: Expr): bool =
+  ## `{args} someTask` as a statement: fire and forget, a task that takes real
+  ## arguments (the nullary case is genOdinCall's isTaskName branch, and the
+  ## bound `let r = {args} task` is genOdinTaskArgsBind).
+  s.kind == exkCall and s.callee != nil and s.callee.kind == exkVar and
+    ctx.index.isTaskName(s.callee.name) and
+    ctx.module.findFn(s.callee.name) != nil and
+    ctx.module.findFn(s.callee.name).fnParams.len > 0
+
+proc genOdinTaskArgsSpawn(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
+  ## Spawn a task with arguments and do not wait for it. Same marshalling as
+  ## the bound form - the arguments travel through context.user_ptr into a
+  ## per-signature wrapper - without a result slot: the wrapper calls the task
+  ## and frees the env. Without this the task body ran on the MAIN context, so
+  ## the first socket read inside it hit "cannot await outside a coroutine".
+  let tname = e.callee.name
+  let task = ctx.module.findFn(tname)
+  let params = task.paramNames()
+  let paramTypes = task.paramTypes()
+  let envName = "SpawnEnv_" & tname
+  let wrapName = "spawn_" & tname
+  if tname notin ctx.taskSpawnHoisted:
+    ctx.taskSpawnHoisted.incl(tname)
+    var fields: seq[string]
+    for i, p in params: fields.add("\t" & p & ": " & ctx.odinType(paramTypes[i]) & ",")
+    ctx.hoisted.add(envName & " :: struct {\n" & fields.join("\n") & "\n}")
+    var argExprs: seq[string]
+    for p in params: argExprs.add("e." & p)
+    let discards = if task.fnReturnType == nil or
+                      (task.fnReturnType.kind == tkNamed and
+                       task.fnReturnType.name == "void"): ""
+                   else: "_ = "
+    ctx.hoisted.add(wrapName & " :: proc() {\n" &
+      "\te := (^" & envName & ")(context.user_ptr)\n" &
+      "\t" & discards & tname & "(" & argExprs.join(", ") & ")\n" &
+      "\tfree(e)\n}")
+  let argParts = ctx.genCallArgs(e)
+  doAssert argParts.len == params.len,
+    "odin: task " & tname & " takes " & $params.len & " param(s), and its " &
+    "call supplies " & $argParts.len
+  let envVar = "env" & $ctx.tmpCounter
+  let savedVar = "savedCtx" & $ctx.tmpCounter
+  ctx.tmpCounter.inc
+  var lines: seq[string]
+  lines.add(ind & envVar & " := new(" & envName & ")")
+  for i, pn in params:
+    lines.add(ind & envVar & "." & pn & " = " & argParts[i])
+  lines.add(ind & savedVar & " := context.user_ptr")
+  lines.add(ind & "context.user_ptr = " & envVar)
+  lines.add(ind & "rt.tuckSpawn(" & wrapName & ")")
+  lines.add(ind & "context.user_ptr = " & savedVar)
+  lines.join("\n")
+
 proc ownsItsLayout(ctx: var OdinCodegenCtx, s: Expr): bool =
   ## Constructs that emit their own indentation and terminator.
-  if ctx.isTaskArgsBind(s): return true
+  if ctx.isTaskArgsBind(s) or ctx.isTaskArgsSpawn(s): return true
   s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkDefer}
 
 proc genStmt(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
+  if ctx.isTaskArgsSpawn(s): return ctx.genOdinTaskArgsSpawn(s, ind & "  ")
   var ownsLayout = s.kind == exkMatch and s.subject != nil
   var code = if ownsLayout: ctx.genMatchStmt(s) else: ctx.genOdinExpr(s)
   if code != "" and ctx.res.shortcut(s) != "":

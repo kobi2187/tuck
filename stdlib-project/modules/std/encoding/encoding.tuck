@@ -99,20 +99,20 @@ fn jsonAt({j: Json, index: int}) -> Json?:
 # stack.
 type Parsed:
   node: Json
-  stop: int
+  endAt: int
 
 type ParsedText:
   value: str
-  stop: int
+  endAt: int
 
 type ParsedItems:
   items: Seq[Json]
-  stop: int
+  endAt: int
 
 type ParsedMembers:
   keys: Seq[str]
   vals: Seq[Json]
-  stop: int
+  endAt: int
 
 fn maxDepth() -> int:
   return 200
@@ -174,7 +174,7 @@ fn parseString({t: str, at: int}) -> ParsedText?:
     let b = {t: t, index: i} byteAt
     if b == 34:
       let s = {bytes: out} fromBytes
-      return {value: s, stop: i + 1} ParsedText
+      return {value: s, endAt: i + 1} ParsedText
     if b < 32:
       return none
     if b != 92:
@@ -251,42 +251,42 @@ fn parseNumber({t: str, at: int}) -> Parsed?:
         return none
       for {t: t, at: i} isDigitAt:
         i = i + 1
-  let piece = {t: t, start: at, stop: i} slice
+  let piece = {t: t, start: at, endAt: i} slice
   if not piece.ok:
     return none
   let v = {t: piece.value} parseFloat
   if not v.ok:
     return none
   let node = {n: v.value} Json.JNum
-  return {node: node, stop: i} Parsed
+  return {node: node, endAt: i} Parsed
 
 fn parseLiteral({t: str, at: int}) -> Parsed?:
   if {t: t, at: at, what: "true"} expectAt:
     let node = {b: true} Json.JBool
-    return {node: node, stop: at + 4} Parsed
+    return {node: node, endAt: at + 4} Parsed
   if {t: t, at: at, what: "false"} expectAt:
     let node = {b: false} Json.JBool
-    return {node: node, stop: at + 5} Parsed
+    return {node: node, endAt: at + 5} Parsed
   if {t: t, at: at, what: "null"} expectAt:
-    return {node: Json.JNull, stop: at + 4} Parsed
+    return {node: Json.JNull, endAt: at + 4} Parsed
   return none
 
 fn parseItems({t: str, at: int, depth: int}) -> ParsedItems?:
   var items: Seq[Json] = []
   var i = {t: t, at: at + 1} skipSpace
   if i < {t: t} byteCount and {t: t, index: i} byteAt == 93:
-    return {items: items, stop: i + 1} ParsedItems
+    return {items: items, endAt: i + 1} ParsedItems
   for true:
     let one = {t: t, at: i, depth: depth + 1} parseValue
     if not one.ok:
       return none
     items = {items: items, value: one.value.node} push
-    i = {t: t, at: one.value.stop} skipSpace
+    i = {t: t, at: one.value.endAt} skipSpace
     if i >= {t: t} byteCount:
       return none
     let b = {t: t, index: i} byteAt
     if b == 93:
-      return {items: items, stop: i + 1} ParsedItems
+      return {items: items, endAt: i + 1} ParsedItems
     if b != 44:
       return none
     i = {t: t, at: i + 1} skipSpace
@@ -297,14 +297,14 @@ fn parseMembers({t: str, at: int, depth: int}) -> ParsedMembers?:
   var vals: Seq[Json] = []
   var i = {t: t, at: at + 1} skipSpace
   if i < {t: t} byteCount and {t: t, index: i} byteAt == 125:
-    return {keys: keys, vals: vals, stop: i + 1} ParsedMembers
+    return {keys: keys, vals: vals, endAt: i + 1} ParsedMembers
   for true:
     if i >= {t: t} byteCount or {t: t, index: i} byteAt != 34:
       return none
     let k = {t: t, at: i} parseString
     if not k.ok:
       return none
-    i = {t: t, at: k.value.stop} skipSpace
+    i = {t: t, at: k.value.endAt} skipSpace
     if i >= {t: t} byteCount or {t: t, index: i} byteAt != 58:
       return none
     i = {t: t, at: i + 1} skipSpace
@@ -313,12 +313,12 @@ fn parseMembers({t: str, at: int, depth: int}) -> ParsedMembers?:
       return none
     keys = {items: keys, value: k.value.value} push
     vals = {items: vals, value: v.value.node} push
-    i = {t: t, at: v.value.stop} skipSpace
+    i = {t: t, at: v.value.endAt} skipSpace
     if i >= {t: t} byteCount:
       return none
     let b = {t: t, index: i} byteAt
     if b == 125:
-      return {keys: keys, vals: vals, stop: i + 1} ParsedMembers
+      return {keys: keys, vals: vals, endAt: i + 1} ParsedMembers
     if b != 44:
       return none
     i = {t: t, at: i + 1} skipSpace
@@ -336,19 +336,19 @@ fn parseValue({t: str, at: int, depth: int}) -> Parsed?:
     if not s.ok:
       return none
     let node = {s: s.value.value} Json.JStr
-    return {node: node, stop: s.value.stop} Parsed
+    return {node: node, endAt: s.value.endAt} Parsed
   if b == 91:
     let a = {t: t, at: i, depth: depth} parseItems
     if not a.ok:
       return none
     let node = {items: a.value.items} Json.JArr
-    return {node: node, stop: a.value.stop} Parsed
+    return {node: node, endAt: a.value.endAt} Parsed
   if b == 123:
     let o = {t: t, at: i, depth: depth} parseMembers
     if not o.ok:
       return none
     let node = {keys: o.value.keys, vals: o.value.vals} Json.JObj
-    return {node: node, stop: o.value.stop} Parsed
+    return {node: node, endAt: o.value.endAt} Parsed
   if b == 45 or {t: t, at: i} isDigitAt:
     return {t: t, at: i} parseNumber
   return {t: t, at: i} parseLiteral
@@ -358,7 +358,7 @@ fn parseJson({t: str}) -> Json?:
   let r = {t: t, at: 0, depth: 0} parseValue
   if not r.ok:
     return none
-  let fin = {t: t, at: r.value.stop} skipSpace
+  let fin = {t: t, at: r.value.endAt} skipSpace
   if fin != {t: t} byteCount:
     return none
   return r.value.node

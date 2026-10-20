@@ -4168,4 +4168,40 @@ fn main() -> int:
   t.quietly: t.hostRuns "A75: a generic fn may reuse its callee's type-parameter letter", 5
   t.bugFixed "A75: a generic fn may reuse its callee's type-parameter letter"
 
+  # A76. A task called with arguments as a statement ran on the main context on
+  # Odin, so its first socket operation panicked "cannot await outside a
+  # coroutine" (issue #165). `42-net-echo` was compile-gated only. Found
+  # writing sys.net.
+  t.src """
+import net
+import scheduler
+
+actor Result [queue: 8]:
+  code: int = 0
+  ready: bool = false
+
+  on put({c: int}):
+    code = c
+    ready = true
+
+task probe({port: int}) -> void [io]:
+  let c = {host: "127.0.0.1", port: port} net::connect
+  if c.ok:
+    Result send put {c: 3}
+    return
+  Result send put {c: 7}
+  return
+
+fn done() -> bool:
+  return Result.ready
+
+fn main() -> int [io]:
+  {port: 1} probe
+  Result.waitUntil {pred: :done}
+  {} scheduler::stop
+  return Result.code
+"""
+  t.quietly: t.runsOdin "A76: a task with arguments is spawned as a coroutine on Odin", 7
+  t.bugFixed "A76: a task with arguments is spawned as a coroutine on Odin"
+
   t.finish()

@@ -847,6 +847,33 @@ proc stageOdinPkg*(dir, odinSrc: string) =
 # because dmd is absent would hide a real Odin failure. The pass message says
 # which backends actually ran, so a green line cannot be misread as three.
 
+proc runsOdin*(t: var T, name: string, want: int) =
+  ## Build the current snippet's Odin and run it, asserting the exit code. For a
+  ## behaviour only Odin can get wrong (a backend-specific runtime path), where
+  ## `hostRuns` would also demand the other two backends carry the feature.
+  let odinExe = findOdin()
+  if odinExe.len == 0:
+    if t.phase != pCollect: t.skip name
+    return
+  let e = t.needOdin()
+  let proj = t.curDir / "odinpkg"
+  let src = t.curDir / "odin" / "t.odin"
+  let bin = proj / "prog_run"
+  let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none", OdinThreads,
+                           "-out:" & bin], e,
+                         proc (dir: string) = stageOdinPkg(dir, src), proj)
+  let r = t.needCmdAfter(@["timeout", "10", bin], b,
+                         proc (dir: string) = discard, proj, verb = vRun)
+  if t.phase == pCollect: return
+  if t.skippedCmd(r): t.skip name; return
+  let (brc, bout) = t.resultOf(b)
+  if brc != 0:
+    t.no name, "odin build failed: " & bout.strip().splitLines()[^1]
+    return
+  let (rc, _) = t.resultOf(r)
+  if rc == want: t.ok name
+  else: t.no name, "exit " & $rc & ", want " & $want
+
 proc hostRuns*(t: var T, name: string, code: int, pattern = "") =
   ## Build AND RUN on every available backend, asserting the same exit code —
   ## and, when `pattern` is given, that each one's output matches it.
