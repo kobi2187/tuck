@@ -383,6 +383,8 @@ proc providerArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
     let (modName, name) = providerFor(ctx.module, ctx.realModules, need, t.name)
     if name != "":
       result.add(ctx.pkgQualifier(modName) & name)
+    elif need.req in ctx.providerParams:
+      result.add(need.req)   # a bounded fn handing its own provider on
 
 proc qualifiedForeignFn(ctx: OdinCodegenCtx, name: string): string
 

@@ -141,6 +141,40 @@ it in.
   `epochMs`, in `std/time`, the three runtimes and the TK-TY43 text. Found
   writing `sys.clock`.
 
+- **A71 (issue #160) — `Self` inside a record in a group requirement was not
+  substituted.** `fn pull({self: Self, ...}) -> {next: Self, data: ...}` could
+  never be satisfied: conformance compared `{next: Mem, ..}` with
+  `{next: Self, ..}`. Fixed: `substituteSelf` delegates to the one `substType`
+  walker. Found writing `sys.io`.
+
+- **A72 (issue #161) — a group-bounded generic could not pass its own type
+  parameter to another fn bounded by the same group.** The inner bound was
+  checked against the concrete provider by name: "parameter 'self' is Mem,
+  group requires S". Fixed: a type parameter of the enclosing fn whose own
+  bound names the group meets it. Found writing `sys.io`.
+
+- **A73 (issue #162) — a group requirement's declared effect was ignored in a
+  generic body.** The call was charged the effect of whichever provider was in
+  scope, so `emit[K: Sink]` over an `[io]` contract passed as pure. Fixed: a
+  call to a requirement of a bound group, in a fn declared in the same module
+  as the group, costs what the group declares. (A group imported from another
+  module is not yet seen by the effect pass.) Found designing `sys.io`.
+
+- **A74 (issue #163) — a group provider in the importing module was rejected.**
+  The group's owning module has its own provider of the same name, and
+  `requirementKey` took that one without asking whether it accepts the
+  argument's type; Odin and D then bound the generic to the owner's provider.
+  Fixed: the checker falls back to the importer's bare provider when the
+  owner's does not take the type, and the generic is always handed its
+  providers (forwarded through nested generics). Found writing file providers
+  for `sys.io`.
+
+- **A75 (issue #164) — a generic fn calling another on a first call's result
+  failed when both used one type-parameter letter.** `echoesOwnParam` took the
+  enclosing fn's own `K` for the callee's `K` echoed back: "cannot infer
+  generic parameter 'K'". Fixed: a letter the enclosing generic fn also uses is
+  that fn's own parameter. Found writing `sys.io`.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

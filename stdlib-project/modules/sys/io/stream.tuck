@@ -1,0 +1,210 @@
+# sys.io (module `stream`; `io` is a reserved word) — streaming over two `group`s, in pure Tuck.
+#
+# A stream is a plain value, not an object, so the contract is a `group`:
+# a compile-time bound, no dispatch, no boxing. A type belongs to `Source` by
+# having a free `pull` of the right shape in scope, and to `Sink` by having a
+# free `put`; nothing is declared.
+#
+# Streams are values, so every operation hands back the advanced stream beside
+# what it produced, and the caller re-binds it. A source that has nothing left
+# answers an empty chunk.
+#
+# This module owns the contracts, the algorithms written against them, and the
+# two in-memory providers (`MemReader`, `MemWriter`) the checks use. Providers
+# for files and sockets live with the module that owns the resource.
+import seq
+import str
+import encoding
+
+group Source:
+  fn pull({self: Self, max: int}) -> {next: Self, data: Seq[u8]} [io]
+
+group Sink:
+  fn put({self: Self, data: Seq[u8]}) -> Self [io]
+
+# What an algorithm hands back: the advanced stream and what was read.
+type Read[S]:
+  next: S
+  data: Seq[u8]
+
+# --- in-memory providers ----------------------------------------------------------
+type MemReader:
+  bytes: Seq[u8]
+  pos: int
+
+type MemWriter:
+  bytes: Seq[u8]
+
+fn memReader({bytes: Seq[u8]}) -> MemReader:
+  return {bytes: bytes, pos: 0} MemReader
+
+fn memWriter() -> MemWriter:
+  let empty: Seq[u8] = []
+  return {bytes: empty} MemWriter
+
+fn pull({self: MemReader, max: int}) -> {next: MemReader, data: Seq[u8]}:
+  var out: Seq[u8] = []
+  var at = self.pos
+  for at < self.bytes.len and out.len < max:
+    out = {items: out, value: self.bytes[at]} push
+    at = at + 1
+  let advanced = {bytes: self.bytes, pos: at} MemReader
+  return {next: advanced, data: out}
+
+fn put({self: MemWriter, data: Seq[u8]}) -> MemWriter:
+  var all = self.bytes
+  for i in 0 .. data.len - 1:
+    all = {items: all, value: data[i]} push
+  return {bytes: all} MemWriter
+
+# --- algorithms over the groups ----------------------------------------------------
+# Everything up to `limit` bytes (the rest stays in the stream).
+fn readAll[S: Source]({s: S, limit: int}) -> Read[S] [io]:
+  var stream = s
+  var out: Seq[u8] = []
+  var more = true
+  for more:
+    let want = limit - out.len
+    if want <= 0:
+      more = false
+    else:
+      let chunk = {self: stream, max: want} pull
+      stream = chunk.next
+      if chunk.data.len == 0:
+        more = false
+      for i in 0 .. chunk.data.len - 1:
+        out = {items: out, value: chunk.data[i]} push
+  return {next: stream, data: out} Read
+
+# Exactly `n` bytes; none when the stream ends first.
+fn readExactly[S: Source]({s: S, n: int}) -> Read[S]? [io]:
+  let got = {s: s, limit: n} readAll
+  if got.data.len != n:
+    return none
+  return got
+
+# One line, without its `\n` (and a `\r` before it); none at the end of the
+# stream. A last line with no line end still counts.
+fn readLine[S: Source]({s: S}) -> Read[S]? [io]:
+  var stream = s
+  var out: Seq[u8] = []
+  var sawAny = false
+  var done = false
+  for not done:
+    let chunk = {self: stream, max: 1} pull
+    stream = chunk.next
+    if chunk.data.len == 0:
+      done = true
+    else:
+      sawAny = true
+      if chunk.data[0] == 10:
+        done = true
+      else:
+        out = {items: out, value: chunk.data[0]} push
+  if not sawAny:
+    return none
+  if out.len > 0 and out[out.len - 1] == 13:
+    var trimmed: Seq[u8] = []
+    for i in 0 .. out.len - 2:
+      trimmed = {items: trimmed, value: out[i]} push
+    out = trimmed
+  return {next: stream, data: out} Read
+
+fn writeAll[K: Sink]({k: K, data: Seq[u8]}) -> K [io]:
+  return {self: k, data: data} put
+
+# The result of copying: both streams advanced, and how many bytes moved.
+type Copied[A, B]:
+  src: A
+  dst: B
+  moved: int
+
+# Up to `limit` bytes from `src` into `dst`, a chunk at a time.
+fn copyTo[A: Source, B: Sink]({src: A, dst: B, limit: int}) -> Copied[A, B] [io]:
+  var source = src
+  var target = dst
+  var moved = 0
+  var more = true
+  for more:
+    let want = limit - moved
+    if want <= 0:
+      more = false
+    else:
+      var size = want
+      if size > 4096:
+        size = 4096
+      let chunk = {self: source, max: size} pull
+      source = chunk.next
+      if chunk.data.len == 0:
+        more = false
+      else:
+        target = {self: target, data: chunk.data} put
+        moved = moved + chunk.data.len
+  return {src: source, dst: target, moved: moved} Copied
+
+# --- checks ---------------------------------------------------------------------
+fn checkReader() -> int [io]:
+  let raw = {t: "hello world"} bytesOf
+  let r = {bytes: raw} memReader
+  let a = {self: r, max: 5} pull
+  if {bytes: a.data} fromBytes != "hello":
+    return 1
+  let b = {self: a.next, max: 100} pull
+  if {bytes: b.data} fromBytes != " world":
+    return 2
+  let c = {self: b.next, max: 10} pull
+  if c.data.len != 0:
+    return 3
+  return checkAlgorithms
+
+fn checkAlgorithms() -> int [io]:
+  let raw = {t: "alpha\nbeta\r\ngamma"} bytesOf
+  let r = {bytes: raw} memReader
+  let l1 = {s: r} readLine
+  if not l1.ok:
+    return 10
+  if {bytes: l1.value.data} fromBytes != "alpha":
+    return 11
+  let l2 = {s: l1.value.next} readLine
+  if not l2.ok:
+    return 12
+  if {bytes: l2.value.data} fromBytes != "beta":
+    return 13
+  let l3 = {s: l2.value.next} readLine
+  if not l3.ok:
+    return 14
+  if {bytes: l3.value.data} fromBytes != "gamma":
+    return 15
+  let l4 = {s: l3.value.next} readLine
+  if l4.ok:
+    return 16
+  let all = {s: r, limit: 8} readAll
+  if all.data.len != 8:
+    return 17
+  let rest = {s: all.next, limit: 100} readAll
+  if rest.data.len != 9:
+    return 18
+  let exact = {s: r, n: 100} readExactly
+  if exact.ok:
+    return 19
+  return checkCopy
+
+fn checkCopy() -> int [io]:
+  let raw = {t: "stream me"} bytesOf
+  let src = {bytes: raw} memReader
+  let dst = memWriter
+  let done = {src: src, dst: dst, limit: 1000} copyTo
+  if done.moved != 9:
+    return 20
+  if {bytes: done.dst.bytes} fromBytes != "stream me":
+    return 21
+  let part = {src: src, dst: dst, limit: 4} copyTo
+  if {bytes: part.dst.bytes} fromBytes != "stre":
+    return 22
+  let w = {k: dst, data: raw} writeAll
+  if w.bytes.len != 9:
+    return 23
+  return 0
+
+fn main() -> int [io]:
+  return checkReader

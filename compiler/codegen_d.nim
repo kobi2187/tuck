@@ -425,6 +425,8 @@ proc dProviderArgs(ctx: var DCodegenCtx, e: Expr): seq[string] =
     let (modName, name) = providerFor(ctx.module, ctx.realModules, need, t.name)
     if name != "":
       result.add(ctx.pkgQualifierD(modName) & name)
+    elif need.req in ctx.providerParams:
+      result.add(need.req)   # a bounded fn handing its own provider on
 
 proc templateCall(ctx: var DCodegenCtx, e: Expr, calleeStr: string,
                   args: seq[string]): string =

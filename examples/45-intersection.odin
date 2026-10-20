@@ -185,7 +185,7 @@ tuckˑfnˑseconds :: proc (self: tuckˑtypeˑInterval) -> int {
   return (self.ticks / 10)
 }
 
-tuckˑfnˑlongEnough :: proc (span: $T, atLeast: int) -> bool {
+tuckˑfnˑlongEnough :: proc (span: $T, atLeast: int, $tuckˑfnˑseconds: proc(self: T) -> int) -> bool {
   return (tuckˑfnˑseconds(span) >= atLeast)
 }
 
@@ -243,7 +243,7 @@ tuckˑfnˑdrive :: proc () {
 
 tuckˑfnˑmain :: proc () -> int {
   tuckˑvˑclearing := tuckˑtypeˑInterval{ticks = 45}
-  tuckˑvˑok := tuckˑfnˑlongEnough(tuckˑvˑclearing, 4)
+  tuckˑvˑok := tuckˑfnˑlongEnough(tuckˑvˑclearing, 4, tuckˑfnˑseconds)
   if !tuckˑvˑok {
       return 9
   }

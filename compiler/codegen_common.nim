@@ -678,29 +678,54 @@ proc paramNamed(f: Decl, typeParam: string): int =
     if p.typ != nil and p.typ.kind == tkNamed and p.typ.name == typeParam: return k
   -1
 
-proc needsOfBound(home: Module, real: ModuleMap, bound: Type,
-                  param: string, idx: int): seq[ProviderNeed] =
-  ## What one bound on type parameter `param` asks of the module declaring the
-  ## fn: each requirement of a plain group that module does not itself declare.
-  if bound == nil or bound.kind != tkNamed: return
+proc ownProvidersConcrete(home: Module, req: string): bool =
+  ## Does every fn `home` declares under `req` take a plain named type first?
+  ## A generic provider (`fn count[T]({self: Seq[T]})`) cannot be matched to an
+  ## argument by name, so it keeps being reached by name rather than passed.
+  for d in home.decls(dkFn):
+    if d.name != req: continue
+    if d.fnParams.len == 0 or d.fnParams[0].typ == nil: return false
+    let t = d.fnParams[0].typ
+    if t.kind != tkNamed or t.name in d.fnGenerics: return false
+  true
+
+proc isPlainBound(home: Module, real: ModuleMap, bound: Type): bool =
+  ## A bound naming a group that takes no type parameters of its own.
+  if bound == nil or bound.kind != tkNamed: return false
   let grp = findGroup(home, real, bound.name)
-  if grp == nil or grp.groupGenerics.len > 0: return
+  grp != nil and grp.groupGenerics.len == 0
+
+proc needsOfBound(home: Module, real: ModuleMap, bound: Type,
+                  param: string, idx: int, always: bool): seq[ProviderNeed] =
+  ## What one bound on type parameter `param` asks of the module declaring the
+  ## fn: each requirement of a plain group that module does not itself declare
+  ## - or, when `always`, every one, since a provider `home` declares serves
+  ## only its own type and a caller's type brings its own (A74).
+  if not isPlainBound(home, real, bound): return
+  let grp = findGroup(home, real, bound.name)
   for mem in grp.groupMembers:
     if mem == nil or mem.kind != dkFn: continue
     let req = prefixed(mem.name, nkFn)
-    if not home.declaresFn(req):
+    if (always and ownProvidersConcrete(home, req)) or not home.declaresFn(req):
       result.add ProviderNeed(req: req, member: mem, param: param, paramIdx: idx)
 
 proc providerNeeds*(home: Module, real: ModuleMap, f: Decl): seq[ProviderNeed] =
   ## The providers `f` (declared in `home`) is passed. Only a plain bound on a
   ## type parameter that a parameter names outright, by a group without type
-  ## parameters of its own; anything else keeps resolving by name.
+  ## parameters of its own; anything else keeps resolving by name. A fn whose
+  ## EVERY bound is plain is handed all its providers; one that mixes in a
+  ## generic group keeps the narrower rule, since its type arguments are solved
+  ## from the group and the extra arguments would disturb that.
   if f == nil or f.kind != dkFn: return
+  var always = true
+  for bs in f.fnGenericBounds:
+    for b in bs:
+      if not isPlainBound(home, real, b): always = false
   for i, g in f.fnGenerics:
     let idx = f.paramNamed(g)
     if i >= f.fnGenericBounds.len or idx < 0: continue
     for b in f.fnGenericBounds[i]:
-      result.add needsOfBound(home, real, b, g, idx)
+      result.add needsOfBound(home, real, b, g, idx, always)
 
 proc fnHome*(m: Module, real: ModuleMap, name: string): Option[Module] =
   ## The module declaring the fn `name`: this one, else another of the program.

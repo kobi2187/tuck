@@ -13,6 +13,8 @@ import seq
 import str
 import text
 import path
+import stream
+import encoding
 
 # The lines of a file, without their line ends (`\n` or `\r\n`). A final line
 # end does not make a final empty line.
@@ -85,8 +87,44 @@ fn entriesOf({dir: str}) -> Seq[str] [io: fs]:
     out = {items: out, value: full} push
   return out
 
+# --- streams over files: providers for std sys.io's groups ---------------------------
+# A reader positioned in a file, and a sink that appends to one. The reader
+# reads the file on each pull; it is for sequential, modest files.
+type FileReader:
+  path: str
+  pos: int
+
+type FileSink:
+  path: str
+
+fn fileReader({path: str}) -> FileReader:
+  return {path: path, pos: 0} FileReader
+
+fn fileSink({path: str}) -> FileSink:
+  return {path: path} FileSink
+
+# What a failed read looks like to a stream: it ends.
+fn pull({self: FileReader, max: int}) -> {next: FileReader, data: Seq[u8]} [io: fs]:
+  var out: Seq[u8] = []
+  let r = {path: self.path} readFile
+  if r.ok:
+    let all = {t: r.value.content} bytesOf
+    var at = self.pos
+    for at < all.len and out.len < max:
+      out = {items: out, value: all[at]} push
+      at = at + 1
+  let advanced = {path: self.path, pos: self.pos + out.len} FileReader
+  return {next: advanced, data: out}
+
+fn put({self: FileSink, data: Seq[u8]}) -> FileSink [io: fs]:
+  let text = {bytes: data} fromBytes
+  let w = {path: self.path, content: text} appendFile
+  if not w.ok:
+    return self
+  return self
+
 # --- checks ---------------------------------------------------------------------
-fn checkLines() -> int [io: fs]:
+fn checkLines() -> int [io, io: fs]:
   let a = {text: "one\ntwo\r\nthree\n"} textLines
   if a.len != 3 or a[1] != "two" or a[2] != "three":
     return 1
@@ -101,7 +139,7 @@ fn checkLines() -> int [io: fs]:
     return 4
   return checkDisk
 
-fn checkDisk() -> int [io: fs]:
+fn checkDisk() -> int [io, io: fs]:
   let root = "/tmp/tuck-files-check"
   let file = {base: root, rel: "deep/er/notes.txt"} join
   let one: Seq[str] = ["alpha", "beta", "gamma"]
@@ -131,12 +169,46 @@ fn checkDisk() -> int [io: fs]:
   let inside = {dir: root + "/other"} entriesOf
   if inside.len != 1 or inside[0] != root + "/other/copy.txt":
     return 18
+  let streamed = checkStreams
+  if streamed != 0:
+    return streamed
   let gone1 = {path: file} removeFile
   let gone2 = {path: copy} removeFile
   if not gone1.ok or not gone2.ok:
     return 19
   return 0
 
-fn main() -> int [io: fs]:
+fn checkStreams() -> int [io, io: fs]:
+  let target = "/tmp/tuck-files-check/stream/out.txt"
+  let made = {path: target, content: ""} writeFileIn
+  if not made.ok:
+    return 60
+  let text = "first line\nsecond line\n"
+  let raw = {t: text} bytesOf
+  let src = {bytes: raw} memReader
+  let sink = {path: target} fileSink
+  let done = {src: src, dst: sink, limit: 1000} copyTo
+  if done.moved != 23:
+    return 61
+  let reader = {path: target} fileReader
+  let l1 = {s: reader} readLine
+  if not l1.ok:
+    return 62
+  if {bytes: l1.value.data} fromBytes != "first line":
+    return 63
+  let l2 = {s: l1.value.next} readLine
+  if not l2.ok:
+    return 64
+  if {bytes: l2.value.data} fromBytes != "second line":
+    return 65
+  let l3 = {s: l2.value.next} readLine
+  if l3.ok:
+    return 66
+  let gone = {path: target} removeFile
+  if not gone.ok:
+    return 67
+  return 0
+
+fn main() -> int [io, io: fs]:
   let a = checkLines
   return a

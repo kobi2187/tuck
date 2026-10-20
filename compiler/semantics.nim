@@ -70,6 +70,7 @@ type
     everyKind: seq[string]      # every kind the PROGRAM declares — main's budget
     visiting: HashSet[string]
     pendingNames: HashSet[string]  # imported `pending:` stubs — never a restriction violation
+    groupReqs: Table[string, Demands]  # the fn being visited: requirement name -> what its group declares
 
 proc getDeclared(c: Checker, name: string): Demands =
   ## What calling `name` demands of its caller; nothing for a name this module
@@ -136,6 +137,7 @@ proc callEffects(c: var Checker, e: Expr, res: var Demands) =
         let callee = if member != nil:
                        Demands(effects: member.fnEffects,
                                resources: member.fnResourceKinds)
+                     elif c.groupReqs.hasKey(calleeName): c.groupReqs[calleeName]
                      else: c.getDeclared(calleeName)
         res = union(res, callee)
         # The [io] marker IS the async annotation: a call to an [io] fn is a
@@ -448,6 +450,32 @@ proc checkMarkerCombinations(d: Decl) =
           effectName(x) & "]. Fix: add [" & effectName(x) & "] to its bracket"),
           d.span)
 
+proc boundName(b: Type): string =
+  ## The group a bound names: `Source`, or `Indexable` for `Indexable[E]`.
+  if b == nil: ""
+  elif b.kind == tkNamed: b.name
+  elif b.kind == tkApp and b.base != nil: b.base.name
+  else: ""
+
+proc declaredReqs(c: Checker, gname: string, into: var Table[string, Demands]) =
+  ## What each requirement of the module's group `gname` declares it costs.
+  for g in c.module.decls:
+    if g == nil or g.kind != dkGroup or g.name != gname: continue
+    for want in g.groupMembers:
+      if want != nil and want.kind == dkFn:
+        into[want.name] = Demands(effects: want.fnEffects,
+                                  resources: want.fnResourceKinds)
+
+proc boundGroupReqs(c: Checker, d: Decl): Table[string, Demands] =
+  ## The requirements this fn's group bounds name, with the effects the GROUP
+  ## declares for each: a call to one inside a bounded body costs what the
+  ## contract says, not what whichever provider happens to be in scope costs
+  ## (issue #162). Groups declared in this module only.
+  for bs in d.fnGenericBounds:
+    for b in bs:
+      let gname = boundName(b)
+      if gname != "": c.declaredReqs(gname, result)
+
 proc verifyFn(c: var Checker, d: Decl) =
   ## One fn body against its own bracket — `main`'s budget aside, below.
   # A contradictory bracket is a fault of the DECLARATION, so a body-less
@@ -483,7 +511,10 @@ proc verifyFn(c: var Checker, d: Decl) =
   c.checkRestrictions(d)
   checkIsrSends(d)
   c.checkStackBound(d)
+  let outerReqs = c.groupReqs
+  c.groupReqs = c.boundGroupReqs(d)
   let actual = c.checkExpr(d.fnBody, budget, d.name)
+  c.groupReqs = outerReqs
   # The other direction (issue #14): a declared [io] the body never needs.
   if d.name != "main" and emIo in d.fnEffects and not hasIo(actual.effects) and
      not c.mayDoIoUnseen(d.fnBody):

@@ -4016,4 +4016,133 @@ fn main() -> int:
   t.quietly: t.hostRuns "A69: == on two Seqs compares their contents on every backend", 0
   t.bugFixed "A69: == on two Seqs compares their contents on every backend"
 
+  # A71. `Self` inside an anonymous record in a group requirement was not
+  # substituted at conformance, so such a requirement could never be met
+  # (issue #160). Found writing sys.io.
+  t.src """
+group Source:
+  fn pull({self: Self, max: int}) -> {next: Self, data: int}
+
+type Mem = {pos: int}
+
+fn pull({self: Mem, max: int}) -> {next: Mem, data: int}:
+  let n = {pos: self.pos + max} Mem
+  return {next: n, data: self.pos}
+
+fn drain[S: Source]({s: S}) -> int:
+  let c = {self: s, max: 2} pull
+  return c.data
+
+fn main() -> int:
+  let m = {pos: 5} Mem
+  return {s: m} drain
+"""
+  t.quietly: t.hostRuns "A71: Self inside a record in a group requirement is substituted", 5
+  t.bugFixed "A71: Self inside a record in a group requirement is substituted"
+
+  # A72. A generic bounded by a group could not hand its own type parameter to
+  # another fn bounded by the same group: the inner bound was looked up against
+  # the concrete provider by name (issue #161). Found writing sys.io.
+  t.src """
+group Source:
+  fn pull({self: Self, max: int}) -> {next: Self, data: int}
+
+type Mem = {pos: int}
+
+fn pull({self: Mem, max: int}) -> {next: Mem, data: int}:
+  let n = {pos: self.pos + max} Mem
+  return {next: n, data: self.pos}
+
+fn inner[S: Source]({s: S}) -> int:
+  let c = {self: s, max: 2} pull
+  return c.data
+
+fn outer[S: Source]({s: S}) -> int:
+  return {s: s} inner
+
+fn main() -> int:
+  let m = {pos: 5} Mem
+  return {s: m} outer
+"""
+  t.quietly: t.hostRuns "A72: a group-bounded generic may call another bounded by the same group", 5
+  t.bugFixed "A72: a group-bounded generic may call another bounded by the same group"
+
+  # A73. A group requirement's declared effect was ignored when a generic body
+  # called it: the body was charged the effect of whichever provider was in
+  # scope, so a pure generic over an `[io]` contract was accepted (issue #162).
+  # Found designing sys.io's streaming groups.
+  t.src """
+group Sink:
+  fn put({self: Self, n: int}) -> Self [io]
+
+type Counter = {total: int}
+
+fn put({self: Counter, n: int}) -> Counter:
+  return {total: self.total + n} Counter
+
+fn emit[K: Sink]({k: K, n: int}) -> K:
+  return {self: k, n: n} put
+
+fn main() -> int:
+  let s = {total: 1} Counter
+  let t = {k: s, n: 4} emit
+  return t.total
+"""
+  t.badCheck "a generic calling an [io] group requirement must declare [io]", "TK-EF01"
+  t.bugFixed "a generic calling an [io] group requirement must declare [io]"
+
+  # A74. A group provider declared in the IMPORTING module was rejected (and on
+  # Odin/D the generic called its own module's provider): the owner's `put` was
+  # taken without asking whether it accepts the argument's type (issue #163).
+  # Found writing file providers for sys.io's streaming groups.
+  t.src """
+import a
+
+type S = {total: int}
+
+fn put({self: S, n: int}) -> S:
+  return {total: self.total + n * 2} S
+
+fn main() -> int:
+  let s = {total: 1} S
+  let w = {bytes: 10} W
+  let done = {k: s, n: 3} twice
+  let other = {k: w, n: 3} twice
+  return done.total * 100 + other.bytes - 1311
+"""
+  t.addFile("a.tuck", """group Sink:
+  fn put({self: Self, n: int}) -> Self
+
+type W = {bytes: int}
+
+fn put({self: W, n: int}) -> W:
+  return {bytes: self.bytes + n} W
+
+fn emit[K: Sink]({k: K, n: int}) -> K:
+  return {self: k, n: n} put
+
+fn twice[K: Sink]({k: K, n: int}) -> K:
+  let once = {k: k, n: n} emit
+  return {k: once, n: n} emit
+""")
+  t.quietly: t.hostRuns "A74: a provider in the importing module serves its own type", 5
+  t.bugFixed "A74: a provider in the importing module serves its own type"
+
+  # A75. A generic fn calling another on the result of a first call failed when
+  # both used the same type-parameter letter: the enclosing fn's own K was taken
+  # for the callee's K echoed back (issue #164). Found writing sys.io.
+  t.src """
+fn inner[K]({k: K, n: int}) -> K:
+  return k
+
+fn outer[K]({k: K, n: int}) -> K:
+  let once = {k: k, n: n} inner
+  return {k: once, n: n} inner
+
+fn main() -> int:
+  return {k: 5, n: 1} outer
+"""
+  t.quietly: t.hostRuns "A75: a generic fn may reuse its callee's type-parameter letter", 5
+  t.bugFixed "A75: a generic fn may reuse its callee's type-parameter letter"
+
   t.finish()

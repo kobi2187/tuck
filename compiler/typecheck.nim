@@ -730,16 +730,11 @@ proc substituteSelf(pt: Type, selfT: Type, letters: seq[string] = @[]): Type =
   ## 2026-09-27) — at any depth, so `Seq[Self]` is a `Seq` of the interface.
   ## So does each of `letters`, the member's type params bounded by `Self`:
   ## through an interface value, each is some satisfier.
-  if pt == nil: return nil
-  case pt.kind
-  of tkNamed:
-    if pt.name == "Self" or pt.name in letters: selfT else: pt
-  of tkApp:
-    var args: seq[Type]
-    for a in pt.args: args.add(substituteSelf(a, selfT, letters))
-    Type(span: pt.span, kind: tkApp, base: substituteSelf(pt.base, selfT, letters),
-         args: args)
-  else: pt
+  ## One walker for every type shape: a record, tuple or fn type holding
+  ## `Self` reads the same as a bare one.
+  var subs = {"Self": selfT}.toTable
+  for l in letters: subs[l] = selfT
+  substType(pt, subs)
 
 proc failIfSameTypeThroughIface(mem: Decl, iname: string, sp: Span) =
   ## `fn splice[A: Self, B: Self]({self: A, other: A, ...})` needs `other` to
@@ -2439,13 +2434,17 @@ proc bindNamedParam(tc: TypeChecker, paramName: string, actual: Type,
     bindings[paramName] = actual
 
 proc echoesOwnParam(declared, actual: Type, generics: seq[string],
-                    bindings: Table[string, Type]): bool =
+                    bindings: Table[string, Type],
+                    enclosing: Table[string, Type]): bool =
   ## A value typed by the callee's OWN unbound param — `none` checked against
   ## a field `next: R?` while R is still unknown — echoes the question back.
   ## Binding R to R built `Link[int, R]` instead of "cannot infer 'R'".
   declared.kind == tkNamed and actual.kind == tkNamed and
     actual.name == declared.name and actual.name in generics and
-    not bindings.hasKey(actual.name)
+    not bindings.hasKey(actual.name) and
+    # a letter the ENCLOSING generic fn also uses is that fn's own parameter,
+    # not the callee's question echoed back (`twice[K]` calling `emit[K]`)
+    actual.name notin enclosing
 
 proc bindableActual(tc: TypeChecker, declared, actual: Type,
                     generics: seq[string],
@@ -2459,7 +2458,8 @@ proc bindableActual(tc: TypeChecker, declared, actual: Type,
   ## "cannot infer generic parameter 'K'".
   let gname = typeParamName(actual)
   if gname != "": return tc.namedType(gname, actual.span)
-  if isFlexible(actual) or echoesOwnParam(declared, actual, generics, bindings):
+  if isFlexible(actual) or
+     echoesOwnParam(declared, actual, generics, bindings, tc.bodyGenerics):
     return nil
   actual
 
@@ -2671,7 +2671,14 @@ proc requirementKey(tc: TypeChecker, member, fnName: string,
     if "::" in fnName: fnName.split("::")[0]
     else: tc.bareOwnerOf.getOrDefault(fnName)
   if owner != "" and tc.fnSigs.hasKey(owner & "::" & member):
-    return owner & "::" & member
+    let qualified = owner & "::" & member
+    # The owner's provider is the default, but only when it takes this type: a
+    # provider the IMPORTING module declares bare is the one for its own type.
+    if concreteT != nil and tc.fnSigs.hasKey(member) and
+       not tc.sigsAcceptReceiver(qualified, concreteT) and
+       tc.sigsAcceptReceiver(member, concreteT):
+      return member
+    return qualified
   if concreteT != nil and not tc.fnSigs.hasKey(member):
     for imp in tc.ambiguousImports.getOrDefault(member):
       let qualified = imp & "::" & member
@@ -2858,6 +2865,12 @@ proc checkOneGroupBound(tc: TypeChecker, bound: Type, concreteT: Type,
   ## naming an INTERFACE is a different mistake with its own message (see
   ## whyNotAnObject's dkGroup arm for the inverse case).
   let groupName = groupNameOf(bound)
+  # A type parameter of the ENCLOSING fn, already bounded by this group, meets
+  # it by that bound: `outer[S: Source]` handing `S` on to `inner[S: Source]`.
+  if concreteT != nil and concreteT.kind == tkNamed and
+     tc.currentBounds.hasKey(concreteT.name):
+    for have in tc.currentBounds[concreteT.name]:
+      if groupNameOf(have) == groupName: return
   if not tc.groupDecls.hasKey(groupName):
     if tc.ifaceDecls.hasKey(groupName):
       tc.checkIfaceBound(groupName, concreteT, paramName, fnName, sp)
