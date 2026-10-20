@@ -4204,4 +4204,20 @@ fn main() -> int [io]:
   t.quietly: t.runsOdin "A76: a task with arguments is spawned as a coroutine on Odin", 7
   t.bugFixed "A76: a task with arguments is spawned as a coroutine on Odin"
 
+  # A77. On D, `discard` of an owned call result printed a bare `tuckOwnTmpN;`,
+  # which dmd rejects as having no effect (issue #166). Found giving the D
+  # runtime networking.
+  t.src """
+import seq
+
+fn make() -> Seq[int]:
+  return [1, 2, 3]
+
+fn main() -> int:
+  make discard
+  return 0
+"""
+  t.quietly: t.hostRuns "A77: discarding an owned call result builds on every backend", 0
+  t.bugFixed "A77: discarding an owned call result builds on every backend"
+
   t.finish()

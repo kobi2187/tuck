@@ -11,6 +11,7 @@
 # error is reported. Whoever needs the difference checks `isOpen`-style at the
 # connection level, or uses std/net directly.
 import net
+import time
 import seq
 import str
 import encoding
@@ -132,12 +133,24 @@ task clientSide({port: int}) -> void [io, io: net]:
   Outcome send report {code: 0}
   return
 
-fn main() -> int [io, io: net]:
-  let l = {port: 38417} serve
+# A free port from the clock, a few tries: three backends may run this check at
+# once, and a fixed port would make them fight for it.
+fn serveSomewhere() -> !Listener [io, io: net, io: clock]:
+  let now = nowMs
+  let base = {value: now.epochMs} int
+  for attempt in 0 .. 6:
+    let port = 30000 + (base + attempt * 977) % 20000
+    let r = {port: port} serve
+    if r.ok:
+      return r
+  return {port: 30000 + (base + 7 * 977) % 20000} serve
+
+fn main() -> int [io, io: net, io: clock]:
+  let l = serveSomewhere
   if not l.ok:
     return 1
   {lfd: l.value.fd} serverSide
-  {port: 38417} clientSide
+  {port: l.value.port} clientSide
   Outcome.waitUntil {pred: :bothDone}
   {l: l.value} stopServing
   {} scheduler::stop

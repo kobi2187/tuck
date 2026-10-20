@@ -41,8 +41,7 @@ it in.
 - **A50 — `std/random` has no Odin or D runtime.** `newDice`, `newDiceFromOs`,
   `rollRange` exist in `tuck_rt.nim` only; "check OK" does not mean every
   backend builds. A scan of every `std` extern against the three runtimes finds
-  nothing else missing except `std/net` on D (`listen`, `accept`, `connect`,
-  `recv`; ROADMAP S3.3, `42-net-echo` cannot link).
+  nothing else missing except `std/net` on D (since added: ROADMAP S3.3).
 - **A51 — the minimum of a signed type cannot be written.** `-128` for `i8` is
   "128 does not fit i8": the minus applies after the range check. `core.convert`
   notes the same for `i64` ("no literal spelling").
@@ -180,6 +179,11 @@ it in.
   coroutine" on its first socket call. Fixed: a task with arguments called as a
   statement is spawned through the same per-signature env and wrapper
   (`context.user_ptr`) as the bound form. Found writing `sys.net`.
+
+- **A77 (issue #166) — D: `discard` of an owned call result emitted a bare
+  `tuckOwnTmpN;`.** dmd rejects an expression statement with no effect. Fixed:
+  a discarded bare name is emitted as `cast(void) name`. Found giving the D
+  runtime networking.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
@@ -340,13 +344,11 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   2026-09-28) is a separate, larger change and not needed by the ping.
 - **Typed select sources.** `on select` lowers `read <fd>` / `timeout <ms>`
   only. Blocks example 16 (see B).
-- **The D runtime has no networking.** `listen`, `accept`, `connect`,
-  `sendAll` and `recvSome` exist in `compiler/tuck_rt.nim` and not in
-  `compiler/tuckrt_d/tuck_rt.d`, so `examples/42-net-echo` emits valid D that
-  cannot link ("undefined identifier `listen` in module `tuck_rt`"). Codegen
-  is fine; the runtime is the gap, and it is why that example is deliberately
-  absent from the D compile gate. A third hand-mirrored runtime is exactly
-  the drift the item below is about.
+- **The D runtime networking — DONE.** `listen`, `accept`, `connect`, `recv`,
+  `send` and `close` are in `compiler/tuckrt_d/tuck_rt.d`, over the same
+  reactor as the other two; `examples/42-net-echo` is compile- and run-gated on
+  D (exit 42) and `sys.net`'s `socket` runs on all three. A third hand-mirrored
+  runtime is still the drift the item below is about.
 - **One C implementation of the runtime.** The Nim and Odin runtimes are
   mirrored by hand and have drifted three times already (see
   `thoughts/bugs-found-while-building-net.md`). Collapsing the offload seam

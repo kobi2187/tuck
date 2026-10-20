@@ -1492,7 +1492,12 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
     # D already allows an expression statement's value to go unused, no
     # keyword needed — the identical construct to Tuck's `discard <expr>`.
     # A bare `discard` has nothing to drop, so it emits nothing.
-    if e.discardVal != nil: ctx.genDExpr(e.discardVal) else: ""
+    # ...except a bare name: dmd rejects `tmp;` ("has no effect"), and the
+    # ownership pass leaves exactly that when the discarded value was bound to
+    # a temporary it will drop at scope exit (A77).
+    if e.discardVal == nil: ""
+    elif e.discardVal.kind == exkVar: "cast(void) " & ctx.genDExpr(e.discardVal)
+    else: ctx.genDExpr(e.discardVal)
   of exkTripleDot: ""   # `...` outside a fn body: a no-op statement
   of exkImport: ""   # imports are assembled by dImports from realModules
   of exkIfaceCall: ctx.genDIfaceCall(e)

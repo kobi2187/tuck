@@ -18,10 +18,6 @@ const Modules = [
   ("core", "error", "error"), ("core", "fmt", "fmt"), ("core", "geom", "geom"), ("core", "hash", "hash"), ("core", "iter", "iter"), ("core", "num", "num"), ("core", "types", "types"), ("std", "math", "math"), ("std", "chrono", "chrono"), ("std", "i18n", "i18n"), ("platform", "boot", "boot"), ("platform", "power", "power"), ("sys", "env", "env"), ("std", "perf", "perf"), ("std", "queue", "queue"), ("std", "testing", "testing"), ("std", "crypto", "crypto"), ("std", "encoding", "encoding"), ("std", "log", "log"), ("std", "regex", "regex"), ("std", "net-http", "http"), ("platform", "dsp", "dsp"), ("platform", "watchdog", "watchdog"), ("sys", "process", "process"), ("std", "cli", "cli"), ("std", "compress", "compress"), ("std", "archive", "archive"), ("std", "random", "random"), ("sys", "path", "path"), ("sys", "files", "files"), ("sys", "time", "clock"), ("sys", "io", "stream"), ("sys", "net", "socket"),
   ("core", "str", "text")]
 
-const NoDlang = ["socket"]
-  ## Modules the D backend cannot build: the D runtime implements no networking
-  ## (ROADMAP S3.3), so `std/net` cannot link there. Move a name out when it can.
-
 proc stdlibArg(t: T): string =
   "--stdlib:stdlib-project"
 
@@ -103,7 +99,7 @@ fn main() -> int:
   for (tier, dirName, name) in Modules:
     nim.add (name, t.needCmd(@["sh", "-c", moduleScript(t, tier, dirName, name, "")], verb = vRun))
     odin.add (name, t.needCmd(@["sh", "-c", moduleScript(t, tier, dirName, name, "odin")], verb = vRun))
-    if haveD and name notin NoDlang:
+    if haveD:
       dlang.add (name, t.needCmd(@["sh", "-c", moduleScript(t, tier, dirName, name, "dlang")], verb = vRun))
   if t.phase != pCollect:
     for (label, runs) in [("Nim", nim), ("Odin", odin), ("D", dlang)]:

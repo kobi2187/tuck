@@ -203,7 +203,7 @@ finished** (no longer deferred).
     with `~`.
 14. #64 — wire `[no_alloc]` and `[irq_safe]`.
 15. #22 / #23 — `callParamsFor` gaps; quadratic emit.
-16. S3.3 — D runtime networking: `42-net-echo` cannot link `listen`/`accept`. L.
+16. ~~S3.3 — D runtime networking~~ **DONE 2026-10-20**: `std/net` on the D runtime; `42-net-echo` runs on D (exit 42).
 17. S3.5 — runtime speed parity; the causes are unmeasured.
 17b. M2.1 — `exclusivelyOwned`'s origin half onto the mirror (moved here from
     item 2; see there). A differential over the corpus first: which copies
@@ -394,7 +394,7 @@ closure no longer exist in any `codegen_*.nim`.
 |---|---|---|---|
 | S3.1 | **#43** | ~~Odin invariant guard~~ **DONE 2026-09-26**: guarded by `tuckNoInvariants` (`#config`), a runtime call not `assert` (which `-disable-assert` stripped), the same message and exit 1 on all three (D aborted, 134). **DONE 2026-09-28** (R9 = b): `tuck build --no-invariants` sets the define on each backend (Nim `-d:`, Odin `-define:`, D `-version=`); `cli_smoke` runs it on all three | M |
 | S3.2 | **#30** | D: ~~volatile registers~~ (done 2026-10-19, all three backends), `[saturating]`, `tuckConcat` | M |
-| S3.3 | — | the D runtime has no networking; `42-net-echo` cannot link | L |
+| S3.3 | — | ~~the D runtime has no networking~~ **DONE 2026-10-20**: `std/net` in `tuck_rt.d`; `42-net-echo` and `sys.net` run on D | L |
 | S3.4 | **#31** | the flake is Odin's own LLVM verifier; pin the Odin version | S |
 | S3.5 | — | **runtime speed parity, found by `benches/memory` (2026-09-25).** Memory is flat on all three; TIME is not: copy_loop Nim 12 ms vs Odin 97 vs D 372; chain Nim 4.6x Odin; overwrite/transfer D 8–11x the others. Causes unconfirmed — see `benches/SCORES.md`, which also has the same programs with the collectors OFF | M |
 | — | **#40** | **FIXED 2026-09-25** by M4.4 | — |

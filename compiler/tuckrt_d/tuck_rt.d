@@ -13,7 +13,7 @@ module tuck_rt;
 import std.stdio : stdout;
 import std.conv : text, to;
 import std.array : join;
-import core.sys.posix.unistd : pipe2, read, write, close;
+import core.sys.posix.unistd : pipe2, read, write, posixClose = close;
 import core.atomic : cas, atomicLoad, atomicStore;
 
 // The coroutine engine is a separate file but the SAME facade: emitted code
@@ -1393,7 +1393,7 @@ private void fileWorker(void* arg)
             if (n <= 0) { r.status = FsIoStatus.AccessDenied; break; }
             off += n;
         }
-        close(fd);
+        posixClose(fd);
         break;
     case FileOp.Read:
         int fd = open(r.path, O_RDONLY, 0);
@@ -1420,7 +1420,7 @@ private void fileWorker(void* arg)
                 if (bigger is null)
                 {
                     free(buf);
-                    close(fd);
+                    posixClose(fd);
                     r.status = FsIoStatus.IoFailed;
                     return;
                 }
@@ -1430,14 +1430,14 @@ private void fileWorker(void* arg)
             if (n < 0)
             {
                 free(buf);
-                close(fd);
+                posixClose(fd);
                 r.status = FsIoStatus.IoFailed;
                 return;
             }
             if (n == 0) break;
             len += n;
         }
-        close(fd);
+        posixClose(fd);
         r.outBuf = buf;
         r.outLen = len;
         break;
@@ -1617,6 +1617,190 @@ R osSeed(R)()
     ulong hi = unpredictableSeed;
     ulong lo = unpredictableSeed;
     return tuckRec!(R, "seed")((hi << 32) | lo);
+}
+
+// --- std/net — TCP over the reactor -----------------------------------------------
+// The same shape as tuck_rt.nim's and tuck_rt.odin's: sockets are plain
+// non-blocking fds, and every call that can wait suspends the CALLING task on
+// readiness (tuckAwaitRead/Write) instead of blocking the thread. An empty
+// recv means the peer closed cleanly. Renamed imports keep the POSIX names
+// (`accept`, `send`, `close`...) from colliding with the externs below.
+private static import sock = core.sys.posix.sys.socket;
+private static import inet = core.sys.posix.netinet.in_;
+private static import arpa = core.sys.posix.arpa.inet;
+private static import fcntl_ = core.sys.posix.fcntl;
+private static import errno_ = core.stdc.errno;
+
+private enum NetErrKind { Refused, AddressInUse, Unreachable, Closed, IoFailed }
+
+/// One place mapping an errno class onto the NetError variants declared in
+/// std/net.tuck. Exhaustive, so a new kind is a compile error here.
+private ushort netErrCode(NetErrKind k)
+{
+    final switch (k)
+    {
+    case NetErrKind.Refused:      return errCode("net/NetError.Refused");
+    case NetErrKind.AddressInUse: return errCode("net/NetError.AddressInUse");
+    case NetErrKind.Unreachable:  return errCode("net/NetError.Unreachable");
+    case NetErrKind.Closed:       return errCode("net/NetError.Closed");
+    case NetErrKind.IoFailed:     return errCode("net/NetError.IoFailed");
+    }
+}
+
+/// errno at the moment of failure, bucketed into what a Tuck program can act
+/// on. Anything unrecognised is IoFailed rather than a guess.
+private ushort netErrnoCode(int e)
+{
+    with (errno_)
+    {
+        if (e == ECONNREFUSED) return netErrCode(NetErrKind.Refused);
+        if (e == EADDRINUSE) return netErrCode(NetErrKind.AddressInUse);
+        if (e == ENETUNREACH || e == EHOSTUNREACH)
+            return netErrCode(NetErrKind.Unreachable);
+        if (e == EPIPE || e == ECONNRESET) return netErrCode(NetErrKind.Closed);
+    }
+    return netErrCode(NetErrKind.IoFailed);
+}
+
+private void setNonBlocking(int fd)
+{
+    auto fl = fcntl_.fcntl(fd, fcntl_.F_GETFL, 0);
+    fcntl_.fcntl(fd, fcntl_.F_SETFL, fl | fcntl_.O_NONBLOCK);
+}
+
+/// A non-blocking TCP socket listening on all interfaces at `port`
+/// (SO_REUSEADDR set, backlog 64), or the classified errno.
+R listen(R)(long port)
+{
+    alias P = typeof(R.value);
+    int fd = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
+    if (fd < 0) return terr!P(netErrnoCode(errno_.errno));
+    // SO_REUSEADDR so a restarted server does not trip over its own TIME_WAIT
+    // sockets - without it, rebinding within ~60s of a shutdown fails.
+    int yes = 1;
+    sock.setsockopt(fd, sock.SOL_SOCKET, sock.SO_REUSEADDR, &yes, yes.sizeof);
+    inet.sockaddr_in sa;
+    sa.sin_family = cast(ushort) sock.AF_INET;
+    sa.sin_port = arpa.htons(cast(ushort) port);
+    sa.sin_addr.s_addr = inet.INADDR_ANY;
+    if (sock.bind(fd, cast(sock.sockaddr*) &sa, sa.sizeof) < 0)
+    {
+        auto e = errno_.errno;
+        posixClose(fd);
+        return terr!P(netErrnoCode(e));
+    }
+    if (sock.listen(fd, 64) < 0)
+    {
+        auto e = errno_.errno;
+        posixClose(fd);
+        return terr!P(netErrnoCode(e));
+    }
+    setNonBlocking(fd);
+    return tok(tuckRec!(P, "fd")(cast(long) fd));
+}
+
+/// Suspends on the listening fd until a client arrives. Re-parks on a spurious
+/// wake (another coroutine took the connection first).
+R accept(R)(long fd)
+{
+    alias P = typeof(R.value);
+    for (;;)
+    {
+        tuckAwaitRead(fd);
+        int c = sock.accept(cast(int) fd, null, null);
+        if (c >= 0)
+        {
+            setNonBlocking(c);
+            return tok(tuckRec!(P, "fd")(cast(long) c));
+        }
+        auto e = errno_.errno;
+        if (e != errno_.EAGAIN && e != errno_.EWOULDBLOCK)
+            return terr!P(netErrnoCode(e));
+    }
+}
+
+/// Non-blocking connect: the syscall returns EINPROGRESS immediately and the fd
+/// becomes WRITABLE when the handshake finishes, so the task suspends on
+/// write-readiness. Only dotted-quad hosts: a hostname needs DNS, which blocks.
+R connect(R)(string host, long port)
+{
+    import std.string : toStringz;
+    alias P = typeof(R.value);
+    inet.sockaddr_in sa;
+    sa.sin_family = cast(ushort) sock.AF_INET;
+    sa.sin_port = arpa.htons(cast(ushort) port);
+    sa.sin_addr.s_addr = arpa.inet_addr(toStringz(host));
+    if (sa.sin_addr.s_addr == uint.max && host != "255.255.255.255")
+        return terr!P(netErrCode(NetErrKind.Unreachable));
+    int fd = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
+    if (fd < 0) return terr!P(netErrnoCode(errno_.errno));
+    setNonBlocking(fd);
+    if (sock.connect(fd, cast(sock.sockaddr*) &sa, sa.sizeof) < 0)
+    {
+        auto e = errno_.errno;
+        if (e != errno_.EINPROGRESS)
+        {
+            posixClose(fd);
+            return terr!P(netErrnoCode(e));
+        }
+        tuckAwaitWrite(fd);
+        // The handshake's real outcome lands in SO_ERROR, not in connect's return.
+        int soErr = 0;
+        uint sl = soErr.sizeof;
+        sock.getsockopt(fd, sock.SOL_SOCKET, sock.SO_ERROR, &soErr, &sl);
+        if (soErr != 0)
+        {
+            posixClose(fd);
+            return terr!P(netErrnoCode(soErr));
+        }
+    }
+    return tok(tuckRec!(P, "fd")(cast(long) fd));
+}
+
+/// An EMPTY result means the peer closed cleanly - not an error, so callers
+/// test `.data.length == 0` rather than matching a variant.
+R recv(R)(long fd, long max)
+{
+    alias P = typeof(R.value);
+    if (max <= 0) return tok(tuckRec!(P, "data")(""));
+    auto buf = new char[cast(size_t) max];
+    for (;;)
+    {
+        tuckAwaitRead(fd);
+        auto n = sock.recv(cast(int) fd, buf.ptr, buf.length, 0);
+        if (n > 0) return tok(tuckRec!(P, "data")(buf[0 .. n].idup));
+        if (n == 0) return tok(tuckRec!(P, "data")(""));
+        auto e = errno_.errno;
+        if (e != errno_.EAGAIN && e != errno_.EWOULDBLOCK)
+            return terr!P(netErrnoCode(e));
+    }
+}
+
+/// Sends ALL of it, suspending on write-readiness whenever the kernel buffer
+/// fills. A partial write is not surfaced: the caller asked to send a value.
+R send(R)(long fd, string data)
+{
+    alias P = typeof(R.value);
+    size_t sent = 0;
+    while (sent < data.length)
+    {
+        auto n = sock.send(cast(int) fd, data.ptr + sent, data.length - sent,
+                           sock.MSG_NOSIGNAL);
+        if (n > 0) sent += n;
+        else
+        {
+            auto e = errno_.errno;
+            if (e == errno_.EAGAIN || e == errno_.EWOULDBLOCK) tuckAwaitWrite(fd);
+            else return terr!P(netErrnoCode(e));
+        }
+    }
+    return tok(tuckRec!(P, "sent")(cast(long) sent));
+}
+
+/// Closes an fd. Errors are ignored: there is nothing a caller can do.
+void close(long fd)
+{
+    posixClose(cast(int) fd);
 }
 
 R nowMs(R)()

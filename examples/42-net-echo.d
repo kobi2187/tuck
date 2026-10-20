@@ -58,7 +58,7 @@ void tuckˑtaskˑserve(long lfd) {
     if ((tuckˑvˑc.status == rt.TuckStatus.Ok)) {
         rt.TuckResult!(tuckˑmodˑshapes_42_net_echo.TRec_data!(string)) tuckOwnTmp1 = tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256L);
         scope(exit) rt.tuckDrop(tuckOwnTmp1);
-        tuckOwnTmp1;
+        cast(void) tuckOwnTmp1;
         tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "pong");
         tuckˑmodˑnet.close(tuckˑvˑc.value.fd);
     }
