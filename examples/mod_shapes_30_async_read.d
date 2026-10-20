@@ -1,7 +1,7 @@
 module mod_shapes_30_async_read;
 
-struct TRec_ms(T_ms) {
-    T_ms ms;
+struct TRec_epochMs(T_epochMs) {
+    T_epochMs epochMs;
 }
 
 struct TRec_fd(T_fd) {

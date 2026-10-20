@@ -135,6 +135,12 @@ it in.
   plain elements compares through `rt.tuckSeqEq` (length, then elements). A
   Seq of Seqs is still a raw `==`. Found writing `std.compress`.
 
+- **A70 (issue #159) — the result of `nowMs` could not be read.** Its field
+  `ms` collided with `std/time`'s fn `ms` (fields and fns share a call
+  namespace), so `n.ms` was refused in every importer. Fixed: the field is
+  `epochMs`, in `std/time`, the three runtimes and the TK-TY43 text. Found
+  writing `sys.clock`.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

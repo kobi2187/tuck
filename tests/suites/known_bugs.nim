@@ -3359,6 +3359,21 @@ fn main() -> int:
   t.badCheck "arithmetic on a one-field record is refused (#103)", "TK-TY43"
   t.bugFixed "arithmetic on a one-field record is refused (#103)"
 
+  # A70. The field of `nowMs`'s result was `ms`, which collided with std/time's
+  # fn `ms`, so the value could not be read at all (issue #159). Found writing
+  # sys.clock.
+  t.src """
+import time
+
+fn main() -> int [io: clock]:
+  let n = nowMs
+  if n.epochMs > 0:
+    return 0
+  return 1
+"""
+  t.quietly: t.hostRuns "A70: the field of a nowMs result can be read", 0
+  t.bugFixed "A70: the field of a nowMs result can be read"
+
   t.src """
 object Box:
   cells: Seq[int]

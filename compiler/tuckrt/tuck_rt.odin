@@ -1456,7 +1456,7 @@ ArgValue :: struct {
 }
 
 NowMs :: struct {
-	ms: u64,
+	epochMs: u64,
 }
 
 // --- std/fs ---
@@ -1892,7 +1892,7 @@ osSeed :: proc() -> OsSeed {
 }
 
 nowMs :: proc() -> NowMs {
-	return NowMs{ms = u64(time.to_unix_nanoseconds(time.now()) / 1_000_000)}
+	return NowMs{epochMs = u64(time.to_unix_nanoseconds(time.now()) / 1_000_000)}
 }
 
 // The reactor's timer, NOT the worker and NOT time.sleep. A sleep is the one

@@ -1622,7 +1622,7 @@ R osSeed(R)()
 R nowMs(R)()
 {
     import std.datetime.systime : Clock;
-    return tuckRec!(R, "ms")(
+    return tuckRec!(R, "epochMs")(
         cast(ulong)(Clock.currStdTime / 10_000 - 62_135_596_800_000L));
 }
 

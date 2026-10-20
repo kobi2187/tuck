@@ -1,7 +1,7 @@
 module mod_shapes_01_data_flow;
 
-struct TRec_ms(T_ms) {
-    T_ms ms;
+struct TRec_epochMs(T_epochMs) {
+    T_epochMs epochMs;
 }
 
 struct TRec_hasNew_episodes_metadata(T_hasNew, T_episodes, T_metadata) {

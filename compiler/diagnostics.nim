@@ -517,10 +517,10 @@ proc parseExplanation(d: DiagCode): string =
     "`K {x: 1}` otherwise."
   of dcTyArithOnRecord:
     "`+ - * /i /f` work on numbers. A record is not a number, even one with a " &
-    "single field such as `{ms: u64}` from `nowMs`: it is a one-field record, " &
+    "single field such as `{epochMs: u64}` from `nowMs`: it is a one-field record, " &
     "and no backend will treat it as the number inside. The checker refuses it " &
     "(issue #103) so that \"check OK\" means \"every backend builds\". " &
-    "Fix: read the field, `b.ms - a.ms`."
+    "Fix: read the field, `b.epochMs - a.epochMs`."
   of dcTyAmbiguousVariant:
     "Two sum types in scope declare a variant of this name, and the place it " &
     "is written says nothing about which one (no parameter, field, match " &

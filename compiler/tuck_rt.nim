@@ -1766,9 +1766,9 @@ proc exit*(code: int) =
   ## Ends the process with `code` at once.
   quit(code)
 
-proc nowMs*(): tuple[ms: uint64] =
+proc nowMs*(): tuple[epochMs: uint64] =
   ## Wall-clock time in milliseconds since the Unix epoch.
-  (ms: uint64(epochTime() * 1000))
+  (epochMs: uint64(epochTime() * 1000))
 proc sleepMs*(ms: uint32) =
   ## The reactor's timer, NOT the worker and NOT os.sleep. A sleep is the one
   ## "blocking" op that was never blocking-by-nature: waiting for a deadline is
