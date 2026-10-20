@@ -13,6 +13,7 @@
 import bits
 import seq
 import str
+import encoding
 
 const mask32: u64 = 4294967295
 
@@ -241,13 +242,6 @@ fn toHex({bytes: Seq[u8]}) -> str:
     parts = {items: parts, value: hi} push
     parts = {items: parts, value: lo} push
   return {parts: parts, sep: ""} joinStr
-
-fn bytesOf({t: str}) -> Seq[u8]:
-  var out: Seq[u8] = []
-  for i in 0 .. {t: t} byteCount - 1:
-    let b = {t: t, index: i} byteAt
-    out = {items: out, value: b} push
-  return out
 
 fn hexOfSha({t: str}) -> str:
   let bytes = {t: t} bytesOf

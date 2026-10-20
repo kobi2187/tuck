@@ -711,13 +711,6 @@ fn unpack({data: Seq[u8], format: Method}) -> Seq[u8]?:
   return none
 
 # --- checks ---------------------------------------------------------------------
-fn bytesOfText({t: str}) -> Seq[u8]:
-  var out: Seq[u8] = []
-  for i in 0 .. {t: t} byteCount - 1:
-    let b = {t: t, index: i} byteAt
-    out = {items: out, value: b} push
-  return out
-
 fn unhex({t: str}) -> Seq[u8]:
   let r = {t: t} fromHex
   if r.ok:
@@ -725,11 +718,8 @@ fn unhex({t: str}) -> Seq[u8]:
   let nothing: Seq[u8] = []
   return nothing
 
-fn textOf({bytes: Seq[u8]}) -> str:
-  return {bytes: bytes} fromBytes
-
 fn checkChecksums() -> int:
-  let nine = {t: "123456789"} bytesOfText
+  let nine = {t: "123456789"} bytesOf
   if {data: nine} crc32 != 3421780262:
     return 1
   if {data: nine} adler32 != 152961502:
@@ -747,14 +737,14 @@ fn checkInflate() -> int:
   let a = {data: stored} inflate
   if not a.ok:
     return 10
-  if {bytes: a.value.data} textOf != "abc":
+  if {bytes: a.value.data} fromBytes != "abc":
     return 11
   # level 6 over "aaaaaaaaaabbbbbbbbbb" — fixed Huffman with matches
   let fixed = {t: "4b4c848124380000"} unhex
   let b = {data: fixed} inflate
   if not b.ok:
     return 12
-  if {bytes: b.value.data} textOf != "aaaaaaaaaabbbbbbbbbb":
+  if {bytes: b.value.data} fromBytes != "aaaaaaaaaabbbbbbbbbb":
     return 13
   return checkDynamic
 
@@ -794,18 +784,18 @@ fn checkCorrupt() -> int:
 
 fn checkWrappers() -> int:
   # python: zlib.compress(b"hello hello hello") and gzip.compress(..., mtime=0)
-  let hello = {t: "hello hello hello"} bytesOfText
+  let hello = {t: "hello hello hello"} bytesOf
   let z = {t: "789ccb48cdc9c957c84090003a2e067d"} unhex
   let a = {data: z, format: Zlib} unpack
   if not a.ok:
     return 40
-  if {bytes: a.value} textOf != "hello hello hello":
+  if {bytes: a.value} fromBytes != "hello hello hello":
     return 41
   let g = {t: "1f8b08000000000002ffcb48cdc9c957c84090008088f9e511000000"} unhex
   let b = {data: g, format: Gzip} unpack
   if not b.ok:
     return 42
-  if {bytes: b.value} textOf != "hello hello hello":
+  if {bytes: b.value} fromBytes != "hello hello hello":
     return 43
   # a flipped checksum byte is refused
   var bad = z
@@ -829,7 +819,7 @@ fn roundTrips({data: Seq[u8], format: Method, level: Level}) -> bool:
   return back.value == data
 
 fn checkRoundTrip() -> int:
-  let hello = {t: "hello hello hello"} bytesOfText
+  let hello = {t: "hello hello hello"} bytesOf
   let empty: Seq[u8] = []
   let raw = {t: "edd45754ce0118c7f1ac92552223eb8fa492ec2d7bb4a561645622bcf5b6de7642cb1e8986ac28914dd97befbd3392102ac9be72be6eddba729e9be7e639e77bcee7e6a7a553cfb"} unhex
   var n = 0
@@ -843,7 +833,7 @@ fn checkRoundTrip() -> int:
       if not {data: raw, format: m, level: l} roundTrips:
         return 70 + n
   # the fixed encoder shrinks repetition
-  let rep = {t: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"} bytesOfText
+  let rep = {t: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"} bytesOf
   let small = {data: rep, level: Balanced} deflate
   if small.len >= rep.len:
     return 80

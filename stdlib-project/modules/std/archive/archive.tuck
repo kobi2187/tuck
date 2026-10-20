@@ -1,0 +1,356 @@
+# std.archive — tar (POSIX ustar), in pure Tuck.
+#
+# An archive is a flat list of entries, each a file or a directory, archived into
+# 512-byte blocks: a header (name, mode, size, mtime, checksum, "ustar" magic)
+# and the content padded to a hdr boundary, then two zero blocks. Names must
+# fit the 100-byte name field; the ustar prefix field, long-name extensions and
+# link entries are not written, and an archive that uses them is refused.
+#
+# Failure is an absent answer, never a crash: a bad checksum, a truncated
+# archive or an entry kind this module does not read is `none`.
+import seq
+import str
+import encoding
+
+type Kind:
+  | File
+  | Dir
+
+type Entry:
+  name: str
+  kind: Kind
+  data: Seq[u8]
+  mode: int
+  mtime: int
+
+# A regular file with the usual 0644 mode (420) and no timestamp.
+fn file({name: str, data: Seq[u8]}) -> Entry:
+  return {name: name, kind: File, data: data, mode: 420, mtime: 0} Entry
+
+# A directory with the usual 0755 mode (493); a trailing slash is added on write.
+fn dir({name: str}) -> Entry:
+  let empty: Seq[u8] = []
+  return {name: name, kind: Dir, data: empty, mode: 493, mtime: 0} Entry
+
+# --- numbers in octal ASCII ---------------------------------------------------------
+# `width` bytes: width-1 octal digits, most significant first, then a NUL.
+fn octalField({value: int, width: int}) -> Seq[u8]:
+  var digits: Seq[int] = []
+  var rest = value
+  for i in 0 .. width - 2:
+    digits = {items: digits, value: 48 + rest % 8} push
+    rest = rest /i 8
+  var out: Seq[u8] = []
+  for i in 0 .. width - 2:
+    let b = {value: digits[width - 2 - i]} u8
+    out = {items: out, value: b} push
+  let nul = {value: 0} u8
+  return {items: out, value: nul} push
+
+# The number in `width` bytes at `start`, up to the first NUL or space; -1 when
+# a byte is not an octal digit or no digit is there.
+fn parseOctal({bytes: Seq[u8], start: int, width: int}) -> int:
+  var v = 0
+  var seen = 0
+  var i = 0
+  for i < width:
+    let c = {value: bytes[start + i]} int
+    if c == 0 or c == 32:
+      i = width
+    elif c >= 48 and c <= 55:
+      v = v * 8 + c - 48
+      seen = seen + 1
+      i = i + 1
+    else:
+      return -1
+  if seen == 0:
+    return -1
+  return v
+
+# --- headers ------------------------------------------------------------------------
+fn zeros({n: int}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  let z = {value: 0} u8
+  for i in 0 .. n - 1:
+    out = {items: out, value: z} push
+  return out
+
+# `field` written over `hdr` at `at`.
+fn putField({hdr: Seq[u8], at: int, field: Seq[u8]}) -> Seq[u8]:
+  var out = hdr
+  for i in 0 .. field.len - 1:
+    {items: out, index: at + i, value: field[i]} setAt
+  return out
+
+# The header checksum: the sum of every byte with the checksum field as spaces.
+fn headerSum({hdr: Seq[u8]}) -> int:
+  var sum = 0
+  for i in 0 .. 511:
+    if i >= 148 and i < 156:
+      sum = sum + 32
+    else:
+      sum = sum + {value: hdr[i]} int
+  return sum
+
+fn typeFlag({kind: Kind}) -> u8:
+  if kind == Dir:
+    return {value: 53} u8
+  return {value: 48} u8
+
+fn endsWithSlash({t: str}) -> bool:
+  let n = {t: t} byteCount
+  if n == 0:
+    return false
+  return {t: t, index: n - 1} byteAt == 47
+
+fn entryName({e: Entry}) -> str:
+  if e.kind == Dir and not {t: e.name} endsWithSlash:
+    return e.name + "/"
+  return e.name
+
+# The 512-byte header for `e`, or none when its name does not fit.
+fn header({e: Entry}) -> Seq[u8]?:
+  let name = {e: e} entryName
+  let nameBytes = {t: name} bytesOf
+  if nameBytes.len > 100:
+    return none
+  var size = 0
+  if e.kind == File:
+    size = e.data.len
+  var hdr = {n: 512} zeros
+  hdr = {hdr: hdr, at: 0, field: nameBytes} putField
+  let mode = {value: e.mode, width: 8} octalField
+  hdr = {hdr: hdr, at: 100, field: mode} putField
+  let zero8 = {value: 0, width: 8} octalField
+  hdr = {hdr: hdr, at: 108, field: zero8} putField
+  hdr = {hdr: hdr, at: 116, field: zero8} putField
+  let sz = {value: size, width: 12} octalField
+  hdr = {hdr: hdr, at: 124, field: sz} putField
+  let mt = {value: e.mtime, width: 12} octalField
+  hdr = {hdr: hdr, at: 136, field: mt} putField
+  let flag = {kind: e.kind} typeFlag
+  {items: hdr, index: 156, value: flag} setAt
+  let magic = {t: "ustar"} bytesOf
+  hdr = {hdr: hdr, at: 257, field: magic} putField
+  let version = {t: "00"} bytesOf
+  hdr = {hdr: hdr, at: 263, field: version} putField
+  let sum = {hdr: hdr} headerSum
+  let ck = {value: sum, width: 7} octalField
+  hdr = {hdr: hdr, at: 148, field: ck} putField
+  let space = {value: 32} u8
+  {items: hdr, index: 155, value: space} setAt
+  return hdr
+
+# --- writing --------------------------------------------------------------------------
+# The archive for these entries; none when any name is longer than 100 bytes.
+fn tarPack({entries: Seq[Entry]}) -> Seq[u8]?:
+  var out: Seq[u8] = []
+  for i in 0 .. entries.len - 1:
+    let e = entries[i]
+    let h = {e: e} header
+    if not h.ok:
+      return none
+    for k in 0 .. 511:
+      out = {items: out, value: h.value[k]} push
+    if e.kind == File:
+      for k in 0 .. e.data.len - 1:
+        out = {items: out, value: e.data[k]} push
+      let pad = (512 - e.data.len % 512) % 512
+      let fill = {n: pad} zeros
+      for k in 0 .. pad - 1:
+        out = {items: out, value: fill[k]} push
+  let end = {n: 1024} zeros
+  for k in 0 .. 1023:
+    out = {items: out, value: end[k]} push
+  return out
+
+# --- reading --------------------------------------------------------------------------
+fn blockIsZero({bytes: Seq[u8], at: int}) -> bool:
+  for i in 0 .. 511:
+    if bytes[at + i] != 0:
+      return false
+  return true
+
+fn slice({bytes: Seq[u8], start: int, n: int}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  for i in 0 .. n - 1:
+    out = {items: out, value: bytes[start + i]} push
+  return out
+
+# The text of a NUL-terminated field of `width` bytes at `start`.
+fn cString({bytes: Seq[u8], start: int, width: int}) -> str:
+  var n = 0
+  for n < width and bytes[start + n] != 0:
+    n = n + 1
+  let raw = {bytes: bytes, start: start, n: n} slice
+  return {bytes: raw} fromBytes
+
+type Parsed:
+  entry: Entry
+  next: int
+
+# The entry whose header hdr starts at `at`, and where the next one starts.
+fn readEntry({bytes: Seq[u8], at: int}) -> Parsed?:
+  let hdr = {bytes: bytes, start: at, n: 512} slice
+  let stored = {bytes: hdr, start: 148, width: 8} parseOctal
+  if stored < 0 or stored != {hdr: hdr} headerSum:
+    return none
+  let magic = {bytes: hdr, start: 257, width: 5} cString
+  if magic != "ustar":
+    return none
+  let size = {bytes: hdr, start: 124, width: 12} parseOctal
+  let mode = {bytes: hdr, start: 100, width: 8} parseOctal
+  let mtime = {bytes: hdr, start: 136, width: 12} parseOctal
+  if size < 0 or mode < 0 or mtime < 0:
+    return none
+  let flag = {value: hdr[156]} int
+  var name = {bytes: hdr, start: 0, width: 100} cString
+  if flag == 53:
+    if {t: name} endsWithSlash:
+      let raw = {t: name} bytesOf
+      let trimmed = {bytes: raw, start: 0, n: raw.len - 1} slice
+      name = {bytes: trimmed} fromBytes
+    let none1: Seq[u8] = []
+    let e = {name: name, kind: Dir, data: none1, mode: mode, mtime: mtime} Entry
+    return {entry: e, next: at + 512} Parsed
+  if flag != 48 and flag != 0:
+    return none
+  if at + 512 + size > bytes.len:
+    return none
+  let body = {bytes: bytes, start: at + 512, n: size} slice
+  let e = {name: name, kind: File, data: body, mode: mode, mtime: mtime} Entry
+  let next = at + 512 + (size + 511) /i 512 * 512
+  return {entry: e, next: next} Parsed
+
+# Every entry of the archive, up to the zero hdr that ends it (or the end of
+# the bytes); none when an entry is corrupt.
+fn tarUnpack({bytes: Seq[u8]}) -> Seq[Entry]?:
+  var out: Seq[Entry] = []
+  var at = 0
+  for at + 512 <= bytes.len:
+    if {bytes: bytes, at: at} blockIsZero:
+      return out
+    let r = {bytes: bytes, at: at} readEntry
+    if not r.ok:
+      return none
+    out = {items: out, value: r.value.entry} push
+    at = r.value.next
+  if at != bytes.len:
+    return none
+  return out
+
+# --- checks ---------------------------------------------------------------------
+fn unhex({t: str}) -> Seq[u8]:
+  let r = {t: t} fromHex
+  if r.ok:
+    return r.value
+  let nothing: Seq[u8] = []
+  return nothing
+
+fn checkOctal() -> int:
+  let f = {value: 420, width: 8} octalField
+  if f.len != 8:
+    return 1
+  if {value: f[6]} int != 52 or {value: f[7]} int != 0:
+    return 2
+  if {bytes: f, start: 0, width: 8} parseOctal != 420:
+    return 3
+  let bad = {t: "09"} bytesOf
+  if {bytes: bad, start: 0, width: 2} parseOctal != -1:
+    return 4
+  return checkReference
+
+fn checkReference() -> int:
+  # python: tarfile USTAR_FORMAT, hello.txt ("hello\n", mtime 1700000000) + dir/
+  let ref = {t: "68656c6c6f2e747874000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003030303036343400303030303030300030303030303030003030303030303030303036003134353234373730343030003030373634370020300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000075737461720030300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000068656c6c6f0a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006469722f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030303030373535003030303030303000303030303030300030303030303030303030300031343532343737303430300030303635363500203500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000757374617200303000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"} unhex
+  let r = {bytes: ref} tarUnpack
+  if not r.ok:
+    return 10
+  if r.value.len != 2:
+    return 11
+  let a = r.value[0]
+  if a.name != "hello.txt" or a.kind != File or a.mode != 420 or a.mtime != 1700000000:
+    return 12
+  if {bytes: a.data} fromBytes != "hello\n":
+    return 13
+  let b = r.value[1]
+  if b.name != "dir" or b.kind != Dir or b.mode != 493 or b.data.len != 0:
+    return 14
+  return checkPack
+
+fn checkPack() -> int:
+  let ref = {t: "68656c6c6f2e747874000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003030303036343400303030303030300030303030303030003030303030303030303036003134353234373730343030003030373634370020300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000075737461720030300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000068656c6c6f0a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006469722f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030303030373535003030303030303000303030303030300030303030303030303030300031343532343737303430300030303635363500203500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000757374617200303000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"} unhex
+  let body = {t: "hello\n"} bytesOf
+  let hello = {name: "hello.txt", kind: File, data: body, mode: 420, mtime: 1700000000} Entry
+  let nothing: Seq[u8] = []
+  let folder = {name: "dir", kind: Dir, data: nothing, mode: 493, mtime: 1700000000} Entry
+  let entries: Seq[Entry] = [hello, folder]
+  let archived = {entries: entries} tarPack
+  if not archived.ok:
+    return 20
+  if archived.value.len != 2560:
+    return 21
+  let head = {bytes: archived.value, start: 0, n: 1536} slice
+  if head != ref:
+    return 22
+  return checkRoundTrip
+
+fn checkRoundTrip() -> int:
+  var big: Seq[u8] = []
+  for i in 0 .. 1299:
+    let b = {value: i % 251} u8
+    big = {items: big, value: b} push
+  let empty: Seq[u8] = []
+  let xs = {t: "x"} bytesOf
+  let f1 = {name: "a.bin", data: big} file
+  let f2 = {name: "empty", data: empty} file
+  let d1 = {name: "nested/dir"} dir
+  let f3 = {name: "nested/dir/x.txt", data: xs} file
+  let entries: Seq[Entry] = [f1, f2, d1, f3]
+  let archived = {entries: entries} tarPack
+  if not archived.ok:
+    return 30
+  if archived.value.len % 512 != 0:
+    return 31
+  let back = {bytes: archived.value} tarUnpack
+  if not back.ok:
+    return 32
+  if back.value.len != 4:
+    return 33
+  if back.value[0].data != big or back.value[1].data.len != 0:
+    return 34
+  if back.value[2].kind != Dir or back.value[2].name != "nested/dir":
+    return 35
+  if back.value[3].name != "nested/dir/x.txt":
+    return 36
+  return checkRefuse
+
+fn checkRefuse() -> int:
+  let body = {t: "x"} bytesOf
+  var name = ""
+  for i in 0 .. 10:
+    name = name + "0123456789"
+  let long1 = {name: name, data: body} file
+  let tooLong: Seq[Entry] = [long1]
+  let r = {entries: tooLong} tarPack
+  if r.ok:
+    return 40
+  let f1 = {name: "f", data: body} file
+  let one: Seq[Entry] = [f1]
+  let good = {entries: one} tarPack
+  if not good.ok:
+    return 41
+  var flipped = good.value
+  let wrong = {value: 7} u8
+  {items: flipped, index: 3, value: wrong} setAt
+  let f = {bytes: flipped} tarUnpack
+  if f.ok:
+    return 42
+  let cut = {bytes: good.value, start: 0, n: 600} slice
+  let c = {bytes: cut} tarUnpack
+  if c.ok:
+    return 43
+  return 0
+
+fn main() -> int:
+  return checkOctal

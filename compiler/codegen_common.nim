@@ -426,6 +426,11 @@ proc hasBracketBase*(e: Expr): bool =
   of exkField: hasBracketBase(e.receiver)
   else: false
 
+proc paramFields*(d: Decl): seq[FieldDef] =
+  ## A fn's parameters as the field list `input` rebuilds them from.
+  for p in d.fnParams:
+    result.add FieldDef(name: p.name, typ: p.typ, span: p.span)
+
 proc isLenOnSized*(res: Resolution, e: Expr): bool =
   ## `.len` on a value whose length is the target's own (a string, a Seq, a
   ## fixed array) — every backend prints it as its length builtin, not a

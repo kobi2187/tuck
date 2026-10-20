@@ -368,6 +368,14 @@ fn b64Alphabet() -> str:
   return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 # Standard base64 with `=` padding.
+# The UTF-8 bytes of a text: the bridge between `str` and the byte codecs.
+fn bytesOf({t: str}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  for i in 0 .. {t: t} byteCount - 1:
+    let b = {t: t, index: i} byteAt
+    out = {items: out, value: b} push
+  return out
+
 fn toBase64({bytes: Seq[u8]}) -> str:
   let alpha = b64Alphabet
   var parts: Seq[str] = []
@@ -672,13 +680,6 @@ fn checkAccess() -> int:
   if missing.ok:
     return 47
   return checkBase64
-
-fn bytesOf({t: str}) -> Seq[u8]:
-  var out: Seq[u8] = []
-  for i in 0 .. {t: t} byteCount - 1:
-    let b = {t: t, index: i} byteAt
-    out = {items: out, value: b} push
-  return out
 
 fn checkBase64() -> int:
   # RFC 4648 section 10

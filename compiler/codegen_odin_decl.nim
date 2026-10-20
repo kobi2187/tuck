@@ -393,9 +393,7 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
     let ret = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
     return rawText & ctx.genOdinMemoWrapper(
       d, ctx.fnHeader(d, ret, "  ".repeat(ctx.indent)), ret)
-  ctx.currentParams = @[]
-  for p in d.fnParams:
-    ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
+  ctx.currentParams = paramFields(d)
   # THE OWNERSHIP PASS DECIDES; this emitter prints. Its frees reach here
   # as `exkDrop` nodes and `dropsOld` assignments (ownership_nodes), so
   # nothing about ownership is looked up while printing.
@@ -1083,10 +1081,9 @@ proc genTaskDecl*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## (tuckrt/tuck_coro.odin over minicoro — 28-async-task exits 42 and
   ## 26-actor-run drains its mailbox to 55); what is missing is spawning the
   ## task body ONTO it. Anything relying on a yield behaves synchronously.
-  ctx.currentParams = @[]
+  ctx.currentParams = paramFields(d)
   var params: seq[string]
   for p in d.fnParams:
-    ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
     params.add(p.name & ": " & ctx.odinType(p.typ))
   let retTypeStr =
     if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
