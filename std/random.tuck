@@ -1,14 +1,108 @@
-# std/random — non-cryptographic PRNG (PCG32). Implemented by tuck_rt.
-# Deliberately shares no type or proc with std/crypto's CSPRNG.
+# std/random — non-cryptographic PRNG (PCG32, O'Neill 2014). Written in Tuck,
+# so it builds and runs the same on every backend.
 #
-# A NAMED record (`type Dice = {state: u64, inc: u64}`) cannot cross this
-# boundary today: codegen emits it as a fresh `tuck_Dice object` inside the
-# MODULE that declares it (random.nim), which imports tuck_rt — so tuck_rt
-# can never see that type back to implement against it. Every existing
-# extern module sidesteps this by using only ANONYMOUS records built from
-# primitives; the PRNG state does the same here, spelled out in full on
-# every signature instead of behind one type name.
+# The generator state is threaded through every call as plain fields (state,
+# inc) in anonymous records: a named record cannot cross an extern boundary
+# today, and keeping the signatures as they were means callers do not change.
+#
+# Deliberately shares nothing with std/crypto's CSPRNG. `newDiceFromOs` takes
+# its seed from the operating system's entropy source (the one extern here).
+import bits
+
 extern:
-  fn newDice({seed: u64}) -> {state: u64, inc: u64} [pure, no_alloc]
-  fn newDiceFromOs() -> {state: u64, inc: u64} [io: sys]
-  fn rollRange({state: u64, inc: u64, low: i64, high: i64}) -> {state: u64, inc: u64, value: i64} [pure, no_alloc]
+  fn osSeed() -> {seed: u64} [io: sys]
+
+# The LCG step and the seed mix overflow by design: they are done in a type
+# that says so (u64 traps on overflow by default).
+type Wrapped = u64 [wrapping]
+
+fn pcgMult() -> u64:
+  return 6364136223846793005
+
+fn mask32() -> u64:
+  return 4294967295
+
+# One PCG32 step: the next state, and the 32-bit output of the current one.
+fn step({state: u64, inc: u64}) -> {state: u64, value: u64}:
+  let s = {value: state} Wrapped
+  let m = {value: pcgMult} Wrapped
+  let i = {value: inc} Wrapped
+  let next = s * m + i
+  let high = {a: state, by: 18} shiftRight
+  let folded = {a: high, b: state} bitXor
+  let top = {a: folded, by: 27} shiftRight
+  let xorshifted = {a: top, b: mask32} bitAnd
+  let rot = {a: state, by: 59} shiftRight
+  let rotBy = rot ~int
+  let right = {a: xorshifted, by: rotBy} shiftRight
+  let negRot = 32 - rotBy
+  let negWide = negRot ~u64
+  let leftBy = {a: negWide, b: 31} bitAnd
+  let leftInt = leftBy ~int
+  let shifted = {a: xorshifted, by: leftInt} shiftLeft
+  let left = {a: shifted, b: mask32} bitAnd
+  let value = {a: right, b: left} bitOr
+  let nextState = {value: next} u64
+  return {state: nextState, value: value}
+
+# A generator seeded with `seed`: the stream comes from the seed, and the
+# state is warmed up by two steps.
+fn newDice({seed: u64}) -> {state: u64, inc: u64}:
+  let doubled = {a: seed, by: 1} shiftLeft
+  let inc = {a: doubled, b: 1} bitOr
+  let warm = {state: 0, inc: inc} step
+  let w = {value: warm.state} Wrapped
+  let sd = {value: seed} Wrapped
+  let mixed = w + sd
+  let seeded = {value: mixed} u64
+  let first = {state: seeded, inc: inc} step
+  return {state: first.state, inc: inc}
+
+fn newDiceFromOs() -> {state: u64, inc: u64} [io: sys]:
+  let os = osSeed
+  return {seed: os.seed} newDice
+
+# One 32-bit draw, and the state after it.
+fn draw32({state: u64, inc: u64}) -> {state: u64, value: u64}:
+  return {state: state, inc: inc} step
+
+# A 64-bit draw from two steps.
+fn draw64({state: u64, inc: u64}) -> {state: u64, value: u64}:
+  let hi = {state: state, inc: inc} step
+  let lo = {state: hi.state, inc: inc} step
+  let upper = {a: hi.value, by: 32} shiftLeft
+  let value = {a: upper, b: lo.value} bitOr
+  return {state: lo.state, value: value}
+
+# The next value in `low .. high` (inclusive, `low <= high`) and the advanced
+# state. Every value in the span is equally likely: a draw in the partial
+# bucket at the top of the draw's range is rejected and drawn again (PCG's
+# bounded_rand), where reducing it modulo the span would favour the low
+# values. A span wider than 2^32 draws 64 bits from two steps. The span
+# `high - low + 1` must fit an i64.
+fn rollRange({state: u64, inc: u64, low: i64, high: i64}) -> {state: u64, inc: u64, value: i64}:
+  let spanI = high - low + 1
+  let span = spanI ~u64
+  var s = state
+  var r: u64 = 0
+  if span <= 4294967296:
+    let threshold = (4294967296 - span) % span
+    var d = {state: s, inc: inc} draw32
+    s = d.state
+    for d.value < threshold:
+      d = {state: s, inc: inc} draw32
+      s = d.state
+    r = d.value % span
+  else:
+    let zero = {value: 0} Wrapped
+    let sp = {value: span} Wrapped
+    let wide = zero - sp
+    let wideU = {value: wide} u64
+    let threshold = wideU % span
+    var d = {state: s, inc: inc} draw64
+    s = d.state
+    for d.value < threshold:
+      d = {state: s, inc: inc} draw64
+      s = d.state
+    r = d.value % span
+  return {state: s, inc: inc, value: low + (r ~i64)}

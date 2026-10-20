@@ -1,25 +1,22 @@
 module _32_duration_units;
 
 import rt = tuck_rt;
-import sys = mod_sys;
-import time = mod_time;
+import tuckˑmodˑshapes_32_duration_units = mod_shapes_32_duration_units;
+import tuckˑmodˑsys = mod_sys;
+import tuckˑmodˑtime = mod_time;
 
-struct TRec_ok(T_ok) {
-    T_ok ok;
-}
-
-long tuckˑfnˑasInt(time.tuckˑtypeˑMilliseconds d) {
+long tuckˑfnˑasInt(tuckˑmodˑtime.tuckˑtypeˑMilliseconds d) {
     return 42L;
 }
 
-TRec_ok!(bool) tuckˑfnˑbudget(time.tuckˑtypeˑMilliseconds d) {
-    return TRec_ok!(bool)(ok: true);
+tuckˑmodˑshapes_32_duration_units.TRec_ok!(bool) tuckˑfnˑbudget(tuckˑmodˑtime.tuckˑtypeˑMilliseconds d) {
+    return tuckˑmodˑshapes_32_duration_units.TRec_ok!(bool)(ok: true);
 }
 
 void tuckˑfnˑmain() {
-    TRec_ok!(bool) tuckˑvˑr = tuckˑfnˑbudget(time.tuckˑfnˑms(cast(uint)5));
-    long tuckˑvˑn = tuckˑfnˑasInt(time.tuckˑfnˑms(cast(uint)42));
-    sys.exit(tuckˑvˑn);
+    tuckˑmodˑshapes_32_duration_units.TRec_ok!(bool) tuckˑvˑr = tuckˑfnˑbudget(tuckˑmodˑtime.tuckˑfnˑms(cast(uint)5));
+    long tuckˑvˑn = tuckˑfnˑasInt(tuckˑmodˑtime.tuckˑfnˑms(cast(uint)42));
+    tuckˑmodˑsys.exit(tuckˑvˑn);
 }
 
 int main(string[] args) {

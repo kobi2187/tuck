@@ -1,0 +1,76 @@
+# platform.watchdog — arm, feed, and notice a missed deadline.
+#
+# One watchdog per program, so it is an actor (a singleton with its own state).
+# The clock is a PARAMETER of each message (`nowMs`), not something the actor
+# reads: the one place that knows a cycle completed passes the time with the
+# feed, which keeps the logic deterministic and testable. Driving the real
+# peripheral register is the board layer's job; this is the deadline logic.
+#
+# Latency note: `feed` goes through a mailbox, and a late feed defeats a
+# watchdog. A board that cannot tolerate that calls its register write directly
+# from the loop that proved liveness and uses this actor for the bookkeeping.
+import scheduler
+
+type ResetCause:
+  | rcPowerOn
+  | rcWatchdog
+  | rcSoftware
+  | rcBrownout
+  | rcExternalPin
+  | rcUnknown
+
+actor Watchdog [queue: 16]:
+  timeoutMs: u32 = 0
+  running: bool = false
+  lastFeedMs: u64 = 0
+  feeds: int = 0
+  checks: int = 0
+  tripped: bool = false
+
+  on configure({ms: u32}):
+    timeoutMs = ms
+
+  on start({nowMs: u64}):
+    running = true
+    lastFeedMs = nowMs
+    tripped = false
+
+  on stop():
+    running = false
+
+  on feed({nowMs: u64}):
+    if running:
+      lastFeedMs = nowMs
+      feeds += 1
+
+  # Has the deadline passed? Sets `tripped` and counts the check.
+  on check({nowMs: u64}):
+    checks += 1
+    if running:
+      let limit = {value: timeoutMs} u64
+      if nowMs - lastFeedMs > limit:
+        tripped = true
+
+fn twoChecks() -> bool:
+  return Watchdog.checks == 2
+
+fn threeChecks() -> bool:
+  return Watchdog.checks == 3
+
+fn main() -> int:
+  Watchdog send configure {ms: 100}
+  Watchdog send start {nowMs: 1000}
+  Watchdog send feed {nowMs: 1050}
+  Watchdog send check {nowMs: 1120}
+  Watchdog send check {nowMs: 1140}
+  Watchdog.waitUntil {pred: :twoChecks}
+  if Watchdog.tripped:
+    return 1
+  if Watchdog.feeds != 1:
+    return 2
+  Watchdog send check {nowMs: 1200}
+  Watchdog.waitUntil {pred: :threeChecks}
+  if not Watchdog.tripped:
+    return 3
+  Watchdog send stop {}
+  return 0

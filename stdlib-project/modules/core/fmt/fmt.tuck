@@ -1,0 +1,100 @@
+# core.fmt — padding and styling of text, and the two contracts a type signs
+# to be rendered.
+#
+# `show` returns a str instead of writing into a caller's sink: a callee
+# cannot write through a parameter (TK-TY15), and `toStr` already works this
+# way. A type that satisfies neither interface cannot be rendered, so a secret
+# cannot be logged by accident.
+import seq
+import str
+import text
+
+type Style:
+  width: int
+  precision: int
+  alignRight: bool
+
+interface Showable:
+  fn show({self: Self}) -> str
+
+interface Inspectable:
+  fn inspect({self: Self}) -> str
+
+fn spaces({count: int}) -> str:
+  var parts: Seq[str] = []
+  for i in 0 .. count - 1:
+    parts = {items: parts, value: " "} push
+  return {parts: parts, sep: ""} joinStr
+
+# `body` made at least `width` bytes wide with spaces, on the left or right.
+fn pad({body: str, width: int, alignRight: bool}) -> str:
+  let missing = width - {t: body} byteCount
+  if missing <= 0:
+    return body
+  let fill = {count: missing} spaces
+  if alignRight:
+    return fill + body
+  return body + fill
+
+# At most `precision` bytes (0 = all of it), then padded to `width`.
+fn styled({body: str, style: Style}) -> str:
+  var shown = body
+  if style.precision > 0 and {t: body} byteCount > style.precision:
+    let cut = {t: body, start: 0, stop: style.precision} slice
+    if cut.ok:
+      shown = cut.value
+  return {body: shown, width: style.width, alignRight: style.alignRight} pad
+
+fn render({v: Showable}) -> str:
+  return v.show
+
+fn renderDebug({v: Inspectable}) -> str:
+  return v.inspect
+
+object Tag:
+  satisfies Showable
+  satisfies Inspectable
+  name: str
+
+  fn show({self: Tag}) -> str:
+    return self.name
+
+  fn inspect({self: Tag}) -> str:
+    return "Tag(" + self.name + ")"
+
+fn checkPad() -> int:
+  if {body: "ab", width: 5, alignRight: false} pad != "ab   ":
+    return 1
+  if {body: "ab", width: 5, alignRight: true} pad != "   ab":
+    return 2
+  if {body: "abcdef", width: 3, alignRight: true} pad != "abcdef":
+    return 3
+  if {body: "", width: 2, alignRight: false} pad != "  ":
+    return 4
+  return 0
+
+fn checkStyled() -> int:
+  let cut = {width: 6, precision: 3, alignRight: true} Style
+  if {body: "abcdef", style: cut} styled != "   abc":
+    return 5
+  let all = {width: 0, precision: 0, alignRight: false} Style
+  if {body: "abcdef", style: all} styled != "abcdef":
+    return 6
+  return 0
+
+fn checkRender() -> int:
+  let t = {name: "x"} Tag
+  if {v: t} render != "x":
+    return 7
+  if {v: t} renderDebug != "Tag(x)":
+    return 8
+  return 0
+
+fn main() -> int:
+  let p = checkPad
+  if p != 0:
+    return p
+  let s = checkStyled
+  if s != 0:
+    return s
+  return checkRender

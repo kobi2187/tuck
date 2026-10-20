@@ -1,7 +1,7 @@
 module _37_ffi_handle;
 
 import rt = tuck_rt;
-import sys = mod_sys;
+import tuckˑmodˑsys = mod_sys;
 
 struct CounterObj;
 alias Counter = CounterObj*;
@@ -18,9 +18,9 @@ void tuckˑfnˑmain() {
     int tuckˑvˑt = counterBump(tuckˑvˑh, cast(int)5);
     counterFree(tuckˑvˑh);
     if ((tuckˑvˑt == cast(int)105)) {
-        sys.exit(0L);
+        tuckˑmodˑsys.exit(0L);
     }
-    sys.exit(1L);
+    tuckˑmodˑsys.exit(1L);
 }
 
 int main(string[] args) {

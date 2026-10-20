@@ -1,0 +1,488 @@
+# std.net-http — the HTTP/1.1 message layer, as pure functions over text.
+#
+# URLs, percent-encoding, query strings, request and response messages,
+# headers and cookies. Nothing here opens a socket: `fetch` and `serve` need
+# std/net (and TLS for https) and are a layer above that feeds these functions
+# bytes. Headers are a `Seq` of name/value pairs, not a map: they are ordered
+# and repeatable (`Set-Cookie` appears many times).
+#
+# A body is a `str` (its bytes), because the byte-vector form wants literals in
+# `Seq[u8]` that the compiler does not accept yet (see ROADMAP).
+import seq
+import str
+import text
+import convert
+
+type Method:
+  | Get
+  | Post
+  | Put
+  | Delete
+  | Head
+  | Patch
+
+type Header:
+  name: str
+  value: str
+
+type Response:
+  status: int
+  reason: str
+  headers: Seq[Header]
+  body: str
+
+type SameSite:
+  | Strict
+  | Lax
+  | NoneSite
+
+type Cookie:
+  name: str
+  value: str
+  path: str
+  domain: str
+  maxAgeSec: i64
+  httpOnly: bool
+  secure: bool
+  sameSite: SameSite
+
+type Url:
+  scheme: str
+  host: str
+  port: int
+  path: str
+  query: str
+  fragment: str
+
+fn methodName({m: Method}) -> str:
+  match m:
+    Get: return "GET"
+    Post: return "POST"
+    Put: return "PUT"
+    Delete: return "DELETE"
+    Head: return "HEAD"
+    Patch: return "PATCH"
+
+# --- percent-encoding ----------------------------------------------------------------
+fn isUnreserved({c: int}) -> bool:
+  if c >= 48 and c <= 57:
+    return true
+  if c >= 65 and c <= 90:
+    return true
+  if c >= 97 and c <= 122:
+    return true
+  return c == 45 or c == 46 or c == 95 or c == 126
+
+fn hexDigit({n: int}) -> str:
+  return {s: "0123456789ABCDEF", index: n} charAt
+
+# Everything but A-Z a-z 0-9 - . _ ~ becomes %HH, byte by byte.
+fn percentEncode({t: str}) -> str:
+  var parts: Seq[str] = []
+  for i in 0 .. {t: t} byteCount - 1:
+    let b = {t: t, index: i} byteAt
+    let c = {value: b} int
+    if {c: c} isUnreserved:
+      let ch = {s: t, index: i} charAt
+      parts = {items: parts, value: ch} push
+    else:
+      let hi = {n: c /i 16} hexDigit
+      let lo = {n: c % 16} hexDigit
+      parts = {items: parts, value: "%" + hi + lo} push
+  return {parts: parts, sep: ""} joinStr
+
+fn hexValue({c: int}) -> int:
+  if c >= 48 and c <= 57:
+    return c - 48
+  if c >= 65 and c <= 70:
+    return c - 55
+  if c >= 97 and c <= 102:
+    return c - 87
+  return -1
+
+# %HH back to a byte; with `plusIsSpace`, `+` is a space (a query string).
+fn percentDecode({t: str, plusIsSpace: bool}) -> str:
+  var bytes: Seq[u8] = []
+  var i = 0
+  let n = {t: t} byteCount
+  for i < n:
+    let b = {t: t, index: i} byteAt
+    let c = {value: b} int
+    if c == 37 and i + 2 < n:
+      let h1 = {t: t, index: i + 1} byteAt
+      let h2 = {t: t, index: i + 2} byteAt
+      let c1 = {value: h1} int
+      let c2 = {value: h2} int
+      let hi = {c: c1} hexValue
+      let lo = {c: c2} hexValue
+      if hi >= 0 and lo >= 0:
+        let v = {value: hi * 16 + lo} u8
+        bytes = {items: bytes, value: v} push
+        i = i + 3
+        continue
+    if c == 43 and plusIsSpace:
+      let sp = {value: 32} u8
+      bytes = {items: bytes, value: sp} push
+    else:
+      bytes = {items: bytes, value: b} push
+    i = i + 1
+  return {bytes: bytes} fromBytes
+
+# --- URLs ------------------------------------------------------------------------------
+fn defaultPort({scheme: str}) -> int:
+  if scheme == "https":
+    return 443
+  return 80
+
+# `scheme://host[:port][/path][?query][#fragment]`; absent when it is not one.
+fn parseUrl({t: str}) -> Url?:
+  let sep = {t: t, what: "://"} text::find
+  if not sep.ok:
+    return none
+  let scheme = {t: t, start: 0, stop: sep.value} slice
+  let total = {t: t} byteCount
+  let rest = {t: t, start: sep.value + 3, stop: total} slice
+  if not scheme.ok:
+    return none
+  if not rest.ok:
+    return none
+  var tail = rest.value
+  var fragment = ""
+  let hash = {t: tail, what: "#"} text::find
+  if hash.ok:
+    let tailLen = {t: tail} byteCount
+    let f = {t: tail, start: hash.value + 1, stop: tailLen} slice
+    let before = {t: tail, start: 0, stop: hash.value} slice
+    if not f.ok:
+      return none
+    if not before.ok:
+      return none
+    fragment = f.value
+    tail = before.value
+  var query = ""
+  let q = {t: tail, what: "?"} text::find
+  if q.ok:
+    let tailLen = {t: tail} byteCount
+    let qs = {t: tail, start: q.value + 1, stop: tailLen} slice
+    let before = {t: tail, start: 0, stop: q.value} slice
+    if not qs.ok:
+      return none
+    if not before.ok:
+      return none
+    query = qs.value
+    tail = before.value
+  var authority = tail
+  var path = "/"
+  let slash = {t: tail, what: "/"} text::find
+  if slash.ok:
+    let tailLen = {t: tail} byteCount
+    let p = {t: tail, start: slash.value, stop: tailLen} slice
+    let a = {t: tail, start: 0, stop: slash.value} slice
+    if not p.ok:
+      return none
+    if not a.ok:
+      return none
+    path = p.value
+    authority = a.value
+  var host = authority
+  var port = {scheme: scheme.value} defaultPort
+  let colon = {t: authority, what: ":"} text::find
+  if colon.ok:
+    let authLen = {t: authority} byteCount
+    let ps = {t: authority, start: colon.value + 1, stop: authLen} slice
+    let h = {t: authority, start: 0, stop: colon.value} slice
+    if not ps.ok:
+      return none
+    if not h.ok:
+      return none
+    let n = {t: ps.value} parseInt
+    if not n.ok:
+      return none
+    host = h.value
+    port = {value: n.value} int
+  if host == "":
+    return none
+  return {scheme: scheme.value, host: host, port: port, path: path, query: query, fragment: fragment} Url
+
+# The request target: path, and `?query` when there is one.
+fn targetOf({u: Url}) -> str:
+  if u.query == "":
+    return u.path
+  return u.path + "?" + u.query
+
+# --- query strings ------------------------------------------------------------------------
+fn queryPairs({query: str}) -> Seq[Header]:
+  var out: Seq[Header] = []
+  if query == "":
+    return out
+  let parts = {t: query, at: "&"} split
+  for i in 0 .. parts.len - 1:
+    let eq = {t: parts[i], what: "="} text::find
+    var name = parts[i]
+    var value = ""
+    if eq.ok:
+      let partLen = {t: parts[i]} byteCount
+      let n = {t: parts[i], start: 0, stop: eq.value} slice
+      let v = {t: parts[i], start: eq.value + 1, stop: partLen} slice
+      if n.ok:
+        if v.ok:
+          name = n.value
+          value = v.value
+    let dn = {t: name, plusIsSpace: true} percentDecode
+    let dv = {t: value, plusIsSpace: true} percentDecode
+    let h = {name: dn, value: dv} Header
+    out = {items: out, value: h} push
+  return out
+
+fn buildQuery({pairs: Seq[Header]}) -> str:
+  var parts: Seq[str] = []
+  for i in 0 .. pairs.len - 1:
+    let n = {t: pairs[i].name} percentEncode
+    let v = {t: pairs[i].value} percentEncode
+    parts = {items: parts, value: n + "=" + v} push
+  return {parts: parts, sep: "&"} joinStr
+
+# --- headers -----------------------------------------------------------------------------------
+fn lowerCase({t: str}) -> str:
+  return {t: t} toLowerAscii
+
+# The first header called `name`, ignoring case.
+fn headerValue({headers: Seq[Header], name: str}) -> str?:
+  let want = {t: name} lowerCase
+  for i in 0 .. headers.len - 1:
+    let have = {t: headers[i].name} lowerCase
+    if have == want:
+      return headers[i].value
+  return none
+
+fn headerOf({r: Response, name: str}) -> str?:
+  return {headers: r.headers, name: name} headerValue
+
+# --- messages ----------------------------------------------------------------------------------
+# An HTTP/1.1 request as text: request line, Host, the given headers, a
+# Content-Length when there is a body, a blank line, the body.
+fn requestText({verb: Method, url: Url, headers: Seq[Header], body: str}) -> str:
+  var lines: Seq[str] = []
+  let name = {m: verb} methodName
+  let target = {u: url} targetOf
+  lines = {items: lines, value: name + " " + target + " HTTP/1.1"} push
+  var host = url.host
+  if url.port != {scheme: url.scheme} defaultPort:
+    let p = {value: url.port} toStr
+    host = host + ":" + p
+  lines = {items: lines, value: "Host: " + host} push
+  for i in 0 .. headers.len - 1:
+    lines = {items: lines, value: headers[i].name + ": " + headers[i].value} push
+  let size = {t: body} byteCount
+  if size > 0:
+    let n = {value: size} toStr
+    lines = {items: lines, value: "Content-Length: " + n} push
+  lines = {items: lines, value: ""} push
+  lines = {items: lines, value: body} push
+  return {parts: lines, sep: "\r\n"} joinStr
+
+# A response from its text: status line, headers, then the body after the blank
+# line. Absent when the status line is not `HTTP/x.y NNN reason`.
+fn parseResponse({raw: str}) -> Response?:
+  let cut = {t: raw, what: "\r\n\r\n"} text::find
+  var head = raw
+  var body = ""
+  if cut.ok:
+    let rawLen = {t: raw} byteCount
+    let h = {t: raw, start: 0, stop: cut.value} slice
+    let b = {t: raw, start: cut.value + 4, stop: rawLen} slice
+    if not h.ok:
+      return none
+    if not b.ok:
+      return none
+    head = h.value
+    body = b.value
+  let lines = {t: head, at: "\r\n"} split
+  let status = lines[0]
+  if not {t: status, prefix: "HTTP/"} startsWith:
+    return none
+  let words = {t: status, at: " "} split
+  if words.len < 2:
+    return none
+  let code = {t: words[1]} parseInt
+  if not code.ok:
+    return none
+  var reason = ""
+  for i in 2 .. words.len - 1:
+    if reason != "":
+      reason = reason + " "
+    reason = reason + words[i]
+  var headers: Seq[Header] = []
+  for i in 1 .. lines.len - 1:
+    let colon = {t: lines[i], what: ":"} text::find
+    if colon.ok:
+      let lineLen = {t: lines[i]} byteCount
+      let n = {t: lines[i], start: 0, stop: colon.value} slice
+      let v = {t: lines[i], start: colon.value + 1, stop: lineLen} slice
+      if n.ok:
+        if v.ok:
+          let trimmed = {t: v.value} trim
+          let h = {name: n.value, value: trimmed} Header
+          headers = {items: headers, value: h} push
+  let st = {value: code.value} int
+  return {status: st, reason: reason, headers: headers, body: body} Response
+
+# --- cookies -------------------------------------------------------------------------------------
+fn sameSiteText({s: SameSite}) -> str:
+  match s:
+    Strict: return "Strict"
+    Lax: return "Lax"
+    NoneSite: return "None"
+
+fn cookie({name: str, value: str}) -> Cookie:
+  return {name: name, value: value, path: "", domain: "", maxAgeSec: -1, httpOnly: false, secure: false, sameSite: SameSite.Lax} Cookie
+
+# The `Set-Cookie` header for a cookie. Attributes left at their default
+# (empty path or domain, negative max-age) are not written.
+fn setCookieHeader({c: Cookie}) -> Header:
+  var parts: Seq[str] = []
+  parts = {items: parts, value: c.name + "=" + c.value} push
+  if c.path != "":
+    parts = {items: parts, value: "Path=" + c.path} push
+  if c.domain != "":
+    parts = {items: parts, value: "Domain=" + c.domain} push
+  if c.maxAgeSec >= 0:
+    let age = {value: c.maxAgeSec} toStr
+    parts = {items: parts, value: "Max-Age=" + age} push
+  if c.httpOnly:
+    parts = {items: parts, value: "HttpOnly"} push
+  if c.secure:
+    parts = {items: parts, value: "Secure"} push
+  let site = {s: c.sameSite} sameSiteText
+  parts = {items: parts, value: "SameSite=" + site} push
+  let line = {parts: parts, sep: "; "} joinStr
+  return {name: "Set-Cookie", value: line} Header
+
+# The cookies a request carries: every `Cookie: a=1; b=2` header, in order.
+fn cookiesOf({headers: Seq[Header]}) -> Seq[Cookie]:
+  var out: Seq[Cookie] = []
+  for i in 0 .. headers.len - 1:
+    let key = {t: headers[i].name} lowerCase
+    if key == "cookie":
+      let pairs = {t: headers[i].value, at: ";"} split
+      for j in 0 .. pairs.len - 1:
+        let piece = {t: pairs[j]} trim
+        let eq = {t: piece, what: "="} text::find
+        if eq.ok:
+          let pieceLen = {t: piece} byteCount
+          let n = {t: piece, start: 0, stop: eq.value} slice
+          let v = {t: piece, start: eq.value + 1, stop: pieceLen} slice
+          if n.ok:
+            if v.ok:
+              let c = {name: n.value, value: v.value} cookie
+              out = {items: out, value: c} push
+  return out
+
+# --- the module's own checks: the exit code names the first that fails -------------------------
+fn checkEncoding() -> int:
+  if {t: "a b&c=d/é"} percentEncode != "a%20b%26c%3Dd%2F%C3%A9":
+    return 1
+  if {t: "a%20b%26c%3Dd%2F%C3%A9", plusIsSpace: false} percentDecode != "a b&c=d/é":
+    return 2
+  if {t: "a+b%2", plusIsSpace: true} percentDecode != "a b%2":
+    return 3
+  if {t: "safe-._~09AZaz"} percentEncode != "safe-._~09AZaz":
+    return 4
+  return 0
+
+fn checkUrl() -> int:
+  let u = {t: "https://example.com:8443/a/b?x=1&y=2#top"} parseUrl
+  if not u.ok:
+    return 5
+  if u.value.scheme != "https" or u.value.host != "example.com" or u.value.port != 8443:
+    return 6
+  if u.value.path != "/a/b" or u.value.query != "x=1&y=2" or u.value.fragment != "top":
+    return 7
+  let plain = {t: "http://h.org"} parseUrl
+  if not plain.ok:
+    return 8
+  if plain.value.port != 80 or plain.value.path != "/":
+    return 9
+  let secure = {t: "https://h.org/p"} parseUrl
+  if not secure.ok:
+    return 10
+  if secure.value.port != 443:
+    return 11
+  let bad = {t: "not a url"} parseUrl
+  if bad.ok:
+    return 12
+  if {u: u.value} targetOf != "/a/b?x=1&y=2":
+    return 13
+  return 0
+
+fn checkQuery() -> int:
+  let pairs = {query: "name=Ann+Lee&q=a%26b&flag"} queryPairs
+  if pairs.len != 3:
+    return 14
+  if pairs[0].value != "Ann Lee" or pairs[1].value != "a&b" or pairs[2].name != "flag":
+    return 15
+  var back: Seq[Header] = []
+  let h = {name: "k", value: "a b"} Header
+  back = {items: back, value: h} push
+  if {pairs: back} buildQuery != "k=a%20b":
+    return 16
+  return 0
+
+fn checkMessages() -> int:
+  let u = {t: "http://example.com:8080/x?y=1"} parseUrl
+  if not u.ok:
+    return 17
+  var hs: Seq[Header] = []
+  let accept = {name: "Accept", value: "*/*"} Header
+  hs = {items: hs, value: accept} push
+  let req = {verb: Method.Post, url: u.value, headers: hs, body: "hi"} requestText
+  let want = "POST /x?y=1 HTTP/1.1\r\nHost: example.com:8080\r\nAccept: */*\r\nContent-Length: 2\r\n\r\nhi"
+  if req != want:
+    return 18
+  let raw = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nSet-Cookie: a=1\r\n\r\nmissing"
+  let r = {raw: raw} parseResponse
+  if not r.ok:
+    return 19
+  if r.value.status != 404 or r.value.reason != "Not Found" or r.value.body != "missing":
+    return 20
+  let ct = {r: r.value, name: "content-type"} headerOf
+  if not ct.ok:
+    return 21
+  if ct.value != "text/plain":
+    return 22
+  let junk = {raw: "garbage"} parseResponse
+  if junk.ok:
+    return 23
+  return 0
+
+fn checkCookies() -> int:
+  var c = {name: "sid", value: "abc"} cookie
+  let plain = {c: c} setCookieHeader
+  if plain.value != "sid=abc; SameSite=Lax":
+    return 24
+  c = {name: "sid", value: "abc", path: "/", domain: "x.org", maxAgeSec: 60, httpOnly: true, secure: true, sameSite: SameSite.Strict} Cookie
+  let full = {c: c} setCookieHeader
+  if full.value != "sid=abc; Path=/; Domain=x.org; Max-Age=60; HttpOnly; Secure; SameSite=Strict":
+    return 25
+  var hs: Seq[Header] = []
+  let h = {name: "Cookie", value: "a=1; b=2"} Header
+  hs = {items: hs, value: h} push
+  let got = {headers: hs} cookiesOf
+  if got.len != 2 or got[0].name != "a" or got[1].value != "2":
+    return 26
+  return 0
+
+fn main() -> int:
+  let a = checkEncoding
+  if a != 0:
+    return a
+  let b = checkUrl
+  if b != 0:
+    return b
+  let c = checkQuery
+  if c != 0:
+    return c
+  let d = checkMessages
+  if d != 0:
+    return d
+  return checkCookies

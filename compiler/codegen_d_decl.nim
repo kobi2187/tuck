@@ -8,6 +8,7 @@ import ast, strutils, sets, tables
 import resolution
 import ast_query
 import codegen_common
+import name_prefix
 import codegen_d_ctx
 from mangle import mangleName
 import ./codegen_d
@@ -63,12 +64,14 @@ proc dBitConsts*(bf: BitFieldInfo): string =
                "_WIDTH) - 1;\n")
 
 proc dBitGetter*(bf: BitFieldInfo, regName: string): string =
-  ## A range reads as a masked uint; a single bit reads as a bool.
+  ## A range reads as a masked uint; a single bit reads as a bool. Every access
+  ## to the register is volatile (core.volatile).
+  let load = "volatileLoad(" & regName & ")"
   let body = if bf.isRange:
-               "return (*" & regName & " >> " & bf.prefix & "_SHIFT) & " &
+               "return (" & load & " >> " & bf.prefix & "_SHIFT) & " &
                  bf.prefix & "_MASK;"
              else:
-               "return (*" & regName & " & (1u << " & bf.prefix &
+               "return (" & load & " & (1u << " & bf.prefix &
                  "_SHIFT)) != 0;"
   let retT = if bf.isRange: "uint" else: "bool"
   retT & " " & bf.prefix & "_get() {\n    " & body & "\n}\n"
@@ -76,15 +79,17 @@ proc dBitGetter*(bf: BitFieldInfo, regName: string): string =
 proc dBitSetter*(bf: BitFieldInfo, regName: string): string =
   ## A range clears its mask before OR-ing the shifted value in; a single bit
   ## sets or clears one mask.
+  let load = "volatileLoad(" & regName & ")"
+  let store = "volatileStore(" & regName & ", "
   if bf.isRange:
     return "void " & bf.prefix & "_set(uint value) {\n" &
            "    uint shifted = (value & " & bf.prefix & "_MASK) << " &
              bf.prefix & "_SHIFT;\n" &
-           "    *" & regName & " = (*" & regName & " & ~(" & bf.prefix &
-             "_MASK << " & bf.prefix & "_SHIFT)) | shifted;\n}\n"
+           "    " & store & "(" & load & " & ~(" & bf.prefix &
+             "_MASK << " & bf.prefix & "_SHIFT)) | shifted);\n}\n"
   "void " & bf.prefix & "_set(bool value) {\n" &
-    "    if (value) *" & regName & " |= (1u << " & bf.prefix & "_SHIFT);\n" &
-    "    else *" & regName & " &= ~(1u << " & bf.prefix & "_SHIFT);\n}\n"
+    "    if (value) " & store & load & " | (1u << " & bf.prefix & "_SHIFT));\n" &
+    "    else " & store & load & " & ~(1u << " & bf.prefix & "_SHIFT));\n}\n"
 
 proc implVarDecls(ctx: var DCodegenCtx, d: Decl, sats: seq[Decl]): string =
   ## Satisfiers whose members live in a module this one cannot import: one
@@ -537,11 +542,9 @@ proc genDRegister*(ctx: var DCodegenCtx, d: Decl): string =
   ## a macro to hand the layout to; Nim's dropped its own in 2026-09. The DECODING is
   ## shared (ast_query.decodeBitField); only the spelling is here.
   ##
-  ## `volatile` in spirit: the pointer is shared with hardware. D has no
-  ## volatile qualifier — core.volatile's volatileLoad/Store are the
-  ## supported spelling — so an optimiser is free to cache a read across
-  ## statements. Correct for the examples, and a real embedded target should
-  ## route these through core.volatile.
+  ## Every access is volatile: the pointer is shared with hardware, and D has
+  ## no volatile qualifier — core.volatile's volatileLoad/Store are the
+  ## supported spelling (imported by dImports when the accessors use them).
   var consts: seq[string]
   var accessors: seq[string]
   for f in d.regFields:
@@ -683,14 +686,12 @@ proc genDRegister*(ctx: DCodegenCtx, m: Module): string =
   result = "void " & RegisterProc & "() {\n"
   for h in foreignHandlers(m):
     let reg = ctx.res.registryOfHandler(h)
-    let origin = if reg == nil: "" else:
-      declOrigin(m, ctx.realModules, reg.name, {dkRegistry})
-    let pre = if origin == "": "" else: dAlias(origin) & "."
+    let pre = if reg == nil: "" else:
+      ctx.pkgQualifierD(declOrigin(m, ctx.realModules, reg.name, {dkRegistry}))
     result.add("    " & pre & ctx.res.handlerListOf(h) & " ~= &" &
                dHandlerFnName(h.name) & ";\n")
   for (iface, o) in movedSatisfiers(m):
-    let origin = moduleDeclaringType(m, iface.name)
-    let pre = if origin == "": "" else: dAlias(origin) & "."
+    let pre = ctx.pkgQualifierD(moduleDeclaringType(m, iface.name))
     for mem in iface.ifaceMembers:
       if mem == nil or mem.kind != dkFn: continue
       result.add("    " & pre & implVarName(iface.name, mem.name, o.name) & " = &" &
@@ -1106,6 +1107,18 @@ proc genDResourceTables(d: Decl): string =
                resourceTableName(d.resKinds[i].name) & ");\n")
   result.add("}\n")
 
+proc genDConst(ctx: var DCodegenCtx, d: Decl): string =
+  ## A literal is a true compile-time constant (`enum` is D's word for one);
+  ## structured data becomes an immutable module-level value. The stated type
+  ## (`const t: Seq[u64] = [1, 2]`) is the const's type: the initializer's own
+  ## would be `long[]`.
+  let stated = if d.constType != nil: ctx.dType(d.constType) & " " else: ""
+  let value = ctx.genDExpr(d.constVal)
+  if d.constVal != nil and d.constVal.kind == exkLit:
+    "enum " & stated & d.name & " = " & value & ";\n"
+  else:
+    "immutable " & stated & d.name & " = " & value & ";\n"
+
 proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   ## The D backend's declaration dispatch: one arm per DeclKind, no `else`, so
   ## a new kind fails to compile here until this backend handles it. Imported
@@ -1113,7 +1126,7 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   if d == nil: return ""
   # Imported type decls are injected for checking only; the origin module
   # emits them (mirrors codegen.nim:1756 / codegen_odin.nim:2234).
-  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.span.file.startsWith(ImportedTypeMarker):
+  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.origin != NoModule:
     return ""
   case d.kind
   of dkType: (if d.hoistedTo != "": "" else: ctx.genDTypeDecl(d))
@@ -1154,13 +1167,7 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   of dkActor: ctx.genDActor(d)
   of dkTask: ctx.genDTaskDecl(d)
   of dkExpr: ""   # top-level statements are collected by emitBody
-  of dkConst:
-    # A literal is a true compile-time constant (`enum` is D's word for
-    # one); structured data becomes an immutable module-level value.
-    if d.constVal != nil and d.constVal.kind == exkLit:
-      "enum " & d.name & " = " & ctx.genDExpr(d.constVal) & ";\n"
-    else:
-      "immutable " & d.name & " = " & ctx.genDExpr(d.constVal) & ";\n"
+  of dkConst: ctx.genDConst(d)
   of dkRegister: ctx.genDRegister(d)
   of dkStaticAssert:
     # D checks this at COMPILE time, natively — the identical construct.

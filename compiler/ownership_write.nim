@@ -401,6 +401,13 @@ proc split(k: string): tuple[place, slot: string] =
   let parts = k.split('\t')
   (parts[0], if parts.len > 1: parts[1] else: "")
 
+proc refilledByStatement(w: Writer, d: Decl, read: Expr): bool =
+  ## `x = f(x)`: the statement that moves `x` out also stores a new value back
+  ## into it, so resetting afterwards would wipe the result (#139).
+  let (b, i) = w.res.statementOf(d.fnBody, read)
+  b != nil and b.stmts[i].kind == exkAssign and
+    pathOf(b.stmts[i].target) == pathOf(read)
+
 proc resetMoves(w: var Writer, d: Decl, plan: DropPlan,
                 keys: HashSet[string]): HashSet[string] =
   ## Rule M: every move of the slots in `keys` is followed by a reset of
@@ -416,6 +423,7 @@ proc resetMoves(w: var Writer, d: Decl, plan: DropPlan,
       let key = $read.id.uint32 & "\t" & s
       if key in done: continue
       done.incl key
+      if w.refilledByStatement(d, read): continue
       if not w.resetAfter(d, read, w.resetOf(read, place, s)):
         w.copyInstead(read)
 

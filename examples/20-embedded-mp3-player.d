@@ -1,6 +1,7 @@
 module _20_embedded_mp3_player;
 
 import rt = tuck_rt;
+import core.volatile : volatileLoad, volatileStore;
 
 alias tuckˑtypeˑHz = uint;
 
@@ -35,36 +36,36 @@ __gshared uint* tuckˑregisterˑDAC_CR = cast(uint*)(0x40007400);
 enum tuckˑregisterˑDAC_CR_EN_SHIFT = 0;
 enum tuckˑregisterˑDAC_CR_BOFF_SHIFT = 1;
 bool tuckˑregisterˑDAC_CR_EN_get() {
-    return (*tuckˑregisterˑDAC_CR & (1u << tuckˑregisterˑDAC_CR_EN_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑDAC_CR) & (1u << tuckˑregisterˑDAC_CR_EN_SHIFT)) != 0;
 }
 void tuckˑregisterˑDAC_CR_EN_set(bool value) {
-    if (value) *tuckˑregisterˑDAC_CR |= (1u << tuckˑregisterˑDAC_CR_EN_SHIFT);
-    else *tuckˑregisterˑDAC_CR &= ~(1u << tuckˑregisterˑDAC_CR_EN_SHIFT);
+    if (value) volatileStore(tuckˑregisterˑDAC_CR, volatileLoad(tuckˑregisterˑDAC_CR) | (1u << tuckˑregisterˑDAC_CR_EN_SHIFT));
+    else volatileStore(tuckˑregisterˑDAC_CR, volatileLoad(tuckˑregisterˑDAC_CR) & ~(1u << tuckˑregisterˑDAC_CR_EN_SHIFT));
 }
 bool tuckˑregisterˑDAC_CR_BOFF_get() {
-    return (*tuckˑregisterˑDAC_CR & (1u << tuckˑregisterˑDAC_CR_BOFF_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑDAC_CR) & (1u << tuckˑregisterˑDAC_CR_BOFF_SHIFT)) != 0;
 }
 void tuckˑregisterˑDAC_CR_BOFF_set(bool value) {
-    if (value) *tuckˑregisterˑDAC_CR |= (1u << tuckˑregisterˑDAC_CR_BOFF_SHIFT);
-    else *tuckˑregisterˑDAC_CR &= ~(1u << tuckˑregisterˑDAC_CR_BOFF_SHIFT);
+    if (value) volatileStore(tuckˑregisterˑDAC_CR, volatileLoad(tuckˑregisterˑDAC_CR) | (1u << tuckˑregisterˑDAC_CR_BOFF_SHIFT));
+    else volatileStore(tuckˑregisterˑDAC_CR, volatileLoad(tuckˑregisterˑDAC_CR) & ~(1u << tuckˑregisterˑDAC_CR_BOFF_SHIFT));
 }
 
 __gshared uint* tuckˑregisterˑDMA1_CH3 = cast(uint*)(0x40020030);
 enum tuckˑregisterˑDMA1_CH3_EN_SHIFT = 0;
 enum tuckˑregisterˑDMA1_CH3_TCIE_SHIFT = 1;
 bool tuckˑregisterˑDMA1_CH3_EN_get() {
-    return (*tuckˑregisterˑDMA1_CH3 & (1u << tuckˑregisterˑDMA1_CH3_EN_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑDMA1_CH3) & (1u << tuckˑregisterˑDMA1_CH3_EN_SHIFT)) != 0;
 }
 void tuckˑregisterˑDMA1_CH3_EN_set(bool value) {
-    if (value) *tuckˑregisterˑDMA1_CH3 |= (1u << tuckˑregisterˑDMA1_CH3_EN_SHIFT);
-    else *tuckˑregisterˑDMA1_CH3 &= ~(1u << tuckˑregisterˑDMA1_CH3_EN_SHIFT);
+    if (value) volatileStore(tuckˑregisterˑDMA1_CH3, volatileLoad(tuckˑregisterˑDMA1_CH3) | (1u << tuckˑregisterˑDMA1_CH3_EN_SHIFT));
+    else volatileStore(tuckˑregisterˑDMA1_CH3, volatileLoad(tuckˑregisterˑDMA1_CH3) & ~(1u << tuckˑregisterˑDMA1_CH3_EN_SHIFT));
 }
 bool tuckˑregisterˑDMA1_CH3_TCIE_get() {
-    return (*tuckˑregisterˑDMA1_CH3 & (1u << tuckˑregisterˑDMA1_CH3_TCIE_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑDMA1_CH3) & (1u << tuckˑregisterˑDMA1_CH3_TCIE_SHIFT)) != 0;
 }
 void tuckˑregisterˑDMA1_CH3_TCIE_set(bool value) {
-    if (value) *tuckˑregisterˑDMA1_CH3 |= (1u << tuckˑregisterˑDMA1_CH3_TCIE_SHIFT);
-    else *tuckˑregisterˑDMA1_CH3 &= ~(1u << tuckˑregisterˑDMA1_CH3_TCIE_SHIFT);
+    if (value) volatileStore(tuckˑregisterˑDMA1_CH3, volatileLoad(tuckˑregisterˑDMA1_CH3) | (1u << tuckˑregisterˑDMA1_CH3_TCIE_SHIFT));
+    else volatileStore(tuckˑregisterˑDMA1_CH3, volatileLoad(tuckˑregisterˑDMA1_CH3) & ~(1u << tuckˑregisterˑDMA1_CH3_TCIE_SHIFT));
 }
 
 enum tuckˑtypeˑPlayerStateKind { Idle, Decoding, Paused }

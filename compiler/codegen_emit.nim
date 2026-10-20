@@ -9,6 +9,7 @@ import ast, strutils, tables
 import resolution
 import ast_query
 import codegen_common
+import name_prefix
 import codegen_ctx
 import ./codegen_decl
 
@@ -65,16 +66,16 @@ proc linkPragma*(lib: string): string =
     "{.passL: \"" & lib & "\".}\n"
   else: "{.passL: \"-l" & lib & "\".}\n"
 
-proc genModuleImports*(m: Module, realModules: Table[string, Module]): string =
-  ## A module whose name would shadow a Nim TYPE is imported under an alias —
-  ## see nimModuleName. Everything else keeps its own name, because this
-  ## backend DOES spell `module.fn` for a `module::fn` call and an alias there
-  ## would name something Nim has never heard of.
+proc genModuleImports*(m: Module, realModules: ModuleMap): string =
+  ## Each imported Tuck module is imported under its alias (`moduleAlias`), so
+  ## no module name can meet a Nim type or module of the same name — `import
+  ## seq` used to make the next `seq[...]` in the file "cannot instantiate the
+  ## 'seq' module". Nim still merges the module's names into this scope; the
+  ## alias is what a `module::fn` call is spelled through.
   for d in m.decls:
-    if d != nil and d.kind == dkImport and d.name in realModules:
-      let asName = nimModuleName(d.name)
-      result.add(if asName == d.name: "import " & d.name & "\n"
-                 else: "import " & d.name & " as " & asName & "\n")
+    if d != nil and d.kind == dkImport and d.importTarget in realModules:
+      result.add("import " & nameOf(d.importTarget) & " as " &
+                 moduleAlias(d.importTarget) & "\n")
 
 proc genOrderedDecls*(ctx: var CodegenCtx, m: Module): string =
   ## Nim needs decl-before-use; Tuck is order-independent. So: type
@@ -103,7 +104,7 @@ proc genLinkFlags*(m: Module): string =
 
 proc emitNim*(m: Module, res: Resolution,
               rtImport = "../compiler/tuck_rt",
-              realModules = initTable[string, Module](),
+              realModules = initTable[ModuleId, Module](),
               moduleName = "main"): string =
   ## `res` is the semantic layer typechecking produced. Taking it as an
   ## argument is the point: this stage cannot run before the one that fills

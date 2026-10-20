@@ -1,0 +1,29 @@
+# core.types — the numeric vocabulary the other modules are written in.
+#
+# `Option` is the language's `?T`, `Result` is `!T`, and `Bytes` would be a
+# synonym for `Seq[u8]`, so none of them is here. What is left is three
+# `distinct` integers: the same bits as `int`, incompatible with it at compile
+# time, so an index cannot be passed where a count is wanted.
+import str
+
+distinct Rune = i32
+distinct Index = int
+distinct Count = int
+
+fn rune({value: i32}) -> Rune:
+  return {value: value} Rune
+
+fn asI32({r: Rune}) -> i32:
+  return {value: r} i32
+
+fn index({value: int}) -> Index:
+  return {value: value} Index
+
+fn count({value: int}) -> Count:
+  return {value: value} Count
+
+fn main() -> int:
+  let r = {value: 65} rune
+  if {r: r} asI32 != 65:
+    return 1
+  return 0

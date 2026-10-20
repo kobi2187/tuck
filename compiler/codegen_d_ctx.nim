@@ -3,6 +3,8 @@
 # The D backend's codegen context and type emission. No genDExpr/genDDecl
 # calls here — pure state and type translation, safe to split from the
 # recursive expression/decl codegen in codegen_d.nim.
+import shape_pool
+import name_prefix
 import ast, tables, sets, strutils
 import ast_query
 import resolution
@@ -52,7 +54,9 @@ type
     hoisted*: seq[string]  # named decls hoisted out of field positions (records)
     recShapes*: Table[string, string]  # record shape signature -> struct name
     modPrefix*: string     # library modules prefix hoisted names
-    realModules*: Table[string, Module]
+    realModules*: ModuleMap
+    used*: ModuleUse      # the modules this file reached through: its imports
+    shapes*: ShapePool    # the program's shared record shapes; nil for one module
     moduleName*: string
     tmpCounter*: int
     currentParams*: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
@@ -114,12 +118,11 @@ proc dImplAlias*(module: string): string =
   ## implAlias, minus the ':' handling: D import paths use only '/'.
   if '/' in module: module.rsplit('/', 1)[^1] else: module
 
-proc dAlias*(moduleName: string): string =
-  ## A Tuck module's name as a D identifier — the import alias at a use site
-  ## and the `mod_<alias>` file it comes from. One spelling rule in one
-  ## place: it was written out at nine call sites, which is how a module
-  ## named `net-http` ends up half-translated.
-  moduleName.replace("-", "_")
+proc pkgQualifierD*(ctx: DCodegenCtx, id: ModuleId): string =
+  ## `<alias>.` for something module `id` declares, "" when it is this
+  ## module's own. D has no cross-module scope merge, so every foreign name is
+  ## qualified here, and the file imports exactly the modules asked for.
+  ctx.used.moduleQualifier(ctx.module.id, id)
 
 proc bangInner*(t: Type): Type =
   ## The payload of a `!T` / `?T` / `!?T`, or nil when the type is plain.
@@ -133,18 +136,13 @@ proc bangInner*(t: Type): Type =
 
 proc importedTypeQualifierD*(ctx: DCodegenCtx, name: string): string =
   ## `pkg.Name` for a type another module declares, else `Name`.
-  let origin = moduleDeclaringType(ctx.module, name)
-  if origin != "" and dAlias(origin) != dAlias(ctx.moduleName):
-    dAlias(origin) & "." & name
-  else: name
+  ctx.pkgQualifierD(moduleDeclaringType(ctx.module, name)) & name
 
 proc importPrefixD*(ctx: DCodegenCtx, name: string): string =
   ## `alias.` when another module declares the type, object or interface
   ## `name` (R11), else "" — for the names derived from it (`<I>Tag`,
   ## `__validated_<T>`) that `importedTypeQualifierD` cannot look up.
-  let origin = moduleDeclaringType(ctx.module, name)
-  if origin != "" and dAlias(origin) != dAlias(ctx.moduleName): dAlias(origin) & "."
-  else: ""
+  ctx.pkgQualifierD(moduleDeclaringType(ctx.module, name))
 
 proc validatorNameD*(ctx: DCodegenCtx, typeName: string): string =
   ## The function that validates an invariant-carrying type, qualified with
@@ -165,7 +163,7 @@ proc dTypeIn*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string
   ## its own definition.
 
 proc recStructNameD*(ctx: var DCodegenCtx, fields: seq[FieldDef],
-                     owner = ""): string
+                     owner = NoModule): string
   ## Forward-declared: dTypeIn's tkRecord arm needs it before its own
   ## definition.
 
@@ -327,9 +325,9 @@ proc dTypeIn*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
     elif isPoolHandleType(ctx.module, t.name) or
          isImportedPoolHandle(ctx.module, ctx.realModules, t.name): "rt.PoolHandle"
     elif slabOfRefType(t.name) != nil: "rt.SlabRef"
-    elif constOrigin(ctx.module, ctx.realModules, t.name) != "":
+    elif constOrigin(ctx.module, ctx.realModules, t.name) != NoModule:
       # An Array size naming an imported const (R11, A33).
-      dAlias(constOrigin(ctx.module, ctx.realModules, t.name)) & "." & t.name
+      ctx.pkgQualifierD(constOrigin(ctx.module, ctx.realModules, t.name)) & t.name
     else: ctx.importedTypeQualifierD(t.name)
   of tkApp: ctx.dRefOrAppType(t, mode)
   of tkTuple: giveUp("tuple type")
@@ -361,7 +359,7 @@ proc dFieldType*(ctx: var DCodegenCtx, owner: string, f: FieldDef): string =
   ctx.inlineSumOwner = saved
 
 proc recStructNameD*(ctx: var DCodegenCtx, fields: seq[FieldDef],
-                    owner = ""): string =
+                    owner = NoModule): string =
   ## An anonymous record shape hoists as a TEMPLATE parameterised by its own
   ## field types — `struct TRec_rest_value(T_rest, T_value)` — and every use
   ## site names an instantiation of it.
@@ -392,30 +390,37 @@ proc recStructNameD*(ctx: var DCodegenCtx, fields: seq[FieldDef],
     typeStrs.add(ctx.dType(f.typ))
     nameParts.add(f.name)
   let args = "!(" & typeStrs.join(", ") & ")"
-  if owner != "" and owner != ctx.moduleName:
-    let alias = dAlias(owner)
-    return alias & ".TRec_" & alias & "_" & nameParts.join("_") & args
-  let name = "TRec_" & ctx.modPrefix & nameParts.join("_")
-  if name notin ctx.recShapes:
-    ctx.recShapes[name] = name
+  let pooled = ctx.shapes != nil
+  if not pooled and owner != NoModule and owner != ctx.module.id:
+    return ctx.pkgQualifierD(owner) & "TRec_" & moduleSlug(owner) & "_" &
+           nameParts.join("_") & args
+  let name = "TRec_" & (if pooled: "" else: ctx.modPrefix) & nameParts.join("_")
+  let known = if pooled: name in ctx.shapes.defs else: name in ctx.recShapes
+  if not known:
     var params: seq[string]
     for f in fields: params.add("T_" & f.name)
     var res = "struct " & name & "(" & params.join(", ") & ") {\n"
     for i, f in fields:
       res.add("    " & params[i] & " " & f.name & ";\n")
     res.add("}")
-    ctx.hoisted.add(res)
-  name & args
+    if pooled: ctx.shapes.defs[name] = res
+    else:
+      ctx.recShapes[name] = name
+      ctx.hoisted.add(res)
+  # In a program of several modules every shape lives in one module, so two
+  # modules naming a shape name one type (#145).
+  let home = if pooled: ctx.pkgQualifierD(moduleId(ctx.shapes.module)) else: ""
+  home & name & args
 
-proc newDCtx*(m: Module, realModules: Table[string, Module],
+proc newDCtx*(m: Module, realModules: ModuleMap,
              moduleName: string, res: Resolution,
-             modPrefix = ""): DCodegenCtx =
+             modPrefix = "", shapes: ShapePool = nil): DCodegenCtx =
   ## A fresh D emission context for module `m`, with its decl index built up
   ## front and the `errors` policy read off the module. `modPrefix` is set for
   ## library modules, whose hoisted names must not collide with the entry's.
   result = DCodegenCtx(definedVars: initHashSet[string](), indent: 0,
                        module: m, realModules: realModules,
                        moduleName: moduleName, modPrefix: modPrefix,
-                       idx: buildDeclIndex(m), res: res)
+                       idx: buildDeclIndex(m), res: res, used: newModuleUse(), shapes: shapes)
   for d in m.decls:
     if d != nil and d.kind == dkErrors: result.errPolicy = d.policyName

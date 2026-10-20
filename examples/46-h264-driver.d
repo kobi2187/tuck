@@ -1,33 +1,34 @@
 module _46_h264_driver;
 
 import rt = tuck_rt;
+import core.volatile : volatileLoad, volatileStore;
 
 __gshared uint* tuckˑregisterˑVI_CTRL = cast(uint*)(0x50000000);
 enum tuckˑregisterˑVI_CTRL_ENABLE_SHIFT = 0;
 enum tuckˑregisterˑVI_CTRL_FRAME_DONE_SHIFT = 1;
 enum tuckˑregisterˑVI_CTRL_OVERRUN_SHIFT = 2;
 bool tuckˑregisterˑVI_CTRL_ENABLE_get() {
-    return (*tuckˑregisterˑVI_CTRL & (1u << tuckˑregisterˑVI_CTRL_ENABLE_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑVI_CTRL) & (1u << tuckˑregisterˑVI_CTRL_ENABLE_SHIFT)) != 0;
 }
 void tuckˑregisterˑVI_CTRL_ENABLE_set(bool value) {
-    if (value) *tuckˑregisterˑVI_CTRL |= (1u << tuckˑregisterˑVI_CTRL_ENABLE_SHIFT);
-    else *tuckˑregisterˑVI_CTRL &= ~(1u << tuckˑregisterˑVI_CTRL_ENABLE_SHIFT);
+    if (value) volatileStore(tuckˑregisterˑVI_CTRL, volatileLoad(tuckˑregisterˑVI_CTRL) | (1u << tuckˑregisterˑVI_CTRL_ENABLE_SHIFT));
+    else volatileStore(tuckˑregisterˑVI_CTRL, volatileLoad(tuckˑregisterˑVI_CTRL) & ~(1u << tuckˑregisterˑVI_CTRL_ENABLE_SHIFT));
 }
 bool tuckˑregisterˑVI_CTRL_FRAME_DONE_get() {
-    return (*tuckˑregisterˑVI_CTRL & (1u << tuckˑregisterˑVI_CTRL_FRAME_DONE_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑVI_CTRL) & (1u << tuckˑregisterˑVI_CTRL_FRAME_DONE_SHIFT)) != 0;
 }
 bool tuckˑregisterˑVI_CTRL_OVERRUN_get() {
-    return (*tuckˑregisterˑVI_CTRL & (1u << tuckˑregisterˑVI_CTRL_OVERRUN_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑVI_CTRL) & (1u << tuckˑregisterˑVI_CTRL_OVERRUN_SHIFT)) != 0;
 }
 
 __gshared uint* tuckˑregisterˑVI_DMA = cast(uint*)(0x50000010);
 enum tuckˑregisterˑVI_DMA_ARMED_SHIFT = 0;
 bool tuckˑregisterˑVI_DMA_ARMED_get() {
-    return (*tuckˑregisterˑVI_DMA & (1u << tuckˑregisterˑVI_DMA_ARMED_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑVI_DMA) & (1u << tuckˑregisterˑVI_DMA_ARMED_SHIFT)) != 0;
 }
 void tuckˑregisterˑVI_DMA_ARMED_set(bool value) {
-    if (value) *tuckˑregisterˑVI_DMA |= (1u << tuckˑregisterˑVI_DMA_ARMED_SHIFT);
-    else *tuckˑregisterˑVI_DMA &= ~(1u << tuckˑregisterˑVI_DMA_ARMED_SHIFT);
+    if (value) volatileStore(tuckˑregisterˑVI_DMA, volatileLoad(tuckˑregisterˑVI_DMA) | (1u << tuckˑregisterˑVI_DMA_ARMED_SHIFT));
+    else volatileStore(tuckˑregisterˑVI_DMA, volatileLoad(tuckˑregisterˑVI_DMA) & ~(1u << tuckˑregisterˑVI_DMA_ARMED_SHIFT));
 }
 
 __gshared uint* tuckˑregisterˑDEC_CTRL = cast(uint*)(0x50001000);
@@ -35,17 +36,17 @@ enum tuckˑregisterˑDEC_CTRL_START_SHIFT = 0;
 enum tuckˑregisterˑDEC_CTRL_BUSY_SHIFT = 1;
 enum tuckˑregisterˑDEC_CTRL_ERR_SHIFT = 2;
 bool tuckˑregisterˑDEC_CTRL_START_get() {
-    return (*tuckˑregisterˑDEC_CTRL & (1u << tuckˑregisterˑDEC_CTRL_START_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑDEC_CTRL) & (1u << tuckˑregisterˑDEC_CTRL_START_SHIFT)) != 0;
 }
 void tuckˑregisterˑDEC_CTRL_START_set(bool value) {
-    if (value) *tuckˑregisterˑDEC_CTRL |= (1u << tuckˑregisterˑDEC_CTRL_START_SHIFT);
-    else *tuckˑregisterˑDEC_CTRL &= ~(1u << tuckˑregisterˑDEC_CTRL_START_SHIFT);
+    if (value) volatileStore(tuckˑregisterˑDEC_CTRL, volatileLoad(tuckˑregisterˑDEC_CTRL) | (1u << tuckˑregisterˑDEC_CTRL_START_SHIFT));
+    else volatileStore(tuckˑregisterˑDEC_CTRL, volatileLoad(tuckˑregisterˑDEC_CTRL) & ~(1u << tuckˑregisterˑDEC_CTRL_START_SHIFT));
 }
 bool tuckˑregisterˑDEC_CTRL_BUSY_get() {
-    return (*tuckˑregisterˑDEC_CTRL & (1u << tuckˑregisterˑDEC_CTRL_BUSY_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑDEC_CTRL) & (1u << tuckˑregisterˑDEC_CTRL_BUSY_SHIFT)) != 0;
 }
 bool tuckˑregisterˑDEC_CTRL_ERR_get() {
-    return (*tuckˑregisterˑDEC_CTRL & (1u << tuckˑregisterˑDEC_CTRL_ERR_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑDEC_CTRL) & (1u << tuckˑregisterˑDEC_CTRL_ERR_SHIFT)) != 0;
 }
 
 __gshared rt.ObjectPool!(ubyte[4096], 4) tuckˑpoolˑFrameBuffers;

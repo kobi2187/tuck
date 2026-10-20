@@ -513,10 +513,83 @@ proc walkExpr(w: var DropWalk, e: Expr, use: Use) =
   of exkDefer: discard          # runs at the scope's end, reading only
   else: w.applyMoves(e, use)
 
+# --- sibling-scope locals ---------------------------------------------------
+#
+# The plan below is keyed by a place's NAME, so two locals that share one in
+# sibling scopes (`let h` in an `if`, `let h` again in a loop) would share a
+# fate and a list of moves: the second `h` was pushed AND dropped (#142). A
+# name that is declared a second time in a function is renamed from there to
+# the end of its scope, before the plan reads anything.
+
+type Uniquify = object
+  res: Resolution
+  visible: seq[HashSet[string]]       ## the names in scope, innermost last
+  sites: Table[string, NodeId]        ## every name declared so far -> where
+  fresh: int
+
+proc isVisible(u: Uniquify, name: string): bool =
+  for sc in u.visible:
+    if name in sc: return true
+
+proc renameIn(res: Resolution, e: Expr, old, fresh: string) =
+  ## Every `old` under `e` becomes `fresh`, including inside a call the
+  ## checker printed in a node's place (`x.len` is one, kept off the tree).
+  for n in e.nodes:
+    if n.kind == exkVar and n.name == old: n.name = fresh
+    if n.kind != exkCall and res.hasCall(n): res.renameIn(res.call(n), old, fresh)
+
+proc renameFrom(res: Resolution, b: Expr, i: int, old, fresh: string) =
+  ## `old` is `fresh` from statement `i` of `b` to the end of the block.
+  for j in i ..< b.stmts.len: res.renameIn(b.stmts[j], old, fresh)
+
+proc uniquify(u: var Uniquify, e: Expr)
+
+proc uniquifyDecl(u: var Uniquify, b: Expr, i: int) =
+  ## A statement that declares a name already declared elsewhere gets a new one.
+  let s = b.stmts[i]
+  let t = s.target
+  if t == nil or t.kind != exkVar or u.res.isOwnerField(t) or u.isVisible(t.name):
+    return
+  if t.name in u.sites and u.sites[t.name] != s.id:
+    inc u.fresh
+    let fresh = t.name & "ˑ" & $u.fresh
+    u.res.renameFrom(b, i, t.name, fresh)
+  u.sites[t.name] = s.id
+  u.visible[^1].incl t.name
+
+proc uniquify(u: var Uniquify, e: Expr) =
+  if e == nil: return
+  case e.kind
+  of exkBlock:
+    u.visible.add initHashSet[string]()
+    for i, s in e.stmts:
+      u.uniquify(s)
+      if s.kind == exkAssign: u.uniquifyDecl(e, i)
+    discard u.visible.pop()
+  of exkFor:
+    u.uniquify(e.iterable)
+    u.visible.add initHashSet[string]()
+    var names: seq[string]
+    var pats = @[e.iter]
+    while pats.len > 0:
+      let p = pats.pop()
+      if p == nil: continue
+      if p.kind == pkVar: names.add p.name
+      elif p.kind == pkTuple: pats.add p.elems
+    for n in names: u.visible[^1].incl n
+    u.uniquify(e.body)
+    discard u.visible.pop()
+  else:
+    for c in e.children: u.uniquify(c)
+
 proc dropPlan*(res: Resolution, m: Module, d: Decl): DropPlan =
   ## Rules D and M for one fn: its owned locals, and its consuming
   ## parameters (P), each with its fate where its scope ends.
   if d.fnBody == nil: return
+  var u = Uniquify(res: res)
+  u.visible.add initHashSet[string]()
+  for p in d.fnParams: u.visible[0].incl p.name
+  u.uniquify(d.fnBody)
   var w = DropWalk(res: res, m: m)
   w.scopes.add @[]
   for p in d.fnParams:
@@ -618,5 +691,8 @@ proc copiesRead*(res: Resolution, ps: Places, v: Expr): bool =
     return false                                   # a temporary moves
   if res.isOwnerField(v): return true              # an actor's field
   let root = rootOf(pathOf(v))
-  if root notin ps.all: return false               # not a place at all
+  if root notin ps.all:
+    # A module const is read in place and owned by nobody: a local made from
+    # it holds a copy (#146).
+    return ps.m.findDecl(dkConst, root) != nil
   root notin ps.owned or not res.isLastUse(v)

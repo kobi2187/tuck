@@ -1,7 +1,7 @@
 module _39_if_match_expr;
 
 import rt = tuck_rt;
-import sys = mod_sys;
+import tuckˑmodˑsys = mod_sys;
 
 enum tuckˑtypeˑColor { Red, Green, Blue }
 
@@ -28,12 +28,12 @@ void tuckˑfnˑmain() {
         if ((tuckˑvˑcode == 2L)) {
             if ((tuckˑvˑname == 20L)) {
                 if ((tuckˑvˑscaled == 200L)) {
-                    sys.exit(0L);
+                    tuckˑmodˑsys.exit(0L);
                 }
             }
         }
     }
-    sys.exit(1L);
+    tuckˑmodˑsys.exit(1L);
 }
 
 int main(string[] args) {

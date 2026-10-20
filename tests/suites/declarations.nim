@@ -403,6 +403,25 @@ fn main() -> int:
           r"tuckˑregisterˑCTRL_EN_get\(\)"
   t.omits "register: Nim never emits raw field syntax either", r"CTRL\.EN"
   t.hostBuilds "register: every backend's host compiler accepts the accessors"
+  # A register is hardware the program shares: an optimiser must not cache a
+  # read across statements or drop a write, so every access is volatile on
+  # every backend (#30).
+  t.emits "register: Nim reads and writes through the volatile helpers",
+          r"tuck_rt\.tuckVolatileLoad\(tuckˑregisterˑCTRL\)"
+  t.omits "register: Nim never dereferences the pointer plainly",
+          r"tuckˑregisterˑCTRL\[\]"
+  t.emitsOdin "register: Odin reads through the volatile intrinsic",
+              r"intrinsics\.volatile_load\(tuckˑregisterˑCTRL\)"
+  t.emitsOdin "register: Odin writes through the volatile intrinsic",
+              r"intrinsics\.volatile_store\(tuckˑregisterˑCTRL"
+  t.omitsOdin "register: Odin never dereferences the pointer plainly",
+              r"tuckˑregisterˑCTRL\^"
+  t.emitsD "register: D reads through core.volatile",
+           r"volatileLoad\(tuckˑregisterˑCTRL\)"
+  t.emitsD "register: D writes through core.volatile",
+           r"volatileStore\(tuckˑregisterˑCTRL"
+  t.omitsD "register: D never dereferences the pointer plainly",
+           r"\*tuckˑregisterˑCTRL"
 
   # An event registry whose event carries a PAYLOAD. Two defects lived here,
   # both invisible for the same reason as the register ones: no registry

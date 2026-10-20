@@ -4,8 +4,8 @@ export tuck_rt
 import "./shim/zlib_shim"
 export zlib_shim
 {.passL: "-lz".}
-import sys
-import console
+import sys as tuckˑmodˑsys
+import console as tuckˑmodˑconsole
 
 proc tuckˑfnˑmain*(): void
 

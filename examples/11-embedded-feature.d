@@ -1,6 +1,7 @@
 module _11_embedded_feature;
 
 import rt = tuck_rt;
+import core.volatile : volatileLoad, volatileStore;
 
 alias tuckˑtypeˑSafeRPM = ushort;
 
@@ -20,21 +21,21 @@ enum tuckˑregisterˑRCC_CR_HSITRIM_SHIFT = 3;
 enum tuckˑregisterˑRCC_CR_HSITRIM_WIDTH = 7 - 3 + 1;
 enum uint tuckˑregisterˑRCC_CR_HSITRIM_MASK = (1u << tuckˑregisterˑRCC_CR_HSITRIM_WIDTH) - 1;
 bool tuckˑregisterˑRCC_CR_HSION_get() {
-    return (*tuckˑregisterˑRCC_CR & (1u << tuckˑregisterˑRCC_CR_HSION_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑRCC_CR) & (1u << tuckˑregisterˑRCC_CR_HSION_SHIFT)) != 0;
 }
 void tuckˑregisterˑRCC_CR_HSION_set(bool value) {
-    if (value) *tuckˑregisterˑRCC_CR |= (1u << tuckˑregisterˑRCC_CR_HSION_SHIFT);
-    else *tuckˑregisterˑRCC_CR &= ~(1u << tuckˑregisterˑRCC_CR_HSION_SHIFT);
+    if (value) volatileStore(tuckˑregisterˑRCC_CR, volatileLoad(tuckˑregisterˑRCC_CR) | (1u << tuckˑregisterˑRCC_CR_HSION_SHIFT));
+    else volatileStore(tuckˑregisterˑRCC_CR, volatileLoad(tuckˑregisterˑRCC_CR) & ~(1u << tuckˑregisterˑRCC_CR_HSION_SHIFT));
 }
 bool tuckˑregisterˑRCC_CR_HSIRDY_get() {
-    return (*tuckˑregisterˑRCC_CR & (1u << tuckˑregisterˑRCC_CR_HSIRDY_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑRCC_CR) & (1u << tuckˑregisterˑRCC_CR_HSIRDY_SHIFT)) != 0;
 }
 uint tuckˑregisterˑRCC_CR_HSITRIM_get() {
-    return (*tuckˑregisterˑRCC_CR >> tuckˑregisterˑRCC_CR_HSITRIM_SHIFT) & tuckˑregisterˑRCC_CR_HSITRIM_MASK;
+    return (volatileLoad(tuckˑregisterˑRCC_CR) >> tuckˑregisterˑRCC_CR_HSITRIM_SHIFT) & tuckˑregisterˑRCC_CR_HSITRIM_MASK;
 }
 void tuckˑregisterˑRCC_CR_HSITRIM_set(uint value) {
     uint shifted = (value & tuckˑregisterˑRCC_CR_HSITRIM_MASK) << tuckˑregisterˑRCC_CR_HSITRIM_SHIFT;
-    *tuckˑregisterˑRCC_CR = (*tuckˑregisterˑRCC_CR & ~(tuckˑregisterˑRCC_CR_HSITRIM_MASK << tuckˑregisterˑRCC_CR_HSITRIM_SHIFT)) | shifted;
+    volatileStore(tuckˑregisterˑRCC_CR, (volatileLoad(tuckˑregisterˑRCC_CR) & ~(tuckˑregisterˑRCC_CR_HSITRIM_MASK << tuckˑregisterˑRCC_CR_HSITRIM_SHIFT)) | shifted);
 }
 
 void tuckˑfnˑprocessISR(tuckˑtypeˑSensorEvent event) {

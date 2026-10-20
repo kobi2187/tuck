@@ -1,0 +1,107 @@
+# std.encoding — one document model (Json) with a parser and a printer, plus
+# base64 and CSV.
+#
+# Pure Tuck over core.str.text: nothing here needs the host. Parsing returns
+# `?`: a text that is not JSON is an absent answer, not a crash. (A fallible
+# `!` return must be [io], and parsing is not io.)
+#
+# `JObj` keeps parallel `keys`/`vals` Seqs rather than a map: it preserves the
+# order a document was written in, which round-tripping wants.
+import seq
+import str
+import text
+
+type Json:
+  | JNull
+  | JBool({b: bool})
+  | JNum({n: f64})
+  | JStr({s: str})
+  | JArr({items: Seq[Json]})
+  | JObj({keys: Seq[str], vals: Seq[Json]})
+
+# --- printing -----------------------------------------------------------------
+fn escapeChar({c: str}) -> str:
+  if c == "\"":
+    return "\\\""
+  if c == "\\":
+    return "\\\\"
+  if c == "\n":
+    return "\\n"
+  if c == "\t":
+    return "\\t"
+  if c == "\r":
+    return "\\r"
+  return c
+
+fn quoted({s: str}) -> str:
+  var parts: Seq[str] = []
+  parts = {items: parts, value: "\""} push
+  for i in 0 .. {t: s} byteCount - 1:
+    let c = {s: s, index: i} charAt
+    let e = {c: c} escapeChar
+    parts = {items: parts, value: e} push
+  parts = {items: parts, value: "\""} push
+  return {parts: parts, sep: ""} joinStr
+
+fn toJsonText({j: Json}) -> str:
+  match j:
+    JNull: return "null"
+    JBool: return {b: j.b} boolText
+    JNum: return {value: j.n} toStr
+    JStr: return {s: j.s} quoted
+    JArr: return {items: j.items} arrayText
+    JObj: return {keys: j.keys, vals: j.vals} objectText
+
+fn boolText({b: bool}) -> str:
+  if b:
+    return "true"
+  return "false"
+
+fn arrayText({items: Seq[Json]}) -> str:
+  var parts: Seq[str] = []
+  for i in 0 .. items.len - 1:
+    let one = {j: items[i]} toJsonText
+    parts = {items: parts, value: one} push
+  let inner = {parts: parts, sep: ","} joinStr
+  return "[" + inner + "]"
+
+fn objectText({keys: Seq[str], vals: Seq[Json]}) -> str:
+  var parts: Seq[str] = []
+  for i in 0 .. keys.len - 1:
+    let k = {s: keys[i]} quoted
+    let v = {j: vals[i]} toJsonText
+    parts = {items: parts, value: k + ":" + v} push
+  let inner = {parts: parts, sep: ","} joinStr
+  return "{" + inner + "}"
+
+# --- access -------------------------------------------------------------------
+fn jsonGet({j: Json, key: str}) -> Json?:
+  match j:
+    JObj:
+      for i in 0 .. j.keys.len - 1:
+        if j.keys[i] == key:
+          return j.vals[i]
+      return none
+    _: return none
+
+fn jsonAt({j: Json, index: int}) -> Json?:
+  match j:
+    JArr:
+      if index < 0 or index >= j.items.len:
+        return none
+      return j.items[index]
+    _: return none
+
+fn checkPrint() -> int:
+  if {j: Json.JNull} toJsonText != "null":
+    return 1
+  let t = {b: true} Json.JBool
+  if {j: t} toJsonText != "true":
+    return 2
+  let s = {s: "a\"b"} Json.JStr
+  if {j: s} toJsonText != "\"a\\\"b\"":
+    return 3
+  return 0
+
+fn main() -> int:
+  return checkPrint

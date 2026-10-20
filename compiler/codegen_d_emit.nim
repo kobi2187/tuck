@@ -5,10 +5,12 @@
 # entry point into one D source file. The public entry points
 # (`emitD`/`emitDModule`) sit above genDDecl/genDExpr in the import order,
 # same shape as codegen_emit.nim / codegen_odin_emit.nim.
+import shape_pool
 import ast, strutils, tables, sets
 import resolution
 import ast_query
 import codegen_common
+import name_prefix
 import codegen_d_ctx
 import ./codegen_d_decl
 import ./codegen_d
@@ -52,10 +54,10 @@ proc dModuleName*(base: string): string =
   ## A module named after a D TYPE shadows it for the whole file: a module
   ## named `string` emitted `module string;` and every `string` below it was
   ## "module `string` is used as a type". Same class as a Tuck module named
-  ## `seq` shadowing Nim's own — see codegen_common.nimModuleName. Only the
+  ## `seq` shadowing Nim's own — see codegen_common.nimEntryStem. Only the
   ## ENTRY module needs the rename; a library module is emitted as
   ## `mod_<name>`, which cannot collide.
-  result = dAlias(base)
+  result = base.replace("-", "_")
   if result.len > 0 and result[0] in {'0' .. '9'}: result = "_" & result
   if result in DShadowingModuleNames: result = "tuck_mod_" & result
 
@@ -64,7 +66,7 @@ proc usesSymbol*(code, sym: string): bool =
   ## symbol may be invoked (`writeln(x)`) or reached through (`stderr.x`).
   (sym & "(") in code or (sym & ".") in code
 
-proc dBootSequence*(m: Module, real: Table[string, Module], hasTasks: bool): string =
+proc dBootSequence*(ctx: DCodegenCtx, m: Module, real: ModuleMap, hasTasks: bool): string =
   ## What runs BEFORE main: the scheduler, then every actor as a daemon.
   ## An actor is a singleton service alive for the whole program, not
   ## something main spawns — but one with no messages has no drain to start
@@ -80,20 +82,16 @@ proc dBootSequence*(m: Module, real: Table[string, Module], hasTasks: bool): str
   # Another module's actors start themselves (A18): their drains and slots
   # live in that module.
   let bootMods = actorBootModules(m, real)
-  for p in bootMods: daemons.add("    " & dAlias(p) & "." & ActorsBootProc & "();\n")
+  for p in bootMods: daemons.add("    " & ctx.pkgQualifierD(p) & ActorsBootProc & "();\n")
   if not hasTasks and daemons.len == 0: return ""
   "    rt.tuckAsyncInit();\n" & daemons.join("")
 
-proc moduleImports(ctx: DCodegenCtx, code: string, inModuleDir: bool): seq[string] =
-  ## The Tuck modules the emitted text names, plus — for the entry point — each
-  ## module whose actors it boots without otherwise naming it (A18).
-  let bootMods = if inModuleDir: @[]
-                 else: actorBootModules(ctx.module, ctx.realModules) &
-                       registerModules(ctx.module, ctx.realModules)
-  for modName in ctx.realModules.keys:
-    let alias = dAlias(modName)
-    if usesSymbol(code, alias) or modName in bootMods:
-      result.add("import " & alias & " = mod_" & alias & ";")
+proc moduleImports(ctx: DCodegenCtx): seq[string] =
+  ## One import per module the file reached through (`pkgQualifierD` records
+  ## each), by the module's alias. The entry point's boot and register calls
+  ## qualify through modules too, so it is written before this list is.
+  for id in ctx.used.byName:
+    result.add("import " & moduleAlias(id) & " = mod_" & moduleSlug(id) & ";")
 
 proc dImports*(ctx: DCodegenCtx, body, mains: string,
               inModuleDir = false): seq[string] =
@@ -112,12 +110,14 @@ proc dImports*(ctx: DCodegenCtx, body, mains: string,
   for lib in ctx.cLibs:
     if not (lib.endsWith(".o") or lib.endsWith(".a") or "/" in lib):
       result.add("pragma(lib, \"" & lib & "\");")
+  if usesSymbol(code, "volatileLoad") or usesSymbol(code, "volatileStore"):
+    result.add("import core.volatile : volatileLoad, volatileStore;")
   var stdioSyms: seq[string]
   for sym in ["writeln", "stderr"]:
     if usesSymbol(code, sym): stdioSyms.add(sym)
   if stdioSyms.len > 0:
     result.add("import std.stdio : " & stdioSyms.join(", ") & ";")
-  result.add(ctx.moduleImports(code, inModuleDir))
+  result.add(ctx.moduleImports())
   # `impl: d "..."` modules — a bare module name, unlike Nim's/Odin's own
   # relative-path imports, so tuck.nim's build step resolves it with an
   # extra dmd `-I` rather than anything rebased or copied here.
@@ -127,11 +127,9 @@ proc dImports*(ctx: DCodegenCtx, body, mains: string,
 
 proc slabReports(ctx: DCodegenCtx, m: Module): string =
   for s in reportedSlabs(m, ctx.realModules):
-    let pre = if s.origin == "": "" else: dAlias(s.origin) & "."
-    result.add("    rt.tuckSlabReport(" & pre & s.name & ");\n")
+    result.add("    rt.tuckSlabReport(" & ctx.pkgQualifierD(s.origin) & s.name & ");\n")
   for s in allSlabs(m, ctx.realModules):
-    let pre = if s.origin == "": "" else: dAlias(s.origin) & "."
-    result.add("    rt.tuckSlabRelease(" & pre & s.name & ");\n")
+    result.add("    rt.tuckSlabRelease(" & ctx.pkgQualifierD(s.origin) & s.name & ");\n")
 
 proc actorFieldReleases(ctx: DCodegenCtx, m: Module): string =
   ## Every actor's owned fields, handed back at exit under `-version=
@@ -169,9 +167,9 @@ proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
   # anything can raise: each such module's own, then this module's.
   var register = ""
   for p in registerModules(m, ctx.realModules):
-    register.add("    " & dAlias(p) & "." & RegisterProc & "();\n")
+    register.add("    " & ctx.pkgQualifierD(p) & RegisterProc & "();\n")
   if registersAnything(m): register.add("    " & RegisterProc & "();\n")
-  let boot = register & dBootSequence(m, ctx.realModules, hasTasks)
+  let boot = register & dBootSequence(ctx, m, ctx.realModules, hasTasks)
   # Drive the loop only when TASKS exist. Actors are daemons whose drain
   # loops never finish, so running the scheduler for them after main would
   # spin forever — main owns the lifecycle and ends the program itself.
@@ -201,14 +199,23 @@ proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
   else:
     result = "void main" & head & drive & "}\n"
 
+proc emitDShapes*(pool: ShapePool): string =
+  ## The generated module holding the program's record shapes (ShapesModule),
+  ## or "" when no module asked for one.
+  if pool == nil or pool.defs.len == 0: return ""
+  result = "module mod_" & pool.module & ";\n\n"
+  for _, def in pool.defs: result.add(def & "\n\n")
+
 proc emitDModule*(name: string, m: Module, res: Resolution,
-                  realModules = initTable[string, Module]()): string =
+                  realModules = initTable[ModuleId, Module](),
+                  shapes: ShapePool = nil): string =
   ## A library module (import target): file mod_<name>.d, module mod_<name>.
   ## The import alias at the use site keeps the Tuck name, so calls read
   ## `console.printLine` — and the mod_ prefix keeps a Tuck module called
   ## `std` or `core` from colliding with D's own top-level packages.
-  let alias = dAlias(name)
-  var ctx = newDCtx(m, realModules, name, res, modPrefix = alias & "_")
+  let alias = name.replace("-", "_")
+  var ctx = newDCtx(m, realModules, name, res, modPrefix = alias & "_",
+                    shapes = shapes)
   var (body, _) = ctx.emitDBody(m)
   if hasRunningActors(m): body.add(ctx.genDActorsBoot(m) & "\n")
   result = "module mod_" & alias & ";\n\n"
@@ -221,19 +228,22 @@ proc emitDModule*(name: string, m: Module, res: Resolution,
   result.add(body)
 
 proc emitD*(m: Module, res: Resolution,
-            realModules = initTable[string, Module](),
-            moduleName = "main"): string =
+            realModules = initTable[ModuleId, Module](),
+            moduleName = "main", shapes: ShapePool = nil): string =
   ## The entry module: declarations, then D's own `main` calling tuck_main.
   ## `res` is the semantic layer typechecking produced. Taking it as an
   ## argument is the point: this stage cannot run before the one that fills
   ## it, and now the signature says so instead of a comment on checkOrDie.
-  var ctx = newDCtx(m, realModules, moduleName, res)
+  var ctx = newDCtx(m, realModules, moduleName, res, shapes = shapes)
   let (body, mains) = ctx.emitDBody(m)
   result = "module " & dModuleName(moduleName) & ";\n\n"
+  # The entry point qualifies through modules too (boot, register, slabs), so
+  # it is written before the import list that names them.
+  let entry = ctx.genDEntryPoint(m, mains)
   let imports = ctx.dImports(body, mains)
   if imports.len > 0:
     result.add(imports.join("\n") & "\n\n")
   for h in ctx.hoisted:
     result.add(h & "\n\n")
   result.add(body)
-  result.add(ctx.genDEntryPoint(m, mains))
+  result.add(entry)

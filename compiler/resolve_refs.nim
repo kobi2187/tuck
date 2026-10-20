@@ -136,10 +136,23 @@ proc resolveRefsIn(e: Expr) =
     return
   for s in e.childSlots: s = resolveVarSlot(s)
 
+proc bindModules*(prog: seq[LoadedModule]) =
+  ## Number the program's modules and point every reference to one at its id:
+  ## an `import` at the module it loads, a `mod::name` at the module it
+  ## reaches. Names stay for diagnostics; everything after this reads the id.
+  for lm in prog: discard moduleId(lm.name)
+  for lm in prog:
+    for d in lm.m.decls(dkImport): d.importTarget = knownModule(d.name)
+    for body in lm.m.bodies:
+      for n in body.nodes:
+        if n.kind == exkQualified and n.modulePath.len > 0:
+          n.qualModule = knownModule(n.modulePath[0])
+
 proc resolveDeclRefs*(prog: seq[LoadedModule]) =
   ## Entry point: build the five whole-program name tables, then rewrite
   ## every matching bare reference across every module's fn/task/const
   ## bodies. Run once, after load + injectImportedTypes, before typecheck.
+  bindModules(prog)
   collectNames(prog)
   for lm in prog:
     # Every body, as a SLOT: a body that is itself a bare name (an actor

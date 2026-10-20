@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (4)
+## A. Open bugs (0)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -36,8 +36,8 @@ it in.
 - **A49 — a bare record literal returned as a named invariant type.**
   `fn make(..) -> Pos: return {n: n}` checks OK; the Nim build fails because the
   validator is handed an unnamed tuple. Same class as TK-TY45 (#127), at the
-  return position. Fix shape: the checker either names the literal from the
-  return type or refuses it, as it now does for a variable.
+  return position. Ruled: the constructor is written out, so the checker refuses
+  the bare literal (TK-TY45). Fixed.
 - **A50 — `std/random` has no Odin or D runtime.** `newDice`, `newDiceFromOs`,
   `rollRange` exist in `tuck_rt.nim` only; "check OK" does not mean every
   backend builds. A scan of every `std` extern against the three runtimes finds
@@ -46,6 +46,78 @@ it in.
 - **A51 — the minimum of a signed type cannot be written.** `-128` for `i8` is
   "128 does not fit i8": the minus applies after the range check. `core.convert`
   notes the same for `i64` ("no literal spelling").
+
+- **A52 (issue #134) — a `_` arm over a payload sum fails the Odin build.** The
+  emitted `switch v in j` ends in a bare `case:` and Odin reports "Unhandled
+  switch cases"; it needs `#partial switch`. Found writing `std.encoding`
+  (stdlib-project), which is skipped until this is fixed.
+
+- **A53 (issue #135) — a list of integer literals does not adopt the expected
+  element type.** `let ys: Seq[u8] = [1, 2]` is "got Seq[int]", though
+  `let x: u8 = 1` is fine. A table of byte or word constants cannot be written
+  as a list. Found writing `std.crypto` (stdlib-project), skipped until fixed.
+
+- **A54 (issue #136) — a literal pushed onto a `Seq[u8]` binds `T` twice.**
+  `{items: b, value: 27} push` is "bound to both u8 and int": the literal does
+  not adopt the already-bound `T`. Same family as A53. Found writing `std.cli`
+  (stdlib-project), skipped until fixed.
+
+- **A55 (issue #137) — an [io] interface method is not counted as I/O.** A fn
+  without `[io]` that calls one passes the effect check, and a fn with `[io]` that
+  does nothing else gets TK-EF02. Found writing `std.log`.
+- **A56 (issue #138) — `return f.key` from a payload-sum match arm fails the Odin
+  build** ("Cannot assign to 'v.key'"): the moved-from field is cleared through an
+  immutable type-switch capture. Found writing `std.log`.
+
+- **A57 (issue #139) — `x = f(x)` on a Seq in a loop wipes the new value.** The
+  emitter stores the result and then resets the variable as moved-from (Nim
+  `tuckStore(caps, f(tuckMove(caps)))` then `tuckReset(caps)`; Odin trips an
+  index assertion). Found writing `std.regex`'s VM (stdlib-project).
+
+- **A58 (issue #140) — arithmetic on float literals does not adopt `f32`.**
+  `d < 0.5 + 0.25` is "comparison between f32 and f64"; a lone literal and a
+  negative literal are fine. Found writing `platform.dsp`.
+
+- **A59 (issue #141) — a literal in a `send` payload does not adopt the handler's
+  field type.** `W send set {ms: 100}` with `on set({ms: u32})` is "expects u32 but
+  got int"; the same literal in a call is fine. Found writing `platform.watchdog`.
+
+- **A60 (issue #142) — a local reused by name in a later scope inherits the
+  earlier one's ownership state.** A `str?` named `h` in one block and a
+  record named `h` in a later one: the second is pushed and also dropped, so the
+  Seq holds freed strings (Odin segfault; Nim is fine). Found writing
+  `std.net-http`.
+
+- **A61 (issue #143) — the same `let` name in two match arms fails to build on
+  Nim and Odin.** The second is emitted as an assignment to a variable declared
+  in the other arm's scope. Same family as A60. Found writing `sys.process`.
+
+- **A62 (issue #145) — a local record literal assigned over another module's
+  anonymous record fails the Odin build.** `var d = {seed: 7} newDice` then
+  `d = {state: 1, inc: 3}`: each module hoists its own struct for an anonymous
+  record, so Odin sees `TRec_random_state_inc` and `TRec_state_inc`. check and
+  Nim are fine. Found rewriting `std/random` in Tuck.
+  Fixed: a program of several modules declares every record shape once, in a
+  generated module (`tuck_shapes`) the others reach like any module.
+
+- **A63 (issue #146) — a local made from a module const Seq was a move of the
+  const.** `var state = table` emitted `tuckMove(table)`, which Nim refuses.
+  `copiesRead` took a non-local root for a temporary. Fixed: a module const's
+  read copies. Found finishing `std.crypto`.
+
+- **A64 (issue #147) — an index literal adopted the expected type of the place
+  around it.** `{a: m[0], b: 1.0} near` with `a: f32` read the `0` as an `f32`
+  ("index must be int"). Fixed: an index is synthesized under an expected
+  `int`. Found finishing `platform.dsp`.
+
+- **A65 (issue #148) — an `if` with a void call in one branch and an assignment
+  in the other was refused ("void vs unit").** Fixed: both are "no value".
+  Found finishing `std.regex`.
+
+- **A66 (issue #149) — a Tuck module named `fmt` or `os` collided with Odin's
+  core package.** "Redeclaration of 'fmt'" on the Odin build. Fixed: the core
+  packages are imported as `odin_fmt` / `odin_os` when the program has such a
+  module. Found finishing `std.cli`.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so

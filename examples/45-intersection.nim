@@ -1,6 +1,6 @@
 {.experimental: "codeReordering".}
 import "../compiler/tuck_rt"
-import scheduler
+import scheduler as tuckˑmodˑscheduler
 
 proc tuckˑdecisionˑnextPhase*(current: tuckˑtypeˑPhase, demand: tuckˑtypeˑDemand, preempt: bool): tuckˑtypeˑPhase
 proc tuckˑfnˑIntersection_PhaseChanged*(to: uint8): void
@@ -54,31 +54,31 @@ const tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT = 0
 const tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT = 1
 const tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT = 2
 proc tuckˑregisterˑSIGNAL_OUT_NS_GREEN_get*(): bool {.inline.} =
-  (tuckˑregisterˑSIGNAL_OUT[] and (1'u32 shl tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑSIGNAL_OUT) and (1'u32 shl tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT)) != 0
 proc tuckˑregisterˑSIGNAL_OUT_NS_GREEN_set*(value: bool) {.inline.} =
   let mask = 1'u32 shl tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT
-  if value: tuckˑregisterˑSIGNAL_OUT[] = tuckˑregisterˑSIGNAL_OUT[] or mask
-  else: tuckˑregisterˑSIGNAL_OUT[] = tuckˑregisterˑSIGNAL_OUT[] and not mask
+  if value: tuck_rt.tuckVolatileStore(tuckˑregisterˑSIGNAL_OUT, tuck_rt.tuckVolatileLoad(tuckˑregisterˑSIGNAL_OUT) or mask)
+  else: tuck_rt.tuckVolatileStore(tuckˑregisterˑSIGNAL_OUT, tuck_rt.tuckVolatileLoad(tuckˑregisterˑSIGNAL_OUT) and not mask)
 proc tuckˑregisterˑSIGNAL_OUT_EW_GREEN_get*(): bool {.inline.} =
-  (tuckˑregisterˑSIGNAL_OUT[] and (1'u32 shl tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑSIGNAL_OUT) and (1'u32 shl tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT)) != 0
 proc tuckˑregisterˑSIGNAL_OUT_EW_GREEN_set*(value: bool) {.inline.} =
   let mask = 1'u32 shl tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT
-  if value: tuckˑregisterˑSIGNAL_OUT[] = tuckˑregisterˑSIGNAL_OUT[] or mask
-  else: tuckˑregisterˑSIGNAL_OUT[] = tuckˑregisterˑSIGNAL_OUT[] and not mask
+  if value: tuck_rt.tuckVolatileStore(tuckˑregisterˑSIGNAL_OUT, tuck_rt.tuckVolatileLoad(tuckˑregisterˑSIGNAL_OUT) or mask)
+  else: tuck_rt.tuckVolatileStore(tuckˑregisterˑSIGNAL_OUT, tuck_rt.tuckVolatileLoad(tuckˑregisterˑSIGNAL_OUT) and not mask)
 proc tuckˑregisterˑSIGNAL_OUT_WALK_get*(): bool {.inline.} =
-  (tuckˑregisterˑSIGNAL_OUT[] and (1'u32 shl tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑSIGNAL_OUT) and (1'u32 shl tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT)) != 0
 proc tuckˑregisterˑSIGNAL_OUT_WALK_set*(value: bool) {.inline.} =
   let mask = 1'u32 shl tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT
-  if value: tuckˑregisterˑSIGNAL_OUT[] = tuckˑregisterˑSIGNAL_OUT[] or mask
-  else: tuckˑregisterˑSIGNAL_OUT[] = tuckˑregisterˑSIGNAL_OUT[] and not mask
+  if value: tuck_rt.tuckVolatileStore(tuckˑregisterˑSIGNAL_OUT, tuck_rt.tuckVolatileLoad(tuckˑregisterˑSIGNAL_OUT) or mask)
+  else: tuck_rt.tuckVolatileStore(tuckˑregisterˑSIGNAL_OUT, tuck_rt.tuckVolatileLoad(tuckˑregisterˑSIGNAL_OUT) and not mask)
 
 var tuckˑregisterˑDETECT_IN = cast[ptr uint32](0x40011004)
 const tuckˑregisterˑDETECT_IN_NS_LOOP_SHIFT = 0
 const tuckˑregisterˑDETECT_IN_EW_LOOP_SHIFT = 1
 proc tuckˑregisterˑDETECT_IN_NS_LOOP_get*(): bool {.inline.} =
-  (tuckˑregisterˑDETECT_IN[] and (1'u32 shl tuckˑregisterˑDETECT_IN_NS_LOOP_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑDETECT_IN) and (1'u32 shl tuckˑregisterˑDETECT_IN_NS_LOOP_SHIFT)) != 0
 proc tuckˑregisterˑDETECT_IN_EW_LOOP_get*(): bool {.inline.} =
-  (tuckˑregisterˑDETECT_IN[] and (1'u32 shl tuckˑregisterˑDETECT_IN_EW_LOOP_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑDETECT_IN) and (1'u32 shl tuckˑregisterˑDETECT_IN_EW_LOOP_SHIFT)) != 0
 
 type tuckˑregistryˑIntersectionKind* = enum PhaseChanged, Preempted
 type tuckˑregistryˑIntersection* = ref object

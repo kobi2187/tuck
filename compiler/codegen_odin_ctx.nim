@@ -4,6 +4,8 @@
 # lookups. No genOdinExpr/genOdinDecl calls here — pure state and type
 # translation, safe to split from the recursive expression/decl codegen
 # in codegen_odin.nim.
+import shape_pool
+import name_prefix
 import ast, tables, sets, strutils
 import ast_query
 import resolution
@@ -39,7 +41,9 @@ type
                            # copy — what is copied is the copy pass's call
                            # (lowering_seqcopy, movedTransfer)
     errPolicy*: string     # from the errors declaration; "" = strict
-    realModules*: Table[string, Module]  # imported modules emitted as own Odin files
+    realModules*: ModuleMap  # imported modules emitted as own Odin files
+    used*: ModuleUse         # the modules this package reached through: its imports
+    shapes*: ShapePool       # the program's shared record shapes; nil for one module
     staticAsserts*: seq[string]  # collected into one `static this()` block
     actorInits*: seq[string]     # `singleton.field = v`, run by the entry
                                  # point before any actor starts (#87)
@@ -97,9 +101,10 @@ proc recStructName*(ctx: var OdinCodegenCtx, fields: seq[FieldDef]): string =
     typeStrs.add(ctx.odinType(f.typ))
     nameParts.add(f.name)
   let args = "(" & typeStrs.join(", ") & ")"
-  let name = "TRec_" & ctx.modPrefix & nameParts.join("_")
-  if name notin ctx.recShapes:
-    ctx.recShapes[name] = name
+  let pooled = ctx.shapes != nil
+  let name = "TRec_" & (if pooled: "" else: ctx.modPrefix) & nameParts.join("_")
+  let known = if pooled: name in ctx.shapes.defs else: name in ctx.recShapes
+  if not known:
     var params: seq[string]
     for f in fields: params.add("$T_" & f.name)
     var decl: seq[string]
@@ -108,8 +113,15 @@ proc recStructName*(ctx: var OdinCodegenCtx, fields: seq[FieldDef]): string =
     for i, f in fields:
       res.add("\t" & f.name & ": T_" & f.name & ",\n")
     res.add("}")
-    ctx.hoisted.add(res)
-  return name & args
+    if pooled: ctx.shapes.defs[name] = res
+    else:
+      ctx.recShapes[name] = name
+      ctx.hoisted.add(res)
+  # In a program of several modules every shape lives in one module, so two
+  # modules naming a shape name one type.
+  let home = if pooled: ctx.used.moduleQualifier(ctx.module.id, moduleId(ctx.shapes.module))
+             else: ""
+  return home & name & args
 
 proc isOddBitWidth*(name: string): bool =
   ## `u2`, `u12` — a width a decision table produced that no machine type has.
@@ -125,20 +137,21 @@ proc roundedIntType*(name: string): string =
   elif bits <= 32: base & "32"
   else: base & "64"
 
+proc pkgQualifier*(ctx: OdinCodegenCtx, id: ModuleId): string =
+  ## `<alias>.` for something module `id` declares, "" when it is this module's
+  ## own. The header imports exactly the modules asked for here
+  ## (codegen_odin_emit.moduleImports), so a name and its import cannot disagree.
+  ctx.used.moduleQualifier(ctx.module.id, id)
+
 proc importedTypeQualifier*(ctx: OdinCodegenCtx, name: string): string =
   ## `pkg.Name` for a type another module declares, else `Name`.
-  let origin = moduleDeclaringType(ctx.module, name)
-  let pkg = origin.replace("-", "_")
-  if origin != "" and pkg != ctx.moduleName.replace("-", "_"): pkg & "." & name
-  else: name
+  ctx.pkgQualifier(moduleDeclaringType(ctx.module, name)) & name
 
 proc importPrefix*(ctx: OdinCodegenCtx, name: string): string =
   ## `pkg.` when another module declares the type, object or interface
   ## `name` (R11), else "" — for the names derived from it (`<I>Tag`,
   ## `__validated_<T>`) that `importedTypeQualifier` cannot look up.
-  let origin = moduleDeclaringType(ctx.module, name)
-  let pkg = origin.replace("-", "_")
-  if origin != "" and pkg != ctx.moduleName.replace("-", "_"): pkg & "." else: ""
+  ctx.pkgQualifier(moduleDeclaringType(ctx.module, name))
 
 proc validatorName*(ctx: OdinCodegenCtx, typeName: string): string =
   ## The proc that validates an invariant-carrying type, qualified with its
@@ -157,10 +170,7 @@ proc qualifyEnumOwner*(ctx: OdinCodegenCtx, owner: string): string =
   ## origin to look up is that name minus the suffix.
   let typeName = if owner.endsWith("Kind"): owner[0 ..< owner.len - 4]
                  else: owner
-  let origin = moduleDeclaringType(ctx.module, typeName)
-  if origin.len == 0: return owner
-  let pkg = origin.replace("-", "_")
-  if pkg == ctx.moduleName.replace("-", "_"): owner else: pkg & "." & owner
+  ctx.pkgQualifier(moduleDeclaringType(ctx.module, typeName)) & owner
 
 proc odinNamedFallback*(ctx: OdinCodegenCtx, t: Type): string =
   ## A name the primitive table did not cover.
@@ -169,7 +179,7 @@ proc odinNamedFallback*(ctx: OdinCodegenCtx, t: Type): string =
   else:
     # An Array size naming an imported const (R11, A33).
     let co = constOrigin(ctx.module, ctx.realModules, t.name)
-    if co != "": co.replace("-", "_") & "." & t.name
+    if co != NoModule: ctx.pkgQualifier(co) & t.name
     else: ctx.importedTypeQualifier(t.name)
 
 proc odinTupleType*(ctx: var OdinCodegenCtx, t: Type): string =
@@ -333,28 +343,30 @@ proc genQualified*(ctx: OdinCodegenCtx, e: Expr): string =
     # has to be resolved here. Local declarations win; only a name this
     # module does not declare is searched for among the imports.
     if not ctx.module.declaresFn(e.qualName):
-      for modName, im in ctx.realModules:
+      for id, im in ctx.realModules:
         if im.declaresFn(e.qualName):
-          return modName.replace("-", "_") & "." & e.qualName
+          return ctx.pkgQualifier(id) & e.qualName
     # Not found anywhere (a bare fn reference like `:plus`, a local, or a
     # builtin): the name stands alone. Prefixing an empty module produced
     # `_plus`, an undeclared name.
     return e.qualName
-  elif modName in ctx.realModules: return modName.replace("-", "_") & "." & e.qualName
+  elif e.qualModule in ctx.realModules:
+    return ctx.pkgQualifier(e.qualModule) & e.qualName
   else: return modName & "_" & e.qualName
 
 proc satisfiersOf*(ctx: OdinCodegenCtx, iface: string): seq[Decl] =
   ## Whole-program satisfier set — see codegen_common.satisfiersOf.
   satisfiersOf(ctx.module, ctx.realModules, iface)
 
-proc newOdinCtx*(m: Module, realModules: Table[string, Module],
+proc newOdinCtx*(m: Module, realModules: ModuleMap,
                 moduleName: string, res: Resolution,
-                modPrefix = ""): OdinCodegenCtx =
+                modPrefix = "", shapes: ShapePool = nil): OdinCodegenCtx =
   ## indent 0: Odin declarations are top-level in a package, with no enclosing
   ## class around them.
   result = OdinCodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m,
                           realModules: realModules, moduleName: moduleName,
-                          modPrefix: modPrefix, res: res)
+                          modPrefix: modPrefix, res: res,
+                          used: newModuleUse(), shapes: shapes)
   for d in m.decls:
     if d != nil and d.kind == dkErrors:
       result.errPolicy = d.policyName

@@ -1,20 +1,21 @@
 module _24_stdlib;
 
 import rt = tuck_rt;
-import fs = mod_fs;
-import console = mod_console;
+import tuckˑmodˑconsole = mod_console;
+import tuckˑmodˑfs = mod_fs;
+import tuckˑmodˑshapes_24_stdlib = mod_shapes_24_stdlib;
 
 void tuckˑfnˑmain() {
-    rt.TuckResult!(rt.TuckUnit) tuckˑvˑw = fs.writeFile("/tmp/tuck-demo.txt", "hello from tuck");
+    rt.TuckResult!(rt.TuckUnit) tuckˑvˑw = tuckˑmodˑfs.writeFile("/tmp/tuck-demo.txt", "hello from tuck");
     if ((tuckˑvˑw.status == rt.TuckStatus.Ok)) {
-        rt.TuckResult!(fs.TRec_fs_content!(string)) tuckˑvˑr = fs.readFile("/tmp/tuck-demo.txt");
+        rt.TuckResult!(tuckˑmodˑshapes_24_stdlib.TRec_content!(string)) tuckˑvˑr = tuckˑmodˑfs.readFile("/tmp/tuck-demo.txt");
         scope(exit) rt.tuckDrop(tuckˑvˑr);
         if ((tuckˑvˑr.status == rt.TuckStatus.Ok)) {
-            console.printLine(tuckˑvˑr.value.content);
+            tuckˑmodˑconsole.printLine(tuckˑvˑr.value.content);
             return;
         }
     }
-    console.printLine("stdlib demo failed");
+    tuckˑmodˑconsole.printLine("stdlib demo failed");
 }
 
 int main(string[] args) {

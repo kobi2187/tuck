@@ -1009,3 +1009,23 @@ two fixed arrays, not the extra load: with them off it is as fast or faster.
 Those indices are in range by construction (a shift and a mask of an index
 the slab has already checked against its length), so the runtime's accessor
 skips them and the second level costs nothing measurable.
+
+## Emit time against the number of types (#23), 2026-10-19
+
+`tuck c` wall clock over `n` trivial types (`type Tn: an: int`), best of one run,
+no host compiler. Measured at `n` doubling, so a quadratic curve reads as ~4x a step.
+
+| n | nim before | odin before | d before | nim after | odin after | d after |
+|---|---|---|---|---|---|---|
+| 1000 | 0.21s | 0.29s | 0.19s | 0.12s | 0.10s | 0.09s |
+| 2000 | 0.48s | 0.92s | 0.53s | 0.20s | 0.18s | 0.17s |
+| 4000 | 1.57s | 2.17s | 1.50s | 0.44s | 0.40s | 0.39s |
+| 16000 | — | — | — | 2.06s | 2.08s | 2.22s |
+
+The cause was not in the emitters: `decl_index.buildDeclIndex`, the cache that
+exists to avoid scanning the declaration list, scanned it twice per type itself
+(`hasInvariants`, `saturatingType` each call `findDecl`), so building the index
+was quadratic on every backend. It now reads the answers off the declaration
+it is already visiting. Odin's `genRecordType` also built a throwaway context
+per type, and a context holds its module by value, so each one copied every
+declaration; it is now built only for a type that has an invariant.

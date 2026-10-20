@@ -94,33 +94,33 @@ var tuckˑregisterˑDAC_CR = cast[ptr uint32](0x40007400)
 const tuckˑregisterˑDAC_CR_EN_SHIFT = 0
 const tuckˑregisterˑDAC_CR_BOFF_SHIFT = 1
 proc tuckˑregisterˑDAC_CR_EN_get*(): bool {.inline.} =
-  (tuckˑregisterˑDAC_CR[] and (1'u32 shl tuckˑregisterˑDAC_CR_EN_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑDAC_CR) and (1'u32 shl tuckˑregisterˑDAC_CR_EN_SHIFT)) != 0
 proc tuckˑregisterˑDAC_CR_EN_set*(value: bool) {.inline.} =
   let mask = 1'u32 shl tuckˑregisterˑDAC_CR_EN_SHIFT
-  if value: tuckˑregisterˑDAC_CR[] = tuckˑregisterˑDAC_CR[] or mask
-  else: tuckˑregisterˑDAC_CR[] = tuckˑregisterˑDAC_CR[] and not mask
+  if value: tuck_rt.tuckVolatileStore(tuckˑregisterˑDAC_CR, tuck_rt.tuckVolatileLoad(tuckˑregisterˑDAC_CR) or mask)
+  else: tuck_rt.tuckVolatileStore(tuckˑregisterˑDAC_CR, tuck_rt.tuckVolatileLoad(tuckˑregisterˑDAC_CR) and not mask)
 proc tuckˑregisterˑDAC_CR_BOFF_get*(): bool {.inline.} =
-  (tuckˑregisterˑDAC_CR[] and (1'u32 shl tuckˑregisterˑDAC_CR_BOFF_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑDAC_CR) and (1'u32 shl tuckˑregisterˑDAC_CR_BOFF_SHIFT)) != 0
 proc tuckˑregisterˑDAC_CR_BOFF_set*(value: bool) {.inline.} =
   let mask = 1'u32 shl tuckˑregisterˑDAC_CR_BOFF_SHIFT
-  if value: tuckˑregisterˑDAC_CR[] = tuckˑregisterˑDAC_CR[] or mask
-  else: tuckˑregisterˑDAC_CR[] = tuckˑregisterˑDAC_CR[] and not mask
+  if value: tuck_rt.tuckVolatileStore(tuckˑregisterˑDAC_CR, tuck_rt.tuckVolatileLoad(tuckˑregisterˑDAC_CR) or mask)
+  else: tuck_rt.tuckVolatileStore(tuckˑregisterˑDAC_CR, tuck_rt.tuckVolatileLoad(tuckˑregisterˑDAC_CR) and not mask)
 
 var tuckˑregisterˑDMA1_CH3 = cast[ptr uint32](0x40020030)
 const tuckˑregisterˑDMA1_CH3_EN_SHIFT = 0
 const tuckˑregisterˑDMA1_CH3_TCIE_SHIFT = 1
 proc tuckˑregisterˑDMA1_CH3_EN_get*(): bool {.inline.} =
-  (tuckˑregisterˑDMA1_CH3[] and (1'u32 shl tuckˑregisterˑDMA1_CH3_EN_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑDMA1_CH3) and (1'u32 shl tuckˑregisterˑDMA1_CH3_EN_SHIFT)) != 0
 proc tuckˑregisterˑDMA1_CH3_EN_set*(value: bool) {.inline.} =
   let mask = 1'u32 shl tuckˑregisterˑDMA1_CH3_EN_SHIFT
-  if value: tuckˑregisterˑDMA1_CH3[] = tuckˑregisterˑDMA1_CH3[] or mask
-  else: tuckˑregisterˑDMA1_CH3[] = tuckˑregisterˑDMA1_CH3[] and not mask
+  if value: tuck_rt.tuckVolatileStore(tuckˑregisterˑDMA1_CH3, tuck_rt.tuckVolatileLoad(tuckˑregisterˑDMA1_CH3) or mask)
+  else: tuck_rt.tuckVolatileStore(tuckˑregisterˑDMA1_CH3, tuck_rt.tuckVolatileLoad(tuckˑregisterˑDMA1_CH3) and not mask)
 proc tuckˑregisterˑDMA1_CH3_TCIE_get*(): bool {.inline.} =
-  (tuckˑregisterˑDMA1_CH3[] and (1'u32 shl tuckˑregisterˑDMA1_CH3_TCIE_SHIFT)) != 0
+  (tuck_rt.tuckVolatileLoad(tuckˑregisterˑDMA1_CH3) and (1'u32 shl tuckˑregisterˑDMA1_CH3_TCIE_SHIFT)) != 0
 proc tuckˑregisterˑDMA1_CH3_TCIE_set*(value: bool) {.inline.} =
   let mask = 1'u32 shl tuckˑregisterˑDMA1_CH3_TCIE_SHIFT
-  if value: tuckˑregisterˑDMA1_CH3[] = tuckˑregisterˑDMA1_CH3[] or mask
-  else: tuckˑregisterˑDMA1_CH3[] = tuckˑregisterˑDMA1_CH3[] and not mask
+  if value: tuck_rt.tuckVolatileStore(tuckˑregisterˑDMA1_CH3, tuck_rt.tuckVolatileLoad(tuckˑregisterˑDMA1_CH3) or mask)
+  else: tuck_rt.tuckVolatileStore(tuckˑregisterˑDMA1_CH3, tuck_rt.tuckVolatileLoad(tuckˑregisterˑDMA1_CH3) and not mask)
 
 var tuckˑpoolˑBufferPool* = ObjectPool[array[512, uint8], 4]()
 proc tuckˑtaskˑstreamReader*(streamId: uint8, chunks: seq[uint32]): TuckResult[tuple[]] =

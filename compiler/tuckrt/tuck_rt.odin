@@ -23,6 +23,7 @@ import "core:mem"
 import "core:strings"
 import "core:sys/linux"
 import "core:time"
+import "core:crypto"
 
 // !T is a result, ?T is an option: absence is a first-class state, not a
 // reserved error code. !T uses Ok/Err, ?T uses Ok/Absent, !?T may be any.
@@ -629,6 +630,18 @@ sqrt :: proc(value: f64) -> f64 {
 
 pow :: proc(base, exp: f64) -> f64 {
 	return math.pow(base, exp)
+}
+
+sin :: proc(value: f64) -> f64 {
+	return math.sin(value)
+}
+
+cos :: proc(value: f64) -> f64 {
+	return math.cos(value)
+}
+
+ln :: proc(value: f64) -> f64 {
+	return math.ln(value)
 }
 
 // std/hash — FNV-1a, 64-bit. Same algorithm as errCode above (32-bit,
@@ -1856,6 +1869,17 @@ exit :: proc(code: int) {
 }
 
 // --- std/time ---
+
+OsSeed :: struct {
+	seed: u64,
+}
+
+// std/random's one shim: eight bytes of the operating system's entropy.
+osSeed :: proc() -> OsSeed {
+	buf: [8]u8
+	crypto.rand_bytes(buf[:])
+	return OsSeed{seed = (^u64)(&buf[0])^}
+}
 
 nowMs :: proc() -> NowMs {
 	return NowMs{ms = u64(time.to_unix_nanoseconds(time.now()) / 1_000_000)}

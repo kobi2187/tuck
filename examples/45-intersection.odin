@@ -2,6 +2,7 @@
 package main
 
 import "core:os"
+import "base:intrinsics"
 import rt "./tuckrt"
 
 tuckˑregisterˑSIGNAL_OUT := cast(^u32)(uintptr(0x40011000))
@@ -9,35 +10,35 @@ tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT :: 0
 tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT :: 1
 tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT :: 2
 tuckˑregisterˑSIGNAL_OUT_NS_GREEN_get :: proc() -> bool {
-	return (tuckˑregisterˑSIGNAL_OUT^ & (u32(1) << u32(tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑSIGNAL_OUT) & (u32(1) << u32(tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT))) != 0
 }
 tuckˑregisterˑSIGNAL_OUT_NS_GREEN_set :: proc(on: bool) {
 	mask := u32(1) << u32(tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT)
-	if on { tuckˑregisterˑSIGNAL_OUT^ |= mask } else { tuckˑregisterˑSIGNAL_OUT^ &~= mask }
+	if on { intrinsics.volatile_store(tuckˑregisterˑSIGNAL_OUT, intrinsics.volatile_load(tuckˑregisterˑSIGNAL_OUT) | mask) } else { intrinsics.volatile_store(tuckˑregisterˑSIGNAL_OUT, intrinsics.volatile_load(tuckˑregisterˑSIGNAL_OUT) &~ mask) }
 }
 tuckˑregisterˑSIGNAL_OUT_EW_GREEN_get :: proc() -> bool {
-	return (tuckˑregisterˑSIGNAL_OUT^ & (u32(1) << u32(tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑSIGNAL_OUT) & (u32(1) << u32(tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT))) != 0
 }
 tuckˑregisterˑSIGNAL_OUT_EW_GREEN_set :: proc(on: bool) {
 	mask := u32(1) << u32(tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT)
-	if on { tuckˑregisterˑSIGNAL_OUT^ |= mask } else { tuckˑregisterˑSIGNAL_OUT^ &~= mask }
+	if on { intrinsics.volatile_store(tuckˑregisterˑSIGNAL_OUT, intrinsics.volatile_load(tuckˑregisterˑSIGNAL_OUT) | mask) } else { intrinsics.volatile_store(tuckˑregisterˑSIGNAL_OUT, intrinsics.volatile_load(tuckˑregisterˑSIGNAL_OUT) &~ mask) }
 }
 tuckˑregisterˑSIGNAL_OUT_WALK_get :: proc() -> bool {
-	return (tuckˑregisterˑSIGNAL_OUT^ & (u32(1) << u32(tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑSIGNAL_OUT) & (u32(1) << u32(tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT))) != 0
 }
 tuckˑregisterˑSIGNAL_OUT_WALK_set :: proc(on: bool) {
 	mask := u32(1) << u32(tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT)
-	if on { tuckˑregisterˑSIGNAL_OUT^ |= mask } else { tuckˑregisterˑSIGNAL_OUT^ &~= mask }
+	if on { intrinsics.volatile_store(tuckˑregisterˑSIGNAL_OUT, intrinsics.volatile_load(tuckˑregisterˑSIGNAL_OUT) | mask) } else { intrinsics.volatile_store(tuckˑregisterˑSIGNAL_OUT, intrinsics.volatile_load(tuckˑregisterˑSIGNAL_OUT) &~ mask) }
 }
 
 tuckˑregisterˑDETECT_IN := cast(^u32)(uintptr(0x40011004))
 tuckˑregisterˑDETECT_IN_NS_LOOP_SHIFT :: 0
 tuckˑregisterˑDETECT_IN_EW_LOOP_SHIFT :: 1
 tuckˑregisterˑDETECT_IN_NS_LOOP_get :: proc() -> bool {
-	return (tuckˑregisterˑDETECT_IN^ & (u32(1) << u32(tuckˑregisterˑDETECT_IN_NS_LOOP_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑDETECT_IN) & (u32(1) << u32(tuckˑregisterˑDETECT_IN_NS_LOOP_SHIFT))) != 0
 }
 tuckˑregisterˑDETECT_IN_EW_LOOP_get :: proc() -> bool {
-	return (tuckˑregisterˑDETECT_IN^ & (u32(1) << u32(tuckˑregisterˑDETECT_IN_EW_LOOP_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑDETECT_IN) & (u32(1) << u32(tuckˑregisterˑDETECT_IN_EW_LOOP_SHIFT))) != 0
 }
 
 tuckˑregistryˑIntersectionKind :: enum { PhaseChanged, Preempted }

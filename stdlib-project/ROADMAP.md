@@ -36,9 +36,15 @@ blocks compile in. Without the flag nothing changes: the blessed `std/` is used.
 
 | Tier | Module | Tuck | Nim | Odin | D |
 |---|---|---|---|---|---|
-| core | array, cmp, convert, hash, iter, num, str (`text`) | yes | pass | pass | not run |
-| alloc | deque, list, map, set, string, vec | yes | pass | pass | not run |
-| core | types, slice, fmt, mem, ptr, atomic, sync-cell, error, simd, geom | no | | | |
+| core | array, cmp, convert, error, fmt, geom, hash, iter, num, str (`text`), types | yes | pass | pass | pass |
+| platform | power (sleep depths, wake sources), boot (regions, lookup, overlap) | yes | pass | pass | pass |
+| sys | env (defaults, PATH split, `$VAR` expansion) | yes | pass | pass | pass |
+| std | math (Decimal, statistics, float functions), chrono (pure calendar; no zone database), perf (stopwatch, counter, histogram), testing (results, report), i18n (case folding, edit distance, words, graphemes, Latin-1 normalization), queue (append-only log over std/fs) | yes | pass | pass | pass |
+| alloc | deque, list, map, set, string, vec | yes | pass | pass | pass |
+| std | encoding (JSON print/access; parser, base64, CSV not started), crypto (SHA-256, HMAC-SHA256, constant-time compare), log (formats, levels, `ConsoleSink`), regex (parser, compiler, backtracking VM, find/replace/split/glob), net-http (URLs, percent-encoding, queries, request/response text, headers, cookies), cli (command tree, parser, usage, table, ANSI) | partial | pass | pass | pass |
+| platform | dsp (biquad, moving average, RMS), watchdog (actor: configure, start, feed, check, stop) | yes | pass | pass | pass |
+| sys | process (`ExitStatus`, `statusOf`, `run` over `runCommand`) | yes | pass | pass | pass |
+| core | slice, mem (designs say fold away); ptr, atomic, sync-cell, simd | no | | | |
 | alloc | allocator, box, rc, fmt | no | | | |
 | sys, std, platform | everything else | no | | | |
 
@@ -50,13 +56,21 @@ blocks compile in. Without the flag nothing changes: the blessed `std/` is used.
 | `alloc.deque` did not check: a local stated `Seq[T]` inside a generic fn lost its `T`, so `{items: xs} Ring` said "cannot infer generic parameter 'T'" | the checker (`bodyGenerics`) |
 | `core.str.text.split` crashed on Odin when called from another module with a literal: the callee frees its text, and the importer read an imported fn as body-less so never made the argument an owned copy | the ownership pass (`Resolution.fnBodies`) |
 | a module imported by file name could not be selected | the flag itself |
+| list literals, generic payload literals, float-literal arithmetic and `send` payload literals did not adopt the expected width (#135, #136, #140, #141) | the checker |
+| `x = f(x)` wiped the variable; sibling-scope locals shared an ownership fate; a `let` repeated across match arms did not build (#139, #142, #143) | the ownership pass and the emitters |
+| a module named `fmt` collided with Odin's `core:fmt` (#149); a local made from a const Seq moved the const (#146); an index literal took the float type around it (#147); `if` with a void call and an assignment (#148) | the Odin emitter, the ownership pass, the checker |
 
 Regression guards for the two compiler fixes are in `tests/suites/known_bugs.nim`.
 
+## Skipped modules
+None. Every module that was set aside for a compiler bug has been finished, and the
+bugs are fixed (`known_bugs.nim` A48-A66; one is still open, #145). Not started inside the
+finished modules: `std.cli` prompts and progress (host-backed), `std.encoding` parser,
+base64 and CSV.
+
 ## Next, in order
 
-1. **D backend.** Run each module's checks under D wherever `dmd` is installed (the
-   harness's `hostRuns` already knows how); CI has D 2.112.0. Expect findings.
+1. **D backend** runs every module's checks too (`tests/suites/stdlib_project.nim`, where `dmd` is installed; CI has D 2.112.0). Keep it green as modules are added.
 2. **Layer-0 gaps** the existing modules already want: `core.fmt` (the string-building
    pieces `alloc.string` stands in for), `core.error`, then `core.slice`/`core.mem`.
    Build order follows `stdlib-layers.md`: lowest layer first.

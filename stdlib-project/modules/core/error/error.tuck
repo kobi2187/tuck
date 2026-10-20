@@ -1,0 +1,67 @@
+# core.error — the small error vocabulary the freestanding tier shares.
+#
+# Most of what an error module usually holds is the language: `!T` fallible
+# returns, `[error: ...]` enums, `?T` for absence. A pure fn cannot return `!T`
+# at all (it must be [io]), so `core` reports failure with `?T` or documents a
+# call-site precondition. What survives is one enum, a source position, and the
+# questions a caller asks about an error.
+#
+# Chaining a cause onto an error has no Tuck answer yet (an `err` raises a
+# variant of a declared enum; there is no field to hang a cause on). That is
+# an open design question, not a gap this module papers over.
+
+import str
+
+type Where:
+  line: u32
+  column: u32
+  offset: int
+
+type CoreError:
+  | Invalid
+  | OutOfRange
+  | Unsupported
+
+# Could asking again plausibly succeed? Of these three, none: each says the
+# request itself was wrong. A kind that is about the world, not the request,
+# earns `true` when it is added.
+fn worthRetrying({e: CoreError}) -> bool:
+  match e:
+    Invalid: return false
+    OutOfRange: return false
+    Unsupported: return false
+
+fn describe({e: CoreError}) -> str:
+  match e:
+    Invalid: return "invalid"
+    OutOfRange: return "out of range"
+    Unsupported: return "unsupported"
+
+# "line:column" for a message.
+fn whereText({at: Where}) -> str:
+  let l = {value: at.line} toStr
+  let c = {value: at.column} toStr
+  return l + ":" + c
+
+fn checkDescribe() -> int:
+  if {e: CoreError.Invalid} describe != "invalid":
+    return 1
+  if {e: CoreError.OutOfRange} describe != "out of range":
+    return 2
+  if {e: CoreError.Unsupported} describe != "unsupported":
+    return 3
+  if {e: CoreError.Invalid} worthRetrying:
+    return 4
+  return 0
+
+fn checkWhere() -> int:
+  let at = {line: 3, column: 14, offset: 40} Where
+  if {at: at} whereText != "3:14":
+    return 5
+  return 0
+
+fn main() -> int:
+  let d = checkDescribe
+  if d != 0:
+    return d
+  return checkWhere

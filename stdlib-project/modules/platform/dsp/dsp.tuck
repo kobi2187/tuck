@@ -1,0 +1,125 @@
+# platform.dsp — small signal-processing building blocks in f32.
+#
+# A filter carries state, and a parameter cannot be written through (TK-TY15),
+# so each step returns the updated filter alongside the output sample. That is
+# the value-semantics cost for the hottest loop in this tier; an `object` with
+# `self ..field` is the alternative when a loop is measured to need it.
+#
+# Not here: FFT and matrix maths. They were never exercised by an application,
+# so translating them would add surface without evidence.
+import seq
+import math
+
+# Direct form II transposed. `z1`/`z2` are the two delay elements.
+type Biquad:
+  b0: f32
+  b1: f32
+  b2: f32
+  a1: f32
+  a2: f32
+  z1: f32
+  z2: f32
+
+type Step:
+  f: Biquad
+  y: f32
+
+# A filter with no memory yet.
+fn biquad({b0: f32, b1: f32, b2: f32, a1: f32, a2: f32}) -> Biquad:
+  return {b0: b0, b1: b1, b2: b2, a1: a1, a2: a2, z1: 0.0, z2: 0.0} Biquad
+
+fn biquadStep({f: Biquad, x: f32}) -> Step:
+  let y = f.b0 * x + f.z1
+  let z1 = f.b1 * x - f.a1 * y + f.z2
+  let z2 = f.b2 * x - f.a2 * y
+  let next = {b0: f.b0, b1: f.b1, b2: f.b2, a1: f.a1, a2: f.a2, z1: z1, z2: z2} Biquad
+  return {f: next, y: y} Step
+
+# The whole signal through a filter, output sample for sample.
+fn biquadRun({f: Biquad, samples: Seq[f32]}) -> Seq[f32]:
+  var out: Seq[f32] = []
+  var state = f
+  for i in 0 .. samples.len - 1:
+    let s = {f: state, x: samples[i]} biquadStep
+    state = s.f
+    out = {items: out, value: s.y} push
+  return out
+
+# Mean of the last `window` samples (fewer at the start, where fewer exist).
+fn movingAverage({samples: Seq[f32], window: int}) -> Seq[f32]:
+  var out: Seq[f32] = []
+  var sum: f32 = 0.0
+  for i in 0 .. samples.len - 1:
+    sum = sum + samples[i]
+    if i >= window:
+      sum = sum - samples[i - window]
+    var n = i + 1
+    if n > window:
+      n = window
+    let mean = sum /f {value: n} f32
+    out = {items: out, value: mean} push
+  return out
+
+fn rmsOf({samples: Seq[f32]}) -> f32:
+  if samples.len == 0:
+    return 0.0
+  var acc: f32 = 0.0
+  for i in 0 .. samples.len - 1:
+    acc = acc + samples[i] * samples[i]
+  let mean = acc /f {value: samples.len} f32
+  let wide = {value: mean} f64
+  let root = {value: wide} sqrt
+  return {value: root} f32
+
+fn near({a: f32, b: f32}) -> bool:
+  let d = a - b
+  return d < 0.0001 and d > -0.0001
+
+fn checkAverage() -> int:
+  let xs: Seq[f32] = [1.0, 2.0, 3.0, 4.0, 5.0]
+  let m = {samples: xs, window: 2} movingAverage
+  if m.len != 5:
+    return 1
+  if not {a: m[0], b: 1.0} near or not {a: m[1], b: 1.5} near:
+    return 2
+  if not {a: m[4], b: 4.5} near:
+    return 3
+  return 0
+
+fn checkRms() -> int:
+  let xs: Seq[f32] = [3.0, 4.0]
+  let r = {samples: xs} rmsOf
+  if not {a: r, b: 3.5355339} near:
+    return 4
+  let empty: Seq[f32] = []
+  if {samples: empty} rmsOf != 0.0:
+    return 5
+  return 0
+
+fn checkBiquad() -> int:
+  # A pass-through filter (b0 = 1, the rest 0) returns its input unchanged.
+  let f = {b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0} biquad
+  let xs: Seq[f32] = [0.5, -1.0, 2.0]
+  let ys = {f: f, samples: xs} biquadRun
+  if ys.len != 3 or ys[1] != -1.0 or ys[2] != 2.0:
+    return 6
+  # A one-pole low-pass (y = 0.5x + 0.5y[-1]) settles toward a constant input.
+  let lp = {b0: 0.5, b1: 0.0, b2: 0.0, a1: -0.5, a2: 0.0} biquad
+  var ones: Seq[f32] = []
+  for i in 0 .. 9:
+    ones = {items: ones, value: 1.0} push
+  let out = {f: lp, samples: ones} biquadRun
+  if not {a: out[0], b: 0.5} near or not {a: out[1], b: 0.75} near:
+    return 7
+  if not {a: out[9], b: 0.99902344} near:
+    return 8
+  return 0
+
+fn main() -> int:
+  let a = checkAverage
+  if a != 0:
+    return a
+  let b = checkRms
+  if b != 0:
+    return b
+  return checkBiquad

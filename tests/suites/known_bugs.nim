@@ -3567,7 +3567,7 @@ fn main() -> int:
   return {a: a} f
 """
   t.quietly: t.runs "A48: a binding stated as a sum type passes to a param of that sum", 1
-  t.bugOpen "A48: a binding stated as a sum type passes to a param of that sum"
+  t.bugFixed "A48: a binding stated as a sum type passes to a param of that sum"
 
   # A49. Returning a bare record literal from a fn whose return type is a named
   # record with an `invariant:` checks OK and then fails the Nim build: the
@@ -3586,8 +3586,10 @@ fn main() -> int:
   let p = {n: 3} make
   return p.n
 """
-  t.quietly: t.runs "A49: a bare record literal returned as a named invariant type builds", 3
-  t.bugOpen "A49: a bare record literal returned as a named invariant type builds"
+  # Ruled: the constructor is written out (`{n: n} Pos`), so a bare literal
+  # returned as a type with an invariant is refused rather than built.
+  t.quietly: t.badCheck "A49: a bare record literal returned as a named invariant type is refused", "constructor"
+  t.bugFixed "A49: a bare record literal returned as a named invariant type is refused"
 
   # A50. std/random has a Nim runtime only: `check` passes and the Odin and D
   # builds fail ("'newDice' is not declared by 'rt'").
@@ -3600,7 +3602,7 @@ fn main() -> int:
   return r.value ^int
 """
   t.quietly: t.hostRuns "A50: std/random builds and runs on every backend", 5
-  t.bugOpen "A50: std/random builds and runs on every backend"
+  t.bugFixed "A50: std/random builds and runs on every backend"
 
   # A51. The minimum of a signed type has no spelling: the minus is applied
   # after the literal is range-checked, so `-128` is "128 does not fit i8".
@@ -3611,6 +3613,333 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.okCheck "A51: the minimum of a signed type can be written"
-  t.bugOpen "A51: the minimum of a signed type can be written"
+  t.bugFixed "A51: the minimum of a signed type can be written"
+
+  # A52. A `_` arm in a match over a payload sum emits an Odin type switch Odin
+  # rejects ("Unhandled switch cases"); check and Nim are fine. Found writing
+  # std.encoding for stdlib-project.
+  t.src """
+type J:
+  | JNull
+  | JNum({n: int})
+  | JStr({s: str})
+
+fn num({j: J}) -> int:
+  match j:
+    JNum: return j.n
+    _: return 0
+
+fn main() -> int:
+  let a = {n: 7} J.JNum
+  return {j: a} num
+"""
+  t.quietly: t.hostRuns "A52: a `_` arm in a match over a payload sum builds on every backend", 7
+  t.bugFixed "A52: a `_` arm in a match over a payload sum builds on every backend"
+
+  # A53. Integer literals in a list do not adopt the expected element type:
+  # `Seq[u8] = [1, 2]` is "got Seq[int]" although `u8 = 1` is fine. Found
+  # writing std.crypto's round-constant table.
+  t.src """
+fn main() -> int:
+  let ys: Seq[u8] = [1, 2]
+  return ys.len
+"""
+  t.quietly: t.runs "A53: a list of integer literals takes the expected element type", 2
+  t.bugFixed "A53: a list of integer literals takes the expected element type"
+
+  # A54. A literal pushed onto a Seq[u8] binds T twice: `T` is u8 from `items`,
+  # then int from the literal, instead of the literal adopting the binding.
+  t.src """
+import seq
+
+fn main() -> int:
+  var b: Seq[u8] = []
+  b = {items: b, value: 27} push
+  return b.len
+"""
+  t.quietly: t.runs "A54: a literal pushed onto a Seq[u8] adopts the element type", 1
+  t.bugFixed "A54: a literal pushed onto a Seq[u8] adopts the element type"
+
+  # A55. A call through an [io] interface method is not counted as I/O: a fn
+  # without [io] that makes one passes the effect check.
+  t.src """
+import console
+
+interface Sink:
+  fn emit({self: Self, n: int}) -> void [io]
+
+object Out:
+  satisfies Sink
+  tag: int
+
+  fn emit({self: Out, n: int}) -> void [io]:
+    {text: "x"} printLine
+
+fn quiet({s: Sink}) -> void:
+  s.emit {n: 1}
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A55: calling an [io] interface method needs [io]", "io"
+  t.bugFixed "A55: calling an [io] interface method needs [io]"
+
+  # A56. `return f.key` from a payload-sum match arm: the Odin emitter clears the
+  # moved-from field through an immutable type-switch capture.
+  t.src """
+type F:
+  | FText({key: str, text: str})
+  | FNum({key: str, n: int})
+
+fn keyOf({f: F}) -> str:
+  match f:
+    FText: return f.key
+    FNum: return f.key
+
+fn main() -> int:
+  let a = {key: "ab", n: 3} F.FNum
+  let k = {f: a} keyOf
+  return k.len
+"""
+  t.quietly: t.hostRuns "A56: a str field returned from a payload-sum match arm builds on every backend", 2
+  t.bugFixed "A56: a str field returned from a payload-sum match arm builds on every backend"
+
+  # A57. `caps = f(caps)` on a Seq in a loop whose other arm copies `caps` into
+  # a pushed record: the emitter stores the result, then resets the variable as
+  # "moved from", wiping it. Wrong result on Nim and Odin. Found writing
+  # std.regex's VM.
+  t.src """
+import seq
+
+type Thread:
+  pc: int
+  caps: Seq[int]
+
+type Run:
+  ok: bool
+  caps: Seq[int]
+
+fn withCap({caps: Seq[int], slot: int, value: int}) -> Seq[int]:
+  var c = caps
+  {items: c, index: slot, value: value} setAt
+  return c
+
+fn pushThread({threads: Seq[Thread], pc: int, caps: Seq[int]}) -> Seq[Thread]:
+  let t = {pc: pc, caps: caps} Thread
+  return {items: threads, value: t} push
+
+fn execute({start: Seq[int]}) -> Run:
+  var threads: Seq[Thread] = []
+  threads = {threads: threads, pc: 0, caps: start} pushThread
+  for threads.len > 0:
+    let top = threads.len - 1
+    let t = threads[top]
+    var rest: Seq[Thread] = []
+    for i in 0 .. top - 1:
+      rest = {items: rest, value: threads[i]} push
+    threads = rest
+    var pc = t.pc
+    var caps = t.caps
+    for true:
+      if pc == 8:
+        return {ok: true, caps: caps} Run
+      elif pc == 3:
+        threads = {threads: threads, pc: 9, caps: caps} pushThread
+        pc = pc + 1
+      elif pc == 5:
+        caps = {caps: caps, slot: 1, value: 9} withCap
+        pc = pc + 1
+      else:
+        pc = pc + 1
+  let nothing: Seq[int] = []
+  return {ok: false, caps: nothing} Run
+
+fn main() -> int:
+  var first: Seq[int] = []
+  first = {items: first, value: 1} push
+  first = {items: first, value: 2} push
+  let r = {start: first} execute
+  return r.caps[1]
+"""
+  t.quietly: t.hostRuns "A57: x = f(x) on a Seq in a loop keeps the new value", 9
+  t.bugFixed "A57: x = f(x) on a Seq in a loop keeps the new value"
+
+  # A58. Arithmetic on float literals is typed f64 before it meets an f32:
+  # `d < 0.5 + 0.25` is "comparison between f32 and f64".
+  t.src """
+fn sum({d: f32}) -> bool:
+  return d < 0.5 + 0.25
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.okCheck "A58: arithmetic on float literals adopts the f32 it is compared with"
+  t.bugFixed "A58: arithmetic on float literals adopts the f32 it is compared with"
+
+  # A59. An integer literal in a `send` payload does not adopt the handler's
+  # field type, though the same literal in a call does.
+  t.src """
+import scheduler
+
+actor W [queue: 4]:
+  t: u32 = 0
+  on set({ms: u32}):
+    t = ms
+
+fn main() -> int:
+  W send set {ms: 100}
+  return 0
+"""
+  t.quietly: t.okCheck "A59: an integer literal in a send payload adopts the handler's field type"
+  t.bugFixed "A59: an integer literal in a send payload adopts the handler's field type"
+
+  # A60. A local reused by name in a later sibling scope inherits the earlier
+  # one's ownership state: the second `h` is pushed AND dropped, so the Seq
+  # holds freed strings (Odin segfault). Found writing std.net-http.
+  t.src """
+import seq
+import str
+
+type H:
+  name: str
+  value: str
+
+fn maybe({s: str}) -> str?:
+  if s == "":
+    return none
+  return s
+
+fn main() -> int:
+  var first = "x"
+  if first == "x":
+    let h = {s: "abc"} maybe
+    if h.ok:
+      first = h.value
+  var hs: Seq[H] = []
+  for i in 0 .. 2:
+    let n = "k" + "ey"
+    let h = {name: n, value: "v"} H
+    hs = {items: hs, value: h} push
+  var total = 0
+  for i in 0 .. hs.len - 1:
+    total = total + {t: hs[i].name} byteCount
+  return total
+"""
+  t.quietly: t.hostRuns "A60: a local reused by name in a later scope is owned independently", 9
+  t.bugFixed "A60: a local reused by name in a later scope is owned independently"
+
+  # A61. The same `let` name in two match arms: the second is emitted as an
+  # assignment to a variable declared in the other arm's scope, so both
+  # backends fail to build. Found writing sys.process.
+  t.src """
+import str
+
+type S:
+  | A({x: int})
+  | B({y: int})
+
+fn name({s: S}) -> str:
+  match s:
+    A:
+      let n = {value: s.x} toStr
+      return "a" + n
+    B:
+      let n = {value: s.y} toStr
+      return "b" + n
+
+fn main() -> int:
+  let v = {y: 7} S.B
+  let text = {s: v} name
+  return {t: text} byteCount
+"""
+  t.quietly: t.hostRuns "A61: the same let name in two match arms builds on every backend", 2
+  t.bugFixed "A61: the same let name in two match arms builds on every backend"
+
+  # A62. A local record literal assigned to a variable holding ANOTHER module's
+  # anonymous record: each module hoists its own struct for it, and Odin sees
+  # two types. check and Nim are fine. Found rewriting std/random in Tuck.
+  t.src """
+import random
+
+fn main() -> int:
+  var d = {seed: 7} newDice
+  d = {state: 1, inc: 3}
+  return d.inc ~int
+"""
+  t.quietly: t.hostRuns "A62: a local record literal assigned over another module's anonymous record builds on every backend", 3
+  t.bugFixed "A62: a local record literal assigned over another module's anonymous record builds on every backend"
+
+  # A63. A local made from a module const Seq was emitted as a MOVE of the
+  # const, which Nim refuses ("immutable, not 'var'"). A const is owned by
+  # nobody, so the local holds a copy. Found finishing std.crypto.
+  t.src """
+import seq
+
+const table: Seq[u64] = [1, 2, 3]
+
+fn main() -> int:
+  var state = table
+  state = {items: state, value: 4} push
+  return state.len + table.len
+"""
+  t.quietly: t.hostRuns "A63: a local made from a module const Seq holds a copy", 7
+  t.bugFixed "A63: a local made from a module const Seq holds a copy"
+
+  # A64. An index literal adopted the expected type of the place around it:
+  # in `{a: m[0], b: 1.0} near` (a: f32) the 0 became an f32 and indexing was
+  # refused. The index is an int whatever the field wants. Found finishing
+  # platform.dsp.
+  t.src """
+import seq
+
+fn near({a: f32, b: f32}) -> bool:
+  return a == b
+
+fn main() -> int:
+  let m: Seq[f32] = [1.0, 2.0]
+  let ok = {a: m[0], b: 1.0} near
+  if ok:
+    return 1
+  return 0
+"""
+  t.quietly: t.runs "A64: an index literal stays an int inside a float-typed payload field", 1
+  t.bugFixed "A64: an index literal stays an int inside a float-typed payload field"
+
+  # A65. An `if` with a `-> void` call in one branch and an assignment in the
+  # other was refused ("void vs unit"). Both are statements. Found finishing
+  # std.regex.
+  t.src """
+import seq
+
+fn main() -> int:
+  var s: Seq[int] = [1, 2]
+  if s.len > 5:
+    {items: s, index: 0, value: 9} setAt
+  else:
+    s = {items: s, value: 3} push
+  return s.len
+"""
+  t.quietly: t.runs "A65: an if may hold a void call in one branch and an assignment in the other", 3
+  t.bugFixed "A65: an if may hold a void call in one branch and an assignment in the other"
+
+  # A66. A Tuck module named `fmt` (or `os`) collided with Odin's core package
+  # of that name: "Redeclaration of 'fmt'". The core packages are imported as
+  # odin_fmt / odin_os when the program has such a module. Found finishing
+  # std.cli.
+  t.src """
+import fmt
+
+fn main() -> int:
+  let s = {body: "ab", width: 4, alignRight: false} pad
+  return {t: s} byteLen
+"""
+  t.addFile("fmt.tuck", """fn pad({body: str, width: int, alignRight: bool}) -> str:
+  return body + "  "
+
+fn byteLen({t: str}) -> int:
+  return 4
+""")
+  t.quietly: t.hostRuns "A66: a Tuck module named fmt builds on every backend", 4
+  t.bugFixed "A66: a Tuck module named fmt builds on every backend"
 
   t.finish()

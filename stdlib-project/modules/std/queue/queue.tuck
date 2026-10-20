@@ -1,0 +1,230 @@
+# std.queue — a crash-safe queue: push, read back what is unacknowledged, ack.
+#
+# The queue is an append-only LOG on disk (one line per event) and a plain value
+# in memory (the unacknowledged entries). Opening replays the log; `push` and
+# `ack` append one line and return the updated queue; `compact` rewrites the log
+# with only what is still pending. A crash between operations loses nothing the
+# file already holds, and a half-written last line is ignored on replay.
+#
+# The payload is a `str` (already-encoded bytes, JSON, whatever the caller
+# chose): Tuck has no generic durable type, and the encoding is the caller's.
+#
+# Log lines:   P <id> <payload>      pushed (newline and backslash escaped)
+#              A <id>                acknowledged
+import fs
+import seq
+import str
+import text
+import convert
+
+type Entry:
+  id: i64
+  payload: str
+
+type DurableQueue:
+  path: str
+  entries: Seq[Entry]
+  nextId: i64
+
+# --- the log's line format -----------------------------------------------------------
+fn escaped({s: str}) -> str:
+  var parts: Seq[str] = []
+  for i in 0 .. {t: s} byteCount - 1:
+    let c = {s: s, index: i} charAt
+    if c == "\\":
+      parts = {items: parts, value: "\\\\"} push
+    elif c == "\n":
+      parts = {items: parts, value: "\\n"} push
+    else:
+      parts = {items: parts, value: c} push
+  return {parts: parts, sep: ""} joinStr
+
+fn unescaped({s: str}) -> str:
+  var parts: Seq[str] = []
+  var i = 0
+  let n = {t: s} byteCount
+  for i < n:
+    let c = {s: s, index: i} charAt
+    if c == "\\" and i + 1 < n:
+      let d = {s: s, index: i + 1} charAt
+      if d == "n":
+        parts = {items: parts, value: "\n"} push
+      else:
+        parts = {items: parts, value: d} push
+      i = i + 2
+    else:
+      parts = {items: parts, value: c} push
+      i = i + 1
+  return {parts: parts, sep: ""} joinStr
+
+fn pushLine({id: i64, payload: str}) -> str:
+  let n = {value: id} toStr
+  let body = {s: payload} escaped
+  return "P " + n + " " + body + "\n"
+
+fn ackLine({id: i64}) -> str:
+  let n = {value: id} toStr
+  return "A " + n + "\n"
+
+# --- replay -----------------------------------------------------------------------------
+fn without({entries: Seq[Entry], id: i64}) -> Seq[Entry]:
+  var out: Seq[Entry] = []
+  for i in 0 .. entries.len - 1:
+    if entries[i].id != id:
+      out = {items: out, value: entries[i]} push
+  return out
+
+# One log line applied to the queue; a line that is not one is skipped.
+fn applied({q: DurableQueue, line: str}) -> DurableQueue:
+  let first = {t: line, what: " "} text::find
+  if not first.ok:
+    return q
+  let kind = {t: line, start: 0, stop: first.value} slice
+  let lineLen = {t: line} byteCount
+  let rest = {t: line, start: first.value + 1, stop: lineLen} slice
+  if not kind.ok:
+    return q
+  if not rest.ok:
+    return q
+  if kind.value == "A":
+    let id = {t: rest.value} parseInt
+    if not id.ok:
+      return q
+    let kept = {entries: q.entries, id: id.value} without
+    return {path: q.path, entries: kept, nextId: q.nextId} DurableQueue
+  if kind.value == "P":
+    let gap = {t: rest.value, what: " "} text::find
+    if not gap.ok:
+      return q
+    let idText = {t: rest.value, start: 0, stop: gap.value} slice
+    let restLen = {t: rest.value} byteCount
+    let body = {t: rest.value, start: gap.value + 1, stop: restLen} slice
+    if not idText.ok:
+      return q
+    if not body.ok:
+      return q
+    let id = {t: idText.value} parseInt
+    if not id.ok:
+      return q
+    let payload = {s: body.value} unescaped
+    let e = {id: id.value, payload: payload} Entry
+    let grown = {items: q.entries, value: e} push
+    var next = q.nextId
+    if id.value >= next:
+      next = id.value + 1
+    return {path: q.path, entries: grown, nextId: next} DurableQueue
+  return q
+
+fn replayed({path: str, log: str}) -> DurableQueue:
+  let nothing: Seq[Entry] = []
+  var q = {path: path, entries: nothing, nextId: 1} DurableQueue
+  let lines = {s: log} splitLines
+  for i in 0 .. lines.len - 1:
+    q = {q: q, line: lines[i]} applied
+  return q
+
+# --- the queue ------------------------------------------------------------------------
+# Open (or create) the queue whose log is at `path`, replaying what is there.
+fn openQueue({path: str}) -> !DurableQueue [io, error: FsError]:
+  let nothing: Seq[Entry] = []
+  let fresh = {path: path, entries: nothing, nextId: 1} DurableQueue
+  if not {path: path} fileExists:
+    return fresh
+  let r = {path: path} readFile
+  if not r.ok:
+    err r.err
+  return {path: path, log: r.value.content} replayed
+
+# Append `payload` to the log and the queue. (`enqueue`, not `push`: a local `push`
+# would shadow seq's for this whole module.) The new entry's id is returned in
+# the queue as its last entry.
+fn enqueue({q: DurableQueue, payload: str}) -> !DurableQueue [io, error: FsError]:
+  let id = q.nextId
+  let line = {id: id, payload: payload} pushLine
+  let w = {path: q.path, content: line} appendFile
+  if not w.ok:
+    err w.err
+  let e = {id: id, payload: payload} Entry
+  let grown = {items: q.entries, value: e} push
+  return {path: q.path, entries: grown, nextId: id + 1} DurableQueue
+
+# Mark entry `id` done: it will not come back after a restart.
+fn ack({q: DurableQueue, id: i64}) -> !DurableQueue [io, error: FsError]:
+  let line = {id: id} ackLine
+  let w = {path: q.path, content: line} appendFile
+  if not w.ok:
+    err w.err
+  let kept = {entries: q.entries, id: id} without
+  return {path: q.path, entries: kept, nextId: q.nextId} DurableQueue
+
+# Everything pushed and not yet acknowledged, oldest first.
+fn unacked({q: DurableQueue}) -> Seq[Entry]:
+  return q.entries
+
+# Rewrite the log with only the pending entries, dropping the history of
+# everything acknowledged.
+fn compact({q: DurableQueue}) -> !DurableQueue [io, error: FsError]:
+  var parts: Seq[str] = []
+  for i in 0 .. q.entries.len - 1:
+    let line = {id: q.entries[i].id, payload: q.entries[i].payload} pushLine
+    parts = {items: parts, value: line} push
+  let body = {parts: parts, sep: ""} joinStr
+  let w = {path: q.path, content: body} writeFile
+  if not w.ok:
+    err w.err
+  return q
+
+# --- the module's own checks: the exit code names the first that fails ---------------
+fn checkFormat() -> int:
+  if {s: "a\nb\\c"} escaped != "a\\nb\\\\c":
+    return 1
+  if {s: "a\\nb\\\\c"} unescaped != "a\nb\\c":
+    return 2
+  let q = {path: "x", log: "P 1 first\nP 2 second\nA 1\nP 3 third\ngarbage\nA 9\n"} replayed
+  if q.entries.len != 2 or q.entries[0].id != 2 or q.entries[1].payload != "third":
+    return 3
+  if q.nextId != 4:
+    return 4
+  return 0
+
+fn checkDisk() -> int [io]:
+  let path = "/tmp/tuck-std-queue-check.log"
+  {path: path} removeFile discard
+  let opened = {path: path} openQueue
+  if not opened.ok:
+    return 5
+  let a = {q: opened.value, payload: "one"} enqueue
+  if not a.ok:
+    return 6
+  let b = {q: a.value, payload: "two\nlines"} enqueue
+  if not b.ok:
+    return 7
+  let c = {q: b.value, id: 1} ack
+  if not c.ok:
+    return 8
+  let afterAck = {q: c.value} unacked
+  if afterAck.len != 1:
+    return 9
+  let again = {path: path} openQueue
+  if not again.ok:
+    return 10
+  let left = {q: again.value} unacked
+  if left.len != 1 or left[0].payload != "two\nlines" or again.value.nextId != 3:
+    return 11
+  let rewritten = {q: again.value} compact
+  if not rewritten.ok:
+    return 12
+  let reopened = {path: path} openQueue
+  if not reopened.ok:
+    return 13
+  let afterCompact = {q: reopened.value} unacked
+  if afterCompact.len != 1:
+    return 14
+  {path: path} removeFile discard
+  return 0
+
+fn main() -> int [io]:
+  let f = checkFormat
+  if f != 0:
+    return f
+  return checkDisk

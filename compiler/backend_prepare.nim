@@ -92,7 +92,7 @@ type
     ## One backend's private copy of the program, ready to emit.
     mods*: seq[LoadedModule]
       ## every module, dependency-first; the entry module is last
-    real*: Table[string, Module]
+    real*: ModuleMap
       ## the imported modules by name — what an emitter looks a cross-module
       ## callee up in. Excludes the entry module, which is nobody's import.
 
@@ -158,7 +158,7 @@ proc prepareCommon(prog: seq[LoadedModule], semLayer: Resolution): BackendTree =
     result.mods.add LoadedModule(name: lm.name, path: lm.path,
                                  m: deepCopy(lm.m))
   for lm in result.mods[0 ..< result.mods.high]:
-    result.real[lm.name] = lm.m
+    result.real[lm.id] = lm.m
   let t0 = vBegin(psLowering)
   for lm in result.mods:
     let ts = epochTime()
@@ -175,7 +175,7 @@ proc prepareCommon(prog: seq[LoadedModule], semLayer: Resolution): BackendTree =
     # param, but it runs before lowering, and lowering builds and rewrites
     # calls. Asserted here, after the last pass that can, so no emitter is
     # ever handed a call with a hole to fill in its own way.
-    assertCallsComplete(semLayer, lm.m, result.real)
+    assertCallsComplete(semLayer, lm.m)
     typeResolvedCalls(semLayer, lm.m)          # a resolved call has a type
     dumpUses(semLayer, lm.m)                   # TUCK_DEBUG_OWN=uses (rule U)
     # 7. DECISIONS BECOME NODES. Last, because every pass above reads the

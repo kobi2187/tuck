@@ -55,7 +55,8 @@ import compiler/ssa_query, compiler/ssa_cache, compiler/ssa_ir
 import compiler/complexity
 import compiler/typecheck
 import compiler/mangle
-import compiler/codegen_common  # nimModuleName: the ENTRY module's own name
+import compiler/codegen_common  # nimEntryStem: the ENTRY module's file stem
+import compiler/shape_pool
                                  # needs the same shadowing check an import
                                  # already gets — see the outName fix below
 import compiler/codegen_emit  # emitNim: genDecl/genExpr sit below this in
@@ -1183,9 +1184,9 @@ when isMainModule:
     # import path from the output dir back to the runtime module
     let rtDir = getAppDir() / "compiler"
     let rtImport = relativePath(rtDir / "tuck_rt", outDir).replace('\\', '/')
-    var realModules = initTable[string, Module]()
+    var realModules = initTable[ModuleId, Module]()
     for lm in prog[0 ..< prog.high]:
-      realModules[lm.name] = lm.m
+      realModules[lm.id] = lm.m
     # Mangling runs ONCE over the WHOLE IMPORT CLOSURE and the shared
     # Resolution, BEFORE the per-backend copies. Whole-program because a
     # qualified reference names a decl in another module — `http::get` is a
@@ -1245,7 +1246,7 @@ when isMainModule:
           # tuck_mod_seq` still opens a file literally called seq.nim).
           # Aliasing the file here too broke that: the import line still
           # says `seq`, but no file by that name exists anymore.
-          let outName = if isEntry: nimModuleName(base) else: lm.name
+          let outName = if isEntry: nimEntryStem(base) else: lm.name
           let nimPath = outDir / (outName & ".nim")
           writeFile(nimPath, emitNim(lm.m, semLayer, rtImport, nimReal, outName))
           echo "wrote ", nimPath
@@ -1264,20 +1265,27 @@ when isMainModule:
         assertTreeIds("odin lowering", odTree.modules)
       block:
         let t0 = vBegin(psEmitting)
+        # A program of several modules declares its record shapes once.
+        let shapes = if odProg.len > 1: newShapePool(base) else: nil
         for lm in odProg[0 ..< odProg.high]:
           let ts = epochTime()
           # Odin packages are DIRECTORIES: an imported module becomes
           # mod_<name>/<name>.odin so `import fs "./mod_fs"` resolves.
-          let modDir = outDir / ("mod_" & lm.name.replace("-", "_"))
+          let modDir = outDir / ("mod_" & moduleSlug(lm.id))
           createDir(modDir)
-          let modOdPath = modDir / (lm.name.replace("-", "_") & ".odin")
-          writeFile(modOdPath, emitOdinModule(lm.name, lm.m, semLayer, odReal))
+          let modOdPath = modDir / (moduleSlug(lm.id) & ".odin")
+          writeFile(modOdPath, emitOdinModule(lm.name, lm.m, semLayer, odReal, shapes))
           echo "wrote ", modOdPath
           vSub(lm.name, ts)
         let tsEntry = epochTime()
         let odPath = outDir / (base & ".odin")
-        writeFile(odPath, emitOdin(odProg[^1].m, semLayer, odReal, base))
+        writeFile(odPath, emitOdin(odProg[^1].m, semLayer, odReal, base, shapes))
         echo "wrote ", odPath
+        let shapesOdin = emitOdinShapes(shapes)
+        if shapesOdin != "":
+          createDir(outDir / ("mod_" & shapes.module))
+          writeFile(outDir / ("mod_" & shapes.module) / (shapes.module & ".odin"),
+                    shapesOdin)
         vSub(odProg[^1].name, tsEntry)
         vEnd(psEmitting, t0)
       # The emitted package imports `./tuckrt`, so the runtime rides along.
@@ -1320,16 +1328,19 @@ when isMainModule:
         assertTreeIds("d lowering", dTree.modules)
       block:
         let t0 = vBegin(psEmitting)
+        let shapes = if dProg.len > 1: newShapePool(base) else: nil
         for lm in dProg[0 ..< dProg.high]:
           let ts = epochTime()
-          let modDPath = outDir / ("mod_" & lm.name.replace("-", "_") & ".d")
-          writeFile(modDPath, emitDModule(lm.name, lm.m, semLayer, dReal))
+          let modDPath = outDir / ("mod_" & moduleSlug(lm.id) & ".d")
+          writeFile(modDPath, emitDModule(lm.name, lm.m, semLayer, dReal, shapes))
           echo "wrote ", modDPath
           vSub(lm.name, ts)
         let tsEntry = epochTime()
         let dPath = outDir / (base & ".d")
-        writeFile(dPath, emitD(dProg[^1].m, semLayer, dReal, base))
+        writeFile(dPath, emitD(dProg[^1].m, semLayer, dReal, base, shapes))
         echo "wrote ", dPath
+        let shapesD = emitDShapes(shapes)
+        if shapesD != "": writeFile(outDir / ("mod_" & shapes.module & ".d"), shapesD)
         vSub(dProg[^1].name, tsEntry)
         vEnd(psEmitting, t0)
       # A vendored `.c` an extern block binds: compile it to an object the
@@ -1363,7 +1374,7 @@ when isMainModule:
       var hasMain = false
       var mainReturns = false
       var actorNames: seq[string]
-      var actorModules: seq[string]   # other modules declaring a running actor
+      var actorModules: seq[ModuleId]   # other modules declaring a running actor
       var hasTasks = false
       # `fn main` is the ENTRY module's, but actors and tasks are collected
       # across the WHOLE PROGRAM. Scanning only the entry meant an actor
@@ -1374,15 +1385,15 @@ when isMainModule:
       # an uninitialised runtime). Same root as #73's actor half — `m.decls` is
       # the entry module and imports are invisible to it — but a worse symptom
       # than a checker rejection.
-      var handlerMods: seq[string]   # other modules handling a registry that is not theirs
+      var handlerMods: seq[ModuleId]   # other modules handling a registry that is not theirs
       for lm in prog:
-        if lm.m != m and registersAnything(lm.m): handlerMods.add(lm.name)
+        if lm.m.id != m.id and registersAnything(lm.m): handlerMods.add(lm.id)
         for d in lm.m.decls:
           if d == nil: continue
           if runsActor(d):
             actorNames.add(mangleName(d.name, nkActor))
-            if lm.m != m and lm.name notin actorModules:
-              actorModules.add(lm.name)
+            if lm.m.id != m.id and lm.id notin actorModules:
+              actorModules.add(lm.id)
           if d.kind == dkTask: hasTasks = true
       for d in m.decls:
         # `m` was mangled above, so `fn main` is now tuck_main here.
@@ -1412,7 +1423,7 @@ when isMainModule:
         # find it again has to ask the same question rather than re-deriving
         # the raw `base` and reading a file that was never written under
         # that name.
-        let mainNim = outDir / (nimModuleName(base) & ".nim")
+        let mainNim = outDir / (nimEntryStem(base) & ".nim")
         # ONE Tuck runtime (compiler/tuck_async, arsenal engine): actors AND
         # tasks are cooperative coroutines. Any program with actors or tasks
         # imports it, inits it, registers its actor singletons before main,
@@ -1426,15 +1437,13 @@ when isMainModule:
         # only another module imports is imported here by name.
         var registerCalls = ""
         var extraImports = ""
-        proc importedDirectly(name: string): bool =
+        proc importedDirectly(id: ModuleId): bool =
           for d in m.decls:
-            if d != nil and d.kind == dkImport and d.name == name: return true
+            if d != nil and d.kind == dkImport and d.importTarget == id: return true
         for hm in handlerMods:
           if not importedDirectly(hm):
-            let asName = nimModuleName(hm)
-            extraImports.add(if asName == hm: "import " & hm & "\n"
-                             else: "import " & hm & " as " & asName & "\n")
-          registerCalls.add("  " & nimModuleName(hm) & "." & RegisterProc & "()\n")
+            extraImports.add("import " & nameOf(hm) & " as " & moduleAlias(hm) & "\n")
+          registerCalls.add("  " & moduleAlias(hm) & "." & RegisterProc & "()\n")
         if registersAnything(m): registerCalls.add("  " & RegisterProc & "()\n")
         if extraImports != "": writeFile(mainNim, extraImports & readFile(mainNim))
         var asyncInit = ""
@@ -1447,13 +1456,8 @@ when isMainModule:
           # names that module even when only another module imports it (A18).
           var viaMid = ""
           for am in actorModules:
-            var direct = false
-            for d in m.decls:
-              if d != nil and d.kind == dkImport and d.name == am: direct = true
-            if not direct:
-              let asName = nimModuleName(am)
-              viaMid.add(if asName == am: "import " & am & "\n"
-                         else: "import " & am & " as " & asName & "\n")
+            if not importedDirectly(am):
+              viaMid.add("import " & nameOf(am) & " as " & moduleAlias(am) & "\n")
           if viaMid != "": writeFile(mainNim, viaMid & readFile(mainNim))
           for a in actorNames: boot.add("  registerActor" & a & "()\n")
           if hasTasks: asyncDrive = "\n  tuckRun()"
@@ -1519,7 +1523,7 @@ when isMainModule:
         # name Nim can compile" reason). `binPath`/`nimCache` below stay on
         # the unaliased `binBase`: the FINAL BINARY keeps the name a user
         # asked for regardless of what the intermediate source is called.
-        let binNim = outDir / (nimModuleName(binBase) & ".nim")
+        let binNim = outDir / (nimEntryStem(binBase) & ".nim")
         if binNim != mainNim: copyFile(mainNim, binNim)
         let binPath = outDir / binBase
         # Async programs need Nim's stack-walker OFF (it corrupts the

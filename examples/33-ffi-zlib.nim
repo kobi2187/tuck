@@ -1,7 +1,7 @@
 {.experimental: "codeReordering".}
 import "../compiler/tuck_rt"
 {.passL: "-lz".}
-import sys
+import sys as tuckˑmodˑsys
 
 proc tuckˑfnˑmain*(): void
 

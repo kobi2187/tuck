@@ -22,13 +22,14 @@
 # It is common to all nodes but only meaningful on named ones, which is why
 # it sits beside `id`/`span` rather than inside a `case` branch.
 
-import hashes, std/options
+import hashes, std/options, std/tables
+import module_ids
+export module_ids
 
 type
   Span* = object
     ## A source position: 1-based line and column, and the file. A node built
-    ## by a later pass has line 0; an imported type decl's file carries
-    ## `ImportedTypeMarker`.
+    ## by a later pass has line 0.
     line*: int
     col*: int
     file*: string
@@ -583,6 +584,7 @@ type
                          # (receiver rides as the fn's first parameter)
     of exkQualified:
       modulePath*: seq[string]
+      qualModule*: ModuleId  # the module `modulePath[0]` names, NoModule for none
       qualName*: string
     of exkStruct:
       fields*: seq[FieldInit]
@@ -762,18 +764,10 @@ type
     ## (exkAbsent), typed by where it is written.
     lkInt, lkFloat, lkStr, lkBool
 
-  # Imported type decls are injected into the importer for checking and
-  # lowering, marked with this span.file so codegen skips re-emitting them.
 const VariantsModule* = "iface_variants"
   ## The module iface_hoist generates to hold the data of types that satisfy an
   ## interface their own module cannot hand to the interface's module. A real
   ## module in the emitted program, readable on purpose.
-
-const ImportedTypeMarker* = "<imported>"
-
-  ## The attribute `parseArenaDecl` puts on the record an `arena` parses into,
-  ## so the checker can tell an arena from a type. Not spellable in source —
-  ## an attribute name is a word, and `<` begins none.
 
 # Legal type sentinels represent explicit abstraction or compiler bookkeeping.
 # A missing type is reported before it can be stamped onto the typed AST.
@@ -923,6 +917,10 @@ type
     ## (and, once mangled, the name the user wrote).
     name*: string
     sourceName*: Option[string]  ## see SourceName note below
+    origin*: ModuleId
+      ## For the importer's copy of a type, object, interface or actor: the
+      ## module that declares it. NoModule for a declaration of the module it
+      ## sits in.
     hoistedTo*: string
       ## A type or object whose DATA lives in a generated module of this name
       ## (iface_hoist): the declaration keeps its members, but no backend
@@ -1128,7 +1126,7 @@ type
     of dkResources:
       resKinds*: seq[ResourceKindDef]  # spec §7.4, one per line of the block
     of dkImport:
-      discard  # module name lives in Decl.name
+      importTarget*: ModuleId  # the module this import loads; its name is Decl.name
     of dkSelect:
       selectArms*: seq[SelectArm]
 
@@ -1138,8 +1136,15 @@ type
     path*: seq[string]
     decls*: seq[Decl]
     span*: Span
+    id*: ModuleId
+      ## Which module this is (module_ids), set when the program is loaded. The
+      ## module an emitter is writing and the entries of a `ModuleMap` are
+      ## compared by it.
 
 
+
+  ModuleMap* = Table[ModuleId, Module]
+    ## The imported modules of a program, by identity.
 
 # --- SourceName: the name the user wrote -----------------------------------
 

@@ -352,6 +352,24 @@ double pow(double base, double exp)
     return stdPow(base, exp);
 }
 
+double sin(double value)
+{
+    import std.math : stdSin = sin;
+    return stdSin(value);
+}
+
+double cos(double value)
+{
+    import std.math : stdCos = cos;
+    return stdCos(value);
+}
+
+double ln(double value)
+{
+    import std.math : stdLog = log;
+    return stdLog(value);
+}
+
 // std/hash — FNV-1a, 64-bit. Same algorithm as errCode above (32-bit);
 // this is the runtime, arbitrary-length variant.
 ulong hash(string data)
@@ -1592,6 +1610,15 @@ void exit(long code)
 // std/time — the wall clock, and a sleep. Until the coroutine runtime lands
 // there are no other tasks to keep running, so a blocking sleep IS the
 // reactor semantics for a single-task program.
+// std/random's one shim: the operating system's entropy, as 64 bits.
+R osSeed(R)()
+{
+    import std.random : unpredictableSeed;
+    ulong hi = unpredictableSeed;
+    ulong lo = unpredictableSeed;
+    return tuckRec!(R, "seed")((hi << 32) | lo);
+}
+
 R nowMs(R)()
 {
     import std.datetime.systime : Clock;

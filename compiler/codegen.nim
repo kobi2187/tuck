@@ -25,7 +25,7 @@
 # WHAT IS SHARED WITH THE ODIN BACKEND, AND WHAT IS NOT.
 #
 # Shared, in codegen_common.nim: logic that has nothing to do with which
-# language is being emitted — errNameFor, actorSingletonName, lookupFnParams.
+# language is being emitted — errNameFor, actorSingletonName.
 # These were byte-identical copies in both backends and had no business being
 # duplicated.
 #
@@ -43,6 +43,7 @@ import ast, strutils, sets, tables, options
 import resolution
 import ast_query
 import codegen_common
+import name_prefix
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_type   # genType: Tuck type -> Nim type text
 import ./ast_query
@@ -69,7 +70,7 @@ proc genQualified(ctx: CodegenCtx, e: Expr): string =
     let cb = cCallbackSig(ctx.module)
     if cb != "": return "cast[" & cb & "](" & e.qualName & ")"
     return e.qualName
-  elif modName in ctx.realModules: nimModuleName(modName) & "." & e.qualName
+  elif e.qualModule in ctx.realModules: moduleAlias(e.qualModule) & "." & e.qualName
   else: modName & "_" & e.qualName
 
 proc genExpr*(ctx: var CodegenCtx, e: Expr): string
@@ -146,7 +147,7 @@ proc explodeRecordArg(ctx: var CodegenCtx, e: Expr, calleeStr: string): string =
   ## Type-directed explosion: a record-typed VAR as the whole payload
   ## (`p advance`) explodes to the fn's params by field name, in param order —
   ## same subset matching the checker verified.
-  let fields = recordArgFields(ctx.res, ctx.module, ctx.realModules, e)
+  let fields = recordArgFields(ctx.res, ctx.module, e)
   if fields.isNone: return ""
   let recv = ctx.genExpr(e.args[0])
   var parts: seq[string]
@@ -238,7 +239,7 @@ proc genCallArgs(ctx: var CodegenCtx, e: Expr): seq[string] =
   ## A call's arguments: a payload's as call_args.payloadArgs orders them,
   ## printed; anything else as written.
   let args = if e.isPayloadCall:
-               payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+               payloadArgs(ctx.res, ctx.module, e)
              else: e.args
   for a in args: result.add(ctx.genExpr(a))
 
@@ -1144,6 +1145,8 @@ proc processMatchArm(ctx: var CodegenCtx, arm: MatchArm, patStr: var string,
     narrowedKey = subjectRecvStr
     ctx.matchNarrowed[narrowedKey] = arm.pattern.name
   let armHead = matchArmHead(arm.pattern, patStr)
+  let armVars = ctx.definedVars       # each arm is its own scope (#143)
+  defer: ctx.definedVars = armVars
   var result: string
   if arm.body != nil and arm.body.kind == exkBlock:
     let oldIndent = ctx.indent

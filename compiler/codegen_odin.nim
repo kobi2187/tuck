@@ -51,7 +51,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
 proc explodeRecordArg(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string): string =
   ## codegen_common.recordArgFields, printed: `f(p.a, p.b)`, or "" when the
   ## call is not a record variable standing for its payload.
-  let fields = recordArgFields(ctx.res, ctx.module, ctx.realModules, e)
+  let fields = recordArgFields(ctx.res, ctx.module, e)
   if fields.isNone: return ""
   let recv = ctx.genOdinExpr(e.args[0])
   var parts: seq[string]
@@ -227,7 +227,7 @@ proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
   ## A payload's arguments are call_args.payloadArgs's, printed; anything
   ## else as written.
   let args = if e.isPayloadCall:
-               payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+               payloadArgs(ctx.res, ctx.module, e)
              else: e.args
   for a in args: result.add(ctx.genOdinExpr(a))
 
@@ -354,8 +354,7 @@ proc odinActorPkg(ctx: OdinCodegenCtx, actor: string): string =
   ## "<pkg>." when another module declares the actor, else "" (R11, A32 — as a
   ## pool is qualified). Its singleton, slot and send helpers are that
   ## package's.
-  let origin = actorOrigin(ctx.module, ctx.realModules, actor)
-  if origin == "": "" else: origin.replace("-", "_") & "."
+  ctx.pkgQualifier(actorOrigin(ctx.module, ctx.realModules, actor))
 
 proc genOdinActorMember(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `Actor.waitUntil {pred: :p}` -> `rt.tuckWaitOn(<Actor>Slot, p)`, and
@@ -375,7 +374,7 @@ proc providerArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
   let found = fnHome(ctx.module, ctx.realModules, e.callee.name)
   if found.isNone: return
   let home = found.get
-  let args = if e.isPayloadCall: payloadArgs(ctx.res, ctx.module, ctx.realModules, e)
+  let args = if e.isPayloadCall: payloadArgs(ctx.res, ctx.module, e)
              else: e.args
   for need in providerNeeds(home, ctx.realModules, home.findFn(e.callee.name)):
     if need.paramIdx >= args.len: continue
@@ -383,7 +382,7 @@ proc providerArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
     if t == nil or t.kind != tkNamed: continue
     let (modName, name) = providerFor(ctx.module, ctx.realModules, need, t.name)
     if name != "":
-      result.add((if modName == "": "" else: modName.replace("-", "_") & ".") & name)
+      result.add(ctx.pkgQualifier(modName) & name)
 
 proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A call in Odin, trying the special shapes first: `waitOn`, a sum
@@ -402,8 +401,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   let member = memberCallee(ctx.res, ctx.module, e)
   if member != "":
     # An imported object's member lives in its own package (R11, A25).
-    let origin = memberCalleeModule(ctx.res, ctx.module, e)
-    calleeStr = (if origin != "": origin.replace("-", "_") & "." else: "") & member
+    calleeStr = ctx.pkgQualifier(memberCalleeModule(ctx.res, ctx.module, e)) & member
   let combinator = ctx.asCombinatorCall(e, calleeStr)
   if combinator != "": return combinator
   var args = ctx.genCallArgs(e)
@@ -548,7 +546,9 @@ proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
   ctx.unionBind = "v"
   for arm in e.arms:
     let patStr = genPatternStr(arm.pattern)
+    let armVars = ctx.definedVars     # each arm is its own scope (#143)
     let bodyStr = ctx.genOdinExpr(arm.body)
+    ctx.definedVars = armVars
     let caseLabel = if patStr == "_": "case:"
                     else: "case " & sumName & "_" & patStr & ":"
     if arm.body != nil and arm.body.kind == exkBlock:
@@ -557,7 +557,18 @@ proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
       cases.add(ind & caseLabel & " " & bodyStr & ";")
   ctx.indent = oldIndent
   ctx.unionBind = savedBind
-  ind & "switch " & "v" & " in " & subjectStr & "\n" &
+  # A `_` arm leaves variants unnamed, which a full switch rejects (#134).
+  var wild = false
+  for arm in e.arms:
+    if arm.pattern != nil and arm.pattern.kind == pkWild: wild = true
+  # An arm that moves a field out resets it through the capture, which Odin
+  # only lets a by-address capture do (#138).
+  var resets = false
+  for arm in e.arms:
+    if arm.body != nil:
+      for n in arm.body.nodes:
+        if n.kind == exkReset: resets = true
+  ind & (if wild: "#partial switch" else: "switch") & (if resets: " &v in " else: " v in ") & subjectStr & "\n" &
     ind & "{\n" & cases.join("\n") & "\n" & ind & "}"
 
 proc detectMatchPatterns(e: Expr, ctx: var OdinCodegenCtx): tuple[errMatch, hasWild, overEnum: bool] =
@@ -597,7 +608,9 @@ proc genMatchStmt(ctx: var OdinCodegenCtx, e: Expr): string =
   let (errMatch, hasWild, overEnum) = detectMatchPatterns(e, ctx)
   for arm in e.arms:
     let patStr = genPatternStr(arm.pattern)
+    let armVars = ctx.definedVars     # each arm is its own scope (#143)
     let bodyStr = ctx.genOdinExpr(arm.body)
+    ctx.definedVars = armVars
     var caseVal = ""
     if arm.pattern != nil and arm.pattern.kind == pkVar and
        "." in arm.pattern.name:
@@ -720,9 +733,9 @@ proc qualifiedForeignFn(ctx: OdinCodegenCtx, name: string): string =
   ## this itself through the emitted `import`; Odin never merges package
   ## scopes, so the owning package has to be found and spelled out here.
   if ctx.module.declaresCallable(name) or name in ctx.providerParams: return ""
-  for modName, im in ctx.realModules:
+  for id, im in ctx.realModules:
     if im.declaresCallable(name):
-      return modName.replace("-", "_") & "." & name
+      return ctx.pkgQualifier(id) & name
   ""
 
 proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
@@ -747,13 +760,13 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   let foreign = ctx.qualifiedForeignFn(e.name)
   if foreign != "": return foreign
   let co = constOrigin(ctx.module, ctx.realModules, e.name)
-  if co != "": return co.replace("-", "_") & "." & e.name   # R11, A33
+  if co != NoModule: return ctx.pkgQualifier(co) & e.name   # R11, A33
   e.name
 
 proc genOdinPoolOp(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A pool operation: `codegen_common.poolOpProc`, the pool by pointer.
   let origin = declOrigin(ctx.module, ctx.realModules, e.poolRef.refName, {dkPool})
-  let pre = if origin == "": "" else: origin.replace("-", "_") & "."   # R11, A36
+  let pre = ctx.pkgQualifier(origin)   # R11, A36
   var args = @["&" & pre & e.poolRef.refName]
   for a in e.poolOperands: args.add ctx.genOdinExpr(a)
   "rt." & poolOpProc(e.poolOp) & "(" & args.join(", ") & ")"
@@ -761,13 +774,11 @@ proc genOdinPoolOp(ctx: var OdinCodegenCtx, e: Expr): string =
 proc odinSlabPkg(ctx: OdinCodegenCtx, name: string): string =
   ## The package a slab is reached through when another module declares it,
   ## "" for this module's own (R11, A36 — as a pool is).
-  let origin = declOrigin(ctx.module, ctx.realModules, name, {dkSlab})
-  if origin == "": "" else: origin.replace("-", "_") & "."
+  ctx.pkgQualifier(declOrigin(ctx.module, ctx.realModules, name, {dkSlab}))
 
 proc odinArenaPkg(ctx: OdinCodegenCtx, name: string): string =
   ## The package an arena is reached through, "" for this module's own.
-  let origin = declOrigin(ctx.module, ctx.realModules, name, {dkArena})
-  if origin == "": "" else: origin.replace("-", "_") & "."
+  ctx.pkgQualifier(declOrigin(ctx.module, ctx.realModules, name, {dkArena}))
 
 proc odinSlab(ctx: var OdinCodegenCtx, name: string): string =
   ## A slab by pointer, as the runtime takes it.
@@ -780,7 +791,7 @@ proc odinSlabOwns*(ctx: OdinCodegenCtx, d: Decl): seq[string] =
   ## procs do (genOdinSlab) with the runtime's reflective drop. Asked of the
   ## slab's own module, so its declaration and every use agree.
   let origin = declOrigin(ctx.module, ctx.realModules, d.name, {dkSlab})
-  let home = if origin == "": ctx.module else: ctx.realModules[origin]
+  let home = if origin == NoModule: ctx.module else: ctx.realModules[origin]
   if ctx.res.owning(home, d.slabElem): @[""] else: @[]
 
 proc genOdinSlabOp(ctx: var OdinCodegenCtx, e: Expr): string =
@@ -897,11 +908,9 @@ proc importedTypeMember(ctx: OdinCodegenCtx, e: Expr): string =
   ## importedTypeQualifier already does in TYPE position. "" when the receiver
   ## is not an imported type name.
   if e.receiver == nil or e.receiver.kind != exkVar: return ""
-  let origin = moduleDeclaringType(ctx.module, e.receiver.name)
-  if origin.len == 0: return ""
-  let pkg = origin.replace("-", "_")
-  if pkg == ctx.moduleName.replace("-", "_"): return ""
-  pkg & "." & e.receiver.name & "." & e.fieldName
+  let pkg = ctx.pkgQualifier(moduleDeclaringType(ctx.module, e.receiver.name))
+  if pkg == "": return ""
+  pkg & e.receiver.name & "." & e.fieldName
 
 proc fieldByReceiverKind(ctx: var OdinCodegenCtx, e: Expr): string =
   ## The two `.name` readings decided by what the RECEIVER is rather than by
@@ -1092,7 +1101,14 @@ proc genUnary(ctx: var OdinCodegenCtx, e: Expr): string =
               of uoNot: "!"
               of uoComposition: raiseAssert "codegen_odin: a `+ Type` " &
                 "composition member reached the expression emitter"
-  opStr & ctx.genOdinExpr(e.operand)
+  let operand = ctx.genOdinExpr(e.operand)
+  # `-i8(128)` overflows the constant before the minus applies; the minimum
+  # of a signed type is written `i8(-128)` (#132).
+  if e.unaryOp == uoNeg and e.operand.kind == exkLit and e.operand.litKind == lkInt:
+    let open = operand.find('(')
+    if open > 0 and operand.endsWith(")"):
+      return operand[0 .. open] & "-" & operand[open + 1 .. ^1]
+  opStr & operand
 
 proc genOdinCast(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `x ~u16` / `x ^u32`: Odin's type conversion, `u16(x)`.

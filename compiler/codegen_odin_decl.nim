@@ -607,11 +607,18 @@ proc genRecordType*(ctx: var OdinCodegenCtx, d: Decl): string =
   var invariantChecks: seq[string]
   # The predicate's bare names are the type's fields; the checker recorded
   # them (Resolution.ownerFields), so they print as `self.<name>`.
-  var checkCtx = OdinCodegenCtx(definedVars: initHashSet[string](), indent: 0,
-                                module: ctx.module, realModules: ctx.realModules,
-                                res: ctx.res)
+  # Built only for a type that has an invariant: the context holds the module
+  # by value, so making one copies every declaration (once per type, that made
+  # the emit quadratic in the number of types, #23).
+  var checkCtx: OdinCodegenCtx
+  var checkCtxMade = false
   for member in d.typeMembers:
     if member.kind == dkExpr:
+      if not checkCtxMade:
+        checkCtx = OdinCodegenCtx(definedVars: initHashSet[string](), indent: 0,
+                                  module: ctx.module, realModules: ctx.realModules,
+                                  res: ctx.res, used: ctx.used, shapes: ctx.shapes)
+        checkCtxMade = true
       # A test and a runtime call, NOT `assert`: `-disable-assert` strips
       # those, which would undo the ruling that invariants survive a release
       # build (2026-08-25, ruling 5). `tuckNoInvariants` is the one opt-out,
@@ -716,7 +723,8 @@ proc newHandlerCtx*(ctx: OdinCodegenCtx, d: Decl): OdinCodegenCtx =
   result = OdinCodegenCtx(definedVars: initHashSet[string](),
                           indent: ctx.indent + 1,
                           module: ctx.module, realModules: ctx.realModules,
-                          errPolicy: ctx.errPolicy, res: ctx.res)
+                          errPolicy: ctx.errPolicy, res: ctx.res, used: ctx.used,
+                          shapes: ctx.shapes)
 
 proc adoptHandlerCtx*(ctx: var OdinCodegenCtx, hctx: OdinCodegenCtx) =
   ## Anything the handler bodies hoisted belongs to the enclosing file.
@@ -912,14 +920,12 @@ proc genOdinRegister*(ctx: OdinCodegenCtx, m: Module): string =
   result = RegisterProc & " :: proc() {\n"
   for h in foreignHandlers(m):
     let reg = ctx.res.registryOfHandler(h)
-    let origin = if reg == nil: "" else:
-      declOrigin(m, ctx.realModules, reg.name, {dkRegistry})
-    let pre = if origin == "": "" else: origin.replace("-", "_") & "."
+    let pre = if reg == nil: "" else:
+      ctx.pkgQualifier(declOrigin(m, ctx.realModules, reg.name, {dkRegistry}))
     result.add("\tappend(&" & pre & ctx.res.handlerListOf(h) & ", " &
                handlerProcName(h) & ")\n")
   for (iface, o) in movedSatisfiers(m):
-    let origin = moduleDeclaringType(m, iface.name)
-    let pre = if origin == "": "" else: origin.replace("-", "_") & "."
+    let pre = ctx.pkgQualifier(moduleDeclaringType(m, iface.name))
     for mem in iface.ifaceMembers:
       if mem == nil or mem.kind != dkFn: continue
       result.add("\t" & pre & implVarName(iface.name, mem.name, o.name) & " = " &
@@ -1238,12 +1244,14 @@ proc bitConsts*(bf: BitFieldInfo, ind: string): seq[string] =
                "_WIDTH)) - 1")
 
 proc bitGetter*(bf: BitFieldInfo, regName, ind: string): string =
-  ## A range reads as a masked u32; a single bit reads as a bool.
+  ## A range reads as a masked u32; a single bit reads as a bool. Every access
+  ## to the register is volatile (base:intrinsics).
+  let load = "intrinsics.volatile_load(" & regName & ")"
   let body = if bf.isRange:
-               "return (" & regName & "^ >> u32(" & bf.prefix & "_SHIFT)) & " &
+               "return (" & load & " >> u32(" & bf.prefix & "_SHIFT)) & " &
                  bf.prefix & "_MASK"
              else:
-               "return (" & regName & "^ & (u32(1) << u32(" & bf.prefix &
+               "return (" & load & " & (u32(1) << u32(" & bf.prefix &
                  "_SHIFT))) != 0"
   let retT = if bf.isRange: "u32" else: "bool"
   ind & bf.prefix & "_get :: proc() -> " & retT & " {\n" &
@@ -1252,17 +1260,19 @@ proc bitGetter*(bf: BitFieldInfo, regName, ind: string): string =
 proc bitSetter*(bf: BitFieldInfo, regName, ind: string): string =
   ## A range clears its mask before OR-ing the shifted value in; a single bit
   ## sets or clears one mask.
+  let load = "intrinsics.volatile_load(" & regName & ")"
+  let store = "intrinsics.volatile_store(" & regName & ", "
   if bf.isRange:
     return ind & bf.prefix & "_set :: proc(value: u32) {\n" &
            ind & "\tshifted := (value & " & bf.prefix & "_MASK) << u32(" &
              bf.prefix & "_SHIFT)\n" &
-           ind & "\t" & regName & "^ = (" & regName & "^ &~ (" & bf.prefix &
-             "_MASK << u32(" & bf.prefix & "_SHIFT))) | shifted\n" &
+           ind & "\t" & store & "(" & load & " &~ (" & bf.prefix &
+             "_MASK << u32(" & bf.prefix & "_SHIFT))) | shifted)\n" &
            ind & "}\n"
   ind & bf.prefix & "_set :: proc(on: bool) {\n" &
     ind & "\tmask := u32(1) << u32(" & bf.prefix & "_SHIFT)\n" &
-    ind & "\tif on { " & regName & "^ |= mask } else { " & regName &
-      "^ &~= mask }\n" & ind & "}\n"
+    ind & "\tif on { " & store & load & " | mask) } else { " & store &
+      load & " &~ mask) }\n" & ind & "}\n"
 
 proc genRegister*(ctx: OdinCodegenCtx, d: Decl, ind: string): string =
   ## Memory-mapped register. Every backend now lowers this the same way —
@@ -1445,7 +1455,7 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## One top-level declaration. Every DeclKind is named, so a new one fails
   ## to compile here until it is decided (CLAUDE.md).
   if d == nil: return ""
-  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.span.file.startsWith(ImportedTypeMarker):
+  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.origin != NoModule:
     return ""  # defined in its own module; that module's Odin file has it
   let ind = "  ".repeat(ctx.indent)
   case d.kind

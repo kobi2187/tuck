@@ -1,41 +1,42 @@
 module _45_intersection;
 
 import rt = tuck_rt;
+import core.volatile : volatileLoad, volatileStore;
 
 __gshared uint* tuckˑregisterˑSIGNAL_OUT = cast(uint*)(0x40011000);
 enum tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT = 0;
 enum tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT = 1;
 enum tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT = 2;
 bool tuckˑregisterˑSIGNAL_OUT_NS_GREEN_get() {
-    return (*tuckˑregisterˑSIGNAL_OUT & (1u << tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑSIGNAL_OUT) & (1u << tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT)) != 0;
 }
 void tuckˑregisterˑSIGNAL_OUT_NS_GREEN_set(bool value) {
-    if (value) *tuckˑregisterˑSIGNAL_OUT |= (1u << tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT);
-    else *tuckˑregisterˑSIGNAL_OUT &= ~(1u << tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT);
+    if (value) volatileStore(tuckˑregisterˑSIGNAL_OUT, volatileLoad(tuckˑregisterˑSIGNAL_OUT) | (1u << tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT));
+    else volatileStore(tuckˑregisterˑSIGNAL_OUT, volatileLoad(tuckˑregisterˑSIGNAL_OUT) & ~(1u << tuckˑregisterˑSIGNAL_OUT_NS_GREEN_SHIFT));
 }
 bool tuckˑregisterˑSIGNAL_OUT_EW_GREEN_get() {
-    return (*tuckˑregisterˑSIGNAL_OUT & (1u << tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑSIGNAL_OUT) & (1u << tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT)) != 0;
 }
 void tuckˑregisterˑSIGNAL_OUT_EW_GREEN_set(bool value) {
-    if (value) *tuckˑregisterˑSIGNAL_OUT |= (1u << tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT);
-    else *tuckˑregisterˑSIGNAL_OUT &= ~(1u << tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT);
+    if (value) volatileStore(tuckˑregisterˑSIGNAL_OUT, volatileLoad(tuckˑregisterˑSIGNAL_OUT) | (1u << tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT));
+    else volatileStore(tuckˑregisterˑSIGNAL_OUT, volatileLoad(tuckˑregisterˑSIGNAL_OUT) & ~(1u << tuckˑregisterˑSIGNAL_OUT_EW_GREEN_SHIFT));
 }
 bool tuckˑregisterˑSIGNAL_OUT_WALK_get() {
-    return (*tuckˑregisterˑSIGNAL_OUT & (1u << tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑSIGNAL_OUT) & (1u << tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT)) != 0;
 }
 void tuckˑregisterˑSIGNAL_OUT_WALK_set(bool value) {
-    if (value) *tuckˑregisterˑSIGNAL_OUT |= (1u << tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT);
-    else *tuckˑregisterˑSIGNAL_OUT &= ~(1u << tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT);
+    if (value) volatileStore(tuckˑregisterˑSIGNAL_OUT, volatileLoad(tuckˑregisterˑSIGNAL_OUT) | (1u << tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT));
+    else volatileStore(tuckˑregisterˑSIGNAL_OUT, volatileLoad(tuckˑregisterˑSIGNAL_OUT) & ~(1u << tuckˑregisterˑSIGNAL_OUT_WALK_SHIFT));
 }
 
 __gshared uint* tuckˑregisterˑDETECT_IN = cast(uint*)(0x40011004);
 enum tuckˑregisterˑDETECT_IN_NS_LOOP_SHIFT = 0;
 enum tuckˑregisterˑDETECT_IN_EW_LOOP_SHIFT = 1;
 bool tuckˑregisterˑDETECT_IN_NS_LOOP_get() {
-    return (*tuckˑregisterˑDETECT_IN & (1u << tuckˑregisterˑDETECT_IN_NS_LOOP_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑDETECT_IN) & (1u << tuckˑregisterˑDETECT_IN_NS_LOOP_SHIFT)) != 0;
 }
 bool tuckˑregisterˑDETECT_IN_EW_LOOP_get() {
-    return (*tuckˑregisterˑDETECT_IN & (1u << tuckˑregisterˑDETECT_IN_EW_LOOP_SHIFT)) != 0;
+    return (volatileLoad(tuckˑregisterˑDETECT_IN) & (1u << tuckˑregisterˑDETECT_IN_EW_LOOP_SHIFT)) != 0;
 }
 
 enum tuckˑregistryˑIntersectionKind { PhaseChanged, Preempted }

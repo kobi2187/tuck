@@ -1,0 +1,160 @@
+# std.perf — measurement only: a stopwatch, a counter, a histogram.
+#
+# Pure values. A parameter cannot be written through (TK-TY15), so every
+# operation takes the old value and returns the new one, and the caller
+# rebinds. The clock is a PARAMETER (`nowMs`), not something the module reads:
+# that keeps it deterministic and testable, and the one caller that owns a
+# clock (std/time's `nowMs`) passes it in.
+#
+# Counter's reader is `total`, not `count`: fields and fns share the call
+# namespace and seq already exports a `count` fn.
+import seq
+import iter
+
+# --- Stopwatch ----------------------------------------------------------------
+# Elapsed time accumulates across start/stop pairs; while running, the time
+# since the last start is added on read.
+type Stopwatch:
+  startedAtMs: u64
+  running: bool
+  accumulatedMs: u64
+
+fn newStopwatch() -> Stopwatch:
+  return {startedAtMs: 0, running: false, accumulatedMs: 0} Stopwatch
+
+fn start({s: Stopwatch, nowMs: u64}) -> Stopwatch:
+  if s.running:
+    return s
+  return {startedAtMs: nowMs, running: true, accumulatedMs: s.accumulatedMs} Stopwatch
+
+fn stop({s: Stopwatch, nowMs: u64}) -> Stopwatch:
+  if not s.running:
+    return s
+  let total = s.accumulatedMs + (nowMs - s.startedAtMs)
+  return {startedAtMs: 0, running: false, accumulatedMs: total} Stopwatch
+
+fn isRunning({s: Stopwatch}) -> bool:
+  return s.running
+
+fn elapsedMs({s: Stopwatch, nowMs: u64}) -> u64:
+  if s.running:
+    return s.accumulatedMs + (nowMs - s.startedAtMs)
+  return s.accumulatedMs
+
+# --- Counter ------------------------------------------------------------------
+type Counter:
+  name: str
+  value: i64
+
+fn newCounter({name: str}) -> Counter:
+  return {name: name, value: 0} Counter
+
+fn adjust({c: Counter, delta: i64}) -> Counter:
+  return {name: c.name, value: c.value + delta} Counter
+
+fn total({c: Counter}) -> i64:
+  return c.value
+
+# --- Histogram ----------------------------------------------------------------
+# Every sample is kept, so percentiles are exact. A bounded-memory sketch is a
+# different module; this one is for runs measured in thousands, not billions.
+type Histogram:
+  name: str
+  samples: Seq[u64]
+
+fn newHistogram({name: str}) -> Histogram:
+  let empty: Seq[u64] = []
+  return {name: name, samples: empty} Histogram
+
+fn addSample({h: Histogram, ms: u64}) -> Histogram:
+  let grown = {items: h.samples, value: ms} push
+  return {name: h.name, samples: grown} Histogram
+
+fn sampleCount({h: Histogram}) -> int:
+  return h.samples.len
+
+# The p-th percentile (0..100) by the nearest-rank method; 0 for no samples.
+fn percentile({h: Histogram, p: f64}) -> u64:
+  let n = h.samples.len
+  if n == 0:
+    return 0
+  let sorted = {items: h.samples} sort
+  var rank = 0
+  if p >= 100.0:
+    rank = n - 1
+  elif p > 0.0:
+    let scaled = p /f 100.0 * {value: n} f64
+    rank = scaled ~int
+    if {value: rank} f64 < scaled:
+      rank = rank + 1
+    rank = rank - 1
+    if rank < 0:
+      rank = 0
+  return sorted[rank]
+
+fn meanMs({h: Histogram}) -> u64:
+  let n = h.samples.len
+  if n == 0:
+    return 0
+  var sum: u64 = 0
+  for i in 0 .. n - 1:
+    sum = sum + h.samples[i]
+  return sum /i {value: n} u64
+
+fn checkStopwatch() -> int:
+  var sw = newStopwatch
+  if {s: sw} isRunning:
+    return 1
+  sw = {s: sw, nowMs: 1000} start
+  if not {s: sw} isRunning:
+    return 2
+  if {s: sw, nowMs: 1250} elapsedMs != 250:
+    return 3
+  sw = {s: sw, nowMs: 1300} stop
+  if {s: sw, nowMs: 9999} elapsedMs != 300:
+    return 4
+  sw = {s: sw, nowMs: 2000} start
+  sw = {s: sw, nowMs: 2100} stop
+  if {s: sw, nowMs: 5000} elapsedMs != 400:
+    return 5
+  let twice = {s: sw, nowMs: 3000} stop
+  if {s: twice, nowMs: 3500} elapsedMs != 400:
+    return 6
+  return 0
+
+fn checkCounter() -> int:
+  var c = {name: "restarts"} newCounter
+  c = {c: c, delta: 1} adjust
+  c = {c: c, delta: 4} adjust
+  c = {c: c, delta: -2} adjust
+  if {c: c} total != 3:
+    return 7
+  if c.name != "restarts":
+    return 8
+  return 0
+
+fn checkHistogram() -> int:
+  var h = {name: "latency"} newHistogram
+  if {h: h, p: 50.0} percentile != 0 or {h: h} meanMs != 0:
+    return 9
+  for v in [40, 10, 30, 20, 50]:
+    let ms = {value: v} u64
+    h = {h: h, ms: ms} addSample
+  if {h: h} sampleCount != 5:
+    return 10
+  if {h: h, p: 100.0} percentile != 50 or {h: h, p: 0.0} percentile != 10:
+    return 11
+  if {h: h, p: 50.0} percentile != 30 or {h: h, p: 20.0} percentile != 10:
+    return 12
+  if {h: h} meanMs != 30:
+    return 13
+  return 0
+
+fn main() -> int:
+  let a = checkStopwatch
+  if a != 0:
+    return a
+  let b = checkCounter
+  if b != 0:
+    return b
+  return checkHistogram

@@ -5,10 +5,12 @@
 # flags/entry point into one Odin source file. The public entry points
 # (`emitOdin`/`emitOdinModule`) sit above genOdinDecl/genOdinExpr in the
 # import order, same shape as codegen_emit.nim for the Nim backend.
-import ast, ast_ops, strutils, tables, algorithm
+import shape_pool
+import ast, ast_ops, strutils, tables, algorithm, sets
 import resolution
 import ast_query
 import codegen_common
+import name_prefix
 import codegen_odin_ctx
 import codegen_odin_util
 
@@ -63,13 +65,30 @@ proc runtimeUsers*(m: Module, actorNames: var seq[string],
     if runsActor(d): actorNames.add(d.name)
     elif d.kind == dkTask: hasTasks = true
 
+proc moduleImports(ctx: OdinCodegenCtx, dirPrefix: string): seq[string] =
+  ## One import per module the package reached through (`pkgQualifier` records
+  ## each), by the module's alias. Odin rejects an import nothing uses, and
+  ## this list cannot hold one: it is the set of qualifiers actually written.
+  for id in ctx.used.byName:
+    result.add("import " & moduleAlias(id) & " \"" & dirPrefix & "mod_" &
+               moduleSlug(id) & "\"")
+
+proc emitOdinShapes*(pool: ShapePool): string =
+  ## The generated module holding the program's record shapes (ShapesModule),
+  ## or "" when no module asked for one.
+  if pool == nil or pool.defs.len == 0: return ""
+  result = odinFeatures & "package tuck_" & pool.module & "\n\n"
+  for _, def in pool.defs: result.add(def & "\n\n")
+
 proc emitOdinModule*(name: string, m: Module, res: Resolution,
-                     realModules = initTable[string, Module]()): string =
+                     realModules = initTable[ModuleId, Module](),
+                     shapes: ShapePool = nil): string =
   ## An imported Tuck module as its own Odin package (`package tuck_<name>`,
   ## in `mod_<name>/`): only the imports its body actually references, then the
   ## hoisted types, then its declarations. No entry point.
   let pkg = name.replace("-", "_")
-  var ctx = newOdinCtx(m, realModules, name, res, modPrefix = pkg & "_")
+  var ctx = newOdinCtx(m, realModules, name, res, modPrefix = pkg & "_",
+                       shapes = shapes)
   var (body, _) = ctx.emitBody(m)
   if hasRunningActors(m): body.add(ctx.genOdinActorsBoot(m) & "\n")
   # Odin package names are GLOBAL, not scoped to their directory, so a Tuck
@@ -80,12 +99,10 @@ proc emitOdinModule*(name: string, m: Module, res: Resolution,
   if name == VariantsModule: res.add(variantsHeader(m, "//"))
   # This file lives in mod_<pkg>/, so siblings are one level up.
   var imports: seq[string]
-  if "fmt." in body: imports.add("import \"core:fmt\"")
+  if "fmt.println(" in body: imports.add("import \"core:fmt\"")
+  if "intrinsics.volatile_" in body: imports.add("import \"base:intrinsics\"")
   if "rt." in body: imports.add("import rt \"../tuckrt\"")
-  for modName in realModules.keys:
-    let dep = modName.replace("-", "_")
-    if dep != pkg and (dep & ".") in body:
-      imports.add("import " & dep & " \"../mod_" & dep & "\"")
+  imports.add(ctx.moduleImports("../"))
   # C libraries bound by extern blocks. `foreign import` is only legal at
   # package top level, so the emitter collects the names during emitBody and
   # declares them here — this is what makes the binding link.
@@ -103,22 +120,23 @@ proc emitOdinModule*(name: string, m: Module, res: Resolution,
 
 proc shouldImportFmt(body, mains: string): bool =
   ## Check if fmt import is needed.
-  "fmt." in body or "fmt." in mains
+  "fmt.println(" in body or "fmt.println(" in mains
 
 proc shouldImportOs(m: Module, body: string): bool =
   ## Check if os import is needed.
   let mainFn = mainDecl(m)
-  (mainFn != nil and mainFn.returnsValue) or "os." in body
+  (mainFn != nil and mainFn.returnsValue) or "os.exit(" in body
 
-proc slabPackages(m: Module, real: Table[string, Module]): seq[string] =
+proc slabPackages(m: Module, real: ModuleMap): seq[ModuleId] =
   ## The modules declaring slabs, "" for the entry module's own. The entry
   ## point reports their slabs and calls each one's `tuckSlabsRelease`, so it
   ## imports each — and `rt` — though its body may name neither.
-  if declaresSlab(m): result.add ""
-  var imported: seq[string]
-  for modName, other in real:
-    if other != m and declaresSlab(other): imported.add modName
-  result.add imported.sorted
+  if declaresSlab(m): result.add NoModule
+  var imported: seq[ModuleId]
+  for id, other in real:
+    if other.id != m.id and declaresSlab(other): imported.add id
+  imported.sort(cmpByName)
+  result.add imported
 
 proc shouldImportRt(m: Module, body, mains: string): bool =
   ## Check if runtime import is needed.
@@ -146,7 +164,7 @@ proc tracksAllocations(m: Module, body, mains: string): bool =
   shouldImportRt(m, body, mains) or allocates(m)
 
 proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
-                 realModules: Table[string, Module]): seq[string] =
+                 realModules: ModuleMap): seq[string] =
   ## Only import what the emitted body actually uses — Odin rejects unused
   ## imports, so an unconditional header would fail to compile on any program
   ## that happens not to touch the runtime.
@@ -157,6 +175,8 @@ proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
     result.add("import \"core:fmt\"")
   if shouldImportOs(m, body):
     result.add("import \"core:os\"")
+  if "intrinsics.volatile_" in body:
+    result.add("import \"base:intrinsics\"")
   # The entry point's slab reports and releases name the runtime and each
   # slab's package, though the body may name neither (genEntryPoint).
   let slabPkgs = slabPackages(m, realModules)
@@ -167,11 +187,7 @@ proc odinImports*(ctx: OdinCodegenCtx, m: Module, body, mains: string,
   # qualified as `<name>.fn` — import each one the body actually calls. The
   # alias keeps the Tuck name even when it shadows an Odin core package (a
   # module called `io` is fine as long as core:io isn't also imported).
-  for modName in realModules.keys:
-    let pkg = modName.replace("-", "_")
-    if (pkg & ".") in body or (pkg & ".") in mains or modName in slabPkgs or
-       modName in bootPkgs:
-      result.add("import " & pkg & " \"./mod_" & pkg & "\"")
+  result.add(ctx.moduleImports("./"))
   # C libraries bound by extern blocks — see emitOdinModule for why these are
   # hoisted here rather than emitted beside the `foreign` block.
   for alias, spec in ctx.foreignLibs:
@@ -217,8 +233,7 @@ proc exitLines(ctx: OdinCodegenCtx, m: Module, tracks: bool): string =
   if declaresResources(m): result.add("\t" & ResourceShutdownProc & "()\n")
   # The slab proposal's exit report (Q3): cells never freed, per slab.
   for s in reportedSlabs(m, ctx.realModules):
-    let pre = if s.origin == "": "" else: s.origin.replace("-", "_") & "."
-    result.add("\trt.tuckSlabReport(&" & pre & s.name & ")\n")
+    result.add("\trt.tuckSlabReport(&" & ctx.pkgQualifier(s.origin) & s.name & ")\n")
   # The allocation report, EXPLICITLY and last. `os.exit` below is `_exit`:
   # it runs no defers and no finalizers, which is the same reason the
   # resource registry closes its tables by hand right above. The exit lives
@@ -228,16 +243,15 @@ proc exitLines(ctx: OdinCodegenCtx, m: Module, tracks: bool): string =
   # no-op unless TUCK_TRACK), so it names what the program leaked rather
   # than the slabs, which live until exit by design.
   for p in slabPackages(m, ctx.realModules):
-    result.add("\t" & (if p == "": "" else: p.replace("-", "_") & ".") &
-               SlabsReleaseProc & "()\n")
+    result.add("\t" & ctx.pkgQualifier(p) & SlabsReleaseProc & "()\n")
   # ...and every actor's state, after the drain above left them idle.
   let fieldDrops = ctx.actorFieldReleases(m)
   if tracks and fieldDrops.len > 0:
     result.add("\twhen rt.TUCK_TRACK {\n" & fieldDrops & "\t}\n")
   if tracks: result.add("\trt.tuckTrackCheck()\n")
 
-proc bootLines(actorNames: seq[string], hasTasks: bool,
-               bootPkgs: seq[string]): string =
+proc bootLines(ctx: OdinCodegenCtx, actorNames: seq[string], hasTasks: bool,
+               bootPkgs: seq[ModuleId]): string =
   ## The runtime boot the entry point runs before main: the scheduler, then
   ## this module's actors, then every other module's own (A18).
   if actorNames.len == 0 and not hasTasks and bootPkgs.len == 0: return ""
@@ -250,7 +264,7 @@ proc bootLines(actorNames: seq[string], hasTasks: bool,
   # Another module's actors start themselves: their drains and slots live in
   # that package.
   for p in bootPkgs:
-    result.add("\t" & p.replace("-", "_") & "." & ActorsBootProc & "()\n")
+    result.add("\t" & ctx.pkgQualifier(p) & ActorsBootProc & "()\n")
 
 proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string =
   ## Tuck's `fn main` is a plain proc; Odin's entry point calls it. Static
@@ -284,13 +298,13 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string
   # Handlers declared for another module's registry are handed over before
   # anything can raise: each such module's own, then this module's.
   for p in registerModules(m, ctx.realModules):
-    result.add("\t" & p.replace("-", "_") & "." & RegisterProc & "()\n")
+    result.add("\t" & ctx.pkgQualifier(p) & RegisterProc & "()\n")
   if registersAnything(m): result.add("\t" & RegisterProc & "()\n")
   var actorNames: seq[string]
   var hasTasks = false
   runtimeUsers(m, actorNames, hasTasks)
   let bootPkgs = actorBootModules(m, ctx.realModules)
-  result.add(bootLines(actorNames, hasTasks, bootPkgs))
+  result.add(ctx.bootLines(actorNames, hasTasks, bootPkgs))
   if mains != "": result.add(mains & "\n")
   # A value-returning `fn main` IS the process exit code (mirrors tuck.nim).
   let mainFn = mainDecl(m)
@@ -315,8 +329,8 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string
 const odinPackage = odinFeatures & "package main\n\n"
 
 proc emitOdin*(m: Module, res: Resolution,
-               realModules = initTable[string, Module](),
-               moduleName = "main"): string =
+               realModules = initTable[ModuleId, Module](),
+               moduleName = "main", shapes: ShapePool = nil): string =
   ## `res` is the semantic layer typechecking produced. Taking it as an
   ## argument is the point: this stage cannot run before the one that fills
   ## it, and now the signature says so instead of a comment on checkOrDie.
@@ -324,13 +338,16 @@ proc emitOdin*(m: Module, res: Resolution,
   # keyed by fn name alone, so a later module's marking overwrote an earlier
   # one's; they are keyed by module now (analysis_provenance.summaries), and
   # everything the emitter needs was decided in backend_prepare.
-  var ctx = newOdinCtx(m, realModules, moduleName, res)
+  var ctx = newOdinCtx(m, realModules, moduleName, res, shapes = shapes)
   let (body, mains) = ctx.emitBody(m)
   result = odinPackage
+  # The entry point reaches through modules too (boot, register, slab release),
+  # so it is written before the header that imports them.
+  let entry = ctx.genEntryPoint(m, body, mains)
   let imports = ctx.odinImports(m, body, mains, realModules)
   if imports.len > 0:
     result.add(imports.join("\n") & "\n\n")
   for h in ctx.hoisted:
     result.add(h & "\n\n")
   result.add(body)
-  result.add(ctx.genEntryPoint(m, body, mains))
+  result.add(entry)

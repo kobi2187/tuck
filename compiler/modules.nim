@@ -82,6 +82,10 @@ type
 # New compiler build invalidates every cache (AST layout may have changed).
 const buildStamp = CompileDate & " " & CompileTime
 
+proc id*(lm: LoadedModule): ModuleId =
+  ## The module's identity, numbered on first sight (module_ids).
+  moduleId(lm.name)
+
 proc lexSource*(source: string): seq[Token] =
   ## Text to tokens. Raises SyntaxError on a malformed source.
   var lex = Lexer(source: source, position: 0, line: 1, column: 1,
@@ -452,7 +456,7 @@ proc resolveImport*(importerPath, module: string): string =
 # `import time` makes time's TYPES usable unqualified — you write `Milliseconds`,
 # not `time::Milliseconds`. Rather than teach every lookup in the checker to
 # search imported modules, the imported type declarations are copied into the
-# importer's own decl list, tagged with ImportedTypeMarker so later stages can
+# importer's own decl list, stamped with their origin module so later stages can
 # still tell them apart (codegen skips them: the target's own import already
 # brings them in).
 proc importedShape(d: Decl, sp: Span): Decl =
@@ -499,10 +503,10 @@ proc importedCopy*(d: Decl, imp: string): Decl =
   ## with its origin (`isImportedCopy` in ast_query reads the stamp back).
   ## A DEEP copy under fresh ids: sharing the original's nodes put two
   ## objects under one id once each backend took its own copy (A31).
-  let sp = Span(line: d.span.line, col: d.span.col,
-                file: ImportedTypeMarker & ":" & imp)
+  let sp = Span(line: d.span.line, col: d.span.col)
   result = deepCopy(importedShape(d, sp))
   result.span = sp
+  result.origin = moduleId(imp)
   freshIds(result)
 
 proc holdsType(m: Module, name: string): bool =
@@ -518,7 +522,7 @@ proc injectable(m: Module): seq[Decl] =
   for d in m.decls:
     if d != nil and d.kind in {dkType, dkObject, dkInterface, dkActor} and
        not (d.kind == dkActor and d.actorGenerics.len > 0) and
-       not d.span.file.startsWith(ImportedTypeMarker):
+       d.origin == NoModule:
       result.add d
 
 proc injectImportedTypes*(prog: var seq[LoadedModule]) =
@@ -582,7 +586,8 @@ proc loadProgram*(entryPath: string): seq[LoadedModule] =
       raise newException(ModuleError, "import cycle through " & extractFilename(ap))
     visiting.incl(ap)
     # the entry module is always parsed fresh (it's what's being worked on)
-    let m = if isEntry: parseTuckFile(ap) else: loadModuleCached(ap)
+    var m = if isEntry: parseTuckFile(ap) else: loadModuleCached(ap)
+    m.id = moduleId(extractFilename(ap).changeFileExt(""))
     for imp in importsOf(m):
       visit(resolveImport(ap, imp), false)
     visiting.excl(ap)
@@ -612,7 +617,8 @@ proc loadProgramIndexed*(entryPath: string):
     if ap in visiting:
       raise newException(ModuleError, "import cycle through " & extractFilename(ap))
     visiting.incl(ap)
-    let m = if isEntry: parseTuckFile(ap) else: loadModuleCached(ap)
+    var m = if isEntry: parseTuckFile(ap) else: loadModuleCached(ap)
+    m.id = moduleId(extractFilename(ap).changeFileExt(""))
     for imp in importsOf(m):
       let ipath = resolveImport(ap, imp)
       if absolutePath(ipath) notin done and entryValid(idx, dir, imp):

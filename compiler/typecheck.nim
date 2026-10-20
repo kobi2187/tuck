@@ -1840,10 +1840,12 @@ proc synthBoolOp(lt, rt: Type, e: Expr): Type =
   Type(span: e.span, kind: tkNamed, name: "bool")
 
 proc isNumericLiteral(e: Expr): bool =
-  ## `5`, `2.5` or `-5`: a literal with no width of its own.
+  ## `5`, `2.5`, `-5` or `0.5 + 0.25`: a value with no width of its own.
   e != nil and
     ((e.kind == exkLit and e.litKind in {lkInt, lkFloat}) or
-     (e.kind == exkUnary and e.unaryOp == uoNeg and isNumericLiteral(e.operand)))
+     (e.kind == exkUnary and e.unaryOp == uoNeg and isNumericLiteral(e.operand)) or
+     (e.kind == exkBinary and e.binOp in {boAdd, boSub, boMul, boDivInt, boDivFloat} and
+      isNumericLiteral(e.left) and isNumericLiteral(e.right)))
 
 proc synthOperands(tc: var TypeChecker, e: Expr): (Type, Type) =
   ## Both operands of a binary expression. A numeric literal takes the type of
@@ -1918,11 +1920,17 @@ proc synthBranches(tc: var TypeChecker, e: Expr, guard: string): (Type, Type) =
   tc.varVariants = mergeVariants(thenVariants, tc.varVariants)
   (thenT, elseT)
 
+proc isNoValue(t: Type): bool =
+  ## `void` or `unit`: a statement's type. A call to a `-> void` fn and an
+  ## assignment are both statements, so an `if` may have one of each (#148).
+  t != nil and t.kind == tkNamed and t.name in ["void", "unit"]
+
 proc synthIf(tc: var TypeChecker, e: Expr): Type =
   ## Branches that produce values must agree on the type.
   tc.checkCondition(e.cond, e.span)
   let (thenT, elseT) = tc.synthBranches(e, tc.okGuardName(e.cond))
   if e.elseBranch != nil and not isFlexible(thenT) and not isFlexible(elseT) and
+     not (isNoValue(thenT) and isNoValue(elseT)) and
      not tc.compatible(thenT, elseT) and not tc.compatible(elseT, thenT):
     fail("Type Error: if branches produce different types: " &
          typeName(thenT) & " vs " & typeName(elseT), e.span)
@@ -2995,6 +3003,37 @@ proc checkWholeBind(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
     fail("Type Error: argument to '" & fnName & "' expects " &
          typeName(expected) & " but got " & typeName(t), arg.span)
 
+proc paramNamed(sig: FnSig, name: string): Type =
+  for p in sig.params:
+    if p.name == name: return p.typ
+
+proc boundNumeric(sig: FnSig, pt: Type, local: Table[string, Type]): Type =
+  ## The numeric type a bare type-parameter `pt` is already bound to, or nil.
+  if pt == nil or pt.kind != tkNamed or pt.name notin sig.generics: return nil
+  let bound = local.getOrDefault(pt.name)
+  if bound != nil and bound.kind == tkNamed and bound.name in NumericNames: bound
+  else: nil
+
+proc adoptBoundLiterals(tc: var TypeChecker, fnName: string, sig: FnSig,
+                        arg: Expr, fields: var seq[ArgField]) =
+  ## A generic fn's literal payload field takes the type its parameter was
+  ## already bound to by ANOTHER field: `{items: bytes, value: 27} push` with
+  ## `bytes: Seq[u8]` makes the 27 a `u8`, instead of binding `T` to `u8` and to
+  ## `int` (#136). The non-literal fields bind first; then each bare numeric
+  ## literal whose parameter is exactly a bound type parameter is retyped.
+  if sig.generics.len == 0: return
+  var local = initTable[string, Type]()
+  for i, f in arg.fields:
+    if isNumericLiteral(f.value): continue
+    let pt = sig.paramNamed(f.name)
+    if pt != nil:
+      tc.inferBindings(pt, fields[i].typ, sig.generics, local, fnName, fields[i].span)
+  for i, f in arg.fields:
+    if not isNumericLiteral(f.value): continue
+    let bound = boundNumeric(sig, sig.paramNamed(f.name), local)
+    if bound != nil:
+      tc.withExpected(bound): fields[i].typ = tc.synthesize(f.value)
+
 proc payloadFields(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
                    bindings: var Table[string, Type],
                    shapeKnown: var bool): seq[ArgField] =
@@ -3008,6 +3047,7 @@ proc payloadFields(tc: var TypeChecker, fnName: string, sig: FnSig, arg: Expr,
     tc.withFieldHints(hints):
       for f in arg.fields:
         result.add((f.name, tc.synthFieldValue(f), f.value.span))
+    tc.adoptBoundLiterals(fnName, sig, arg, result)
     return
   let t = tc.synthesize(arg)
   if isFlexible(t): return
@@ -4089,7 +4129,8 @@ proc synthLit(tc: var TypeChecker, e: Expr): Type =
     # The literal adopts the place's type, and a value that does not fit it
     # is an error here, not a silent wrap (issue #16, step 5).
     let known = evalConstExpr(tc.module, e)
-    if e.litKind == lkInt and known.isSome and not fitsIn(want.name, known.get):
+    let value = if known.isSome and tc.negatedLit: -known.get else: known.get(0)
+    if e.litKind == lkInt and known.isSome and not fitsIn(want.name, value):
       fail(dcTyCastOutOfRange, e.litValue & " does not fit " & want.name &
            "; write a type it fits, or a smaller value", e.span)
     return tc.namedType(want.name, e.span)
@@ -4280,8 +4321,16 @@ proc synthList(tc: var TypeChecker, e: Expr): Type =
   ## the type of the sequence"). That used to pass the checker and fail at
   ## the Nim compile; it is TK-TY20 now.
   var elemT: Type = nil
+  # A list going into a `Seq[u8]` / `Array[N, f32]` place hands each item the
+  # ELEMENT type, so a bare literal takes the width the place wants (#135).
+  let wanted = tc.asContainerWanted()
+  let elemWant = if wanted != nil: wanted.args[^1] else: nil
   for item in e.items:
-    let t = tc.synthesize(item)
+    var t: Type
+    if elemWant != nil:
+      tc.withExpected(elemWant): t = tc.synthesize(item)
+    else:
+      t = tc.synthesize(item)
     if isFlexible(elemT): elemT = t
   let (baseName, sizeArg) = tc.determineListBase(e, elemT)
   if isFlexible(elemT) and e.items.len == 0:
@@ -4374,7 +4423,11 @@ proc synthUnary(tc: var TypeChecker, e: Expr): Type =
   # right THERE and nowhere else (TK-TY42 refuses it as a value).
   let savedComposing = tc.composing
   tc.composing = e.unaryOp == uoComposition
+  # `-128` is one number: the minimum of an i8 is writable (#132).
+  let savedNeg = tc.negatedLit
+  tc.negatedLit = e.unaryOp == uoNeg and e.operand != nil and e.operand.kind == exkLit
   let t = tc.synthesize(e.operand)
+  tc.negatedLit = savedNeg
   tc.composing = savedComposing
   if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
 
@@ -4845,6 +4898,21 @@ proc isErrorDotRef(v: Expr): bool =
   v != nil and v.kind == exkField and v.receiver != nil and
     v.receiver.kind == exkVar and v.receiver.name == "Error"
 
+proc failIfBareForInvariantType(tc: TypeChecker, value: Expr, ret: Type,
+                                what: string) =
+  ## A type with an `invariant:` block is built through its constructor, which
+  ## runs the validator; a bare `{...}` returned where one is wanted skips it
+  ## and the Nim build is handed an unnamed tuple (#130). The constructor is
+  ## written out: `return {n: n} Pos`.
+  if value.kind != exkStruct or ret == nil or ret.kind != tkNamed: return
+  let d = tc.typeDeclsByName.getOrDefault(ret.name, nil)
+  if d == nil: return
+  for m in d.members:
+    if m.kind == dkExpr:
+      fail(dcTyAnonToNamed, what & " is a " & ret.name & ", which has an " &
+           "invariant, so it must be built with its constructor. Fix: write " &
+           "`{...} " & ret.name & "`", value.span)
+
 proc checkReturnValue(tc: var TypeChecker, e: Expr) =
   ## `return [d, c]` where the fn returns Seq[Animal]: the list literal takes
   ## its element type from the first item, so it must be wrapped element by
@@ -4860,6 +4928,7 @@ proc checkReturnValue(tc: var TypeChecker, e: Expr) =
     discard tc.synthesize(e.returnVal)
     return
   let what = "return value of '" & tc.currentFn & "'"
+  tc.failIfBareForInvariantType(e.returnVal, tc.currentRet, what)
   let retIface = tc.ifaceElemSlot(tc.currentRet)
   if retIface != "" and e.returnVal.kind == exkList:
     tc.checkIfaceElems(retIface, e.returnVal, what)
@@ -5122,7 +5191,8 @@ proc checkSendField(tc: var TypeChecker, e: Expr, p: Param,
   ## One handler param must be supplied by the payload, at a matching type.
   for f in given:
     if f.name != p.name: continue
-    let ft = tc.synthesize(f.value)
+    var ft: Type
+    tc.withExpected(p.typ): ft = tc.synthesize(f.value)
     if p.typ != nil and not tc.compatible(ft, p.typ):
       fail("Type Error: send field '" & p.name & "' expects " &
            typeName(p.typ) & " but got " & typeName(ft), f.value.span)
@@ -5378,7 +5448,10 @@ proc resolveIndex(tc: var TypeChecker, br: Expr, value: Expr,
     fail("Type Error: indexing takes exactly one index, got " &
          $br.brArgs.len, sp)
   let idx = br.brArgs[0]
-  let idxT = tc.synthesize(idx)
+  # The index is an int whatever the element or the place around it wants: the
+  # expected type of `{a: m[0]} near` is f32, and the 0 must not adopt it.
+  var idxT: Type
+  tc.withExpected(tc.namedType("int", sp)): idxT = tc.synthesize(idx)
   if not isFlexible(idxT) and not (idxT.kind == tkNamed and idxT.name == "int"):
     fail("Type Error: index must be int, got " & typeName(idxT), idx.span)
   var fields = @[("items", br.brReceiver), ("index", idx)]
@@ -6091,7 +6164,7 @@ proc failIfBadQualifiedType(m: Module, t: Type) =
   for c in t.children: failIfBadQualifiedType(m, c)
   if t.kind != tkNamed or t.qualifier.len == 0: return
   let written = t.qualifier.join("::") & "::" & t.name
-  let origin = moduleDeclaringType(m, t.name)
+  let origin = nameOf(moduleDeclaringType(m, t.name))
   let named = t.qualifier[^1]
   if origin == named or origin == t.qualifier.join("/"): return
   let why =
@@ -6413,8 +6486,8 @@ proc checkIfaceMatchesComplete(mods: seq[tuple[name, path: string, m: Module]]) 
   ## (`satisfies` may be attached from outside), and each one is a value the
   ## match can be handed.
   if ifaceMatches.len == 0: return
-  var real = initTable[string, Module]()
-  for (name, path, m) in mods: real[name] = m
+  var real = initTable[ModuleId, Module]()
+  for (_, _, m) in mods: real[m.id] = m
   for rec in ifaceMatches:
     if rec.catchAll: continue
     var missing: seq[string]
@@ -6519,7 +6592,7 @@ proc computeSelfWriters(mods: seq[tuple[name, path: string, m: Module]]): HashSe
 
 proc callWritesSelf(call: MemberCall, writers: HashSet[NodeId],
                     mods: seq[tuple[name, path: string, m: Module]],
-                    real: Table[string, Module]): bool =
+                    real: ModuleMap): bool =
   ## Does this call run a member that changes `self`? Through an interface
   ## value: when ANY satisfier's implementation of it does.
   if call.member != nil: return call.member.id in writers
@@ -6579,8 +6652,8 @@ proc checkSelfWrites(mods: seq[tuple[name, path: string, m: Module]]) =
   var writers = computeSelfWriters(mods)
   addHoistedWriters(mods, writers)
   semLayer.selfWriters = writers
-  var real = initTable[string, Module]()
-  for (name, path, m) in mods: real[name] = m
+  var real = initTable[ModuleId, Module]()
+  for (_, _, m) in mods: real[m.id] = m
   for call in memberCalls:
     if call.recvKind == rkVar: continue
     if not callWritesSelf(call, writers, mods, real): continue

@@ -1,0 +1,14 @@
+module mod_shapes_39_if_match_expr;
+
+struct TRec_count(T_count) {
+    T_count count;
+}
+
+struct TRec_arg(T_arg) {
+    T_arg arg;
+}
+
+struct TRec_value(T_value) {
+    T_value value;
+}
+

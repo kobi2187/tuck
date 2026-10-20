@@ -1,10 +1,10 @@
 module t;
 
 import rt = tuck_rt;
-import console = mod_console;
+import tuckˑmodˑconsole = mod_console;
 
 long tuckˑfnˑmain() {
-    console.printLine("hello from tuck");
+    tuckˑmodˑconsole.printLine("hello from tuck");
     return 7L;
 }
 

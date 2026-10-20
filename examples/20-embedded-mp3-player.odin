@@ -1,6 +1,7 @@
 #+feature dynamic-literals
 package main
 
+import "base:intrinsics"
 import rt "./tuckrt"
 
 tuckˑtypeˑHz :: distinct u32
@@ -35,36 +36,36 @@ tuckˑregisterˑDAC_CR := cast(^u32)(uintptr(0x40007400))
 tuckˑregisterˑDAC_CR_EN_SHIFT :: 0
 tuckˑregisterˑDAC_CR_BOFF_SHIFT :: 1
 tuckˑregisterˑDAC_CR_EN_get :: proc() -> bool {
-	return (tuckˑregisterˑDAC_CR^ & (u32(1) << u32(tuckˑregisterˑDAC_CR_EN_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑDAC_CR) & (u32(1) << u32(tuckˑregisterˑDAC_CR_EN_SHIFT))) != 0
 }
 tuckˑregisterˑDAC_CR_EN_set :: proc(on: bool) {
 	mask := u32(1) << u32(tuckˑregisterˑDAC_CR_EN_SHIFT)
-	if on { tuckˑregisterˑDAC_CR^ |= mask } else { tuckˑregisterˑDAC_CR^ &~= mask }
+	if on { intrinsics.volatile_store(tuckˑregisterˑDAC_CR, intrinsics.volatile_load(tuckˑregisterˑDAC_CR) | mask) } else { intrinsics.volatile_store(tuckˑregisterˑDAC_CR, intrinsics.volatile_load(tuckˑregisterˑDAC_CR) &~ mask) }
 }
 tuckˑregisterˑDAC_CR_BOFF_get :: proc() -> bool {
-	return (tuckˑregisterˑDAC_CR^ & (u32(1) << u32(tuckˑregisterˑDAC_CR_BOFF_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑDAC_CR) & (u32(1) << u32(tuckˑregisterˑDAC_CR_BOFF_SHIFT))) != 0
 }
 tuckˑregisterˑDAC_CR_BOFF_set :: proc(on: bool) {
 	mask := u32(1) << u32(tuckˑregisterˑDAC_CR_BOFF_SHIFT)
-	if on { tuckˑregisterˑDAC_CR^ |= mask } else { tuckˑregisterˑDAC_CR^ &~= mask }
+	if on { intrinsics.volatile_store(tuckˑregisterˑDAC_CR, intrinsics.volatile_load(tuckˑregisterˑDAC_CR) | mask) } else { intrinsics.volatile_store(tuckˑregisterˑDAC_CR, intrinsics.volatile_load(tuckˑregisterˑDAC_CR) &~ mask) }
 }
 
 tuckˑregisterˑDMA1_CH3 := cast(^u32)(uintptr(0x40020030))
 tuckˑregisterˑDMA1_CH3_EN_SHIFT :: 0
 tuckˑregisterˑDMA1_CH3_TCIE_SHIFT :: 1
 tuckˑregisterˑDMA1_CH3_EN_get :: proc() -> bool {
-	return (tuckˑregisterˑDMA1_CH3^ & (u32(1) << u32(tuckˑregisterˑDMA1_CH3_EN_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑDMA1_CH3) & (u32(1) << u32(tuckˑregisterˑDMA1_CH3_EN_SHIFT))) != 0
 }
 tuckˑregisterˑDMA1_CH3_EN_set :: proc(on: bool) {
 	mask := u32(1) << u32(tuckˑregisterˑDMA1_CH3_EN_SHIFT)
-	if on { tuckˑregisterˑDMA1_CH3^ |= mask } else { tuckˑregisterˑDMA1_CH3^ &~= mask }
+	if on { intrinsics.volatile_store(tuckˑregisterˑDMA1_CH3, intrinsics.volatile_load(tuckˑregisterˑDMA1_CH3) | mask) } else { intrinsics.volatile_store(tuckˑregisterˑDMA1_CH3, intrinsics.volatile_load(tuckˑregisterˑDMA1_CH3) &~ mask) }
 }
 tuckˑregisterˑDMA1_CH3_TCIE_get :: proc() -> bool {
-	return (tuckˑregisterˑDMA1_CH3^ & (u32(1) << u32(tuckˑregisterˑDMA1_CH3_TCIE_SHIFT))) != 0
+	return (intrinsics.volatile_load(tuckˑregisterˑDMA1_CH3) & (u32(1) << u32(tuckˑregisterˑDMA1_CH3_TCIE_SHIFT))) != 0
 }
 tuckˑregisterˑDMA1_CH3_TCIE_set :: proc(on: bool) {
 	mask := u32(1) << u32(tuckˑregisterˑDMA1_CH3_TCIE_SHIFT)
-	if on { tuckˑregisterˑDMA1_CH3^ |= mask } else { tuckˑregisterˑDMA1_CH3^ &~= mask }
+	if on { intrinsics.volatile_store(tuckˑregisterˑDMA1_CH3, intrinsics.volatile_load(tuckˑregisterˑDMA1_CH3) | mask) } else { intrinsics.volatile_store(tuckˑregisterˑDMA1_CH3, intrinsics.volatile_load(tuckˑregisterˑDMA1_CH3) &~ mask) }
 }
 
 tuckˑtypeˑPlayerState_Idle :: struct {}

@@ -1,15 +1,12 @@
 module mod_fs;
 
 import rt = tuck_rt;
-
-struct TRec_fs_content(T_content) {
-    T_content content;
-}
+import tuckˑmodˑshapes_24_stdlib = mod_shapes_24_stdlib;
 
 enum tuckˑtypeˑFsError { NotFound, AccessDenied, IoFailed }
 
-rt.TuckResult!(TRec_fs_content!(string)) readFile(string path) {
-    return rt.readFile!(rt.TuckResult!(TRec_fs_content!(string)))(path);
+rt.TuckResult!(tuckˑmodˑshapes_24_stdlib.TRec_content!(string)) readFile(string path) {
+    return rt.readFile!(rt.TuckResult!(tuckˑmodˑshapes_24_stdlib.TRec_content!(string)))(path);
 }
 
 rt.TuckResult!(rt.TuckUnit) writeFile(string path, string content) {
