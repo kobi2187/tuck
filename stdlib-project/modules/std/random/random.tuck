@@ -1,0 +1,315 @@
+# std.random — a seeded, reproducible generator (PCG32, XSH-RR variant), in
+# pure Tuck.
+#
+# A generator is a value: every draw returns the advanced generator beside the
+# number, and the caller re-binds it. Seeded generators are pure and replay
+# exactly; there is no OS-seeded constructor here (that needs `[io]` and lives
+# with the host). This module shares nothing with std.crypto and is not for
+# keys or nonces: it is for fixtures, simulations and shuffles.
+#
+# The 64-bit state step multiplies past 2^64 on purpose, so it is done in a
+# `[wrapping]` type; the bit mixing is std/bits.
+import bits
+import seq
+import math
+
+type Wrapped = u64 [wrapping]
+
+type Dice:
+  state: u64
+  inc: u64
+
+# A draw: the advanced generator and what it produced.
+type Rolled:
+  d: Dice
+  value: u64
+
+type RolledInt:
+  d: Dice
+  value: int
+
+type RolledFloat:
+  d: Dice
+  value: f64
+
+type RolledBool:
+  d: Dice
+  yes: bool
+
+type Shuffled[T]:
+  d: Dice
+  items: Seq[T]
+
+type Picked[T]:
+  d: Dice
+  value: T
+
+fn lcgMultiplier() -> u64:
+  return 6364136223846793005
+
+fn mask32() -> u64:
+  return 4294967295
+
+# state' = state * multiplier + inc, modulo 2^64.
+fn step({state: u64, inc: u64}) -> u64:
+  let s = {value: state} Wrapped
+  let m = {value: lcgMultiplier} Wrapped
+  let c = {value: inc} Wrapped
+  let next = s * m + c
+  return {value: next} u64
+
+# A generator on stream `stream` (any value; the low bit is forced on, as PCG
+# requires) from `seed`.
+fn newDiceOnStream({seed: u64, stream: u64}) -> Dice:
+  let shifted = {a: stream, by: 1} shiftLeft
+  let inc = {a: shifted, b: 1} bitOr
+  let first = {state: 0, inc: inc} step
+  let seeded = {value: first} Wrapped
+  let add = {value: seed} Wrapped
+  let sum = seeded + add
+  let plain = {value: sum} u64
+  let second = {state: plain, inc: inc} step
+  return {state: second, inc: inc} Dice
+
+fn newDice({seed: u64}) -> Dice:
+  return {seed: seed, stream: 54} newDiceOnStream
+
+fn rotateRight32({x: u64, by: int}) -> u64:
+  let low = {a: x, by: by} shiftRight
+  let amount = (32 - by) % 32
+  let high = {a: x, by: amount} shiftLeft
+  let both = {a: low, b: high} bitOr
+  return {a: both, b: mask32} bitAnd
+
+# The next 32 random bits, as a u64 below 2^32.
+fn nextU32({d: Dice}) -> Rolled:
+  let old = d.state
+  let next = {state: old, inc: d.inc} step
+  let shifted = {a: old, by: 18} shiftRight
+  let mixed = {a: shifted, b: old} bitXor
+  let top = {a: mixed, by: 27} shiftRight
+  let xorshifted = {a: top, b: mask32} bitAnd
+  let rot = {a: old, by: 59} shiftRight
+  let amount = {value: rot} int
+  let out = {x: xorshifted, by: amount} rotateRight32
+  let advanced = {state: next, inc: d.inc} Dice
+  return {d: advanced, value: out} Rolled
+
+# A number in low..high inclusive, without modulo bias; none when the range is
+# empty or wider than 2^32.
+fn rollRange({d: Dice, low: int, high: int}) -> RolledInt?:
+  if low > high:
+    return none
+  let span = high - low + 1
+  if span > 4294967296:
+    return none
+  # reject the draws below 2^32 mod span, which would favour small results
+  let cutoff = (4294967296 - span) % span
+  var gen = d
+  for true:
+    let r = {d: gen} nextU32
+    gen = r.d
+    let n = {value: r.value} int
+    if n >= cutoff:
+      return {d: gen, value: low + n % span} RolledInt
+  return none
+
+# A float in [0, 1) with 53 random bits.
+fn rollFloat({d: Dice}) -> RolledFloat:
+  let a = {d: d} nextU32
+  let b = {d: a.d} nextU32
+  let hi = {a: a.value, by: 5} shiftRight
+  let lo = {a: b.value, by: 6} shiftRight
+  let hiN = {value: hi} int
+  let loN = {value: lo} int
+  let bits53 = hiN * 67108864 + loN
+  let f = {value: bits53} f64
+  return {d: b.d, value: f /f 9007199254740992.0} RolledFloat
+
+fn chance({d: Dice, probability: f64}) -> RolledBool:
+  let r = {d: d} rollFloat
+  return {d: r.d, yes: r.value < probability} RolledBool
+
+# One element, or none from an empty Seq.
+fn pick[T]({d: Dice, items: Seq[T]}) -> Picked[T]?:
+  if items.len == 0:
+    return none
+  let r = {d: d, low: 0, high: items.len - 1} rollRange
+  if not r.ok:
+    return none
+  return {d: r.value.d, value: items[r.value.value]} Picked
+
+# The items in random order (Fisher-Yates).
+fn shuffle[T]({d: Dice, items: Seq[T]}) -> Shuffled[T]:
+  var out = items
+  var gen = d
+  var i = out.len - 1
+  for i > 0:
+    let r = {d: gen, low: 0, high: i} rollRange
+    if r.ok:
+      gen = r.value.d
+      let j = r.value.value
+      let held = out[i]
+      let swapped = out[j]
+      {items: out, index: i, value: swapped} setAt
+      {items: out, index: j, value: held} setAt
+    i = i - 1
+  return {d: gen, items: out} Shuffled
+
+# `n` distinct items, in random order.
+fn sample[T]({d: Dice, items: Seq[T], n: int}) -> Shuffled[T]:
+  let all = {d: d, items: items} shuffle
+  var out: Seq[T] = []
+  var k = n
+  if k > all.items.len:
+    k = all.items.len
+  for i in 0 .. k - 1:
+    out = {items: out, value: all.items[i]} push
+  return {d: all.d, items: out} Shuffled
+
+fn fillBytes({d: Dice, n: int}) -> Shuffled[u8]:
+  var out: Seq[u8] = []
+  var gen = d
+  for i in 0 .. n - 1:
+    let r = {d: gen} nextU32
+    gen = r.d
+    let b = {value: r.value % 256} u8
+    out = {items: out, value: b} push
+  return {d: gen, items: out} Shuffled
+
+# One weighted choice; none when the lists differ in length, are empty, or the
+# weights do not sum above zero.
+fn pickWeighted[T]({d: Dice, items: Seq[T], weights: Seq[f64]}) -> Picked[T]?:
+  if items.len == 0 or items.len != weights.len:
+    return none
+  var total = 0.0
+  for i in 0 .. weights.len - 1:
+    total = total + weights[i]
+  if total <= 0.0:
+    return none
+  let r = {d: d} rollFloat
+  let target = r.value * total
+  var run = 0.0
+  var chosen = items.len - 1
+  var found = false
+  for i in 0 .. items.len - 1:
+    run = run + weights[i]
+    if not found and target < run:
+      chosen = i
+      found = true
+  return {d: r.d, value: items[chosen]} Picked
+
+# A normal variate (Box-Muller).
+fn gaussian({d: Dice, mean: f64, stddev: f64}) -> RolledFloat:
+  let a = {d: d} rollFloat
+  let b = {d: a.d} rollFloat
+  # 1 - u is in (0, 1], so its log exists
+  let ln = {x: 1.0 - a.value} lnOf
+  var radius = 0.0
+  if ln.ok:
+    radius = {x: -2.0 * ln.value} sqrtOf
+  let angle = {x: 6.283185307179586 * b.value} cosOf
+  return {d: b.d, value: mean + stddev * radius * angle} RolledFloat
+
+# --- checks ---------------------------------------------------------------------
+fn checkReference() -> int:
+  # pcg32-demo: srandom(42, 54) gives a15c02b7 7b47f409 ba1d3330 83d2f293
+  let want: Seq[u64] = [2707161783, 2068313097, 3122475824, 2211639955]
+  var d = {seed: 42} newDice
+  for i in 0 .. 3:
+    let r = {d: d} nextU32
+    d = r.d
+    if r.value != want[i]:
+      return 1 + i
+  return checkRange
+
+fn checkRange() -> int:
+  var d = {seed: 7} newDice
+  var seen: Seq[int] = [0, 0, 0, 0, 0, 0]
+  for i in 0 .. 599:
+    let r = {d: d, low: 1, high: 6} rollRange
+    if not r.ok:
+      return 10
+    d = r.value.d
+    let v = r.value.value
+    if v < 1 or v > 6:
+      return 11
+    {items: seen, index: v - 1, value: seen[v - 1] + 1} setAt
+  for k in 0 .. 5:
+    if seen[k] < 60:
+      return 12
+  let bad = {d: d, low: 3, high: 2} rollRange
+  if bad.ok:
+    return 13
+  return checkFloat
+
+fn checkFloat() -> int:
+  var d = {seed: 1} newDice
+  var total = 0.0
+  for i in 0 .. 999:
+    let r = {d: d} rollFloat
+    d = r.d
+    if r.value < 0.0 or r.value >= 1.0:
+      return 20
+    total = total + r.value
+  if total < 440.0 or total > 560.0:
+    return 21
+  return checkShuffle
+
+fn checkShuffle() -> int:
+  let items: Seq[int] = [1, 2, 3, 4, 5, 6, 7, 8]
+  let d = {seed: 99} newDice
+  let a = {d: d, items: items} shuffle
+  let b = {d: d, items: items} shuffle
+  if a.items != b.items:
+    return 30
+  var sum = 0
+  for i in 0 .. a.items.len - 1:
+    sum = sum + a.items[i]
+  if sum != 36 or a.items.len != 8:
+    return 31
+  if a.items == items:
+    return 32
+  let s = {d: a.d, items: items, n: 3} sample
+  if s.items.len != 3:
+    return 33
+  let none1: Seq[int] = []
+  let p = {d: d, items: none1} pick
+  if p.ok:
+    return 34
+  let q = {d: d, items: items} pick
+  if not q.ok:
+    return 35
+  let bytes = {d: d, n: 10} fillBytes
+  if bytes.items.len != 10:
+    return 36
+  return checkWeighted
+
+fn checkWeighted() -> int:
+  let names: Seq[int] = [10, 20, 30]
+  let none1: Seq[f64] = [0.0, 0.0, 0.0]
+  let start = {seed: 3} newDice
+  let zero = {d: start, items: names, weights: none1} pickWeighted
+  if zero.ok:
+    return 40
+  let only: Seq[f64] = [0.0, 1.0, 0.0]
+  var d = start
+  for i in 0 .. 49:
+    let r = {d: d, items: names, weights: only} pickWeighted
+    if not r.ok:
+      return 41
+    d = r.value.d
+    if r.value.value != 20:
+      return 42
+  var total = 0.0
+  for i in 0 .. 1999:
+    let g = {d: d, mean: 5.0, stddev: 2.0} gaussian
+    d = g.d
+    total = total + g.value
+  let avg = total /f 2000.0
+  if avg < 4.7 or avg > 5.3:
+    return 43
+  return 0
+
+fn main() -> int:
+  return checkReference
