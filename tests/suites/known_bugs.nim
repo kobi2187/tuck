@@ -4091,6 +4091,29 @@ fn main() -> int:
   t.badCheck "a generic calling an [io] group requirement must declare [io]", "TK-EF01"
   t.bugFixed "a generic calling an [io] group requirement must declare [io]"
 
+  # ...and when the group is declared in ANOTHER module than the generic.
+  t.src """
+import a
+
+type Counter = {total: int}
+
+fn put({self: Counter, n: int}) -> Counter:
+  return {total: self.total + n} Counter
+
+fn emit[K: Sink]({k: K, n: int}) -> K:
+  return {self: k, n: n} put
+
+fn main() -> int:
+  let s = {total: 1} Counter
+  let t = {k: s, n: 4} emit
+  return t.total
+"""
+  t.addFile("a.tuck", """group Sink:
+  fn put({self: Self, n: int}) -> Self [io]
+""")
+  t.badCheck "...also when the group is imported", "TK-EF01"
+  t.bugFixed "...also when the group is imported"
+
   # A74. A group provider declared in the IMPORTING module was rejected (and on
   # Odin/D the generic called its own module's provider): the owner's `put` was
   # taken without asking whether it accepts the argument's type (issue #163).

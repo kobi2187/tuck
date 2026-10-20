@@ -579,12 +579,16 @@ proc checkOrDie(path: string, loaded: var seq[LoadedModule],
   let importedRes = importedResources(loaded, sigOnly)
   let programKinds = declaredResourceKinds(loaded)
   let pendingNames = importedPendingNames(loaded)
+  var groups = initTable[string, Table[string, Demands]]()
+  for lm in loaded:
+    for name, reqs in groupRequirements(lm.m.decls): groups[name] = reqs
   let t0 = vBegin(psVerifyEffects)
   defer: vEnd(psVerifyEffects, t0)
   try:
     for lm in loaded:
       let ts = epochTime()
-      verifyModuleEffects(lm.m, imported, importedRes, programKinds, pendingNames)
+      verifyModuleEffects(lm.m, imported, importedRes, programKinds, pendingNames,
+                          groups)
       vSub(lm.name, ts)
     # Who may touch a slab (TK-AC08/09): whole-program, after typecheck
     # because it reads the checker's stamps (slab ops, slab derefs, callee

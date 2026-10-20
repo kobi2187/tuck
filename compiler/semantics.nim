@@ -71,6 +71,7 @@ type
     visiting: HashSet[string]
     pendingNames: HashSet[string]  # imported `pending:` stubs — never a restriction violation
     groupReqs: Table[string, Demands]  # the fn being visited: requirement name -> what its group declares
+    groups: Table[string, Table[string, Demands]]  # group name -> requirement -> what it declares, whole program
 
 proc getDeclared(c: Checker, name: string): Demands =
   ## What calling `name` demands of its caller; nothing for a name this module
@@ -457,24 +458,30 @@ proc boundName(b: Type): string =
   elif b.kind == tkApp and b.base != nil: b.base.name
   else: ""
 
-proc declaredReqs(c: Checker, gname: string, into: var Table[string, Demands]) =
-  ## What each requirement of the module's group `gname` declares it costs.
-  for g in c.module.decls:
-    if g == nil or g.kind != dkGroup or g.name != gname: continue
+proc groupRequirements*(decls: seq[Decl]): Table[string, Table[string, Demands]] =
+  ## Each group in `decls` with what every one of its requirements declares it
+  ## costs. The driver gathers this over the whole program, so a bounded fn
+  ## written in a different module from its group is still charged by the
+  ## contract (issue #162).
+  for g in decls:
+    if g == nil or g.kind != dkGroup: continue
+    var reqs = initTable[string, Demands]()
     for want in g.groupMembers:
       if want != nil and want.kind == dkFn:
-        into[want.name] = Demands(effects: want.fnEffects,
+        reqs[want.name] = Demands(effects: want.fnEffects,
                                   resources: want.fnResourceKinds)
+    result[g.name] = reqs
 
 proc boundGroupReqs(c: Checker, d: Decl): Table[string, Demands] =
   ## The requirements this fn's group bounds name, with the effects the GROUP
   ## declares for each: a call to one inside a bounded body costs what the
   ## contract says, not what whichever provider happens to be in scope costs
-  ## (issue #162). Groups declared in this module only.
+  ## (issue #162). Groups come from the whole program.
   for bs in d.fnGenericBounds:
     for b in bs:
       let gname = boundName(b)
-      if gname != "": c.declaredReqs(gname, result)
+      if gname != "" and c.groups.hasKey(gname):
+        for req, cost in c.groups[gname]: result[req] = cost
 
 proc verifyFn(c: var Checker, d: Decl) =
   ## One fn body against its own bracket — `main`'s budget aside, below.
@@ -792,7 +799,9 @@ proc verifyModuleEffects*(m: Module,
                             initTable[string, seq[string]](),
                           programKinds: seq[string] = @[],
                           importedPending: HashSet[string] =
-                            initHashSet[string]()) =
+                            initHashSet[string](),
+                          groups: Table[string, Table[string, Demands]] =
+                            initTable[string, Table[string, Demands]]()) =
   ## Check every declaration in `m` performs only the effects it declares.
   ##
   ## `imported` carries the effects of fns this module IMPORTS, keyed the same
@@ -808,7 +817,9 @@ proc verifyModuleEffects*(m: Module,
   ## — and `main`, whose budget is every kind, would get an empty one.
   var c = Checker(module: m, declared: initTable[string, Demands](),
                   visiting: initHashSet[string](), everyKind: programKinds,
-                  pendingNames: importedPending)
+                  pendingNames: importedPending, groups: groups)
+  # this module's own groups, whatever the driver passed
+  for name, reqs in groupRequirements(m.decls): c.groups[name] = reqs
   c.collectImported(imported, importedRes)
   c.collectLocal(m)
   for d in m.decls:

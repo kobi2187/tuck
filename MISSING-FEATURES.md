@@ -157,8 +157,7 @@ it in.
   generic body.** The call was charged the effect of whichever provider was in
   scope, so `emit[K: Sink]` over an `[io]` contract passed as pure. Fixed: a
   call to a requirement of a bound group, in a fn declared in the same module
-  as the group, costs what the group declares. (A group imported from another
-  module is not yet seen by the effect pass.) Found designing `sys.io`.
+  as the group, costs what the group declares. The driver gathers every group's requirement effects over the whole program, so a group imported from another module is charged the same way. Found designing `sys.io`.
 
 - **A74 (issue #163) — a group provider in the importing module was rejected.**
   The group's owning module has its own provider of the same name, and
