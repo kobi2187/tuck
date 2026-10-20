@@ -130,6 +130,11 @@ it in.
   Fixed: the mangler reads a checker-stamped call's callee in the fn namespace, and the Odin emitter does not take a non-callable parameter for the callee.
   Found writing `std.compress`.
 
+- **A69 (issue #157) — `==` on two Seqs did not build on Odin.** The emitter
+  printed a raw `==`, which Odin refuses for a dynamic array. Fixed: a Seq of
+  plain elements compares through `rt.tuckSeqEq` (length, then elements). A
+  Seq of Seqs is still a raw `==`. Found writing `std.compress`.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

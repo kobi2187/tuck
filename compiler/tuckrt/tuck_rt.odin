@@ -502,6 +502,16 @@ tuckArraySetAt :: proc(items: ^[$N]$T, index: int, value: T) {
 // [dynamic]T copy would still share the source memory below capacity.
 getLength :: proc(x: $T) -> int { return len(x) }
 
+// `==` on two Seqs: same length and equal elements. Odin will not compare a
+// dynamic array with `==`.
+tuckSeqEq :: proc(a, b: [dynamic]$T) -> bool {
+	if len(a) != len(b) { return false }
+	for i in 0 ..< len(a) {
+		if a[i] != b[i] { return false }
+	}
+	return true
+}
+
 count :: proc(items: [dynamic]$T) -> int { return len(items) }
 
 byteCount :: proc(t: string) -> int { return len(t) }

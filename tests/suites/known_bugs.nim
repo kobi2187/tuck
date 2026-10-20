@@ -3985,4 +3985,20 @@ fn main() -> int:
   t.quietly: t.hostRuns "A68b: a parameter named like a fn does not capture a call to it", 5
   t.bugFixed "A68b: a parameter named like a fn does not capture a call to it"
 
+  # A69. `==` on two Seqs emitted a raw Odin `==`, which Odin refuses for a
+  # dynamic array (issue #157). Found writing std.compress.
+  t.src """
+import seq
+
+fn main() -> int:
+  var a: Seq[int] = [1, 2]
+  var b: Seq[int] = [1, 2]
+  var c: Seq[int] = [1, 3]
+  if a == b and a != c:
+    return 0
+  return 1
+"""
+  t.quietly: t.hostRuns "A69: == on two Seqs compares their contents on every backend", 0
+  t.bugFixed "A69: == on two Seqs compares their contents on every backend"
+
   t.finish()

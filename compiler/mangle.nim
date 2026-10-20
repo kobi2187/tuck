@@ -232,6 +232,24 @@ proc mangleMatch(res: Resolution, e: Expr, names: MangleNames,
       p.name = mangleName(p.name, nkConst)
     mangleExpr(res, arm.body, names, inner, fields)
 
+proc mangleStamped(res: Resolution, e: Expr, names: MangleNames,
+                   locals: var HashSet[string], fields: HashSet[string]) =
+  ## The call the checker stamped for `xs.len` / `n toStr` names a FN, read in
+  ## the fn namespace: a local of the same name (`let len = 2`) must not
+  ## capture its callee. The one stamped call whose callee IS a local is
+  ## `slot.invoke`, whose callee is the receiver itself.
+  let c = res.call(e)
+  if c != nil and c.kind == exkCall and c.callee != nil and
+     c.callee.kind == exkVar and c.callee.name in locals and
+     not (e.kind == exkField and c.callee == e.receiver):
+    var outer = locals
+    outer.excl(c.callee.name)
+    for ch in c.children:
+      if ch == c.callee: mangleExpr(res, ch, names, outer, fields)
+      else: mangleExpr(res, ch, names, locals, fields)
+  else:
+    mangleExpr(res, c, names, locals, fields)
+
 proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSet[string],
                 fields: HashSet[string] = initHashSet[string]()) =
   ## `locals` holds the names bound INSIDE this body — params, `let`/`var`
@@ -253,21 +271,7 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
   # that stamped expression instead of the exkVar, so it must be renamed too —
   # missing it declares tuck_ready while still calling ready().
   if res.hasCall(e):
-    let c = res.call(e)
-    # The call the checker stamped for `xs.len` / `n toStr` names a FN, read in
-    # the fn namespace: a local of the same name (`let len = 2`) must not
-    # capture its callee. The one stamped call whose callee IS a local is
-    # `slot.invoke`, whose callee is the receiver itself.
-    if c != nil and c.kind == exkCall and c.callee != nil and
-       c.callee.kind == exkVar and c.callee.name in locals and
-       not (e.kind == exkField and c.callee == e.receiver):
-      var outer = locals
-      outer.excl(c.callee.name)
-      for ch in c.children:
-        if ch == c.callee: mangleExpr(res, ch, names, outer, fields)
-        else: mangleExpr(res, ch, names, locals, fields)
-    else:
-      mangleExpr(res, c, names, locals, fields)
+    mangleStamped(res, e, names, locals, fields)
 
   case e.kind
   of exkVar:

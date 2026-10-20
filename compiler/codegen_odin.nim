@@ -386,6 +386,16 @@ proc providerArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
 
 proc qualifiedForeignFn(ctx: OdinCodegenCtx, name: string): string
 
+proc unshadowedCallee(ctx: OdinCodegenCtx, e: Expr, calleeStr: string): string =
+  ## A parameter that is not callable cannot be the callee: the name is a fn
+  ## it shadows (`len`, beside `xs.len`).
+  if e.callee.kind != exkVar or ctx.res.hasCall(e.callee): return calleeStr
+  for p in ctx.currentParams:
+    if p.name == e.callee.name and (p.typ == nil or p.typ.kind != tkFunc):
+      let foreign = ctx.qualifiedForeignFn(p.name)
+      if foreign != "": return foreign
+  calleeStr
+
 proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A call in Odin, trying the special shapes first: `waitOn`, a sum
   ## variant, a member or combinator call. A member call passes `&receiver`,
@@ -400,13 +410,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
     # dispatch holds, so it is passed as is.
     return actorMember & "(" & (@["self"] & ctx.genCallArgs(e)).join(", ") & ")"
   var calleeStr = ctx.genOdinExpr(e.callee)
-  if e.callee.kind == exkVar and not ctx.res.hasCall(e.callee):
-    # A parameter that is not callable cannot be the callee: the name is a fn
-    # it shadows (`len`, beside `xs.len`).
-    for p in ctx.currentParams:
-      if p.name == e.callee.name and (p.typ == nil or p.typ.kind != tkFunc):
-        let foreign = ctx.qualifiedForeignFn(p.name)
-        if foreign != "": calleeStr = foreign
+  calleeStr = ctx.unshadowedCallee(e, calleeStr)
   let member = memberCallee(ctx.res, ctx.module, e)
   if member != "":
     # An imported object's member lives in its own package (R11, A25).
@@ -1076,6 +1080,16 @@ proc odinBinOp(op: BinOp): string =
   of boRangeIncl: "..="   # Odin spells inclusive ranges ..=
   of boRangeExcl: "..<"
 
+proc seqEquality(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `==` / `!=` on two Seqs of plain elements: Odin cannot compare a dynamic
+  ## array, so the runtime does (length, then elements).
+  if e.binOp notin {boEq, boNeq}: return ""
+  let lt = ctx.res.typeFor(e.left)
+  if lt == nil or seqElem(lt) == nil or seqElem(seqElem(lt)) != nil: return ""
+  let call = "rt.tuckSeqEq(" & ctx.genOdinExpr(e.left) & ", " &
+             ctx.genOdinExpr(e.right) & ")"
+  if e.binOp == boEq: call else: "(!" & call & ")"
+
 proc genBinary(ctx: var OdinCodegenCtx, e: Expr): string =
   ## rt.tuckConcat — `concat` was the Beef runtime's name and never existed in
   ## the Odin one (tuckrt/tuck_rt.odin:87), so any string `+` emitted an
@@ -1093,6 +1107,8 @@ proc genBinary(ctx: var OdinCodegenCtx, e: Expr): string =
       let call = sumName & "_eq(" & ctx.genOdinExpr(e.left) & ", " &
                  ctx.genOdinExpr(e.right) & ")"
       return if e.binOp == boEq: call else: "(!" & call & ")"
+  let seqEq = ctx.seqEquality(e)
+  if seqEq != "": return seqEq
   if e.binOp in {boAdd, boSub, boMul}:
     let plan = overflowPlan(ctx.module, ctx.realModules, ctx.res.typeFor(e))
     if plan.active:

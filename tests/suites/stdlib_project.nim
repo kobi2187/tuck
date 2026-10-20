@@ -15,7 +15,7 @@ const Modules = [
   ("alloc", "deque", "deque"), ("alloc", "list", "list"), ("alloc", "map", "map"),
   ("alloc", "set", "set"), ("alloc", "string", "string"), ("alloc", "vec", "vec"),
   ("core", "array", "array"), ("core", "cmp", "cmp"), ("core", "convert", "convert"),
-  ("core", "error", "error"), ("core", "fmt", "fmt"), ("core", "geom", "geom"), ("core", "hash", "hash"), ("core", "iter", "iter"), ("core", "num", "num"), ("core", "types", "types"), ("std", "math", "math"), ("std", "chrono", "chrono"), ("std", "i18n", "i18n"), ("platform", "boot", "boot"), ("platform", "power", "power"), ("sys", "env", "env"), ("std", "perf", "perf"), ("std", "queue", "queue"), ("std", "testing", "testing"), ("std", "crypto", "crypto"), ("std", "encoding", "encoding"), ("std", "log", "log"), ("std", "regex", "regex"), ("std", "net-http", "http"), ("platform", "dsp", "dsp"), ("platform", "watchdog", "watchdog"), ("sys", "process", "process"), ("std", "cli", "cli"),
+  ("core", "error", "error"), ("core", "fmt", "fmt"), ("core", "geom", "geom"), ("core", "hash", "hash"), ("core", "iter", "iter"), ("core", "num", "num"), ("core", "types", "types"), ("std", "math", "math"), ("std", "chrono", "chrono"), ("std", "i18n", "i18n"), ("platform", "boot", "boot"), ("platform", "power", "power"), ("sys", "env", "env"), ("std", "perf", "perf"), ("std", "queue", "queue"), ("std", "testing", "testing"), ("std", "crypto", "crypto"), ("std", "encoding", "encoding"), ("std", "log", "log"), ("std", "regex", "regex"), ("std", "net-http", "http"), ("platform", "dsp", "dsp"), ("platform", "watchdog", "watchdog"), ("sys", "process", "process"), ("std", "cli", "cli"), ("std", "compress", "compress"),
   ("core", "str", "text")]
 
 proc stdlibArg(t: T): string =
