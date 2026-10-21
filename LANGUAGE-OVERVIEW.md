@@ -437,9 +437,11 @@ narrow — `if not r.ok: return 0` then `r.value.v` (`tests/suites/known_bugs.ni
 So does a **loop** on it — `for up.ok:` narrows `up` in the body, so a chain
 of `?` links is walked with `up = up.value.parent` (#98). Assigning a `?T` to a
 narrowed name ends its narrowing there: the guard held for the old value.
-Not yet (seen 2026-10-04): a guard narrows a NAME, not a field path —
-`if b.n.ok: b.n.value` is still `unhandled`; bind it first, `let n = b.n` —
-and `if x.ok and y.ok:` narrows neither; nest the two `if`s.
+A guard narrows a **field path** of a record too — `if not b.n.ok: return`
+then `b.n.value` (A78, `known_bugs`). Re-binding or assigning the root (or a
+prefix), and a `..n` update, forget it; an **object** root does not narrow,
+since a member may rewrite its fields. Not yet: `if x.ok and y.ok:` narrows
+neither; nest the two `if`s.
 
 Every unhandled shape is rejected with `unhandled`: arithmetic on `!T`, payload
 access, `or`-defaulting, a bare statement drop, an unhandled pool `acquire`.

@@ -369,9 +369,11 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
 # order matters and is the real content of this part of the checker.
 
 proc unwrapGuarded(tc: var TypeChecker, e: Expr, recvT: Type): Type =
-  ## `.value` is legal only under this result's own `if x.ok` guard.
-  if e.receiver.kind != exkVar or not tc.isNarrowed(e.receiver.name):
-    let n = if e.receiver.kind == exkVar: e.receiver.name else: "<result>"
+  ## `.value` is legal only under this result's own `if x.ok` guard — on a
+  ## name or a field path of names (`r.fault`).
+  let key = guardKey(e.receiver)
+  if key == "" or not tc.isNarrowed(key):
+    let n = if key != "": key else: "<result>"
     fail("Type Error: unhandled " & typeName(recvT) & " — guard it " &
          "first: `if " & n & ".ok:` and read .value inside, or " &
          "`if not " & n & ".ok:` with a return, which narrows " &
@@ -1888,14 +1890,25 @@ proc checkCondition(tc: var TypeChecker, cond: Expr, sp: Span) =
     fail("Type Error: if condition must be bool, got " & typeName(condT),
          cond.span)
 
+proc pathNarrowable(tc: TypeChecker, key: string): bool =
+  ## A field path narrows only off a plain RECORD root: a record is a value
+  ## nothing else holds, so its fields change only by assignment, which the
+  ## checker sees. An OBJECT's member fns may rewrite its fields behind a call.
+  let dot = key.find('.')
+  if dot < 0: return true
+  let (found, b) = tc.lookup(key[0 ..< dot])
+  if not found or b.typ == nil: return false
+  let t = tc.resolve(b.typ)
+  not (t != nil and t.kind == tkNamed and tc.objDecls.hasKey(t.name))
+
 proc okGuardName(tc: TypeChecker, cond: Expr): string =
   ## `if r.ok:` narrows r inside the then-branch ONLY — outside the guard the
-  ## value is still the wrapped type (strict, scope-limited).
-  if cond != nil and cond.kind == exkField and cond.fieldName == "ok" and
-     cond.receiver != nil and cond.receiver.kind == exkVar and
-     not tc.isNarrowed(cond.receiver.name):
-    cond.receiver.name
-  else: ""
+  ## value is still the wrapped type (strict, scope-limited). `r` may be a
+  ## field path of a record (`if w.fault.ok:`).
+  if cond == nil or cond.kind != exkField or cond.fieldName != "ok": return ""
+  let key = guardKey(cond.receiver)
+  if key == "" or tc.isNarrowed(key) or not tc.pathNarrowable(key): return ""
+  key
 
 # === BRANCHES, MATCH, AND THE MERGE ========================================
 # Where the checker's per-variable knowledge FORKS and rejoins. Each branch
@@ -2364,6 +2377,9 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
   let fields = tc.fieldsOf(recvT)
   for step in e.steps.mitems:
     tc.checkChainStep(step, e, result, recvT, fields)
+  # `x ..fault {none}` rewrites x's fields: nothing proved under x still holds.
+  let key = guardKey(e.base)
+  if key != "": tc.forgetPaths(key)
 
 proc failIfAnonymousForNamed(tc: TypeChecker, e: Expr, actual, expected: Type,
                              what: string) =
@@ -4570,7 +4586,7 @@ proc synthStmt(tc: var TypeChecker, blk, s: Expr, narrowed: var seq[string]): Ty
   ## and report it if it drops a fallible result.
   result = tc.synthesize(s)
   let g = earlyReturnGuard(s)
-  if g != "" and not tc.isNarrowed(g):
+  if g != "" and not tc.isNarrowed(g) and tc.pathNarrowable(g):
     tc.setNarrowed(g, true)
     narrowed.add(g)
   # a control-flow exit (`err X`, or a branch that only exits) is never a drop
@@ -4894,6 +4910,12 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
   if e.target != nil and e.target.kind == exkVar and isWrapper(valT) and
      tc.isNarrowed(e.target.name):
     tc.setNarrowed(e.target.name, false)
+  # The same for a field path, and whatever was proved UNDER the place written
+  # (`r = ...` forgets `r.fault`; `r.cfg = ...` forgets `r.cfg.port`).
+  let key = guardKey(e.target)
+  if key != "":
+    tc.forgetPaths(key)
+    if '.' in key and isWrapper(valT): tc.setNarrowed(key, false)
 
 proc synthAssign(tc: var TypeChecker, e: Expr): Type =
   ## An assignment is a statement: it yields unit.

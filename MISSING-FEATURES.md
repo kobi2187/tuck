@@ -185,6 +185,25 @@ it in.
   a discarded bare name is emitted as `cast(void) name`. Found giving the D
   runtime networking.
 
+- **A78 (issue #168) — a guard narrowed a name, not a field path.**
+  `if not w.f.ok: return` still left `w.f.value` "unhandled". Fixed: a guard
+  narrows a field path of names in every form (`if`, early return, `for`).
+  Re-binding or assigning the root, or a prefix, and a `..field` update forget
+  what was proved under it; only a record root narrows, since an object's
+  member may rewrite its fields. Found writing `platform.hal`.
+
+- **A79 (issue #167) — `r = f(r.b)` wiped the new `r.b`.** The ownership pass
+  reset the moved field after the statement, which had already stored a whole
+  new `r`; Odin, without the reset, freed the moved part twice. Fixed: the
+  value is bound first and the part emptied before the store
+  (`tmp := f(r.b); reset(r.b); r = tmp`). Found writing `platform.hal`.
+
+- **A80 (issue #169) — Odin: a by-value `self` could not give up its fields.**
+  `writtenParams` exempted every parameter named `self` from the shadowing
+  copy, assuming a member's pointer self; a group provider's `self` is a
+  record by value. Fixed: only a pointer `self` is exempt. Found writing
+  `platform.hal`.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

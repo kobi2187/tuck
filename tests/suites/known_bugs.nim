@@ -4220,4 +4220,138 @@ fn main() -> int:
   t.quietly: t.hostRuns "A77: discarding an owned call result builds on every backend", 0
   t.bugFixed "A77: discarding an owned call result builds on every backend"
 
+  # A78. A `.ok` guard narrowed a name but not a field path, so a record's
+  # optional field could not be read after guarding it (issue #168). Found
+  # writing platform.hal. Sound: re-binding or assigning the root forgets it,
+  # and an OBJECT root does not narrow (a member may rewrite its fields).
+  t.src """
+type W:
+  f: int?
+
+fn g({w: W}) -> int:
+  var r = w
+  var left = 2
+  for left > 0:
+    if not r.f.ok:
+      return 0
+    let v = r.f.value
+    r = {f: v + 1} W
+    left = left - 1
+  if r.f.ok:
+    return r.f.value
+  return 1
+
+fn main() -> int:
+  let w = {f: 5} W
+  return {w: w} g
+"""
+  t.quietly: t.hostRuns "A78: a guard narrows a record's field path", 7
+  t.bugFixed "A78: a guard narrows a record's field path"
+
+  t.src """
+type W:
+  f: int?
+
+fn g({w: W}) -> int:
+  var v = w
+  if v.f.ok:
+    v = {f: none} W
+    return v.f.value
+  return 0
+
+fn main() -> int:
+  let w = {f: 5} W
+  return {w: w} g
+"""
+  t.badCheck "...and re-assigning the root forgets it", "unhandled"
+  t.bugFixed "...and re-assigning the root forgets it"
+
+  t.src """
+object Box:
+  f: int?
+
+  fn clear({self: Box}):
+    self.f = none
+
+fn g({b: Box}) -> int:
+  if b.f.ok:
+    return b.f.value
+  return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "...and an object's field does not narrow", "unhandled"
+  t.bugFixed "...and an object's field does not narrow"
+
+  # A79. `r = f(r.b)` moved `r.b` into the call and then reset it AFTER the
+  # new `r` was stored, wiping the new value's `b` (issue #167). Found writing
+  # platform.hal (a retried I2C read lost its device).
+  t.src """
+import seq
+
+group Stepper:
+  fn bump({self: Self}) -> Self
+
+type Box:
+  n: int
+  xs: Seq[int]
+
+type Wrap[B]:
+  b: B
+  data: Seq[int]
+  k: int
+
+fn bump({self: Box}) -> Box:
+  return {n: self.n + 1, xs: self.xs} Box
+
+fn step[B: Stepper]({b: B}) -> Wrap[B]:
+  let next = {self: b} bump
+  let d: Seq[int] = [9]
+  return {b: next, data: d, k: 1} Wrap
+
+fn main() -> int:
+  let xs: Seq[int] = [1, 2]
+  let start = {n: 0, xs: xs} Box
+  var r = {b: start} step
+  r = {b: r.b} step
+  return r.b.n
+"""
+  t.quietly: t.hostRuns "A79: re-binding a record from its own field keeps the new value", 2
+  t.bugFixed "A79: re-binding a record from its own field keeps the new value"
+
+  # A80. Odin: a free fn moving fields out of a by-value `self` wrote to the
+  # parameter, which Odin forbids (issue #169). Every group provider has this
+  # shape. Found writing platform.hal.
+  t.src """
+import seq
+
+type Pin:
+  level: int
+  trace: Seq[int]
+  script: Seq[int]
+  step: int
+
+type Sensed:
+  pin: Pin
+  level: int
+
+fn sense({self: Pin}) -> Sensed:
+  if self.step >= self.script.len:
+    return {pin: self, level: self.level} Sensed
+  let level = self.script[self.step]
+  let next = {level: level, trace: self.trace, script: self.script, step: self.step + 1} Pin
+  return {pin: next, level: level} Sensed
+
+fn main() -> int:
+  let s: Seq[int] = [4, 5, 6]
+  let t: Seq[int] = []
+  let p = {level: 0, trace: t, script: s, step: 0} Pin
+  let a = {self: p} sense
+  let b = {self: a.pin} sense
+  return b.level
+"""
+  t.quietly: t.hostRuns "A80: a by-value self may give up its fields on every backend", 5
+  t.bugFixed "A80: a by-value self may give up its fields on every backend"
+
   t.finish()

@@ -1,0 +1,157 @@
+# platform.libc-shim (module `board`) — what a board must provide.
+#
+# A board-support package is a PROVIDER of `group Board`, the way a file or a
+# socket is a provider of sys.io's `Source`/`Sink`: a free fn of the right shape
+# per board type, checked at compile time, nothing declared. Boards share very
+# little, so the group holds only what every one of them has: a millisecond
+# tick and the RAM region the heap may use. Everything else a board offers is a
+# group of its own (platform.hal's pins and buses), and its console is a
+# `Source`/`Sink` like any other stream, so the stream algorithms work on it.
+#
+# Two providers live here (one module holds one provider per requirement, so a
+# board package is naturally a module of its own): `HostBoard` for a hosted OS (the wall clock, no
+# heap region of its own: the OS owns the heap), and its console `HostConsole`.
+# A real board's package is a third provider in its own module.
+import seq
+import str
+import time
+import console
+import encoding
+import stream
+
+# The RAM a heap may be carved from: [start, start + size).
+type HeapRegion:
+  start: u64
+  size: u64
+
+group Board:
+  fn ticksMs({self: Self}) -> u64 [io]
+  fn heapRegion({self: Self}) -> HeapRegion
+
+# --- carving the heap region ---------------------------------------------------------
+# The smallest multiple of `boundary` at or above `value`.
+fn alignUp({value: u64, boundary: u64}) -> u64:
+  if boundary <= 1:
+    return value
+  return (value + boundary - 1) /i boundary * boundary
+
+# A block carved from the front of a region, and what is left of the region.
+type Carved:
+  rest: HeapRegion
+  address: u64
+
+# `bytes` bytes aligned to `boundary`, bump style; none when the region is too
+# small. Carving never frees: a board that wants to free runs an allocator on
+# top of the region this hands out.
+fn carve({region: HeapRegion, bytes: u64, boundary: u64}) -> Carved?:
+  let at = {value: region.start, boundary: boundary} alignUp
+  let limit = region.start + region.size
+  if at > limit or bytes > limit - at:
+    return none
+  let rest = {start: at + bytes, size: limit - at - bytes} HeapRegion
+  return {rest: rest, address: at} Carved
+
+# --- time, on any board ------------------------------------------------------------
+# Milliseconds since `since`; zero if the tick went backwards (a wall clock may).
+fn elapsedMs[B: Board]({b: B, since: u64}) -> u64 [io]:
+  let now = {self: b} ticksMs
+  if now < since:
+    return 0
+  return now - since
+
+fn deadlinePassed[B: Board]({b: B, deadline: u64}) -> bool [io]:
+  let now = {self: b} ticksMs
+  return now >= deadline
+
+# Text and a line end, to any console or other sink.
+fn sayTo[K: Sink]({k: K, text: str}) -> K [io]:
+  let bytes = {t: text + "\n"} bytesOf
+  return {k: k, data: bytes} writeAll
+
+# --- the hosted board ---------------------------------------------------------------
+type HostBoard:
+  label: str
+
+type HostConsole:
+  label: str
+
+fn hostBoard() -> HostBoard:
+  return {label: "host"} HostBoard
+
+fn hostConsole() -> HostConsole:
+  return {label: "stdout"} HostConsole
+
+# The wall clock: a hosted OS has no free-running board timer to offer.
+fn ticksMs({self: HostBoard}) -> u64 [io: clock]:
+  let n = nowMs
+  return n.epochMs
+
+# None of its own: on a hosted OS the heap is the OS's.
+fn heapRegion({self: HostBoard}) -> HeapRegion:
+  return {start: 0, size: 0} HeapRegion
+
+fn put({self: HostConsole, data: Seq[u8]}) -> HostConsole [io: console]:
+  let text = {bytes: data} fromBytes
+  {text: text} print
+  return self
+
+# --- checks ---------------------------------------------------------------------
+fn checkCarve() -> int:
+  let region = {start: 1000, size: 100} HeapRegion
+  let a = {region: region, bytes: 10, boundary: 8} carve
+  if not a.ok:
+    return 1
+  if a.value.address != 1000 or a.value.rest.start != 1010 or a.value.rest.size != 90:
+    return 2
+  let b = {region: a.value.rest, bytes: 16, boundary: 16} carve
+  if not b.ok:
+    return 3
+  if b.value.address != 1024 or b.value.rest.size != 60:
+    return 4
+  let c = {region: b.value.rest, bytes: 61, boundary: 1} carve
+  if c.ok:
+    return 5
+  let d = {region: b.value.rest, bytes: 60, boundary: 1} carve
+  if not d.ok:
+    return 6
+  if d.value.rest.size != 0:
+    return 7
+  return 0
+
+fn checkTime() -> int [io, io: clock]:
+  let host = hostBoard
+  let now = {self: host} ticksMs
+  if {b: host, since: now + 3600000} elapsedMs != 0:
+    return 10
+  if {b: host, since: now - 1000} elapsedMs < 1000:
+    return 11
+  if not {b: host, deadline: now} deadlinePassed:
+    return 12
+  if {b: host, deadline: now + 3600000} deadlinePassed:
+    return 13
+  return 0
+
+fn checkHost() -> int [io, io: clock, io: console]:
+  let host = hostBoard
+  # after 2023-11-14 by the wall clock
+  if {b: host, since: 0} elapsedMs < 1700000000000:
+    return 20
+  let region = {self: host} heapRegion
+  if region.size != 0:
+    return 21
+  let w = memWriter
+  let said = {k: w, text: "board ok"} sayTo
+  if {bytes: said.bytes} fromBytes != "board ok\n":
+    return 22
+  let out = hostConsole
+  let printed = {k: out, text: "board: hosted console ok"} sayTo
+  return 0
+
+fn main() -> int [io, io: clock, io: console]:
+  let a = checkCarve
+  if a != 0:
+    return a
+  let b = checkTime
+  if b != 0:
+    return b
+  return checkHost

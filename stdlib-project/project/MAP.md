@@ -48,9 +48,10 @@ superseding the "stream fork blocked" framing for tree-shaped data).
 
 ### sys — OS surface
 - [ ] sys/fs, sys/env, sys/process, sys/time, sys/signal  (status: unscoped — small deltas to existing std/fs, std/sys)
-- [ ] sys/thread, sys/sync                                  (status: blocked — needs core.atomic)
+- [x] sys/thread, sys/sync                                  (status: dropped — tasks, actors and the scheduler do the job)
 - [ ] sys/io, sys/net                                       (status: blocked — F4 stream fork per ROADMAP-GRAPH §3.4)
-- [ ] sys/ffi, sys/dynload, sys/mmap                         (status: out-of-scope-v1)
+- [x] sys/ffi, sys/dynload                                  (status: dropped — `extern`; plugins are a language question)
+- [ ] sys/mmap                                            (status: kept, process-shared pages only; not started)
 - [ ] sys/audio, sys/ble, sys/window                         (status: out-of-scope-v1 — no target consumer)
 
 ### platform — embedded/bare-metal

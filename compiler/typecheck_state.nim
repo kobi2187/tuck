@@ -6,7 +6,7 @@
 # `var TypeChecker` threaded through their signatures, so this type and its core
 # operations live here for them to import.
 import resolution
-import ast, lowering, tables, sets
+import ast, lowering, tables, sets, strutils
 import ast_query
 import typecheck_util
 
@@ -56,6 +56,7 @@ type
     ## The checker's state for one module: the signature and type tables it
     ## checks against, the scope stack, and the per-fn context (generics, return
     ## type, narrowing) of the body being checked.
+    narrowedPaths*: HashSet[string]  # guarded field paths (`r.fault`); a name's own flag is on its Binding
     module*: Module
     fnSigs*: Table[string, seq[FnSig]]
       ## Name -> every signature declared under it, not one. Two objects may
@@ -331,6 +332,14 @@ proc popScope*(tc: var TypeChecker) =
       if had: tc.varVariants[name] = prev
       else: tc.varVariants.del(name)
 
+proc forgetPaths*(tc: var TypeChecker, prefix: string) =
+  ## Every guarded path under `prefix` (`r` forgets `r.fault`, `r.a.b`): the
+  ## value they were proved on is gone.
+  var gone: seq[string]
+  for p in tc.narrowedPaths:
+    if p.startsWith(prefix & "."): gone.add p
+  for p in gone: tc.narrowedPaths.excl(p)
+
 proc bindName*(tc: var TypeChecker, name: string, typ: Type, isVar: bool,
                isParam = false, span = Span(), site: Expr = nil) =
   ## A fresh binding is never narrowed: guarding is something that happens to
@@ -343,11 +352,16 @@ proc bindName*(tc: var TypeChecker, name: string, typ: Type, isVar: bool,
     tc.shadowedVariants[^1].add((name,
                                  (if had: tc.varVariants[name] else: @[]), had))
   tc.scopes[^1][name] = (typ, isVar, isParam, false, false, false, span, site)
+  tc.forgetPaths(name)
 
 proc setNarrowed*(tc: var TypeChecker, name: string, on: bool) =
   ## Mark the INNERMOST binding of `name` as guarded, or unmark it. Walks the
   ## same way `lookup` does, so the binding that gets marked is the one a read
-  ## would resolve to.
+  ## would resolve to. A field path (`r.fault`) is kept in `narrowedPaths`;
+  ## binding or assigning its root clears it (forgetPaths).
+  if '.' in name:
+    if on: tc.narrowedPaths.incl(name) else: tc.narrowedPaths.excl(name)
+    return
   for i in countdown(tc.scopes.high, 0):
     if tc.scopes[i].hasKey(name):
       tc.scopes[i][name].narrowed = on
@@ -404,6 +418,7 @@ proc unhandledBindings*(tc: TypeChecker): seq[(string, Span)] =
 
 proc isNarrowed*(tc: TypeChecker, name: string): bool =
   ## Has the innermost binding of `name` been guarded?
+  if '.' in name: return name in tc.narrowedPaths
   for i in countdown(tc.scopes.high, 0):
     if tc.scopes[i].hasKey(name):
       return tc.scopes[i][name].narrowed
