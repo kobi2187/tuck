@@ -1541,6 +1541,54 @@ bool fileExists(string path)
 /// Idempotent by an explicit existence check, same as the Nim and Odin
 /// runtimes, so all three backends agree on the same contract rather than
 /// relying on each platform's own already-exists behavior for mkdir -p.
+/// errno from a metadata call (stat, rename, rmdir) onto the FsError variants,
+/// the same buckets in all three runtimes.
+private ushort fsErrnoCode(int e)
+{
+    import core.stdc.errno : ENOENT, ENOTDIR, EACCES, EPERM, ENOTEMPTY, EEXIST;
+    if (e == ENOENT || e == ENOTDIR) return errCode("fs/FsError.NotFound");
+    if (e == EACCES || e == EPERM) return errCode("fs/FsError.AccessDenied");
+    if (e == ENOTEMPTY || e == EEXIST) return errCode("fs/FsError.NotEmpty");
+    return errCode("fs/FsError.IoFailed");
+}
+
+/// lstat: a final symbolic link is reported as a link, not followed. NOT
+/// offloaded, same rationale as fileExists.
+R pathInfo(R)(string path)
+{
+    import core.sys.posix.sys.stat : stat_t, lstat, S_ISDIR, S_ISLNK;
+    import core.stdc.errno : errno;
+    import std.string : toStringz;
+    alias P = typeof(R.value);
+    stat_t st;
+    if (lstat(toStringz(path), &st) != 0) return terr!P(fsErrnoCode(errno));
+    P p;
+    p.isFolder = S_ISDIR(st.st_mode);
+    p.isLink = S_ISLNK(st.st_mode);
+    p.bytes = cast(long) st.st_size;
+    p.modifiedMs = cast(long) st.st_mtim.tv_sec * 1000 + cast(long) st.st_mtim.tv_nsec / 1_000_000;
+    return tok(p);
+}
+
+TuckResult!TuckUnit renamePath(string path, string to)
+{
+    import core.stdc.stdio : rename;
+    import core.stdc.errno : errno;
+    import std.string : toStringz;
+    if (rename(toStringz(path), toStringz(to)) != 0)
+        return terr!TuckUnit(fsErrnoCode(errno));
+    return tokVoid();
+}
+
+TuckResult!TuckUnit removeFolder(string path)
+{
+    import core.sys.posix.unistd : rmdir;
+    import core.stdc.errno : errno;
+    import std.string : toStringz;
+    if (rmdir(toStringz(path)) != 0) return terr!TuckUnit(fsErrnoCode(errno));
+    return tokVoid();
+}
+
 TuckResult!TuckUnit makeDir(string path)
 {
     import std.file : exists, mkdirRecurse, FileException;

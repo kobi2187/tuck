@@ -34,7 +34,10 @@ proc runsOdinWith(t: var T, name: string, want: int, flags: seq[string],
     if t.phase != pCollect: t.skip name
     return
   let e = t.needOdin()
-  let proj = t.curDir / "odinpkg"
+  # A staging directory of its own: staging empties the directory first, and
+  # hostRuns stages `odinpkg` for the same snippet, so sharing it let one
+  # build wipe the other's binary before it ran (an intermittent "No such file").
+  let proj = t.curDir / ("odinpkg_" & tag)
   let src = t.curDir / "odin" / "t.odin"
   let bin = proj / ("prog_" & tag)
   let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none", OdinThreads] &

@@ -3,6 +3,7 @@ type FsError:
   | NotFound
   | AccessDenied
   | IoFailed
+  | NotEmpty
 
 extern:
   fn readFile({path: str}) -> !{content: str} [io: fs, error: FsError]
@@ -18,3 +19,11 @@ extern:
   # The names (not paths) directly inside `path`, sorted; empty when `path` is
   # missing or not a directory.
   fn listDir({path: str}) -> Seq[str] [io: fs]
+  # What is at `path`, without following a final symbolic link: a folder, a
+  # link, or (neither) a file; its size in bytes and when it last changed, in
+  # milliseconds since the Unix epoch. Not offloaded, like fileExists: one stat.
+  fn pathInfo({path: str}) -> !{isFolder: bool, isLink: bool, bytes: int, modifiedMs: int} [io: fs, error: FsError]
+  # Rename or move within one filesystem; an existing file at `to` is replaced.
+  fn renamePath({path: str, to: str}) -> !void [io: fs, error: FsError]
+  # Remove an EMPTY folder: NotEmpty otherwise. A file is removeFile's.
+  fn removeFolder({path: str}) -> !void [io: fs, error: FsError]

@@ -2,12 +2,12 @@
 #
 # `std/fs` reads and writes whole files; this adds the usual conveniences on
 # top, in Tuck: lines in and out, copying, writing under folders that may not
-# exist yet, and full paths for a folder's entries. Failure is the FsError of
-# the underlying call, passed through.
+# exist yet, full paths for a folder's entries, and whole trees: walking,
+# removing, copying and measuring one. Failure is the FsError of the underlying
+# call, passed through.
 #
-# Not here: telling a folder from a file. `std/fs.listDir` is empty for a
-# missing folder, an empty folder and a plain file alike, so a recursive walk
-# cannot be written honestly until the runtime offers an is-a-folder test.
+# A symbolic link is never followed into: it is reported, removed or copied as
+# what it is, so a link to a parent folder cannot make a walk endless.
 import fs
 import seq
 import str
@@ -86,6 +86,92 @@ fn entriesOf({dir: str}) -> Seq[str] [io: fs]:
     let full = {base: dir, rel: names[i]} join
     out = {items: out, value: full} push
   return out
+
+# --- whole trees ------------------------------------------------------------------
+# One thing found by a walk: its path, whether it is a folder, and its size.
+type Found:
+  path: str
+  isFolder: bool
+  bytes: int
+
+# Everything under `root`, depth first, a folder before its contents and the
+# names in sorted order; `root` itself is not listed. A file as `root` has
+# nothing under it.
+fn walk({root: str}) -> !Seq[Found] [io: fs, error: FsError]:
+  var out: Seq[Found] = []
+  let names = {path: root} listDir
+  for i in 0 .. names.len - 1:
+    let full = {base: root, rel: names[i]} join
+    let info = {path: full} pathInfo
+    if not info.ok:
+      err info.err
+    let isFolder = info.value.isFolder
+    let f = {path: full, isFolder: isFolder, bytes: info.value.bytes} Found
+    out = {items: out, value: f} push
+    if isFolder:
+      let inner = {root: full} walk
+      if not inner.ok:
+        err inner.err
+      for k in 0 .. inner.value.len - 1:
+        out = {items: out, value: inner.value[k]} push
+  return out
+
+# Remove `path` and, for a folder, everything under it.
+fn removeTree({path: str}) -> !void [io: fs, error: FsError]:
+  let info = {path: path} pathInfo
+  if not info.ok:
+    err info.err
+  if not info.value.isFolder:
+    let r = {path: path} removeFile
+    if not r.ok:
+      err r.err
+    return
+  let names = {path: path} listDir
+  for i in 0 .. names.len - 1:
+    let full = {base: path, rel: names[i]} join
+    let inner = {path: full} removeTree
+    if not inner.ok:
+      err inner.err
+  let r = {path: path} removeFolder
+  if not r.ok:
+    err r.err
+
+# A copy of `src` (a file or a whole folder) at `dst`.
+fn copyTree({src: str, dst: str}) -> !void [io: fs, error: FsError]:
+  let info = {path: src} pathInfo
+  if not info.ok:
+    err info.err
+  if not info.value.isFolder:
+    let c = {src: src, dst: dst} copyFile
+    if not c.ok:
+      err c.err
+    return
+  let made = {path: dst} makeDir
+  if not made.ok:
+    err made.err
+  let names = {path: src} listDir
+  for i in 0 .. names.len - 1:
+    let from1 = {base: src, rel: names[i]} join
+    let to1 = {base: dst, rel: names[i]} join
+    let inner = {src: from1, dst: to1} copyTree
+    if not inner.ok:
+      err inner.err
+
+# The bytes of every file under `root` (or of `root`, a file).
+fn treeSize({root: str}) -> !int [io: fs, error: FsError]:
+  let info = {path: root} pathInfo
+  if not info.ok:
+    err info.err
+  if not info.value.isFolder:
+    return info.value.bytes
+  let all = {root: root} walk
+  if not all.ok:
+    err all.err
+  var total = 0
+  for i in 0 .. all.value.len - 1:
+    if not all.value[i].isFolder:
+      total = total + all.value[i].bytes
+  return total
 
 # --- streams over files: providers for std sys.io's groups ---------------------------
 # A reader positioned in a file, and a sink that appends to one. The reader
@@ -172,6 +258,9 @@ fn checkDisk() -> int [io, io: fs]:
   let streamed = checkStreams
   if streamed != 0:
     return streamed
+  let trees = checkTrees
+  if trees != 0:
+    return trees
   let gone1 = {path: file} removeFile
   let gone2 = {path: copy} removeFile
   if not gone1.ok or not gone2.ok:
@@ -207,6 +296,48 @@ fn checkStreams() -> int [io, io: fs]:
   let gone = {path: target} removeFile
   if not gone.ok:
     return 67
+  return 0
+
+fn checkTrees() -> int [io, io: fs]:
+  let root = "/tmp/tuck-files-trees"
+  {path: root} removeTree discard
+  let a = {path: root + "/a/one.txt", content: "12345"} writeFileIn
+  let b = {path: root + "/a/deeper/two.txt", content: "abc"} writeFileIn
+  let c = {path: root + "/b.txt", content: "z"} writeFileIn
+  if not a.ok or not b.ok or not c.ok:
+    return 70
+  let found = {root: root} walk
+  if not found.ok:
+    return 71
+  let want: Seq[str] = ["a", "a/deeper", "a/deeper/two.txt", "a/one.txt", "b.txt"]
+  if found.value.len != want.len:
+    return 72
+  for i in 0 .. want.len - 1:
+    if found.value[i].path != root + "/" + want[i]:
+      return 73 + i
+  if not found.value[0].isFolder or found.value[4].isFolder:
+    return 80
+  let size = {root: root} treeSize
+  if not size.ok:
+    return 81
+  if size.value != 9:
+    return 82
+  let copied = {src: root + "/a", dst: root + "/copy"} copyTree
+  if not copied.ok:
+    return 83
+  let copySize = {root: root + "/copy"} treeSize
+  if not copySize.ok:
+    return 84
+  if copySize.value != 8:
+    return 85
+  let removed = {path: root} removeTree
+  if not removed.ok:
+    return 86
+  if {path: root} fileExists:
+    return 87
+  let again = {path: root} removeTree
+  if again.ok:
+    return 88
   return 0
 
 fn main() -> int [io, io: fs]:

@@ -856,7 +856,9 @@ proc runsOdin*(t: var T, name: string, want: int) =
     if t.phase != pCollect: t.skip name
     return
   let e = t.needOdin()
-  let proj = t.curDir / "odinpkg"
+  # Its own staging directory: staging empties it first, and hostRuns stages
+  # `odinpkg` for the same snippet.
+  let proj = t.curDir / "odinpkg_run"
   let src = t.curDir / "odin" / "t.odin"
   let bin = proj / "prog_run"
   let b = t.needCmdAfter(@[odinExe, "build", proj, "-o:none", OdinThreads,

@@ -1603,6 +1603,53 @@ listDir :: proc(path: string) -> [dynamic]string {
 	return result
 }
 
+PathInfo :: struct {
+	isFolder:   bool,
+	isLink:     bool,
+	bytes:      int,
+	modifiedMs: int,
+}
+
+// errno from a metadata call (stat, rename, rmdir) onto the FsError variants,
+// the same buckets in all three runtimes.
+@(private)
+fsErrnoCode :: proc(e: linux.Errno) -> u16 {
+	#partial switch e {
+	case .ENOENT, .ENOTDIR: return errCode("fs/FsError.NotFound")
+	case .EACCES, .EPERM:   return errCode("fs/FsError.AccessDenied")
+	case .ENOTEMPTY, .EEXIST: return errCode("fs/FsError.NotEmpty")
+	}
+	return errCode("fs/FsError.IoFailed")
+}
+
+// lstat: a final symbolic link is reported as a link, not followed. NOT
+// offloaded, same rationale as fileExists.
+pathInfo :: proc(path: string) -> TuckResult(PathInfo) {
+	cpath := strings.clone_to_cstring(path, context.temp_allocator)
+	st: linux.Stat
+	if e := linux.lstat(cpath, &st); e != .NONE do return terr(PathInfo, fsErrnoCode(e))
+	ms := int(st.mtime.time_sec) * 1000 + int(st.mtime.time_nsec) / 1_000_000
+	return tok(PathInfo{
+		isFolder = linux.S_ISDIR(st.mode),
+		isLink = linux.S_ISLNK(st.mode),
+		bytes = int(st.size),
+		modifiedMs = ms,
+	})
+}
+
+renamePath :: proc(path: string, to: string) -> TuckResult(TuckUnit) {
+	a := strings.clone_to_cstring(path, context.temp_allocator)
+	b := strings.clone_to_cstring(to, context.temp_allocator)
+	if e := linux.rename(a, b); e != .NONE do return terr(TuckUnit, fsErrnoCode(e))
+	return tokVoid()
+}
+
+removeFolder :: proc(path: string) -> TuckResult(TuckUnit) {
+	cpath := strings.clone_to_cstring(path, context.temp_allocator)
+	if e := linux.rmdir(cpath); e != .NONE do return terr(TuckUnit, fsErrnoCode(e))
+	return tokVoid()
+}
+
 // Idempotent by an explicit existence check, same as the Nim runtime, so
 // all three backends agree on the same contract rather than relying on
 // each platform's own already-exists behavior for mkdir -p.

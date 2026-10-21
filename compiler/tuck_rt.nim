@@ -1519,6 +1519,38 @@ proc listDir*(path: string): seq[string] =
   for _, p in os.walkDir(path, relative = true): result.add p
   algorithm.sort(result)
 
+proc fsErrno[T](e: cint): TuckResult[T] =
+  ## errno from a metadata call (stat, rename, rmdir) onto the FsError
+  ## variants, the same buckets in all three runtimes.
+  if e == posix.ENOENT or e == posix.ENOTDIR: terr[T](errCode("fs/FsError.NotFound"))
+  elif e == posix.EACCES or e == posix.EPERM: terr[T](errCode("fs/FsError.AccessDenied"))
+  elif e == posix.ENOTEMPTY or e == posix.EEXIST: terr[T](errCode("fs/FsError.NotEmpty"))
+  else: terr[T](errCode("fs/FsError.IoFailed"))
+
+proc pathInfo*(path: string): TuckResult[tuple[isFolder: bool, isLink: bool,
+                                                bytes: int, modifiedMs: int]] =
+  ## lstat: a final symbolic link is reported as a link, not followed. NOT
+  ## offloaded, same rationale as fileExists.
+  var st: posix.Stat
+  if posix.lstat(path.cstring, st) != 0:
+    return fsErrno[tuple[isFolder: bool, isLink: bool, bytes: int,
+                         modifiedMs: int]](posix.errno)
+  let ms = int(st.st_mtim.tv_sec) * 1000 + int(st.st_mtim.tv_nsec) div 1_000_000
+  tok((isFolder: posix.S_ISDIR(st.st_mode), isLink: posix.S_ISLNK(st.st_mode),
+       bytes: int(st.st_size), modifiedMs: ms))
+
+proc cRename(a, b: cstring): cint {.importc: "rename", header: "<stdio.h>".}
+
+proc renamePath*(path, to: string): TuckResult[tuple[]] =
+  ## rename(2): atomic within one filesystem, replacing a file at `to`.
+  if cRename(path.cstring, to.cstring) != 0: return fsErrno[tuple[]](posix.errno)
+  tokVoid()
+
+proc removeFolder*(path: string): TuckResult[tuple[]] =
+  ## rmdir(2): an empty folder only.
+  if posix.rmdir(path.cstring) != 0: return fsErrno[tuple[]](posix.errno)
+  tokVoid()
+
 proc makeDir*(path: string): TuckResult[tuple[]] =
   ## NOT offloaded, same rationale as fileExists. Idempotent by an explicit
   ## check rather than relying on os.createDir's own already-exists
