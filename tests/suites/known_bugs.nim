@@ -4354,4 +4354,32 @@ fn main() -> int:
   t.quietly: t.hostRuns "A80: a by-value self may give up its fields on every backend", 5
   t.bugFixed "A80: a by-value self may give up its fields on every backend"
 
+  # A81. An inner `let` shadowing an outer local stored into the outer one: the
+  # ownership pass's uniquify took a shadowing declaration for a reassignment
+  # (issue #170). Found writing platform.net-lowpower.
+  t.src """
+import str
+
+fn f({x: int}) -> int:
+  if x > 0:
+    let x = "abc"
+    return {t: x} byteCount
+  return x
+
+fn g() -> int:
+  var n = 10
+  for i in 0 .. 2:
+    var n = "a"
+    n = n + "b"
+    if {t: n} byteCount != 2:
+      return 99
+  n = n + 1
+  return n
+
+fn main() -> int:
+  return {x: 3} f + g
+"""
+  t.quietly: t.hostRuns "A81: an inner let shadowing an outer local is a new variable", 14
+  t.bugFixed "A81: an inner let shadowing an outer local is a new variable"
+
   t.finish()

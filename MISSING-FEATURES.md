@@ -204,6 +204,14 @@ it in.
   record by value. Fixed: only a pointer `self` is exempt. Found writing
   `platform.hal`.
 
+- **A81 (issue #170) — an inner `let` shadowing an outer local stored into
+  the outer one.** The checker supports shadowing; the ownership pass's
+  `uniquify` returned early for any visible name, so the inner declaration was
+  emitted as an assignment (a build error when the types differ, a silent
+  overwrite when they agree). Fixed: a declaration of a name visible only from
+  an enclosing scope gets a name of its own. Found writing
+  `platform.net-lowpower`.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

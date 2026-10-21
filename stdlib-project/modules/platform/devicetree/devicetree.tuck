@@ -1,0 +1,404 @@
+# platform.devicetree — a board description turned into Tuck, in pure Tuck.
+#
+# Tuck reads no files at compile time, so this is a GENERATOR rather than a
+# runtime API: a build step reads the board's `.dts`, hands the text here, and
+# writes what comes back into a module the application imports. A pin the board
+# does not have is then a name that does not exist — a compile error, never a
+# runtime `none`.
+#
+# What is emitted, for every node that has a label and is not disabled (a
+# disabled node disables everything under it):
+#   reg = <base size>        ->  const <label>Base: u64 = base
+#                                 const <label>Size: u64 = size
+#   gpios = <&ctrl pin ...>  ->  const <label>Port: str = "ctrl"
+#                                 const <label>Pin: int = pin
+# and the root's `model` as `const boardModel: str`. Register FIELD layouts are
+# not in a devicetree; they come from the vendor's SVD as `register` blocks.
+#
+# The accepted subset: nodes with optional labels, string and cell-list
+# properties (several values separated by commas), flag properties, `//` and
+# `/* */` comments, a `/dts-v1/;` header. Includes, overlays and macros are
+# not: run the C preprocessor first, as the kernel's build does.
+import seq
+import str
+import text
+import convert
+
+type TokKind:
+  | Word
+  | Quoted
+  | Mark
+
+type Tok:
+  kind: TokKind
+  word: str
+
+type Prop:
+  name: str
+  strings: Seq[str]
+  cells: Seq[str]
+
+type DtNode:
+  name: str
+  label: str
+  parent: int
+  props: Seq[Prop]
+
+# --- tokens ---------------------------------------------------------------------
+fn isWordByte({b: u8}) -> bool:
+  let c = {value: b} int
+  if c >= 48 and c <= 57:
+    return true
+  if c >= 65 and c <= 90:
+    return true
+  if c >= 97 and c <= 122:
+    return true
+  # , . _ - @ # / + ? &
+  let extra: Seq[int] = [44, 46, 95, 45, 64, 35, 47, 43, 63, 38]
+  for i in 0 .. extra.len - 1:
+    if c == extra[i]:
+      return true
+  return false
+
+fn piece({t: str, start: int, stop: int}) -> str:
+  let s = {t: t, start: start, stop: stop} slice
+  if s.ok:
+    return s.value
+  return ""
+
+# Where the word starting at `at` ends.
+fn wordEnd({t: str, at: int}) -> int:
+  let n = {t: t} byteCount
+  var j = at
+  var more = true
+  for more and j < n:
+    let b = {t: t, index: j} byteAt
+    if {b: b} isWordByte:
+      j = j + 1
+    else:
+      more = false
+  return j
+
+# Where a comment starting at `at` ends, or `at` when none starts there.
+fn skipComment({t: str, at: int}) -> int:
+  let n = {t: t} byteCount
+  if {t: t, at: at, what: "//"} matchesAt:
+    var i = at
+    for i < n and {t: t, index: i} byteAt != 10:
+      i = i + 1
+    return i
+  if {t: t, at: at, what: "/*"} matchesAt:
+    var i = at + 2
+    for i < n and not {t: t, at: i, what: "*/"} matchesAt:
+      i = i + 1
+    return i + 2
+  return at
+
+# The tokens of `t`; none for an unterminated string.
+fn tokens({t: str}) -> Seq[Tok]?:
+  var out: Seq[Tok] = []
+  let n = {t: t} byteCount
+  var i = 0
+  for i < n:
+    let skipped = {t: t, at: i} skipComment
+    let b = {t: t, index: i} byteAt
+    if skipped != i:
+      i = skipped
+    elif b == 32 or b == 9 or b == 10 or b == 13:
+      i = i + 1
+    elif b == 34:
+      var j = i + 1
+      for j < n and {t: t, index: j} byteAt != 34:
+        j = j + 1
+      if j >= n:
+        return none
+      let w = {t: t, start: i + 1, stop: j} piece
+      let tok = {kind: Quoted, word: w} Tok
+      out = {items: out, value: tok} push
+      i = j + 1
+    elif {b: b} isWordByte:
+      let j = {t: t, at: i} wordEnd
+      let w = {t: t, start: i, stop: j} piece
+      let tok = {kind: Word, word: w} Tok
+      out = {items: out, value: tok} push
+      i = j
+    else:
+      let w = {t: t, start: i, stop: i + 1} piece
+      let tok = {kind: Mark, word: w} Tok
+      out = {items: out, value: tok} push
+      i = i + 1
+  return out
+
+# --- the tree --------------------------------------------------------------------
+# The nodes parsed so far, flat (each knows its parent's index), and where the
+# parser stopped.
+type Parsing:
+  nodes: Seq[DtNode]
+  next: int
+
+fn isMark({toks: Seq[Tok], at: int, m: str}) -> bool:
+  if at >= toks.len:
+    return false
+  return toks[at].kind == Mark and toks[at].word == m
+
+fn addProp({nodes: Seq[DtNode], index: int, p: Prop}) -> Seq[DtNode]:
+  var out = nodes
+  let n = out[index]
+  let props = {items: n.props, value: p} push
+  let updated = {name: n.name, label: n.label, parent: n.parent, props: props} DtNode
+  {items: out, index: index, value: updated} setAt
+  return out
+
+type PropParsed:
+  prop: Prop
+  next: int
+
+# `name = "a", <1 2>;` or a bare `name;` — `at` is on the name.
+fn parseProp({toks: Seq[Tok], at: int}) -> PropParsed?:
+  let name = toks[at].word
+  var strings: Seq[str] = []
+  var cells: Seq[str] = []
+  var i = at + 1
+  if {toks: toks, at: i, m: ";"} isMark:
+    let flag = {name: name, strings: strings, cells: cells} Prop
+    return {prop: flag, next: i + 1} PropParsed
+  if not {toks: toks, at: i, m: "="} isMark:
+    return none
+  i = i + 1
+  for i < toks.len and not {toks: toks, at: i, m: ";"} isMark:
+    let t = toks[i]
+    if t.kind == Quoted:
+      strings = {items: strings, value: t.word} push
+      i = i + 1
+    elif t.word == ",":
+      # a comma is a word byte (`st,stm32-usart`), so a lone one between two
+      # values arrives as a word
+      i = i + 1
+    elif {toks: toks, at: i, m: "<"} isMark:
+      i = i + 1
+      for i < toks.len and toks[i].kind == Word:
+        cells = {items: cells, value: toks[i].word} push
+        i = i + 1
+      if not {toks: toks, at: i, m: ">"} isMark:
+        return none
+      i = i + 1
+    else:
+      return none
+  if i >= toks.len:
+    return none
+  let p = {name: name, strings: strings, cells: cells} Prop
+  return {prop: p, next: i + 1} PropParsed
+
+# The body of node `self`, `at` just past its `{`, up to and past `};`.
+fn parseBody({toks: Seq[Tok], at: int, nodes: Seq[DtNode], self: int}) -> Parsing?:
+  var all = nodes
+  var i = at
+  for i < toks.len and not {toks: toks, at: i, m: "}"} isMark:
+    if toks[i].kind != Word:
+      return none
+    if {toks: toks, at: i + 1, m: ":"} isMark or {toks: toks, at: i + 1, m: "{"} isMark:
+      let child = {toks: toks, at: i, nodes: all, parent: self} parseNode
+      if not child.ok:
+        return none
+      all = child.value.nodes
+      i = child.value.next
+    else:
+      let p = {toks: toks, at: i} parseProp
+      if not p.ok:
+        return none
+      all = {nodes: all, index: self, p: p.value.prop} addProp
+      i = p.value.next
+  if not {toks: toks, at: i + 1, m: ";"} isMark:
+    return none
+  return {nodes: all, next: i + 2} Parsing
+
+# `[label:] name { ... };` — `at` is on the label or the name.
+fn parseNode({toks: Seq[Tok], at: int, nodes: Seq[DtNode], parent: int}) -> Parsing?:
+  var i = at
+  var label = ""
+  if {toks: toks, at: i + 1, m: ":"} isMark:
+    label = toks[i].word
+    i = i + 2
+  if i >= toks.len or toks[i].kind != Word:
+    return none
+  if not {toks: toks, at: i + 1, m: "{"} isMark:
+    return none
+  # `&label { ... };` amends a node declared elsewhere: an overlay, which is
+  # outside the subset
+  if {t: toks[i].word, prefix: "&"} startsWith:
+    return none
+  let noProps: Seq[Prop] = []
+  let node = {name: toks[i].word, label: label, parent: parent, props: noProps} DtNode
+  let grown = {items: nodes, value: node} push
+  return {toks: toks, at: i + 2, nodes: grown, self: grown.len - 1} parseBody
+
+# Every node of the description, or none when it is outside the subset.
+fn parseDts({t: str}) -> Seq[DtNode]?:
+  let toks = {t: t} tokens
+  if not toks.ok:
+    return none
+  var nodes: Seq[DtNode] = []
+  var i = 0
+  for i < toks.value.len:
+    let w = toks.value[i].word
+    if toks.value[i].kind == Word and {t: w, prefix: "/dts-v1/"} startsWith:
+      i = i + 2
+    else:
+      let r = {toks: toks.value, at: i, nodes: nodes, parent: -1} parseNode
+      if not r.ok:
+        return none
+      nodes = r.value.nodes
+      i = r.value.next
+  return nodes
+
+# --- emitting Tuck ---------------------------------------------------------------
+fn propOf({n: DtNode, name: str}) -> Prop?:
+  for i in 0 .. n.props.len - 1:
+    if n.props[i].name == name:
+      return n.props[i]
+  return none
+
+fn isDisabled({nodes: Seq[DtNode], index: int}) -> bool:
+  var i = index
+  for i >= 0:
+    let s = {n: nodes[i], name: "status"} propOf
+    if s.ok:
+      if s.value.strings.len > 0 and s.value.strings[0] == "disabled":
+        return true
+    i = nodes[i].parent
+  return false
+
+# `led_0` -> `led0`, `user_button` -> `userButton`: a label as a Tuck name.
+fn tuckName({label: str}) -> str:
+  let parts = {t: label, at: "_"} split
+  var out = parts[0]
+  for i in 1 .. parts.len - 1:
+    let p = parts[i]
+    let n = {t: p} byteCount
+    if n > 0:
+      let head = {t: p, start: 0, stop: 1} piece
+      let rest = {t: p, start: 1, stop: n} piece
+      out = out + {t: head} toUpperAscii + rest
+  return out
+
+fn constsOf({n: DtNode, name: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  let reg = {n: n, name: "reg"} propOf
+  if reg.ok:
+    if reg.value.cells.len >= 2:
+      out = {items: out, value: "const " + name + "Base: u64 = " + reg.value.cells[0]} push
+      out = {items: out, value: "const " + name + "Size: u64 = " + reg.value.cells[1]} push
+  let gpios = {n: n, name: "gpios"} propOf
+  if gpios.ok:
+    let cells = gpios.value.cells
+    if cells.len >= 2 and {t: cells[0], prefix: "&"} startsWith:
+      let n0 = {t: cells[0]} byteCount
+      let ctrl = {t: cells[0], start: 1, stop: n0} piece
+      out = {items: out, value: "const " + name + "Port: str = \"" + ctrl + "\""} push
+      out = {items: out, value: "const " + name + "Pin: int = " + cells[1]} push
+  return out
+
+# The Tuck module text for a board description; none when it does not parse.
+fn generate({dts: str}) -> str?:
+  let nodes = {t: dts} parseDts
+  if not nodes.ok:
+    return none
+  var lines: Seq[str] = ["# Generated by platform.devicetree. Do not edit."]
+  for i in 0 .. nodes.value.len - 1:
+    let n = nodes.value[i]
+    if n.parent < 0:
+      let model = {n: n, name: "model"} propOf
+      if model.ok:
+        if model.value.strings.len > 0:
+          lines = {items: lines, value: "const boardModel: str = \"" + model.value.strings[0] + "\""} push
+    let off = {nodes: nodes.value, index: i} isDisabled
+    if n.label != "" and not off:
+      let name = {label: n.label} tuckName
+      let cs = {n: n, name: name} constsOf
+      for k in 0 .. cs.len - 1:
+        lines = {items: lines, value: cs[k]} push
+  return {parts: lines, sep: "\n"} joinStr + "\n"
+
+# --- checks ---------------------------------------------------------------------
+fn sample() -> str:
+  return "/dts-v1/;\n" +
+    "/* a demo board */\n" +
+    "/ {\n" +
+    "  model = \"demo-board\";\n" +
+    "  soc {\n" +
+    "    uart0: serial@40011000 {\n" +
+    "      compatible = \"st,stm32-usart\", \"st,usart\";\n" +
+    "      reg = <0x40011000 0x400>;\n" +
+    "      status = \"okay\";\n" +
+    "    };\n" +
+    "    uart1: serial@40004400 {\n" +
+    "      reg = <0x40004400 0x400>;\n" +
+    "      status = \"disabled\";   // not wired on this board\n" +
+    "    };\n" +
+    "  };\n" +
+    "  leds {\n" +
+    "    led_0: led-0 { gpios = <&gpioa 5 0>; label = \"status\"; };\n" +
+    "  };\n" +
+    "  off: spare {\n" +
+    "    status = \"disabled\";\n" +
+    "    btn: button { gpios = <&gpioc 13 1>; };\n" +
+    "  };\n" +
+    "  user_button: key { gpios = <&gpioc 13 1>; wakeup-source; };\n" +
+    "};\n"
+
+fn checkParse() -> int:
+  let nodes = {t: sample} parseDts
+  if not nodes.ok:
+    return 1
+  if nodes.value.len != 9:
+    return 2
+  let uart = nodes.value[2]
+  if uart.label != "uart0" or uart.name != "serial@40011000":
+    return 3
+  let compat = {n: uart, name: "compatible"} propOf
+  if not compat.ok:
+    return 4
+  if compat.value.strings.len != 2 or compat.value.strings[1] != "st,usart":
+    return 5
+  let key = nodes.value[8]
+  let wake = {n: key, name: "wakeup-source"} propOf
+  if not wake.ok:
+    return 6
+  return 0
+
+fn checkGenerate() -> int:
+  let out = {dts: sample} generate
+  if not out.ok:
+    return 10
+  let want = "# Generated by platform.devicetree. Do not edit.\n" +
+    "const boardModel: str = \"demo-board\"\n" +
+    "const uart0Base: u64 = 0x40011000\n" +
+    "const uart0Size: u64 = 0x400\n" +
+    "const led0Port: str = \"gpioa\"\n" +
+    "const led0Pin: int = 5\n" +
+    "const userButtonPort: str = \"gpioc\"\n" +
+    "const userButtonPin: int = 13\n"
+  if out.value != want:
+    return 11
+  return 0
+
+fn checkRefuse() -> int:
+  let open1 = {dts: "/ { model = \"x; };"} generate
+  if open1.ok:
+    return 20
+  let noSemi = {dts: "/ { a = <1 2> };"} generate
+  if noSemi.ok:
+    return 21
+  let overlay = {dts: "&uart0 { status = \"okay\"; };"} generate
+  if overlay.ok:
+    return 22
+  return 0
+
+fn main() -> int:
+  let a = checkParse
+  if a != 0:
+    return a
+  let b = checkGenerate
+  if b != 0:
+    return b
+  return checkRefuse

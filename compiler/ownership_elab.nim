@@ -548,9 +548,13 @@ proc uniquifyDecl(u: var Uniquify, b: Expr, i: int) =
   ## A statement that declares a name already declared elsewhere gets a new one.
   let s = b.stmts[i]
   let t = s.target
-  if t == nil or t.kind != exkVar or u.res.isOwnerField(t) or u.isVisible(t.name):
-    return
-  if t.name in u.sites and u.sites[t.name] != s.id:
+  if t == nil or t.kind != exkVar or u.res.isOwnerField(t): return
+  # A `let`/`var` of a name an ENCLOSING scope declared shadows it until this
+  # block ends; without a name of its own it would store into the outer one,
+  # whatever its type (A81). Visible in THIS scope already is a reassignment.
+  let shadows = s.isDecl and u.isVisible(t.name) and t.name notin u.visible[^1]
+  if u.isVisible(t.name) and not shadows: return
+  if shadows or (t.name in u.sites and u.sites[t.name] != s.id):
     inc u.fresh
     let fresh = t.name & "ˑ" & $u.fresh
     u.res.renameFrom(b, i, t.name, fresh)
