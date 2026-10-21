@@ -51,7 +51,7 @@ superseding the "stream fork blocked" framing for tree-shaped data).
 - [x] sys/thread, sys/sync                                  (status: dropped — tasks, actors and the scheduler do the job)
 - [ ] sys/io, sys/net                                       (status: blocked — F4 stream fork per ROADMAP-GRAPH §3.4)
 - [x] sys/ffi, sys/dynload                                  (status: dropped — `extern`; plugins are a language question)
-- [ ] sys/mmap                                            (status: kept, process-shared pages only; not started)
+- [x] sys/mmap                                            (status: done — read-only zero-copy file mapping behind a handle, per-backend shims)
 - [ ] sys/audio, sys/ble, sys/window                         (status: out-of-scope-v1 — no target consumer)
 
 ### platform — embedded/bare-metal

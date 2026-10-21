@@ -15,7 +15,7 @@ const Modules = [
   ("alloc", "deque", "deque"), ("alloc", "list", "list"), ("alloc", "map", "map"),
   ("alloc", "set", "set"), ("alloc", "string", "string"), ("alloc", "vec", "vec"),
   ("core", "array", "array"), ("core", "cmp", "cmp"), ("core", "convert", "convert"),
-  ("core", "error", "error"), ("core", "fmt", "fmt"), ("core", "geom", "geom"), ("core", "hash", "hash"), ("core", "iter", "iter"), ("core", "num", "num"), ("core", "types", "types"), ("std", "math", "math"), ("std", "chrono", "chrono"), ("std", "i18n", "i18n"), ("platform", "boot", "boot"), ("platform", "power", "power"), ("sys", "env", "env"), ("std", "perf", "perf"), ("std", "queue", "queue"), ("std", "testing", "testing"), ("std", "crypto", "crypto"), ("std", "encoding", "encoding"), ("std", "log", "log"), ("std", "regex", "regex"), ("std", "net-http", "http"), ("platform", "dsp", "dsp"), ("platform", "watchdog", "watchdog"), ("sys", "process", "process"), ("std", "cli", "cli"), ("std", "compress", "compress"), ("std", "archive", "archive"), ("std", "random", "random"), ("sys", "path", "path"), ("sys", "files", "files"), ("sys", "time", "clock"), ("sys", "io", "stream"), ("sys", "net", "socket"), ("sys", "signal", "signal"), ("platform", "libc-shim", "board"), ("platform", "hal", "hal"), ("platform", "devicetree", "devicetree"), ("platform", "net-lowpower", "advertise"),
+  ("core", "error", "error"), ("core", "fmt", "fmt"), ("core", "geom", "geom"), ("core", "hash", "hash"), ("core", "iter", "iter"), ("core", "num", "num"), ("core", "types", "types"), ("std", "math", "math"), ("std", "chrono", "chrono"), ("std", "i18n", "i18n"), ("platform", "boot", "boot"), ("platform", "power", "power"), ("sys", "env", "env"), ("std", "perf", "perf"), ("std", "queue", "queue"), ("std", "testing", "testing"), ("std", "crypto", "crypto"), ("std", "encoding", "encoding"), ("std", "log", "log"), ("std", "regex", "regex"), ("std", "net-http", "http"), ("platform", "dsp", "dsp"), ("platform", "watchdog", "watchdog"), ("sys", "process", "process"), ("std", "cli", "cli"), ("std", "compress", "compress"), ("std", "archive", "archive"), ("std", "random", "random"), ("sys", "path", "path"), ("sys", "files", "files"), ("sys", "time", "clock"), ("sys", "io", "stream"), ("sys", "net", "socket"), ("sys", "signal", "signal"), ("sys", "mmap", "mmap"), ("platform", "libc-shim", "board"), ("platform", "hal", "hal"), ("platform", "devicetree", "devicetree"), ("platform", "net-lowpower", "advertise"),
   ("core", "str", "text")]
 
 proc stdlibArg(t: T): string =
@@ -35,7 +35,10 @@ proc moduleScript(t: T, tier, dirName, name: string, backend: string): string =
                     else: ("", "m")
   # dmd may live outside PATH (the harness knows where); the driver needs it on it.
   let dmdPath = if backend == "dlang": "PATH=" & parentDir(findDmd()) & ":$PATH " else: ""
-  "mkdir -p " & dir & " && cp " & src & " " & dir / "m.tuck" & " && cd " & dir &
+  # A module's `impl:` shims sit in its own `shim/` folder, beside it.
+  let shims = src.parentDir / "shim"
+  let copyShims = if dirExists(shims): " && cp -r " & shims & " " & dir else: ""
+  "mkdir -p " & dir & " && cp " & src & " " & dir / "m.tuck" & copyShims & " && cd " & dir &
     " && " & dmdPath & tuckAbs(t) & " b m.tuck " & flag &
     stdlibArg(t) & " --root:" & t.root & " > build.log 2>&1 && ./" & bin
 
@@ -145,6 +148,41 @@ fn main() -> int [io]:
       let (rc, outp) = t.resultOf(idx)
       # 10 + 20 + 1000 (x) + 1000 (empty) - 5 = 2025, as an exit code: 233.
       if rc == 233: t.ok title
+      else: t.no title, "exit " & $rc & "\n" & outp
+
+  # An IMPORTED module whose externs live in per-backend shims (sys.mmap): the
+  # shims are found beside the module, not beside the program (A82).
+  t.addFile "mapuse.tuck", """
+import mmap
+import fs
+
+fn main() -> int [io: fs]:
+  let w = {path: "/tmp/tuck-mapuse.txt", content: "a\nb\nc\n"} writeFile
+  if not w.ok:
+    return 1
+  let m = {path: "/tmp/tuck-mapuse.txt"} mapFile
+  if not m.ok:
+    return 2
+  let n = {m: m.value} lineCount
+  {m: m.value} unmapFile
+  return n
+"""
+  var mapRuns: seq[(string, int)]
+  for (label, flag, bin) in [("Nim", "", "mapuse"), ("Odin", "--odin", "mapuse_odin"),
+                             ("D", "--dlang", "mapuse_d")]:
+    if label == "D" and not haveD: continue
+    let dir = t.curDir / ("mapuse-" & label)
+    let dmdPath = if label == "D": "PATH=" & parentDir(findDmd()) & ":$PATH " else: ""
+    mapRuns.add (label, t.needCmd(@["sh", "-c", "mkdir -p " & dir & " && cp " &
+        t.curDir / "mapuse.tuck" & " " & dir & " && cd " & dir & " && " & dmdPath &
+        tuckAbs(t) & " b mapuse.tuck " & flag & " " & stdlibArg(t) & " --root:" &
+        t.root & " > build.log 2>&1 && ./" & bin], verb = vRun))
+  if t.phase != pCollect:
+    for (label, idx) in mapRuns:
+      let title = "an imported module's impl shims are found on " & label
+      if t.skippedCmd(idx): t.skip title; continue
+      let (rc, outp) = t.resultOf(idx)
+      if rc == 3: t.ok title
       else: t.no title, "exit " & $rc & "\n" & outp
 
   t.finish()

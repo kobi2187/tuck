@@ -212,6 +212,13 @@ it in.
   an enclosing scope gets a name of its own. Found writing
   `platform.net-lowpower`.
 
+- **A82 (issue #171) — an `impl:` shim worked only in the entry module.**
+  Imported, Nim called it through `tuck_rt` (every header-less extern counted
+  as the runtime's), Odin rebased its path against the output directory instead
+  of the module's `mod_<name>/` package, and D collected `-I` from the entry
+  module only. Fixed in all three; `stdlib_project` builds a program importing
+  `sys.mmap` on each backend. Found writing `sys.mmap`.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

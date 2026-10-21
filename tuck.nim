@@ -1667,13 +1667,16 @@ when isMainModule:
           # phase), so `module` is still author-relative to `path`, exactly
           # like `externLib` above.
           var implDirs: HashSet[string]
-          for d in m.decls:
-            if d == nil or d.kind != dkExtern: continue
-            for mem in d.mixinMembers:
-              if mem.kind != dkFn or not mem.isExtern: continue
-              for (backend, module) in mem.externImpl:
-                if backend != "d": continue
-                implDirs.incl(parentDir(path) / module.parentDir())
+          # Every module's, each against its OWN file: a shim named by an
+          # imported module sits beside that module, not beside the entry (A82).
+          for lm in prog:
+            for d in lm.m.decls:
+              if d == nil or d.kind != dkExtern: continue
+              for mem in d.mixinMembers:
+                if mem.kind != dkFn or not mem.isExtern: continue
+                for (backend, module) in mem.externImpl:
+                  if backend != "d": continue
+                  implDirs.incl(parentDir(lm.path) / module.parentDir())
           var implIArgs = ""
           for dir in implDirs: implIArgs.add(" -I" & quoteShell(dir))
           # TUCK_DMD_EXTRA: flags appended verbatim (`-version=tuckTrack`

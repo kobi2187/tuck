@@ -4382,4 +4382,22 @@ fn main() -> int:
   t.quietly: t.hostRuns "A81: an inner let shadowing an outer local is a new variable", 14
   t.bugFixed "A81: an inner let shadowing an outer local is a new variable"
 
+  # A82. An `extern [impl: ...]` shim worked only in the entry module: imported,
+  # Nim called it through tuck_rt, Odin rebased its path one level short and D
+  # had no -I for it (issue #171). Found writing sys.mmap.
+  t.src """
+import lib
+
+fn main() -> int:
+  return seven
+"""
+  t.addFile("lib.tuck", """extern [impl: nim "./lib_shim", odin "./shim", d "./lib_shim"]:
+  fn seven() -> int
+""")
+  t.addFile("lib_shim.nim", "proc seven*(): int = 7\n")
+  t.addFile("lib_shim.d", "module lib_shim;\nlong seven() { return 7; }\n")
+  t.addFile("shim/lib_shim.odin", "package lib_shim\nseven :: proc() -> int { return 7 }\n")
+  t.quietly: t.runs "A82: a shim named by an imported module is found (Nim)", 7
+  t.bugFixed "A82: a shim named by an imported module is found (Nim)"
+
   t.finish()
