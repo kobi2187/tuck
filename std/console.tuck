@@ -10,4 +10,7 @@ type IoError:
 extern:
   fn print({text: str}) -> void [io: console]
   fn printLine({text: str}) -> void [io: console]
+  # A line to stderr, which is unbuffered: diagnostics and logs, kept apart
+  # from the output a pipe carries on.
+  fn printError({text: str}) -> void [io: console]
   fn readLine() -> !{line: str} [io: console, error: IoError]

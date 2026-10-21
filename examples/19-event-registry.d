@@ -25,7 +25,7 @@ void raise_tuckˑregistryˑAppEvents_LowMemory(uint remaining) {
 
 
 void tuckˑfnˑtriggerEvent() {
-    raise_tuckˑregistryˑAppEvents_SensorFailure(1L, "timeout");
+    raise_tuckˑregistryˑAppEvents_SensorFailure(cast(ubyte)1, "timeout");
 }
 
 void tuckˑfnˑAppEvents_SensorFailure(ubyte port, string reason) {

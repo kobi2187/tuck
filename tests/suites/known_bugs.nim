@@ -635,8 +635,10 @@ on AppEvents.LowMemory({remaining: u32}):
 fn main() -> int:
   return 0
 """
+  # The literal is the event field's width, `42'u32`: a raise payload takes
+  # its event's field types (A93).
   t.quietly: t.emits("a registry raise in a task body is lowered",
-                     r"raise_tuckˑregistryˑAppEvents_LowMemory\(42\)")
+                     r"raise_tuckˑregistryˑAppEvents_LowMemory\(42'u32\)")
   t.bugFixed "a registry raise in a task body is lowered"
 
   # A PAYLOAD-FREE registry raise emitted swapped, nonsensical code.
@@ -4628,5 +4630,34 @@ fn midThing() -> int:
 """)
   t.quietly: t.hostRuns "A92: a bare call means the fn the caller imports, not one further down", 148
   t.bugFixed "A92: a bare call means the fn the caller imports, not one further down"
+
+  # A93. A raise payload was synthesized with no expected types, so a variant
+  # name two sums declare was ambiguous there and nowhere else (issue #182).
+  # Found reviving the web-downloader app.
+  t.src """
+import console
+
+type Link:
+  | Dialing
+  | Hungup
+
+type Fault:
+  | Stalled
+  | Hungup
+
+registry AppEv:
+  | Faulted({fault: Fault})
+
+on AppEv.Faulted({fault: Fault}) [io: console]:
+  match fault:
+    Stalled: {text: "stalled"} printLine
+    Hungup: {text: "hung up"} printLine
+
+fn main() -> int [io: console]:
+  AppEv.raise Faulted {fault: Hungup}
+  return 3
+"""
+  t.quietly: t.hostRuns "A93: a raise payload takes its event's field types", 3, "hung up"
+  t.bugFixed "A93: a raise payload takes its event's field types"
 
   t.finish()

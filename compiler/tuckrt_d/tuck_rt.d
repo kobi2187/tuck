@@ -143,6 +143,11 @@ T tuckCopy(T)(T v) {
 // std/console — terminal I/O (rt-implemented externs).
 void print(string s) { stdout.write(s); stdout.flush(); }
 void printLine(string s) { stdout.writeln(s); }
+void printError(string s) {
+    import std.stdio : stderr;
+    stderr.writeln(s);
+    stderr.flush();
+}
 
 // `toStr` — the universal stringifier. tuck_rt.nim spells it `$value`; D's
 // std.conv.text is the same "any value to its display form" operation.

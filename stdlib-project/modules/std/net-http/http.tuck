@@ -284,20 +284,10 @@ fn requestText({verb: Method, url: Url, headers: Seq[Header], body: str}) -> str
 # A response from its text: status line, headers, then the body after the blank
 # line. Absent when the status line is not `HTTP/x.y NNN reason`.
 fn parseResponse({raw: str}) -> Response?:
-  let cut = {t: raw, what: "\r\n\r\n"} text::find
-  var head = raw
-  var body = ""
-  if cut.ok:
-    let rawLen = {t: raw} byteCount
-    let h = {t: raw, start: 0, stop: cut.value} slice
-    let b = {t: raw, start: cut.value + 4, stop: rawLen} slice
-    if not h.ok:
-      return none
-    if not b.ok:
-      return none
-    head = h.value
-    body = b.value
-  let lines = {t: head, at: "\r\n"} split
+  let parts = {raw: raw} splitMessage
+  if not parts.ok:
+    return none
+  let lines = {t: parts.value.head, at: "\r\n"} split
   let status = lines[0]
   if not {t: status, prefix: "HTTP/"} startsWith:
     return none
@@ -312,8 +302,37 @@ fn parseResponse({raw: str}) -> Response?:
     if reason != "":
       reason = reason + " "
     reason = reason + words[i]
+  let headers = {lines: lines, start: 1} headersFrom
+  let st = {value: code.value} int
+  return {status: st, reason: reason, headers: headers, body: parts.value.body} Response
+
+# --- the server's half -------------------------------------------------------------------------
+type Request:
+  verb: Method
+  target: str
+  headers: Seq[Header]
+  body: str
+
+fn methodNamed({name: str}) -> Method?:
+  if name == "GET":
+    return Method.Get
+  if name == "POST":
+    return Method.Post
+  if name == "PUT":
+    return Method.Put
+  if name == "DELETE":
+    return Method.Delete
+  if name == "HEAD":
+    return Method.Head
+  if name == "PATCH":
+    return Method.Patch
+  return none
+
+# The `Name: value` lines of a message head, from line `start` on. A line with
+# no colon is skipped.
+fn headersFrom({lines: Seq[str], start: int}) -> Seq[Header]:
   var headers: Seq[Header] = []
-  for i in 1 .. lines.len - 1:
+  for i in start .. lines.len - 1:
     let colon = {t: lines[i], what: ":"} text::find
     if colon.ok:
       let lineLen = {t: lines[i]} byteCount
@@ -324,8 +343,72 @@ fn parseResponse({raw: str}) -> Response?:
           let trimmed = {t: v.value} trim
           let h = {name: n.value, value: trimmed} Header
           headers = {items: headers, value: h} push
-  let st = {value: code.value} int
-  return {status: st, reason: reason, headers: headers, body: body} Response
+  return headers
+
+# The head and body of a message: split at the first blank line.
+fn splitMessage({raw: str}) -> {head: str, body: str}?:
+  let cut = {t: raw, what: "\r\n\r\n"} text::find
+  if not cut.ok:
+    return {head: raw, body: ""}
+  let rawLen = {t: raw} byteCount
+  let h = {t: raw, start: 0, stop: cut.value} slice
+  let b = {t: raw, start: cut.value + 4, stop: rawLen} slice
+  if not h.ok:
+    return none
+  if not b.ok:
+    return none
+  return {head: h.value, body: b.value}
+
+# A request from its text. Absent unless the first line is
+# `METHOD target HTTP/x.y` with a method this module knows.
+fn parseRequest({raw: str}) -> Request?:
+  let parts = {raw: raw} splitMessage
+  if not parts.ok:
+    return none
+  let lines = {t: parts.value.head, at: "\r\n"} split
+  let words = {t: lines[0], at: " "} split
+  if words.len != 3:
+    return none
+  if not {t: words[2], prefix: "HTTP/"} startsWith:
+    return none
+  let verb = {name: words[0]} methodNamed
+  if not verb.ok:
+    return none
+  let headers = {lines: lines, start: 1} headersFrom
+  return {verb: verb.value, target: words[1], headers: headers, body: parts.value.body} Request
+
+# The reason phrase that goes with a status code.
+fn reasonFor({status: int}) -> str:
+  if status == 200:
+    return "OK"
+  if status == 301:
+    return "Moved Permanently"
+  if status == 400:
+    return "Bad Request"
+  if status == 403:
+    return "Forbidden"
+  if status == 404:
+    return "Not Found"
+  if status == 405:
+    return "Method Not Allowed"
+  if status == 500:
+    return "Internal Server Error"
+  return "Unknown"
+
+# A response as text: status line, the given headers, Content-Length (always,
+# so the reader knows where the body ends), a blank line, the body.
+fn responseText({r: Response}) -> str:
+  var lines: Seq[str] = []
+  let code = {value: r.status} toStr
+  lines = {items: lines, value: "HTTP/1.1 " + code + " " + r.reason} push
+  for i in 0 .. r.headers.len - 1:
+    lines = {items: lines, value: r.headers[i].name + ": " + r.headers[i].value} push
+  let size = {t: r.body} byteCount
+  let n = {value: size} toStr
+  lines = {items: lines, value: "Content-Length: " + n} push
+  lines = {items: lines, value: ""} push
+  lines = {items: lines, value: r.body} push
+  return {parts: lines, sep: "\r\n"} joinStr
 
 # --- cookies -------------------------------------------------------------------------------------
 fn sameSiteText({s: SameSite}) -> str:
@@ -472,6 +555,41 @@ fn checkCookies() -> int:
     return 26
   return 0
 
+fn checkServer() -> int:
+  let raw = "GET /a%20b?x=1 HTTP/1.1\r\nHost: example.com\r\nAccept:  text/html \r\n\r\n"
+  let r = {raw: raw} parseRequest
+  if not r.ok:
+    return 60
+  if r.value.target != "/a%20b?x=1":
+    return 61
+  let accept = {headers: r.value.headers, name: "accept"} headerValue
+  if not accept.ok:
+    return 62
+  if accept.value != "text/html":
+    return 63
+  match r.value.verb:
+    Get: discard
+    _: return 64
+  let brew = {raw: "BREW /pot HTTP/1.1\r\n\r\n"} parseRequest
+  if brew.ok:
+    return 65
+  let noHeaders: Seq[Header] = []
+  let gone = {status: 404, reason: "Not Found", headers: noHeaders, body: "gone"} Response
+  let wire = {r: gone} responseText
+  let back = {raw: wire} parseResponse
+  if not back.ok:
+    return 66
+  if back.value.status != 404 or back.value.body != "gone":
+    return 67
+  let size = {r: back.value, name: "content-length"} headerOf
+  if not size.ok:
+    return 68
+  if size.value != "4":
+    return 69
+  if {status: 405} reasonFor != "Method Not Allowed":
+    return 70
+  return 0
+
 fn main() -> int:
   let a = checkEncoding
   if a != 0:
@@ -485,4 +603,7 @@ fn main() -> int:
   let d = checkMessages
   if d != 0:
     return d
+  let e = checkServer
+  if e != 0:
+    return e
   return checkCookies

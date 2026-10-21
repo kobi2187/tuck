@@ -282,6 +282,12 @@ it in.
   each module is mangled against a table without the names it sees only as
   externs. Found writing the `spellcheck` app.
 
+- **A93 (issue #182) — a raise payload had no expected types.**
+  `AppEv.raise Faulted {fault: Hungup}`, where two sums declare `Hungup`, was
+  "ambiguous" although the event declares `fault: Fault`; the same value in a
+  construction, a call or an assignment was not. Fixed: the event's fields
+  are the payload's hints. Found reviving the `web-downloader` app.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

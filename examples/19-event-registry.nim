@@ -24,7 +24,7 @@ proc raise_tuckˑregistryˑAppEvents_LowMemory*(remaining: uint32) =
 
 
 proc tuckˑfnˑtriggerEvent*(): void =
-  raise_tuckˑregistryˑAppEvents_SensorFailure(1, "timeout")
+  raise_tuckˑregistryˑAppEvents_SensorFailure(1'u8, "timeout")
 
 proc tuckˑfnˑAppEvents_SensorFailure*(port: uint8, reason: string): void =
   var reason = tuckBits(reason)

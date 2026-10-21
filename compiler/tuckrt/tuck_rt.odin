@@ -1675,6 +1675,10 @@ printLine :: proc(text: string) {
 	fmt.println(text)
 }
 
+printError :: proc(text: string) {
+	fmt.eprintln(text)
+}
+
 @(private)
 ReadLineReq :: struct {
 	buf:    [4096]u8,

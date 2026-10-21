@@ -25,7 +25,7 @@ raise_tuckˑregistryˑAppEvents_LowMemory :: proc(remaining: u32) {
 
 
 tuckˑfnˑtriggerEvent :: proc () {
-  raise_tuckˑregistryˑAppEvents_SensorFailure(1, "timeout")
+  raise_tuckˑregistryˑAppEvents_SensorFailure(u8(1), "timeout")
 }
 
 tuckˑfnˑAppEvents_SensorFailure :: proc (port: u8, reason: string) {

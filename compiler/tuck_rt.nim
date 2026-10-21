@@ -1572,6 +1572,12 @@ proc printLine*(text: string) =
   stdout.write(text)
   stdout.write("\n")
 
+proc printError*(text: string) =
+  ## Writes `text` and a newline to stderr, at once.
+  stderr.write(text)
+  stderr.write("\n")
+  stderr.flushFile()
+
 type
   ReadLineReq = object
     ## Caller-allocated, caller-freed, and reachable only from the parked

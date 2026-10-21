@@ -253,6 +253,76 @@ const Cases: seq[AppCase] = @[
    "", 0),
   ("spellchecker", "spellcheck", "--words nope.txt", "",
    "spellcheck: cannot read nope.txt\n", 2),
+  # a file, with its type and length
+  ("serve", "serve", "--stdio --dir site", "GET /hello.txt HTTP/1.1\r\nHost: x\r\n\r\n",
+   "HTTP/1.1 200 OK\r\n" &
+   "Content-Type: text/plain; charset=utf-8\r\n" &
+   "Content-Length: 17\r\n" &
+   "\r\n" &
+   "hello from serve\n", 0),
+  # a folder without index.html is listed: folders first, names encoded and escaped
+  ("serve", "serve", "--stdio --dir site", "GET / HTTP/1.1\r\n\r\n",
+   "HTTP/1.1 200 OK\r\n" &
+   "Content-Type: text/html; charset=utf-8\r\n" &
+   "Content-Length: 225\r\n" &
+   "\r\n" &
+   "<!doctype html>\n" &
+   "<title>/</title>\n" &
+   "<h1>/</h1>\n" &
+   "<ul>\n" &
+   "<li><a href=\"notes/\">notes/</a></li>\n" &
+   "<li><a href=\"two%20words/\">two words/</a></li>\n" &
+   "<li><a href=\"data.json\">data.json</a></li>\n" &
+   "<li><a href=\"hello.txt\">hello.txt</a></li>\n" &
+   "</ul>\n", 0),
+  # a folder named without its slash is redirected to it
+  ("serve", "serve", "--stdio --dir site", "GET /notes HTTP/1.1\r\n\r\n",
+   "HTTP/1.1 301 Moved Permanently\r\n" &
+   "Content-Type: text/plain; charset=utf-8\r\n" &
+   "Location: /notes/\r\n" &
+   "Content-Length: 22\r\n" &
+   "\r\n" &
+   "301 Moved Permanently\n", 0),
+  ("serve", "serve", "--stdio --dir site", "GET /notes/ HTTP/1.1\r\n\r\n",
+   "HTTP/1.1 200 OK\r\n" &
+   "Content-Type: text/html; charset=utf-8\r\n" &
+   "Content-Length: 60\r\n" &
+   "\r\n" &
+   "<!doctype html>\n" &
+   "<title>notes</title>\n" &
+   "<p>Served by Tuck.</p>\n", 0),
+  # nothing outside the folder
+  ("serve", "serve", "--stdio --dir site", "GET /../serve.tuck HTTP/1.1\r\n\r\n",
+   "HTTP/1.1 403 Forbidden\r\n" &
+   "Content-Type: text/plain; charset=utf-8\r\n" &
+   "Content-Length: 14\r\n" &
+   "\r\n" &
+   "403 Forbidden\n", 0),
+  ("serve", "serve", "--stdio --dir site", "GET /nope.txt HTTP/1.1\r\n\r\n",
+   "HTTP/1.1 404 Not Found\r\n" &
+   "Content-Type: text/plain; charset=utf-8\r\n" &
+   "Content-Length: 14\r\n" &
+   "\r\n" &
+   "404 Not Found\n", 0),
+  ("serve", "serve", "--stdio --dir site", "POST / HTTP/1.1\r\n\r\n",
+   "HTTP/1.1 405 Method Not Allowed\r\n" &
+   "Content-Type: text/plain; charset=utf-8\r\n" &
+   "Allow: GET, HEAD\r\n" &
+   "Content-Length: 23\r\n" &
+   "\r\n" &
+   "405 Method Not Allowed\n", 0),
+  # HEAD: the head GET would send, length included
+  ("serve", "serve", "--stdio --dir site", "HEAD /data.json HTTP/1.1\r\n\r\n",
+   "HTTP/1.1 200 OK\r\n" &
+   "Content-Type: application/json\r\n" &
+   "Content-Length: 13\r\n" &
+   "\r\n", 0),
+  ("serve", "serve", "--stdio --dir site", "hello\n\n",
+   "HTTP/1.1 400 Bad Request\r\n" &
+   "Content-Type: text/plain; charset=utf-8\r\n" &
+   "Content-Length: 16\r\n" &
+   "\r\n" &
+   "400 Bad Request\n", 0),
 ]
 
 type Backend = tuple[label, flag, suffix: string]

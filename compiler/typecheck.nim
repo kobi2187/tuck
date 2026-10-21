@@ -3725,6 +3725,14 @@ proc isRegistryRaiseCall(e: Expr): bool =
     e.callee.callee != nil and e.callee.callee.kind == exkVar and
     registryEventOwner(e.callee.callee.name) != ""
 
+proc raisedEventFields(e: Expr): seq[FieldDef] =
+  ## The payload fields the event a raise names declares.
+  let ev = e.callee.callee.name
+  let reg = registryEventOwner(ev)
+  if reg notin semLayer.registryNames: return
+  for v in semLayer.registryNames[reg].variants:
+    if v.name == ev: return v.fields
+
 proc asVariantPayloadCall(tc: var TypeChecker, e: Expr): Type =
   ## `{payload} Type.Variant` — the payload-first spelling of the same
   ## construction `Type.Variant {payload}` is. The callee already answered
@@ -3772,7 +3780,12 @@ proc asIndirectCall(tc: var TypeChecker, e: Expr): Type =
     if result != nil: return result
     return afterErrorType(e.span)
   if isRegistryRaiseCall(e):
-    for a in e.args: discard tc.synthesize(a)
+    # The event's declared fields are the payload's expected types, as a
+    # construction's are: `{fault: Hungup}` picks Fault's Hungup (A93).
+    var hints = initTable[string, Type]()
+    for fd in raisedEventFields(e): hints[fd.name] = fd.typ
+    tc.withFieldHints(hints):
+      for a in e.args: discard tc.synthesize(a)
     return result
   for a in e.args: discard tc.synthesize(a)
   fail("Type Error: expression is not callable", e.span)
