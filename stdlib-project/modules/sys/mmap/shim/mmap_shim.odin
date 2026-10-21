@@ -93,6 +93,17 @@ mapCount :: proc(handle: int, value: int) -> int {
 	return n
 }
 
+// How many bytes in [start, start + n) equal `value`, clamped.
+mapCountRange :: proc(handle: int, value: int, start: int, n: int) -> int {
+	if !valid(handle) do return 0
+	m := gMaps[handle]
+	c := 0
+	for i := max(start, 0); i < min(start + n, m.size); i += 1 {
+		if int(m.base[i]) == value do c += 1
+	}
+	return c
+}
+
 // A copy of [start, start + n), clamped to the mapping.
 mapCopy :: proc(handle: int, start: int, n: int) -> [dynamic]u8 {
 	out := make([dynamic]u8)

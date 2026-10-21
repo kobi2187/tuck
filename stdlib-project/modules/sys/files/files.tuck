@@ -15,6 +15,7 @@ import text
 import path
 import stream
 import encoding
+import mmap
 
 # The lines of a file, without their line ends (`\n` or `\r\n`). A final line
 # end does not make a final empty line.
@@ -174,33 +175,75 @@ fn treeSize({root: str}) -> !int [io: fs, error: FsError]:
   return total
 
 # --- streams over files: providers for std sys.io's groups ---------------------------
-# A reader positioned in a file, and a sink that appends to one. The reader
-# reads the file on each pull; it is for sequential, modest files.
+# A reader over a MAPPING of the file (sys.mmap): opened once, and each pull
+# copies only the chunk it returns, so reading a large file never holds it
+# whole. It reads the file as it was when opened. And a sink that appends.
 type FileReader:
-  path: str
+  mapped: Mapping
   pos: int
 
 type FileSink:
   path: str
 
-fn fileReader({path: str}) -> FileReader:
-  return {path: path, pos: 0} FileReader
+fn fileReader({path: str}) -> !FileReader [io: fs, error: MapError]:
+  let m = {path: path} mapFile
+  if not m.ok:
+    err m.err
+  return {mapped: m.value, pos: 0} FileReader
+
+# Release the mapping; the reader reads nothing after.
+fn closeReader({r: FileReader}) -> void [io: fs]:
+  {m: r.mapped} unmapFile
 
 fn fileSink({path: str}) -> FileSink:
   return {path: path} FileSink
 
-# What a failed read looks like to a stream: it ends.
+# Up to `max` bytes from where the reader stands; an empty chunk at the end.
 fn pull({self: FileReader, max: int}) -> {next: FileReader, data: Seq[u8]} [io: fs]:
-  var out: Seq[u8] = []
-  let r = {path: self.path} readFile
-  if r.ok:
-    let all = {t: r.value.content} bytesOf
-    var at = self.pos
-    for at < all.len and out.len < max:
-      out = {items: out, value: all[at]} push
-      at = at + 1
-  let advanced = {path: self.path, pos: self.pos + out.len} FileReader
+  let out = {m: self.mapped, start: self.pos, n: max} window
+  let advanced = {mapped: self.mapped, pos: self.pos + out.len} FileReader
   return {next: advanced, data: out}
+
+# --- searching a file in place ------------------------------------------------------
+# The lines of a file, counted over a mapping: nothing is read into memory.
+fn countLines({path: str}) -> !int [io: fs, error: MapError]:
+  let m = {path: path} mapFile
+  if not m.ok:
+    err m.err
+  let n = {m: m.value} lineCount
+  {m: m.value} unmapFile
+  return n
+
+# One line that matched: its 1-based number and its text.
+type Hit:
+  line: int
+  text: str
+
+# Every line containing `what`, each once, in order. The file is searched in
+# place: line numbers come from counting newlines between matches, and only
+# the matching lines are copied out.
+fn grepFile({path: str, what: str}) -> !Seq[Hit] [io: fs, error: MapError]:
+  let m = {path: path} mapFile
+  if not m.ok:
+    err m.err
+  let f = m.value
+  let nl = {value: 10} u8
+  var hits: Seq[Hit] = []
+  var line = 1
+  var scanned = 0
+  var lastLine = 0
+  let at = {m: f, what: what} allMatches
+  for i in 0 .. at.len - 1:
+    line = line + {m: f, value: nl, start: scanned, n: at[i] - scanned} countIn
+    scanned = at[i]
+    if line != lastLine:
+      lastLine = line
+      let text = {m: f, at: at[i]} lineAround
+      if text.ok:
+        let hit = {line: line, text: text.value} Hit
+        hits = {items: hits, value: hit} push
+  {m: f} unmapFile
+  return hits
 
 fn put({self: FileSink, data: Seq[u8]}) -> FileSink [io: fs]:
   let text = {bytes: data} fromBytes
@@ -279,7 +322,10 @@ fn checkStreams() -> int [io, io: fs]:
   let done = {src: src, dst: sink, limit: 1000} copyTo
   if done.moved != 23:
     return 61
-  let reader = {path: target} fileReader
+  let opened = {path: target} fileReader
+  if not opened.ok:
+    return 68
+  let reader = opened.value
   let l1 = {s: reader} readLine
   if not l1.ok:
     return 62
@@ -293,6 +339,25 @@ fn checkStreams() -> int [io, io: fs]:
   let l3 = {s: l2.value.next} readLine
   if l3.ok:
     return 66
+  {r: reader} closeReader
+  let lines = {path: target} countLines
+  if not lines.ok:
+    return 90
+  if lines.value != 2:
+    return 91
+  let hits = {path: target, what: "line"} grepFile
+  if not hits.ok:
+    return 92
+  if hits.value.len != 2 or hits.value[1].line != 2 or hits.value[1].text != "second line":
+    return 93
+  let one = {path: target, what: "first"} grepFile
+  if not one.ok:
+    return 94
+  if one.value.len != 1 or one.value[0].line != 1:
+    return 95
+  let absent = {path: target + ".nope", what: "x"} grepFile
+  if absent.ok:
+    return 96
   let gone = {path: target} removeFile
   if not gone.ok:
     return 67

@@ -88,6 +88,13 @@ proc mapCount*(handle, value: int): int =
   for i in 0 ..< m.size:
     if int(m.base[i]) == value: inc result
 
+proc mapCountRange*(handle, value, start, n: int): int =
+  ## How many bytes in [start, start + n) equal `value`, clamped.
+  if not valid(handle): return 0
+  let m = gMaps[handle]
+  for i in max(start, 0) ..< min(start + n, m.size):
+    if int(m.base[i]) == value: inc result
+
 proc mapCopy*(handle, start, n: int): seq[uint8] =
   ## A copy of [start, start + n), clamped to the mapping.
   if not valid(handle): return @[]

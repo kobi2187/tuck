@@ -27,6 +27,7 @@ extern [impl: nim "./shim/mmap_shim", odin "./shim", d "./shim/mmap_shim"]:
   fn mapByte({handle: int, at: int}) -> int [io: fs]
   fn mapFind({handle: int, what: str, start: int}) -> int [io: fs]
   fn mapCount({handle: int, value: int}) -> int [io: fs]
+  fn mapCountRange({handle: int, value: int, start: int, n: int}) -> int [io: fs]
   fn mapCopy({handle: int, start: int, n: int}) -> Seq[u8] [io: fs]
 
 # A mapped file: its handle and its size in bytes.
@@ -84,6 +85,11 @@ fn lineCount({m: Mapping}) -> int [io: fs]:
     return newlines
   return newlines + 1
 
+# How many bytes in [start, start + n) equal `value`, counted in place.
+fn countIn({m: Mapping, value: u8, start: int, n: int}) -> int [io: fs]:
+  let v = {value: value} int
+  return {handle: m.handle, value: v, start: start, n: n} mapCountRange
+
 # A copy of bytes [start, start + n), clamped to the file.
 fn window({m: Mapping, start: int, n: int}) -> Seq[u8] [io: fs]:
   return {handle: m.handle, start: start, n: n} mapCopy
@@ -140,6 +146,9 @@ fn checkMap() -> int [io: fs]:
   let tail = {m: f, start: 29, n: 100} window
   if {bytes: tail} fromBytes != "last":
     return 13
+  let nl = {value: 10} u8
+  if {m: f, value: nl, start: 0, n: 19} countIn != 2:
+    return 15
   let missing = {m: f, what: "delta", start: 0} findIn
   if missing.ok:
     return 14

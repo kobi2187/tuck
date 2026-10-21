@@ -105,6 +105,19 @@ long mapCount(long handle, long value)
     return n;
 }
 
+/// How many bytes in [start, start + n) equal `value`, clamped.
+long mapCountRange(long handle, long value, long start, long n)
+{
+    if (!valid(handle)) return 0;
+    auto m = gMaps[cast(size_t) handle];
+    long a = start < 0 ? 0 : start;
+    long b = start + n < m.size ? start + n : m.size;
+    long c = 0;
+    for (long i = a; i < b; i++)
+        if (m.base[cast(size_t) i] == value) c++;
+    return c;
+}
+
 /// A copy of [start, start + n), clamped to the mapping.
 ubyte[] mapCopy(long handle, long start, long n)
 {
