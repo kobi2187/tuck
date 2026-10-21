@@ -1787,6 +1787,53 @@ proc argAt*(index: int): tuple[arg: string] =
   ## Command-line argument `index` (1-based; 0 is the program).
   (arg: paramStr(index))
 
+# --- signals as values (std/sys) ----------------------------------------------
+# One signalfd for the process: every watched signal is blocked for normal
+# delivery and read from it instead, so receiving one is reading a descriptor,
+# which the reactor can await like a socket.
+type SignalfdInfo {.importc: "struct signalfd_siginfo",
+                   header: "<sys/signalfd.h>".} = object
+  ssi_signo: uint32
+var SFD_NONBLOCK {.importc, header: "<sys/signalfd.h>".}: cint
+var SFD_CLOEXEC {.importc, header: "<sys/signalfd.h>".}: cint
+proc c_signalfd(fd: cint, mask: ptr posix.Sigset, flags: cint): cint {.
+  importc: "signalfd", header: "<sys/signalfd.h>".}
+proc c_pthread_sigmask(how: cint, s, old: ptr posix.Sigset): cint {.
+  importc: "pthread_sigmask", header: "<signal.h>".}
+proc c_raise(sig: cint): cint {.importc: "raise", header: "<signal.h>".}
+
+var gSigMask: posix.Sigset
+var gSigFd: cint = -1
+
+proc watchSignal*(number: int) =
+  ## Block `number` for the calling thread and route it to the signalfd.
+  if gSigFd < 0: discard posix.sigemptyset(gSigMask)
+  discard posix.sigaddset(gSigMask, cint(number))
+  discard c_pthread_sigmask(posix.SIG_BLOCK, addr gSigMask, nil)
+  gSigFd = c_signalfd(gSigFd, addr gSigMask, SFD_NONBLOCK or SFD_CLOEXEC)
+
+proc nextSignal*(timeoutMs: int): TuckResult[tuple[number: int]] =
+  ## The next watched signal, or none after `timeoutMs`. In a task the wait
+  ## suspends only that task; in `main` it is a plain poll.
+  if gSigFd < 0: return tnone[tuple[number: int]]()
+  var info: SignalfdInfo
+  while true:
+    let n = posix.read(gSigFd, addr info, sizeof(info))
+    if n == sizeof(info): return tok((number: int(info.ssi_signo)))
+    if n >= 0 or (posix.errno != posix.EAGAIN and posix.errno != posix.EWOULDBLOCK):
+      return tnone[tuple[number: int]]()
+    if inCoroutine():
+      if not tuckAwaitReadOrTimeout(int(gSigFd), timeoutMs):
+        return tnone[tuple[number: int]]()
+    else:
+      var pfd = posix.TPollfd(fd: gSigFd, events: posix.POLLIN)
+      if posix.poll(addr pfd, 1, cint(timeoutMs)) <= 0:
+        return tnone[tuple[number: int]]()
+
+proc raiseSignal*(number: int) =
+  ## raise(3): to the calling thread, which is the one that blocked it.
+  discard c_raise(cint(number))
+
 proc getEnv*(name: string): TuckResult[tuple[value: string]] =
   ## The environment variable `name`, or none when it is unset.
   if os.existsEnv(name):

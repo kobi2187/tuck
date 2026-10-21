@@ -12,6 +12,10 @@ struct TRec_value(T_value) {
     T_value value;
 }
 
+struct TRec_number(T_number) {
+    T_number number;
+}
+
 struct TRec_line(T_line) {
     T_line line;
 }

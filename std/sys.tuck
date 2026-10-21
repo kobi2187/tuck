@@ -7,3 +7,12 @@ extern:
   # Runs `line` through the shell, its output going where the program's own
   # goes, and returns the exit code. Blocks until the command ends.
   fn runCommand({line: str}) -> int [io: sys]
+  # Signals as values, never as handlers (a handler cannot safely run program
+  # code). `watchSignal` blocks signal `number` for the calling thread and
+  # routes it to one descriptor; call it before starting actors or tasks, which
+  # inherit the mask. `nextSignal` answers the next one, or none after
+  # `timeoutMs`: inside a task it suspends only that task. `raiseSignal` sends
+  # one to the calling thread.
+  fn watchSignal({number: int}) -> void [io: sys]
+  fn nextSignal({timeoutMs: int}) -> {number: int}? [io: sys]
+  fn raiseSignal({number: int}) -> void [io: sys]

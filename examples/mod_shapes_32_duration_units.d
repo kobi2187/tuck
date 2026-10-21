@@ -12,6 +12,10 @@ struct TRec_value(T_value) {
     T_value value;
 }
 
+struct TRec_number(T_number) {
+    T_number number;
+}
+
 struct TRec_epochMs(T_epochMs) {
     T_epochMs epochMs;
 }

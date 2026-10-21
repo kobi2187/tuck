@@ -1914,6 +1914,54 @@ argAt :: proc(index: int) -> ArgValue {
 	return ArgValue{arg = strings.clone(os.args[index + 1])}   // fresh: the caller frees it
 }
 
+// --- signals as values (std/sys) ---
+// One signalfd for the process: every watched signal is blocked for normal
+// delivery and read from it instead, so receiving one is reading a descriptor
+// the reactor can await. Raw syscalls with the KERNEL's 8-byte mask:
+// linux.rt_sigprocmask passes the 128-byte libc set size, which the kernel
+// refuses, and core:sys/linux has no signalfd wrapper.
+SignalNumber :: struct {
+	number: int,
+}
+
+@(private) gSigMask: u64
+@(private) gSigFd: int = -1
+
+watchSignal :: proc(number: int) {
+	gSigMask |= u64(1) << uint(number - 1)
+	linux.syscall(linux.SYS_rt_sigprocmask, 0, &gSigMask, rawptr(nil), 8)   // SIG_BLOCK
+	flags := 0o4000 | 0o2000000    // SFD_NONBLOCK | SFD_CLOEXEC
+	r := linux.syscall(linux.SYS_signalfd4, gSigFd, &gSigMask, 8, flags)
+	if int(r) >= 0 do gSigFd = int(r)
+}
+
+// The next watched signal, or none after `timeoutMs`. In a task the wait
+// suspends only that task; in `main` it is a plain poll.
+nextSignal :: proc(timeoutMs: int) -> TuckResult(SignalNumber) {
+	if gSigFd < 0 do return tnone(SignalNumber)
+	info: [128]u8
+	for {
+		n, err := linux.read(linux.Fd(gSigFd), info[:])
+		if err == .NONE && n == 128 {
+			signo := int(info[0]) | int(info[1]) << 8 | int(info[2]) << 16 | int(info[3]) << 24
+			return tok(SignalNumber{number = signo})
+		}
+		if err != .EAGAIN do return tnone(SignalNumber)
+		if inCoroutine() {
+			if !tuckAwaitReadOrTimeout(gSigFd, timeoutMs) do return tnone(SignalNumber)
+		} else {
+			fds := []linux.Poll_Fd{{fd = linux.Fd(gSigFd), events = {.IN}}}
+			ready, _ := linux.poll(fds, i32(timeoutMs))
+			if ready <= 0 do return tnone(SignalNumber)
+		}
+	}
+}
+
+// To the calling thread, which is the one that blocked it.
+raiseSignal :: proc(number: int) {
+	linux.tgkill(linux.getpid(), linux.gettid(), linux.Signal(number))
+}
+
 getEnv :: proc(name: string) -> TuckResult(EnvValue) {
 	// Absence is ?T, not an error — the caller decides what unset means.
 	value, found := os.lookup_env(name, context.allocator)

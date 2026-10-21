@@ -23,4 +23,16 @@ long runCommand(string line) {
     return rt.runCommand(line);
 }
 
+void watchSignal(long number) {
+    rt.watchSignal(number);
+}
+
+rt.TuckResult!(tuckˑmodˑshapes_43_literal_payload.TRec_number!(long)) nextSignal(long timeoutMs) {
+    return rt.nextSignal!(rt.TuckResult!(tuckˑmodˑshapes_43_literal_payload.TRec_number!(long)))(timeoutMs);
+}
+
+void raiseSignal(long number) {
+    rt.raiseSignal(number);
+}
+
 

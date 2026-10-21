@@ -1640,6 +1640,60 @@ R argAt(R)(long index)
 /// `?{value: str}` — an unset variable is ABSENT, not an error and not an
 /// empty string. Absence is a first-class status, so the caller matches on
 /// it rather than comparing against a sentinel.
+// --- signals as values (std/sys) -----------------------------------------------
+// One signalfd for the process: every watched signal is blocked for normal
+// delivery and read from it instead, so receiving one is reading a descriptor
+// the reactor can await.
+private __gshared int gSigFd = -1;
+private __gshared bool gSigInit = false;
+private __gshared imported!"core.sys.posix.signal".sigset_t gSigMask;
+
+void watchSignal(long number)
+{
+    import core.sys.posix.signal : sigemptyset, sigaddset, pthread_sigmask, SIG_BLOCK;
+    import core.sys.linux.sys.signalfd : signalfd, SFD_NONBLOCK, SFD_CLOEXEC;
+    if (!gSigInit) { sigemptyset(&gSigMask); gSigInit = true; }
+    sigaddset(&gSigMask, cast(int) number);
+    pthread_sigmask(SIG_BLOCK, &gSigMask, null);
+    auto fd = signalfd(gSigFd, &gSigMask, SFD_NONBLOCK | SFD_CLOEXEC);
+    if (fd >= 0) gSigFd = fd;
+}
+
+/// The next watched signal, or none after `timeoutMs`. In a task the wait
+/// suspends only that task; in `main` it is a plain poll.
+R nextSignal(R)(long timeoutMs)
+{
+    import core.sys.linux.sys.signalfd : signalfd_siginfo;
+    import core.sys.posix.poll : pollfd, poll, POLLIN;
+    import core.sys.posix.unistd : read;
+    import core.stdc.errno : errno, EAGAIN, EWOULDBLOCK;
+    alias P = typeof(R.value);
+    if (gSigFd < 0) return tnone!P();
+    signalfd_siginfo info;
+    for (;;)
+    {
+        auto n = read(gSigFd, &info, info.sizeof);
+        if (n == info.sizeof) return tok(tuckRec!(P, "number")(cast(long) info.ssi_signo));
+        if (n >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) return tnone!P();
+        if (inCoroutine())
+        {
+            if (!tuckAwaitReadOrTimeout(gSigFd, timeoutMs)) return tnone!P();
+        }
+        else
+        {
+            pollfd pfd = pollfd(gSigFd, POLLIN, 0);
+            if (poll(&pfd, 1, cast(int) timeoutMs) <= 0) return tnone!P();
+        }
+    }
+}
+
+/// raise(3): to the calling thread, which is the one that blocked it.
+void raiseSignal(long number)
+{
+    import core.stdc.signal : raise;
+    raise(cast(int) number);
+}
+
 R getEnv(R)(string name)
 {
     import std.process : environment;

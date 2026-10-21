@@ -16,3 +16,7 @@ struct TRec_value(T_value) {
     T_value value;
 }
 
+struct TRec_number(T_number) {
+    T_number number;
+}
+
