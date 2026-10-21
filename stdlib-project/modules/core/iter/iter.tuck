@@ -24,6 +24,8 @@ fnsig Mapper[T, U] = {x: T} -> U
 fnsig Predicate[T] = {x: T} -> bool
 fnsig Combiner[T, A] = {acc: A, x: T} -> A
 fnsig Action[T] = {x: T} -> void
+# Does `a` go before `b`? A sort's whole idea of order.
+fnsig Before[T] = {a: T, b: T} -> bool
 
 # --- adapters: Seq[T] in, Seq[_] out ----------------------------------------
 
@@ -172,6 +174,26 @@ fn sort[T]({items: Seq[T]}) -> Seq[T]:
     i = i + 1
   return out
 
+# In the order `before` defines, STABLE: elements that neither goes before keep
+# their input order, so sorting by one key and then another composes (the way
+# Python's `sorted(xs, key=...)` does). Insertion sort, like `sort`.
+fn sortBy[T]({items: Seq[T], before: Before[T]}) -> Seq[T]:
+  var out = items
+  var i = 1
+  for i < out.len:
+    let key = out[i]
+    var j = i - 1
+    var moving = true
+    for moving and j >= 0:
+      if {a: key, b: out[j]} before:
+        {items: out, index: j + 1, value: out[j]} setAt
+        j = j - 1
+      else:
+        moving = false
+    {items: out, index: j + 1, value: key} setAt
+    i = i + 1
+  return out
+
 # --- self-check --------------------------------------------------------------
 
 fn isPositive({x: int}) -> bool:
@@ -296,7 +318,33 @@ fn checkOrder() -> int:
     return 31
   return 0
 
+type Pair:
+  name: str
+  score: int
+
+fn higherFirst({a: Pair, b: Pair}) -> bool:
+  return a.score > b.score
+
+fn checkSortBy() -> int:
+  let a = {name: "a", score: 2} Pair
+  let b = {name: "b", score: 3} Pair
+  let c = {name: "c", score: 2} Pair
+  let d = {name: "d", score: 1} Pair
+  let xs: Seq[Pair] = [a, b, c, d]
+  let s = {items: xs, before: :higherFirst} sortBy
+  # stable: a stays ahead of c, which scored the same
+  if s[0].name != "b" or s[1].name != "a" or s[2].name != "c" or s[3].name != "d":
+    return 90
+  let empty: Seq[Pair] = []
+  let e = {items: empty, before: :higherFirst} sortBy
+  if e.len != 0:
+    return 91
+  return 0
+
 fn main() -> int:
+  let sb = checkSortBy
+  if sb != 0:
+    return sb
   let a = checkAdapters
   if a != 0:
     return a

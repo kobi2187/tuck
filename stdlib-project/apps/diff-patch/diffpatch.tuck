@@ -1,114 +1,196 @@
-# diff-patch (slice) — line-level LCS diff of two small text files.
+# diffpatch — the differences between two text files, as a unified diff.
 #
-# Scope: reads a.txt/b.txt, splits into lines, runs a real LCS dynamic-program
-# over the lines, and prints unified-style +/-/unchanged lines. No hunk
-# headers, no --check mode, no patch application — see FINDINGS.md.
+#   diffpatch OLD NEW [--context N]
 #
-# Storage note: std/seq has only at/setAt (no push/append; see FINDINGS.md),
-# so both the line list and the DP table are preallocated fixed-size Seq
-# literals (maxLines slots, a flat (maxLines+1)^2 table) rather than grown
-# dynamically. Fine for a small demo, a real ceiling for bigger inputs.
-import fs
+# The output is what `diff -u` prints (less the timestamps), so `patch`
+# applies it: `---`/`+++` naming the files, then one `@@ -a,b +c,d @@` hunk
+# per run of changes with N lines of context around it (3). Exit 0 when the
+# files are the same, 1 when they differ, 2 when one cannot be read.
+#
+# The match is a longest common subsequence over whole lines, a table of
+# (OLD lines + 1) x (NEW lines + 1) cells: fine for the files a person edits,
+# not for a log of a million lines.
 import console
-import str
 import seq
+import str
+import text
+import convert
+import cli
+import fs
+import files
 
-type LineSet = {lines: Seq[str], count: int}
+# One line of the edit: kept (" "), removed ("-") or added ("+"), with how many
+# lines of each file came before it.
+type Op:
+  mark: str
+  body: str
+  oldAt: int
+  newAt: int
 
-const maxLines = 8
-const stride = 9
+# --- matching -----------------------------------------------------------------------
+fn larger({a: int, b: int}) -> int:
+  if a > b:
+    return a
+  return b
 
-fn splitLines({content: str}) -> LineSet:
-  var lines = ["", "", "", "", "", "", "", ""]
-  var count = 0
-  var current = ""
-  let n = content.len
-  for i in 0 ..< n:
-    let ch = {s: content, index: i} charAt
-    if ch == "\n":
-      lines[count] = current
-      count = count + 1
-      current = ""
-    else:
-      current = current + ch
-  if not (current == ""):
-    lines[count] = current
-    count = count + 1
-  {lines: lines, count: count} LineSet
-
-fn lcsTable({a: LineSet, b: LineSet}) -> Seq[int]:
-  var dp = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
-  for i in 1 .. a.count:
-    for j in 1 .. b.count:
-      let la = {items: a.lines, index: i - 1} at
-      let lb = {items: b.lines, index: j - 1} at
-      if la == lb:
-        let prev = {items: dp, index: (i - 1) * stride + (j - 1)} at
-        dp[i * stride + j] = prev + 1
+# Cell (i, j) holds the longest common subsequence of left[i..] and right[j..].
+fn lcsTable({left: Seq[str], right: Seq[str]}) -> Seq[int]:
+  let w = right.len + 1
+  var t: Seq[int] = []
+  for k in 0 .. (left.len + 1) * w - 1:
+    t = {items: t, value: 0} push
+  var i = left.len - 1
+  for i >= 0:
+    var j = right.len - 1
+    for j >= 0:
+      if left[i] == right[j]:
+        t[i * w + j] = t[(i + 1) * w + j + 1] + 1
       else:
-        let up = {items: dp, index: (i - 1) * stride + j} at
-        let left = {items: dp, index: i * stride + (j - 1)} at
-        if up >= left:
-          dp[i * stride + j] = up
-        else:
-          dp[i * stride + j] = left
-  dp
-
-# Backtracks the DP table from (a.count, b.count) to (0, 0), collecting one
-# prefixed line per step. Emitted in reverse (last decision first), so the
-# caller prints the ops array back-to-front to restore source order.
-fn printDiff({a: LineSet, b: LineSet, dp: Seq[int]}) -> void [io]:
-  var ops = ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]
-  var opCount = 0
-  var i = a.count
-  var j = b.count
-  loop:
-    if i == 0:
-      if j == 0:
-        break
-    if i > 0:
-      if j > 0:
-        let la = {items: a.lines, index: i - 1} at
-        let lb = {items: b.lines, index: j - 1} at
-        if la == lb:
-          ops[opCount] = "  " + la
-          opCount = opCount + 1
-          i = i - 1
-          j = j - 1
-          continue
-    var takeAdd = j > 0
-    if i > 0:
-      if j > 0:
-        let up = {items: dp, index: (i - 1) * stride + j} at
-        let left = {items: dp, index: i * stride + (j - 1)} at
-        if up >= left:
-          takeAdd = false
-    if takeAdd:
-      let lb2 = {items: b.lines, index: j - 1} at
-      ops[opCount] = "+ " + lb2
-      opCount = opCount + 1
+        t[i * w + j] = {a: t[(i + 1) * w + j], b: t[i * w + j + 1]} larger
       j = j - 1
-      continue
-    let la2 = {items: a.lines, index: i - 1} at
-    ops[opCount] = "- " + la2
-    opCount = opCount + 1
     i = i - 1
+  return t
 
-  for k in 0 ..< opCount:
-    let idx = opCount - 1 - k
-    let line = {items: ops, index: idx} at
-    {text: line} printLine
+fn op({mark: str, body: str, i: int, j: int}) -> Op:
+  return {mark: mark, body: body, oldAt: i, newAt: j} Op
 
-fn main() -> void [io]:
-  let ra = {path: "stdlib-project/apps/diff-patch/a.txt"} fs::readFile
-  let rb = {path: "stdlib-project/apps/diff-patch/b.txt"} fs::readFile
-  if not ra.ok:
-    {text: "could not read a.txt"} printLine
-    return
-  if not rb.ok:
-    {text: "could not read b.txt"} printLine
-    return
-  let a = {content: ra.value.content} splitLines
-  let b = {content: rb.value.content} splitLines
-  let dp = {a: a, b: b} lcsTable
-  {a: a, b: b, dp: dp} printDiff
+# The edit, front to back. On a tie a removal goes first, so a changed line
+# reads as its old text then its new one.
+fn editOf({left: Seq[str], right: Seq[str]}) -> Seq[Op]:
+  let t = {left: left, right: right} lcsTable
+  let w = right.len + 1
+  var ops: Seq[Op] = []
+  var i = 0
+  var j = 0
+  for i < left.len and j < right.len:
+    if left[i] == right[j]:
+      let o = {mark: " ", body: left[i], i: i, j: j} op
+      ops = {items: ops, value: o} push
+      i = i + 1
+      j = j + 1
+    elif t[(i + 1) * w + j] >= t[i * w + j + 1]:
+      let o = {mark: "-", body: left[i], i: i, j: j} op
+      ops = {items: ops, value: o} push
+      i = i + 1
+    else:
+      let o = {mark: "+", body: right[j], i: i, j: j} op
+      ops = {items: ops, value: o} push
+      j = j + 1
+  for i < left.len:
+    let o = {mark: "-", body: left[i], i: i, j: j} op
+    ops = {items: ops, value: o} push
+    i = i + 1
+  for j < right.len:
+    let o = {mark: "+", body: right[j], i: i, j: j} op
+    ops = {items: ops, value: o} push
+    j = j + 1
+  return ops
+
+# --- hunks --------------------------------------------------------------------------
+fn changesIn({ops: Seq[Op]}) -> Seq[int]:
+  var at: Seq[int] = []
+  for k in 0 .. ops.len - 1:
+    if ops[k].mark != " ":
+      at = {items: at, value: k} push
+  return at
+
+# `start,size`, or just `start` for one line, as diff writes it. An empty
+# range names the line before it.
+fn rangeText({before: int, size: int}) -> str:
+  var start = before + 1
+  if size == 0:
+    start = before
+  let s = {value: start} toStr
+  if size == 1:
+    return s
+  let n = {value: size} toStr
+  return s + "," + n
+
+fn hunkText({ops: Seq[Op], first: int, last: int}) -> str:
+  var oldSize = 0
+  var newSize = 0
+  var lines: Seq[str] = []
+  for k in first .. last:
+    if ops[k].mark != "+":
+      oldSize = oldSize + 1
+    if ops[k].mark != "-":
+      newSize = newSize + 1
+    lines = {items: lines, value: ops[k].mark + ops[k].body} push
+  let o = {before: ops[first].oldAt, size: oldSize} rangeText
+  let n = {before: ops[first].newAt, size: newSize} rangeText
+  let head = "@@ -" + o + " +" + n + " @@"
+  let body = {parts: lines, sep: "\n"} joinStr
+  return head + "\n" + body
+
+fn clampTo({x: int, low: int, high: int}) -> int:
+  if x < low:
+    return low
+  if x > high:
+    return high
+  return x
+
+# Changes closer than twice the context share a hunk.
+fn hunksOf({ops: Seq[Op], around: int}) -> Seq[str]:
+  let at = {ops: ops} changesIn
+  var out: Seq[str] = []
+  var c = 0
+  for c < at.len:
+    var last = at[c]
+    var d = c + 1
+    for d < at.len and at[d] - last - 1 <= 2 * around:
+      last = at[d]
+      d = d + 1
+    let first = {x: at[c] - around, low: 0, high: ops.len - 1} clampTo
+    let stop = {x: last + around, low: 0, high: ops.len - 1} clampTo
+    let h = {ops: ops, first: first, last: stop} hunkText
+    out = {items: out, value: h} push
+    c = d
+  return out
+
+# --- the program --------------------------------------------------------------------
+fn command() -> Command:
+  let ctx = {name: "context", shortName: "c", kind: ANumber, help: "lines around a change (3)", required: false} spec
+  let args: Seq[ArgSpec] = [ctx]
+  let noSubs: Seq[Command] = []
+  return {name: "diffpatch", help: "a unified diff of two files", args: args, subcommands: noSubs} Command
+
+fn linesOf({path: str}) -> Seq[str]? [io: fs]:
+  let got = {path: path} readLines
+  if not got.ok:
+    return none
+  return got.value.lines
+
+fn main() -> int [io, io: sys, io: console, io: fs]:
+  let argv = commandLine
+  let parsed = {c: command, argv: argv} tryParse
+  if not parsed.ok:
+    let usage = {c: command} usageOf
+    {text: usage} printLine
+    return 2
+  let a = parsed.value
+  if a.positional.len != 2:
+    {text: "diffpatch: name two files"} printLine
+    return 2
+  var around = 3
+  let given = {a: a, name: "context"} numberOf
+  if given.ok:
+    around = {value: given.value} int
+  let oldName = a.positional[0]
+  let newName = a.positional[1]
+  let left = {path: oldName} linesOf
+  if not left.ok:
+    {text: "diffpatch: cannot read " + oldName} printLine
+    return 2
+  let right = {path: newName} linesOf
+  if not right.ok:
+    {text: "diffpatch: cannot read " + newName} printLine
+    return 2
+  let ops = {left: left.value, right: right.value} editOf
+  let hunks = {ops: ops, around: around} hunksOf
+  if hunks.len == 0:
+    return 0
+  {text: "--- " + oldName} printLine
+  {text: "+++ " + newName} printLine
+  for k in 0 .. hunks.len - 1:
+    {text: hunks[k]} printLine
+  return 1

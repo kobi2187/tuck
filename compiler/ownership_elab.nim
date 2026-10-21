@@ -549,15 +549,19 @@ proc uniquifyDecl(u: var Uniquify, b: Expr, i: int) =
   let s = b.stmts[i]
   let t = s.target
   if t == nil or t.kind != exkVar or u.res.isOwnerField(t): return
-  # A `let`/`var` of a name an ENCLOSING scope declared shadows it until this
-  # block ends; without a name of its own it would store into the outer one,
-  # whatever its type (A81). Visible in THIS scope already is a reassignment.
-  let shadows = s.isDecl and u.isVisible(t.name) and t.name notin u.visible[^1]
+  # A `let`/`var` of a name already in scope, an enclosing one's (A81) or
+  # this block's own (A90), is a new local until this block ends; without a
+  # name of its own it would store into the old one, whatever its type. Only
+  # a plain `x = ...` of a visible name is a reassignment.
+  let shadows = s.isDecl and u.isVisible(t.name)
   if u.isVisible(t.name) and not shadows: return
   if shadows or (t.name in u.sites and u.sites[t.name] != s.id):
     inc u.fresh
-    let fresh = t.name & "ˑ" & $u.fresh
-    u.res.renameFrom(b, i, t.name, fresh)
+    let old = t.name
+    let fresh = old & "ˑ" & $u.fresh
+    # The declaration's own value still reads the old one: `let x = x + 1`.
+    t.name = fresh
+    u.res.renameFrom(b, i + 1, old, fresh)
   u.sites[t.name] = s.id
   u.visible[^1].incl t.name
 

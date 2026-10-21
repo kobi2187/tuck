@@ -110,7 +110,7 @@ fn lineAround({m: Mapping, at: int}) -> str? [io: fs]:
 
 # --- checks ---------------------------------------------------------------------
 fn checkMap() -> int [io: fs]:
-  let path = "/tmp/tuck-mmap-check.txt"
+  let path = "tuck-mmap-check.txt"
   let w = {path: path, content: "alpha one\nbeta two\ngamma one\nlast"} writeFile
   if not w.ok:
     return 1
@@ -156,7 +156,7 @@ fn checkMap() -> int [io: fs]:
   return 0
 
 fn checkEdges() -> int [io: fs]:
-  let empty = "/tmp/tuck-mmap-empty.txt"
+  let empty = "tuck-mmap-empty.txt"
   let w = {path: empty, content: ""} writeFile
   if not w.ok:
     return 20
@@ -169,7 +169,7 @@ fn checkEdges() -> int [io: fs]:
   if none1.ok:
     return 23
   {m: m.value} unmapFile
-  let gone = {path: "/tmp/tuck-mmap-no-such-file"} mapFile
+  let gone = {path: "tuck-mmap-no-such-file"} mapFile
   if gone.ok:
     return 24
   match gone.err:

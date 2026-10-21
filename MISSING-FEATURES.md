@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (1)
+## A. Open bugs (2)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -241,6 +241,46 @@ it in.
   error lost a last line without a newline. Fixed: a process-wide pending
   buffer hands out one line per call. Guarded by the `apps` suite, which pipes
   stdin into all three backends. Found writing the `hangman` app.
+
+- **A87 (issue #176) — the else of `if not r.ok:` did not narrow `r`.**
+  Fixed: the else-branch (and an `elif` chain in it) is narrowed; the
+  then-branch is not. Found writing the `guess` app.
+
+- **A88 (issue #177) — OPEN: two imports declaring one type name, the first
+  silently wins.** `injectImportedTypes` keeps one `Entry` when two imported
+  modules each declare one, and a named type carries only its name, so the
+  second module's values are checked against the first's fields. Blocks the
+  `wordfreq` app (cli's `Entry` against map's `Entry[K, V]`). Awaiting a ruling:
+  type identity by declaring module, or an ambiguity error when the bare name
+  is used. Pin: "A88: two imports may each declare a type of one name".
+
+- **A89 (issue #178) — a bare variant of a payload sum was emitted as a Kind
+  tag.** `var o = Nothing`, where `Open` also has `InList({tag: str})`, printed
+  the Kind enum's tag on all three backends. Fixed: the checker stamps it as the
+  qualified construction `Open.Nothing`, which every backend already built.
+  Found writing the `md2html` app.
+
+- **A90 (issue #179) — a second `let` of a name in the same scope stored into
+  the first.** The checker accepts the rebinding with a new type; the
+  ownership pass's `uniquify` renamed only a shadow of an enclosing scope's
+  name (A81), so the backends stored a `?int` into the `int`. Fixed: any
+  declaration of a name in scope gets a name of its own from the next
+  statement on, and its own value still reads the old one (`let x = x + 1`).
+  Found writing the `jsonq` app.
+
+- **A91 (issue #180) — an imported payload sum could not be matched or built
+  on Odin and D.** Odin wrote `case Shape_Dot`, `x.(Shape_Box)`, `Shape_Box{}`
+  and the union-typed local without the declaring package; D built
+  constructions unqualified and wrote `Shape.Dot` as an enum member. Fixed on
+  both. Found writing the `jsonq` app over `std.encoding`'s `Json`.
+
+- **A92 (issue #181) — a bare call reached a same-named fn the caller does
+  not import.** Odin and D qualified a call with the first module in the
+  program declaring the name, and the mangler's program-wide table renamed a
+  bare reference to an extern after a Tuck fn of that name anywhere. Fixed:
+  the modules the caller imports come first (`ast_query.callableOrigin`), and
+  each module is mangled against a table without the names it sees only as
+  externs. Found writing the `spellcheck` app.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so

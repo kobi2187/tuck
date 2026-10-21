@@ -269,7 +269,9 @@ fn checkLines() -> int [io, io: fs]:
   return checkDisk
 
 fn checkDisk() -> int [io, io: fs]:
-  let root = "/tmp/tuck-files-check"
+  # Relative: each backend runs in its own folder, so concurrent runs of this
+  # check never share files.
+  let root = "tuck-files-check"
   let file = {base: root, rel: "deep/er/notes.txt"} join
   let one: Seq[str] = ["alpha", "beta", "gamma"]
   let made = {path: file, content: "x"} writeFileIn
@@ -311,7 +313,7 @@ fn checkDisk() -> int [io, io: fs]:
   return 0
 
 fn checkStreams() -> int [io, io: fs]:
-  let target = "/tmp/tuck-files-check/stream/out.txt"
+  let target = "tuck-files-check/stream/out.txt"
   let made = {path: target, content: ""} writeFileIn
   if not made.ok:
     return 60
@@ -364,7 +366,7 @@ fn checkStreams() -> int [io, io: fs]:
   return 0
 
 fn checkTrees() -> int [io, io: fs]:
-  let root = "/tmp/tuck-files-trees"
+  let root = "tuck-files-trees"
   {path: root} removeTree discard
   let a = {path: root + "/a/one.txt", content: "12345"} writeFileIn
   let b = {path: root + "/a/deeper/two.txt", content: "abc"} writeFileIn

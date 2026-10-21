@@ -432,7 +432,8 @@ if r.ok:
 ```
 
 Accessing `.value` without a guard → `guard it first`. A guard that *falls
-through* does not narrow (`tests/suites/typecheck.nim`). An **early-return guard does**
+through* does not narrow (`tests/suites/typecheck.nim`). The **else of `if not r.ok:`**
+does (A87). An **early-return guard does**
 narrow — `if not r.ok: return 0` then `r.value.v` (`tests/suites/known_bugs.nim`, exit 5).
 So does a **loop** on it — `for up.ok:` narrows `up` in the body, so a chain
 of `?` links is walked with `up = up.value.parent` (#98). Assigning a `?T` to a

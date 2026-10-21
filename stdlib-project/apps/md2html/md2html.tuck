@@ -1,0 +1,253 @@
+# md2html — Markdown on stdin, HTML on stdout.
+#
+#   md2html < notes.md > notes.html
+#
+# The common subset: `#`..`######` headings, paragraphs (blank-line separated),
+# `-`/`*` bullet lists, `1.` numbered lists, fenced ``` code blocks, and inline
+# **bold**, *emphasis*, `code` and [links](url). `<`, `>` and `&` are escaped
+# everywhere, so the output is safe to serve.
+import console
+import seq
+import str
+import text
+
+# --- inline ------------------------------------------------------------------------
+fn escaped({t: str}) -> str:
+  var out = ""
+  for i in 0 .. {t: t} byteCount - 1:
+    let c = {s: t, index: i} charAt
+    if c == "<":
+      out = out + "&lt;"
+    elif c == ">":
+      out = out + "&gt;"
+    elif c == "&":
+      out = out + "&amp;"
+    else:
+      out = out + c
+  return out
+
+fn piece({t: str, start: int, stop: int}) -> str:
+  let s = {t: t, start: start, stop: stop} slice
+  if s.ok:
+    return s.value
+  return ""
+
+# Where `what` next occurs in `t` at or after `at`, or -1.
+fn findFrom({t: str, what: str, at: int}) -> int:
+  let n = {t: t} byteCount
+  let rest = {t: t, start: at, stop: n} piece
+  let i = {t: rest, what: what} find
+  if not i.ok:
+    return -1
+  return at + i.value
+
+# One line's inline markup as HTML.
+fn inline({t: str}) -> str:
+  var out = ""
+  var i = 0
+  let n = {t: t} byteCount
+  for i < n:
+    if {t: t, at: i, what: "**"} matchesAt:
+      let close = {t: t, what: "**", at: i + 2} findFrom
+      if close > i + 2:
+        let inner = {t: t, start: i + 2, stop: close} piece
+        let html = {t: inner} inline
+        out = out + "<strong>" + html + "</strong>"
+        i = close + 2
+      else:
+        out = out + "**"
+        i = i + 2
+    elif {t: t, at: i, what: "`"} matchesAt:
+      let close = {t: t, what: "`", at: i + 1} findFrom
+      if close > i:
+        let inner = {t: t, start: i + 1, stop: close} piece
+        let html = {t: inner} escaped
+        out = out + "<code>" + html + "</code>"
+        i = close + 1
+      else:
+        out = out + "`"
+        i = i + 1
+    elif {t: t, at: i, what: "*"} matchesAt:
+      let close = {t: t, what: "*", at: i + 1} findFrom
+      if close > i + 1:
+        let inner = {t: t, start: i + 1, stop: close} piece
+        let html = {t: inner} inline
+        out = out + "<em>" + html + "</em>"
+        i = close + 1
+      else:
+        out = out + "*"
+        i = i + 1
+    elif {t: t, at: i, what: "["} matchesAt:
+      let mid = {t: t, what: "](", at: i + 1} findFrom
+      let close = {t: t, what: ")", at: mid + 2} findFrom
+      if mid > i and close > mid:
+        let label = {t: t, start: i + 1, stop: mid} piece
+        let url = {t: t, start: mid + 2, stop: close} piece
+        let href = {t: url} escaped
+        let html = {t: label} inline
+        out = out + "<a href=\"" + href + "\">" + html + "</a>"
+        i = close + 1
+      else:
+        out = out + "["
+        i = i + 1
+    else:
+      let c = {t: t, start: i, stop: i + 1} piece
+      let html = {t: c} escaped
+      out = out + html
+      i = i + 1
+  return out
+
+# --- blocks ------------------------------------------------------------------------
+type Kind:
+  | Blank
+  | Heading
+  | Bullet
+  | Numbered
+  | Fence
+  | Text
+
+fn headingLevel({t: str}) -> int:
+  var n = 0
+  for n < 6 and {t: t, at: n, what: "#"} matchesAt:
+    n = n + 1
+  if n > 0 and {t: t, at: n, what: " "} matchesAt:
+    return n
+  return 0
+
+# The body of a `12. item` line after the number, or none.
+fn numberedBody({t: str}) -> str?:
+  var i = 0
+  let n = {t: t} byteCount
+  var digits = true
+  for digits and i < n:
+    let b = {t: t, index: i} byteAt
+    if b >= 48 and b <= 57:
+      i = i + 1
+    else:
+      digits = false
+  if i == 0 or not {t: t, at: i, what: ". "} matchesAt:
+    return none
+  return {t: t, start: i + 2, stop: n} piece
+
+fn kindOf({t: str}) -> Kind:
+  let s = {t: t} trim
+  if s == "":
+    return Blank
+  if {t: s, prefix: "```"} startsWith:
+    return Fence
+  if {t: s} headingLevel > 0:
+    return Heading
+  if {t: s, prefix: "- "} startsWith or {t: s, prefix: "* "} startsWith:
+    return Bullet
+  let num = {t: s} numberedBody
+  if num.ok:
+    return Numbered
+  return Text
+
+fn afterMarker({t: str}) -> str:
+  let s = {t: t} trim
+  let n = {t: s} byteCount
+  return {t: s, start: 2, stop: n} piece
+
+# What is open between lines: a list, a paragraph, a code block.
+type Open:
+  | Nothing
+  | InList({tag: str})
+  | InPara
+  | InCode
+
+fn closeOf({o: Open}) -> str:
+  match o:
+    Nothing: return ""
+    InList: return "</" + o.tag + ">"
+    InPara: return "</p>"
+    InCode: return "</code></pre>"
+
+fn render({lines: Seq[str]}) -> Seq[str]:
+  var out: Seq[str] = []
+  var open = Nothing
+  for i in 0 .. lines.len - 1:
+    let line = lines[i]
+    let k = {t: line} kindOf
+    match open:
+      InCode:
+        if k == Fence:
+          out = {items: out, value: "</code></pre>"} push
+          open = Nothing
+        else:
+          let html = {t: line} escaped
+          out = {items: out, value: html} push
+        continue
+      _: discard
+    if k == Fence:
+      let close = {o: open} closeOf
+      if close != "":
+        out = {items: out, value: close} push
+      out = {items: out, value: "<pre><code>"} push
+      open = InCode
+    elif k == Blank:
+      let close = {o: open} closeOf
+      if close != "":
+        out = {items: out, value: close} push
+      open = Nothing
+    elif k == Heading:
+      let close = {o: open} closeOf
+      if close != "":
+        out = {items: out, value: close} push
+      open = Nothing
+      let s = {t: line} trim
+      let level = {t: s} headingLevel
+      let n = {t: s} byteCount
+      let body = {t: s, start: level + 1, stop: n} piece
+      let digit = {value: level} toStr
+      let tag = "h" + digit
+      let html = {t: body} inline
+      out = {items: out, value: "<" + tag + ">" + html + "</" + tag + ">"} push
+    elif k == Bullet or k == Numbered:
+      let tag = if k == Bullet: "ul" else: "ol"
+      var same = false
+      match open:
+        InList: same = open.tag == tag
+        _: discard
+      if not same:
+        let close = {o: open} closeOf
+        if close != "":
+          out = {items: out, value: close} push
+        out = {items: out, value: "<" + tag + ">"} push
+        open = {tag: tag} Open.InList
+      var body = {t: line} afterMarker
+      if k == Numbered:
+        let s = {t: line} trim
+        let nb = {t: s} numberedBody
+        if nb.ok:
+          body = nb.value
+      let html = {t: body} inline
+      out = {items: out, value: "<li>" + html + "</li>"} push
+    else:
+      match open:
+        InPara: discard
+        _:
+          let close = {o: open} closeOf
+          if close != "":
+            out = {items: out, value: close} push
+          out = {items: out, value: "<p>"} push
+          open = InPara
+      let s = {t: line} trim
+      let html = {t: s} inline
+      out = {items: out, value: html} push
+  let close = {o: open} closeOf
+  if close != "":
+    out = {items: out, value: close} push
+  return out
+
+fn main() -> int [io, io: console]:
+  var lines: Seq[str] = []
+  for true:
+    let r = readLine
+    if not r.ok:
+      let html = {lines: lines} render
+      for i in 0 .. html.len - 1:
+        {text: html[i]} printLine
+      return 0
+    lines = {items: lines, value: r.value.line} push
+  return 0

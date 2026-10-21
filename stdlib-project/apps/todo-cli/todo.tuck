@@ -1,49 +1,234 @@
-# todo-cli — add, list, complete, and filter by priority.
+# todo — a to-do list kept in a plain text file.
 #
-# A slice of APP.md's full ambition: no file storage, no query language, no
-# recurrence. Enough to exercise the combinations a real CLI reaches for —
-# sum types + `match`, a Seq of records, in-place element update, filtering
-# into an accumulator, and string building for output.
+#   todo [--file F] add WORDS... [--urgent]
+#   todo [--file F] list [--all]
+#   todo [--file F] done N
+#   todo [--file F] remove N
+#   todo [--file F] shell          one command per line on stdin
+#
+# The file (todo.txt here by default) is the todo.txt format, so other tools
+# read it: one task per line, `x ` before a finished one and `(A) ` before an
+# urgent one. Tasks are numbered from 1 in file order, and a number names the
+# same task in `list`, `done` and `remove`. Running with no command lists.
 import console
-import str
 import seq
-
-type Priority:
-  | Low
-  | Normal
-  | Urgent
+import str
+import text
+import convert
+import cli
+import fs
 
 type Task:
   title: str
-  prio: Priority
+  urgent: bool
   done: bool
 
-fn label({p: Priority}) -> str:
-  match p:
-    Low: return "low"
-    Normal: return "normal"
-    Urgent: return "URGENT"
+type Outcome:
+  tasks: Seq[Task]
+  code: int
 
-fn render({t: Task}) -> str:
-  let mark = if t.done: "[x]" else: "[ ]"
-  return mark + " " + t.title + " (" + {p: t.prio} label + ")"
+# --- the file -----------------------------------------------------------------------
+fn afterPrefix({t: str, prefix: str}) -> str:
+  let n = {t: t} byteCount
+  let from1 = {t: prefix} byteCount
+  let rest = {t: t, start: from1, stop: n} slice
+  if rest.ok:
+    return rest.value
+  return ""
 
-fn main() -> void [io]:
-  var tasks = [{title: "buy milk", prio: Priority.Normal, done: false} Task]
-  # A continuation line must indent by exactly one 2-space level, never by
-  # visual alignment (TK-LX06), so this payload stays on one line.
-  tasks = {items: tasks, value: {title: "ship it", prio: Priority.Urgent, done: false} Task} push
+fn taskOf({line: str}) -> Task:
+  var rest = line
+  var done = false
+  var urgent = false
+  if {t: rest, prefix: "x "} startsWith:
+    done = true
+    rest = {t: rest, prefix: "x "} afterPrefix
+  if {t: rest, prefix: "(A) "} startsWith:
+    urgent = true
+    rest = {t: rest, prefix: "(A) "} afterPrefix
+  return {title: rest, urgent: urgent, done: done} Task
 
-  # complete the first task IN PLACE — the element is addressed directly
-  tasks[0].done = true
+fn lineOf({item: Task}) -> str:
+  var line = item.title
+  if item.urgent:
+    line = "(A) " + line
+  if item.done:
+    line = "x " + line
+  return line
 
-  {text: "all:"} printLine
-  for t in tasks:
-    {text: "  " + {t: t} render} printLine
+fn load({file: str}) -> Seq[Task] [io: fs]:
+  var tasks: Seq[Task] = []
+  let got = {path: file} readFile
+  if not got.ok:
+    return tasks
+  let lines = {s: got.value.content} splitLines
+  for i in 0 .. lines.len - 1:
+    let line = {t: lines[i]} trim
+    if line != "":
+      let item = {line: line} taskOf
+      tasks = {items: tasks, value: item} push
+  return tasks
 
-  var urgent = 0
-  for t in tasks:
-    match t.prio:
-      Urgent: urgent = urgent + 1
-      _: discard
-  {text: "urgent: " + urgent.toStr} printLine
+fn save({file: str, tasks: Seq[Task]}) -> bool [io: fs]:
+  var lines: Seq[str] = []
+  for i in 0 .. tasks.len - 1:
+    let line = {item: tasks[i]} lineOf
+    lines = {items: lines, value: line + "\n"} push
+  let body = {parts: lines, sep: ""} joinStr
+  let wrote = {path: file, content: body} writeFile
+  return wrote.ok
+
+# --- the commands -------------------------------------------------------------------
+fn shown({item: Task, number: int}) -> str:
+  var mark = "[ ]"
+  if item.done:
+    mark = "[x]"
+  let n = {value: number} toStr
+  var line = n + ". " + mark + " " + item.title
+  if item.urgent:
+    line = line + " (urgent)"
+  return line
+
+fn listTasks({tasks: Seq[Task], all: bool}) -> Outcome [io: console]:
+  var shownAny = false
+  for i in 0 .. tasks.len - 1:
+    if all or not tasks[i].done:
+      let line = {item: tasks[i], number: i + 1} shown
+      {text: line} printLine
+      shownAny = true
+  if not shownAny:
+    {text: "nothing to do"} printLine
+  return {tasks: tasks, code: 0} Outcome
+
+fn addTask({tasks: Seq[Task], words: Seq[str], urgent: bool}) -> Outcome [io: console]:
+  if words.len == 0:
+    {text: "todo: add what?"} printLine
+    return {tasks: tasks, code: 2} Outcome
+  let title = {parts: words, sep: " "} joinStr
+  let item = {title: title, urgent: urgent, done: false} Task
+  let more = {items: tasks, value: item} push
+  let n = {value: more.len} toStr
+  {text: "added " + n + ": " + title} printLine
+  return {tasks: more, code: 0} Outcome
+
+# The task a command's one word names, as an index, or none.
+fn pick({tasks: Seq[Task], words: Seq[str]}) -> int? [io: console]:
+  if words.len != 1:
+    {text: "todo: name one task by its number"} printLine
+    return none
+  let n = {t: words[0]} parseInt
+  if not n.ok:
+    {text: "todo: not a number: " + words[0]} printLine
+    return none
+  let at = {value: n.value} int
+  if at < 1 or at > tasks.len:
+    {text: "todo: no task " + words[0]} printLine
+    return none
+  return at - 1
+
+fn finish({tasks: Seq[Task], words: Seq[str]}) -> Outcome [io: console]:
+  let at = {tasks: tasks, words: words} pick
+  if not at.ok:
+    return {tasks: tasks, code: 1} Outcome
+  var out = tasks
+  out[at.value].done = true
+  {text: "done " + words[0] + ": " + out[at.value].title} printLine
+  return {tasks: out, code: 0} Outcome
+
+fn removeTask({tasks: Seq[Task], words: Seq[str]}) -> Outcome [io: console]:
+  let at = {tasks: tasks, words: words} pick
+  if not at.ok:
+    return {tasks: tasks, code: 1} Outcome
+  var out: Seq[Task] = []
+  for i in 0 .. tasks.len - 1:
+    if i != at.value:
+      out = {items: out, value: tasks[i]} push
+  {text: "removed " + words[0] + ": " + tasks[at.value].title} printLine
+  return {tasks: out, code: 0} Outcome
+
+fn run({tasks: Seq[Task], a: Args}) -> Outcome [io: console]:
+  let words = a.positional
+  if a.subcommand == "add":
+    let urgent = {a: a, name: "urgent"} hasFlag
+    return {tasks: tasks, words: words, urgent: urgent} addTask
+  if a.subcommand == "done":
+    return {tasks: tasks, words: words} finish
+  if a.subcommand == "remove":
+    return {tasks: tasks, words: words} removeTask
+  let all = {a: a, name: "all"} hasFlag
+  return {tasks: tasks, all: all} listTasks
+
+# --- the command line ---------------------------------------------------------------
+fn sub({name: str, help: str, args: Seq[ArgSpec]}) -> Command:
+  let noSubs: Seq[Command] = []
+  return {name: name, help: help, args: args, subcommands: noSubs} Command
+
+fn command() -> Command:
+  let none1: Seq[ArgSpec] = []
+  let urgent = {name: "urgent", shortName: "u", kind: AFlag, help: "put it first in mind", required: false} spec
+  let addArgs: Seq[ArgSpec] = [urgent]
+  let all = {name: "all", shortName: "a", kind: AFlag, help: "finished ones too", required: false} spec
+  let listArgs: Seq[ArgSpec] = [all]
+  let add = {name: "add", help: "add a task", args: addArgs} sub
+  let lst = {name: "list", help: "list what is left", args: listArgs} sub
+  let fin = {name: "done", help: "finish task N", args: none1} sub
+  let rem = {name: "remove", help: "forget task N", args: none1} sub
+  let sh = {name: "shell", help: "read commands from stdin", args: none1} sub
+  let subs: Seq[Command] = [add, lst, fin, rem, sh]
+  let file = {name: "file", shortName: "f", kind: AText, help: "the list (todo.txt)", required: false} spec
+  let args: Seq[ArgSpec] = [file]
+  return {name: "todo", help: "a to-do list in a text file", args: args, subcommands: subs} Command
+
+fn wordsOf({line: str}) -> Seq[str]:
+  let parts = {t: line, at: " "} split
+  var out: Seq[str] = []
+  for i in 0 .. parts.len - 1:
+    if parts[i] != "":
+      out = {items: out, value: parts[i]} push
+  return out
+
+# One command line run against the list, which is saved when it changed.
+fn step({tasks: Seq[Task], argv: Seq[str], file: str}) -> Outcome [io: console, io: fs]:
+  let parsed = {c: command, argv: argv} tryParse
+  if not parsed.ok:
+    let usage = {c: command} usageOf
+    {text: usage} printLine
+    return {tasks: tasks, code: 2} Outcome
+  let out = {tasks: tasks, a: parsed.value} run
+  if out.code == 0 and parsed.value.subcommand != "list" and parsed.value.subcommand != "":
+    if not {file: file, tasks: out.tasks} save:
+      {text: "todo: cannot write " + file} printLine
+      return {tasks: out.tasks, code: 1} Outcome
+  return out
+
+fn shell({tasks: Seq[Task], file: str}) -> int [io: console, io: fs]:
+  var now = tasks
+  var code = 0
+  for true:
+    let got = readLine
+    if not got.ok:
+      return code
+    let argv = {line: got.value.line} wordsOf
+    if argv.len > 0:
+      let out = {tasks: now, argv: argv, file: file} step
+      now = out.tasks
+      if out.code != 0:
+        code = out.code
+  return code
+
+fn main() -> int [io, io: sys, io: console, io: fs]:
+  let argv = commandLine
+  let parsed = {c: command, argv: argv} tryParse
+  if not parsed.ok:
+    let usage = {c: command} usageOf
+    {text: usage} printLine
+    return 2
+  var file = "todo.txt"
+  let given = {a: parsed.value, name: "file"} textOf
+  if given.ok:
+    file = given.value
+  let tasks = {file: file} load
+  if parsed.value.subcommand == "shell":
+    return {tasks: tasks, file: file} shell
+  let out = {tasks: tasks, argv: argv, file: file} step
+  return out.code

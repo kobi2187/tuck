@@ -1,0 +1,127 @@
+# tidy — sort the files of a folder into subfolders by kind.
+#
+#   tidy FOLDER [--dry-run] [--by-extension]
+#
+# `holiday.JPG` goes to `images/`, `notes.md` to `documents/`, and so on;
+# anything unrecognised, or without an extension, goes to `other/`. With
+# --by-extension the folder is the extension itself (`jpg/`). Folders and
+# hidden files are left where they are, and a file is never moved over one
+# that already exists. --dry-run prints the plan and touches nothing.
+import console
+import seq
+import str
+import text
+import iter
+import cli
+import fs
+import path
+
+type Kind:
+  folder: str
+  extensions: Seq[str]
+
+fn kinds() -> Seq[Kind]:
+  let images = {folder: "images", extensions: ["jpg", "jpeg", "png", "gif", "webp", "svg"]} Kind
+  let docs = {folder: "documents", extensions: ["pdf", "txt", "md", "doc", "docx", "odt", "csv"]} Kind
+  let audio = {folder: "audio", extensions: ["mp3", "wav", "flac", "ogg"]} Kind
+  let video = {folder: "video", extensions: ["mp4", "mkv", "mov", "webm"]} Kind
+  let archives = {folder: "archives", extensions: ["zip", "tar", "gz", "7z"]} Kind
+  let code = {folder: "code", extensions: ["py", "rb", "js", "c", "nim", "tuck"]} Kind
+  let all: Seq[Kind] = [images, docs, audio, video, archives, code]
+  return all
+
+fn holds({items: Seq[str], word: str}) -> bool:
+  for i in 0 .. items.len - 1:
+    if items[i] == word:
+      return true
+  return false
+
+# The subfolder a file name belongs in.
+fn folderFor({name: str, byExtension: bool}) -> str:
+  let ext = {p: name} extension
+  if not ext.ok:
+    return "other"
+  let lower = {t: ext.value} toLowerAscii
+  if byExtension:
+    return lower
+  let all = kinds
+  for i in 0 .. all.len - 1:
+    if {items: all[i].extensions, word: lower} holds:
+      return all[i].folder
+  return "other"
+
+# The names in `dir` that are plain, visible files, in name order so every
+# run (and every platform) prints the same plan.
+fn filesIn({dir: str}) -> Seq[str] [io: fs]:
+  let names = {path: dir} listDir
+  var out: Seq[str] = []
+  for i in 0 .. names.len - 1:
+    let name = names[i]
+    let full = {base: dir, rel: name} join
+    let info = {path: full} pathInfo
+    if info.ok:
+      let hidden = {t: name, prefix: "."} startsWith
+      if not info.value.isFolder and not hidden:
+        out = {items: out, value: name} push
+  return {items: out} sort
+
+fn ensureFolder({dir: str}) -> bool [io: fs]:
+  let info = {path: dir} pathInfo
+  if info.ok:
+    return info.value.isFolder
+  let made = {path: dir} makeDir
+  return made.ok
+
+# Moves one file; what to print about it.
+fn moveOne({dir: str, name: str, folder: str, dryRun: bool}) -> str [io: fs]:
+  let target = {base: folder, rel: name} join
+  let to = {base: dir, rel: target} join
+  if {path: to} fileExists:
+    return "skip " + name + " (" + target + " exists)"
+  if dryRun:
+    return name + " -> " + target
+  let where = {base: dir, rel: folder} join
+  if not {dir: where} ensureFolder:
+    return "fail " + name + " (cannot make " + folder + ")"
+  let from1 = {base: dir, rel: name} join
+  let moved = {path: from1, to: to} renamePath
+  if not moved.ok:
+    return "fail " + name
+  return name + " -> " + target
+
+fn command() -> Command:
+  let dry = {name: "dry-run", shortName: "n", kind: AFlag, help: "print the plan only", required: false} spec
+  let byExt = {name: "by-extension", shortName: "e", kind: AFlag, help: "one folder per extension", required: false} spec
+  let args: Seq[ArgSpec] = [dry, byExt]
+  let noSubs: Seq[Command] = []
+  return {name: "tidy", help: "sort a folder's files into subfolders by kind", args: args, subcommands: noSubs} Command
+
+fn main() -> int [io, io: sys, io: console, io: fs]:
+  let argv = commandLine
+  let parsed = {c: command, argv: argv} tryParse
+  if not parsed.ok:
+    let usage = {c: command} usageOf
+    {text: usage} printLine
+    return 2
+  let a = parsed.value
+  if a.positional.len != 1:
+    {text: "tidy: name one folder"} printLine
+    return 2
+  let dir = a.positional[0]
+  let dryRun = {a: a, name: "dry-run"} hasFlag
+  let byExt = {a: a, name: "by-extension"} hasFlag
+  let names = {dir: dir} filesIn
+  var moved = 0
+  for i in 0 .. names.len - 1:
+    let folder = {name: names[i], byExtension: byExt} folderFor
+    let line = {dir: dir, name: names[i], folder: folder, dryRun: dryRun} moveOne
+    {text: line} printLine
+    if {t: line, what: " -> "} text::has:
+      moved = moved + 1
+  let n = {value: moved} toStr
+  var verb = "moved"
+  if dryRun:
+    verb = "would move"
+  let total = {value: names.len} toStr
+  {text: verb + " " + n + " of " + total + " files"} printLine
+  return 0

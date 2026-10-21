@@ -1916,7 +1916,13 @@ proc okGuardName(tc: TypeChecker, cond: Expr): string =
 # wrong is how narrowing or variant state leaks across a branch it should not.
 # The three join sites (if/else, match arms, loop body) are all here.
 
-proc synthBranches(tc: var TypeChecker, e: Expr, guard: string): (Type, Type) =
+proc negatedGuardName(tc: TypeChecker, cond: Expr): string =
+  ## `if not r.ok: ... else:` — the ELSE branch is the one that knows r.
+  if cond == nil or cond.kind != exkUnary or cond.unaryOp != uoNot: return ""
+  tc.okGuardName(cond.operand)
+
+proc synthBranches(tc: var TypeChecker, e: Expr, guard: string,
+                   elseGuard = ""): (Type, Type) =
   ## Both branches from the same entry state; the after-if state is their union.
   if guard != "": tc.setNarrowed(guard, true)
   let entryVariants = tc.varVariants
@@ -1924,7 +1930,9 @@ proc synthBranches(tc: var TypeChecker, e: Expr, guard: string): (Type, Type) =
   let thenVariants = tc.varVariants
   if guard != "": tc.setNarrowed(guard, false)
   tc.varVariants = entryVariants
+  if elseGuard != "": tc.setNarrowed(elseGuard, true)
   let elseT = tc.synthesize(e.elseBranch)
+  if elseGuard != "": tc.setNarrowed(elseGuard, false)
   tc.varVariants = mergeVariants(thenVariants, tc.varVariants)
   (thenT, elseT)
 
@@ -1936,7 +1944,8 @@ proc isNoValue(t: Type): bool =
 proc synthIf(tc: var TypeChecker, e: Expr): Type =
   ## Branches that produce values must agree on the type.
   tc.checkCondition(e.cond, e.span)
-  let (thenT, elseT) = tc.synthBranches(e, tc.okGuardName(e.cond))
+  let (thenT, elseT) = tc.synthBranches(e, tc.okGuardName(e.cond),
+                                        tc.negatedGuardName(e.cond))
   if e.elseBranch != nil and not isFlexible(thenT) and not isFlexible(elseT) and
      not (isNoValue(thenT) and isNoValue(elseT)) and
      not tc.compatible(thenT, elseT) and not tc.compatible(elseT, thenT):
@@ -4192,13 +4201,30 @@ proc sharedVariantType(tc: var TypeChecker, e: Expr, owners: seq[string]): Type 
        e.span)
   afterErrorType(e.span)
 
+proc stampVariantValue(tc: TypeChecker, e: Expr, owner: Type) =
+  ## A bare variant of a sum that carries a payload anywhere is a VALUE of
+  ## that sum, not the tag its Kind enum holds: it is stamped as the qualified
+  ## construction (`Open.Nothing`), which every backend already builds (A89).
+  ## A plain enum keeps the bare tag.
+  if owner == nil or owner.kind != tkNamed: return
+  let body = tc.typeDecls.getOrDefault(owner.name)
+  if body == nil or body.kind != tkSum or not sumHasPayload(body): return
+  setCall(semLayer, e, Expr(span: e.span, kind: exkField, fieldName: e.name,
+          receiver: Expr(span: e.span, kind: exkVar, name: owner.name)))
+
 proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   ## A bare sum-type variant is a value of its sum type. `Light.Red` is the
   ## qualified form of the same thing, handled by the field-access path.
   let owners = tc.sumTypesOwning(e.name)
-  if owners.len > 1: return tc.sharedVariantType(e, owners)
+  if owners.len > 1:
+    result = tc.sharedVariantType(e, owners)
+    tc.stampVariantValue(e, result)
+    return
   let owner = if owners.len == 1: owners[0] else: ""
-  if owner != "": return tc.namedType(owner, e.span)
+  if owner != "":
+    result = tc.namedType(owner, e.span)
+    tc.stampVariantValue(e, result)
+    return
   let regOwner = registryEventOwner(e.name)
   if regOwner != "": return tc.namedType(regOwner, e.span)
   if tc.expectedType != nil:

@@ -188,7 +188,7 @@ fn checkFormat() -> int:
   return 0
 
 fn checkDisk() -> int [io]:
-  let path = "/tmp/tuck-std-queue-check.log"
+  let path = "tuck-std-queue-check.log"
   {path: path} removeFile discard
   let opened = {path: path} openQueue
   if not opened.ok:

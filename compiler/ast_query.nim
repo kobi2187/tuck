@@ -324,6 +324,20 @@ proc declaresCallable*(m: Module, name: string): bool =
   ## a call by this name can reach in `m`. Odin and D qualify a call with the
   ## module that declares it (R11, A37).
   m.declaresFn(name) or m.declaresRaiseProc(name) or m.declaresImplVar(name)
+
+proc callableOrigin*(m: Module, real: ModuleMap, name: string): ModuleId =
+  ## The module a bare call `name` in `m` reaches, or NoModule when `m`
+  ## declares it or nobody does. A module `m` IMPORTS comes first, in import
+  ## order: one further down the import graph may declare a fn of the same
+  ## name, and the first declaration met in the whole program was taken (A92,
+  ## console's `readLine` called as sys.io's generic one).
+  if name == "" or m.declaresCallable(name): return NoModule
+  for d in m.decls(dkImport):
+    if d.importTarget in real and real[d.importTarget].declaresCallable(name):
+      return d.importTarget
+  for id, im in real:
+    if im.declaresCallable(name): return id
+  NoModule
 proc params*(d: Decl): seq[Param] =
   ## A callable's parameters, in order. Tasks keep theirs in a separate field
   ## from fns; callers asking "what does this take" should not have to care.

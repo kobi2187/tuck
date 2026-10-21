@@ -45,11 +45,8 @@ proc importDeclaring(ctx: DCodegenCtx, name: string): ModuleId =
   ## module declares it (local wins) or nobody does. D has no cross-module
   ## scope merge, so every foreign call has to be qualified — three separate
   ## copies of this search had grown before it was named once.
-  if name == "" or ctx.module.declaresCallable(name) or
-     name in ctx.providerParams: return NoModule
-  for id, im in ctx.realModules:
-    if im.declaresCallable(name): return id
-  NoModule
+  if name in ctx.providerParams: return NoModule
+  callableOrigin(ctx.module, ctx.realModules, name)
 
 proc genDQualified(ctx: DCodegenCtx, e: Expr): string =
   ## An imported module's fn is always `alias.name`. Local declarations win;
@@ -293,8 +290,10 @@ proc dSumVariantCtor(ctx: var DCodegenCtx, typeName, variantName: string,
   let found = payloadSumVariant(ctx.module, typeName, variantName)
   if found.isNone: return ""
   let v = found.get
+  # In the declaring module's package when the sum is imported (A91).
+  let q = ctx.importPrefixD(typeName) & typeName
   if v.fields.len == 0 or payload == nil:
-    return typeName & "(" & typeName & "Kind." & variantName & ")"
+    return q & "(" & q & "Kind." & variantName & ")"
   var parts: seq[string]
   for f in v.fields:
     for pf in payload.fields:
@@ -307,9 +306,9 @@ proc dSumVariantCtor(ctx: var DCodegenCtx, typeName, variantName: string,
   # slot and dmd rejected it — every payload variant after the first was
   # unbuildable on this backend. The union is anonymous, so its members are
   # members of the struct and a named literal reaches them.
-  typeName & "(kind: " & typeName & "Kind." & variantName & ", " &
+  q & "(kind: " & q & "Kind." & variantName & ", " &
     sumPayloadField(variantName) & ": " &
-    typeName & "_" & variantName & "(" & parts.join(", ") & "))"
+    q & "_" & variantName & "(" & parts.join(", ") & "))"
 
 proc asDSumVariantCall(ctx: var DCodegenCtx, e: Expr): string =
   ## `{payload} Sum.Variant` as a D tagged-struct construction, or "" when the
@@ -773,9 +772,13 @@ proc genDField(ctx: var DCodegenCtx, e: Expr): string =
   # does for a foreign call — D has no cross-module scope merge. Without this
   # the variant emitted as a bare `tuck_Order.Before` and dmd reported an
   # undefined identifier, while the call beside it was correctly qualified.
+  # A variant of an imported PAYLOAD sum is a construction, not an enum
+  # member (A91).
   if e.receiver != nil and e.receiver.kind == exkVar:
     let pkg = ctx.pkgQualifierD(moduleDeclaringType(ctx.module, e.receiver.name))
     if pkg != "":
+      let ctor = ctx.dSumVariantCtor(e.receiver.name, e.fieldName, e.dotArg)
+      if ctor != "": return ctor
       return pkg & e.receiver.name & "." & e.fieldName
   ctx.genDFieldRead(e)
 

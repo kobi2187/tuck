@@ -136,7 +136,8 @@ proc sumVariantCtor(ctx: var OdinCodegenCtx, typeName, variantName: string,
   # Odin union: constructing a variant IS constructing its struct; the union
   # carries the tag itself, so there is no kind field to set and no
   # per-variant payload slot to name.
-  let vName = typeName & "_" & v.name
+  # In the declaring module's package when the sum is imported (A91).
+  let vName = ctx.importPrefix(typeName) & typeName & "_" & v.name
   if v.fields.len == 0 or payload == nil:
     return vName & "{}"
   var vals: seq[string]
@@ -574,7 +575,7 @@ proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
     let bodyStr = ctx.genOdinExpr(arm.body)
     ctx.definedVars = armVars
     let caseLabel = if patStr == "_": "case:"
-                    else: "case " & sumName & "_" & patStr & ":"
+                    else: "case " & ctx.importPrefix(sumName) & sumName & "_" & patStr & ":"
     if arm.body != nil and arm.body.kind == exkBlock:
       cases.add(ind & caseLabel & "\n" & bodyStr)
     else:
@@ -756,11 +757,9 @@ proc qualifiedForeignFn(ctx: OdinCodegenCtx, name: string): string =
   ## An unqualified cross-module call (`0 exit` for `sys::exit`). Nim resolves
   ## this itself through the emitted `import`; Odin never merges package
   ## scopes, so the owning package has to be found and spelled out here.
-  if ctx.module.declaresCallable(name) or name in ctx.providerParams: return ""
-  for id, im in ctx.realModules:
-    if im.declaresCallable(name):
-      return ctx.pkgQualifier(id) & name
-  ""
+  if name in ctx.providerParams: return ""
+  let id = callableOrigin(ctx.module, ctx.realModules, name)
+  if id == NoModule: "" else: ctx.pkgQualifier(id) & name
 
 proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A bare name: a checker-stamped call, a payload, a field, an enum tag, or
@@ -970,7 +969,8 @@ proc assertedVariantField(ctx: var OdinCodegenCtx, e: Expr): string =
   if sumName == "": return ""
   let owner = variantOwningField(ctx.module, sumName, e.fieldName)
   if owner == "": return ""
-  ctx.genOdinExpr(e.receiver) & ".(" & sumName & "_" & owner & ")." & e.fieldName
+  ctx.genOdinExpr(e.receiver) & ".(" & ctx.importPrefix(sumName) & sumName & "_" & owner &
+    ")." & e.fieldName
 
 proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## A `.name` access: interface dispatch, an actor singleton's field, a
@@ -1450,7 +1450,9 @@ proc unionDeclType(ctx: var OdinCodegenCtx, e: Expr): string =
   let d = findDecl(ctx.module, dkType, t.name)
   if d == nil or d.typeBody == nil or d.typeBody.kind != tkSum: return ""
   if not sumHasPayload(d.typeBody): return ""
-  t.name
+  # Spelled as any other use of the type, so one imported from another
+  # module carries its package (A91).
+  ctx.odinType(t)
 
 proc withAssignValidate(ctx: var OdinCodegenCtx, e: Expr,
                         stmt: string): string =

@@ -4450,4 +4450,183 @@ fn main() -> int [io: sys]:
   t.quietly: t.hostRuns "A85: argAt counts from the program on every backend", 6
   t.bugFixed "A85: argAt counts from the program on every backend"
 
+  # A87. The else-branch of `if not r.ok:` did not narrow r (issue #176).
+  # Found writing the guess app.
+  t.src """
+fn f({r: int?}) -> int:
+  if not r.ok:
+    return 0
+  elif r.value > 5:
+    return 2
+  else:
+    return r.value
+
+fn main() -> int:
+  let a: int? = 3
+  let b: int? = none
+  return {r: a} f * 10 + {r: b} f
+"""
+  t.quietly: t.hostRuns "A87: the else of a negated guard knows the value is present", 30
+  t.bugFixed "A87: the else of a negated guard knows the value is present"
+
+  t.src """
+fn f({r: int?}) -> int:
+  if not r.ok:
+    return r.value
+  return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "...and its then-branch still does not", "unhandled"
+  t.bugFixed "...and its then-branch still does not"
+
+  # A88. Two imports declaring one type name: the first one silently won
+  # (issue #177). Found writing the wordfreq app (cli's Entry against map's
+  # Entry[K, V]). Each module's fns return their own Entry.
+  t.src """
+import lefty
+import righty
+
+fn main() -> int:
+  let l = makeLeft
+  let r = makeRight
+  return l.hits * 10 + r.size
+"""
+  t.addFile("lefty.tuck", """public:
+  Entry
+  makeLeft
+
+type Entry:
+  word: str
+  hits: int
+
+fn makeLeft() -> Entry:
+  return {word: "a", hits: 3} Entry
+""")
+  t.addFile("righty.tuck", """public:
+  Entry
+  makeRight
+
+type Entry:
+  size: int
+
+fn makeRight() -> Entry:
+  return {size: 4} Entry
+""")
+  t.quietly: t.hostRuns "A88: two imports may each declare a type of one name", 34
+  t.bugOpen "A88: two imports may each declare a type of one name"
+
+  # A89. A bare payload-free variant of a payload sum (`var o = Nothing`) was
+  # emitted as its Kind enum's tag, not a value of the sum (issue #178).
+  # Found writing the md2html app.
+  t.src """
+type Open:
+  | Nothing
+  | InList({tag: str})
+
+fn depth({o: Open}) -> int:
+  match o:
+    Nothing: return 1
+    InList: return 2
+
+fn main() -> int:
+  var o = Nothing
+  let a = {o: o} depth
+  o = {tag: "ul"} Open.InList
+  let b = {o: o} depth
+  o = Nothing
+  let c = {o: o} depth
+  return a * 10 + b + c * 100
+"""
+  t.quietly: t.hostRuns "A89: a bare variant of a payload sum is a value of the sum", 112
+  t.bugFixed "A89: a bare variant of a payload sum is a value of the sum"
+
+  # A90. A second `let` of a name in the SAME scope was read as a
+  # reassignment and stored into the first, whatever its type (issue #179).
+  # Found writing the jsonq app. The rebinding's own value reads the old one.
+  t.src """
+fn half({x: int}) -> int?:
+  if x < 0:
+    return none
+  return x /i 2
+
+fn f({x: int}) -> int:
+  let n = x + 1
+  let r = {x: n} half
+  if not r.ok:
+    return 0
+  let n = {x: r.value} half
+  if not n.ok:
+    return 1
+  let k = n.value
+  let k = k * 10 + 1
+  return k
+
+fn main() -> int:
+  return {x: 9} f
+"""
+  t.quietly: t.hostRuns "A90: a let may rebind a name already in this scope", 21
+  t.bugFixed "A90: a let may rebind a name already in this scope"
+
+  # A91. An imported payload sum: Odin spelled its variant structs, and D its
+  # constructions, without the declaring module (issue #180). Found writing
+  # the jsonq app, which matches on std.encoding's Json.
+  t.src """
+import shapes
+
+fn widthOf({s: Shape}) -> int:
+  var here = s
+  match here:
+    Dot: return 1
+    Box: return here.w
+
+fn main() -> int:
+  let b = {w: 5} Shape.Box
+  var d = Dot
+  let w = b.w
+  d = {w: 7} Shape.Box
+  let e = Shape.Dot
+  return {s: b} widthOf * 10 + {s: d} widthOf + {s: e} widthOf + w
+"""
+  t.addFile("shapes.tuck", """type Shape:
+  | Dot
+  | Box({w: int})
+""")
+  t.quietly: t.hostRuns "A91: an imported payload sum is matched and built on every backend", 63
+  t.bugFixed "A91: an imported payload sum is matched and built on every backend"
+
+  # A92. A bare call reached the first fn of its name ANYWHERE in the program
+  # (issue #181): Odin and D qualified `greet` with `deep`, which only `mid`
+  # imports, and the mangler renamed sys's extern `argCount` after deep's Tuck
+  # fn. Found writing the spellcheck app (console's `readLine` called as
+  # sys.io's generic one).
+  t.src """
+import sys
+import near
+import mid
+
+fn main() -> int [io: sys]:
+  let n = argCount
+  let g = greet
+  return n.total + g + midThing
+"""
+  t.addFile("deep.tuck", """fn argCount({x: int}) -> int:
+  return x + 100
+
+fn greet({who: str}) -> int:
+  return 7
+""")
+  t.addFile("mid.tuck", """import deep
+
+fn midThing() -> int:
+  let a = {x: 1} argCount
+  return a + {who: "x"} greet
+""")
+  t.addFile("near.tuck", """fn greet() -> int:
+  return 40
+""")
+  t.quietly: t.hostRuns "A92: a bare call means the fn the caller imports, not one further down", 148
+  t.bugFixed "A92: a bare call means the fn the caller imports, not one further down"
+
   t.finish()

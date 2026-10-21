@@ -1,0 +1,3 @@
+The quik brown fox jumps ovar the lazi dog.
+Don't worry: this checker can't know every word.
+Hello, wrold!

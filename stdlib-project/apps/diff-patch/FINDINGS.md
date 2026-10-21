@@ -98,3 +98,12 @@ name collision cost real debugging time because `tuck ch` reported clean and
 the failure only appeared as a raw Nim compiler error two stages later — that
 gap between "the tool that should catch this" and "the tool that actually
 catches it" is the sharpest edge in the whole session.
+
+## Rewritten as `diff -u` (2026-10-21)
+
+Both gaps above are long closed (`push`, `splitLines`, `files.readLines`), so
+the slice became the real tool: `diffpatch OLD NEW [--context N]` prints
+unified hunks byte-identical to GNU `diff -u` (less its timestamps) on Nim,
+Odin and D, `patch` applies them, and the exit code is diff's (0 same, 1
+different, 2 trouble). Frictions: `new` and `context` are keywords of a
+backend, so neither can name a parameter (TK-PA12).

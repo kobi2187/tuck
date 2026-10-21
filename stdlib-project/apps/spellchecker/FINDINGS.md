@@ -75,3 +75,12 @@ with only indexed mutation (no push, no dynamic sizing) forced a
 single-row-DP variant with a literal-sized backing array and manual bounds
 constants, which is exactly the kind of thing a real program would trip
 on immediately outside a toy dictionary this small.
+
+## Rewritten as a real tool (2026-10-21)
+
+`spellcheck [--words FILE] [--distance N] < text` now reads its dictionary
+from a word list and reports `line:column word -> guess`, the guess chosen by
+Damerau edit distance (a swapped pair is one edit). Found on the way: A92 —
+`import files` brought sys.io's generic `readLine` into the program, and a bare
+`readLine` meaning console's extern was emitted as a call to it on every
+backend (issue #181, fixed).
