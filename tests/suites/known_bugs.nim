@@ -4400,4 +4400,54 @@ fn main() -> int:
   t.quietly: t.runs "A82: a shim named by an imported module is found (Nim)", 7
   t.bugFixed "A82: a shim named by an imported module is found (Nim)"
 
+  # A83. `argCount`'s field `count` collided with std/seq's fn `count`, so the
+  # result was unreadable in any module importing both (issue #172).
+  t.src """
+import seq
+import sys
+
+fn main() -> int [io: sys]:
+  let n = argCount
+  return n.total + 4
+"""
+  t.quietly: t.hostRuns "A83: argCount's result is readable beside std/seq", 4
+  t.bugFixed "A83: argCount's result is readable beside std/seq"
+
+  # A84. Odin/D: a variant of an imported sum named `...Kind` lost its module:
+  # the emitters recovered the sum by stripping `Kind` off the enum's name
+  # (issue #173). Found writing the hangman app (std.cli's ArgKind).
+  t.src """
+import a
+
+fn main() -> int:
+  let k = Fancy
+  return {k: k} score
+"""
+  t.addFile("a.tuck", """type Kind:
+  | Plain
+  | Fancy
+
+fn score({k: Kind}) -> int:
+  if k == Fancy:
+    return 7
+  return 1
+""")
+  t.quietly: t.hostRuns "A84: an imported sum named Kind keeps its module", 7
+  t.bugFixed "A84: an imported sum named Kind keeps its module"
+
+  # A85. `argAt` was 1-based on Nim but 0-based on Odin and D (issue #174):
+  # with no arguments, argAt 0 is the program and argAt 1 is empty.
+  t.src """
+import sys
+
+fn main() -> int [io: sys]:
+  let prog = {index: 0} argAt
+  let first = {index: 1} argAt
+  if prog.arg == "" or first.arg != "":
+    return 1
+  return 6
+"""
+  t.quietly: t.hostRuns "A85: argAt counts from the program on every backend", 6
+  t.bugFixed "A85: argAt counts from the program on every backend"
+
   t.finish()

@@ -219,6 +219,29 @@ it in.
   module only. Fixed in all three; `stdlib_project` builds a program importing
   `sys.mmap` on each backend. Found writing `sys.mmap`.
 
+- **A83 (issue #172) — `argCount`'s result was unreadable beside `std/seq`.**
+  Its field `count` collided with seq's fn `count` (A70's class). Fixed: the
+  field is `total`, in `std/sys` and the three runtimes. Found writing the
+  `hangman` app.
+
+- **A84 (issue #173) — Odin/D lost the module of an imported sum named
+  `...Kind`.** The emitters recovered the sum from its tag enum's name by
+  stripping `Kind`, which misread `Kind`/`ArgKind` themselves. Fixed: the
+  module is read off the declaration owning the tag (`enumTagDecl`). Found
+  writing the `hangman` app.
+
+- **A85 (issue #174) — `argAt` was 1-based on Nim, 0-based on Odin and D,
+  and Nim raised past the last argument.**
+  Odin and D skipped the program name. Fixed: 1..argCount are the arguments
+  and 0 the program on every backend, stated in `std/sys.tuck`. Found writing
+  the `hangman` app.
+
+- **A86 (issue #175) — Odin `readLine` returned a whole stdin chunk as one
+  line.** Piped lines after the first were dropped, and an end-of-input EOF
+  error lost a last line without a newline. Fixed: a process-wide pending
+  buffer hands out one line per call. Guarded by the `apps` suite, which pipes
+  stdin into all three backends. Found writing the `hangman` app.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

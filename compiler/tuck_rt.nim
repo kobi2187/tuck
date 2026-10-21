@@ -1780,11 +1780,15 @@ proc runCommand*(line: string): int =
   ## goes, and returns its exit code. Blocks the caller until it ends.
   osproc.execCmd(line)
 
-proc argCount*(): tuple[count: int] =
+proc argCount*(): tuple[total: int] =
   ## How many command-line arguments were passed, not counting the program.
-  (count: paramCount())
+  ## `total`, not `count`: std/seq's fn `count` would make a `count` field
+  ## unreadable in any module importing both (A83).
+  (total: paramCount())
 proc argAt*(index: int): tuple[arg: string] =
-  ## Command-line argument `index` (1-based; 0 is the program).
+  ## Command-line argument `index` (1-based; 0 is the program); "" outside
+  ## 0 .. argCount, as on Odin and D (A85) — paramStr raises instead.
+  if index < 0 or index > paramCount(): return (arg: "")
   (arg: paramStr(index))
 
 # --- signals as values (std/sys) ----------------------------------------------

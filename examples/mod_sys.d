@@ -3,8 +3,8 @@ module mod_sys;
 import rt = tuck_rt;
 import tuckˑmodˑshapes_43_literal_payload = mod_shapes_43_literal_payload;
 
-tuckˑmodˑshapes_43_literal_payload.TRec_count!(long) argCount() {
-    return rt.argCount!(tuckˑmodˑshapes_43_literal_payload.TRec_count!(long))();
+tuckˑmodˑshapes_43_literal_payload.TRec_total!(long) argCount() {
+    return rt.argCount!(tuckˑmodˑshapes_43_literal_payload.TRec_total!(long))();
 }
 
 tuckˑmodˑshapes_43_literal_payload.TRec_arg!(string) argAt(long index) {

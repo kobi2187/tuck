@@ -1,7 +1,7 @@
 module mod_shapes_32_duration_units;
 
-struct TRec_count(T_count) {
-    T_count count;
+struct TRec_total(T_total) {
+    T_total total;
 }
 
 struct TRec_arg(T_arg) {

@@ -13,6 +13,7 @@ import str
 import text
 import convert
 import fmt
+import sys
 
 type ArgKind:
   | AFlag
@@ -122,6 +123,15 @@ fn withPositional({a: Args, word: str}) -> Args:
 # Parse `argv` (the program name already removed) against `c`. `--name value`,
 # `--name=value`, `-s value`, bare words as positionals; a first bare word that
 # names a subcommand hands the rest of the line to that subcommand.
+# The program's own arguments, without the program name: what `tryParse` takes.
+fn commandLine() -> Seq[str] [io: sys]:
+  var out: Seq[str] = []
+  let n = argCount
+  for i in 1 .. n.total:
+    let a = {index: i} argAt
+    out = {items: out, value: a.arg} push
+  return out
+
 fn tryParse({c: Command, argv: Seq[str]}) -> Args?:
   let empty: Seq[Entry] = []
   let words: Seq[str] = []

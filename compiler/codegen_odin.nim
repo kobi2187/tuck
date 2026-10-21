@@ -470,12 +470,21 @@ proc odinBangInfo*(ctx: var OdinCodegenCtx, t: Type):
     return (true, (if inner == "void": "rt.TuckUnit" else: inner), t.args[0])
   return (false, "", nil)
 
+proc qualifiedTagEnum*(ctx: OdinCodegenCtx, tag: string): string =
+  ## The enum owning `tag`, reached through its module when the sum declaring
+  ## it was imported; "" for a tag no declared sum has. Read off the
+  ## DECLARATION: recovering the sum's name by stripping a `Kind` suffix from
+  ## the enum's misread every sum whose own name ends in `Kind` (A84).
+  let d = enumTagDecl(ctx.module, tag)
+  if d == nil: return ""
+  ctx.pkgQualifier(moduleDeclaringType(ctx.module, d.name)) & enumTagOwner(ctx.module, tag)
+
 proc patternValue*(ctx: OdinCodegenCtx, patStr: string): string =
   ## Comparison operand for a pattern value: enum tags need qualification (or
   ## Odin's implicit-selector `.Tag` for hoisted inline enums); literals pass.
   if patStr.len == 0: return patStr
-  let owner = enumTagOwner(ctx.module, patStr)
-  if owner != "": return ctx.qualifyEnumOwner(owner) & "." & patStr
+  let owner = ctx.qualifiedTagEnum(patStr)
+  if owner != "": return owner & "." & patStr
   if patStr[0] in {'A'..'Z'}: return "." & patStr
   patStr
 
@@ -764,8 +773,8 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   # bare enum tag: qualify with its declared owner (Odin has no module-global
   # enum members the way Nim does)
   var owner = ""
-  withTagHint(ctx.res.typeFor(e)): owner = enumTagOwner(ctx.module, e.name)
-  if owner != "": return ctx.qualifyEnumOwner(owner) & "." & e.name
+  withTagHint(ctx.res.typeFor(e)): owner = ctx.qualifiedTagEnum(e.name)
+  if owner != "": return owner & "." & e.name
   # A variant of an INLINE sum (`state: {Red, Green} = Red`) has no owner to
   # qualify with; Odin's implicit selector names it, the target being typed.
   let t = ctx.res.typeFor(e)

@@ -1627,14 +1627,15 @@ void tuckSetArgs(string[] args) { tuckArgs = args; }
 R argCount(R)()
 {
     long n = tuckArgs.length > 0 ? cast(long) tuckArgs.length - 1 : 0;
-    return tuckRec!(R, "count")(n);
+    return tuckRec!(R, "total")(n);
 }
 
 R argAt(R)(long index)
 {
-    if (index < 0 || index + 1 >= cast(long) tuckArgs.length)
+    // 1-based like Nim's paramStr: 1..argCount are the arguments, 0 the program
+    if (index < 0 || index >= cast(long) tuckArgs.length)
         return tuckRec!(R, "arg")("");
-    return tuckRec!(R, "arg")(tuckArgs[cast(size_t) index + 1]);
+    return tuckRec!(R, "arg")(tuckArgs[cast(size_t) index]);
 }
 
 /// `?{value: str}` — an unset variable is ABSENT, not an error and not an

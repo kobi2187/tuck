@@ -4,8 +4,8 @@ struct TRec_line(T_line) {
     T_line line;
 }
 
-struct TRec_count(T_count) {
-    T_count count;
+struct TRec_total(T_total) {
+    T_total total;
 }
 
 struct TRec_arg(T_arg) {

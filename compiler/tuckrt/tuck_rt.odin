@@ -1448,7 +1448,7 @@ EnvValue :: struct {
 }
 
 ArgCount :: struct {
-	count: int,
+	total: int,
 }
 
 ArgValue :: struct {
@@ -1686,12 +1686,14 @@ ReadLineReq :: struct {
 readLineWorker :: proc(arg: rawptr) {
 	r := (^ReadLineReq)(arg)
 	n, err := os.read(os.stdin, r.buf[:])
-	if err != nil {
-		r.status = .IoFailed
+	// end of input first: os.read reports it as an EOF ERROR with no bytes,
+	// which is not a failure
+	if n <= 0 && (err == nil || err == .EOF) {
+		r.status = .EndOfInput
 		return
 	}
-	if n <= 0 {
-		r.status = .EndOfInput
+	if err != nil && n <= 0 {
+		r.status = .IoFailed
 		return
 	}
 	r.len = n
@@ -1704,19 +1706,36 @@ readLineWorker :: proc(arg: rawptr) {
 // see thoughts/async-endgame-measurements.md. The worker was the fix that
 // removed the hang; the reactor is the better implementation of the same
 // extern, and applies to both backends equally.
+// What was read from stdin past the last line handed out: a pipe delivers many
+// lines in one read, and each call returns ONE (A86).
+@(private) gStdinPending: [dynamic]u8
+
+@(private)
+takePendingLine :: proc(upTo: int) -> string {
+	line := strings.trim_right(string(gStdinPending[:upTo]), "\r\n")
+	out := strings.clone(line)
+	remove_range(&gStdinPending, 0, min(upTo + 1, len(gStdinPending)))
+	return out
+}
+
 readLine :: proc() -> TuckResult(IoLine) {
-	req := ReadLineReq{status = .Ok}
-	tuckSubmitBlocking(readLineWorker, &req)
-	switch req.status {
-	case .EndOfInput:
-		return terr(IoLine, errCode("console/IoError.EndOfInput"))
-	case .Ok:
-		line := strings.trim_right(string(req.buf[:req.len]), "\r\n")
-		return tok(IoLine{line = strings.clone(line)})
-	case .IoFailed, .NotFound, .AccessDenied:
-		return terr(IoLine, errCode("console/IoError.IoFailed"))
+	for {
+		for b, i in gStdinPending {
+			if b == '\n' do return tok(IoLine{line = takePendingLine(i)})
+		}
+		req := ReadLineReq{status = .Ok}
+		tuckSubmitBlocking(readLineWorker, &req)
+		switch req.status {
+		case .EndOfInput:
+			// a last line without a newline is still a line
+			if len(gStdinPending) > 0 do return tok(IoLine{line = takePendingLine(len(gStdinPending))})
+			return terr(IoLine, errCode("console/IoError.EndOfInput"))
+		case .Ok:
+			append(&gStdinPending, ..req.buf[:req.len])
+		case .IoFailed, .NotFound, .AccessDenied:
+			return terr(IoLine, errCode("console/IoError.IoFailed"))
+		}
 	}
-	return terr(IoLine, errCode("console/IoError.IoFailed"))
 }
 
 // --- std/net: TCP over the reactor ------------------------------------------
@@ -1906,12 +1925,13 @@ runCommand :: proc(line: string) -> int {
 
 argCount :: proc() -> ArgCount {
 	// Tuck counts arguments the way Nim's paramCount does: excluding argv[0].
-	return ArgCount{count = max(len(os.args) - 1, 0)}
+	return ArgCount{total = max(len(os.args) - 1, 0)}
 }
 
 argAt :: proc(index: int) -> ArgValue {
-	if index < 0 || index + 1 >= len(os.args) do return ArgValue{arg = ""}
-	return ArgValue{arg = strings.clone(os.args[index + 1])}   // fresh: the caller frees it
+	// 1-based like Nim's paramStr: 1..argCount are the arguments, 0 the program
+	if index < 0 || index >= len(os.args) do return ArgValue{arg = ""}
+	return ArgValue{arg = strings.clone(os.args[index])}   // fresh: the caller frees it
 }
 
 // --- signals as values (std/sys) ---

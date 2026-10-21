@@ -28,7 +28,7 @@ import lowering                # getFieldsForType
 # module: the record-shape hash (so both backends name a shape alike) and the
 # enum a bare tag belongs to. Neither is Odin-specific; if a third consumer
 # appears they should move to a backend-neutral module.
-from codegen_odin_util import enumTagOwner, tagOwnerHint, hintOf, withTagHint
+from codegen_odin_util import enumTagOwner, enumTagDecl, tagOwnerHint, hintOf, withTagHint
 from mangle import mangleName
 import ./codegen_d_ctx
 
@@ -800,15 +800,14 @@ proc qualifyEnumTag*(ctx: DCodegenCtx, name: string): string =
   # tags are answered from the hoist table instead.
   if ctx.inlineTagOwner.hasKey(name):
     return ctx.inlineTagOwner[name] & "." & name
-  let owner = enumTagOwner(ctx.module, name)
-  if owner == "": return ""
+  let d = enumTagDecl(ctx.module, name)
+  if d == nil: return ""
   # The owner may be an IMPORTED type, in which case the enum lives in that
   # module and has to be reached through it — same rule as the construction
-  # site above. `enumTagOwner` answers `TKind` for a payload sum, so the type
-  # whose origin to look up is that name minus the suffix.
-  let typeName = if owner.endsWith("Kind"): owner[0 ..< owner.len - 4]
-                 else: owner
-  ctx.pkgQualifierD(moduleDeclaringType(ctx.module, typeName)) & owner & "." & name
+  # site above. Its module is read off the DECLARATION: stripping a `Kind`
+  # suffix from the enum's name misread a sum named `...Kind` itself (A84).
+  ctx.pkgQualifierD(moduleDeclaringType(ctx.module, d.name)) &
+    enumTagOwner(ctx.module, name) & "." & name
 
 proc isFnRefD(ctx: DCodegenCtx, e: Expr): bool =
   ## A `:fnRef` filling a callback slot — a declared fn named as a VALUE

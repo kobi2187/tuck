@@ -3,8 +3,8 @@
 #
 # A generator is a value: every draw returns the advanced generator beside the
 # number, and the caller re-binds it. Seeded generators are pure and replay
-# exactly; there is no OS-seeded constructor here (that needs `[io]` and lives
-# with the host). This module shares nothing with std.crypto and is not for
+# exactly; `newDiceFromOs` seeds from the OS instead (and is `[io]`). This
+# module shares nothing with std.crypto and is not for
 # keys or nonces: it is for fixtures, simulations and shuffles.
 #
 # The 64-bit state step multiplies past 2^64 on purpose, so it is done in a
@@ -12,6 +12,10 @@
 import bits
 import seq
 import math
+
+extern:
+  # Eight bytes of the operating system's entropy (the runtime's one shim).
+  fn osSeed() -> {seed: u64} [io: sys]
 
 type Wrapped = u64 [wrapping]
 
@@ -73,6 +77,11 @@ fn newDiceOnStream({seed: u64, stream: u64}) -> Dice:
 
 fn newDice({seed: u64}) -> Dice:
   return {seed: seed, stream: 54} newDiceOnStream
+
+# A generator seeded from the OS: different on every run, so not replayable.
+fn newDiceFromOs() -> Dice [io: sys]:
+  let os = osSeed
+  return {seed: os.seed} newDice
 
 fn rotateRight32({x: u64, by: int}) -> u64:
   let low = {a: x, by: by} shiftRight
@@ -311,5 +320,18 @@ fn checkWeighted() -> int:
     return 43
   return 0
 
-fn main() -> int:
+fn checkOs() -> int [io: sys]:
+  let a = newDiceFromOs
+  let b = newDiceFromOs
+  let ra = {d: a} nextU32
+  let rb = {d: b} nextU32
+  # two OS seeds agreeing on the first draw: one chance in 2^32
+  if ra.value == rb.value:
+    return 50
+  return 0
+
+fn main() -> int [io: sys]:
+  let os = checkOs
+  if os != 0:
+    return os
   return checkReference
