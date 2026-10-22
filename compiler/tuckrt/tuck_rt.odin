@@ -88,12 +88,83 @@ tuckStrOwned :: proc(s: string) -> string {
 	return strings.clone(s)
 }
 
+// The text of a float: ONE rule on every backend (A67), written out the same
+// in tuck_rt.nim, which explains it. Digits from C's snprintf and strtod;
+// the layout is Python's `repr`.
+@(private)
+tuck_float_layout :: proc(neg: bool, digits_in: string, exp: int) -> string {
+	digits := digits_in
+	for len(digits) > 1 && digits[len(digits) - 1] == '0' {
+		digits = digits[:len(digits) - 1]
+	}
+	n := len(digits)
+	b := strings.builder_make()
+	if neg { strings.write_byte(&b, '-') }
+	if exp >= -4 && exp < 16 {
+		if exp >= 0 {
+			if n <= exp + 1 {
+				strings.write_string(&b, digits)
+				for _ in 0 ..< exp + 1 - n { strings.write_byte(&b, '0') }
+				strings.write_string(&b, ".0")
+			} else {
+				strings.write_string(&b, digits[:exp + 1])
+				strings.write_byte(&b, '.')
+				strings.write_string(&b, digits[exp + 1:])
+			}
+		} else {
+			strings.write_string(&b, "0.")
+			for _ in 0 ..< -exp - 1 { strings.write_byte(&b, '0') }
+			strings.write_string(&b, digits)
+		}
+	} else {
+		strings.write_string(&b, digits[:1])
+		if n > 1 {
+			strings.write_byte(&b, '.')
+			strings.write_string(&b, digits[1:])
+		}
+		e := exp < 0 ? -exp : exp
+		strings.write_string(&b, exp < 0 ? "e-" : "e+")
+		if e < 10 { strings.write_byte(&b, '0') }
+		strings.write_int(&b, e)
+	}
+	return strings.to_string(b)
+}
+
+tuck_float_text :: proc(x: f64, single: bool) -> string {
+	if x != x { return strings.clone("nan") }
+	if math.is_inf(x, 1) { return strings.clone("inf") }
+	if math.is_inf(x, -1) { return strings.clone("-inf") }
+	neg := math.sign_bit(x)
+	if x == 0 { return strings.clone(neg ? "-0.0" : "0.0") }
+	buf: [64]u8
+	for p in 0 ..= 17 {
+		libc.snprintf(cast([^]libc.char)&buf[0], 64, "%.*e", i32(p), x)
+		back := f64(libc.strtod(cstring(&buf[0]), nil))
+		if (single && f32(back) == f32(x)) || (!single && back == x) { break }
+	}
+	text := string(cstring(&buf[0]))
+	digits := strings.builder_make()
+	defer strings.builder_destroy(&digits)
+	i := 0
+	if text[i] == '-' { i += 1 }
+	for i < len(text) && text[i] != 'e' {
+		if text[i] != '.' { strings.write_byte(&digits, text[i]) }
+		i += 1
+	}
+	exp, _ := strconv.parse_int(text[i + 1:])
+	return tuck_float_layout(neg, strings.to_string(digits), exp)
+}
+
 toStr :: proc(value: $T) -> string {
 	// cstring is a bare char* from C: aprint would format the POINTER, not
 	// the text. Odin's string(cstr) walks to the NUL and copies, which is
 	// what crossing the FFI boundary into a Tuck string has to mean.
 	when T == cstring {
 		return strings.clone(string(value))
+	} else when T == f64 {
+		return tuck_float_text(value, false)
+	} else when T == f32 {
+		return tuck_float_text(f64(value), true)
 	} else {
 		return fmt.aprint(value)
 	}
@@ -501,6 +572,16 @@ tuckArraySetAt :: proc(items: ^[$N]$T, index: int, value: T) {
 // (and never mutated through) the result — a plain-value append on a
 // [dynamic]T copy would still share the source memory below capacity.
 getLength :: proc(x: $T) -> int { return len(x) }
+
+// `==` on two Seqs: same length and equal elements. Odin will not compare a
+// dynamic array with `==`.
+tuckSeqEq :: proc(a, b: [dynamic]$T) -> bool {
+	if len(a) != len(b) { return false }
+	for i in 0 ..< len(a) {
+		if a[i] != b[i] { return false }
+	}
+	return true
+}
 
 count :: proc(items: [dynamic]$T) -> int { return len(items) }
 
@@ -1438,7 +1519,7 @@ EnvValue :: struct {
 }
 
 ArgCount :: struct {
-	count: int,
+	total: int,
 }
 
 ArgValue :: struct {
@@ -1446,7 +1527,7 @@ ArgValue :: struct {
 }
 
 NowMs :: struct {
-	ms: u64,
+	epochMs: u64,
 }
 
 // --- std/fs ---
@@ -1593,6 +1674,53 @@ listDir :: proc(path: string) -> [dynamic]string {
 	return result
 }
 
+PathInfo :: struct {
+	isFolder:   bool,
+	isLink:     bool,
+	bytes:      int,
+	modifiedMs: int,
+}
+
+// errno from a metadata call (stat, rename, rmdir) onto the FsError variants,
+// the same buckets in all three runtimes.
+@(private)
+fsErrnoCode :: proc(e: linux.Errno) -> u16 {
+	#partial switch e {
+	case .ENOENT, .ENOTDIR: return errCode("fs/FsError.NotFound")
+	case .EACCES, .EPERM:   return errCode("fs/FsError.AccessDenied")
+	case .ENOTEMPTY, .EEXIST: return errCode("fs/FsError.NotEmpty")
+	}
+	return errCode("fs/FsError.IoFailed")
+}
+
+// lstat: a final symbolic link is reported as a link, not followed. NOT
+// offloaded, same rationale as fileExists.
+pathInfo :: proc(path: string) -> TuckResult(PathInfo) {
+	cpath := strings.clone_to_cstring(path, context.temp_allocator)
+	st: linux.Stat
+	if e := linux.lstat(cpath, &st); e != .NONE do return terr(PathInfo, fsErrnoCode(e))
+	ms := int(st.mtime.time_sec) * 1000 + int(st.mtime.time_nsec) / 1_000_000
+	return tok(PathInfo{
+		isFolder = linux.S_ISDIR(st.mode),
+		isLink = linux.S_ISLNK(st.mode),
+		bytes = int(st.size),
+		modifiedMs = ms,
+	})
+}
+
+renamePath :: proc(path: string, to: string) -> TuckResult(TuckUnit) {
+	a := strings.clone_to_cstring(path, context.temp_allocator)
+	b := strings.clone_to_cstring(to, context.temp_allocator)
+	if e := linux.rename(a, b); e != .NONE do return terr(TuckUnit, fsErrnoCode(e))
+	return tokVoid()
+}
+
+removeFolder :: proc(path: string) -> TuckResult(TuckUnit) {
+	cpath := strings.clone_to_cstring(path, context.temp_allocator)
+	if e := linux.rmdir(cpath); e != .NONE do return terr(TuckUnit, fsErrnoCode(e))
+	return tokVoid()
+}
+
 // Idempotent by an explicit existence check, same as the Nim runtime, so
 // all three backends agree on the same contract rather than relying on
 // each platform's own already-exists behavior for mkdir -p.
@@ -1618,6 +1746,10 @@ printLine :: proc(text: string) {
 	fmt.println(text)
 }
 
+printError :: proc(text: string) {
+	fmt.eprintln(text)
+}
+
 @(private)
 ReadLineReq :: struct {
 	buf:    [4096]u8,
@@ -1629,12 +1761,14 @@ ReadLineReq :: struct {
 readLineWorker :: proc(arg: rawptr) {
 	r := (^ReadLineReq)(arg)
 	n, err := os.read(os.stdin, r.buf[:])
-	if err != nil {
-		r.status = .IoFailed
+	// end of input first: os.read reports it as an EOF ERROR with no bytes,
+	// which is not a failure
+	if n <= 0 && (err == nil || err == .EOF) {
+		r.status = .EndOfInput
 		return
 	}
-	if n <= 0 {
-		r.status = .EndOfInput
+	if err != nil && n <= 0 {
+		r.status = .IoFailed
 		return
 	}
 	r.len = n
@@ -1647,19 +1781,36 @@ readLineWorker :: proc(arg: rawptr) {
 // see thoughts/async-endgame-measurements.md. The worker was the fix that
 // removed the hang; the reactor is the better implementation of the same
 // extern, and applies to both backends equally.
+// What was read from stdin past the last line handed out: a pipe delivers many
+// lines in one read, and each call returns ONE (A86).
+@(private) gStdinPending: [dynamic]u8
+
+@(private)
+takePendingLine :: proc(upTo: int) -> string {
+	line := strings.trim_right(string(gStdinPending[:upTo]), "\r\n")
+	out := strings.clone(line)
+	remove_range(&gStdinPending, 0, min(upTo + 1, len(gStdinPending)))
+	return out
+}
+
 readLine :: proc() -> TuckResult(IoLine) {
-	req := ReadLineReq{status = .Ok}
-	tuckSubmitBlocking(readLineWorker, &req)
-	switch req.status {
-	case .EndOfInput:
-		return terr(IoLine, errCode("console/IoError.EndOfInput"))
-	case .Ok:
-		line := strings.trim_right(string(req.buf[:req.len]), "\r\n")
-		return tok(IoLine{line = strings.clone(line)})
-	case .IoFailed, .NotFound, .AccessDenied:
-		return terr(IoLine, errCode("console/IoError.IoFailed"))
+	for {
+		for b, i in gStdinPending {
+			if b == '\n' do return tok(IoLine{line = takePendingLine(i)})
+		}
+		req := ReadLineReq{status = .Ok}
+		tuckSubmitBlocking(readLineWorker, &req)
+		switch req.status {
+		case .EndOfInput:
+			// a last line without a newline is still a line
+			if len(gStdinPending) > 0 do return tok(IoLine{line = takePendingLine(len(gStdinPending))})
+			return terr(IoLine, errCode("console/IoError.EndOfInput"))
+		case .Ok:
+			append(&gStdinPending, ..req.buf[:req.len])
+		case .IoFailed, .NotFound, .AccessDenied:
+			return terr(IoLine, errCode("console/IoError.IoFailed"))
+		}
 	}
-	return terr(IoLine, errCode("console/IoError.IoFailed"))
 }
 
 // --- std/net: TCP over the reactor ------------------------------------------
@@ -1849,12 +2000,55 @@ runCommand :: proc(line: string) -> int {
 
 argCount :: proc() -> ArgCount {
 	// Tuck counts arguments the way Nim's paramCount does: excluding argv[0].
-	return ArgCount{count = max(len(os.args) - 1, 0)}
+	return ArgCount{total = max(len(os.args) - 1, 0)}
 }
 
 argAt :: proc(index: int) -> ArgValue {
-	if index < 0 || index + 1 >= len(os.args) do return ArgValue{arg = ""}
-	return ArgValue{arg = strings.clone(os.args[index + 1])}   // fresh: the caller frees it
+	// 1-based like Nim's paramStr: 1..argCount are the arguments, 0 the program
+	if index < 0 || index >= len(os.args) do return ArgValue{arg = ""}
+	return ArgValue{arg = strings.clone(os.args[index])}   // fresh: the caller frees it
+}
+
+// --- signals as values (std/sys) ---
+// One signalfd for the process: every watched signal is blocked for normal
+// delivery and read from it instead, so receiving one is reading a descriptor
+// the reactor can await. Raw syscalls with the KERNEL's 8-byte mask:
+// linux.rt_sigprocmask passes the 128-byte libc set size, which the kernel
+// refuses, and core:sys/linux has no signalfd wrapper.
+SignalNumber :: struct {
+	number: int,
+}
+
+@(private) gSigMask: u64
+@(private) gSigFd: int = -1
+
+watchSignal :: proc(number: int) {
+	gSigMask |= u64(1) << uint(number - 1)
+	linux.syscall(linux.SYS_rt_sigprocmask, 0, &gSigMask, rawptr(nil), 8)   // SIG_BLOCK
+	flags := 0o4000 | 0o2000000    // SFD_NONBLOCK | SFD_CLOEXEC
+	r := linux.syscall(linux.SYS_signalfd4, gSigFd, &gSigMask, 8, flags)
+	if int(r) >= 0 do gSigFd = int(r)
+}
+
+// The next watched signal, or none after `timeoutMs`. In a task the wait
+// suspends only that task; in `main` it is a plain poll.
+nextSignal :: proc(timeoutMs: int) -> TuckResult(SignalNumber) {
+	if gSigFd < 0 do return tnone(SignalNumber)
+	info: [128]u8
+	for {
+		n, err := linux.read(linux.Fd(gSigFd), info[:])
+		if err == .NONE && n == 128 {
+			signo := int(info[0]) | int(info[1]) << 8 | int(info[2]) << 16 | int(info[3]) << 24
+			return tok(SignalNumber{number = signo})
+		}
+		if err != .EAGAIN do return tnone(SignalNumber)
+		if !tuckAwaitReadOrTimeout(gSigFd, timeoutMs) do return tnone(SignalNumber)
+	}
+}
+
+// To the calling thread, which is the one that blocked it.
+raiseSignal :: proc(number: int) {
+	linux.tgkill(linux.getpid(), linux.gettid(), linux.Signal(number))
 }
 
 getEnv :: proc(name: string) -> TuckResult(EnvValue) {
@@ -1882,7 +2076,7 @@ osSeed :: proc() -> OsSeed {
 }
 
 nowMs :: proc() -> NowMs {
-	return NowMs{ms = u64(time.to_unix_nanoseconds(time.now()) / 1_000_000)}
+	return NowMs{epochMs = u64(time.to_unix_nanoseconds(time.now()) / 1_000_000)}
 }
 
 // The reactor's timer, NOT the worker and NOT time.sleep. A sleep is the one
@@ -1894,9 +2088,5 @@ nowMs :: proc() -> NowMs {
 // time.sleep here used to halt the process: the scheduler, the reactor, every
 // actor and every timer, for the full duration.
 sleepMs :: proc(ms: u32) {
-	if activeCoroutine != nil {
-		tuckSleep(int(ms))
-	} else {
-		time.sleep(time.Duration(ms) * time.Millisecond)   // no scheduler to yield to
-	}
+	tuckSleep(int(ms))   // from main, the scheduler runs for the duration
 }

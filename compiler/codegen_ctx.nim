@@ -71,6 +71,12 @@ proc cCallbackSig*(m: Module): string =
     if mem.kind == dkFnSig and mem.sigIsCCallback: return mem.name
   ""
 
+proc hasImplFor(mem: Decl, backend: string): bool =
+  ## Does an `impl: <backend> "..."` shim implement this extern? Then it is the
+  ## shim's, not the runtime's, and is called as the shim exports it (A82).
+  for (b, _) in mem.externImpl:
+    if b == backend: return true
+
 proc indexRuntimeExterns(ctx: var CodegenCtx) =
   ## Runtime-backed externs from the WHOLE program, not just this module: the
   ## collision this guards against happens at the CALL site, and the call is
@@ -83,7 +89,7 @@ proc indexRuntimeExterns(ctx: var CodegenCtx) =
       if d == nil or d.kind != dkExtern: continue
       for mem in d.mixinMembers:
         if mem.kind == dkFn and mem.isExtern and mem.externHeader == "" and
-           mem.externEmit == "":
+           mem.externEmit == "" and not mem.hasImplFor("nim"):
           ctx.rtExterns.incl(mem.name)
 
 proc indexImportedEmits(ctx: var CodegenCtx) =

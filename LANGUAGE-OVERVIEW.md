@@ -396,6 +396,16 @@ together, or an interface value, are refused (`tests/suites/interfaces.nim`).
 > place such a word is read outside a bracket is a closed vocabulary's value,
 > `[on_full: error]`, which names nothing.
 
+> **So are the keywords, and a host's keywords for a parameter or field.**
+> Tuck's own keywords (`lexer.nim`'s table: `task`, `distinct`, `actor`,
+> `select`, `pending`, `when`, ...) name nothing either. A **parameter or a
+> field** also may not take a keyword of a language Tuck emits (`new`,
+> `context`, `with`, `out`, ...: `compiler/host_keywords.nim`, measured against
+> dmd, nim and odin), because those two keep their names in the emitted code;
+> the refusal is `TK-PA12`. A local may, since locals are renamed. The ones
+> the weekend apps met, ruled reserved 2026-10-22: **`task`, `distinct`,
+> `new`, `context`**.
+
 ---
 
 ## 4. The error model
@@ -432,14 +442,21 @@ if r.ok:
 ```
 
 Accessing `.value` without a guard → `guard it first`. A guard that *falls
-through* does not narrow (`tests/suites/typecheck.nim`). An **early-return guard does**
+through* does not narrow (`tests/suites/typecheck.nim`). The **else of `if not r.ok:`**
+does (A87). An **early-return guard does**
 narrow — `if not r.ok: return 0` then `r.value.v` (`tests/suites/known_bugs.nim`, exit 5).
 So does a **loop** on it — `for up.ok:` narrows `up` in the body, so a chain
 of `?` links is walked with `up = up.value.parent` (#98). Assigning a `?T` to a
 narrowed name ends its narrowing there: the guard held for the old value.
-Not yet (seen 2026-10-04): a guard narrows a NAME, not a field path —
-`if b.n.ok: b.n.value` is still `unhandled`; bind it first, `let n = b.n` —
-and `if x.ok and y.ok:` narrows neither; nest the two `if`s.
+A guard narrows a **field path** of a record too — `if not b.n.ok: return`
+then `b.n.value` (A78, `known_bugs`). Re-binding or assigning the root (or a
+prefix), and a `..n` update, forget it; an **object** root does not narrow,
+since a member may rewrite its fields. **A guard stands alone in its
+condition**: `if x.ok and y > 0:`, `if not a.ok or not b.ok:` and the like are
+refused (`TK-TY46`, ruled 2026-10-22), in an `elif` and a conditional `for`
+too, because a guard mixed into `and`/`or` reads as one and narrows nothing.
+Nest the tests, or give each guard its own early return. A presence test may
+still be combined where it guards nothing: `let both = a.ok and b.ok`.
 
 Every unhandled shape is rejected with `unhandled`: arithmetic on `!T`, payload
 access, `or`-defaulting, a bare statement drop, an unhandled pool `acquire`.
@@ -674,6 +691,16 @@ application (`examples/23:1`). The type system does the rest:
 
 ---
 
+### The text of a float
+
+`{value: x} toStr` on an `f64` or `f32` is the same text on every backend,
+written by the runtime rather than the host's formatter: Python's `repr`.
+The shortest digits that read back as the same value; a whole number keeps
+`.0` (`1.0`, `100.0`); fixed notation for a decimal exponent from -4 to 15,
+else `1e+16`, `1.2e-05`; `nan`, `inf`, `-0.0`. An `f32` gets the shortest
+digits that read back as that `f32` (`0.1`, not `0.10000000149011612`).
+Ruled 2026-10-22 (A67, `tests/suites/known_bugs.nim`).
+
 ## 8. Invariants
 
 ```tuck
@@ -906,6 +933,15 @@ let r = {base: 21} compute   # bound => awaited
 > cannot run. It is spec §9.2 working as designed, but the failure mode is a
 > silent hang.
 
+**An `[io]` call does not need a task.** Any fn that declares the effect —
+`[io]`, or the kind, `[io: net]` for the network — may make one, `main`
+included (ruled 2026-10-22). Inside a task the call suspends that task; from
+`main`, which is not a coroutine, the thread runs the scheduler — ready tasks,
+the reactor, timers — until the call's fd is ready. So `main` may accept a
+connection a task of the same program makes, and a `sleepMs` in `main` lets
+the tasks run (A94, `tests/suites/known_bugs.nim`). The effect is checked: a
+net call from a fn without `[io]` or `[io: net]` is `TK-EF01`.
+
 ### Timeouts — `on select` in a task
 
 ```tuck
@@ -986,6 +1022,18 @@ prefix stays **gradual** — `{volume: 3} audio::play` typechecks
 (`tests/suites/typecheck.nim`), so a sketch compiles before its modules exist.
 
 Module resolution needs `--root:`.
+
+**A type two modules declare is two types** (ruled 2026-10-22, A88). Each is
+its module's own: `cli::Entry` and `map::Entry` have their own fields, and a
+value of one is not a value of the other. A module that declares the name
+means its own by the bare name; a module that imports exactly one of them
+means that one; a module that imports both writes `cli::Entry`, in a type
+(`{e: cli::Entry}`), a construction (`{key: k, value: v} map::Entry`) or a
+variant. The bare name there is refused, naming both (`TK-TY47`). Internally
+the name carries its module from load on (`compiler/type_identity.nim`), so
+the checker and every backend tell them apart by name, and the emitted
+identifier is `tuckˑtypeˑcliˑEntry`. Only a name that does collide is
+touched.
 
 ### Name mangling
 
@@ -1574,7 +1622,7 @@ Queries that ask the AST a question live in `codegen_common.nim` and are shared.
 Emitters, which interleave traversal with target syntax, stay twinned and
 diffable.
 
-Current coverage: **47 compile-gated** examples, 44 Odin compiles, 45 D compiles, 23 Odin runs and 21 D runs pinned to exact exit codes. (Every number here is checked against the suite's own gate lists by `tests/suites/examples.nim`, so they cannot drift silently.)
+Current coverage: **47 compile-gated** examples, 44 Odin compiles, 46 D compiles, 23 Odin runs and 22 D runs pinned to exact exit codes. (Every number here is checked against the suite's own gate lists by `tests/suites/examples.nim`, so they cannot drift silently.)
 
 Nim-only so far: `42-net-echo` and `14-task`. Task select/timeouts (29, 30)
 are no longer on that list — both are run-gated on Odin and D as well.

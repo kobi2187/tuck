@@ -69,6 +69,13 @@ type MangleNames* = Table[string, NameKind]
   ## Every top-level name the program declares and renames, under the name
   ## the user wrote, with the kind that picks its prefix.
 
+var programWide: MangleNames
+  ## The whole program's table, for a reference that names its module
+  ## (`http::get`): what one module sees bare does not decide those.
+var reachedCalls: HashSet[pointer]
+  ## The stamped calls some module's walk renamed with that module's table,
+  ## which the closing whole-program sweep must not rename again.
+
 proc rememberSource(slot: var Option[string], name: string) =
   ## Records the pre-mangle name, once. Guarded because each backend lowers
   ## its own deepCopy and re-runs this pass — a second run must not overwrite
@@ -123,6 +130,38 @@ proc programNames*(mods: seq[Module]): MangleNames =
   ## module alone cannot tell these apart.
   for m in mods:
     for n, k in manglableNames(m): result[n] = k
+
+proc externFnNames(m: Module): HashSet[string] =
+  ## The extern fns `m` declares, which keep the name they bind.
+  for d in m.decls:
+    if d == nil: continue
+    if d.kind == dkFn and d.isExtern: result.incl d.name
+    if d.kind in {dkMixin, dkExtern, dkPending}:
+      for mem in d.mixinMembers:
+        if mem != nil and mem.kind == dkFn and mem.isExtern: result.incl mem.name
+
+proc moduleTables(mods: seq[Module], names: MangleNames): seq[MangleNames] =
+  ## Per module: the program's table less every name that module SEES only as
+  ## an extern, in itself or a module it imports. A Tuck fn of the same name
+  ## further down the import graph made every bare call by that name a call to
+  ## it (A92: console's extern `readLine` against sys.io's generic one). Built
+  ## before anything is renamed, since a renamed declaration no longer answers
+  ## to the name written at its call sites.
+  var byId: Table[ModuleId, Module]
+  for m in mods: byId[m.id] = m
+  for m in mods:
+    var seen = @[m]
+    for d in m.decls:
+      if d != nil and d.kind == dkImport and d.importTarget in byId:
+        seen.add byId[d.importTarget]
+    var tuckNames, externs: HashSet[string]
+    for x in seen:
+      for n in manglableNames(x).keys: tuckNames.incl n
+      externs.incl externFnNames(x)
+    var t = names
+    for n in externs:
+      if n notin tuckNames: t.del n
+    result.add t
 
 proc mangleType(t: Type, names: MangleNames) =
   ## Rename every type NAME reachable from `t`. Field and variant names stay
@@ -232,6 +271,25 @@ proc mangleMatch(res: Resolution, e: Expr, names: MangleNames,
       p.name = mangleName(p.name, nkConst)
     mangleExpr(res, arm.body, names, inner, fields)
 
+proc mangleStamped(res: Resolution, e: Expr, names: MangleNames,
+                   locals: var HashSet[string], fields: HashSet[string]) =
+  ## The call the checker stamped for `xs.len` / `n toStr` names a FN, read in
+  ## the fn namespace: a local of the same name (`let len = 2`) must not
+  ## capture its callee. The one stamped call whose callee IS a local is
+  ## `slot.invoke`, whose callee is the receiver itself.
+  let c = res.call(e)
+  reachedCalls.incl cast[pointer](c)
+  if c != nil and c.kind == exkCall and c.callee != nil and
+     c.callee.kind == exkVar and c.callee.name in locals and
+     not (e.kind == exkField and c.callee == e.receiver):
+    var outer = locals
+    outer.excl(c.callee.name)
+    for ch in c.children:
+      if ch == c.callee: mangleExpr(res, ch, names, outer, fields)
+      else: mangleExpr(res, ch, names, locals, fields)
+  else:
+    mangleExpr(res, c, names, locals, fields)
+
 proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSet[string],
                 fields: HashSet[string] = initHashSet[string]()) =
   ## `locals` holds the names bound INSIDE this body — params, `let`/`var`
@@ -253,7 +311,7 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
   # that stamped expression instead of the exkVar, so it must be renamed too —
   # missing it declares tuck_ready while still calling ready().
   if res.hasCall(e):
-    mangleExpr(res, res.call(e), names, locals, fields)
+    mangleStamped(res, e, names, locals, fields)
 
   case e.kind
   of exkVar:
@@ -271,8 +329,9 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
     # against the program-wide set, so a cross-module reference lands on the
     # same name that module's own pass produced — and an extern like
     # `fs::readFile`, which is never manglable, stays verbatim.
-    if e.qualName in names:
-      e.qualName = mangleName(e.qualName, names[e.qualName])
+    let table = if e.modulePath.len > 0: programWide else: names
+    if e.qualName in table:
+      e.qualName = mangleName(e.qualName, table[e.qualName])
   # The uniform middle: kinds whose children are all walked with the SAME
   # locals set, in no particular order. Everything with a scoping rule of its
   # own — exkFor, exkAssign, exkMatch — is spelled out below instead, because
@@ -447,9 +506,11 @@ proc mangleProgram*(res: Resolution, mods: seq[Module]) =
   ## this must run once, before the per-backend deepCopies.
   let names = programNames(mods)
   if names.len == 0: return
-
-  for m in mods:
-    mangleModuleWith(res, m, names)
+  programWide = names
+  reachedCalls.clear()
+  let tables = moduleTables(mods, names)
+  for i, m in mods:
+    mangleModuleWith(res, m, tables[i])
 
   # Type and Expr are ref objects, so renaming through the value the table
   # yields updates what the table holds — no write-back needed.
@@ -460,7 +521,7 @@ proc mangleProgram*(res: Resolution, mods: seq[Module]) =
   # idempotent.
   var locals = initHashSet[string]()
   for e in res.calls.values:
-    mangleExpr(res, e, names, locals)
+    if cast[pointer](e) notin reachedCalls: mangleExpr(res, e, names, locals)
 
 proc mangleModuleWith(res: Resolution, m: Module, names: MangleNames) =
   ## Rename every manglable declaration in this module and every reference to

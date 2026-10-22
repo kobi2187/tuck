@@ -66,6 +66,7 @@ import tables, times, os, strutils
 import ast
 import modules
 import resolution
+import name_prefix  # moduleSlug: where Odin writes an imported module
 import lowering
 import lowering_field_order
 import lowering_combinator
@@ -200,8 +201,13 @@ proc prepare*(prog: seq[LoadedModule], backend: Backend,
     "the first one's twin decisions (keyed by node id)"
   preparedOnce = true
   result = prepareCommon(prog, semLayer)
-  for lm in result.mods:                                           # 2. rebase
-    rebaseImplPaths(lm, backend.name, outDir)
+  for i, lm in result.mods:                                        # 2. rebase
+    # Relative to where THIS module's file is written: Odin emits an imported
+    # module as the package `mod_<name>/`, a directory below the entry (A82).
+    let dir = if backend == bkOdin and i < result.mods.high:
+                outDir / ("mod_" & moduleSlug(lm.id))
+              else: outDir
+    rebaseImplPaths(lm, backend.name, dir)
 
 proc modules*(t: BackendTree): seq[Module] =
   ## The bare modules, for the stage assertions that take a `seq[Module]`.

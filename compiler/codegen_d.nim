@@ -28,7 +28,7 @@ import lowering                # getFieldsForType
 # module: the record-shape hash (so both backends name a shape alike) and the
 # enum a bare tag belongs to. Neither is Odin-specific; if a third consumer
 # appears they should move to a backend-neutral module.
-from codegen_odin_util import enumTagOwner, tagOwnerHint, hintOf, withTagHint
+from codegen_odin_util import enumTagOwner, enumTagDecl, tagOwnerHint, hintOf, withTagHint
 from mangle import mangleName
 import ./codegen_d_ctx
 
@@ -45,11 +45,8 @@ proc importDeclaring(ctx: DCodegenCtx, name: string): ModuleId =
   ## module declares it (local wins) or nobody does. D has no cross-module
   ## scope merge, so every foreign call has to be qualified — three separate
   ## copies of this search had grown before it was named once.
-  if name == "" or ctx.module.declaresCallable(name) or
-     name in ctx.providerParams: return NoModule
-  for id, im in ctx.realModules:
-    if im.declaresCallable(name): return id
-  NoModule
+  if name in ctx.providerParams: return NoModule
+  callableOrigin(ctx.module, ctx.realModules, name)
 
 proc genDQualified(ctx: DCodegenCtx, e: Expr): string =
   ## An imported module's fn is always `alias.name`. Local declarations win;
@@ -293,8 +290,10 @@ proc dSumVariantCtor(ctx: var DCodegenCtx, typeName, variantName: string,
   let found = payloadSumVariant(ctx.module, typeName, variantName)
   if found.isNone: return ""
   let v = found.get
+  # In the declaring module's package when the sum is imported (A91).
+  let q = ctx.importPrefixD(typeName) & typeName
   if v.fields.len == 0 or payload == nil:
-    return typeName & "(" & typeName & "Kind." & variantName & ")"
+    return q & "(" & q & "Kind." & variantName & ")"
   var parts: seq[string]
   for f in v.fields:
     for pf in payload.fields:
@@ -307,9 +306,9 @@ proc dSumVariantCtor(ctx: var DCodegenCtx, typeName, variantName: string,
   # slot and dmd rejected it — every payload variant after the first was
   # unbuildable on this backend. The union is anonymous, so its members are
   # members of the struct and a named literal reaches them.
-  typeName & "(kind: " & typeName & "Kind." & variantName & ", " &
+  q & "(kind: " & q & "Kind." & variantName & ", " &
     sumPayloadField(variantName) & ": " &
-    typeName & "_" & variantName & "(" & parts.join(", ") & "))"
+    q & "_" & variantName & "(" & parts.join(", ") & "))"
 
 proc asDSumVariantCall(ctx: var DCodegenCtx, e: Expr): string =
   ## `{payload} Sum.Variant` as a D tagged-struct construction, or "" when the
@@ -425,6 +424,8 @@ proc dProviderArgs(ctx: var DCodegenCtx, e: Expr): seq[string] =
     let (modName, name) = providerFor(ctx.module, ctx.realModules, need, t.name)
     if name != "":
       result.add(ctx.pkgQualifierD(modName) & name)
+    elif need.req in ctx.providerParams:
+      result.add(need.req)   # a bounded fn handing its own provider on
 
 proc templateCall(ctx: var DCodegenCtx, e: Expr, calleeStr: string,
                   args: seq[string]): string =
@@ -771,9 +772,13 @@ proc genDField(ctx: var DCodegenCtx, e: Expr): string =
   # does for a foreign call — D has no cross-module scope merge. Without this
   # the variant emitted as a bare `tuck_Order.Before` and dmd reported an
   # undefined identifier, while the call beside it was correctly qualified.
+  # A variant of an imported PAYLOAD sum is a construction, not an enum
+  # member (A91).
   if e.receiver != nil and e.receiver.kind == exkVar:
     let pkg = ctx.pkgQualifierD(moduleDeclaringType(ctx.module, e.receiver.name))
     if pkg != "":
+      let ctor = ctx.dSumVariantCtor(e.receiver.name, e.fieldName, e.dotArg)
+      if ctor != "": return ctor
       return pkg & e.receiver.name & "." & e.fieldName
   ctx.genDFieldRead(e)
 
@@ -798,15 +803,14 @@ proc qualifyEnumTag*(ctx: DCodegenCtx, name: string): string =
   # tags are answered from the hoist table instead.
   if ctx.inlineTagOwner.hasKey(name):
     return ctx.inlineTagOwner[name] & "." & name
-  let owner = enumTagOwner(ctx.module, name)
-  if owner == "": return ""
+  let d = enumTagDecl(ctx.module, name)
+  if d == nil: return ""
   # The owner may be an IMPORTED type, in which case the enum lives in that
   # module and has to be reached through it — same rule as the construction
-  # site above. `enumTagOwner` answers `TKind` for a payload sum, so the type
-  # whose origin to look up is that name minus the suffix.
-  let typeName = if owner.endsWith("Kind"): owner[0 ..< owner.len - 4]
-                 else: owner
-  ctx.pkgQualifierD(moduleDeclaringType(ctx.module, typeName)) & owner & "." & name
+  # site above. Its module is read off the DECLARATION: stripping a `Kind`
+  # suffix from the enum's name misread a sum named `...Kind` itself (A84).
+  ctx.pkgQualifierD(moduleDeclaringType(ctx.module, d.name)) &
+    enumTagOwner(ctx.module, name) & "." & name
 
 proc isFnRefD(ctx: DCodegenCtx, e: Expr): bool =
   ## A `:fnRef` filling a callback slot — a declared fn named as a VALUE
@@ -1490,7 +1494,12 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
     # D already allows an expression statement's value to go unused, no
     # keyword needed — the identical construct to Tuck's `discard <expr>`.
     # A bare `discard` has nothing to drop, so it emits nothing.
-    if e.discardVal != nil: ctx.genDExpr(e.discardVal) else: ""
+    # ...except a bare name: dmd rejects `tmp;` ("has no effect"), and the
+    # ownership pass leaves exactly that when the discarded value was bound to
+    # a temporary it will drop at scope exit (A77).
+    if e.discardVal == nil: ""
+    elif e.discardVal.kind == exkVar: "cast(void) " & ctx.genDExpr(e.discardVal)
+    else: ctx.genDExpr(e.discardVal)
   of exkTripleDot: ""   # `...` outside a fn body: a no-op statement
   of exkImport: ""   # imports are assembled by dImports from realModules
   of exkIfaceCall: ctx.genDIfaceCall(e)

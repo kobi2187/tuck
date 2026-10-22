@@ -1,116 +1,190 @@
-# spellchecker — small real slice of the full app (see APP.md for the
-# ambitious version: multi-language segmentation, Markdown/URL exclusion,
-# frequency-ranked suggestions, batch mode).
+# spellcheck — the words on stdin that a dictionary does not know.
 #
-# This slice: a hardcoded dictionary, whitespace tokenization of a hardcoded
-# sentence, dictionary lookup, and a Levenshtein-distance suggestion for
-# unknown words. Real Unicode word segmentation (the hard part per APP.md)
-# is NOT attempted — tokenize below only splits on the space character.
+#   spellcheck [--words FILE] [--distance N] < text.txt
 #
-# `pending:` sketches the shape of loading a real dictionary from disk,
-# which this slice does not need (the dictionary is a literal below) but
-# any real spellchecker eventually would.
+# The dictionary is a word list, one word per line (words.txt by default).
+# Each unknown word is reported as `line:column word`, with the closest known
+# word when one is at most N edits away (2): `3:9 quik -> quick`. A word is a
+# run of letters, with apostrophes inside it (`don't`), compared in lower
+# case. Exit 0 when every word is known, 1 when one is not, 2 when the
+# dictionary cannot be read.
 import console
+import seq
 import str
+import text
+import convert
+import cli
+import fs
+import files
 
-pending:
-  fn loadDictionaryFile({path: str}) -> Seq[str]
+type Word:
+  body: str
+  column: int
 
-fn main() -> void [io]:
-  let dictionary = ["the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog", "spelling", "checker", "language", "compiler", "hello", "world"]
-  let text = "the quik brown fox jumps ovar the lazi dog"
+# --- words --------------------------------------------------------------------------
+fn isLetter({b: u8}) -> bool:
+  return (b >= 97 and b <= 122) or (b >= 65 and b <= 90)
 
-  let tokens = {text: text} tokenize
+fn isApostrophe({b: u8}) -> bool:
+  return b == 39
 
-  for word in tokens:
-    if word == "":
-      continue
-    if {word: word, dict: dictionary} isKnown:
-      {text: word + " -- OK"} printLine
+# Where the word that starts at `start` ends. An apostrophe belongs to it only
+# between two letters.
+fn wordEnd({t: str, start: int}) -> int:
+  let n = {t: t} byteCount
+  var j = start
+  for j < n:
+    let b = {t: t, index: j} byteAt
+    if {b: b} isLetter:
+      j = j + 1
+    elif {b: b} isApostrophe and j + 1 < n:
+      let after = {t: t, index: j + 1} byteAt
+      if not ({b: after} isLetter):
+        return j
+      j = j + 1
     else:
-      let best = {word: word, dict: dictionary} bestMatch
-      let msg = word + " -- unknown, did you mean '" + best.word + "'? (distance " + best.dist.toStr + ")"
-      {text: msg} printLine
+      return j
+  return j
 
-# Splits on the space character only. Real word-boundary segmentation across
-# scripts (hyphenation, contractions, CJK/Thai with no spaces at all) is a
-# genuinely different, much harder problem — flagged, not solved, here.
-fn tokenize({text: str}) -> Seq[str]:
-  var result = ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]
-  var count = 0
-  var current = ""
-  let n = text.len
+fn wordsIn({line: str}) -> Seq[Word]:
+  var out: Seq[Word] = []
+  let n = {t: line} byteCount
   var i = 0
-  for _ in 1 .. n:
-    let c = {s: text, index: i} charAt
-    if c == " ":
-      if current != "":
-        {items: result, index: count, value: current} setAt
-        count = count + 1
-        current = ""
+  for i < n:
+    let b = {t: line, index: i} byteAt
+    if {b: b} isLetter:
+      let stop = {t: line, start: i} wordEnd
+      let piece = {t: line, start: i, stop: stop} slice
+      if piece.ok:
+        let lower = {t: piece.value} toLowerAscii
+        let w = {body: lower, column: i + 1} Word
+        out = {items: out, value: w} push
+      i = stop
     else:
-      current = current + c
-    i = i + 1
-  if current != "":
-    {items: result, index: count, value: current} setAt
-  result
+      i = i + 1
+  return out
 
-fn isKnown({word: str, dict: Seq[str]}) -> bool:
-  for w in dict:
-    if w == word:
+# --- the dictionary -----------------------------------------------------------------
+fn knows({dict: Seq[str], word: str}) -> bool:
+  for i in 0 .. dict.len - 1:
+    if dict[i] == word:
       return true
-  false
+  return false
 
-fn bestMatch({word: str, dict: Seq[str]}) -> {word: str, dist: int}:
-  var bestWord = ""
-  var bestDist = 9999
-  for w in dict:
-    let d = {a: word, b: w} levenshtein
-    if d < bestDist:
-      bestDist = d
-      bestWord = w
-  {word: bestWord, dist: bestDist}
-
-fn minOf3({a: int, b: int, c: int}) -> int:
+fn smallest({a: int, b: int, c: int}) -> int:
   var m = a
   if b < m:
     m = b
   if c < m:
     m = c
-  m
+  return m
 
-# Single-row Levenshtein DP. Words are assumed to fit in 12 characters
-# (the fixed row size below) — fine for this hardcoded slice, not a general
-# bound. A real dictionary app would need a `Seq` that can grow, which the
-# current `std/seq` (at/setAt only, no push/make) does not offer; see
-# FINDINGS.md.
-fn levenshtein({a: str, b: str}) -> int:
-  let la = a.len
-  let lb = b.len
-  var row = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+fn letterAt({t: str, i: int}) -> u8:
+  return {t: t, index: i} byteAt
 
-  var j = 0
-  for _ in 0 .. lb:
-    {items: row, index: j, value: j} setAt
-    j = j + 1
+# Edits from `a` to `b`: insert, delete or replace one letter, or swap two
+# neighbours (`wrold` is one edit from `world`). Three rows at a time.
+fn distance({a: str, b: str}) -> int:
+  let n = {t: a} byteCount
+  let m = {t: b} byteCount
+  var older: Seq[int] = []
+  var prev: Seq[int] = []
+  for j in 0 .. m:
+    prev = {items: prev, value: j} push
+  for i in 1 .. n:
+    var row: Seq[int] = []
+    row = {items: row, value: i} push
+    for j in 1 .. m:
+      var cost = 1
+      let x = {t: a, i: i - 1} letterAt
+      let y = {t: b, i: j - 1} letterAt
+      if x == y:
+        cost = 0
+      var best = {a: prev[j] + 1, b: row[j - 1] + 1, c: prev[j - 1] + cost} smallest
+      if i > 1 and j > 1:
+        let xBack = {t: a, i: i - 2} letterAt
+        let yBack = {t: b, i: j - 2} letterAt
+        if x == yBack and xBack == y and older[j - 2] + 1 < best:
+          best = older[j - 2] + 1
+      row = {items: row, value: best} push
+    older = prev
+    prev = row
+  return prev[m]
 
-  var i = 1
-  for _ in 1 .. la:
-    var prevDiag = {items: row, index: 0} at
-    {items: row, index: 0, value: i} setAt
-    let ca = {s: a, index: i - 1} charAt
-    var jj = 1
-    for _ in 1 .. lb:
-      let temp = {items: row, index: jj} at
-      let cb = {s: b, index: jj - 1} charAt
-      let costVal = if ca == cb: 0 else: 1
-      let delCost = {items: row, index: jj} at + 1
-      let insCost = {items: row, index: jj - 1} at + 1
-      let subCost = prevDiag + costVal
-      let cell = {a: delCost, b: insCost, c: subCost} minOf3
-      {items: row, index: jj, value: cell} setAt
-      prevDiag = temp
-      jj = jj + 1
-    i = i + 1
+# The closest dictionary word within `most` edits, the first one on a tie.
+fn guessFor({dict: Seq[str], word: str, most: int}) -> str?:
+  var best = most + 1
+  var found = ""
+  for i in 0 .. dict.len - 1:
+    let d = {a: word, b: dict[i]} distance
+    if d < best:
+      best = d
+      found = dict[i]
+  if found == "":
+    return none
+  return found
 
-  {items: row, index: lb} at
+fn dictionaryAt({path: str}) -> Seq[str]? [io: fs]:
+  let got = {path: path} readLines
+  if not got.ok:
+    return none
+  var out: Seq[str] = []
+  for i in 0 .. got.value.lines.len - 1:
+    let w = {t: got.value.lines[i]} trim
+    if w != "":
+      let lower = {t: w} toLowerAscii
+      out = {items: out, value: lower} push
+  return out
+
+# --- the program --------------------------------------------------------------------
+fn command() -> Command:
+  let words = {name: "words", shortName: "w", kind: AText, help: "the word list (words.txt)", required: false} spec
+  let far = {name: "distance", shortName: "d", kind: ANumber, help: "furthest suggestion, in edits (2)", required: false} spec
+  let args: Seq[ArgSpec] = [words, far]
+  let noSubs: Seq[Command] = []
+  return {name: "spellcheck", help: "report the words a dictionary does not know", args: args, subcommands: noSubs} Command
+
+fn report({w: Word, row: int, guess: str?}) -> str:
+  let r = {value: row} toStr
+  let c = {value: w.column} toStr
+  let head = r + ":" + c + " " + w.body
+  if guess.ok:
+    return head + " -> " + guess.value
+  return head
+
+fn main() -> int [io, io: sys, io: console, io: fs]:
+  let argv = commandLine
+  let parsed = {c: command, argv: argv} tryParse
+  if not parsed.ok:
+    let usage = {c: command} usageOf
+    {text: usage} printLine
+    return 2
+  var path = "words.txt"
+  let given = {a: parsed.value, name: "words"} textOf
+  if given.ok:
+    path = given.value
+  var most = 2
+  let far = {a: parsed.value, name: "distance"} numberOf
+  if far.ok:
+    most = {value: far.value} int
+  let dict = {path: path} dictionaryAt
+  if not dict.ok:
+    {text: "spellcheck: cannot read " + path} printLine
+    return 2
+  var misses = 0
+  var row = 0
+  for true:
+    let got = readLine
+    if not got.ok:
+      if misses > 0:
+        return 1
+      return 0
+    row = row + 1
+    let words = {line: got.value.line} wordsIn
+    for i in 0 .. words.len - 1:
+      if not {dict: dict.value, word: words[i].body} knows:
+        let guess = {dict: dict.value, word: words[i].body, most: most} guessFor
+        let line = {w: words[i], row: row, guess: guess} report
+        {text: line} printLine
+        misses = misses + 1
+  return 0

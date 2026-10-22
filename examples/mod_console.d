@@ -13,6 +13,10 @@ void printLine(string text) {
     rt.printLine(text);
 }
 
+void printError(string text) {
+    rt.printError(text);
+}
+
 rt.TuckResult!(tuckˑmodˑshapes_41_tostr_concat.TRec_line!(string)) readLine() {
     return rt.readLine!(rt.TuckResult!(tuckˑmodˑshapes_41_tostr_concat.TRec_line!(string)))();
 }

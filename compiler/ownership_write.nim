@@ -408,6 +408,24 @@ proc refilledByStatement(w: Writer, d: Decl, read: Expr): bool =
   b != nil and b.stmts[i].kind == exkAssign and
     pathOf(b.stmts[i].target) == pathOf(read)
 
+proc storedAbove(w: Writer, d: Decl, read: Expr): bool =
+  ## `r = f(r.b)`: the statement moves a PART of the place it then replaces
+  ## whole. A reset after it would wipe the new value's part (A79).
+  let (b, i) = w.res.statementOf(d.fnBody, read)
+  if b == nil or b.stmts[i].kind != exkAssign: return false
+  let stored = pathOf(b.stmts[i].target)
+  stored.len > 0 and pathOf(read).startsWith(stored & ".")
+
+proc resetBeforeStore(w: var Writer, d: Decl, read, reset: Expr) =
+  ## For `r = f(r.b)`: the value is bound first and the part emptied before the
+  ## store, so dropping the old `r` frees nothing the new one holds:
+  ## `tmp := f(r.b); reset(r.b); r = tmp`.
+  let (b, i) = w.res.statementOf(d.fnBody, read)
+  let s = b.stmts[i]
+  b.stmts.insert(w.res.bindHere(s.assignVal), i)
+  s.assignVal.movedOut = true          # the new local's one read hands it on
+  b.stmts.insert(reset, i + 1)
+
 proc resetMoves(w: var Writer, d: Decl, plan: DropPlan,
                 keys: HashSet[string]): HashSet[string] =
   ## Rule M: every move of the slots in `keys` is followed by a reset of
@@ -424,6 +442,9 @@ proc resetMoves(w: var Writer, d: Decl, plan: DropPlan,
       if key in done: continue
       done.incl key
       if w.refilledByStatement(d, read): continue
+      if w.storedAbove(d, read):
+        w.resetBeforeStore(d, read, w.resetOf(read, place, s))
+        continue
       if not w.resetAfter(d, read, w.resetOf(read, place, s)):
         w.copyInstead(read)
 

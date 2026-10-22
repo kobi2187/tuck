@@ -1,0 +1,352 @@
+# platform.hal — the portable words a driver uses on any board, in pure Tuck.
+#
+# Tuck already owns the bottom layer: `register` declarations give per-field,
+# compile-checked MMIO. This module is the vocabulary ABOVE them, so a driver
+# is written once against "a pin", "an I2C bus", "an ADC channel" and runs on
+# any board that provides them.
+#
+# Each peripheral kind is its own small `group`; a board package provides the
+# ones its silicon has, as free fns over its own handle types (usually a few
+# register writes each). Nothing is dispatched at run time: a driver bounded by
+# `[B: I2cBus]` is compiled once per bus type it is used with.
+#
+# Peripherals are values, so every operation hands back the advanced
+# peripheral beside its answer and the caller re-binds it. A bus call can fail
+# without losing the bus: the failure is a `fault` field next to it. Every bus
+# call takes a timeout, and the faults are categories a caller can act on
+# (retry on a bus error, give up on no-ack): those two choices are this
+# module's deliberate departure from embedded-hal.
+#
+# Claiming a pin (and pin modes) belongs to the board package, which hands out
+# handles already configured; interrupts on an edge wait for platform.interrupt.
+import seq
+import str
+
+type PinLevel:
+  | Low
+  | High
+
+type I2cError:
+  | NoAck
+  | BusError
+  | ArbitrationLoss
+  | I2cTimeout
+
+type SpiError:
+  | SpiTimeout
+  | SpiBusError
+
+# What a peripheral answered, beside the peripheral itself.
+type Sensed[P]:
+  pin: P
+  level: PinLevel
+
+type I2cDone[B]:
+  bus: B
+  data: Seq[u8]
+  fault: I2cError?
+
+type SpiDone[B]:
+  bus: B
+  data: Seq[u8]
+  fault: SpiError?
+
+type Sampled[A]:
+  channel: A
+  raw: u16
+
+group OutputPin:
+  fn drive({self: Self, level: PinLevel}) -> Self [io]
+
+group InputPin:
+  fn sense({self: Self}) -> Sensed[Self] [io]
+
+# One I2C transaction: write `sent` to `device`, then read `want` bytes (either
+# may be empty), within `timeoutMs`.
+group I2cBus:
+  fn i2cTransfer({self: Self, device: u8, sent: Seq[u8], want: int, timeoutMs: u32}) -> I2cDone[Self] [io]
+
+# Full duplex: as many bytes come back as go out.
+group SpiBus:
+  fn spiTransfer({self: Self, sent: Seq[u8], timeoutMs: u32}) -> SpiDone[Self] [io]
+
+group AdcChannel:
+  fn sample({self: Self}) -> Sampled[Self] [io]
+
+group PwmChannel:
+  fn setDuty({self: Self, permille: u16}) -> Self [io]
+
+# --- pins ------------------------------------------------------------------------
+fn toggled({level: PinLevel}) -> PinLevel:
+  if level == High:
+    return Low
+  return High
+
+# `times` full pulses (high then low), ending low.
+fn pulse[P: OutputPin]({pin: P, times: int}) -> P [io]:
+  var p = pin
+  for i in 0 .. times - 1:
+    p = {self: p, level: High} drive
+    p = {self: p, level: Low} drive
+  return p
+
+# The level once `stable` consecutive samples agree; none if `tries` samples
+# never settle. Polling debounce: no timer, no interrupt.
+fn debounced[P: InputPin]({pin: P, stable: int, tries: int}) -> Sensed[P]? [io]:
+  var p = pin
+  var run = 0
+  var last = Low
+  for i in 0 .. tries - 1:
+    let s = {self: p} sense
+    p = s.pin
+    if run > 0 and s.level == last:
+      run = run + 1
+    else:
+      run = 1
+      last = s.level
+    if run >= stable:
+      return {pin: p, level: last} Sensed
+  return none
+
+# --- I2C: the register idiom most devices speak --------------------------------------
+# `n` registers starting at `reg`.
+fn i2cRead[B: I2cBus]({bus: B, device: u8, reg: u8, n: int, timeoutMs: u32}) -> I2cDone[B] [io]:
+  let sent: Seq[u8] = [reg]
+  return {self: bus, device: device, sent: sent, want: n, timeoutMs: timeoutMs} i2cTransfer
+
+fn i2cWrite[B: I2cBus]({bus: B, device: u8, reg: u8, data: Seq[u8], timeoutMs: u32}) -> I2cDone[B] [io]:
+  var sent: Seq[u8] = [reg]
+  for i in 0 .. data.len - 1:
+    sent = {items: sent, value: data[i]} push
+  return {self: bus, device: device, sent: sent, want: 0, timeoutMs: timeoutMs} i2cTransfer
+
+# A bus error is worth retrying; no-ack and timeout mean the device is not
+# answering, and a lost arbitration means another controller won.
+fn worthRetry({fault: I2cError}) -> bool:
+  return fault == BusError or fault == ArbitrationLoss
+
+# `i2cRead`, retried up to `attempts` times while the fault is worth a retry.
+fn i2cReadRetrying[B: I2cBus]({bus: B, device: u8, reg: u8, n: int, timeoutMs: u32, attempts: int}) -> I2cDone[B] [io]:
+  var r = {bus: bus, device: device, reg: reg, n: n, timeoutMs: timeoutMs} i2cRead
+  var left = attempts - 1
+  for left > 0:
+    if not r.fault.ok:
+      return r
+    if not {fault: r.fault.value} worthRetry:
+      return r
+    r = {bus: r.bus, device: device, reg: reg, n: n, timeoutMs: timeoutMs} i2cRead
+    left = left - 1
+  return r
+
+# --- SPI -----------------------------------------------------------------------------
+# Write-only: clock the bytes out and drop what comes back.
+fn spiWrite[B: SpiBus]({bus: B, sent: Seq[u8], timeoutMs: u32}) -> SpiDone[B] [io]:
+  let r = {self: bus, sent: sent, timeoutMs: timeoutMs} spiTransfer
+  let nothing: Seq[u8] = []
+  return {bus: r.bus, data: nothing, fault: r.fault} SpiDone
+
+# --- ADC and PWM ------------------------------------------------------------------
+# A raw reading of a `resolution`-bit converter as millivolts of `vrefMv`.
+fn toMillivolts({raw: u16, resolution: int, vrefMv: int}) -> int:
+  var full = 1
+  for i in 0 .. resolution - 1:
+    full = full * 2
+  return {value: raw} int * vrefMv /i (full - 1)
+
+# The mean of `n` samples, to damp noise.
+fn averaged[A: AdcChannel]({channel: A, n: int}) -> Sampled[A] [io]:
+  var c = channel
+  var total = 0
+  for i in 0 .. n - 1:
+    let s = {self: c} sample
+    c = s.channel
+    total = total + {value: s.raw} int
+  let mean = {value: total /i n} u16
+  return {channel: c, raw: mean} Sampled
+
+# Duty in percent (0..100, clamped) as the per-mille the group takes.
+fn dutyPercent[W: PwmChannel]({pwm: W, percent: int}) -> W [io]:
+  var p = percent
+  if p < 0:
+    p = 0
+  if p > 100:
+    p = 100
+  let permille = {value: p * 10} u16
+  return {self: pwm, permille: permille} setDuty
+
+# --- simulated peripherals: providers for the checks -------------------------------
+# A pin wired to itself: what is driven is what is sensed. `trace` records every
+# level driven; `script` (when not empty) is what sensing returns, in order.
+type SimPin:
+  level: PinLevel
+  trace: Seq[PinLevel]
+  script: Seq[PinLevel]
+  step: int
+
+fn simPin() -> SimPin:
+  let none1: Seq[PinLevel] = []
+  return {level: Low, trace: none1, script: none1, step: 0} SimPin
+
+fn drive({self: SimPin, level: PinLevel}) -> SimPin:
+  let trace = {items: self.trace, value: level} push
+  return {level: level, trace: trace, script: self.script, step: self.step} SimPin
+
+fn sense({self: SimPin}) -> Sensed[SimPin]:
+  if self.step >= self.script.len:
+    return {pin: self, level: self.level} Sensed
+  let level = self.script[self.step]
+  let next = {level: level, trace: self.trace, script: self.script, step: self.step + 1} SimPin
+  return {pin: next, level: level} Sensed
+
+# One device at `device` with 256 byte registers and an auto-incrementing
+# register pointer, the way most sensors behave. `flaky` transfers fail with a
+# bus error before it answers.
+type SimI2c:
+  device: u8
+  regs: Seq[u8]
+  pointer: int
+  flaky: int
+
+fn simI2c({device: u8}) -> SimI2c:
+  var regs: Seq[u8] = []
+  for i in 0 .. 255:
+    let b = {value: 0} u8
+    regs = {items: regs, value: b} push
+  return {device: device, regs: regs, pointer: 0, flaky: 0} SimI2c
+
+fn i2cTransfer({self: SimI2c, device: u8, sent: Seq[u8], want: int, timeoutMs: u32}) -> I2cDone[SimI2c]:
+  let nothing: Seq[u8] = []
+  if self.flaky > 0:
+    let calmer = {device: self.device, regs: self.regs, pointer: self.pointer, flaky: self.flaky - 1} SimI2c
+    return {bus: calmer, data: nothing, fault: BusError} I2cDone
+  if device != self.device:
+    return {bus: self, data: nothing, fault: NoAck} I2cDone
+  var regs = self.regs
+  var pointer = self.pointer
+  for i in 0 .. sent.len - 1:
+    if i == 0:
+      pointer = {value: sent[0]} int
+    else:
+      {items: regs, index: pointer % 256, value: sent[i]} setAt
+      pointer = pointer + 1
+  var got: Seq[u8] = []
+  for i in 0 .. want - 1:
+    got = {items: got, value: regs[pointer % 256]} push
+    pointer = pointer + 1
+  let after = {device: self.device, regs: regs, pointer: pointer % 256, flaky: 0} SimI2c
+  return {bus: after, data: got, fault: none} I2cDone
+
+# MOSI wired to MISO: every byte comes back as it went out.
+type SimSpi:
+  clocked: int
+
+fn spiTransfer({self: SimSpi, sent: Seq[u8], timeoutMs: u32}) -> SpiDone[SimSpi]:
+  let after = {clocked: self.clocked + sent.len} SimSpi
+  return {bus: after, data: sent, fault: none} SpiDone
+
+# Readings played back in order, the last one repeating.
+type SimAdc:
+  readings: Seq[u16]
+  step: int
+
+fn sample({self: SimAdc}) -> Sampled[SimAdc]:
+  var i = self.step
+  if i >= self.readings.len:
+    i = self.readings.len - 1
+  let next = {readings: self.readings, step: self.step + 1} SimAdc
+  return {channel: next, raw: self.readings[i]} Sampled
+
+type SimPwm:
+  permille: u16
+
+fn setDuty({self: SimPwm, permille: u16}) -> SimPwm:
+  return {permille: permille} SimPwm
+
+# --- checks ---------------------------------------------------------------------
+fn checkPins() -> int [io]:
+  let p = simPin
+  let pulsed = {pin: p, times: 3} pulse
+  if pulsed.trace.len != 6 or pulsed.level != Low:
+    return 1
+  if pulsed.trace[0] != High or pulsed.trace[1] != Low:
+    return 2
+  # bounces, then settles high
+  let bouncy: Seq[PinLevel] = [High, Low, High, Low, High, High, High, High]
+  let none1: Seq[PinLevel] = []
+  let input = {level: Low, trace: none1, script: bouncy, step: 0} SimPin
+  let d = {pin: input, stable: 3, tries: 10} debounced
+  if not d.ok:
+    return 3
+  if d.value.level != High:
+    return 4
+  let never: Seq[PinLevel] = [High, Low, High, Low, High, Low]
+  let jittery = {level: Low, trace: none1, script: never, step: 0} SimPin
+  let e = {pin: jittery, stable: 3, tries: 6} debounced
+  if e.ok:
+    return 5
+  return 0
+
+fn checkI2c() -> int [io]:
+  let bus = {device: 72} simI2c
+  let payload: Seq[u8] = [17, 34, 51]
+  let w = {bus: bus, device: 72, reg: 16, data: payload, timeoutMs: 10} i2cWrite
+  if w.fault.ok:
+    return 10
+  let r = {bus: w.bus, device: 72, reg: 16, n: 3, timeoutMs: 10} i2cRead
+  if r.fault.ok:
+    return 11
+  if r.data != payload:
+    return 12
+  let wrong = {bus: r.bus, device: 73, reg: 16, n: 1, timeoutMs: 10} i2cRead
+  if not wrong.fault.ok:
+    return 13
+  if wrong.fault.value != NoAck:
+    return 14
+  # two bus errors, then the device answers: three attempts are enough
+  let flaky = {device: 72, regs: r.bus.regs, pointer: 0, flaky: 2} SimI2c
+  let retried = {bus: flaky, device: 72, reg: 16, n: 3, timeoutMs: 10, attempts: 3} i2cReadRetrying
+  if retried.fault.ok:
+    return 15
+  if retried.data != payload:
+    return 16
+  # a no-ack is not retried
+  let gone = {bus: flaky, device: 9, reg: 16, n: 1, timeoutMs: 10, attempts: 5} i2cReadRetrying
+  if not gone.fault.ok:
+    return 17
+  return 0
+
+fn checkSpiAdcPwm() -> int [io]:
+  let spi = {clocked: 0} SimSpi
+  let out: Seq[u8] = [1, 2, 3, 4]
+  let t = {self: spi, sent: out, timeoutMs: 5} spiTransfer
+  if t.data != out:
+    return 20
+  let w = {bus: t.bus, sent: out, timeoutMs: 5} spiWrite
+  if w.data.len != 0 or w.bus.clocked != 8:
+    return 21
+  if {raw: 4095, resolution: 12, vrefMv: 3300} toMillivolts != 3300:
+    return 22
+  if {raw: 2048, resolution: 12, vrefMv: 3300} toMillivolts != 1650:
+    return 23
+  let readings: Seq[u16] = [100, 110, 90, 100]
+  let adc = {readings: readings, step: 0} SimAdc
+  let avg = {channel: adc, n: 4} averaged
+  if avg.raw != 100:
+    return 24
+  let pwm = {permille: 0} SimPwm
+  let half = {pwm: pwm, percent: 50} dutyPercent
+  if half.permille != 500:
+    return 25
+  let over = {pwm: half, percent: 140} dutyPercent
+  if over.permille != 1000:
+    return 26
+  return 0
+
+fn main() -> int [io]:
+  let a = checkPins
+  if a != 0:
+    return a
+  let b = checkI2c
+  if b != 0:
+    return b
+  return checkSpiAdcPwm

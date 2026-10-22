@@ -70,6 +70,8 @@ type
     everyKind: seq[string]      # every kind the PROGRAM declares — main's budget
     visiting: HashSet[string]
     pendingNames: HashSet[string]  # imported `pending:` stubs — never a restriction violation
+    groupReqs: Table[string, Demands]  # the fn being visited: requirement name -> what its group declares
+    groups: Table[string, Table[string, Demands]]  # group name -> requirement -> what it declares, whole program
 
 proc getDeclared(c: Checker, name: string): Demands =
   ## What calling `name` demands of its caller; nothing for a name this module
@@ -136,6 +138,7 @@ proc callEffects(c: var Checker, e: Expr, res: var Demands) =
         let callee = if member != nil:
                        Demands(effects: member.fnEffects,
                                resources: member.fnResourceKinds)
+                     elif c.groupReqs.hasKey(calleeName): c.groupReqs[calleeName]
                      else: c.getDeclared(calleeName)
         res = union(res, callee)
         # The [io] marker IS the async annotation: a call to an [io] fn is a
@@ -448,6 +451,38 @@ proc checkMarkerCombinations(d: Decl) =
           effectName(x) & "]. Fix: add [" & effectName(x) & "] to its bracket"),
           d.span)
 
+proc boundName(b: Type): string =
+  ## The group a bound names: `Source`, or `Indexable` for `Indexable[E]`.
+  if b == nil: ""
+  elif b.kind == tkNamed: b.name
+  elif b.kind == tkApp and b.base != nil: b.base.name
+  else: ""
+
+proc groupRequirements*(decls: seq[Decl]): Table[string, Table[string, Demands]] =
+  ## Each group in `decls` with what every one of its requirements declares it
+  ## costs. The driver gathers this over the whole program, so a bounded fn
+  ## written in a different module from its group is still charged by the
+  ## contract (issue #162).
+  for g in decls:
+    if g == nil or g.kind != dkGroup: continue
+    var reqs = initTable[string, Demands]()
+    for want in g.groupMembers:
+      if want != nil and want.kind == dkFn:
+        reqs[want.name] = Demands(effects: want.fnEffects,
+                                  resources: want.fnResourceKinds)
+    result[g.name] = reqs
+
+proc boundGroupReqs(c: Checker, d: Decl): Table[string, Demands] =
+  ## The requirements this fn's group bounds name, with the effects the GROUP
+  ## declares for each: a call to one inside a bounded body costs what the
+  ## contract says, not what whichever provider happens to be in scope costs
+  ## (issue #162). Groups come from the whole program.
+  for bs in d.fnGenericBounds:
+    for b in bs:
+      let gname = boundName(b)
+      if gname != "" and c.groups.hasKey(gname):
+        for req, cost in c.groups[gname]: result[req] = cost
+
 proc verifyFn(c: var Checker, d: Decl) =
   ## One fn body against its own bracket — `main`'s budget aside, below.
   # A contradictory bracket is a fault of the DECLARATION, so a body-less
@@ -483,7 +518,10 @@ proc verifyFn(c: var Checker, d: Decl) =
   c.checkRestrictions(d)
   checkIsrSends(d)
   c.checkStackBound(d)
+  let outerReqs = c.groupReqs
+  c.groupReqs = c.boundGroupReqs(d)
   let actual = c.checkExpr(d.fnBody, budget, d.name)
+  c.groupReqs = outerReqs
   # The other direction (issue #14): a declared [io] the body never needs.
   if d.name != "main" and emIo in d.fnEffects and not hasIo(actual.effects) and
      not c.mayDoIoUnseen(d.fnBody):
@@ -761,7 +799,9 @@ proc verifyModuleEffects*(m: Module,
                             initTable[string, seq[string]](),
                           programKinds: seq[string] = @[],
                           importedPending: HashSet[string] =
-                            initHashSet[string]()) =
+                            initHashSet[string](),
+                          groups: Table[string, Table[string, Demands]] =
+                            initTable[string, Table[string, Demands]]()) =
   ## Check every declaration in `m` performs only the effects it declares.
   ##
   ## `imported` carries the effects of fns this module IMPORTS, keyed the same
@@ -777,7 +817,9 @@ proc verifyModuleEffects*(m: Module,
   ## — and `main`, whose budget is every kind, would get an empty one.
   var c = Checker(module: m, declared: initTable[string, Demands](),
                   visiting: initHashSet[string](), everyKind: programKinds,
-                  pendingNames: importedPending)
+                  pendingNames: importedPending, groups: groups)
+  # this module's own groups, whatever the driver passed
+  for name, reqs in groupRequirements(m.decls): c.groups[name] = reqs
   c.collectImported(imported, importedRes)
   c.collectLocal(m)
   for d in m.decls:

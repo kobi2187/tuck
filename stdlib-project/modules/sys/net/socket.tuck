@@ -1,0 +1,157 @@
+# sys.net (module `socket`; `net` is std/net) — TCP streams as `Source`/`Sink`.
+#
+# std/net hands out plain file descriptors. This wraps a connected one as a
+# `TcpStream` and makes it a provider of sys.io's groups, so every algorithm
+# written against them (read a line, read exactly n bytes, copy) works on a
+# socket as it does on a file or a buffer.
+#
+# A stream cannot carry an error through `pull`/`put` (their results have
+# none), so a failed or closed socket reads as the end of the stream, and a
+# failed send drops the write; `dial`, `serve` and `acceptOne` are where an
+# error is reported. Whoever needs the difference checks `isOpen`-style at the
+# connection level, or uses std/net directly.
+import net
+import time
+import seq
+import str
+import encoding
+import stream
+import scheduler
+
+type TcpStream:
+  fd: int
+
+type Listener:
+  fd: int
+  port: int
+
+# --- connecting ----------------------------------------------------------------------
+fn dial({host: str, port: int}) -> !TcpStream [io: net, error: NetError]:
+  let c = {host: host, port: port} connect
+  if not c.ok:
+    err c.err
+  return {fd: c.value.fd} TcpStream
+
+fn serve({port: int}) -> !Listener [io: net, error: NetError]:
+  let l = {port: port} listen
+  if not l.ok:
+    err l.err
+  return {fd: l.value.fd, port: port} Listener
+
+# Wait for one client.
+fn acceptOne({l: Listener}) -> !TcpStream [io: net, error: NetError]:
+  let a = {fd: l.fd} accept
+  if not a.ok:
+    err a.err
+  return {fd: a.value.fd} TcpStream
+
+fn hangUp({s: TcpStream}) -> void [io: net]:
+  {fd: s.fd} close
+
+fn stopServing({l: Listener}) -> void [io: net]:
+  {fd: l.fd} close
+
+# --- the stream groups ---------------------------------------------------------------
+# Up to `max` bytes; an empty chunk when the peer closed, or the read failed.
+fn pull({self: TcpStream, max: int}) -> {next: TcpStream, data: Seq[u8]} [io: net]:
+  var out: Seq[u8] = []
+  let r = {fd: self.fd, max: max} recv
+  if r.ok:
+    out = {t: r.value.data} bytesOf
+  return {next: self, data: out}
+
+# All of `data`, or nothing sent when the socket fails.
+fn put({self: TcpStream, data: Seq[u8]}) -> TcpStream [io: net]:
+  let text = {bytes: data} fromBytes
+  let sent = {fd: self.fd, data: text} send
+  if not sent.ok:
+    return self
+  return self
+
+# --- checks ---------------------------------------------------------------------
+# Server and client share one program over loopback. Socket calls suspend the
+# calling TASK, so each side is a task; an actor collects how each ended and
+# `main` waits on it (a task bound to a name would be awaited at once).
+actor Outcome [queue: 8]:
+  failed: int = 0
+  finished: int = 0
+
+  on report({code: int}):
+    if code != 0:
+      failed = code
+    finished = finished + 1
+
+fn bothDone() -> bool:
+  return Outcome.finished >= 2
+
+task serverSide({lfd: int}) -> void [io, io: net]:
+  let l = {fd: lfd, port: 0} Listener
+  let s = {l: l} acceptOne
+  if not s.ok:
+    Outcome send report {code: 10}
+    return
+  let first = {s: s.value} readLine
+  if not first.ok:
+    Outcome send report {code: 11}
+    return
+  if {bytes: first.value.data} fromBytes != "ping":
+    Outcome send report {code: 12}
+    return
+  let second = {s: first.value.next} readLine
+  if not second.ok:
+    Outcome send report {code: 13}
+    return
+  if {bytes: second.value.data} fromBytes != "second line":
+    Outcome send report {code: 14}
+    return
+  let reply = {t: "pong"} bytesOf
+  let answered = {k: s.value, data: reply} writeAll
+  {s: answered} hangUp
+  Outcome send report {code: 0}
+  return
+
+task clientSide({port: int}) -> void [io, io: net]:
+  let c = {host: "127.0.0.1", port: port} dial
+  if not c.ok:
+    Outcome send report {code: 20}
+    return
+  let hello = {t: "ping\nsecond line\n"} bytesOf
+  let sent = {k: c.value, data: hello} writeAll
+  let back = {s: sent, n: 4} readExactly
+  if not back.ok:
+    Outcome send report {code: 21}
+    return
+  if {bytes: back.value.data} fromBytes != "pong":
+    Outcome send report {code: 22}
+    return
+  {s: back.value.next} hangUp
+  # nothing listens on this port
+  let nobody = {host: "127.0.0.1", port: 38418} dial
+  if nobody.ok:
+    Outcome send report {code: 23}
+    return
+  Outcome send report {code: 0}
+  return
+
+# A free port from the clock, a few tries: three backends may run this check at
+# once, and a fixed port would make them fight for it.
+fn serveSomewhere() -> !Listener [io, io: net, io: clock]:
+  let now = nowMs
+  let base = {value: now.epochMs} int
+  for attempt in 0 .. 6:
+    let port = 30000 + (base + attempt * 977) % 20000
+    let r = {port: port} serve
+    if r.ok:
+      return r
+  return {port: 30000 + (base + 7 * 977) % 20000} serve
+
+fn main() -> int [io, io: net, io: clock]:
+  let l = serveSomewhere
+  if not l.ok:
+    return 1
+  {lfd: l.value.fd} serverSide
+  {port: l.value.port} clientSide
+  Outcome.waitUntil {pred: :bothDone}
+  {l: l.value} stopServing
+  {} scheduler::stop
+  return Outcome.failed

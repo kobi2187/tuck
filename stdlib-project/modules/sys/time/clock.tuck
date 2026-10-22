@@ -1,0 +1,293 @@
+# sys.clock — wall-clock moments and durations as text, over std/time and
+# std.chrono.
+#
+# A `Timestamp` is milliseconds since the Unix epoch, UTC. It is `distinct`, so
+# it cannot be mixed with a plain count of milliseconds by accident. The
+# arithmetic saturates at zero rather than wrapping: asking how long ago a moment
+# in the future was answers "no time", not a number near 2^64.
+#
+# There is no monotonic `Instant` here. `std/time` offers only the wall clock
+# (`nowMs`), and a wall clock steps with NTP and DST, so measuring an interval
+# with it is wrong in exactly the cases that matter. That wants a runtime
+# extern, not a Tuck workaround.
+import time
+import seq
+import str
+import text
+import convert
+import chrono
+
+distinct Timestamp = u64
+
+fn timestamp({epochMs: u64}) -> Timestamp:
+  return {value: epochMs} Timestamp
+
+fn millis({t: Timestamp}) -> u64:
+  return {value: t} u64
+
+fn now() -> Timestamp [io: clock]:
+  let n = nowMs
+  return {epochMs: n.epochMs} timestamp
+
+# Milliseconds from `earlier` to `later`; zero when `later` is not later.
+fn since({later: Timestamp, earlier: Timestamp}) -> u64:
+  let a = {t: later} millis
+  let b = {t: earlier} millis
+  if a <= b:
+    return 0
+  return a - b
+
+fn plusMs({t: Timestamp, epochMs: u64}) -> Timestamp:
+  let base = {t: t} millis
+  return {epochMs: base + epochMs} timestamp
+
+# --- ISO 8601 -------------------------------------------------------------------------
+# "2023-11-14T22:13:20Z" (UTC, whole seconds).
+fn formatIso({t: Timestamp}) -> str:
+  let raw = {t: t} millis
+  let epoch = {value: raw} int
+  let dt = {atMs: epoch} fromUnixMs
+  let date = {d: dt.date, pattern: "yyyy-MM-dd"} formatDate
+  let hour = {value: dt.time.hour} int
+  let minute = {value: dt.time.minute} int
+  let second = {value: dt.time.second} int
+  let hh = {n: hour, width: 2} digits
+  let mm = {n: minute, width: 2} digits
+  let ss = {n: second, width: 2} digits
+  return date + "T" + hh + ":" + mm + ":" + ss + "Z"
+
+# The same with milliseconds: "2023-11-14T22:13:20.250Z".
+fn formatIsoMs({t: Timestamp}) -> str:
+  let whole = {t: t} formatIso
+  let raw = {t: t} millis
+  let epoch = {value: raw} int
+  let frac = {n: epoch % 1000, width: 3} digits
+  let cut = {t: whole} byteCount - 1
+  let head = {t: whole, start: 0, stop: cut} slice
+  if head.ok:
+    return head.value + "." + frac + "Z"
+  return whole
+
+# The minutes east of UTC in "+hh:mm" / "-hh:mm"; none when it is not that.
+fn offsetMinutes({t: str}) -> int?:
+  if {t: t} byteCount != 6:
+    return none
+  let sign = {t: t, index: 0} byteAt
+  var direction = 0
+  if sign == 43:
+    direction = 1
+  elif sign == 45:
+    direction = -1
+  else:
+    return none
+  let digitsPart = {t: t} slice1
+  let parts = {t: digitsPart, at: ":"} split
+  if parts.len != 2:
+    return none
+  let h = {t: parts[0]} parseInt
+  let m = {t: parts[1]} parseInt
+  if not h.ok:
+    return none
+  if not m.ok:
+    return none
+  let hours = {value: h.value} int
+  let mins = {value: m.value} int
+  if hours > 23 or mins > 59:
+    return none
+  return direction * (hours * 60 + mins)
+
+# Everything after the first byte.
+fn slice1({t: str}) -> str:
+  let n = {t: t} byteCount
+  let rest = {t: t, start: 1, stop: n} slice
+  if rest.ok:
+    return rest.value
+  return ""
+
+# A number of 3 fractional digits from ".5" / ".25" / ".250"; none otherwise.
+fn fractionMs({t: str}) -> int?:
+  var digitsText = t
+  for {t: digitsText} byteCount < 3:
+    digitsText = digitsText + "0"
+  let cut = {t: digitsText, start: 0, stop: 3} slice
+  if not cut.ok:
+    return none
+  let n = {t: cut.value} parseInt
+  if not n.ok:
+    return none
+  return {value: n.value} int
+
+# "2023-11-14T22:13:20Z", with optional ".mmm" and "+hh:mm" / "-hh:mm" in place
+# of the Z. None for anything else, or an impossible date or time.
+fn parseIso({t: str}) -> Timestamp?:
+  let halves = {t: t, at: "T"} split
+  if halves.len != 2:
+    return none
+  let date = {t: halves[0]} parseDate
+  if not date.ok:
+    return none
+  let rest = halves[1]
+  let size = {t: rest} byteCount
+  var offsetMin = 0
+  var body = ""
+  if {t: rest, suffix: "Z"} endsWith:
+    let cut = {t: rest, start: 0, stop: size - 1} slice
+    if not cut.ok:
+      return none
+    body = cut.value
+  else:
+    if size < 7:
+      return none
+    let tail = {t: rest, start: size - 6, stop: size} slice
+    let head = {t: rest, start: 0, stop: size - 6} slice
+    if not tail.ok:
+      return none
+    if not head.ok:
+      return none
+    let off = {t: tail.value} offsetMinutes
+    if not off.ok:
+      return none
+    offsetMin = off.value
+    body = head.value
+  let clock = {t: body, at: ":"} split
+  if clock.len != 3:
+    return none
+  let secParts = {t: clock[2], at: "."} split
+  var fraction = 0
+  if secParts.len == 2:
+    let f = {t: secParts[1]} fractionMs
+    if not f.ok:
+      return none
+    fraction = f.value
+  elif secParts.len != 1:
+    return none
+  let hh = {t: clock[0]} parseInt
+  let mm = {t: clock[1]} parseInt
+  let ss = {t: secParts[0]} parseInt
+  if not hh.ok:
+    return none
+  if not mm.ok:
+    return none
+  if not ss.ok:
+    return none
+  let hour = {value: hh.value} int
+  let minute = {value: mm.value} int
+  let second = {value: ss.value} int
+  if hour > 23 or minute > 59 or second > 60:
+    return none
+  let h8 = {value: hour} u8
+  let m8 = {value: minute} u8
+  let s8 = {value: second} u8
+  let nano = {value: fraction * 1000000} u32
+  let tod = {hour: h8, minute: m8, second: s8, nano: nano} TimeOfDay
+  let dt = {d: date.value, t: tod} atTime
+  let epoch = {moment: dt, offsetSec: offsetMin * 60} toUnixMs
+  if epoch < 0:
+    return none
+  let unsigned = {value: epoch} u64
+  return {epochMs: unsigned} timestamp
+
+# --- durations as text ----------------------------------------------------------------
+# "1h 2m 3s", "45s", "250ms"; the largest nonzero units only, to the second.
+fn humanDuration({epochMs: u64}) -> str:
+  let total = {value: epochMs} int
+  if total < 1000:
+    let n = {value: total} toStr
+    return n + "ms"
+  let secs = total /i 1000
+  let days = secs /i 86400
+  let hours = (secs % 86400) /i 3600
+  let mins = (secs % 3600) /i 60
+  let s = secs % 60
+  var parts: Seq[str] = []
+  if days > 0:
+    let d = {value: days} toStr
+    parts = {items: parts, value: d + "d"} push
+  if hours > 0:
+    let h = {value: hours} toStr
+    parts = {items: parts, value: h + "h"} push
+  if mins > 0:
+    let m = {value: mins} toStr
+    parts = {items: parts, value: m + "m"} push
+  if s > 0 or parts.len == 0:
+    let sv = {value: s} toStr
+    parts = {items: parts, value: sv + "s"} push
+  return {parts: parts, sep: " "} joinStr
+
+# --- checks ---------------------------------------------------------------------
+fn checkFormat() -> int [io: clock]:
+  let t = {epochMs: 1700000000000} timestamp
+  if {t: t} formatIso != "2023-11-14T22:13:20Z":
+    return 1
+  let u = {epochMs: 1700000000250} timestamp
+  if {t: u} formatIsoMs != "2023-11-14T22:13:20.250Z":
+    return 2
+  let epoch = {epochMs: 0} timestamp
+  if {t: epoch} formatIso != "1970-01-01T00:00:00Z":
+    return 3
+  return checkParse
+
+fn checkParse() -> int [io: clock]:
+  let a = {t: "2023-11-14T22:13:20Z"} parseIso
+  if not a.ok:
+    return 10
+  if {t: a.value} millis != 1700000000000:
+    return 11
+  let b = {t: "2023-11-14T22:13:20.250Z"} parseIso
+  if not b.ok:
+    return 12
+  if {t: b.value} millis != 1700000000250:
+    return 13
+  let c = {t: "2023-11-15T00:13:20+02:00"} parseIso
+  if not c.ok:
+    return 14
+  if {t: c.value} millis != 1700000000000:
+    return 15
+  let d = {t: "2023-11-14T17:43:20-04:30"} parseIso
+  if not d.ok:
+    return 16
+  if {t: d.value} millis != 1700000000000:
+    return 17
+  let bad1 = {t: "2023-13-14T22:13:20Z"} parseIso
+  if bad1.ok:
+    return 18
+  let bad2 = {t: "2023-11-14 22:13:20Z"} parseIso
+  if bad2.ok:
+    return 19
+  let bad3 = {t: "2023-11-14T25:13:20Z"} parseIso
+  if bad3.ok:
+    return 20
+  return checkSpan
+
+fn checkSpan() -> int [io: clock]:
+  let a = {epochMs: 5000} timestamp
+  let b = {epochMs: 2000} timestamp
+  if {later: a, earlier: b} since != 3000:
+    return 30
+  if {later: b, earlier: a} since != 0:
+    return 31
+  let c = {t: b, epochMs: 500} plusMs
+  if {t: c} millis != 2500:
+    return 32
+  if {epochMs: 250} humanDuration != "250ms":
+    return 33
+  if {epochMs: 3723000} humanDuration != "1h 2m 3s":
+    return 34
+  if {epochMs: 45000} humanDuration != "45s":
+    return 35
+  if {epochMs: 90061000} humanDuration != "1d 1h 1m 1s":
+    return 36
+  return checkNow
+
+fn checkNow() -> int [io: clock]:
+  let t = now
+  # after 2023-11-14, before year 2200
+  if {t: t} millis < 1700000000000:
+    return 40
+  if {t: t} millis > 7258118400000:
+    return 41
+  return 0
+
+fn main() -> int [io: clock]:
+  let r = checkFormat
+  return r

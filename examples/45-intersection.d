@@ -182,7 +182,7 @@ long tuckˑfnˑseconds(tuckˑtypeˑInterval self) {
     return (self.ticks / 10L);
 }
 
-bool tuckˑfnˑlongEnough(T)(T span, long atLeast) {
+bool tuckˑfnˑlongEnough(T, alias tuckˑfnˑseconds)(T span, long atLeast) {
     return (tuckˑfnˑseconds(span) >= atLeast);
 }
 
@@ -246,7 +246,7 @@ void tuckˑfnˑdrive() {
 
 long tuckˑfnˑmain() {
     tuckˑtypeˑInterval tuckˑvˑclearing = tuckˑtypeˑInterval(ticks: 45L);
-    bool tuckˑvˑok = tuckˑfnˑlongEnough(tuckˑvˑclearing, 4L);
+    bool tuckˑvˑok = tuckˑfnˑlongEnough!(tuckˑtypeˑInterval, tuckˑfnˑseconds)(tuckˑvˑclearing, 4L);
     if (!tuckˑvˑok) {
         return 9L;
     }

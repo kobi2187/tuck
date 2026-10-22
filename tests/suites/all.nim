@@ -9,6 +9,7 @@ import ../harness
 import actor_heartbeat
 import actor_mode
 import actor_result
+import apps
 import auto_alias
 import bare_variant
 import cli_smoke
@@ -80,6 +81,7 @@ let registry: seq[Entry] = @[
   ("actor_heartbeat",     SuiteProc(actor_heartbeat.run),     false),
   ("actor_mode",          SuiteProc(actor_mode.run),          true),
   ("actor_result",        SuiteProc(actor_result.run),        true),
+  ("apps",                SuiteProc(apps.run),                false),
   ("auto_alias",          SuiteProc(auto_alias.run),          false),
   ("bare_variant",        SuiteProc(bare_variant.run),        true),
   ("cli_smoke",           SuiteProc(cli_smoke.run),           false),

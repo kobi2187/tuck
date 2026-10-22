@@ -520,10 +520,9 @@ proc genDTaskDecl*(ctx: var DCodegenCtx, d: Decl): string =
   result = retStr & " " & d.name & "(" & ctx.genDParams(d.fnParams) & ") {\n"
   ctx.indent = 1
   ctx.definedVars.clear()
-  ctx.currentParams = @[]
+  ctx.currentParams = paramFields(d)
   for p in d.fnParams:
     ctx.definedVars.incl(p.name)
-    ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
   result.add(ctx.genDStmtOrBlock(d.fnBody))
   result.add(dTrailingReturn(d.fnBody, retStr, 1))
   ctx.indent = 0
@@ -972,10 +971,9 @@ proc genDFnDecl*(ctx: var DCodegenCtx, d: Decl, nameOverride = "",
   ctx.movedParam = movedP
   ctx.indent = 1
   ctx.definedVars.clear()
-  ctx.currentParams = @[]
+  ctx.currentParams = paramFields(d)
   for p in d.fnParams:
     ctx.definedVars.incl(p.name)
-    ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
   if d.fnDepth > 0:
     let v = depthVar(d)
     result.add("    " & v & "++;\n    scope(exit) " & v & "--;\n    if (" & v &

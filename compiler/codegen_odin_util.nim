@@ -72,15 +72,20 @@ proc tagEnumName(d: Decl): string =
     if v.fields.len > 0: return d.name & "Kind"
   d.name
 
+proc enumTagDecl*(m: Module, tag: string): Decl =
+  ## The declared sum that owns a variant tag, or nil (an inline sum). When two
+  ## sums share the tag, the hinted one wins (issue #102); otherwise the first
+  ## declared.
+  if tagOwnerHint != "":
+    for d in m.decls:
+      if d != nil and d.name == tagOwnerHint and d.ownsTag(tag): return d
+  for d in m.decls:
+    if d.ownsTag(tag): return d
+  nil
+
 proc enumTagOwner*(m: Module, tag: string): string =
   ## The declared enum (or its Kind enum) that owns a variant tag, if any.
   ## A payload sum's tags live on its `<Name>Kind` enum, so that is the owner.
-  ## When two sums share the tag, the hinted one wins (issue #102); otherwise
-  ## the first declared. Empty when no declared sum has the tag (an inline sum).
-  if tagOwnerHint != "":
-    for d in m.decls:
-      if d != nil and d.name == tagOwnerHint and d.ownsTag(tag):
-        return d.tagEnumName
-  for d in m.decls:
-    if d.ownsTag(tag): return d.tagEnumName
-  ""
+  ## Empty when no declared sum has the tag (an inline sum).
+  let d = enumTagDecl(m, tag)
+  if d == nil: "" else: d.tagEnumName

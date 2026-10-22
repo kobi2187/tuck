@@ -41,12 +41,13 @@ blocks compile in. Without the flag nothing changes: the blessed `std/` is used.
 | sys | env (defaults, PATH split, `$VAR` expansion) | yes | pass | pass | pass |
 | std | math (Decimal, statistics, float functions), chrono (pure calendar; no zone database), perf (stopwatch, counter, histogram), testing (results, report), i18n (case folding, edit distance, words, graphemes, Latin-1 normalization), queue (append-only log over std/fs) | yes | pass | pass | pass |
 | alloc | deque, list, map, set, string, vec | yes | pass | pass | pass |
-| std | encoding (JSON print/access; parser, base64, CSV not started), crypto (SHA-256, HMAC-SHA256, constant-time compare), log (formats, levels, `ConsoleSink`), regex (parser, compiler, backtracking VM, find/replace/split/glob), net-http (URLs, percent-encoding, queries, request/response text, headers, cookies), cli (command tree, parser, usage, table, ANSI) | partial | pass | pass | pass |
-| platform | dsp (biquad, moving average, RMS), watchdog (actor: configure, start, feed, check, stop) | yes | pass | pass | pass |
-| sys | process (`ExitStatus`, `statusOf`, `run` over `runCommand`) | yes | pass | pass | pass |
+| std | encoding (JSON print/access/parser, base64, hex, CSV), compress (CRC-32, Adler-32, inflate of all block kinds, fixed-Huffman LZ77 deflate, zlib, gzip; no Zstd), archive (tar/ustar pack and unpack, 100-byte names), random (PCG32: ranges, floats, shuffle, sample, weighted pick, gaussian), crypto (SHA-256, HMAC-SHA256, constant-time compare), log (formats, levels, `ConsoleSink`), regex (parser, compiler, backtracking VM, find/replace/split/glob), net-http (URLs, percent-encoding, queries, request/response text, headers, cookies), cli (command tree, parser, usage, table, ANSI) | partial | pass | pass | pass |
+| platform | dsp (biquad, moving average, RMS), watchdog (actor: configure, start, feed, check, stop), board (libc-shim: `group Board` with ticks and heap region, heap carving, `HostBoard` and its console as a `Sink`), hal (one group per peripheral kind: output/input pin, I2C, SPI, ADC, PWM; pulse, debounce, register read/write with retry, averaging, duty; a simulated device per group), devicetree (a generator: a `.dts` subset to Tuck constants for every enabled labelled node), advertise (net-lowpower: BLE advertising payloads built and read within 31 bytes, `group Radio` with the interval range checked once) | yes | pass | pass | pass |
+| sys | process (`ExitStatus`, `statusOf`, `run` over `runCommand`), path (normalize, join, parent, base name, extension, relative paths), clock (distinct wall-clock Timestamp, saturating `since`, ISO 8601 format/parse with offsets, human durations; no monotonic Instant until the runtime has one), stream (sys.io: `Source`/`Sink` groups, read-all/exact/line and copy generic over them, in-memory providers; module named `stream` because `io` is reserved), mmap (zero-copy file mapping behind a handle: find, all matches, line count, the line around an offset, explicit windows; per-backend `impl:` shims), signal (signals as values over a signalfd: `onSignal`, `awaitSignal` with a timeout that suspends only the calling task; `std/sys` gains `watchSignal`/`nextSignal`/`raiseSignal` on all three runtimes), socket (sys.net: `TcpStream` as `Source`/`Sink` over std/net, `dial`/`serve`/`acceptOne`), files (walk, remove, copy and measure whole trees over std/fs's new `pathInfo`/`renamePath`/`removeFolder`; file reader and sink providers for those groups, lines in and out, copy, write under new folders, folder entries as paths) | yes | pass | pass | pass |
 | core | slice, mem (designs say fold away); ptr, atomic, sync-cell, simd | no | | | |
 | alloc | allocator, box, rc, fmt | no | | | |
 | sys, std, platform | everything else | no | | | |
+| sys (dropped) | sync, thread, ffi, dynload: the language does their job (actors and tasks, `extern`); see INDEX.md | — | | | |
 
 ## What dogfooding found (all fixed)
 
@@ -64,9 +65,9 @@ Regression guards for the two compiler fixes are in `tests/suites/known_bugs.nim
 
 ## Skipped modules
 None. Every module that was set aside for a compiler bug has been finished, and the
-bugs are fixed (`known_bugs.nim` A48-A66; one is still open, #145). Not started inside the
-finished modules: `std.cli` prompts and progress (host-backed), `std.encoding` parser,
-base64 and CSV.
+bugs are fixed (`known_bugs.nim` A48-A82; one is still open, #155). Not started inside the
+finished modules: `std.cli` prompts and progress (host-backed), `std.compress` dynamic-Huffman
+encoder and Zstd.
 
 ## Next, in order
 

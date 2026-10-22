@@ -1,0 +1,251 @@
+# platform.net-lowpower (module `advertise`) — BLE advertising, in pure Tuck.
+#
+# The tier is advertise-only: a sensor that announces a few bytes and never
+# connects. What is portable is the PAYLOAD: Bluetooth's advertising data is a
+# run of length-prefixed fields — [length][type][data...], length counting the
+# type byte — inside 31 bytes (legacy advertising). Building it right is the
+# part every board shares; this module builds and reads it.
+#
+# The radio itself is board-specific, so it is a `group Radio` a board package
+# provides, with the interval range the specification allows (20 ms .. 10.24 s)
+# checked here once rather than in every board.
+import seq
+import str
+import encoding
+
+type RadioError:
+  | RadioBusy
+  | NotSupported
+  | BadInterval
+  | TooLong
+
+# Manufacturer-specific data: a Bluetooth SIG company id and its bytes.
+type AdvertData:
+  companyId: u16
+  payload: Seq[u8]
+
+# One field read back from advertising data.
+type AdField:
+  kind: int
+  data: Seq[u8]
+
+type RadioDone[R]:
+  radio: R
+  fault: RadioError?
+
+group Radio:
+  fn startAdvertising({self: Self, data: Seq[u8], intervalMs: u32}) -> RadioDone[Self] [io]
+  fn stopAdvertising({self: Self}) -> Self [io]
+
+# Field types (Bluetooth Core Supplement, part A).
+fn adFlags() -> int:
+  return 1
+
+fn adShortName() -> int:
+  return 8
+
+fn adFullName() -> int:
+  return 9
+
+fn adManufacturer() -> int:
+  return 255
+
+# LE General Discoverable, BR/EDR not supported: what a beacon announces.
+fn beaconFlags() -> u8:
+  return {value: 6} u8
+
+fn legacyLimit() -> int:
+  return 31
+
+# --- building ---------------------------------------------------------------------
+fn byteOf({n: int}) -> u8:
+  return {value: n % 256} u8
+
+# `into` with one field appended.
+fn field({into: Seq[u8], kind: int, data: Seq[u8]}) -> Seq[u8]:
+  var out = into
+  let size = {n: data.len + 1} byteOf
+  let k = {n: kind} byteOf
+  out = {items: out, value: size} push
+  out = {items: out, value: k} push
+  for i in 0 .. data.len - 1:
+    out = {items: out, value: data[i]} push
+  return out
+
+fn firstBytes({data: Seq[u8], n: int}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  for i in 0 .. n - 1:
+    out = {items: out, value: data[i]} push
+  return out
+
+# Flags, the manufacturer data, then the name: in full when it fits, else
+# shortened to what room is left (a scanner shows it as a short name). None
+# when flags and manufacturer data alone exceed the limit.
+fn advertisement({name: str, maker: AdvertData}) -> Seq[u8]?:
+  let empty: Seq[u8] = []
+  let flags: Seq[u8] = [beaconFlags]
+  var out = {into: empty, kind: adFlags, data: flags} field
+  let id = {value: maker.companyId} int
+  var md: Seq[u8] = []
+  let low = {n: id} byteOf
+  let high = {n: id /i 256} byteOf
+  md = {items: md, value: low} push
+  md = {items: md, value: high} push
+  for i in 0 .. maker.payload.len - 1:
+    md = {items: md, value: maker.payload[i]} push
+  out = {into: out, kind: adManufacturer, data: md} field
+  if out.len > legacyLimit:
+    return none
+  let nameBytes = {t: name} bytesOf
+  if nameBytes.len == 0:
+    return out
+  let room = legacyLimit - out.len - 2
+  if room <= 0:
+    return out
+  if nameBytes.len <= room:
+    return {into: out, kind: adFullName, data: nameBytes} field
+  let short = {data: nameBytes, n: room} firstBytes
+  return {into: out, kind: adShortName, data: short} field
+
+# --- reading ----------------------------------------------------------------------
+# The fields of advertising data; none when a length runs past the end.
+fn fields({data: Seq[u8]}) -> Seq[AdField]?:
+  var out: Seq[AdField] = []
+  var i = 0
+  for i < data.len:
+    let size = {value: data[i]} int
+    if size == 0:
+      # a zero length ends the significant part; the rest is padding
+      return out
+    if i + 1 + size > data.len:
+      return none
+    let kind = {value: data[i + 1]} int
+    var body: Seq[u8] = []
+    for k in i + 2 .. i + size:
+      body = {items: body, value: data[k]} push
+    let f = {kind: kind, data: body} AdField
+    out = {items: out, value: f} push
+    i = i + 1 + size
+  return out
+
+fn fieldOf({fs: Seq[AdField], kind: int}) -> AdField?:
+  for i in 0 .. fs.len - 1:
+    if fs[i].kind == kind:
+      return fs[i]
+  return none
+
+# --- advertising on any radio -----------------------------------------------------
+# Checks what the specification fixes before the board sees it.
+fn advertise[R: Radio]({radio: R, data: Seq[u8], intervalMs: u32}) -> RadioDone[R] [io]:
+  if intervalMs < 20 or intervalMs > 10240:
+    return {radio: radio, fault: BadInterval} RadioDone
+  if data.len > legacyLimit:
+    return {radio: radio, fault: TooLong} RadioDone
+  return {self: radio, data: data, intervalMs: intervalMs} startAdvertising
+
+# --- a simulated radio, for the checks ------------------------------------------------
+type SimRadio:
+  active: bool
+  sent: Seq[u8]
+  intervalMs: u32
+
+fn startAdvertising({self: SimRadio, data: Seq[u8], intervalMs: u32}) -> RadioDone[SimRadio]:
+  if self.active:
+    return {radio: self, fault: RadioBusy} RadioDone
+  let started = {active: true, sent: data, intervalMs: intervalMs} SimRadio
+  return {radio: started, fault: none} RadioDone
+
+fn stopAdvertising({self: SimRadio}) -> SimRadio:
+  return {active: false, sent: self.sent, intervalMs: self.intervalMs} SimRadio
+
+# --- checks ---------------------------------------------------------------------
+fn hexOf({bytes: Seq[u8]}) -> str:
+  return {bytes: bytes} toHex
+
+fn checkBuild() -> int:
+  let payload: Seq[u8] = [1, 2]
+  let nordic = {companyId: 89, payload: payload} AdvertData
+  let ad = {name: "tuck", maker: nordic} advertisement
+  if not ad.ok:
+    return 1
+  # 02 01 06 | 05 ff 59 00 01 02 | 05 09 't' 'u' 'c' 'k'
+  if {bytes: ad.value} hexOf != "020106" + "05ff59000102" + "0509" + "7475636b":
+    return 2
+  # a long name is shortened to fill exactly 31 bytes
+  let long = {name: "a-rather-long-sensor-name-here", maker: nordic} advertisement
+  if not long.ok:
+    return 3
+  if long.value.len != 31:
+    return 4
+  let fs = {data: long.value} fields
+  if not fs.ok:
+    return 5
+  let short = {fs: fs.value, kind: adShortName} fieldOf
+  if not short.ok:
+    return 6
+  if {bytes: short.value.data} fromBytes != "a-rather-long-sensor":
+    return 7
+  let full = {fs: fs.value, kind: adFullName} fieldOf
+  if full.ok:
+    return 8
+  return 0
+
+fn checkRead() -> int:
+  let raw: Seq[u8] = [2, 1, 6, 3, 255, 89, 0, 0, 0]
+  let fs = {data: raw} fields
+  if not fs.ok:
+    return 10
+  if fs.value.len != 2:
+    return 11
+  let m = {fs: fs.value, kind: adManufacturer} fieldOf
+  if not m.ok:
+    return 12
+  if m.value.data.len != 2:
+    return 13
+  let broken: Seq[u8] = [2, 1, 6, 9, 9]
+  let b = {data: broken} fields
+  if b.ok:
+    return 14
+  let huge: Seq[u8] = []
+  var big = huge
+  for i in 0 .. 29:
+    let b = {n: i} byteOf
+    big = {items: big, value: b} push
+  let tooMuch = {companyId: 89, payload: big} AdvertData
+  let over = {name: "", maker: tooMuch} advertisement
+  if over.ok:
+    return 15
+  return 0
+
+fn checkRadio() -> int [io]:
+  let none1: Seq[u8] = []
+  let radio = {active: false, sent: none1, intervalMs: 0} SimRadio
+  let data: Seq[u8] = [2, 1, 6]
+  let tooFast = {radio: radio, data: data, intervalMs: 10} advertise
+  if not tooFast.fault.ok:
+    return 20
+  if tooFast.fault.value != BadInterval:
+    return 21
+  let started = {radio: radio, data: data, intervalMs: 100} advertise
+  if started.fault.ok:
+    return 22
+  if not started.radio.active or started.radio.sent != data:
+    return 23
+  let again = {radio: started.radio, data: data, intervalMs: 100} advertise
+  if not again.fault.ok:
+    return 24
+  if again.fault.value != RadioBusy:
+    return 25
+  let stopped = {self: again.radio} stopAdvertising
+  if stopped.active:
+    return 26
+  return 0
+
+fn main() -> int [io]:
+  let a = checkBuild
+  if a != 0:
+    return a
+  let b = checkRead
+  if b != 0:
+    return b
+  return checkRadio

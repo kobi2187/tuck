@@ -171,14 +171,14 @@ proc markFirstTypeParam(ty, g: string): string =
 
 proc providerProcType(ctx: var OdinCodegenCtx, need: ProviderNeed): string =
   ## `proc(self: T) -> int`: the group's signature with `Self` read as the
-  ## bounded type parameter.
+  ## bounded type parameter, at any depth (`-> {next: Self, ...}` too).
+  let subs = {"Self": Type(kind: tkNamed, name: need.param)}.toTable
   var ps: seq[string]
   for p in need.member.fnParams:
-    ps.add(p.name & ": " & (if isSelfType(p.typ): need.param else: ctx.odinType(p.typ)))
+    ps.add(p.name & ": " & ctx.odinType(substType(p.typ, subs)))
   let rt = need.member.fnReturnType
   let ret = if rt == nil or (rt.kind == tkNamed and rt.name in ["void", "unit"]): ""
-            elif isSelfType(rt): " -> " & need.param
-            else: " -> " & ctx.odinType(rt)
+            else: " -> " & ctx.odinType(substType(rt, subs))
   "proc(" & ps.join(", ") & ")" & ret
 
 proc fnParamList*(ctx: var OdinCodegenCtx, d: Decl): string =
@@ -330,19 +330,27 @@ proc genMovedTwin(ctx: var OdinCodegenCtx, d: Decl, header, bodyStr,
                                   twinName & " :: proc")
   wrap & twinHeader & "\n" & bodyStr & "\n" & ind & "}\n"
 
-proc writtenParams(d: Decl): seq[string] =
+proc writtenRoot(n: Expr): string =
+  ## The name a statement stores into (a reset's place, an assignment's
+  ## target, through any field path), or "".
+  var r = if n.kind == exkReset: n.resetPlace
+          elif n.kind == exkAssign and not n.isDecl: n.target
+          else: nil
+  while r != nil and r.kind == exkField: r = r.receiver
+  if r != nil and r.kind == exkVar: r.name else: ""
+
+proc writtenParams(d: Decl, ptrSelf: bool): seq[string] =
   ## The parameters the body stores into: an Odin parameter is immutable, so
   ## each is shadowed by a local of the same name first. A reset after a
-  ## move (rule M) is the usual one.
+  ## move (rule M) is the usual one. `self` too, unless it is a member's
+  ## POINTER self, which is written through: a group provider's `self` is a
+  ## record passed by value like any other parameter (A80).
   if d.fnBody == nil: return
   for n in d.fnBody.nodes:
-    var r = if n.kind == exkReset: n.resetPlace
-            elif n.kind == exkAssign and not n.isDecl: n.target
-            else: nil
-    while r != nil and r.kind == exkField: r = r.receiver
-    if r == nil or r.kind != exkVar or r.name in result: continue
+    let root = writtenRoot(n)
+    if root == "" or root in result or (root == "self" and ptrSelf): continue
     for p in d.fnParams:
-      if p.name == r.name and p.name != "self": result.add p.name
+      if p.name == root: result.add p.name
 
 proc genOdinMemoWrapper(ctx: var OdinCodegenCtx, d: Decl, header, retTypeStr: string): string =
   ## `fn memo(N) f` in Odin: N direct-mapped slots in a thread-local array, or
@@ -393,9 +401,7 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
     let ret = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
     return rawText & ctx.genOdinMemoWrapper(
       d, ctx.fnHeader(d, ret, "  ".repeat(ctx.indent)), ret)
-  ctx.currentParams = @[]
-  for p in d.fnParams:
-    ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
+  ctx.currentParams = paramFields(d)
   # THE OWNERSHIP PASS DECIDES; this emitter prints. Its frees reach here
   # as `exkDrop` nodes and `dropsOld` assignments (ownership_nodes), so
   # nothing about ownership is looked up while printing.
@@ -414,7 +420,7 @@ proc genOdinFnDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   let savedMoved = ctx.movedParam
   ctx.movedParam = movedP
   var bodyStr = ctx.genFnBody(d, retTypeStr, ind)
-  for p in writtenParams(d):
+  for p in writtenParams(d, ctx.ptrSelf):
     bodyStr = ind & "  " & p & " := " & p & "\n" & bodyStr
   var depthDecl = ""
   if d.fnDepth > 0:
@@ -1083,10 +1089,9 @@ proc genTaskDecl*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## (tuckrt/tuck_coro.odin over minicoro — 28-async-task exits 42 and
   ## 26-actor-run drains its mailbox to 55); what is missing is spawning the
   ## task body ONTO it. Anything relying on a yield behaves synchronously.
-  ctx.currentParams = @[]
+  ctx.currentParams = paramFields(d)
   var params: seq[string]
   for p in d.fnParams:
-    ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
     params.add(p.name & ": " & ctx.odinType(p.typ))
   let retTypeStr =
     if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"

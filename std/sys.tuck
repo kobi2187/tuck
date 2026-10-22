@@ -1,9 +1,20 @@
 # std/sys — process environment. Implemented by tuck_rt.
 extern:
-  fn argCount() -> {count: int} [io: sys]
+  # The arguments, not counting the program: argAt 1 .. total are they, and
+  # argAt 0 is the program itself; "" outside that range.
+  fn argCount() -> {total: int} [io: sys]
   fn argAt({index: int}) -> {arg: str} [io: sys]
   fn getEnv({name: str}) -> {value: str}? [io: sys]
   fn exit({code: int}) -> void [io: sys]
   # Runs `line` through the shell, its output going where the program's own
   # goes, and returns the exit code. Blocks until the command ends.
   fn runCommand({line: str}) -> int [io: sys]
+  # Signals as values, never as handlers (a handler cannot safely run program
+  # code). `watchSignal` blocks signal `number` for the calling thread and
+  # routes it to one descriptor; call it before starting actors or tasks, which
+  # inherit the mask. `nextSignal` answers the next one, or none after
+  # `timeoutMs`: inside a task it suspends only that task. `raiseSignal` sends
+  # one to the calling thread.
+  fn watchSignal({number: int}) -> void [io: sys]
+  fn nextSignal({timeoutMs: int}) -> {number: int}? [io: sys]
+  fn raiseSignal({number: int}) -> void [io: sys]

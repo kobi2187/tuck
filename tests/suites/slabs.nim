@@ -99,7 +99,8 @@ fn fixed() -> int:
   let b = Small.new {data: 2, next: none}
   let c = Small.new {data: 3, next: none}
   var score = 0
-  if a.ok and b.ok and not c.ok:
+  let firstTwo = a.ok and b.ok and not c.ok
+  if firstTwo:
     score = 100
   Small.reset
   if a.ok:

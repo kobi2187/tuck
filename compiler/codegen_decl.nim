@@ -202,9 +202,7 @@ proc genFnDecl*(ctx: var CodegenCtx, d: Decl): string =
     let header = fnHeaderNim(d.name.replace(".", "_"), "", params, ret,
                              nimFnPragmas(d), isExportedDecl(ctx.module, d))
     return rawText & genMemoWrapper(ctx, d, header)
-  ctx.currentParams = @[]
-  for p in d.fnParams:
-    ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
+  ctx.currentParams = paramFields(d)
   let fnNameSanitized = d.name.replace(".", "_")
   let params = nimFnParams(ctx.res, ctx.module, d)
   let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
@@ -697,10 +695,9 @@ proc genTaskDecl*(ctx: var CodegenCtx, d: Decl): string =
   ## A task is a fn whose body runs on the scheduler: inside it, [io] calls
   ## become async yields (ctx.inTask), which is the only reason it is not
   ## just genFnDecl.
-  ctx.currentParams = @[]
+  ctx.currentParams = paramFields(d)
   var params: seq[string]
   for p in d.fnParams:
-    ctx.currentParams.add(FieldDef(name: p.name, typ: p.typ, span: p.span))
     params.add(p.name & ": " & genType(p.typ))
   let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
   let header = "proc " & d.name & "*(" & params.join(", ") & "): " &

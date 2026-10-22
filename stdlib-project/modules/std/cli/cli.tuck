@@ -13,6 +13,7 @@ import str
 import text
 import convert
 import fmt
+import sys
 
 type ArgKind:
   | AFlag
@@ -38,7 +39,7 @@ type Entry:
 
 # `subcommand` is the name chosen, "" when none was.
 type Args:
-  values: Seq[Entry]
+  named: Seq[Entry]
   positional: Seq[str]
   subcommand: str
 
@@ -69,9 +70,9 @@ fn subcommandNamed({c: Command, name: str}) -> Command?:
   return none
 
 fn textOf({a: Args, name: str}) -> str?:
-  for i in 0 .. a.values.len - 1:
-    if a.values[i].key == name:
-      return a.values[i].value
+  for i in 0 .. a.named.len - 1:
+    if a.named[i].key == name:
+      return a.named[i].value
   return none
 
 fn numberOf({a: Args, name: str}) -> i64?:
@@ -112,20 +113,29 @@ fn requiredPresent({c: Command, a: Args}) -> bool:
 
 fn withEntry({a: Args, key: str, value: str}) -> Args:
   let e = {key: key, value: value} Entry
-  let grown = {items: a.values, value: e} push
-  return {values: grown, positional: a.positional, subcommand: a.subcommand} Args
+  let grown = {items: a.named, value: e} push
+  return {named: grown, positional: a.positional, subcommand: a.subcommand} Args
 
 fn withPositional({a: Args, word: str}) -> Args:
   let grown = {items: a.positional, value: word} push
-  return {values: a.values, positional: grown, subcommand: a.subcommand} Args
+  return {named: a.named, positional: grown, subcommand: a.subcommand} Args
 
 # Parse `argv` (the program name already removed) against `c`. `--name value`,
 # `--name=value`, `-s value`, bare words as positionals; a first bare word that
 # names a subcommand hands the rest of the line to that subcommand.
+# The program's own arguments, without the program name: what `tryParse` takes.
+fn commandLine() -> Seq[str] [io: sys]:
+  var out: Seq[str] = []
+  let n = argCount
+  for i in 1 .. n.total:
+    let a = {index: i} argAt
+    out = {items: out, value: a.arg} push
+  return out
+
 fn tryParse({c: Command, argv: Seq[str]}) -> Args?:
   let empty: Seq[Entry] = []
   let words: Seq[str] = []
-  var a = {values: empty, positional: words, subcommand: ""} Args
+  var a = {named: empty, positional: words, subcommand: ""} Args
   var i = 0
   for i < argv.len:
     let arg = argv[i]
@@ -202,13 +212,13 @@ fn tailFrom({items: Seq[str], start: int}) -> Seq[str]:
 
 # The outer line's own entries first, then the subcommand's.
 fn merged({a: Args, inner: Args, name: str}) -> Args:
-  var vals = a.values
-  for i in 0 .. inner.values.len - 1:
-    vals = {items: vals, value: inner.values[i]} push
+  var vals = a.named
+  for i in 0 .. inner.named.len - 1:
+    vals = {items: vals, value: inner.named[i]} push
   var pos = a.positional
   for i in 0 .. inner.positional.len - 1:
     pos = {items: pos, value: inner.positional[i]} push
-  return {values: vals, positional: pos, subcommand: name} Args
+  return {named: vals, positional: pos, subcommand: name} Args
 
 # --- usage ----------------------------------------------------------------------
 fn flagText({spec: ArgSpec}) -> str:
@@ -249,10 +259,13 @@ fn dashes({count: int}) -> str:
     out = out + "-"
   return out
 
+# The last cell is not padded: a line never ends in spaces.
 fn renderRow({cells: Seq[str], widths: Seq[int]}) -> str:
   var parts: Seq[str] = []
   for i in 0 .. cells.len - 1:
-    let cell = {body: cells[i], width: widths[i], alignRight: false} pad
+    var cell = cells[i]
+    if i < cells.len - 1:
+      cell = {body: cells[i], width: widths[i], alignRight: false} pad
     parts = {items: parts, value: cell} push
   return {parts: parts, sep: " | "} joinStr
 
@@ -388,7 +401,7 @@ fn checkOutput() -> int:
   rows = {items: rows, value: row1} push
   rows = {items: rows, value: row2} push
   let table = {headers: headers, rows: rows} renderTable
-  let want = "id | name \n-- | -----\n1  | alpha\n22 | b    "
+  let want = "id | name\n-- | -----\n1  | alpha\n22 | b"
   if table != want:
     return 15
   let plain = {body: "x", colour: Plain, bold: false} styled

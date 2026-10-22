@@ -51,9 +51,17 @@ This directory is the follow-up to `REPORT.md`'s comparative stdlib study and un
 
 **alloc** (heap, no OS): `allocator`, `vec`, `string`, `map`, `set`, `deque`, `list`, `box`, `rc`, `fmt`
 
-**sys** (hosted OS, thin wrapping): `io`, `fs`, `env`, `process`, `thread`, `sync`, `time`, `net`, `mmap`, `dynload`, `ffi`, `signal`, `ble` *(round 2 — hosted-OS BLE central, sibling to `platform.net-lowpower`'s embedded BLE peripheral)*, `window` *(round 4 — window/surface/input primitive, shared consumer across desktop/game/mobile)*, `audio` *(round 4 — thin PCM device I/O, bundled rung B1)*
+> **Dissolved into the language (dropped 2026-10-21).** Five modules of the
+> original design have no Tuck module, because the language already does their
+> job: `std.async`, `sys.thread` and `sys.sync` (tasks, actors with bounded
+> mailboxes, the scheduler and the reactor over minicoro), `sys.ffi` (`extern`
+> with `impl:` per backend), and `sys.dynload` (blocked by the rule that every
+> callable is known at build time; plugins are a language-level question).
+> The history below still names them where they shaped a finding.
 
-**std** (hosted OS, batteries included): `async`, `testing`, `log`, `regex`, `encoding`, `crypto`, `compress`, `archive`, `net-http`, `net-tls`, `chrono`, `math`, `random`, `cli`, `reflect`, `serde-derive`, `i18n`, `db` *(round 4 — query/row-mapping interface, `database/sql`-shaped, with the bundled `sqlite` submodule as rung B1's reference driver)*, `perf` *(round 4 — Stopwatch/Counter/Histogram, measurement only; heavier profiling stays external per `GOVERNANCE.md`)*, `queue` *(round 4 — `DurableQueue[T]`, crash-safe push/pending/ack, generalizing the mobile-sync write-queue finding)*
+**sys** (hosted OS, thin wrapping): `io`, `fs`, `env`, `process`, `time`, `net`, `mmap`, `signal`, `ble` *(round 2 — hosted-OS BLE central, sibling to `platform.net-lowpower`'s embedded BLE peripheral)*, `window` *(round 4 — window/surface/input primitive, shared consumer across desktop/game/mobile)*, `audio` *(round 4 — thin PCM device I/O, bundled rung B1)*
+
+**std** (hosted OS, batteries included): `testing`, `log`, `regex`, `encoding`, `crypto`, `compress`, `archive`, `net-http`, `net-tls`, `chrono`, `math`, `random`, `cli`, `reflect`, `serde-derive`, `i18n`, `db` *(round 4 — query/row-mapping interface, `database/sql`-shaped, with the bundled `sqlite` submodule as rung B1's reference driver)*, `perf` *(round 4 — Stopwatch/Counter/Histogram, measurement only; heavier profiling stays external per `GOVERNANCE.md`)*, `queue` *(round 4 — `DurableQueue[T]`, crash-safe push/pending/ack, generalizing the mobile-sync write-queue finding)*
 
 **platform** (embedded/systems toolkit, sibling of std): `hal`, `rtos`, `interrupt`, `devicetree`, `boot`, `power`, `dsp`, `net-lowpower`, `libc-shim`, `watchdog` *(round 4 — arm/feed/timeout, vendor-boundary-friendly)*
 
@@ -76,12 +84,10 @@ This directory is the follow-up to `REPORT.md`'s comparative stdlib study and un
 | sys.io | | ● | | | | ● | | | | | ● |
 | sys.fs | ● | ● | ○ | ● | ● | ● | ● | ● | | | ● |
 | sys.mmap | | ● | | | | | | | | | ● |
-| sys.thread/sync | | ● | | | | | | | ● | | |
 | sys.net | | | | | | | | | ● | | |
 | sys.signal | ● | | | | | | | | ● | | |
 | sys.process/dynload/ffi | | ○ | | | | | | | | | |
 | std.net-http/tls | ● | | | | ● | | | | | | |
-| std.async | ● | | | | ○ | | | | ● | | ○ |
 | std.crypto | ● | | | | | ● | | ● | | | |
 | std.encoding | | ○ | | ● | ● | | ● | ● | | | ○ |
 | std.chrono | | | | ● | ● | | | | ○ | | |

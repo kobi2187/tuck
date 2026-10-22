@@ -1,0 +1,285 @@
+# serve — share a folder over HTTP, like `python -m http.server`.
+#
+#   serve [--port N] [--dir FOLDER]     serve on http://localhost:N/ (8000)
+#   serve --stdio [--dir FOLDER]        answer one request on stdin/stdout
+#
+# GET and HEAD only. A folder answers with its index.html when it has one,
+# else a page listing what is in it; a file answers with its bytes and a
+# Content-Type from its extension. Nothing outside FOLDER is reachable: a
+# path with a `..` segment is refused (403). --stdio is how inetd and
+# systemd's socket activation hand a server its connection, and how a test
+# drives this one without a network.
+import console
+import seq
+import str
+import text
+import convert
+import iter
+import cli
+import fs
+import net
+import path
+import http
+
+# --- what to send -------------------------------------------------------------------
+fn contentType({file: str}) -> str:
+  let ext = {p: file} extension
+  if not ext.ok:
+    return "application/octet-stream"
+  let e = {t: ext.value} toLowerAscii
+  if e == "html" or e == "htm":
+    return "text/html; charset=utf-8"
+  if e == "txt" or e == "md":
+    return "text/plain; charset=utf-8"
+  if e == "css":
+    return "text/css"
+  if e == "js":
+    return "text/javascript"
+  if e == "json":
+    return "application/json"
+  if e == "png":
+    return "image/png"
+  if e == "jpg" or e == "jpeg":
+    return "image/jpeg"
+  if e == "svg":
+    return "image/svg+xml"
+  return "application/octet-stream"
+
+fn escapedHtml({t: str}) -> str:
+  var out = ""
+  for i in 0 .. {t: t} byteCount - 1:
+    let c = {s: t, index: i} charAt
+    if c == "<":
+      out = out + "&lt;"
+    elif c == ">":
+      out = out + "&gt;"
+    elif c == "&":
+      out = out + "&amp;"
+    elif c == "\"":
+      out = out + "&quot;"
+    else:
+      out = out + c
+  return out
+
+fn page({status: int, kind: str, body: str}) -> Response:
+  let reason = {status: status} reasonFor
+  let h = {name: "Content-Type", value: kind} Header
+  let headers: Seq[Header] = [h]
+  return {status: status, reason: reason, headers: headers, body: body} Response
+
+fn problem({status: int}) -> Response:
+  let code = {value: status} toStr
+  let reason = {status: status} reasonFor
+  return {status: status, kind: "text/plain; charset=utf-8", body: code + " " + reason + "\n"} page
+
+# One `<li>` of a listing: the name percent-encoded in the link, escaped in
+# the text, and a folder's trailing slash on both.
+fn entryLine({name: str, slash: str}) -> str:
+  let link = {t: name} percentEncode
+  let label = {t: name} escapedHtml
+  return "<li><a href=\"" + link + slash + "\">" + label + slash + "</a></li>\n"
+
+# A page listing a folder, folders first, each in name order.
+fn listing({full: str, shown: str}) -> Response [io: fs]:
+  let names = {path: full} listDir
+  let sorted = {items: names} sort
+  var folders: Seq[str] = []
+  var files: Seq[str] = []
+  for i in 0 .. sorted.len - 1:
+    let inside = {base: full, rel: sorted[i]} join
+    let info = {path: inside} pathInfo
+    if info.ok:
+      if info.value.isFolder:
+        folders = {items: folders, value: sorted[i]} push
+      else:
+        files = {items: files, value: sorted[i]} push
+  let title = {t: shown} escapedHtml
+  var html = "<!doctype html>\n<title>" + title + "</title>\n<h1>" + title + "</h1>\n<ul>\n"
+  for i in 0 .. folders.len - 1:
+    let item = {name: folders[i], slash: "/"} entryLine
+    html = html + item
+  for i in 0 .. files.len - 1:
+    let item = {name: files[i], slash: ""} entryLine
+    html = html + item
+  html = html + "</ul>\n"
+  return {status: 200, kind: "text/html; charset=utf-8", body: html} page
+
+# --- answering ----------------------------------------------------------------------
+fn pathPart({target: str}) -> str:
+  let q = {t: target, what: "?"} text::find
+  if not q.ok:
+    return target
+  let p = {t: target, start: 0, stop: q.value} slice
+  if p.ok:
+    return p.value
+  return target
+
+fn climbsOut({p: str}) -> bool:
+  let parts = {t: p, at: "/"} split
+  for i in 0 .. parts.len - 1:
+    if parts[i] == "..":
+      return true
+  return false
+
+fn folderAnswer({full: str, shown: str}) -> Response [io: fs]:
+  if not {t: shown, suffix: "/"} endsWith:
+    let moved = {status: 301} problem
+    let there = {name: "Location", value: shown + "/"} Header
+    let headers = {items: moved.headers, value: there} push
+    return {status: 301, reason: moved.reason, headers: headers, body: moved.body} Response
+  let index = {base: full, rel: "index.html"} join
+  let page1 = {path: index} readFile
+  if page1.ok:
+    return {status: 200, kind: "text/html; charset=utf-8", body: page1.value.content} page
+  return {full: full, shown: shown} listing
+
+fn answer({root: str, req: Request}) -> Response [io: fs]:
+  var readOnly = false
+  match req.verb:
+    Get: readOnly = true
+    Head: readOnly = true
+    _: discard
+  if not readOnly:
+    let refused = {status: 405} problem
+    let allow = {name: "Allow", value: "GET, HEAD"} Header
+    let headers = {items: refused.headers, value: allow} push
+    return {status: 405, reason: refused.reason, headers: headers, body: refused.body} Response
+  let raw = {target: req.target} pathPart
+  let shown = {t: raw, plusIsSpace: false} percentDecode
+  if {p: shown} climbsOut:
+    return {status: 403} problem
+  let full = {base: root, rel: "." + shown} join
+  let info = {path: full} pathInfo
+  if not info.ok:
+    return {status: 404} problem
+  if info.value.isFolder:
+    return {full: full, shown: shown} folderAnswer
+  let got = {path: full} readFile
+  if not got.ok:
+    return {status: 403} problem
+  let kind = {file: full} contentType
+  return {status: 200, kind: kind, body: got.value.content} page
+
+# The bytes to send: a HEAD answer is the GET answer's head alone.
+fn wireText({req: Request?, r: Response}) -> str:
+  let whole = {r: r} responseText
+  if not req.ok:
+    return whole
+  match req.value.verb:
+    Head:
+      let cut = {t: whole, what: "\r\n\r\n"} text::find
+      if cut.ok:
+        let head = {t: whole, start: 0, stop: cut.value + 4} slice
+        if head.ok:
+          return head.value
+    _: discard
+  return whole
+
+fn respondTo({root: str, raw: str}) -> {wire: str, line: str} [io: fs]:
+  let req = {raw: raw} parseRequest
+  if not req.ok:
+    let bad = {status: 400} problem
+    let wire = {req: req, r: bad} wireText
+    return {wire: wire, line: "? 400"}
+  let r = {root: root, req: req.value} answer
+  let wire = {req: req, r: r} wireText
+  let verb = {m: req.value.verb} methodName
+  let code = {value: r.status} toStr
+  return {wire: wire, line: verb + " " + req.value.target + " " + code}
+
+# --- connections --------------------------------------------------------------------
+# A request head read off stdin: lines up to the blank one, `\r` or not.
+fn stdinRequest() -> str [io: console]:
+  var lines: Seq[str] = []
+  for true:
+    let got = readLine
+    if not got.ok:
+      return {parts: lines, sep: "\r\n"} joinStr + "\r\n\r\n"
+    var line = got.value.line
+    if {t: line, suffix: "\r"} endsWith:
+      let n = {t: line} byteCount
+      let cut = {t: line, start: 0, stop: n - 1} slice
+      if cut.ok:
+        line = cut.value
+    if line == "":
+      return {parts: lines, sep: "\r\n"} joinStr + "\r\n\r\n"
+    lines = {items: lines, value: line} push
+  return ""
+
+# What a client sent, up to the end of its head (64 KiB at most).
+fn socketRequest({fd: int}) -> str [io: net]:
+  var raw = ""
+  for true:
+    let got = {fd: fd, max: 4096} recv
+    if not got.ok:
+      return raw
+    if got.value.data == "":
+      return raw
+    raw = raw + got.value.data
+    if {t: raw, what: "\r\n\r\n"} text::has:
+      return raw
+    if {t: raw} byteCount > 65536:
+      return raw
+  return raw
+
+# One connection: read its request, answer, close, log a line.
+task handle({fd: int, root: str}) -> void [io]:
+  let raw = {fd: fd} socketRequest
+  let out = {root: root, raw: raw} respondTo
+  let sent = {fd: fd, data: out.wire} send
+  {fd: fd} close
+  var line = out.line
+  if not sent.ok:
+    line = line + " (not sent)"
+  {text: line} printError
+  return
+
+# Every connection gets a task of its own, so a slow client holds up no one.
+task acceptAll({lfd: int, root: str}) -> int [io]:
+  for true:
+    let c = {fd: lfd} accept
+    if c.ok:
+      {fd: c.value.fd, root: root} handle
+  return 0
+
+fn serveSocket({root: str, port: int}) -> int [io]:
+  let l = {port: port} listen
+  let p = {value: port} toStr
+  if not l.ok:
+    {text: "serve: cannot listen on port " + p} printError
+    return 2
+  {text: "Serving " + root + " on http://localhost:" + p + "/"} printError
+  # Binding a task's result awaits it: main lives as long as the server.
+  let code = {lfd: l.value.fd, root: root} acceptAll
+  return code
+
+fn command() -> Command:
+  let port = {name: "port", shortName: "p", kind: ANumber, help: "the port (8000)", required: false} spec
+  let dir = {name: "dir", shortName: "d", kind: AText, help: "the folder to share (.)", required: false} spec
+  let stdio = {name: "stdio", shortName: "s", kind: AFlag, help: "one request on stdin, the answer on stdout", required: false} spec
+  let args: Seq[ArgSpec] = [port, dir, stdio]
+  let noSubs: Seq[Command] = []
+  return {name: "serve", help: "share a folder over HTTP", args: args, subcommands: noSubs} Command
+
+fn main() -> int [io, io: sys, io: console, io: fs, io: net]:
+  let argv = commandLine
+  let parsed = {c: command, argv: argv} tryParse
+  if not parsed.ok:
+    let usage = {c: command} usageOf
+    {text: usage} printLine
+    return 2
+  let a = parsed.value
+  var root = "."
+  let d = {a: a, name: "dir"} textOf
+  if d.ok:
+    root = d.value
+  if {a: a, name: "stdio"} hasFlag:
+    let raw = stdinRequest
+    let out = {root: root, raw: raw} respondTo
+    {text: out.wire} print
+    return 0
+  var port = 8000
+  let p = {a: a, name: "port"} numberOf
+  if p.ok:
+    port = {value: p.value} int
+  return {root: root, port: port} serveSocket

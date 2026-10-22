@@ -1,0 +1,4 @@
+{"name": "weekend", "tags": ["tuck", "json"], "users": [
+  {"name": "ada", "age": 36, "score": 9.5, "admin": true},
+  {"name": "bob", "age": 41, "score": -2, "admin": false, "note": null}
+], "empty": {}, "none": []}

@@ -250,7 +250,8 @@ fn main() -> int:
   score = score + ({n: n} bits) * 2
   let hit = {xs: [3, 5], want: 5} find
   let miss = {xs: [3, 5], want: 9} find
-  if hit.ok and not miss.ok:
+  let onlyHit = hit.ok and not miss.ok
+  if onlyHit:
     score = score + 16
   score = score + {v: none} orZero + {v: 32} orZero
   let k = {data: 64, next: 1} Node

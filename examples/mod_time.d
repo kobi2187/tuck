@@ -21,8 +21,8 @@ tuckˑtypeˑSeconds tuckˑfnˑs(uint value) {
     return tuckˑtypeˑSeconds(value);
 }
 
-tuckˑmodˑshapes_32_duration_units.TRec_ms!(ulong) nowMs() {
-    return rt.nowMs!(tuckˑmodˑshapes_32_duration_units.TRec_ms!(ulong))();
+tuckˑmodˑshapes_32_duration_units.TRec_epochMs!(ulong) nowMs() {
+    return rt.nowMs!(tuckˑmodˑshapes_32_duration_units.TRec_epochMs!(ulong))();
 }
 
 void sleepMs(uint ms) {

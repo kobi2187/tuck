@@ -105,3 +105,11 @@ four findings here were exactly that, and all three were invisible until
 something was BUILT. `./tuck ch` passing continues to mean less than it looks
 like it means, which is the strongest argument for building more apps rather
 than reading more of the compiler.
+
+## Rewritten as a real program (2026-10-21)
+
+The slice above became a usable tool: `add`/`list`/`done`/`remove` against a
+todo.txt-format file, plus `shell`, which reads one command per line from
+stdin (how the `apps` suite drives a whole session in one run, against
+`--file /dev/null`). One friction: `task` is a reserved word, so it cannot
+name a local.

@@ -422,11 +422,43 @@ private void unwatch(int fd, bool isTimer)
     if (isTimer) close(fd);
 }
 
+/// An [io] call may be made from any fn that declares the effect, not only a
+/// task (ruled 2026-10-22). Main is not a coroutine and cannot park, so it
+/// LENDS its thread to the scheduler — ready tasks, the reactor, timers —
+/// until its own `fd` is ready (true) or `timeoutMs` passes (false; negative:
+/// never), the way awaitResult waits for a task. Written out the same in
+/// tuck_async.nim, which explains it.
+private bool tuckLendUntil(int fd, bool write, long timeoutMs)
+{
+    import core.sys.posix.poll : pollfd, poll, POLLIN, POLLOUT;
+    import core.time : MonoTime;
+    initLoop();
+    immutable start = MonoTime.currTime;
+    pollfd pfd = pollfd(fd, write ? POLLOUT : POLLIN, 0);
+    for (;;)
+    {
+        pfd.revents = 0;
+        if (poll(&pfd, 1, 0) > 0) return true;
+        immutable spent = (MonoTime.currTime - start).total!"msecs";
+        if (timeoutMs >= 0 && spent >= timeoutMs) return false;
+        if (readyCount > 0) { stepOne(); continue; }
+        if (gLoop.waiters.count == 0)
+        {
+            // Nothing else can make progress: just wait on the fd itself.
+            pfd.revents = 0;
+            immutable left = timeoutMs < 0 ? -1 : cast(int)(timeoutMs - spent);
+            return poll(&pfd, 1, left) > 0;
+        }
+        runOnce(1);
+    }
+}
+
 /// Suspend until `fd` is readable.
 void tuckAwaitRead(long fd)
 {
     initLoop();
     auto ifd = cast(int) fd;
+    if (activeCoroutine is null) { tuckLendUntil(ifd, false, -1); return; }
     if (!watchFd(ifd, false)) return;
     parkCurrent(ifd, false);
     unwatch(ifd, false);
@@ -436,6 +468,7 @@ void tuckAwaitWrite(long fd)
 {
     initLoop();
     auto ifd = cast(int) fd;
+    if (activeCoroutine is null) { tuckLendUntil(ifd, true, -1); return; }
     if (!watchFd(ifd, true)) return;
     parkCurrent(ifd, true);
     unwatch(ifd, false);
@@ -445,6 +478,7 @@ void tuckAwaitWrite(long fd)
 void tuckSleep(long ms)
 {
     initLoop();
+    if (activeCoroutine is null) { tuckLendUntil(-1, false, ms); return; }
     int tfd;
     if (!armTimer(tfd, ms)) return;
     parkCurrent(tfd, true);
@@ -458,6 +492,7 @@ void tuckSleep(long ms)
 bool tuckAwaitReadOrTimeout(long fd, long timeoutMs)
 {
     initLoop();
+    if (activeCoroutine is null) return tuckLendUntil(cast(int) fd, false, timeoutMs);
     auto rfd = cast(int) fd;
     if (!watchFd(rfd, false)) return false;
     int tfd;

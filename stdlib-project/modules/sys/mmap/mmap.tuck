@@ -1,0 +1,185 @@
+# sys.mmap — a file mapped into memory and read in place.
+#
+# The point of a mapping is ZERO COPY: the OS pages the file in on demand, and
+# a scan of it never builds a second copy. Tuck may not hold the pointer a
+# mapping is, so the mapped bytes stay behind a handle in a backend shim
+# (shim/mmap_shim.{nim,odin,d}) and the work runs there, over the mapping:
+# reading a byte, finding a pattern, counting a byte. What crosses into Tuck is
+# an offset, a count — or, from `window` only, a copy of the bytes asked for.
+#
+# So a 2 GB log is searched, and its lines counted, without 2 GB ever being
+# allocated. The mapping is read-only and private: the program sees the file as
+# it was when mapped, as far as the OS keeps those pages.
+import seq
+import str
+import encoding
+import fs
+
+type MapError:
+  | NotFound
+  | AccessDenied
+  | MapFailed
+
+extern [impl: nim "./shim/mmap_shim", odin "./shim", d "./shim/mmap_shim"]:
+  fn mapOpen({path: str}) -> int [io: fs]
+  fn mapSize({handle: int}) -> int [io: fs]
+  fn mapClose({handle: int}) -> void [io: fs]
+  fn mapByte({handle: int, at: int}) -> int [io: fs]
+  fn mapFind({handle: int, what: str, start: int}) -> int [io: fs]
+  fn mapCount({handle: int, value: int}) -> int [io: fs]
+  fn mapCountRange({handle: int, value: int, start: int, n: int}) -> int [io: fs]
+  fn mapCopy({handle: int, start: int, n: int}) -> Seq[u8] [io: fs]
+
+# A mapped file: its handle and its size in bytes.
+type Mapping:
+  handle: int
+  size: int
+
+fn mapFile({path: str}) -> !Mapping [io: fs, error: MapError]:
+  let h = {path: path} mapOpen
+  if h == -1:
+    err NotFound
+  if h == -2:
+    err AccessDenied
+  if h < 0:
+    err MapFailed
+  let size = {handle: h} mapSize
+  return {handle: h, size: size} Mapping
+
+fn unmapFile({m: Mapping}) -> void [io: fs]:
+  {handle: m.handle} mapClose
+
+# The byte at `at`; none outside the file.
+fn mappedByte({m: Mapping, at: int}) -> u8? [io: fs]:
+  let b = {handle: m.handle, at: at} mapByte
+  if b < 0:
+    return none
+  return {value: b} u8
+
+# Where `what` first occurs at or after `start`; none if it does not.
+fn findIn({m: Mapping, what: str, start: int}) -> int? [io: fs]:
+  let at = {handle: m.handle, what: what, start: start} mapFind
+  if at < 0:
+    return none
+  return at
+
+# Every offset where `what` occurs, non-overlapping, in order.
+fn allMatches({m: Mapping, what: str}) -> Seq[int] [io: fs]:
+  var out: Seq[int] = []
+  let step = {t: what} byteCount
+  if step == 0:
+    return out
+  var at = {handle: m.handle, what: what, start: 0} mapFind
+  for at >= 0:
+    out = {items: out, value: at} push
+    at = {handle: m.handle, what: what, start: at + step} mapFind
+  return out
+
+# How many lines: newline count, plus one for a last line without one.
+fn lineCount({m: Mapping}) -> int [io: fs]:
+  if m.size == 0:
+    return 0
+  let newlines = {handle: m.handle, value: 10} mapCount
+  let last = {handle: m.handle, at: m.size - 1} mapByte
+  if last == 10:
+    return newlines
+  return newlines + 1
+
+# How many bytes in [start, start + n) equal `value`, counted in place.
+fn countIn({m: Mapping, value: u8, start: int, n: int}) -> int [io: fs]:
+  let v = {value: value} int
+  return {handle: m.handle, value: v, start: start, n: n} mapCountRange
+
+# A copy of bytes [start, start + n), clamped to the file.
+fn window({m: Mapping, start: int, n: int}) -> Seq[u8] [io: fs]:
+  return {handle: m.handle, start: start, n: n} mapCopy
+
+# The text of the line that contains offset `at`, without its newline; none
+# outside the file. Only that line is copied.
+fn lineAround({m: Mapping, at: int}) -> str? [io: fs]:
+  if at < 0 or at >= m.size:
+    return none
+  var a = at
+  for a > 0 and {handle: m.handle, at: a - 1} mapByte != 10:
+    a = a - 1
+  var b = at
+  for b < m.size and {handle: m.handle, at: b} mapByte != 10:
+    b = b + 1
+  let bytes = {m: m, start: a, n: b - a} window
+  return {bytes: bytes} fromBytes
+
+# --- checks ---------------------------------------------------------------------
+fn checkMap() -> int [io: fs]:
+  let path = "tuck-mmap-check.txt"
+  let w = {path: path, content: "alpha one\nbeta two\ngamma one\nlast"} writeFile
+  if not w.ok:
+    return 1
+  let m = {path: path} mapFile
+  if not m.ok:
+    return 2
+  let f = m.value
+  if f.size != 33:
+    return 3
+  let b = {m: f, at: 0} mappedByte
+  if not b.ok:
+    return 4
+  if b.value != 97:
+    return 5
+  let off = {m: f, at: 33} mappedByte
+  if off.ok:
+    return 6
+  let beta = {m: f, what: "beta", start: 0} findIn
+  if not beta.ok:
+    return 7
+  if beta.value != 10:
+    return 8
+  let ones = {m: f, what: "one"} allMatches
+  if ones.len != 2 or ones[0] != 6 or ones[1] != 25:
+    return 9
+  if {m: f} lineCount != 4:
+    return 10
+  let line = {m: f, at: 27} lineAround
+  if not line.ok:
+    return 11
+  if line.value != "gamma one":
+    return 12
+  let tail = {m: f, start: 29, n: 100} window
+  if {bytes: tail} fromBytes != "last":
+    return 13
+  let nl = {value: 10} u8
+  if {m: f, value: nl, start: 0, n: 19} countIn != 2:
+    return 15
+  let missing = {m: f, what: "delta", start: 0} findIn
+  if missing.ok:
+    return 14
+  {m: f} unmapFile
+  return 0
+
+fn checkEdges() -> int [io: fs]:
+  let empty = "tuck-mmap-empty.txt"
+  let w = {path: empty, content: ""} writeFile
+  if not w.ok:
+    return 20
+  let m = {path: empty} mapFile
+  if not m.ok:
+    return 21
+  if m.value.size != 0 or {m: m.value} lineCount != 0:
+    return 22
+  let none1 = {m: m.value, what: "x", start: 0} findIn
+  if none1.ok:
+    return 23
+  {m: m.value} unmapFile
+  let gone = {path: "tuck-mmap-no-such-file"} mapFile
+  if gone.ok:
+    return 24
+  match gone.err:
+    NotFound: discard
+    AccessDenied: return 25
+    MapFailed: return 26
+  return 0
+
+fn main() -> int [io: fs]:
+  let a = checkMap
+  if a != 0:
+    return a
+  return checkEdges

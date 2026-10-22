@@ -244,6 +244,6 @@ proc harnessFor*(importName: string, cs: seq[Case]): string =
   result = "import " & importName & "\nimport console\nimport sys\n\n" &
            "fn main() -> int [io]:\n  let n = {} argCount\n"
   for i, c in cs:
-    result.add "  if n.count == " & $(i + 1) & ":\n"
+    result.add "  if n.total == " & $(i + 1) & ":\n"
     for l in c.lines: result.add "    " & l & "\n"
   result.add "  return 0\n"

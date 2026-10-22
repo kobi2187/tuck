@@ -92,6 +92,488 @@ fn jsonAt({j: Json, index: int}) -> Json?:
       return j.items[index]
     _: return none
 
+# --- parsing ------------------------------------------------------------------
+# Recursive descent over the text's bytes. Every step takes the position it
+# starts at and hands back the position it stopped at; `none` is "not JSON",
+# never a crash. `depth` bounds nesting so a hostile document cannot blow the
+# stack.
+type Parsed:
+  node: Json
+  endAt: int
+
+type ParsedText:
+  value: str
+  endAt: int
+
+type ParsedItems:
+  items: Seq[Json]
+  endAt: int
+
+type ParsedMembers:
+  keys: Seq[str]
+  vals: Seq[Json]
+  endAt: int
+
+fn maxDepth() -> int:
+  return 200
+
+fn isSpaceAt({t: str, at: int}) -> bool:
+  let b = {t: t, index: at} byteAt
+  return b == 32 or b == 9 or b == 10 or b == 13
+
+fn skipSpace({t: str, at: int}) -> int:
+  let n = {t: t} byteCount
+  var i = at
+  for i < n:
+    if not {t: t, at: i} isSpaceAt:
+      return i
+    i = i + 1
+  return i
+
+fn isDigitAt({t: str, at: int}) -> bool:
+  if at >= {t: t} byteCount:
+    return false
+  let b = {t: t, index: at} byteAt
+  return b >= 48 and b <= 57
+
+fn expectAt({t: str, at: int, what: str}) -> bool:
+  return {t: t, at: at, what: what} matchesAt
+
+fn hexValue({b: u8}) -> int:
+  if b >= 48 and b <= 57:
+    return {value: b} int - 48
+  if b >= 97 and b <= 102:
+    return {value: b} int - 87
+  if b >= 65 and b <= 70:
+    return {value: b} int - 55
+  return -1
+
+# Four hex digits at `at` as a number, or -1.
+fn hex4({t: str, at: int}) -> int:
+  if at + 4 > {t: t} byteCount:
+    return -1
+  var v = 0
+  for i in 0 .. 3:
+    let digit = {t: t, index: at + i} byteAt
+    let h = {b: digit} hexValue
+    if h < 0:
+      return -1
+    v = v * 16 + h
+  return v
+
+fn appendRune({code: int, into: Seq[u8]}) -> Seq[u8]:
+  let r = {value: code} u32
+  return {r: r, into: into} encodeRune
+
+# The string starting at the opening quote `at`.
+fn parseString({t: str, at: int}) -> ParsedText?:
+  let n = {t: t} byteCount
+  var i = at + 1
+  var out: Seq[u8] = []
+  for i < n:
+    let b = {t: t, index: i} byteAt
+    if b == 34:
+      let s = {bytes: out} fromBytes
+      return {value: s, endAt: i + 1} ParsedText
+    if b < 32:
+      return none
+    if b != 92:
+      out = {items: out, value: b} push
+      i = i + 1
+    else:
+      if i + 1 >= n:
+        return none
+      let e = {t: t, index: i + 1} byteAt
+      i = i + 2
+      if e == 34 or e == 92 or e == 47:
+        out = {items: out, value: e} push
+      elif e == 98:
+        out = {items: out, value: 8} push
+      elif e == 102:
+        out = {items: out, value: 12} push
+      elif e == 110:
+        out = {items: out, value: 10} push
+      elif e == 114:
+        out = {items: out, value: 13} push
+      elif e == 116:
+        out = {items: out, value: 9} push
+      elif e == 117:
+        var code = {t: t, at: i} hex4
+        if code < 0:
+          return none
+        i = i + 4
+        if code >= 55296 and code <= 56319:
+          # a high surrogate must be followed by \u + a low surrogate
+          if not {t: t, at: i, what: "\\u"} expectAt:
+            return none
+          let low = {t: t, at: i + 2} hex4
+          if low < 56320 or low > 57343:
+            return none
+          code = 65536 + (code - 55296) * 1024 + (low - 56320)
+          i = i + 6
+        elif code >= 56320 and code <= 57343:
+          return none
+        out = {code: code, into: out} appendRune
+      else:
+        return none
+  return none
+
+# A number: -?digits(.digits)?([eE][+-]?digits)?  — no leading zeros.
+fn parseNumber({t: str, at: int}) -> Parsed?:
+  let n = {t: t} byteCount
+  var i = at
+  if {t: t, index: i} byteAt == 45:
+    i = i + 1
+  if not {t: t, at: i} isDigitAt:
+    return none
+  if {t: t, index: i} byteAt == 48:
+    i = i + 1
+    if {t: t, at: i} isDigitAt:
+      return none
+  else:
+    for {t: t, at: i} isDigitAt:
+      i = i + 1
+  if i < n and {t: t, index: i} byteAt == 46:
+    i = i + 1
+    if not {t: t, at: i} isDigitAt:
+      return none
+    for {t: t, at: i} isDigitAt:
+      i = i + 1
+  if i < n:
+    let e = {t: t, index: i} byteAt
+    if e == 101 or e == 69:
+      i = i + 1
+      if i < n:
+        let sign = {t: t, index: i} byteAt
+        if sign == 43 or sign == 45:
+          i = i + 1
+      if not {t: t, at: i} isDigitAt:
+        return none
+      for {t: t, at: i} isDigitAt:
+        i = i + 1
+  let piece = {t: t, start: at, endAt: i} slice
+  if not piece.ok:
+    return none
+  let v = {t: piece.value} parseFloat
+  if not v.ok:
+    return none
+  let node = {n: v.value} Json.JNum
+  return {node: node, endAt: i} Parsed
+
+fn parseLiteral({t: str, at: int}) -> Parsed?:
+  if {t: t, at: at, what: "true"} expectAt:
+    let node = {b: true} Json.JBool
+    return {node: node, endAt: at + 4} Parsed
+  if {t: t, at: at, what: "false"} expectAt:
+    let node = {b: false} Json.JBool
+    return {node: node, endAt: at + 5} Parsed
+  if {t: t, at: at, what: "null"} expectAt:
+    return {node: Json.JNull, endAt: at + 4} Parsed
+  return none
+
+fn parseItems({t: str, at: int, depth: int}) -> ParsedItems?:
+  var items: Seq[Json] = []
+  var i = {t: t, at: at + 1} skipSpace
+  if i < {t: t} byteCount and {t: t, index: i} byteAt == 93:
+    return {items: items, endAt: i + 1} ParsedItems
+  for true:
+    let one = {t: t, at: i, depth: depth + 1} parseValue
+    if not one.ok:
+      return none
+    items = {items: items, value: one.value.node} push
+    i = {t: t, at: one.value.endAt} skipSpace
+    if i >= {t: t} byteCount:
+      return none
+    let b = {t: t, index: i} byteAt
+    if b == 93:
+      return {items: items, endAt: i + 1} ParsedItems
+    if b != 44:
+      return none
+    i = {t: t, at: i + 1} skipSpace
+  return none
+
+fn parseMembers({t: str, at: int, depth: int}) -> ParsedMembers?:
+  var keys: Seq[str] = []
+  var vals: Seq[Json] = []
+  var i = {t: t, at: at + 1} skipSpace
+  if i < {t: t} byteCount and {t: t, index: i} byteAt == 125:
+    return {keys: keys, vals: vals, endAt: i + 1} ParsedMembers
+  for true:
+    if i >= {t: t} byteCount or {t: t, index: i} byteAt != 34:
+      return none
+    let k = {t: t, at: i} parseString
+    if not k.ok:
+      return none
+    i = {t: t, at: k.value.endAt} skipSpace
+    if i >= {t: t} byteCount or {t: t, index: i} byteAt != 58:
+      return none
+    i = {t: t, at: i + 1} skipSpace
+    let v = {t: t, at: i, depth: depth + 1} parseValue
+    if not v.ok:
+      return none
+    keys = {items: keys, value: k.value.value} push
+    vals = {items: vals, value: v.value.node} push
+    i = {t: t, at: v.value.endAt} skipSpace
+    if i >= {t: t} byteCount:
+      return none
+    let b = {t: t, index: i} byteAt
+    if b == 125:
+      return {keys: keys, vals: vals, endAt: i + 1} ParsedMembers
+    if b != 44:
+      return none
+    i = {t: t, at: i + 1} skipSpace
+  return none
+
+fn parseValue({t: str, at: int, depth: int}) -> Parsed?:
+  if depth > {} maxDepth:
+    return none
+  let i = {t: t, at: at} skipSpace
+  if i >= {t: t} byteCount:
+    return none
+  let b = {t: t, index: i} byteAt
+  if b == 34:
+    let s = {t: t, at: i} parseString
+    if not s.ok:
+      return none
+    let node = {s: s.value.value} Json.JStr
+    return {node: node, endAt: s.value.endAt} Parsed
+  if b == 91:
+    let a = {t: t, at: i, depth: depth} parseItems
+    if not a.ok:
+      return none
+    let node = {items: a.value.items} Json.JArr
+    return {node: node, endAt: a.value.endAt} Parsed
+  if b == 123:
+    let o = {t: t, at: i, depth: depth} parseMembers
+    if not o.ok:
+      return none
+    let node = {keys: o.value.keys, vals: o.value.vals} Json.JObj
+    return {node: node, endAt: o.value.endAt} Parsed
+  if b == 45 or {t: t, at: i} isDigitAt:
+    return {t: t, at: i} parseNumber
+  return {t: t, at: i} parseLiteral
+
+# The document in `t`, or none when it is not exactly one JSON value.
+fn parseJson({t: str}) -> Json?:
+  let r = {t: t, at: 0, depth: 0} parseValue
+  if not r.ok:
+    return none
+  let fin = {t: t, at: r.value.endAt} skipSpace
+  if fin != {t: t} byteCount:
+    return none
+  return r.value.node
+
+# --- base64 and hex ------------------------------------------------------------
+fn b64Alphabet() -> str:
+  return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+# Standard base64 with `=` padding.
+# The UTF-8 bytes of a text: the bridge between `str` and the byte codecs.
+fn bytesOf({t: str}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  for i in 0 .. {t: t} byteCount - 1:
+    let b = {t: t, index: i} byteAt
+    out = {items: out, value: b} push
+  return out
+
+fn toBase64({bytes: Seq[u8]}) -> str:
+  let alpha = b64Alphabet
+  var parts: Seq[str] = []
+  var i = 0
+  let n = bytes.len
+  for i < n:
+    let b0 = {value: bytes[i]} int
+    var b1 = 0
+    var b2 = 0
+    var have = 1
+    if i + 1 < n:
+      b1 = {value: bytes[i + 1]} int
+      have = 2
+    if i + 2 < n:
+      b2 = {value: bytes[i + 2]} int
+      have = 3
+    let word = b0 * 65536 + b1 * 256 + b2
+    let c0 = {s: alpha, index: word /i 262144 % 64} charAt
+    let c1 = {s: alpha, index: word /i 4096 % 64} charAt
+    parts = {items: parts, value: c0} push
+    parts = {items: parts, value: c1} push
+    if have >= 2:
+      let c2 = {s: alpha, index: word /i 64 % 64} charAt
+      parts = {items: parts, value: c2} push
+    else:
+      parts = {items: parts, value: "="} push
+    if have >= 3:
+      let c3 = {s: alpha, index: word % 64} charAt
+      parts = {items: parts, value: c3} push
+    else:
+      parts = {items: parts, value: "="} push
+    i = i + 3
+  return {parts: parts, sep: ""} joinStr
+
+# The 6-bit value of a base64 digit (the URL-safe `-` and `_` too), or -1.
+fn b64Value({b: u8}) -> int:
+  if b >= 65 and b <= 90:
+    return {value: b} int - 65
+  if b >= 97 and b <= 122:
+    return {value: b} int - 71
+  if b >= 48 and b <= 57:
+    return {value: b} int + 4
+  if b == 43 or b == 45:
+    return 62
+  if b == 47 or b == 95:
+    return 63
+  return -1
+
+# Decode base64, padded or not. A byte outside the alphabet, or a length no
+# encoder produces, is none.
+fn fromBase64({t: str}) -> Seq[u8]?:
+  var n = {t: t} byteCount
+  for n > 0 and {t: t, index: n - 1} byteAt == 61:
+    n = n - 1
+  if n % 4 == 1:
+    return none
+  var out: Seq[u8] = []
+  var acc = 0
+  var bits = 0
+  for i in 0 .. n - 1:
+    let digit = {t: t, index: i} byteAt
+    let v = {b: digit} b64Value
+    if v < 0:
+      return none
+    acc = acc * 64 + v
+    bits = bits + 6
+    if bits >= 8:
+      bits = bits - 8
+      var scale = 1
+      if bits == 2:
+        scale = 4
+      elif bits == 4:
+        scale = 16
+      let byte = {value: acc /i scale % 256} u8
+      out = {items: out, value: byte} push
+      acc = acc % scale
+  return out
+
+fn hexDigits() -> str:
+  return "0123456789abcdef"
+
+fn toHex({bytes: Seq[u8]}) -> str:
+  let digits = hexDigits
+  var parts: Seq[str] = []
+  for i in 0 .. bytes.len - 1:
+    let v = {value: bytes[i]} int
+    let hi = {s: digits, index: v /i 16} charAt
+    let lo = {s: digits, index: v % 16} charAt
+    parts = {items: parts, value: hi} push
+    parts = {items: parts, value: lo} push
+  return {parts: parts, sep: ""} joinStr
+
+# Pairs of hex digits, either case; an odd length or a stray byte is none.
+fn fromHex({t: str}) -> Seq[u8]?:
+  let n = {t: t} byteCount
+  if n % 2 != 0:
+    return none
+  var out: Seq[u8] = []
+  var i = 0
+  for i < n:
+    let a = {t: t, index: i} byteAt
+    let b = {t: t, index: i + 1} byteAt
+    let hi = {b: a} hexValue
+    let lo = {b: b} hexValue
+    if hi < 0 or lo < 0:
+      return none
+    let byte = {value: hi * 16 + lo} u8
+    out = {items: out, value: byte} push
+    i = i + 2
+  return out
+
+# --- CSV -----------------------------------------------------------------------
+# RFC 4180: fields split on `sep`, rows on CRLF or LF, a field may be quoted to
+# hold the separator, a newline or a doubled quote. A quote that never closes
+# is none. A trailing newline does not make an empty last row.
+fn parseCsv({t: str, sep: str}) -> Seq[Seq[str]]?:
+  let n = {t: t} byteCount
+  let sepByte = {t: sep, index: 0} byteAt
+  var rows: Seq[Seq[str]] = []
+  var row: Seq[str] = []
+  var field: Seq[u8] = []
+  var quoted = false
+  var started = false
+  var i = 0
+  for i < n:
+    let b = {t: t, index: i} byteAt
+    if quoted:
+      if b == 34:
+        if i + 1 < n and {t: t, index: i + 1} byteAt == 34:
+          field = {items: field, value: 34} push
+          i = i + 2
+        else:
+          quoted = false
+          i = i + 1
+      else:
+        field = {items: field, value: b} push
+        i = i + 1
+    elif b == 34 and field.len == 0:
+      quoted = true
+      started = true
+      i = i + 1
+    elif b == sepByte:
+      let f = {bytes: field} fromBytes
+      row = {items: row, value: f} push
+      field = []
+      started = true
+      i = i + 1
+    elif b == 10 or b == 13:
+      let f = {bytes: field} fromBytes
+      row = {items: row, value: f} push
+      rows = {items: rows, value: row} push
+      row = []
+      field = []
+      started = false
+      i = i + 1
+      if b == 13 and i < n and {t: t, index: i} byteAt == 10:
+        i = i + 1
+    else:
+      field = {items: field, value: b} push
+      started = true
+      i = i + 1
+  if quoted:
+    return none
+  if started or field.len > 0:
+    let f = {bytes: field} fromBytes
+    row = {items: row, value: f} push
+    rows = {items: rows, value: row} push
+  return rows
+
+fn csvField({value: str, sep: str}) -> str:
+  let needs = {t: value, what: sep} has or {t: value, what: "\""} has or {t: value, what: "\n"} has or {t: value, what: "\r"} has
+  if not needs:
+    return value
+  var parts: Seq[str] = []
+  parts = {items: parts, value: "\""} push
+  for i in 0 .. {t: value} byteCount - 1:
+    let c = {s: value, index: i} charAt
+    if c == "\"":
+      parts = {items: parts, value: "\"\""} push
+    else:
+      parts = {items: parts, value: c} push
+  parts = {items: parts, value: "\""} push
+  return {parts: parts, sep: ""} joinStr
+
+fn toCsvText({rows: Seq[Seq[str]], sep: str}) -> str:
+  var lines: Seq[str] = []
+  for r in 0 .. rows.len - 1:
+    var cells: Seq[str] = []
+    for c in 0 .. rows[r].len - 1:
+      let cell = {value: rows[r][c], sep: sep} csvField
+      cells = {items: cells, value: cell} push
+    let line = {parts: cells, sep: sep} joinStr
+    lines = {items: lines, value: line} push
+  let body = {parts: lines, sep: "\n"} joinStr
+  if rows.len == 0:
+    return ""
+  return body + "\n"
+
 fn checkPrint() -> int:
   if {j: Json.JNull} toJsonText != "null":
     return 1
@@ -101,6 +583,207 @@ fn checkPrint() -> int:
   let s = {s: "a\"b"} Json.JStr
   if {j: s} toJsonText != "\"a\\\"b\"":
     return 3
+  return checkParse
+
+# Is `t` a JSON array whose element `index` is the number `want`? Compares the
+# parsed VALUE, so these checks say nothing about how a float prints.
+fn numberAt({t: str, index: int, want: f64}) -> bool:
+  let j = {t: t} parseJson
+  if not j.ok:
+    return false
+  let one = {j: j.value, index: index} jsonAt
+  if not one.ok:
+    return false
+  match one.value:
+    JNum: return one.value.n == want
+    _: return false
+
+# What a document prints back as: parse, then print.
+fn roundTrip({t: str}) -> str:
+  let j = {t: t} parseJson
+  if not j.ok:
+    return "<bad>"
+  return {j: j.value} toJsonText
+
+fn checkParse() -> int:
+  if {t: "null"} roundTrip != "null":
+    return 4
+  if not {t: "  [1, 2 , 3]  ", index: 2, want: 3.0} numberAt:
+    return 5
+  if {t: "{\"a\": [true, false, null], \"b\": \"x\"}"} roundTrip != "{\"a\":[true,false,null],\"b\":\"x\"}":
+    return 6
+  if {t: "[[],{}]"} roundTrip != "[[],{}]":
+    return 7
+  if {t: "\"a\\nb\\t\\\"q\\\"\""} roundTrip != "\"a\\nb\\t\\\"q\\\"\"":
+    return 8
+  if not {t: "[-12.5]", index: 0, want: -12.5} numberAt:
+    return 9
+  if not {t: "[2e3]", index: 0, want: 2000.0} numberAt:
+    return 10
+  if not {t: "[0.25e-1, 1E2]", index: 1, want: 100.0} numberAt:
+    return 10
+  return checkParseUnicode
+
+fn checkParseUnicode() -> int:
+  # \u00e9 is two bytes of UTF-8; a surrogate pair is four.
+  let a = {t: "\"\\u00e9\""} parseJson
+  if not a.ok:
+    return 11
+  match a.value:
+    JStr:
+      if {t: a.value.s} byteCount != 2:
+        return 12
+    _: return 13
+  let b = {t: "\"\\ud83d\\ude00\""} parseJson
+  if not b.ok:
+    return 14
+  match b.value:
+    JStr:
+      if {t: b.value.s} byteCount != 4:
+        return 15
+    _: return 16
+  return checkParseBad
+
+fn checkParseBad() -> int:
+  let bad: Seq[str] = ["", "[1,", "[1 2]", "{\"a\" 1}", "{a: 1}", "tru", "01", "1.", "\"abc", "[1,]", "{\"a\":1,}", "1 2", "\"\\x\"", "\"\\ud83d\""]
+  for i in 0 .. bad.len - 1:
+    let r = {t: bad[i]} parseJson
+    if r.ok:
+      return 20 + i
+  # nesting past the limit is refused rather than recursed into
+  var deep = ""
+  for i in 0 .. 250:
+    deep = deep + "["
+  let r = {t: deep} parseJson
+  if r.ok:
+    return 40
+  return checkAccess
+
+fn checkAccess() -> int:
+  let j = {t: "{\"name\": \"tuck\", \"tags\": [\"a\", \"b\"]}"} parseJson
+  if not j.ok:
+    return 41
+  let name = {j: j.value, key: "name"} jsonGet
+  if not name.ok:
+    return 42
+  if {j: name.value} toJsonText != "\"tuck\"":
+    return 43
+  let tags = {j: j.value, key: "tags"} jsonGet
+  if not tags.ok:
+    return 44
+  let second = {j: tags.value, index: 1} jsonAt
+  if not second.ok:
+    return 45
+  if {j: second.value} toJsonText != "\"b\"":
+    return 46
+  let missing = {j: j.value, key: "nope"} jsonGet
+  if missing.ok:
+    return 47
+  return checkBase64
+
+fn checkBase64() -> int:
+  # RFC 4648 section 10
+  let cases: Seq[str] = ["", "f", "fo", "foo", "foob", "fooba", "foobar"]
+  let want: Seq[str] = ["", "Zg==", "Zm8=", "Zm9v", "Zm9vYg==", "Zm9vYmE=", "Zm9vYmFy"]
+  for i in 0 .. cases.len - 1:
+    let raw = {t: cases[i]} bytesOf
+    if {bytes: raw} toBase64 != want[i]:
+      return 50 + i
+    let back = {t: want[i]} fromBase64
+    if not back.ok:
+      return 60 + i
+    if {bytes: back.value} fromBytes != cases[i]:
+      return 70 + i
+  let unpadded = {t: "Zm9vYg"} fromBase64
+  if not unpadded.ok:
+    return 80
+  if {bytes: unpadded.value} fromBytes != "foob":
+    return 81
+  let urlsafe = {t: "-_-_"} fromBase64
+  let std = {t: "+/+/"} fromBase64
+  if not urlsafe.ok:
+    return 82
+  if not std.ok:
+    return 82
+  if {bytes: urlsafe.value} toBase64 != "+/+/":
+    return 83
+  let junk = {t: "Zm9v!"} fromBase64
+  if junk.ok:
+    return 84
+  let short = {t: "Z"} fromBase64
+  if short.ok:
+    return 85
+  return checkHex
+
+fn checkHex() -> int:
+  let raw = {t: "Tuck"} bytesOf
+  if {bytes: raw} toHex != "5475636b":
+    return 90
+  let back = {t: "5475636B"} fromHex
+  if not back.ok:
+    return 91
+  if {bytes: back.value} fromBytes != "Tuck":
+    return 92
+  let odd = {t: "abc"} fromHex
+  if odd.ok:
+    return 93
+  let bad = {t: "zz"} fromHex
+  if bad.ok:
+    return 94
+  return checkCsv
+
+fn cell({rows: Seq[Seq[str]], r: int, c: int}) -> str:
+  return rows[r][c]
+
+fn checkCsv() -> int:
+  let a = {t: "a,b,c\n1,2,3\n", sep: ","} parseCsv
+  if not a.ok:
+    return 100
+  if a.value.len != 2 or a.value[0].len != 3:
+    return 101
+  if {rows: a.value, r: 1, c: 2} cell != "3":
+    return 102
+  let q = {t: "\"x,y\",\"say \"\"hi\"\"\",\"two\nlines\"\r\nlast,,\n", sep: ","} parseCsv
+  if not q.ok:
+    return 103
+  if q.value.len != 2:
+    return 104
+  if {rows: q.value, r: 0, c: 0} cell != "x,y":
+    return 105
+  if {rows: q.value, r: 0, c: 1} cell != "say \"hi\"":
+    return 106
+  if {rows: q.value, r: 0, c: 2} cell != "two\nlines":
+    return 107
+  if q.value[1].len != 3 or {rows: q.value, r: 1, c: 2} cell != "":
+    return 108
+  let open = {t: "\"never closed", sep: ","} parseCsv
+  if open.ok:
+    return 109
+  let semi = {t: "a;b\n", sep: ";"} parseCsv
+  if not semi.ok:
+    return 110
+  if semi.value[0].len != 2:
+    return 111
+  return checkCsvPrint
+
+fn checkCsvPrint() -> int:
+  let rows = {t: "plain,\"has,comma\",\"has \"\"quote\"\"\"\nx,y,z\n", sep: ","} parseCsv
+  if not rows.ok:
+    return 120
+  let text = {rows: rows.value, sep: ","} toCsvText
+  if text != "plain,\"has,comma\",\"has \"\"quote\"\"\"\nx,y,z\n":
+    return 121
+  let empty: Seq[Seq[str]] = []
+  if {rows: empty, sep: ","} toCsvText != "":
+    return 122
+  return 0
+
+# NOT wired into main: a float prints differently on the backends (issue #155,
+# A67), so the text of a number is not yet something to assert across them.
+# This is the assertion that belongs here once it is settled.
+fn checkNumberText() -> int:
+  if {t: "[1, 2.5]"} roundTrip != "[1.0,2.5]":
+    return 130
   return 0
 
 fn main() -> int:

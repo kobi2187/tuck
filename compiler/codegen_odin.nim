@@ -136,7 +136,8 @@ proc sumVariantCtor(ctx: var OdinCodegenCtx, typeName, variantName: string,
   # Odin union: constructing a variant IS constructing its struct; the union
   # carries the tag itself, so there is no kind field to set and no
   # per-variant payload slot to name.
-  let vName = typeName & "_" & v.name
+  # In the declaring module's package when the sum is imported (A91).
+  let vName = ctx.importPrefix(typeName) & typeName & "_" & v.name
   if v.fields.len == 0 or payload == nil:
     return vName & "{}"
   var vals: seq[string]
@@ -383,6 +384,20 @@ proc providerArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
     let (modName, name) = providerFor(ctx.module, ctx.realModules, need, t.name)
     if name != "":
       result.add(ctx.pkgQualifier(modName) & name)
+    elif need.req in ctx.providerParams:
+      result.add(need.req)   # a bounded fn handing its own provider on
+
+proc qualifiedForeignFn(ctx: OdinCodegenCtx, name: string): string
+
+proc unshadowedCallee(ctx: OdinCodegenCtx, e: Expr, calleeStr: string): string =
+  ## A parameter that is not callable cannot be the callee: the name is a fn
+  ## it shadows (`len`, beside `xs.len`).
+  if e.callee.kind != exkVar or ctx.res.hasCall(e.callee): return calleeStr
+  for p in ctx.currentParams:
+    if p.name == e.callee.name and (p.typ == nil or p.typ.kind != tkFunc):
+      let foreign = ctx.qualifiedForeignFn(p.name)
+      if foreign != "": return foreign
+  calleeStr
 
 proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A call in Odin, trying the special shapes first: `waitOn`, a sum
@@ -398,6 +413,7 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
     # dispatch holds, so it is passed as is.
     return actorMember & "(" & (@["self"] & ctx.genCallArgs(e)).join(", ") & ")"
   var calleeStr = ctx.genOdinExpr(e.callee)
+  calleeStr = ctx.unshadowedCallee(e, calleeStr)
   let member = memberCallee(ctx.res, ctx.module, e)
   if member != "":
     # An imported object's member lives in its own package (R11, A25).
@@ -455,12 +471,21 @@ proc odinBangInfo*(ctx: var OdinCodegenCtx, t: Type):
     return (true, (if inner == "void": "rt.TuckUnit" else: inner), t.args[0])
   return (false, "", nil)
 
+proc qualifiedTagEnum*(ctx: OdinCodegenCtx, tag: string): string =
+  ## The enum owning `tag`, reached through its module when the sum declaring
+  ## it was imported; "" for a tag no declared sum has. Read off the
+  ## DECLARATION: recovering the sum's name by stripping a `Kind` suffix from
+  ## the enum's misread every sum whose own name ends in `Kind` (A84).
+  let d = enumTagDecl(ctx.module, tag)
+  if d == nil: return ""
+  ctx.pkgQualifier(moduleDeclaringType(ctx.module, d.name)) & enumTagOwner(ctx.module, tag)
+
 proc patternValue*(ctx: OdinCodegenCtx, patStr: string): string =
   ## Comparison operand for a pattern value: enum tags need qualification (or
   ## Odin's implicit-selector `.Tag` for hoisted inline enums); literals pass.
   if patStr.len == 0: return patStr
-  let owner = enumTagOwner(ctx.module, patStr)
-  if owner != "": return ctx.qualifyEnumOwner(owner) & "." & patStr
+  let owner = ctx.qualifiedTagEnum(patStr)
+  if owner != "": return owner & "." & patStr
   if patStr[0] in {'A'..'Z'}: return "." & patStr
   patStr
 
@@ -550,7 +575,7 @@ proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
     let bodyStr = ctx.genOdinExpr(arm.body)
     ctx.definedVars = armVars
     let caseLabel = if patStr == "_": "case:"
-                    else: "case " & sumName & "_" & patStr & ":"
+                    else: "case " & ctx.importPrefix(sumName) & sumName & "_" & patStr & ":"
     if arm.body != nil and arm.body.kind == exkBlock:
       cases.add(ind & caseLabel & "\n" & bodyStr)
     else:
@@ -732,11 +757,9 @@ proc qualifiedForeignFn(ctx: OdinCodegenCtx, name: string): string =
   ## An unqualified cross-module call (`0 exit` for `sys::exit`). Nim resolves
   ## this itself through the emitted `import`; Odin never merges package
   ## scopes, so the owning package has to be found and spelled out here.
-  if ctx.module.declaresCallable(name) or name in ctx.providerParams: return ""
-  for id, im in ctx.realModules:
-    if im.declaresCallable(name):
-      return ctx.pkgQualifier(id) & name
-  ""
+  if name in ctx.providerParams: return ""
+  let id = callableOrigin(ctx.module, ctx.realModules, name)
+  if id == NoModule: "" else: ctx.pkgQualifier(id) & name
 
 proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A bare name: a checker-stamped call, a payload, a field, an enum tag, or
@@ -749,8 +772,8 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   # bare enum tag: qualify with its declared owner (Odin has no module-global
   # enum members the way Nim does)
   var owner = ""
-  withTagHint(ctx.res.typeFor(e)): owner = enumTagOwner(ctx.module, e.name)
-  if owner != "": return ctx.qualifyEnumOwner(owner) & "." & e.name
+  withTagHint(ctx.res.typeFor(e)): owner = ctx.qualifiedTagEnum(e.name)
+  if owner != "": return owner & "." & e.name
   # A variant of an INLINE sum (`state: {Red, Green} = Red`) has no owner to
   # qualify with; Odin's implicit selector names it, the target being typed.
   let t = ctx.res.typeFor(e)
@@ -946,7 +969,8 @@ proc assertedVariantField(ctx: var OdinCodegenCtx, e: Expr): string =
   if sumName == "": return ""
   let owner = variantOwningField(ctx.module, sumName, e.fieldName)
   if owner == "": return ""
-  ctx.genOdinExpr(e.receiver) & ".(" & sumName & "_" & owner & ")." & e.fieldName
+  ctx.genOdinExpr(e.receiver) & ".(" & ctx.importPrefix(sumName) & sumName & "_" & owner &
+    ")." & e.fieldName
 
 proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## A `.name` access: interface dispatch, an actor singleton's field, a
@@ -1067,6 +1091,16 @@ proc odinBinOp(op: BinOp): string =
   of boRangeIncl: "..="   # Odin spells inclusive ranges ..=
   of boRangeExcl: "..<"
 
+proc seqEquality(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `==` / `!=` on two Seqs of plain elements: Odin cannot compare a dynamic
+  ## array, so the runtime does (length, then elements).
+  if e.binOp notin {boEq, boNeq}: return ""
+  let lt = ctx.res.typeFor(e.left)
+  if lt == nil or seqElem(lt) == nil or seqElem(seqElem(lt)) != nil: return ""
+  let call = "rt.tuckSeqEq(" & ctx.genOdinExpr(e.left) & ", " &
+             ctx.genOdinExpr(e.right) & ")"
+  if e.binOp == boEq: call else: "(!" & call & ")"
+
 proc genBinary(ctx: var OdinCodegenCtx, e: Expr): string =
   ## rt.tuckConcat — `concat` was the Beef runtime's name and never existed in
   ## the Odin one (tuckrt/tuck_rt.odin:87), so any string `+` emitted an
@@ -1084,6 +1118,8 @@ proc genBinary(ctx: var OdinCodegenCtx, e: Expr): string =
       let call = sumName & "_eq(" & ctx.genOdinExpr(e.left) & ", " &
                  ctx.genOdinExpr(e.right) & ")"
       return if e.binOp == boEq: call else: "(!" & call & ")"
+  let seqEq = ctx.seqEquality(e)
+  if seqEq != "": return seqEq
   if e.binOp in {boAdd, boSub, boMul}:
     let plan = overflowPlan(ctx.module, ctx.realModules, ctx.res.typeFor(e))
     if plan.active:
@@ -1224,13 +1260,67 @@ proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string 
             slotVar & ")")
   lines.join("\n")
 
+proc isTaskArgsSpawn(ctx: var OdinCodegenCtx, s: Expr): bool =
+  ## `{args} someTask` as a statement: fire and forget, a task that takes real
+  ## arguments (the nullary case is genOdinCall's isTaskName branch, and the
+  ## bound `let r = {args} task` is genOdinTaskArgsBind).
+  s.kind == exkCall and s.callee != nil and s.callee.kind == exkVar and
+    ctx.index.isTaskName(s.callee.name) and
+    ctx.module.findFn(s.callee.name) != nil and
+    ctx.module.findFn(s.callee.name).fnParams.len > 0
+
+proc genOdinTaskArgsSpawn(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
+  ## Spawn a task with arguments and do not wait for it. Same marshalling as
+  ## the bound form - the arguments travel through context.user_ptr into a
+  ## per-signature wrapper - without a result slot: the wrapper calls the task
+  ## and frees the env. Without this the task body ran on the MAIN context, so
+  ## the first socket read inside it hit "cannot await outside a coroutine".
+  let tname = e.callee.name
+  let task = ctx.module.findFn(tname)
+  let params = task.paramNames()
+  let paramTypes = task.paramTypes()
+  let envName = "SpawnEnv_" & tname
+  let wrapName = "spawn_" & tname
+  if tname notin ctx.taskSpawnHoisted:
+    ctx.taskSpawnHoisted.incl(tname)
+    var fields: seq[string]
+    for i, p in params: fields.add("\t" & p & ": " & ctx.odinType(paramTypes[i]) & ",")
+    ctx.hoisted.add(envName & " :: struct {\n" & fields.join("\n") & "\n}")
+    var argExprs: seq[string]
+    for p in params: argExprs.add("e." & p)
+    let discards = if task.fnReturnType == nil or
+                      (task.fnReturnType.kind == tkNamed and
+                       task.fnReturnType.name == "void"): ""
+                   else: "_ = "
+    ctx.hoisted.add(wrapName & " :: proc() {\n" &
+      "\te := (^" & envName & ")(context.user_ptr)\n" &
+      "\t" & discards & tname & "(" & argExprs.join(", ") & ")\n" &
+      "\tfree(e)\n}")
+  let argParts = ctx.genCallArgs(e)
+  doAssert argParts.len == params.len,
+    "odin: task " & tname & " takes " & $params.len & " param(s), and its " &
+    "call supplies " & $argParts.len
+  let envVar = "env" & $ctx.tmpCounter
+  let savedVar = "savedCtx" & $ctx.tmpCounter
+  ctx.tmpCounter.inc
+  var lines: seq[string]
+  lines.add(ind & envVar & " := new(" & envName & ")")
+  for i, pn in params:
+    lines.add(ind & envVar & "." & pn & " = " & argParts[i])
+  lines.add(ind & savedVar & " := context.user_ptr")
+  lines.add(ind & "context.user_ptr = " & envVar)
+  lines.add(ind & "rt.tuckSpawn(" & wrapName & ")")
+  lines.add(ind & "context.user_ptr = " & savedVar)
+  lines.join("\n")
+
 proc ownsItsLayout(ctx: var OdinCodegenCtx, s: Expr): bool =
   ## Constructs that emit their own indentation and terminator.
-  if ctx.isTaskArgsBind(s): return true
+  if ctx.isTaskArgsBind(s) or ctx.isTaskArgsSpawn(s): return true
   s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkDefer}
 
 proc genStmt(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
+  if ctx.isTaskArgsSpawn(s): return ctx.genOdinTaskArgsSpawn(s, ind & "  ")
   var ownsLayout = s.kind == exkMatch and s.subject != nil
   var code = if ownsLayout: ctx.genMatchStmt(s) else: ctx.genOdinExpr(s)
   if code != "" and ctx.res.shortcut(s) != "":
@@ -1360,7 +1450,9 @@ proc unionDeclType(ctx: var OdinCodegenCtx, e: Expr): string =
   let d = findDecl(ctx.module, dkType, t.name)
   if d == nil or d.typeBody == nil or d.typeBody.kind != tkSum: return ""
   if not sumHasPayload(d.typeBody): return ""
-  t.name
+  # Spelled as any other use of the type, so one imported from another
+  # module carries its package (A91).
+  ctx.odinType(t)
 
 proc withAssignValidate(ctx: var OdinCodegenCtx, e: Expr,
                         stmt: string): string =

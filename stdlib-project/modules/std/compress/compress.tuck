@@ -1,0 +1,843 @@
+# std.compress — DEFLATE (RFC 1951), zlib (RFC 1950) and gzip (RFC 1952), in
+# pure Tuck.
+#
+# Reading (`unpack`) handles all three block kinds: stored, fixed Huffman and
+# dynamic Huffman. Writing (`pack`) emits stored blocks for `Fastest` and fixed
+# Huffman with a hash-matched LZ77 for the other levels; a dynamic-Huffman
+# encoder is not written, so `Smallest` packs like `Balanced`. Zstd is named
+# in `Method` for the design's sake and is not implemented: it packs and
+# unpacks to none.
+#
+# Failure is an absent answer, never a crash: a truncated stream, a bad
+# checksum or a code the stream could not have produced is `none`.
+#
+# Bit operations are std/bits externs (Tuck has no bitwise operators); the rest
+# is integer arithmetic over `int`, which cannot overflow at these sizes.
+import bits
+import seq
+import str
+import encoding
+
+type Method:
+  | Gzip
+  | Zlib
+  | Deflate
+  | Zstd
+
+type Level:
+  | Fastest
+  | Balanced
+  | Smallest
+
+# A canonical Huffman code: how many codes there are of each length 0..15, and
+# the symbols in order of (length, symbol).
+type Huffman:
+  tally: Seq[int]
+  symbol: Seq[int]
+
+type Decoded:
+  sym: int
+  pos: int
+
+# The bytes produced so far, and the bit position the reader stopped at.
+type Inflated:
+  data: Seq[u8]
+  pos: int
+
+const pow2: Seq[int] = [1, 2, 4, 8, 16, 32, 64, 128]
+
+const lenBase: Seq[int] = [
+  3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
+  35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
+
+const lenExtra: Seq[int] = [
+  0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
+  3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0]
+
+const distBase: Seq[int] = [
+  1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
+  257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]
+
+const distExtra: Seq[int] = [
+  0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
+  7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13]
+
+# The order the code-length code's own lengths are sent in.
+const clOrder: Seq[int] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
+
+# --- checksums ------------------------------------------------------------------
+fn crcTable() -> Seq[u64]:
+  var table: Seq[u64] = []
+  for n in 0 .. 255:
+    var c: u64 = {value: n} u64
+    for k in 0 .. 7:
+      let low = {a: c, b: 1} bitAnd
+      let half = {a: c, by: 1} shiftRight
+      if low == 1:
+        c = {a: 3988292384, b: half} bitXor
+      else:
+        c = half
+    table = {items: table, value: c} push
+  return table
+
+fn crc32({data: Seq[u8]}) -> u64:
+  let table = crcTable
+  var c: u64 = 4294967295
+  for i in 0 .. data.len - 1:
+    let b = {value: data[i]} u64
+    let mixed = {a: c, b: b} bitXor
+    let idx = {a: mixed, b: 255} bitAnd
+    let at = {value: idx} int
+    let rest = {a: c, by: 8} shiftRight
+    c = {a: table[at], b: rest} bitXor
+  return {a: c, b: 4294967295} bitXor
+
+fn adler32({data: Seq[u8]}) -> u64:
+  var s1 = 1
+  var s2 = 0
+  for i in 0 .. data.len - 1:
+    s1 = (s1 + {value: data[i]} int) % 65521
+    s2 = (s2 + s1) % 65521
+  return {value: s2 * 65536 + s1} u64
+
+# --- reading bits ---------------------------------------------------------------
+# A position is a BIT index into `data`, least significant bit of each byte
+# first, as DEFLATE reads. Callers check there is a bit left before asking.
+fn bitAt({data: Seq[u8], pos: int}) -> int:
+  let byte = {value: data[pos /i 8]} int
+  return byte /i pow2[pos % 8] % 2
+
+# `n` bits as a number, the first bit read being the lowest; -1 past the end.
+fn getBits({data: Seq[u8], pos: int, n: int}) -> int:
+  if pos + n > data.len * 8:
+    return -1
+  var v = 0
+  var weight = 1
+  for i in 0 .. n - 1:
+    let b = {data: data, pos: pos + i} bitAt
+    v = v + b * weight
+    weight = weight * 2
+  return v
+
+# --- Huffman codes ---------------------------------------------------------------
+# Build the canonical code for symbols 0..n-1 with these lengths (0 = unused).
+# An over-subscribed set is not a code at all: none. An incomplete one is
+# allowed, as DEFLATE allows it for a lone distance code.
+fn buildHuffman({lengths: Seq[int], n: int}) -> Huffman?:
+  var tally: Seq[int] = []
+  for i in 0 .. 15:
+    tally = {items: tally, value: 0} push
+  for s in 0 .. n - 1:
+    let l = lengths[s]
+    {items: tally, index: l, value: tally[l] + 1} setAt
+  var left = 1
+  for l in 1 .. 15:
+    left = left * 2 - tally[l]
+    if left < 0:
+      return none
+  var offs: Seq[int] = []
+  offs = {items: offs, value: 0} push
+  offs = {items: offs, value: 0} push
+  for l in 1 .. 14:
+    let next = offs[l] + tally[l]
+    offs = {items: offs, value: next} push
+  var symbol: Seq[int] = []
+  for i in 0 .. n - 1:
+    symbol = {items: symbol, value: 0} push
+  for s in 0 .. n - 1:
+    let l = lengths[s]
+    if l != 0:
+      {items: symbol, index: offs[l], value: s} setAt
+      {items: offs, index: l, value: offs[l] + 1} setAt
+  return {tally: tally, symbol: symbol} Huffman
+
+# One symbol, read bit by bit from `pos`.
+fn decodeSym({data: Seq[u8], pos: int, h: Huffman}) -> Decoded?:
+  var code = 0
+  var first = 0
+  var index = 0
+  var p = pos
+  for l in 1 .. 15:
+    if p >= data.len * 8:
+      return none
+    let bit = {data: data, pos: p} bitAt
+    code = code + bit
+    p = p + 1
+    let here = h.tally[l]
+    if code - here < first:
+      return {sym: h.symbol[index + (code - first)], pos: p} Decoded
+    index = index + here
+    first = (first + here) * 2
+    code = code * 2
+  return none
+
+fn fixedLiteralLengths() -> Seq[int]:
+  var lengths: Seq[int] = []
+  for s in 0 .. 287:
+    var l = 8
+    if s >= 144 and s <= 255:
+      l = 9
+    elif s >= 256 and s <= 279:
+      l = 7
+    lengths = {items: lengths, value: l} push
+  return lengths
+
+fn fixedDistanceLengths() -> Seq[int]:
+  var lengths: Seq[int] = []
+  for s in 0 .. 29:
+    lengths = {items: lengths, value: 5} push
+  return lengths
+
+# --- inflate -----------------------------------------------------------------------
+# Copy `len` bytes from `dist` back in the output, one at a time: the source
+# may overlap the bytes being written.
+fn copyBack({data: Seq[u8], dist: int, len: int}) -> Seq[u8]?:
+  if dist > data.len:
+    return none
+  var out = data
+  for k in 0 .. len - 1:
+    let b = out[out.len - dist]
+    out = {items: out, value: b} push
+  return out
+
+# The compressed symbols of one block, until end-of-block.
+fn inflateCodes({data: Seq[u8], pos: int, produced: Seq[u8], lit: Huffman, dist: Huffman}) -> Inflated?:
+  var out = produced
+  var p = pos
+  for true:
+    let s = {data: data, pos: p, h: lit} decodeSym
+    if not s.ok:
+      return none
+    p = s.value.pos
+    let sym = s.value.sym
+    if sym < 256:
+      let b = {value: sym} u8
+      out = {items: out, value: b} push
+    elif sym == 256:
+      return {data: out, pos: p} Inflated
+    else:
+      let li = sym - 257
+      if li >= 29:
+        return none
+      let extra = {data: data, pos: p, n: lenExtra[li]} getBits
+      if extra < 0:
+        return none
+      p = p + lenExtra[li]
+      let len = lenBase[li] + extra
+      let d = {data: data, pos: p, h: dist} decodeSym
+      if not d.ok:
+        return none
+      p = d.value.pos
+      let di = d.value.sym
+      if di >= 30:
+        return none
+      let dextra = {data: data, pos: p, n: distExtra[di]} getBits
+      if dextra < 0:
+        return none
+      p = p + distExtra[di]
+      let copied = {data: out, dist: distBase[di] + dextra, len: len} copyBack
+      if not copied.ok:
+        return none
+      out = copied.value
+  return none
+
+# A stored block: byte-aligned LEN, NLEN, then LEN raw bytes.
+fn inflateStored({data: Seq[u8], pos: int, produced: Seq[u8]}) -> Inflated?:
+  let at = (pos + 7) /i 8
+  if at + 4 > data.len:
+    return none
+  let len = {value: data[at]} int + {value: data[at + 1]} int * 256
+  let nlen = {value: data[at + 2]} int + {value: data[at + 3]} int * 256
+  if len + nlen != 65535:
+    return none
+  if at + 4 + len > data.len:
+    return none
+  var out = produced
+  for i in 0 .. len - 1:
+    let b = data[at + 4 + i]
+    out = {items: out, value: b} push
+  return {data: out, pos: (at + 4 + len) * 8} Inflated
+
+# The code lengths of a dynamic block, decoded with its code-length code.
+fn readLengths({data: Seq[u8], pos: int, cl: Huffman, total: int}) -> Inflated?:
+  var lengths: Seq[int] = []
+  var p = pos
+  for lengths.len < total:
+    let s = {data: data, pos: p, h: cl} decodeSym
+    if not s.ok:
+      return none
+    p = s.value.pos
+    let sym = s.value.sym
+    if sym < 16:
+      lengths = {items: lengths, value: sym} push
+    else:
+      var repeat = 0
+      var value = 0
+      var width = 0
+      if sym == 16:
+        if lengths.len == 0:
+          return none
+        value = lengths[lengths.len - 1]
+        repeat = 3
+        width = 2
+      elif sym == 17:
+        repeat = 3
+        width = 3
+      else:
+        repeat = 11
+        width = 7
+      let extra = {data: data, pos: p, n: width} getBits
+      if extra < 0:
+        return none
+      p = p + width
+      repeat = repeat + extra
+      if lengths.len + repeat > total:
+        return none
+      for k in 0 .. repeat - 1:
+        lengths = {items: lengths, value: value} push
+  # the lengths ride in `data` as bytes so the result is an `Inflated`
+  var lengthBytes: Seq[u8] = []
+  for i in 0 .. lengths.len - 1:
+    let b = {value: lengths[i]} u8
+    lengthBytes = {items: lengthBytes, value: b} push
+  return {data: lengthBytes, pos: p} Inflated
+
+fn slice16({lengths: Seq[u8], start: int, total: int}) -> Seq[int]:
+  var out: Seq[int] = []
+  for i in 0 .. total - 1:
+    let one = {value: lengths[start + i]} int
+    out = {items: out, value: one} push
+  return out
+
+# A dynamic block: three counts, the code-length code, then both real codes.
+fn inflateDynamic({data: Seq[u8], pos: int, produced: Seq[u8]}) -> Inflated?:
+  let hlit = {data: data, pos: pos, n: 5} getBits
+  let hdist = {data: data, pos: pos + 5, n: 5} getBits
+  let hclen = {data: data, pos: pos + 10, n: 4} getBits
+  if hlit < 0 or hdist < 0 or hclen < 0:
+    return none
+  let nlit = hlit + 257
+  let ndist = hdist + 1
+  let ncl = hclen + 4
+  if nlit > 286 or ndist > 30:
+    return none
+  var p = pos + 14
+  var clLengths: Seq[int] = []
+  for i in 0 .. 18:
+    clLengths = {items: clLengths, value: 0} push
+  for i in 0 .. ncl - 1:
+    let v = {data: data, pos: p, n: 3} getBits
+    if v < 0:
+      return none
+    {items: clLengths, index: clOrder[i], value: v} setAt
+    p = p + 3
+  let cl = {lengths: clLengths, n: 19} buildHuffman
+  if not cl.ok:
+    return none
+  let read = {data: data, pos: p, cl: cl.value, total: nlit + ndist} readLengths
+  if not read.ok:
+    return none
+  p = read.value.pos
+  let all = read.value.data
+  let litLengths = {lengths: all, start: 0, total: nlit} slice16
+  let distLengths = {lengths: all, start: nlit, total: ndist} slice16
+  if litLengths[256] == 0:
+    return none
+  let lit = {lengths: litLengths, n: nlit} buildHuffman
+  let dist = {lengths: distLengths, n: ndist} buildHuffman
+  if not lit.ok:
+    return none
+  if not dist.ok:
+    return none
+  return {data: data, pos: p, produced: produced, lit: lit.value, dist: dist.value} inflateCodes
+
+fn inflateFixed({data: Seq[u8], pos: int, produced: Seq[u8]}) -> Inflated?:
+  let ll = fixedLiteralLengths
+  let dl = fixedDistanceLengths
+  let lit = {lengths: ll, n: 288} buildHuffman
+  let dist = {lengths: dl, n: 30} buildHuffman
+  if not lit.ok:
+    return none
+  if not dist.ok:
+    return none
+  return {data: data, pos: pos, produced: produced, lit: lit.value, dist: dist.value} inflateCodes
+
+# The whole raw DEFLATE stream in `data`: the bytes it expands to and the bit
+# position just past its last block.
+fn inflate({data: Seq[u8]}) -> Inflated?:
+  var out: Seq[u8] = []
+  var pos = 0
+  for true:
+    let final = {data: data, pos: pos, n: 1} getBits
+    let kind = {data: data, pos: pos + 1, n: 2} getBits
+    if final < 0 or kind < 0:
+      return none
+    pos = pos + 3
+    var block: Inflated? = none
+    if kind == 0:
+      block = {data: data, pos: pos, produced: out} inflateStored
+    elif kind == 1:
+      block = {data: data, pos: pos, produced: out} inflateFixed
+    elif kind == 2:
+      block = {data: data, pos: pos, produced: out} inflateDynamic
+    else:
+      return none
+    if not block.ok:
+      return none
+    out = block.value.data
+    pos = block.value.pos
+    if final == 1:
+      return {data: out, pos: pos} Inflated
+  return none
+
+# --- writing bits ---------------------------------------------------------------
+# The encoder collects (value, width) pairs and `flushBits` packs them, least
+# significant bit first. Huffman codes go out most significant bit first, so
+# they are reversed before they are queued.
+type Code:
+  value: int
+  width: int
+
+fn reverseBits({v: int, n: int}) -> int:
+  var r = 0
+  var x = v
+  for i in 0 .. n - 1:
+    r = r * 2 + x % 2
+    x = x /i 2
+  return r
+
+fn flushBits({vals: Seq[int], widths: Seq[int]}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  var acc = 0
+  var held = 0
+  for i in 0 .. vals.len - 1:
+    acc = acc + vals[i] * pow2[held]
+    held = held + widths[i]
+    for held >= 8:
+      let b = {value: acc % 256} u8
+      out = {items: out, value: b} push
+      acc = acc /i 256
+      held = held - 8
+  if held > 0:
+    let b = {value: acc} u8
+    out = {items: out, value: b} push
+  return out
+
+# --- the fixed code (RFC 1951 3.2.6) ----------------------------------------------
+fn fixedLit({sym: int}) -> Code:
+  var code = 0
+  var w = 0
+  if sym < 144:
+    code = 48 + sym
+    w = 8
+  elif sym < 256:
+    code = 400 + sym - 144
+    w = 9
+  elif sym < 280:
+    code = sym - 256
+    w = 7
+  else:
+    code = 192 + sym - 280
+    w = 8
+  let r = {v: code, n: w} reverseBits
+  return {value: r, width: w} Code
+
+fn lengthSym({run: int}) -> int:
+  var i = 28
+  for lenBase[i] > run:
+    i = i - 1
+  return i
+
+fn distSym({dist: int}) -> int:
+  var i = 29
+  for distBase[i] > dist:
+    i = i - 1
+  return i
+
+# --- LZ77 over a one-slot hash table, emitting the fixed code ------------------------
+fn hashAt({data: Seq[u8], at: int}) -> int:
+  let a = {value: data[at]} int
+  let b = {value: data[at + 1]} int
+  let c = {value: data[at + 2]} int
+  return (a * 1021 + b * 31 + c) % 4093
+
+fn matchRun({data: Seq[u8], prior: int, at: int}) -> int:
+  var run = 0
+  for run < 258 and at + run < data.len and data[prior + run] == data[at + run]:
+    run = run + 1
+  return run
+
+fn deflateFixed({data: Seq[u8]}) -> Seq[u8]:
+  var vals: Seq[int] = [1, 1]
+  var widths: Seq[int] = [1, 2]
+  var head: Seq[int] = []
+  for i in 0 .. 4092:
+    head = {items: head, value: -1} push
+  var at = 0
+  for at < data.len:
+    var best = 0
+    var prior = -1
+    if at + 2 < data.len:
+      let h = {data: data, at: at} hashAt
+      prior = head[h]
+      {items: head, index: h, value: at} setAt
+      if prior >= 0 and at - prior <= 32768:
+        best = {data: data, prior: prior, at: at} matchRun
+    if best >= 3:
+      let ls = {run: best} lengthSym
+      let lc = {sym: 257 + ls} fixedLit
+      vals = {items: vals, value: lc.value} push
+      widths = {items: widths, value: lc.width} push
+      vals = {items: vals, value: best - lenBase[ls]} push
+      widths = {items: widths, value: lenExtra[ls]} push
+      let dist = at - prior
+      let ds = {dist: dist} distSym
+      let dc = {v: ds, n: 5} reverseBits
+      vals = {items: vals, value: dc} push
+      widths = {items: widths, value: 5} push
+      vals = {items: vals, value: dist - distBase[ds]} push
+      widths = {items: widths, value: distExtra[ds]} push
+      for k in 1 .. best - 1:
+        if at + k + 2 < data.len:
+          let h2 = {data: data, at: at + k} hashAt
+          {items: head, index: h2, value: at + k} setAt
+      at = at + best
+    else:
+      let c = {value: data[at]} int
+      let lc = {sym: c} fixedLit
+      vals = {items: vals, value: lc.value} push
+      widths = {items: widths, value: lc.width} push
+      at = at + 1
+  let end = {sym: 256} fixedLit
+  vals = {items: vals, value: end.value} push
+  widths = {items: widths, value: end.width} push
+  return {vals: vals, widths: widths} flushBits
+
+# --- stored blocks -------------------------------------------------------------------
+fn deflateStored({data: Seq[u8]}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  var at = 0
+  var more = true
+  for more:
+    var n = data.len - at
+    if n > 65535:
+      n = 65535
+    var final = 0
+    if at + n >= data.len:
+      final = 1
+      more = false
+    let nlen = 65535 - n
+    let head: Seq[int] = [final, n % 256, n /i 256, nlen % 256, nlen /i 256]
+    for i in 0 .. 4:
+      let b = {value: head[i]} u8
+      out = {items: out, value: b} push
+    for i in 0 .. n - 1:
+      out = {items: out, value: data[at + i]} push
+    at = at + n
+  return out
+
+# The raw DEFLATE stream for `data`: stored for Fastest, the fixed code for
+# Balanced, and for Smallest whichever of the two comes out shorter.
+fn deflate({data: Seq[u8], level: Level}) -> Seq[u8]:
+  if level == Fastest:
+    return {data: data} deflateStored
+  let coded = {data: data} deflateFixed
+  if level == Balanced:
+    return coded
+  let stored = {data: data} deflateStored
+  if stored.len < coded.len:
+    return stored
+  return coded
+
+# --- zlib and gzip ------------------------------------------------------------------
+fn byteOf({n: int}) -> u8:
+  return {value: n % 256} u8
+
+fn pushWord({items: Seq[u8], word: u64, bigEndian: bool}) -> Seq[u8]:
+  var out = items
+  var w = {value: word} int
+  var four: Seq[int] = []
+  for i in 0 .. 3:
+    four = {items: four, value: w % 256} push
+    w = w /i 256
+  for i in 0 .. 3:
+    var k = i
+    if bigEndian:
+      k = 3 - i
+    let b = {n: four[k]} byteOf
+    out = {items: out, value: b} push
+  return out
+
+fn packZlib({data: Seq[u8], level: Level}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  let cmf = {n: 120} byteOf
+  out = {items: out, value: cmf} push
+  var flg = 156
+  if level == Fastest:
+    flg = 1
+  elif level == Smallest:
+    flg = 218
+  let f = {n: flg} byteOf
+  out = {items: out, value: f} push
+  let body = {data: data, level: level} deflate
+  for i in 0 .. body.len - 1:
+    out = {items: out, value: body[i]} push
+  let sum = {data: data} adler32
+  return {items: out, word: sum, bigEndian: true} pushWord
+
+fn packGzip({data: Seq[u8], level: Level}) -> Seq[u8]:
+  var xfl = 0
+  if level == Smallest:
+    xfl = 2
+  elif level == Fastest:
+    xfl = 4
+  let head: Seq[int] = [31, 139, 8, 0, 0, 0, 0, 0, xfl, 255]
+  var out: Seq[u8] = []
+  for i in 0 .. 9:
+    let b = {n: head[i]} byteOf
+    out = {items: out, value: b} push
+  let body = {data: data, level: level} deflate
+  for i in 0 .. body.len - 1:
+    out = {items: out, value: body[i]} push
+  let sum = {data: data} crc32
+  out = {items: out, word: sum, bigEndian: false} pushWord
+  let size = {value: data.len} u64
+  return {items: out, word: size, bigEndian: false} pushWord
+
+# `none` for Zstd, which this module does not implement.
+fn pack({data: Seq[u8], format: Method, level: Level}) -> Seq[u8]?:
+  if format == Deflate:
+    return {data: data, level: level} deflate
+  if format == Zlib:
+    return {data: data, level: level} packZlib
+  if format == Gzip:
+    return {data: data, level: level} packGzip
+  return none
+
+# --- reading zlib and gzip ----------------------------------------------------------
+fn bytesFrom({data: Seq[u8], start: int}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  for i in start .. data.len - 1:
+    out = {items: out, value: data[i]} push
+  return out
+
+# Four bytes at `at` as a number, or -1 when they are not all there.
+fn wordAt({data: Seq[u8], at: int, bigEndian: bool}) -> int:
+  if at < 0 or at + 4 > data.len:
+    return -1
+  var v = 0
+  for i in 0 .. 3:
+    var k = 3 - i
+    if bigEndian:
+      k = i
+    v = v * 256 + {value: data[at + k]} int
+  return v
+
+fn unzlib({data: Seq[u8]}) -> Seq[u8]?:
+  if data.len < 6:
+    return none
+  let cmf = {value: data[0]} int
+  let flg = {value: data[1]} int
+  if cmf % 16 != 8 or (cmf * 256 + flg) % 31 != 0 or flg /i 32 % 2 != 0:
+    return none
+  let body = {data: data, start: 2} bytesFrom
+  let r = {data: body} inflate
+  if not r.ok:
+    return none
+  let tail = (r.value.pos + 7) /i 8
+  let want = {data: body, at: tail, bigEndian: true} wordAt
+  let got = {data: r.value.data} adler32
+  if want < 0 or {value: got} int != want:
+    return none
+  return r.value.data
+
+# Skip a zero-terminated field starting at `at`; the index after it, or -1.
+fn skipZero({data: Seq[u8], at: int}) -> int:
+  var i = at
+  for i < data.len and data[i] != 0:
+    i = i + 1
+  if i >= data.len:
+    return -1
+  return i + 1
+
+fn gzipBodyStart({data: Seq[u8]}) -> int:
+  let flg = {value: data[3]} int
+  var at = 10
+  if flg /i 4 % 2 == 1:
+    if at + 2 > data.len:
+      return -1
+    at = at + 2 + {value: data[at]} int + {value: data[at + 1]} int * 256
+  if flg /i 8 % 2 == 1 and at >= 0:
+    at = {data: data, at: at} skipZero
+  if flg /i 16 % 2 == 1 and at >= 0:
+    at = {data: data, at: at} skipZero
+  if flg /i 2 % 2 == 1 and at >= 0:
+    at = at + 2
+  return at
+
+fn ungzip({data: Seq[u8]}) -> Seq[u8]?:
+  if data.len < 18:
+    return none
+  if data[0] != 31 or data[1] != 139 or data[2] != 8:
+    return none
+  let start = {data: data} gzipBodyStart
+  if start < 0 or start >= data.len:
+    return none
+  let body = {data: data, start: start} bytesFrom
+  let r = {data: body} inflate
+  if not r.ok:
+    return none
+  let tail = (r.value.pos + 7) /i 8
+  let wantCrc = {data: body, at: tail, bigEndian: false} wordAt
+  let wantSize = {data: body, at: tail + 4, bigEndian: false} wordAt
+  let gotCrc = {data: r.value.data} crc32
+  if wantCrc < 0 or wantSize < 0:
+    return none
+  if {value: gotCrc} int != wantCrc or r.value.data.len % 4294967296 != wantSize:
+    return none
+  return r.value.data
+
+# `none` for a corrupt stream, a bad checksum, and for Zstd.
+fn unpack({data: Seq[u8], format: Method}) -> Seq[u8]?:
+  if format == Deflate:
+    let r = {data: data} inflate
+    if not r.ok:
+      return none
+    return r.value.data
+  if format == Zlib:
+    return {data: data} unzlib
+  if format == Gzip:
+    return {data: data} ungzip
+  return none
+
+# --- checks ---------------------------------------------------------------------
+fn unhex({t: str}) -> Seq[u8]:
+  let r = {t: t} fromHex
+  if r.ok:
+    return r.value
+  let nothing: Seq[u8] = []
+  return nothing
+
+fn checkChecksums() -> int:
+  let nine = {t: "123456789"} bytesOf
+  if {data: nine} crc32 != 3421780262:
+    return 1
+  if {data: nine} adler32 != 152961502:
+    return 2
+  let empty: Seq[u8] = []
+  if {data: empty} crc32 != 0:
+    return 3
+  if {data: empty} adler32 != 1:
+    return 4
+  return checkInflate
+
+fn checkInflate() -> int:
+  # python: zlib.compressobj(0, DEFLATED, -15) over "abc" — a stored block
+  let stored = {t: "010300fcff616263"} unhex
+  let a = {data: stored} inflate
+  if not a.ok:
+    return 10
+  if {bytes: a.value.data} fromBytes != "abc":
+    return 11
+  # level 6 over "aaaaaaaaaabbbbbbbbbb" — fixed Huffman with matches
+  let fixed = {t: "4b4c848124380000"} unhex
+  let b = {data: fixed} inflate
+  if not b.ok:
+    return 12
+  if {bytes: b.value.data} fromBytes != "aaaaaaaaaabbbbbbbbbb":
+    return 13
+  return checkDynamic
+
+fn checkDynamic() -> int:
+  # a dynamic-Huffman stream (python level 9) over an 11400-byte input
+  let raw = {t: "edd45754ce0118c7f1ac92552223eb8fa492ec2d7bb4a561645622bcf5b6de7642cb1e8986ac28914dd97befbd3392102ac9be72be6eddba729e9be7e639e77bcee7e6a7a553cfb0b97187ae7d06598f1a33699a2a2862de821529ebb3761c387ae6f2ad472fde947ea95253af518b7616ddfa0eb6711a3bd9db373872fec295a91bb277e61d3b7be5f6e3976fcbbe56d5d56fdcd2a463f77e436c478f9b32dd4f1315bb28296de3d65df9c7cf5dbdf3a4f05df9b76ab5ea3769d5deb247ffa176cee3a7ce508744c72d5e95be2967f7c113e7afdd7dfaaae4d3f7eab50d9a2aa69d7a5a0db37771f7f0f10f9d13bf24796de6b63d874e5eb87eafa0e87dc58f1a751a18b536ebdc6bc07007d7099e3303c2621296aeced8bc7defe153176fdc7ff6fac3e79fda751b366b63dea5f7c0118e6e13bd660586cf4d5cb666dd96dc7d474e5fbaf9e079f1c7ca5f98db621e897936e6e598f7637e88590bb331666bcc2acc2b301fc0fc087315cced30db60f6c5bc12731ee6c798ab6236c16c8bd90f7312e67ccc4f3057c3dc1eb31d6635e655980f627e8ab93a6653ccf698fd3127633e84b900730dcc66981d3007605e8df930e66798b5319b6376c41c88790de623989f63d6c1dc01f328cc419853301fc5fc02734dcc16989d3007634ec57c0cf34bccba983b621e8d5983390df371cc85986b61b6c4ec8c3904733ae613985f61ae8db9136617cca198d7623e89b908731dcc9d31bb620ec39c81f914e6d798eb62ee82d90d7338e675984f632ec65c0f7357cc633047605e8ff90ce63798f53077c33c167324e60d98cf627e8b591f7377cce3304761de88f91ce67798eb63ee81793ce668cc9b309fc75c82d900734fccee98e760cec47c01f37bcc0d30f7c23c01730ce6cd982f62fe80b921e6de9827629e8b790be64b983f6236c4dc07f324ccf3306761be8cb9147323cc7d314fc63c1f7336e62b98cb3037c6dc0ff314ccb198b762be8ab91c7313ccfd314fc51c873907f335cc9f3037c56c85d903733ce66d98af63aec06c847900664fcc0998b763be81f933e666980762f6c29c883917f34dcc955a327332733273327332733273ffc3ccf978ab546ae5af6ba104fb782b019a995eb315cf4075a89f325d1da6ccd2f8fa0729ea10efc03f6f954744b8324d3dc352918a54a42215a948452a52918a54a42215a948452a52918a54a42215a948452a52918a54a42215a948452a52f97795df"} unhex
+  let d = {data: raw} inflate
+  if not d.ok:
+    return 20
+  if d.value.data.len != 11400:
+    return 21
+  if {data: d.value.data} crc32 != 517998529:
+    return 22
+  if {data: d.value.data} adler32 != 1849594134:
+    return 23
+  return checkCorrupt
+
+fn checkCorrupt() -> int:
+  # a flipped NLEN, a stream cut short, and a reserved block type all fail
+  let badLen = {t: "010300fdff616263"} unhex
+  let r1 = {data: badLen} inflate
+  if r1.ok:
+    return 30
+  let cut = {t: "0103"} unhex
+  let r2 = {data: cut} inflate
+  if r2.ok:
+    return 31
+  let reserved = {t: "07"} unhex
+  let r3 = {data: reserved} inflate
+  if r3.ok:
+    return 32
+  let empty: Seq[u8] = []
+  let r4 = {data: empty} inflate
+  if r4.ok:
+    return 33
+  return checkWrappers
+
+fn checkWrappers() -> int:
+  # python: zlib.compress(b"hello hello hello") and gzip.compress(..., mtime=0)
+  let hello = {t: "hello hello hello"} bytesOf
+  let z = {t: "789ccb48cdc9c957c84090003a2e067d"} unhex
+  let a = {data: z, format: Zlib} unpack
+  if not a.ok:
+    return 40
+  if {bytes: a.value} fromBytes != "hello hello hello":
+    return 41
+  let g = {t: "1f8b08000000000002ffcb48cdc9c957c84090008088f9e511000000"} unhex
+  let b = {data: g, format: Gzip} unpack
+  if not b.ok:
+    return 42
+  if {bytes: b.value} fromBytes != "hello hello hello":
+    return 43
+  # a flipped checksum byte is refused
+  var bad = z
+  let wrong = {value: 126} u8
+  {items: bad, index: bad.len - 1, value: wrong} setAt
+  let c = {data: bad, format: Zlib} unpack
+  if c.ok:
+    return 44
+  let none1 = {data: hello, format: Zstd, level: Balanced} pack
+  if none1.ok:
+    return 45
+  return checkRoundTrip
+
+fn roundTrips({data: Seq[u8], format: Method, level: Level}) -> bool:
+  let squeezed = {data: data, format: format, level: level} pack
+  if not squeezed.ok:
+    return false
+  let back = {data: squeezed.value, format: format} unpack
+  if not back.ok:
+    return false
+  return back.value == data
+
+fn checkRoundTrip() -> int:
+  let hello = {t: "hello hello hello"} bytesOf
+  let empty: Seq[u8] = []
+  let raw = {t: "edd45754ce0118c7f1ac92552223eb8fa492ec2d7bb4a561645622bcf5b6de7642cb1e8986ac28914dd97befbd3392102ac9be72be6eddba729e9be7e639e77bcee7e6a7a553cfb"} unhex
+  var n = 0
+  for m in [Deflate, Zlib, Gzip]:
+    for l in [Fastest, Balanced, Smallest]:
+      n = n + 1
+      if not {data: hello, format: m, level: l} roundTrips:
+        return 50 + n
+      if not {data: empty, format: m, level: l} roundTrips:
+        return 60 + n
+      if not {data: raw, format: m, level: l} roundTrips:
+        return 70 + n
+  # the fixed encoder shrinks repetition
+  let rep = {t: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"} bytesOf
+  let small = {data: rep, level: Balanced} deflate
+  if small.len >= rep.len:
+    return 80
+  return 0
+
+fn main() -> int:
+  return checkChecksums

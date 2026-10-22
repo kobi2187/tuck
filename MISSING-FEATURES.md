@@ -41,8 +41,7 @@ it in.
 - **A50 — `std/random` has no Odin or D runtime.** `newDice`, `newDiceFromOs`,
   `rollRange` exist in `tuck_rt.nim` only; "check OK" does not mean every
   backend builds. A scan of every `std` extern against the three runtimes finds
-  nothing else missing except `std/net` on D (`listen`, `accept`, `connect`,
-  `recv`; ROADMAP S3.3, `42-net-echo` cannot link).
+  nothing else missing except `std/net` on D (since added: ROADMAP S3.3).
 - **A51 — the minimum of a signed type cannot be written.** `-128` for `i8` is
   "128 does not fit i8": the minus applies after the range check. `core.convert`
   notes the same for `i64` ("no literal spelling").
@@ -118,6 +117,186 @@ it in.
   core package.** "Redeclaration of 'fmt'" on the Odin build. Fixed: the core
   packages are imported as `odin_fmt` / `odin_os` when the program has such a
   module. Found finishing `std.cli`.
+
+- **A67 (issue #155) — `toStr` of a float printed differently per backend.**
+  `{value: 1.0} toStr` was `1.0` on Nim, `1` on Odin and D, and D cut every
+  float to 6 digits. Ruled 2026-10-22: one text, `1.0`, made explicitly. Fixed:
+  each runtime takes the shortest round-trip digits from C's snprintf/strtod
+  and lays them out as Python's `repr` does. Found writing the JSON parser for
+  `std.encoding`.
+
+- **A68 (issue #156) — a local named like a fn captured the call to it.**
+  `xs.len + len` with `let len = 2` built `len(xs) + len` calling the local.
+  Fixed: the mangler reads a checker-stamped call's callee in the fn namespace, and the Odin emitter does not take a non-callable parameter for the callee.
+  Found writing `std.compress`.
+
+- **A69 (issue #157) — `==` on two Seqs did not build on Odin.** The emitter
+  printed a raw `==`, which Odin refuses for a dynamic array. Fixed: a Seq of
+  plain elements compares through `rt.tuckSeqEq` (length, then elements). A
+  Seq of Seqs is still a raw `==`. Found writing `std.compress`.
+
+- **A70 (issue #159) — the result of `nowMs` could not be read.** Its field
+  `ms` collided with `std/time`'s fn `ms` (fields and fns share a call
+  namespace), so `n.ms` was refused in every importer. Fixed: the field is
+  `epochMs`, in `std/time`, the three runtimes and the TK-TY43 text. Found
+  writing `sys.clock`.
+
+- **A71 (issue #160) — `Self` inside a record in a group requirement was not
+  substituted.** `fn pull({self: Self, ...}) -> {next: Self, data: ...}` could
+  never be satisfied: conformance compared `{next: Mem, ..}` with
+  `{next: Self, ..}`. Fixed: `substituteSelf` delegates to the one `substType`
+  walker. Found writing `sys.io`.
+
+- **A72 (issue #161) — a group-bounded generic could not pass its own type
+  parameter to another fn bounded by the same group.** The inner bound was
+  checked against the concrete provider by name: "parameter 'self' is Mem,
+  group requires S". Fixed: a type parameter of the enclosing fn whose own
+  bound names the group meets it. Found writing `sys.io`.
+
+- **A73 (issue #162) — a group requirement's declared effect was ignored in a
+  generic body.** The call was charged the effect of whichever provider was in
+  scope, so `emit[K: Sink]` over an `[io]` contract passed as pure. Fixed: a
+  call to a requirement of a bound group, in a fn declared in the same module
+  as the group, costs what the group declares. The driver gathers every group's requirement effects over the whole program, so a group imported from another module is charged the same way. Found designing `sys.io`.
+
+- **A74 (issue #163) — a group provider in the importing module was rejected.**
+  The group's owning module has its own provider of the same name, and
+  `requirementKey` took that one without asking whether it accepts the
+  argument's type; Odin and D then bound the generic to the owner's provider.
+  Fixed: the checker falls back to the importer's bare provider when the
+  owner's does not take the type, and the generic is always handed its
+  providers (forwarded through nested generics). Found writing file providers
+  for `sys.io`.
+
+- **A75 (issue #164) — a generic fn calling another on a first call's result
+  failed when both used one type-parameter letter.** `echoesOwnParam` took the
+  enclosing fn's own `K` for the callee's `K` echoed back: "cannot infer
+  generic parameter 'K'". Fixed: a letter the enclosing generic fn also uses is
+  that fn's own parameter. Found writing `sys.io`.
+
+- **A76 (issue #165) — Odin ran a task called with arguments on the main
+  context.** Only a nullary task, or a bound `let r = {args} task`, was spawned
+  as a coroutine, so `examples/42-net-echo` panicked "cannot await outside a
+  coroutine" on its first socket call. Fixed: a task with arguments called as a
+  statement is spawned through the same per-signature env and wrapper
+  (`context.user_ptr`) as the bound form. Found writing `sys.net`.
+
+- **A77 (issue #166) — D: `discard` of an owned call result emitted a bare
+  `tuckOwnTmpN;`.** dmd rejects an expression statement with no effect. Fixed:
+  a discarded bare name is emitted as `cast(void) name`. Found giving the D
+  runtime networking.
+
+- **A78 (issue #168) — a guard narrowed a name, not a field path.**
+  `if not w.f.ok: return` still left `w.f.value` "unhandled". Fixed: a guard
+  narrows a field path of names in every form (`if`, early return, `for`).
+  Re-binding or assigning the root, or a prefix, and a `..field` update forget
+  what was proved under it; only a record root narrows, since an object's
+  member may rewrite its fields. Found writing `platform.hal`.
+
+- **A79 (issue #167) — `r = f(r.b)` wiped the new `r.b`.** The ownership pass
+  reset the moved field after the statement, which had already stored a whole
+  new `r`; Odin, without the reset, freed the moved part twice. Fixed: the
+  value is bound first and the part emptied before the store
+  (`tmp := f(r.b); reset(r.b); r = tmp`). Found writing `platform.hal`.
+
+- **A80 (issue #169) — Odin: a by-value `self` could not give up its fields.**
+  `writtenParams` exempted every parameter named `self` from the shadowing
+  copy, assuming a member's pointer self; a group provider's `self` is a
+  record by value. Fixed: only a pointer `self` is exempt. Found writing
+  `platform.hal`.
+
+- **A81 (issue #170) — an inner `let` shadowing an outer local stored into
+  the outer one.** The checker supports shadowing; the ownership pass's
+  `uniquify` returned early for any visible name, so the inner declaration was
+  emitted as an assignment (a build error when the types differ, a silent
+  overwrite when they agree). Fixed: a declaration of a name visible only from
+  an enclosing scope gets a name of its own. Found writing
+  `platform.net-lowpower`.
+
+- **A82 (issue #171) — an `impl:` shim worked only in the entry module.**
+  Imported, Nim called it through `tuck_rt` (every header-less extern counted
+  as the runtime's), Odin rebased its path against the output directory instead
+  of the module's `mod_<name>/` package, and D collected `-I` from the entry
+  module only. Fixed in all three; `stdlib_project` builds a program importing
+  `sys.mmap` on each backend. Found writing `sys.mmap`.
+
+- **A83 (issue #172) — `argCount`'s result was unreadable beside `std/seq`.**
+  Its field `count` collided with seq's fn `count` (A70's class). Fixed: the
+  field is `total`, in `std/sys` and the three runtimes. Found writing the
+  `hangman` app.
+
+- **A84 (issue #173) — Odin/D lost the module of an imported sum named
+  `...Kind`.** The emitters recovered the sum from its tag enum's name by
+  stripping `Kind`, which misread `Kind`/`ArgKind` themselves. Fixed: the
+  module is read off the declaration owning the tag (`enumTagDecl`). Found
+  writing the `hangman` app.
+
+- **A85 (issue #174) — `argAt` was 1-based on Nim, 0-based on Odin and D,
+  and Nim raised past the last argument.**
+  Odin and D skipped the program name. Fixed: 1..argCount are the arguments
+  and 0 the program on every backend, stated in `std/sys.tuck`. Found writing
+  the `hangman` app.
+
+- **A86 (issue #175) — Odin `readLine` returned a whole stdin chunk as one
+  line.** Piped lines after the first were dropped, and an end-of-input EOF
+  error lost a last line without a newline. Fixed: a process-wide pending
+  buffer hands out one line per call. Guarded by the `apps` suite, which pipes
+  stdin into all three backends. Found writing the `hangman` app.
+
+- **A87 (issue #176) — the else of `if not r.ok:` did not narrow `r`.**
+  Fixed: the else-branch (and an `elif` chain in it) is narrowed; the
+  then-branch is not. Found writing the `guess` app.
+
+- **A88 (issue #177) — two imports declaring one type name, the first
+  silently won.** `injectImportedTypes` kept one `Entry` when two imported
+  modules each declared one, and a named type carried only its name, so the
+  second module's values were checked against the first's fields. Ruled
+  2026-10-22: each is its own type, and the importer qualifies. Fixed
+  (`compiler/type_identity.nim`): a type name two modules declare is named with
+  its module (`cli::Entry`) wherever it is meant, and a bare name two imports
+  provide is `TK-TY47`. Unblocked the `wordfreq` app.
+
+- **A89 (issue #178) — a bare variant of a payload sum was emitted as a Kind
+  tag.** `var o = Nothing`, where `Open` also has `InList({tag: str})`, printed
+  the Kind enum's tag on all three backends. Fixed: the checker stamps it as the
+  qualified construction `Open.Nothing`, which every backend already built.
+  Found writing the `md2html` app.
+
+- **A90 (issue #179) — a second `let` of a name in the same scope stored into
+  the first.** The checker accepts the rebinding with a new type; the
+  ownership pass's `uniquify` renamed only a shadow of an enclosing scope's
+  name (A81), so the backends stored a `?int` into the `int`. Fixed: any
+  declaration of a name in scope gets a name of its own from the next
+  statement on, and its own value still reads the old one (`let x = x + 1`).
+  Found writing the `jsonq` app.
+
+- **A91 (issue #180) — an imported payload sum could not be matched or built
+  on Odin and D.** Odin wrote `case Shape_Dot`, `x.(Shape_Box)`, `Shape_Box{}`
+  and the union-typed local without the declaring package; D built
+  constructions unqualified and wrote `Shape.Dot` as an enum member. Fixed on
+  both. Found writing the `jsonq` app over `std.encoding`'s `Json`.
+
+- **A92 (issue #181) — a bare call reached a same-named fn the caller does
+  not import.** Odin and D qualified a call with the first module in the
+  program declaring the name, and the mangler's program-wide table renamed a
+  bare reference to an extern after a Tuck fn of that name anywhere. Fixed:
+  the modules the caller imports come first (`ast_query.callableOrigin`), and
+  each module is mangled against a table without the names it sees only as
+  externs. Found writing the `spellcheck` app.
+
+- **A93 (issue #182) — a raise payload had no expected types.**
+  `AppEv.raise Faulted {fault: Hungup}`, where two sums declare `Hungup`, was
+  "ambiguous" although the event declares `fault: Fault`; the same value in a
+  construction, a call or an assignment was not. Fixed: the event's fields
+  are the payload's hints. Found reviving the `web-downloader` app.
+
+- **A94 (issue #183) — an `[io]` wait outside a task aborted at run time.**
+  `accept` called from `main` (declaring `[io: net]`, which the checker
+  accepts) died with "cannot await outside a coroutine" on every backend.
+  Ruled 2026-10-22: async code runs in any fn that declares the effect.
+  Fixed: from `main` the thread runs the scheduler until the fd is ready, as
+  `awaitResult` did; `sleepMs` and `nextSignal` there too. Found writing the
+  `serve` app.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
@@ -278,13 +457,11 @@ Measured, not guessed — see `thoughts/async-endgame-measurements.md`.
   2026-09-28) is a separate, larger change and not needed by the ping.
 - **Typed select sources.** `on select` lowers `read <fd>` / `timeout <ms>`
   only. Blocks example 16 (see B).
-- **The D runtime has no networking.** `listen`, `accept`, `connect`,
-  `sendAll` and `recvSome` exist in `compiler/tuck_rt.nim` and not in
-  `compiler/tuckrt_d/tuck_rt.d`, so `examples/42-net-echo` emits valid D that
-  cannot link ("undefined identifier `listen` in module `tuck_rt`"). Codegen
-  is fine; the runtime is the gap, and it is why that example is deliberately
-  absent from the D compile gate. A third hand-mirrored runtime is exactly
-  the drift the item below is about.
+- **The D runtime networking — DONE.** `listen`, `accept`, `connect`, `recv`,
+  `send` and `close` are in `compiler/tuckrt_d/tuck_rt.d`, over the same
+  reactor as the other two; `examples/42-net-echo` is compile- and run-gated on
+  D (exit 42) and `sys.net`'s `socket` runs on all three. A third hand-mirrored
+  runtime is still the drift the item below is about.
 - **One C implementation of the runtime.** The Nim and Odin runtimes are
   mirrored by hand and have drifted three times already (see
   `thoughts/bugs-found-while-building-net.md`). Collapsing the offload seam

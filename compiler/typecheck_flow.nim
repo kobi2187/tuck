@@ -359,6 +359,16 @@ proc alwaysExits(e: Expr): bool =
     true
   else: false
 
+proc guardKey*(e: Expr): string =
+  ## What a `.ok` guard on `e` narrows: a name, or a FIELD PATH of names
+  ## (`r.fault`, `w.cfg.port`) — never a call, an index or a result's own
+  ## `.value`, whose answer may differ the next time it is read. "" otherwise.
+  if e == nil: return ""
+  if e.kind == exkVar: return e.name
+  if e.kind != exkField or e.fieldName in ["ok", "value", "err"]: return ""
+  let root = guardKey(e.receiver)
+  if root == "": "" else: root & "." & e.fieldName
+
 proc earlyReturnGuard*(s: Expr): string =
   ## `if not r.ok: <exits>` — the name of the result it proves present for
   ## everything after this statement, or "" when the shape does not match.
@@ -369,5 +379,4 @@ proc earlyReturnGuard*(s: Expr): string =
   if c.kind != exkUnary or c.unaryOp != uoNot or c.operand == nil: return ""
   let inner = c.operand
   if inner.kind != exkField or inner.fieldName != "ok": return ""
-  if inner.receiver == nil or inner.receiver.kind != exkVar: return ""
-  inner.receiver.name
+  guardKey(inner.receiver)

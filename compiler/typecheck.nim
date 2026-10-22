@@ -369,9 +369,11 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
 # order matters and is the real content of this part of the checker.
 
 proc unwrapGuarded(tc: var TypeChecker, e: Expr, recvT: Type): Type =
-  ## `.value` is legal only under this result's own `if x.ok` guard.
-  if e.receiver.kind != exkVar or not tc.isNarrowed(e.receiver.name):
-    let n = if e.receiver.kind == exkVar: e.receiver.name else: "<result>"
+  ## `.value` is legal only under this result's own `if x.ok` guard — on a
+  ## name or a field path of names (`r.fault`).
+  let key = guardKey(e.receiver)
+  if key == "" or not tc.isNarrowed(key):
+    let n = if key != "": key else: "<result>"
     fail("Type Error: unhandled " & typeName(recvT) & " — guard it " &
          "first: `if " & n & ".ok:` and read .value inside, or " &
          "`if not " & n & ".ok:` with a return, which narrows " &
@@ -730,16 +732,11 @@ proc substituteSelf(pt: Type, selfT: Type, letters: seq[string] = @[]): Type =
   ## 2026-09-27) — at any depth, so `Seq[Self]` is a `Seq` of the interface.
   ## So does each of `letters`, the member's type params bounded by `Self`:
   ## through an interface value, each is some satisfier.
-  if pt == nil: return nil
-  case pt.kind
-  of tkNamed:
-    if pt.name == "Self" or pt.name in letters: selfT else: pt
-  of tkApp:
-    var args: seq[Type]
-    for a in pt.args: args.add(substituteSelf(a, selfT, letters))
-    Type(span: pt.span, kind: tkApp, base: substituteSelf(pt.base, selfT, letters),
-         args: args)
-  else: pt
+  ## One walker for every type shape: a record, tuple or fn type holding
+  ## `Self` reads the same as a bare one.
+  var subs = {"Self": selfT}.toTable
+  for l in letters: subs[l] = selfT
+  substType(pt, subs)
 
 proc failIfSameTypeThroughIface(mem: Decl, iname: string, sp: Span) =
   ## `fn splice[A: Self, B: Self]({self: A, other: A, ...})` needs `other` to
@@ -1881,10 +1878,36 @@ proc synthBinary(tc: var TypeChecker, e: Expr): Type =
 # spec 4.4b: union two branch states — narrowing is never discarded,
 # only widened to the union of what the branches could produce
 
+proc wrapperOkRead(cond: Expr): Expr =
+  ## The first `.ok` of a `T?`/`!T` read anywhere in `cond`, or nil.
+  if cond == nil: return nil
+  for n in cond.nodes:
+    if n.kind == exkField and n.fieldName == "ok" and n.receiver != nil and
+       isWrapper(semLayer.typeFor(n.receiver)):
+      return n
+
+proc failIfGuardNotAlone(cond: Expr) =
+  ## A condition testing `.ok` is that test alone, `x.ok` or `not x.ok`
+  ## (TK-TY46, ruled 2026-10-22): a guard inside `and`/`or` narrows nothing.
+  ## Call after the condition is synthesized: the receiver's type decides.
+  let guard = wrapperOkRead(cond)
+  if guard == nil: return
+  let inner = if cond.kind == exkUnary and cond.unaryOp == uoNot: cond.operand
+              else: cond
+  if inner == guard: return
+  let name = guardKey(guard.receiver)
+  let shown = if name != "": name else: "the value"
+  fail(dcTyGuardNotAlone, "the `" & shown & ".ok` test shares its condition " &
+       "with more, so it guards nothing: only a lone `" & shown & ".ok` (or `not " &
+       shown & ".ok`) lets the branch read `" & shown & ".value`. Fix: nest — " &
+       "`if " & shown & ".ok:` with the rest of the condition inside it; for " &
+       "`or`, one early return per guard", cond.span)
+
 proc checkCondition(tc: var TypeChecker, cond: Expr, sp: Span) =
   ## A condition must be a plain bool — an unhandled fallible result is the
   ## common mistake and gets its own message.
   let condT = tc.synthesize(cond)
+  failIfGuardNotAlone(cond)
   if isWrapper(condT):
     fail("Type Error: unhandled " & typeName(condT) & " in condition — test " &
          "`.ok`, or pass it to a handling function", cond.span)
@@ -1893,14 +1916,25 @@ proc checkCondition(tc: var TypeChecker, cond: Expr, sp: Span) =
     fail("Type Error: if condition must be bool, got " & typeName(condT),
          cond.span)
 
+proc pathNarrowable(tc: TypeChecker, key: string): bool =
+  ## A field path narrows only off a plain RECORD root: a record is a value
+  ## nothing else holds, so its fields change only by assignment, which the
+  ## checker sees. An OBJECT's member fns may rewrite its fields behind a call.
+  let dot = key.find('.')
+  if dot < 0: return true
+  let (found, b) = tc.lookup(key[0 ..< dot])
+  if not found or b.typ == nil: return false
+  let t = tc.resolve(b.typ)
+  not (t != nil and t.kind == tkNamed and tc.objDecls.hasKey(t.name))
+
 proc okGuardName(tc: TypeChecker, cond: Expr): string =
   ## `if r.ok:` narrows r inside the then-branch ONLY — outside the guard the
-  ## value is still the wrapped type (strict, scope-limited).
-  if cond != nil and cond.kind == exkField and cond.fieldName == "ok" and
-     cond.receiver != nil and cond.receiver.kind == exkVar and
-     not tc.isNarrowed(cond.receiver.name):
-    cond.receiver.name
-  else: ""
+  ## value is still the wrapped type (strict, scope-limited). `r` may be a
+  ## field path of a record (`if w.fault.ok:`).
+  if cond == nil or cond.kind != exkField or cond.fieldName != "ok": return ""
+  let key = guardKey(cond.receiver)
+  if key == "" or tc.isNarrowed(key) or not tc.pathNarrowable(key): return ""
+  key
 
 # === BRANCHES, MATCH, AND THE MERGE ========================================
 # Where the checker's per-variable knowledge FORKS and rejoins. Each branch
@@ -1908,7 +1942,13 @@ proc okGuardName(tc: TypeChecker, cond: Expr): string =
 # wrong is how narrowing or variant state leaks across a branch it should not.
 # The three join sites (if/else, match arms, loop body) are all here.
 
-proc synthBranches(tc: var TypeChecker, e: Expr, guard: string): (Type, Type) =
+proc negatedGuardName(tc: TypeChecker, cond: Expr): string =
+  ## `if not r.ok: ... else:` — the ELSE branch is the one that knows r.
+  if cond == nil or cond.kind != exkUnary or cond.unaryOp != uoNot: return ""
+  tc.okGuardName(cond.operand)
+
+proc synthBranches(tc: var TypeChecker, e: Expr, guard: string,
+                   elseGuard = ""): (Type, Type) =
   ## Both branches from the same entry state; the after-if state is their union.
   if guard != "": tc.setNarrowed(guard, true)
   let entryVariants = tc.varVariants
@@ -1916,7 +1956,9 @@ proc synthBranches(tc: var TypeChecker, e: Expr, guard: string): (Type, Type) =
   let thenVariants = tc.varVariants
   if guard != "": tc.setNarrowed(guard, false)
   tc.varVariants = entryVariants
+  if elseGuard != "": tc.setNarrowed(elseGuard, true)
   let elseT = tc.synthesize(e.elseBranch)
+  if elseGuard != "": tc.setNarrowed(elseGuard, false)
   tc.varVariants = mergeVariants(thenVariants, tc.varVariants)
   (thenT, elseT)
 
@@ -1928,7 +1970,8 @@ proc isNoValue(t: Type): bool =
 proc synthIf(tc: var TypeChecker, e: Expr): Type =
   ## Branches that produce values must agree on the type.
   tc.checkCondition(e.cond, e.span)
-  let (thenT, elseT) = tc.synthBranches(e, tc.okGuardName(e.cond))
+  let (thenT, elseT) = tc.synthBranches(e, tc.okGuardName(e.cond),
+                                        tc.negatedGuardName(e.cond))
   if e.elseBranch != nil and not isFlexible(thenT) and not isFlexible(elseT) and
      not (isNoValue(thenT) and isNoValue(elseT)) and
      not tc.compatible(thenT, elseT) and not tc.compatible(elseT, thenT):
@@ -2369,6 +2412,9 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
   let fields = tc.fieldsOf(recvT)
   for step in e.steps.mitems:
     tc.checkChainStep(step, e, result, recvT, fields)
+  # `x ..fault {none}` rewrites x's fields: nothing proved under x still holds.
+  let key = guardKey(e.base)
+  if key != "": tc.forgetPaths(key)
 
 proc failIfAnonymousForNamed(tc: TypeChecker, e: Expr, actual, expected: Type,
                              what: string) =
@@ -2439,13 +2485,17 @@ proc bindNamedParam(tc: TypeChecker, paramName: string, actual: Type,
     bindings[paramName] = actual
 
 proc echoesOwnParam(declared, actual: Type, generics: seq[string],
-                    bindings: Table[string, Type]): bool =
+                    bindings: Table[string, Type],
+                    enclosing: Table[string, Type]): bool =
   ## A value typed by the callee's OWN unbound param — `none` checked against
   ## a field `next: R?` while R is still unknown — echoes the question back.
   ## Binding R to R built `Link[int, R]` instead of "cannot infer 'R'".
   declared.kind == tkNamed and actual.kind == tkNamed and
     actual.name == declared.name and actual.name in generics and
-    not bindings.hasKey(actual.name)
+    not bindings.hasKey(actual.name) and
+    # a letter the ENCLOSING generic fn also uses is that fn's own parameter,
+    # not the callee's question echoed back (`twice[K]` calling `emit[K]`)
+    actual.name notin enclosing
 
 proc bindableActual(tc: TypeChecker, declared, actual: Type,
                     generics: seq[string],
@@ -2459,7 +2509,8 @@ proc bindableActual(tc: TypeChecker, declared, actual: Type,
   ## "cannot infer generic parameter 'K'".
   let gname = typeParamName(actual)
   if gname != "": return tc.namedType(gname, actual.span)
-  if isFlexible(actual) or echoesOwnParam(declared, actual, generics, bindings):
+  if isFlexible(actual) or
+     echoesOwnParam(declared, actual, generics, bindings, tc.bodyGenerics):
     return nil
   actual
 
@@ -2671,7 +2722,14 @@ proc requirementKey(tc: TypeChecker, member, fnName: string,
     if "::" in fnName: fnName.split("::")[0]
     else: tc.bareOwnerOf.getOrDefault(fnName)
   if owner != "" and tc.fnSigs.hasKey(owner & "::" & member):
-    return owner & "::" & member
+    let qualified = owner & "::" & member
+    # The owner's provider is the default, but only when it takes this type: a
+    # provider the IMPORTING module declares bare is the one for its own type.
+    if concreteT != nil and tc.fnSigs.hasKey(member) and
+       not tc.sigsAcceptReceiver(qualified, concreteT) and
+       tc.sigsAcceptReceiver(member, concreteT):
+      return member
+    return qualified
   if concreteT != nil and not tc.fnSigs.hasKey(member):
     for imp in tc.ambiguousImports.getOrDefault(member):
       let qualified = imp & "::" & member
@@ -2858,6 +2916,12 @@ proc checkOneGroupBound(tc: TypeChecker, bound: Type, concreteT: Type,
   ## naming an INTERFACE is a different mistake with its own message (see
   ## whyNotAnObject's dkGroup arm for the inverse case).
   let groupName = groupNameOf(bound)
+  # A type parameter of the ENCLOSING fn, already bounded by this group, meets
+  # it by that bound: `outer[S: Source]` handing `S` on to `inner[S: Source]`.
+  if concreteT != nil and concreteT.kind == tkNamed and
+     tc.currentBounds.hasKey(concreteT.name):
+    for have in tc.currentBounds[concreteT.name]:
+      if groupNameOf(have) == groupName: return
   if not tc.groupDecls.hasKey(groupName):
     if tc.ifaceDecls.hasKey(groupName):
       tc.checkIfaceBound(groupName, concreteT, paramName, fnName, sp)
@@ -3687,6 +3751,14 @@ proc isRegistryRaiseCall(e: Expr): bool =
     e.callee.callee != nil and e.callee.callee.kind == exkVar and
     registryEventOwner(e.callee.callee.name) != ""
 
+proc raisedEventFields(e: Expr): seq[FieldDef] =
+  ## The payload fields the event a raise names declares.
+  let ev = e.callee.callee.name
+  let reg = registryEventOwner(ev)
+  if reg notin semLayer.registryNames: return
+  for v in semLayer.registryNames[reg].variants:
+    if v.name == ev: return v.fields
+
 proc asVariantPayloadCall(tc: var TypeChecker, e: Expr): Type =
   ## `{payload} Type.Variant` — the payload-first spelling of the same
   ## construction `Type.Variant {payload}` is. The callee already answered
@@ -3734,7 +3806,12 @@ proc asIndirectCall(tc: var TypeChecker, e: Expr): Type =
     if result != nil: return result
     return afterErrorType(e.span)
   if isRegistryRaiseCall(e):
-    for a in e.args: discard tc.synthesize(a)
+    # The event's declared fields are the payload's expected types, as a
+    # construction's are: `{fault: Hungup}` picks Fault's Hungup (A93).
+    var hints = initTable[string, Type]()
+    for fd in raisedEventFields(e): hints[fd.name] = fd.typ
+    tc.withFieldHints(hints):
+      for a in e.args: discard tc.synthesize(a)
     return result
   for a in e.args: discard tc.synthesize(a)
   fail("Type Error: expression is not callable", e.span)
@@ -4163,13 +4240,30 @@ proc sharedVariantType(tc: var TypeChecker, e: Expr, owners: seq[string]): Type 
        e.span)
   afterErrorType(e.span)
 
+proc stampVariantValue(tc: TypeChecker, e: Expr, owner: Type) =
+  ## A bare variant of a sum that carries a payload anywhere is a VALUE of
+  ## that sum, not the tag its Kind enum holds: it is stamped as the qualified
+  ## construction (`Open.Nothing`), which every backend already builds (A89).
+  ## A plain enum keeps the bare tag.
+  if owner == nil or owner.kind != tkNamed: return
+  let body = tc.typeDecls.getOrDefault(owner.name)
+  if body == nil or body.kind != tkSum or not sumHasPayload(body): return
+  setCall(semLayer, e, Expr(span: e.span, kind: exkField, fieldName: e.name,
+          receiver: Expr(span: e.span, kind: exkVar, name: owner.name)))
+
 proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   ## A bare sum-type variant is a value of its sum type. `Light.Red` is the
   ## qualified form of the same thing, handled by the field-access path.
   let owners = tc.sumTypesOwning(e.name)
-  if owners.len > 1: return tc.sharedVariantType(e, owners)
+  if owners.len > 1:
+    result = tc.sharedVariantType(e, owners)
+    tc.stampVariantValue(e, result)
+    return
   let owner = if owners.len == 1: owners[0] else: ""
-  if owner != "": return tc.namedType(owner, e.span)
+  if owner != "":
+    result = tc.namedType(owner, e.span)
+    tc.stampVariantValue(e, result)
+    return
   let regOwner = registryEventOwner(e.name)
   if regOwner != "": return tc.namedType(regOwner, e.span)
   if tc.expectedType != nil:
@@ -4557,7 +4651,7 @@ proc synthStmt(tc: var TypeChecker, blk, s: Expr, narrowed: var seq[string]): Ty
   ## and report it if it drops a fallible result.
   result = tc.synthesize(s)
   let g = earlyReturnGuard(s)
-  if g != "" and not tc.isNarrowed(g):
+  if g != "" and not tc.isNarrowed(g) and tc.pathNarrowable(g):
     tc.setNarrowed(g, true)
     narrowed.add(g)
   # a control-flow exit (`err X`, or a branch that only exits) is never a drop
@@ -4681,6 +4775,7 @@ proc synthWhile(tc: var TypeChecker, e: Expr): Type =
   let guard = tc.okGuardName(e.whileCond)
   if e.whileCond != nil:
     let ct = tc.synthesize(e.whileCond)
+    failIfGuardNotAlone(e.whileCond)
     if not isFlexible(ct) and typeName(ct) != "bool":
       fail("Type Error: loop condition must be bool, got " & typeName(ct),
            e.whileCond.span)
@@ -4881,6 +4976,12 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
   if e.target != nil and e.target.kind == exkVar and isWrapper(valT) and
      tc.isNarrowed(e.target.name):
     tc.setNarrowed(e.target.name, false)
+  # The same for a field path, and whatever was proved UNDER the place written
+  # (`r = ...` forgets `r.fault`; `r.cfg = ...` forgets `r.cfg.port`).
+  let key = guardKey(e.target)
+  if key != "":
+    tc.forgetPaths(key)
+    if '.' in key and isWrapper(valT): tc.setNarrowed(key, false)
 
 proc synthAssign(tc: var TypeChecker, e: Expr): Type =
   ## An assignment is a statement: it yields unit.

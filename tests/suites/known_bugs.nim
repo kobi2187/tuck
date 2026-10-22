@@ -635,8 +635,10 @@ on AppEvents.LowMemory({remaining: u32}):
 fn main() -> int:
   return 0
 """
+  # The literal is the event field's width, `42'u32`: a raise payload takes
+  # its event's field types (A93).
   t.quietly: t.emits("a registry raise in a task body is lowered",
-                     r"raise_tuckˑregistryˑAppEvents_LowMemory\(42\)")
+                     r"raise_tuckˑregistryˑAppEvents_LowMemory\(42'u32\)")
   t.bugFixed "a registry raise in a task body is lowered"
 
   # A PAYLOAD-FREE registry raise emitted swapped, nonsensical code.
@@ -2447,12 +2449,15 @@ fn main() -> int:
   let b = {n: 0} find
   let c = {n: 2} find
   var r = 0
-  if a.ok and c.ok:
+  let both = a.ok and c.ok
+  if both:
     r = r + 2
-  if a.ok xor b.ok:
+  let one = a.ok xor b.ok
+  if one:
     r = r + 1
   return r
 """
+  # Bound first: a condition testing `.ok` is that test alone (TK-TY46).
   t.hostRuns "...and `.ok` presence tests combine with and/xor on every backend", 3
 
   # The checker traces which variants a fn can return, so a transition out
@@ -3359,6 +3364,21 @@ fn main() -> int:
   t.badCheck "arithmetic on a one-field record is refused (#103)", "TK-TY43"
   t.bugFixed "arithmetic on a one-field record is refused (#103)"
 
+  # A70. The field of `nowMs`'s result was `ms`, which collided with std/time's
+  # fn `ms`, so the value could not be read at all (issue #159). Found writing
+  # sys.clock.
+  t.src """
+import time
+
+fn main() -> int [io: clock]:
+  let n = nowMs
+  if n.epochMs > 0:
+    return 0
+  return 1
+"""
+  t.quietly: t.hostRuns "A70: the field of a nowMs result can be read", 0
+  t.bugFixed "A70: the field of a nowMs result can be read"
+
   t.src """
 object Box:
   cells: Seq[int]
@@ -3941,5 +3961,855 @@ fn byteLen({t: str}) -> int:
 """)
   t.quietly: t.hostRuns "A66: a Tuck module named fmt builds on every backend", 4
   t.bugFixed "A66: a Tuck module named fmt builds on every backend"
+
+  # A67. `toStr` of an integral float printed "1.0" on Nim and "1" on Odin and
+  # D, and D cut every float to 6 digits. Ruled 2026-10-22: one text, `1.0`,
+  # made by the runtime itself rather than the host's formatter (Python's
+  # repr, issue #155). Found writing std.encoding.
+  t.src """
+import str
+
+fn main() -> int:
+  let s = {value: 1.0} toStr
+  return {t: s} byteCount
+"""
+  t.quietly: t.hostRuns "A67: an integral float prints the same text on every backend", 3
+  t.bugFixed "A67: an integral float prints the same text on every backend"
+
+  t.src """
+import console
+import seq
+import str
+
+fn main() -> int [io: console]:
+  let xs: Seq[f64] = [1.0, 100.0, 3.141592653589793, 0.000012, 123456789.0, 10000000000000000.0, 0.0 - 0.5]
+  var parts: Seq[str] = []
+  for x in xs:
+    let t = {value: x} toStr
+    parts = {items: parts, value: t} push
+  let line = {parts: parts, sep: " "} joinStr
+  {text: line} printLine
+  return 0
+"""
+  t.quietly: t.hostRuns("A67: every float prints as Python's repr on every backend", 0,
+    r"1\.0[ ]100\.0[ ]3\.141592653589793[ ]1\.2e-05[ ]123456789\.0[ ]1e\+16[ ]-0\.5")
+  t.bugFixed "A67: every float prints as Python's repr on every backend"
+
+  # A68. A local named like a fn captured the fn's call: `xs.len` beside
+  # `let len = 2` mangled the callee to the local (issue #156). Found writing
+  # std.compress. The mangler now reads a stamped call's callee in the fn
+  # namespace.
+  t.src """
+import seq
+
+fn main() -> int:
+  var xs: Seq[int] = [1, 2, 3]
+  let len = 2
+  return xs.len + len
+"""
+  t.quietly: t.hostRuns "A68: a local named like a fn does not capture a call to it", 5
+  t.bugFixed "A68: a local named like a fn does not capture a call to it"
+
+  # the same capture through a PARAMETER (Odin printed the param as the callee)
+  t.src """
+import seq
+
+fn cb({data: Seq[int], len: int}) -> int:
+  return data.len + len
+
+fn main() -> int:
+  var xs: Seq[int] = [1, 2, 3]
+  return {data: xs, len: 2} cb
+"""
+  t.quietly: t.hostRuns "A68b: a parameter named like a fn does not capture a call to it", 5
+  t.bugFixed "A68b: a parameter named like a fn does not capture a call to it"
+
+  # A69. `==` on two Seqs emitted a raw Odin `==`, which Odin refuses for a
+  # dynamic array (issue #157). Found writing std.compress.
+  t.src """
+import seq
+
+fn main() -> int:
+  var a: Seq[int] = [1, 2]
+  var b: Seq[int] = [1, 2]
+  var c: Seq[int] = [1, 3]
+  if a == b and a != c:
+    return 0
+  return 1
+"""
+  t.quietly: t.hostRuns "A69: == on two Seqs compares their contents on every backend", 0
+  t.bugFixed "A69: == on two Seqs compares their contents on every backend"
+
+  # A71. `Self` inside an anonymous record in a group requirement was not
+  # substituted at conformance, so such a requirement could never be met
+  # (issue #160). Found writing sys.io.
+  t.src """
+group Source:
+  fn pull({self: Self, max: int}) -> {next: Self, data: int}
+
+type Mem = {pos: int}
+
+fn pull({self: Mem, max: int}) -> {next: Mem, data: int}:
+  let n = {pos: self.pos + max} Mem
+  return {next: n, data: self.pos}
+
+fn drain[S: Source]({s: S}) -> int:
+  let c = {self: s, max: 2} pull
+  return c.data
+
+fn main() -> int:
+  let m = {pos: 5} Mem
+  return {s: m} drain
+"""
+  t.quietly: t.hostRuns "A71: Self inside a record in a group requirement is substituted", 5
+  t.bugFixed "A71: Self inside a record in a group requirement is substituted"
+
+  # A72. A generic bounded by a group could not hand its own type parameter to
+  # another fn bounded by the same group: the inner bound was looked up against
+  # the concrete provider by name (issue #161). Found writing sys.io.
+  t.src """
+group Source:
+  fn pull({self: Self, max: int}) -> {next: Self, data: int}
+
+type Mem = {pos: int}
+
+fn pull({self: Mem, max: int}) -> {next: Mem, data: int}:
+  let n = {pos: self.pos + max} Mem
+  return {next: n, data: self.pos}
+
+fn inner[S: Source]({s: S}) -> int:
+  let c = {self: s, max: 2} pull
+  return c.data
+
+fn outer[S: Source]({s: S}) -> int:
+  return {s: s} inner
+
+fn main() -> int:
+  let m = {pos: 5} Mem
+  return {s: m} outer
+"""
+  t.quietly: t.hostRuns "A72: a group-bounded generic may call another bounded by the same group", 5
+  t.bugFixed "A72: a group-bounded generic may call another bounded by the same group"
+
+  # A73. A group requirement's declared effect was ignored when a generic body
+  # called it: the body was charged the effect of whichever provider was in
+  # scope, so a pure generic over an `[io]` contract was accepted (issue #162).
+  # Found designing sys.io's streaming groups.
+  t.src """
+group Sink:
+  fn put({self: Self, n: int}) -> Self [io]
+
+type Counter = {total: int}
+
+fn put({self: Counter, n: int}) -> Counter:
+  return {total: self.total + n} Counter
+
+fn emit[K: Sink]({k: K, n: int}) -> K:
+  return {self: k, n: n} put
+
+fn main() -> int:
+  let s = {total: 1} Counter
+  let t = {k: s, n: 4} emit
+  return t.total
+"""
+  t.badCheck "a generic calling an [io] group requirement must declare [io]", "TK-EF01"
+  t.bugFixed "a generic calling an [io] group requirement must declare [io]"
+
+  # ...and when the group is declared in ANOTHER module than the generic.
+  t.src """
+import a
+
+type Counter = {total: int}
+
+fn put({self: Counter, n: int}) -> Counter:
+  return {total: self.total + n} Counter
+
+fn emit[K: Sink]({k: K, n: int}) -> K:
+  return {self: k, n: n} put
+
+fn main() -> int:
+  let s = {total: 1} Counter
+  let t = {k: s, n: 4} emit
+  return t.total
+"""
+  t.addFile("a.tuck", """group Sink:
+  fn put({self: Self, n: int}) -> Self [io]
+""")
+  t.badCheck "...also when the group is imported", "TK-EF01"
+  t.bugFixed "...also when the group is imported"
+
+  # A74. A group provider declared in the IMPORTING module was rejected (and on
+  # Odin/D the generic called its own module's provider): the owner's `put` was
+  # taken without asking whether it accepts the argument's type (issue #163).
+  # Found writing file providers for sys.io's streaming groups.
+  t.src """
+import a
+
+type S = {total: int}
+
+fn put({self: S, n: int}) -> S:
+  return {total: self.total + n * 2} S
+
+fn main() -> int:
+  let s = {total: 1} S
+  let w = {bytes: 10} W
+  let done = {k: s, n: 3} twice
+  let other = {k: w, n: 3} twice
+  return done.total * 100 + other.bytes - 1311
+"""
+  t.addFile("a.tuck", """group Sink:
+  fn put({self: Self, n: int}) -> Self
+
+type W = {bytes: int}
+
+fn put({self: W, n: int}) -> W:
+  return {bytes: self.bytes + n} W
+
+fn emit[K: Sink]({k: K, n: int}) -> K:
+  return {self: k, n: n} put
+
+fn twice[K: Sink]({k: K, n: int}) -> K:
+  let once = {k: k, n: n} emit
+  return {k: once, n: n} emit
+""")
+  t.quietly: t.hostRuns "A74: a provider in the importing module serves its own type", 5
+  t.bugFixed "A74: a provider in the importing module serves its own type"
+
+  # A75. A generic fn calling another on the result of a first call failed when
+  # both used the same type-parameter letter: the enclosing fn's own K was taken
+  # for the callee's K echoed back (issue #164). Found writing sys.io.
+  t.src """
+fn inner[K]({k: K, n: int}) -> K:
+  return k
+
+fn outer[K]({k: K, n: int}) -> K:
+  let once = {k: k, n: n} inner
+  return {k: once, n: n} inner
+
+fn main() -> int:
+  return {k: 5, n: 1} outer
+"""
+  t.quietly: t.hostRuns "A75: a generic fn may reuse its callee's type-parameter letter", 5
+  t.bugFixed "A75: a generic fn may reuse its callee's type-parameter letter"
+
+  # A76. A task called with arguments as a statement ran on the main context on
+  # Odin, so its first socket operation panicked "cannot await outside a
+  # coroutine" (issue #165). `42-net-echo` was compile-gated only. Found
+  # writing sys.net.
+  t.src """
+import net
+import scheduler
+
+actor Result [queue: 8]:
+  code: int = 0
+  ready: bool = false
+
+  on put({c: int}):
+    code = c
+    ready = true
+
+task probe({port: int}) -> void [io]:
+  let c = {host: "127.0.0.1", port: port} net::connect
+  if c.ok:
+    Result send put {c: 3}
+    return
+  Result send put {c: 7}
+  return
+
+fn done() -> bool:
+  return Result.ready
+
+fn main() -> int [io]:
+  {port: 1} probe
+  Result.waitUntil {pred: :done}
+  {} scheduler::stop
+  return Result.code
+"""
+  t.quietly: t.runsOdin "A76: a task with arguments is spawned as a coroutine on Odin", 7
+  t.bugFixed "A76: a task with arguments is spawned as a coroutine on Odin"
+
+  # A77. On D, `discard` of an owned call result printed a bare `tuckOwnTmpN;`,
+  # which dmd rejects as having no effect (issue #166). Found giving the D
+  # runtime networking.
+  t.src """
+import seq
+
+fn make() -> Seq[int]:
+  return [1, 2, 3]
+
+fn main() -> int:
+  make discard
+  return 0
+"""
+  t.quietly: t.hostRuns "A77: discarding an owned call result builds on every backend", 0
+  t.bugFixed "A77: discarding an owned call result builds on every backend"
+
+  # A78. A `.ok` guard narrowed a name but not a field path, so a record's
+  # optional field could not be read after guarding it (issue #168). Found
+  # writing platform.hal. Sound: re-binding or assigning the root forgets it,
+  # and an OBJECT root does not narrow (a member may rewrite its fields).
+  t.src """
+type W:
+  f: int?
+
+fn g({w: W}) -> int:
+  var r = w
+  var left = 2
+  for left > 0:
+    if not r.f.ok:
+      return 0
+    let v = r.f.value
+    r = {f: v + 1} W
+    left = left - 1
+  if r.f.ok:
+    return r.f.value
+  return 1
+
+fn main() -> int:
+  let w = {f: 5} W
+  return {w: w} g
+"""
+  t.quietly: t.hostRuns "A78: a guard narrows a record's field path", 7
+  t.bugFixed "A78: a guard narrows a record's field path"
+
+  t.src """
+type W:
+  f: int?
+
+fn g({w: W}) -> int:
+  var v = w
+  if v.f.ok:
+    v = {f: none} W
+    return v.f.value
+  return 0
+
+fn main() -> int:
+  let w = {f: 5} W
+  return {w: w} g
+"""
+  t.badCheck "...and re-assigning the root forgets it", "unhandled"
+  t.bugFixed "...and re-assigning the root forgets it"
+
+  t.src """
+object Box:
+  f: int?
+
+  fn clear({self: Box}):
+    self.f = none
+
+fn g({b: Box}) -> int:
+  if b.f.ok:
+    return b.f.value
+  return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "...and an object's field does not narrow", "unhandled"
+  t.bugFixed "...and an object's field does not narrow"
+
+  # A79. `r = f(r.b)` moved `r.b` into the call and then reset it AFTER the
+  # new `r` was stored, wiping the new value's `b` (issue #167). Found writing
+  # platform.hal (a retried I2C read lost its device).
+  t.src """
+import seq
+
+group Stepper:
+  fn bump({self: Self}) -> Self
+
+type Box:
+  n: int
+  xs: Seq[int]
+
+type Wrap[B]:
+  b: B
+  data: Seq[int]
+  k: int
+
+fn bump({self: Box}) -> Box:
+  return {n: self.n + 1, xs: self.xs} Box
+
+fn step[B: Stepper]({b: B}) -> Wrap[B]:
+  let next = {self: b} bump
+  let d: Seq[int] = [9]
+  return {b: next, data: d, k: 1} Wrap
+
+fn main() -> int:
+  let xs: Seq[int] = [1, 2]
+  let start = {n: 0, xs: xs} Box
+  var r = {b: start} step
+  r = {b: r.b} step
+  return r.b.n
+"""
+  t.quietly: t.hostRuns "A79: re-binding a record from its own field keeps the new value", 2
+  t.bugFixed "A79: re-binding a record from its own field keeps the new value"
+
+  # A80. Odin: a free fn moving fields out of a by-value `self` wrote to the
+  # parameter, which Odin forbids (issue #169). Every group provider has this
+  # shape. Found writing platform.hal.
+  t.src """
+import seq
+
+type Pin:
+  level: int
+  trace: Seq[int]
+  script: Seq[int]
+  step: int
+
+type Sensed:
+  pin: Pin
+  level: int
+
+fn sense({self: Pin}) -> Sensed:
+  if self.step >= self.script.len:
+    return {pin: self, level: self.level} Sensed
+  let level = self.script[self.step]
+  let next = {level: level, trace: self.trace, script: self.script, step: self.step + 1} Pin
+  return {pin: next, level: level} Sensed
+
+fn main() -> int:
+  let s: Seq[int] = [4, 5, 6]
+  let t: Seq[int] = []
+  let p = {level: 0, trace: t, script: s, step: 0} Pin
+  let a = {self: p} sense
+  let b = {self: a.pin} sense
+  return b.level
+"""
+  t.quietly: t.hostRuns "A80: a by-value self may give up its fields on every backend", 5
+  t.bugFixed "A80: a by-value self may give up its fields on every backend"
+
+  # A81. An inner `let` shadowing an outer local stored into the outer one: the
+  # ownership pass's uniquify took a shadowing declaration for a reassignment
+  # (issue #170). Found writing platform.net-lowpower.
+  t.src """
+import str
+
+fn f({x: int}) -> int:
+  if x > 0:
+    let x = "abc"
+    return {t: x} byteCount
+  return x
+
+fn g() -> int:
+  var n = 10
+  for i in 0 .. 2:
+    var n = "a"
+    n = n + "b"
+    if {t: n} byteCount != 2:
+      return 99
+  n = n + 1
+  return n
+
+fn main() -> int:
+  return {x: 3} f + g
+"""
+  t.quietly: t.hostRuns "A81: an inner let shadowing an outer local is a new variable", 14
+  t.bugFixed "A81: an inner let shadowing an outer local is a new variable"
+
+  # A82. An `extern [impl: ...]` shim worked only in the entry module: imported,
+  # Nim called it through tuck_rt, Odin rebased its path one level short and D
+  # had no -I for it (issue #171). Found writing sys.mmap.
+  t.src """
+import lib
+
+fn main() -> int:
+  return seven
+"""
+  t.addFile("lib.tuck", """extern [impl: nim "./lib_shim", odin "./shim", d "./lib_shim"]:
+  fn seven() -> int
+""")
+  t.addFile("lib_shim.nim", "proc seven*(): int = 7\n")
+  t.addFile("lib_shim.d", "module lib_shim;\nlong seven() { return 7; }\n")
+  t.addFile("shim/lib_shim.odin", "package lib_shim\nseven :: proc() -> int { return 7 }\n")
+  t.quietly: t.runs "A82: a shim named by an imported module is found (Nim)", 7
+  t.bugFixed "A82: a shim named by an imported module is found (Nim)"
+
+  # A83. `argCount`'s field `count` collided with std/seq's fn `count`, so the
+  # result was unreadable in any module importing both (issue #172).
+  t.src """
+import seq
+import sys
+
+fn main() -> int [io: sys]:
+  let n = argCount
+  return n.total + 4
+"""
+  t.quietly: t.hostRuns "A83: argCount's result is readable beside std/seq", 4
+  t.bugFixed "A83: argCount's result is readable beside std/seq"
+
+  # A84. Odin/D: a variant of an imported sum named `...Kind` lost its module:
+  # the emitters recovered the sum by stripping `Kind` off the enum's name
+  # (issue #173). Found writing the hangman app (std.cli's ArgKind).
+  t.src """
+import a
+
+fn main() -> int:
+  let k = Fancy
+  return {k: k} score
+"""
+  t.addFile("a.tuck", """type Kind:
+  | Plain
+  | Fancy
+
+fn score({k: Kind}) -> int:
+  if k == Fancy:
+    return 7
+  return 1
+""")
+  t.quietly: t.hostRuns "A84: an imported sum named Kind keeps its module", 7
+  t.bugFixed "A84: an imported sum named Kind keeps its module"
+
+  # A85. `argAt` was 1-based on Nim but 0-based on Odin and D (issue #174):
+  # with no arguments, argAt 0 is the program and argAt 1 is empty.
+  t.src """
+import sys
+
+fn main() -> int [io: sys]:
+  let prog = {index: 0} argAt
+  let first = {index: 1} argAt
+  if prog.arg == "" or first.arg != "":
+    return 1
+  return 6
+"""
+  t.quietly: t.hostRuns "A85: argAt counts from the program on every backend", 6
+  t.bugFixed "A85: argAt counts from the program on every backend"
+
+  # A87. The else-branch of `if not r.ok:` did not narrow r (issue #176).
+  # Found writing the guess app.
+  t.src """
+fn f({r: int?}) -> int:
+  if not r.ok:
+    return 0
+  elif r.value > 5:
+    return 2
+  else:
+    return r.value
+
+fn main() -> int:
+  let a: int? = 3
+  let b: int? = none
+  return {r: a} f * 10 + {r: b} f
+"""
+  t.quietly: t.hostRuns "A87: the else of a negated guard knows the value is present", 30
+  t.bugFixed "A87: the else of a negated guard knows the value is present"
+
+  t.src """
+fn f({r: int?}) -> int:
+  if not r.ok:
+    return r.value
+  return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "...and its then-branch still does not", "unhandled"
+  t.bugFixed "...and its then-branch still does not"
+
+  # A88. Two imports declaring one type name: the first one silently won
+  # (issue #177). Found writing the wordfreq app (cli's Entry against map's
+  # Entry[K, V]). Ruled 2026-10-22: each module's type is its own, and a bare
+  # name two imports provide is an error the user resolves by qualifying.
+  # Each module's fns return their own Entry.
+  t.src """
+import lefty
+import righty
+
+fn main() -> int:
+  let l = makeLeft
+  let r = makeRight
+  return l.hits * 10 + r.size
+"""
+  t.addFile("lefty.tuck", """public:
+  Entry
+  makeLeft
+
+type Entry:
+  word: str
+  hits: int
+
+fn makeLeft() -> Entry:
+  return {word: "a", hits: 3} Entry
+""")
+  t.addFile("righty.tuck", """public:
+  Entry
+  makeRight
+
+type Entry:
+  size: int
+
+fn makeRight() -> Entry:
+  return {size: 4} Entry
+""")
+  t.quietly: t.hostRuns "A88: two imports may each declare a type of one name", 34
+  t.bugFixed "A88: two imports may each declare a type of one name"
+
+  t.src """
+import lefty
+import righty
+
+fn sizeOf({e: righty::Entry}) -> int:
+  return e.size
+
+fn main() -> int:
+  let l = makeLeft
+  let r = makeRight
+  let e: lefty::Entry = {word: "b", hits: 1} lefty::Entry
+  return l.hits * 10 + {e: r} sizeOf + e.hits
+"""
+  t.addFile("lefty.tuck", """public:
+  Entry
+  makeLeft
+
+type Entry:
+  word: str
+  hits: int
+
+fn makeLeft() -> Entry:
+  return {word: "a", hits: 3} Entry
+""")
+  t.addFile("righty.tuck", """public:
+  Entry
+  makeRight
+
+type Entry:
+  size: int
+
+fn makeRight() -> Entry:
+  return {size: 4} Entry
+""")
+  t.quietly: t.hostRuns "...`mod::Entry` names one of them, in a type and a construction", 35
+  t.bugFixed "...`mod::Entry` names one of them, in a type and a construction"
+
+  t.src """
+import lefty
+import righty
+
+fn main() -> int:
+  let e = {word: "b", hits: 1} Entry
+  return e.hits
+"""
+  t.addFile("lefty.tuck", """type Entry:
+  word: str
+  hits: int
+""")
+  t.addFile("righty.tuck", """type Entry:
+  size: int
+""")
+  t.badCheck "...and a bare name both provide is refused, naming both", "TK-TY47.*lefty::Entry.*righty::Entry"
+
+  # A89. A bare payload-free variant of a payload sum (`var o = Nothing`) was
+  # emitted as its Kind enum's tag, not a value of the sum (issue #178).
+  # Found writing the md2html app.
+  t.src """
+type Open:
+  | Nothing
+  | InList({tag: str})
+
+fn depth({o: Open}) -> int:
+  match o:
+    Nothing: return 1
+    InList: return 2
+
+fn main() -> int:
+  var o = Nothing
+  let a = {o: o} depth
+  o = {tag: "ul"} Open.InList
+  let b = {o: o} depth
+  o = Nothing
+  let c = {o: o} depth
+  return a * 10 + b + c * 100
+"""
+  t.quietly: t.hostRuns "A89: a bare variant of a payload sum is a value of the sum", 112
+  t.bugFixed "A89: a bare variant of a payload sum is a value of the sum"
+
+  # A90. A second `let` of a name in the SAME scope was read as a
+  # reassignment and stored into the first, whatever its type (issue #179).
+  # Found writing the jsonq app. The rebinding's own value reads the old one.
+  t.src """
+fn half({x: int}) -> int?:
+  if x < 0:
+    return none
+  return x /i 2
+
+fn f({x: int}) -> int:
+  let n = x + 1
+  let r = {x: n} half
+  if not r.ok:
+    return 0
+  let n = {x: r.value} half
+  if not n.ok:
+    return 1
+  let k = n.value
+  let k = k * 10 + 1
+  return k
+
+fn main() -> int:
+  return {x: 9} f
+"""
+  t.quietly: t.hostRuns "A90: a let may rebind a name already in this scope", 21
+  t.bugFixed "A90: a let may rebind a name already in this scope"
+
+  # A91. An imported payload sum: Odin spelled its variant structs, and D its
+  # constructions, without the declaring module (issue #180). Found writing
+  # the jsonq app, which matches on std.encoding's Json.
+  t.src """
+import shapes
+
+fn widthOf({s: Shape}) -> int:
+  var here = s
+  match here:
+    Dot: return 1
+    Box: return here.w
+
+fn main() -> int:
+  let b = {w: 5} Shape.Box
+  var d = Dot
+  let w = b.w
+  d = {w: 7} Shape.Box
+  let e = Shape.Dot
+  return {s: b} widthOf * 10 + {s: d} widthOf + {s: e} widthOf + w
+"""
+  t.addFile("shapes.tuck", """type Shape:
+  | Dot
+  | Box({w: int})
+""")
+  t.quietly: t.hostRuns "A91: an imported payload sum is matched and built on every backend", 63
+  t.bugFixed "A91: an imported payload sum is matched and built on every backend"
+
+  # A92. A bare call reached the first fn of its name ANYWHERE in the program
+  # (issue #181): Odin and D qualified `greet` with `deep`, which only `mid`
+  # imports, and the mangler renamed sys's extern `argCount` after deep's Tuck
+  # fn. Found writing the spellcheck app (console's `readLine` called as
+  # sys.io's generic one).
+  t.src """
+import sys
+import near
+import mid
+
+fn main() -> int [io: sys]:
+  let n = argCount
+  let g = greet
+  return n.total + g + midThing
+"""
+  t.addFile("deep.tuck", """fn argCount({x: int}) -> int:
+  return x + 100
+
+fn greet({who: str}) -> int:
+  return 7
+""")
+  t.addFile("mid.tuck", """import deep
+
+fn midThing() -> int:
+  let a = {x: 1} argCount
+  return a + {who: "x"} greet
+""")
+  t.addFile("near.tuck", """fn greet() -> int:
+  return 40
+""")
+  t.quietly: t.hostRuns "A92: a bare call means the fn the caller imports, not one further down", 148
+  t.bugFixed "A92: a bare call means the fn the caller imports, not one further down"
+
+  # A93. A raise payload was synthesized with no expected types, so a variant
+  # name two sums declare was ambiguous there and nowhere else (issue #182).
+  # Found reviving the web-downloader app.
+  t.src """
+import console
+
+type Link:
+  | Dialing
+  | Hungup
+
+type Fault:
+  | Stalled
+  | Hungup
+
+registry AppEv:
+  | Faulted({fault: Fault})
+
+on AppEv.Faulted({fault: Fault}) [io: console]:
+  match fault:
+    Stalled: {text: "stalled"} printLine
+    Hungup: {text: "hung up"} printLine
+
+fn main() -> int [io: console]:
+  AppEv.raise Faulted {fault: Hungup}
+  return 3
+"""
+  t.quietly: t.hostRuns "A93: a raise payload takes its event's field types", 3, "hung up"
+  t.bugFixed "A93: a raise payload takes its event's field types"
+
+  # A94. An [io] wait outside a task aborted at run time — "cannot await
+  # outside a coroutine" — though the checker accepted the fn's [io: net]
+  # (issue #183). Ruled: async code runs in any fn that declares the effect.
+  # Main now lends its thread to the scheduler while it waits. Found writing
+  # the serve app.
+  t.src """
+import net
+import time
+
+# main serves the connection itself, from a plain fn: its accept and recv wait
+# while the client task runs. Before, an [io] wait outside a task aborted.
+actor Result [queue: 8]:
+  code: int = 0
+  ready: bool = false
+
+  on put({c: int}):
+    code = c
+    ready = true
+
+task client({port: int}) -> void [io: net]:
+  let c = {host: "127.0.0.1", port: port} connect
+  if not c.ok:
+    Result send put {c: 1}
+    return
+  {fd: c.value.fd, data: "ping"} send discard
+  let r = {fd: c.value.fd, max: 16} recv
+  {fd: c.value.fd} close
+  if r.ok:
+    if r.value.data == "pong":
+      Result send put {c: 40}
+      return
+  Result send put {c: 3}
+  return
+
+fn answerOne({lfd: int}) -> int [io: net]:
+  let c = {fd: lfd} accept
+  if not c.ok:
+    return 100
+  let got = {fd: c.value.fd, max: 16} recv
+  if not got.ok:
+    return 101
+  {fd: c.value.fd, data: "pong"} send discard
+  {fd: c.value.fd} close
+  if got.value.data == "ping":
+    return 2
+  return 102
+
+fn done() -> bool:
+  return Result.ready
+
+# The backends may run at once, so each takes the first port it can have.
+fn firstFree({from1: int}) -> {fd: int, port: int} [io: net]:
+  var p = from1
+  for p < from1 + 50:
+    let l = {port: p} listen
+    if l.ok:
+      return {fd: l.value.fd, port: p}
+    p = p + 1
+  return {fd: 0 - 1, port: 0}
+
+fn main() -> int [io: net, io: clock]:
+  let l = {from1: 34611} firstFree
+  if l.fd < 0:
+    return 9
+  {port: l.port} client
+  let served = {lfd: l.fd} answerOne
+  {ms: 5} sleepMs
+  Result.waitUntil {pred: :done}
+  {fd: l.fd} close
+  return Result.code + served
+"""
+  t.quietly: t.hostRuns "A94: an [io] fn waits on the network outside a task", 42
+  t.bugFixed "A94: an [io] fn waits on the network outside a task"
 
   t.finish()

@@ -1,0 +1,249 @@
+# sys.path — file-system path text, in pure Tuck.
+#
+# Paths are `/`-separated text. Nothing here touches the disk: it is joining,
+# splitting, normalizing and relating names, which is most of what programs do
+# with paths. A path is absolute when it starts with `/`. `.` segments and
+# repeated separators are dropped; `..` cancels the segment before it, and is
+# kept only at the front of a relative path (or dropped at the root).
+import seq
+import str
+import text
+
+fn isAbsolute({p: str}) -> bool:
+  return {t: p, prefix: "/"} startsWith
+
+# The segments of `p` without empty ones or `.`.
+fn components({p: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  let raw = {t: p, at: "/"} split
+  for i in 0 .. raw.len - 1:
+    if raw[i] != "" and raw[i] != ".":
+      out = {items: out, value: raw[i]} push
+  return out
+
+fn rebuild({absolute: bool, parts: Seq[str]}) -> str:
+  let body = {parts: parts, sep: "/"} joinStr
+  if absolute:
+    return "/" + body
+  if parts.len == 0:
+    return "."
+  return body
+
+# `p` with `.`, `..` and repeated separators resolved.
+fn normalize({p: str}) -> str:
+  let absolute = {p: p} isAbsolute
+  let raw = {p: p} components
+  var kept: Seq[str] = []
+  for i in 0 .. raw.len - 1:
+    let seg = raw[i]
+    if seg == "..":
+      if kept.len > 0 and kept[kept.len - 1] != "..":
+        kept = {items: kept} dropLast
+      elif not absolute:
+        kept = {items: kept, value: seg} push
+    else:
+      kept = {items: kept, value: seg} push
+  return {absolute: absolute, parts: kept} rebuild
+
+fn dropLast({items: Seq[str]}) -> Seq[str]:
+  var out: Seq[str] = []
+  for i in 0 .. items.len - 2:
+    out = {items: out, value: items[i]} push
+  return out
+
+# `rel` under `base`; an absolute `rel` replaces `base`.
+fn join({base: str, rel: str}) -> str:
+  let rooted = {p: rel} isAbsolute
+  if rooted or base == "":
+    return {p: rel} normalize
+  let both = base + "/" + rel
+  return {p: both} normalize
+
+fn joinAll({parts: Seq[str]}) -> str:
+  var acc = ""
+  for i in 0 .. parts.len - 1:
+    acc = {base: acc, rel: parts[i]} join
+  return acc
+
+# The last segment: "" for the root.
+fn baseName({p: str}) -> str:
+  let parts = {p: p} components
+  if parts.len == 0:
+    if {p: p} isAbsolute:
+      return ""
+    return "."
+  return parts[parts.len - 1]
+
+# Everything but the last segment; the root's parent is the root.
+fn parent({p: str}) -> str:
+  let absolute = {p: p} isAbsolute
+  let n = {p: p} normalize
+  let parts = {p: n} components
+  if parts.len == 0:
+    if absolute:
+      return "/"
+    return ".."
+  if parts[parts.len - 1] == "..":
+    return n + "/.."
+  let up = {items: parts} dropLast
+  if up.len == 0 and not absolute:
+    return "."
+  return {absolute: absolute, parts: up} rebuild
+
+# The text after the last dot of the base name, without the dot; none for no
+# dot, a leading dot only (`.bashrc`) or a trailing one.
+fn extension({p: str}) -> str?:
+  let name = {p: p} baseName
+  let pieces = {t: name, at: "."} split
+  if pieces.len < 2:
+    return none
+  if pieces.len == 2 and pieces[0] == "":
+    return none
+  let last = pieces[pieces.len - 1]
+  if last == "":
+    return none
+  return last
+
+# The base name without its extension.
+fn stem({p: str}) -> str:
+  let name = {p: p} baseName
+  let ext = {p: p} extension
+  if not ext.ok:
+    return name
+  let total = {t: name} byteCount
+  let tail = {t: ext.value} byteCount
+  let cut = total - tail - 1
+  let head = {t: name, start: 0, stop: cut} slice
+  if head.ok:
+    return head.value
+  return name
+
+# `p` with its extension replaced (or added).
+fn withExtension({p: str, ext: str}) -> str:
+  let parts = {p: p} components
+  if parts.len == 0:
+    return p
+  let dir = {p: p} parent
+  let base = {p: p} stem
+  return {base: dir, rel: base + "." + ext} join
+
+# `p` as a path from `base`; none when one is absolute and the other not.
+fn relativeTo({p: str, base: str}) -> str?:
+  let pa = {p: p} isAbsolute
+  let ba = {p: base} isAbsolute
+  if pa != ba:
+    return none
+  let np = {p: p} normalize
+  let nb = {p: base} normalize
+  let a = {p: np} components
+  let b = {p: nb} components
+  var common = 0
+  for common < a.len and common < b.len and a[common] == b[common]:
+    common = common + 1
+  var out: Seq[str] = []
+  for i in common .. b.len - 1:
+    out = {items: out, value: ".."} push
+  for i in common .. a.len - 1:
+    out = {items: out, value: a[i]} push
+  return {absolute: false, parts: out} rebuild
+
+# --- checks ---------------------------------------------------------------------
+fn norm({p: str, want: str}) -> bool:
+  return {p: p} normalize == want
+
+fn checkNormalize() -> int:
+  if not {p: "a//b/./c/", want: "a/b/c"} norm:
+    return 1
+  if not {p: "/a/b/../c", want: "/a/c"} norm:
+    return 2
+  if not {p: "a/../..", want: ".."} norm:
+    return 3
+  if not {p: "/..", want: "/"} norm:
+    return 4
+  if not {p: "", want: "."} norm:
+    return 5
+  if not {p: "./", want: "."} norm:
+    return 6
+  if not {p: "../a/../../b", want: "../../b"} norm:
+    return 7
+  return checkJoin
+
+fn checkJoin() -> int:
+  if {base: "/usr", rel: "lib/x"} join != "/usr/lib/x":
+    return 10
+  if {base: "/usr", rel: "/etc"} join != "/etc":
+    return 11
+  if {base: "a/b", rel: "../c"} join != "a/c":
+    return 12
+  if {base: "", rel: "x"} join != "x":
+    return 13
+  let parts: Seq[str] = ["/", "var", "log", "..", "tmp", "f.txt"]
+  if {parts: parts} joinAll != "/var/tmp/f.txt":
+    return 14
+  return checkNames
+
+fn checkNames() -> int:
+  if {p: "/a/b/c.txt"} baseName != "c.txt":
+    return 20
+  if {p: "/"} baseName != "":
+    return 21
+  if {p: "/a/b/c.txt"} parent != "/a/b":
+    return 22
+  if {p: "/a"} parent != "/":
+    return 23
+  if {p: "/"} parent != "/":
+    return 24
+  if {p: "a"} parent != ".":
+    return 25
+  if {p: ".."} parent != "../..":
+    return 26
+  return checkExtension
+
+fn checkExtension() -> int:
+  let e1 = {p: "a/b.tar.gz"} extension
+  if not e1.ok:
+    return 30
+  if e1.value != "gz":
+    return 30
+  let e2 = {p: "/home/.bashrc"} extension
+  if e2.ok:
+    return 31
+  let e3 = {p: "noext"} extension
+  if e3.ok:
+    return 32
+  let e4 = {p: "dot."} extension
+  if e4.ok:
+    return 33
+  if {p: "a/b.tar.gz"} stem != "b.tar":
+    return 34
+  if {p: "noext"} stem != "noext":
+    return 35
+  if {p: "a/b.txt", ext: "md"} withExtension != "a/b.md":
+    return 36
+  if {p: "a/b", ext: "md"} withExtension != "a/b.md":
+    return 37
+  return checkRelative
+
+fn checkRelative() -> int:
+  let r1 = {p: "/a/b/c", base: "/a"} relativeTo
+  if not r1.ok:
+    return 40
+  if r1.value != "b/c":
+    return 40
+  let r2 = {p: "/a/x", base: "/a/b/c"} relativeTo
+  if not r2.ok:
+    return 41
+  if r2.value != "../../x":
+    return 41
+  let r3 = {p: "/a", base: "/a"} relativeTo
+  if not r3.ok:
+    return 42
+  if r3.value != ".":
+    return 42
+  let r4 = {p: "a", base: "/a"} relativeTo
+  if r4.ok:
+    return 43
+  return 0
+
+fn main() -> int:
+  return checkNormalize

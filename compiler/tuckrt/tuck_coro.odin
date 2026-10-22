@@ -355,9 +355,41 @@ unwatch :: proc(fd: linux.Fd, isTimer: bool) {
 	if isTimer do linux.close(fd)
 }
 
+// An [io] call may be made from any fn that declares the effect, not only a
+// task (ruled 2026-10-22). Main is not a coroutine and cannot park, so it
+// LENDS its thread to the scheduler — ready tasks, the reactor, timers —
+// until its own `fd` is ready (true) or `timeoutMs` passes (false; negative:
+// never), the way awaitResult waits for a task. Written out the same in
+// tuck_async.nim, which explains it.
+@(private)
+tuckLendUntil :: proc(fd: int, write: bool, timeoutMs: int) -> bool {
+	initLoop()
+	start := time.tick_now()
+	pfd := [1]linux.Poll_Fd{{fd = linux.Fd(fd), events = write ? {.OUT} : {.IN}}}
+	for {
+		pfd[0].revents = {}
+		if n, _ := linux.poll(pfd[:], 0); n > 0 do return true
+		spent := int(time.duration_milliseconds(time.tick_since(start)))
+		if timeoutMs >= 0 && spent >= timeoutMs do return false
+		if runNext() do continue
+		if len(gLoop.waiters) == 0 {
+			// Nothing else can make progress: just wait on the fd itself.
+			pfd[0].revents = {}
+			left := timeoutMs < 0 ? -1 : timeoutMs - spent
+			n, _ := linux.poll(pfd[:], i32(left))
+			return n > 0
+		}
+		runOnce(1)
+	}
+}
+
 // Suspend until `fd` is readable.
 tuckAwaitRead :: proc(fd: int) {
 	initLoop()
+	if activeCoroutine == nil {
+		tuckLendUntil(fd, false, -1)
+		return
+	}
 	if !watchFd(linux.Fd(fd), false) do return
 	parkCurrent(linux.Fd(fd), false)
 	unwatch(linux.Fd(fd), false)
@@ -365,6 +397,10 @@ tuckAwaitRead :: proc(fd: int) {
 
 tuckAwaitWrite :: proc(fd: int) {
 	initLoop()
+	if activeCoroutine == nil {
+		tuckLendUntil(fd, true, -1)
+		return
+	}
 	if !watchFd(linux.Fd(fd), true) do return
 	parkCurrent(linux.Fd(fd), true)
 	unwatch(linux.Fd(fd), false)
@@ -373,6 +409,10 @@ tuckAwaitWrite :: proc(fd: int) {
 // Cooperative sleep: suspend this coroutine for `ms`, driven by the reactor.
 tuckSleep :: proc(ms: int) {
 	initLoop()
+	if activeCoroutine == nil {
+		tuckLendUntil(-1, false, ms)
+		return
+	}
 	tfd, okArm := armTimer(ms)
 	if !okArm do return
 	parkCurrent(tfd, true)
@@ -385,6 +425,7 @@ tuckSleep :: proc(ms: int) {
 // leaving it registered would later wake a coroutine that has moved on.
 tuckAwaitReadOrTimeout :: proc(fd: int, timeoutMs: int) -> bool {
 	initLoop()
+	if activeCoroutine == nil do return tuckLendUntil(fd, false, timeoutMs)
 	rfd := linux.Fd(fd)
 	if !watchFd(rfd, false) do return false
 	tfd, okArm := armTimer(timeoutMs)

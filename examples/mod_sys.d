@@ -3,8 +3,8 @@ module mod_sys;
 import rt = tuck_rt;
 import tuckˑmodˑshapes_43_literal_payload = mod_shapes_43_literal_payload;
 
-tuckˑmodˑshapes_43_literal_payload.TRec_count!(long) argCount() {
-    return rt.argCount!(tuckˑmodˑshapes_43_literal_payload.TRec_count!(long))();
+tuckˑmodˑshapes_43_literal_payload.TRec_total!(long) argCount() {
+    return rt.argCount!(tuckˑmodˑshapes_43_literal_payload.TRec_total!(long))();
 }
 
 tuckˑmodˑshapes_43_literal_payload.TRec_arg!(string) argAt(long index) {
@@ -21,6 +21,18 @@ void exit(long code) {
 
 long runCommand(string line) {
     return rt.runCommand(line);
+}
+
+void watchSignal(long number) {
+    rt.watchSignal(number);
+}
+
+rt.TuckResult!(tuckˑmodˑshapes_43_literal_payload.TRec_number!(long)) nextSignal(long timeoutMs) {
+    return rt.nextSignal!(rt.TuckResult!(tuckˑmodˑshapes_43_literal_payload.TRec_number!(long)))(timeoutMs);
+}
+
+void raiseSignal(long number) {
+    rt.raiseSignal(number);
 }
 
 

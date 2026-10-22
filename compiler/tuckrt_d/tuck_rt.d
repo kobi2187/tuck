@@ -13,7 +13,7 @@ module tuck_rt;
 import std.stdio : stdout;
 import std.conv : text, to;
 import std.array : join;
-import core.sys.posix.unistd : pipe2, read, write, close;
+import core.sys.posix.unistd : pipe2, read, write, posixClose = close;
 import core.atomic : cas, atomicLoad, atomicStore;
 
 // The coroutine engine is a separate file but the SAME facade: emitted code
@@ -143,10 +143,79 @@ T tuckCopy(T)(T v) {
 // std/console — terminal I/O (rt-implemented externs).
 void print(string s) { stdout.write(s); stdout.flush(); }
 void printLine(string s) { stdout.writeln(s); }
+void printError(string s) {
+    import std.stdio : stderr;
+    stderr.writeln(s);
+    stderr.flush();
+}
 
 // `toStr` — the universal stringifier. tuck_rt.nim spells it `$value`; D's
 // std.conv.text is the same "any value to its display form" operation.
-string toStr(T)(T value) { return text(value); }
+// The text of a float: ONE rule on every backend (A67), written out the same
+// in tuck_rt.nim, which explains it. Digits from C's snprintf and strtod;
+// the layout is Python's `repr`.
+private string tuckFloatLayout(bool neg, string digits, long exp) {
+    while (digits.length > 1 && digits[$ - 1] == '0') digits = digits[0 .. $ - 1];
+    immutable n = cast(long) digits.length;
+    string body;
+    if (exp >= -4 && exp < 16) {
+        if (exp >= 0) {
+            if (n <= exp + 1) {
+                body = digits;
+                foreach (_; 0 .. exp + 1 - n) body ~= '0';
+                body ~= ".0";
+            } else {
+                body = digits[0 .. exp + 1] ~ "." ~ digits[exp + 1 .. $];
+            }
+        } else {
+            body = "0.";
+            foreach (_; 0 .. -exp - 1) body ~= '0';
+            body ~= digits;
+        }
+    } else {
+        body = digits[0 .. 1];
+        if (n > 1) body ~= "." ~ digits[1 .. $];
+        immutable e = exp < 0 ? -exp : exp;
+        body ~= exp < 0 ? "e-" : "e+";
+        if (e < 10) body ~= '0';
+        body ~= text(e);
+    }
+    return neg ? "-" ~ body : body;
+}
+
+string tuckFloatText(double x, bool single) {
+    import core.stdc.stdio : snprintf;
+    import core.stdc.stdlib : strtod;
+    import std.math : isNaN, isInfinity, signbit;
+    import std.conv : to;
+    if (isNaN(x)) return "nan";
+    if (isInfinity(x)) return x > 0 ? "inf" : "-inf";
+    immutable neg = signbit(x) != 0;
+    if (x == 0) return neg ? "-0.0" : "0.0";
+    char[64] buf;
+    foreach (p; 0 .. 18) {
+        snprintf(buf.ptr, buf.length, "%.*e", cast(int) p, x);
+        immutable back = strtod(buf.ptr, null);
+        if ((single && cast(float) back == cast(float) x) || (!single && back == x)) break;
+    }
+    import core.stdc.string : strlen;
+    string t = buf[0 .. strlen(buf.ptr)].idup;
+    string digits;
+    size_t i = 0;
+    if (t[i] == '-') i++;
+    while (i < t.length && t[i] != 'e') {
+        if (t[i] != '.') digits ~= t[i];
+        i++;
+    }
+    long exp = to!long(t[i + 1 .. $][0] == '+' ? t[i + 2 .. $] : t[i + 1 .. $]);
+    return tuckFloatLayout(neg, digits, exp);
+}
+
+string toStr(T)(T value) {
+    static if (is(T == double)) return tuckFloatText(value, false);
+    else static if (is(T == float)) return tuckFloatText(value, true);
+    else return text(value);
+}
 
 // !T is a result, ?T is an option: absence is a first-class state, not a
 // reserved error code. !T uses Ok/Err, ?T uses Ok/Absent, !?T may be any.
@@ -1393,7 +1462,7 @@ private void fileWorker(void* arg)
             if (n <= 0) { r.status = FsIoStatus.AccessDenied; break; }
             off += n;
         }
-        close(fd);
+        posixClose(fd);
         break;
     case FileOp.Read:
         int fd = open(r.path, O_RDONLY, 0);
@@ -1420,7 +1489,7 @@ private void fileWorker(void* arg)
                 if (bigger is null)
                 {
                     free(buf);
-                    close(fd);
+                    posixClose(fd);
                     r.status = FsIoStatus.IoFailed;
                     return;
                 }
@@ -1430,14 +1499,14 @@ private void fileWorker(void* arg)
             if (n < 0)
             {
                 free(buf);
-                close(fd);
+                posixClose(fd);
                 r.status = FsIoStatus.IoFailed;
                 return;
             }
             if (n == 0) break;
             len += n;
         }
-        close(fd);
+        posixClose(fd);
         r.outBuf = buf;
         r.outLen = len;
         break;
@@ -1541,6 +1610,54 @@ bool fileExists(string path)
 /// Idempotent by an explicit existence check, same as the Nim and Odin
 /// runtimes, so all three backends agree on the same contract rather than
 /// relying on each platform's own already-exists behavior for mkdir -p.
+/// errno from a metadata call (stat, rename, rmdir) onto the FsError variants,
+/// the same buckets in all three runtimes.
+private ushort fsErrnoCode(int e)
+{
+    import core.stdc.errno : ENOENT, ENOTDIR, EACCES, EPERM, ENOTEMPTY, EEXIST;
+    if (e == ENOENT || e == ENOTDIR) return errCode("fs/FsError.NotFound");
+    if (e == EACCES || e == EPERM) return errCode("fs/FsError.AccessDenied");
+    if (e == ENOTEMPTY || e == EEXIST) return errCode("fs/FsError.NotEmpty");
+    return errCode("fs/FsError.IoFailed");
+}
+
+/// lstat: a final symbolic link is reported as a link, not followed. NOT
+/// offloaded, same rationale as fileExists.
+R pathInfo(R)(string path)
+{
+    import core.sys.posix.sys.stat : stat_t, lstat, S_ISDIR, S_ISLNK;
+    import core.stdc.errno : errno;
+    import std.string : toStringz;
+    alias P = typeof(R.value);
+    stat_t st;
+    if (lstat(toStringz(path), &st) != 0) return terr!P(fsErrnoCode(errno));
+    P p;
+    p.isFolder = S_ISDIR(st.st_mode);
+    p.isLink = S_ISLNK(st.st_mode);
+    p.bytes = cast(long) st.st_size;
+    p.modifiedMs = cast(long) st.st_mtim.tv_sec * 1000 + cast(long) st.st_mtim.tv_nsec / 1_000_000;
+    return tok(p);
+}
+
+TuckResult!TuckUnit renamePath(string path, string to)
+{
+    import core.stdc.stdio : rename;
+    import core.stdc.errno : errno;
+    import std.string : toStringz;
+    if (rename(toStringz(path), toStringz(to)) != 0)
+        return terr!TuckUnit(fsErrnoCode(errno));
+    return tokVoid();
+}
+
+TuckResult!TuckUnit removeFolder(string path)
+{
+    import core.sys.posix.unistd : rmdir;
+    import core.stdc.errno : errno;
+    import std.string : toStringz;
+    if (rmdir(toStringz(path)) != 0) return terr!TuckUnit(fsErrnoCode(errno));
+    return tokVoid();
+}
+
 TuckResult!TuckUnit makeDir(string path)
 {
     import std.file : exists, mkdirRecurse, FileException;
@@ -1579,19 +1696,65 @@ void tuckSetArgs(string[] args) { tuckArgs = args; }
 R argCount(R)()
 {
     long n = tuckArgs.length > 0 ? cast(long) tuckArgs.length - 1 : 0;
-    return tuckRec!(R, "count")(n);
+    return tuckRec!(R, "total")(n);
 }
 
 R argAt(R)(long index)
 {
-    if (index < 0 || index + 1 >= cast(long) tuckArgs.length)
+    // 1-based like Nim's paramStr: 1..argCount are the arguments, 0 the program
+    if (index < 0 || index >= cast(long) tuckArgs.length)
         return tuckRec!(R, "arg")("");
-    return tuckRec!(R, "arg")(tuckArgs[cast(size_t) index + 1]);
+    return tuckRec!(R, "arg")(tuckArgs[cast(size_t) index]);
 }
 
 /// `?{value: str}` — an unset variable is ABSENT, not an error and not an
 /// empty string. Absence is a first-class status, so the caller matches on
 /// it rather than comparing against a sentinel.
+// --- signals as values (std/sys) -----------------------------------------------
+// One signalfd for the process: every watched signal is blocked for normal
+// delivery and read from it instead, so receiving one is reading a descriptor
+// the reactor can await.
+private __gshared int gSigFd = -1;
+private __gshared bool gSigInit = false;
+private __gshared imported!"core.sys.posix.signal".sigset_t gSigMask;
+
+void watchSignal(long number)
+{
+    import core.sys.posix.signal : sigemptyset, sigaddset, pthread_sigmask, SIG_BLOCK;
+    import core.sys.linux.sys.signalfd : signalfd, SFD_NONBLOCK, SFD_CLOEXEC;
+    if (!gSigInit) { sigemptyset(&gSigMask); gSigInit = true; }
+    sigaddset(&gSigMask, cast(int) number);
+    pthread_sigmask(SIG_BLOCK, &gSigMask, null);
+    auto fd = signalfd(gSigFd, &gSigMask, SFD_NONBLOCK | SFD_CLOEXEC);
+    if (fd >= 0) gSigFd = fd;
+}
+
+/// The next watched signal, or none after `timeoutMs`. In a task the wait
+/// suspends only that task; in `main` it is a plain poll.
+R nextSignal(R)(long timeoutMs)
+{
+    import core.sys.linux.sys.signalfd : signalfd_siginfo;
+    import core.sys.posix.unistd : read;
+    import core.stdc.errno : errno, EAGAIN, EWOULDBLOCK;
+    alias P = typeof(R.value);
+    if (gSigFd < 0) return tnone!P();
+    signalfd_siginfo info;
+    for (;;)
+    {
+        auto n = read(gSigFd, &info, info.sizeof);
+        if (n == info.sizeof) return tok(tuckRec!(P, "number")(cast(long) info.ssi_signo));
+        if (n >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) return tnone!P();
+        if (!tuckAwaitReadOrTimeout(gSigFd, timeoutMs)) return tnone!P();
+    }
+}
+
+/// raise(3): to the calling thread, which is the one that blocked it.
+void raiseSignal(long number)
+{
+    import core.stdc.signal : raise;
+    raise(cast(int) number);
+}
+
 R getEnv(R)(string name)
 {
     import std.process : environment;
@@ -1619,18 +1782,202 @@ R osSeed(R)()
     return tuckRec!(R, "seed")((hi << 32) | lo);
 }
 
+// --- std/net — TCP over the reactor -----------------------------------------------
+// The same shape as tuck_rt.nim's and tuck_rt.odin's: sockets are plain
+// non-blocking fds, and every call that can wait suspends the CALLING task on
+// readiness (tuckAwaitRead/Write) instead of blocking the thread. An empty
+// recv means the peer closed cleanly. Renamed imports keep the POSIX names
+// (`accept`, `send`, `close`...) from colliding with the externs below.
+private static import sock = core.sys.posix.sys.socket;
+private static import inet = core.sys.posix.netinet.in_;
+private static import arpa = core.sys.posix.arpa.inet;
+private static import fcntl_ = core.sys.posix.fcntl;
+private static import errno_ = core.stdc.errno;
+
+private enum NetErrKind { Refused, AddressInUse, Unreachable, Closed, IoFailed }
+
+/// One place mapping an errno class onto the NetError variants declared in
+/// std/net.tuck. Exhaustive, so a new kind is a compile error here.
+private ushort netErrCode(NetErrKind k)
+{
+    final switch (k)
+    {
+    case NetErrKind.Refused:      return errCode("net/NetError.Refused");
+    case NetErrKind.AddressInUse: return errCode("net/NetError.AddressInUse");
+    case NetErrKind.Unreachable:  return errCode("net/NetError.Unreachable");
+    case NetErrKind.Closed:       return errCode("net/NetError.Closed");
+    case NetErrKind.IoFailed:     return errCode("net/NetError.IoFailed");
+    }
+}
+
+/// errno at the moment of failure, bucketed into what a Tuck program can act
+/// on. Anything unrecognised is IoFailed rather than a guess.
+private ushort netErrnoCode(int e)
+{
+    with (errno_)
+    {
+        if (e == ECONNREFUSED) return netErrCode(NetErrKind.Refused);
+        if (e == EADDRINUSE) return netErrCode(NetErrKind.AddressInUse);
+        if (e == ENETUNREACH || e == EHOSTUNREACH)
+            return netErrCode(NetErrKind.Unreachable);
+        if (e == EPIPE || e == ECONNRESET) return netErrCode(NetErrKind.Closed);
+    }
+    return netErrCode(NetErrKind.IoFailed);
+}
+
+private void setNonBlocking(int fd)
+{
+    auto fl = fcntl_.fcntl(fd, fcntl_.F_GETFL, 0);
+    fcntl_.fcntl(fd, fcntl_.F_SETFL, fl | fcntl_.O_NONBLOCK);
+}
+
+/// A non-blocking TCP socket listening on all interfaces at `port`
+/// (SO_REUSEADDR set, backlog 64), or the classified errno.
+R listen(R)(long port)
+{
+    alias P = typeof(R.value);
+    int fd = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
+    if (fd < 0) return terr!P(netErrnoCode(errno_.errno));
+    // SO_REUSEADDR so a restarted server does not trip over its own TIME_WAIT
+    // sockets - without it, rebinding within ~60s of a shutdown fails.
+    int yes = 1;
+    sock.setsockopt(fd, sock.SOL_SOCKET, sock.SO_REUSEADDR, &yes, yes.sizeof);
+    inet.sockaddr_in sa;
+    sa.sin_family = cast(ushort) sock.AF_INET;
+    sa.sin_port = arpa.htons(cast(ushort) port);
+    sa.sin_addr.s_addr = inet.INADDR_ANY;
+    if (sock.bind(fd, cast(sock.sockaddr*) &sa, sa.sizeof) < 0)
+    {
+        auto e = errno_.errno;
+        posixClose(fd);
+        return terr!P(netErrnoCode(e));
+    }
+    if (sock.listen(fd, 64) < 0)
+    {
+        auto e = errno_.errno;
+        posixClose(fd);
+        return terr!P(netErrnoCode(e));
+    }
+    setNonBlocking(fd);
+    return tok(tuckRec!(P, "fd")(cast(long) fd));
+}
+
+/// Suspends on the listening fd until a client arrives. Re-parks on a spurious
+/// wake (another coroutine took the connection first).
+R accept(R)(long fd)
+{
+    alias P = typeof(R.value);
+    for (;;)
+    {
+        tuckAwaitRead(fd);
+        int c = sock.accept(cast(int) fd, null, null);
+        if (c >= 0)
+        {
+            setNonBlocking(c);
+            return tok(tuckRec!(P, "fd")(cast(long) c));
+        }
+        auto e = errno_.errno;
+        if (e != errno_.EAGAIN && e != errno_.EWOULDBLOCK)
+            return terr!P(netErrnoCode(e));
+    }
+}
+
+/// Non-blocking connect: the syscall returns EINPROGRESS immediately and the fd
+/// becomes WRITABLE when the handshake finishes, so the task suspends on
+/// write-readiness. Only dotted-quad hosts: a hostname needs DNS, which blocks.
+R connect(R)(string host, long port)
+{
+    import std.string : toStringz;
+    alias P = typeof(R.value);
+    inet.sockaddr_in sa;
+    sa.sin_family = cast(ushort) sock.AF_INET;
+    sa.sin_port = arpa.htons(cast(ushort) port);
+    sa.sin_addr.s_addr = arpa.inet_addr(toStringz(host));
+    if (sa.sin_addr.s_addr == uint.max && host != "255.255.255.255")
+        return terr!P(netErrCode(NetErrKind.Unreachable));
+    int fd = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
+    if (fd < 0) return terr!P(netErrnoCode(errno_.errno));
+    setNonBlocking(fd);
+    if (sock.connect(fd, cast(sock.sockaddr*) &sa, sa.sizeof) < 0)
+    {
+        auto e = errno_.errno;
+        if (e != errno_.EINPROGRESS)
+        {
+            posixClose(fd);
+            return terr!P(netErrnoCode(e));
+        }
+        tuckAwaitWrite(fd);
+        // The handshake's real outcome lands in SO_ERROR, not in connect's return.
+        int soErr = 0;
+        uint sl = soErr.sizeof;
+        sock.getsockopt(fd, sock.SOL_SOCKET, sock.SO_ERROR, &soErr, &sl);
+        if (soErr != 0)
+        {
+            posixClose(fd);
+            return terr!P(netErrnoCode(soErr));
+        }
+    }
+    return tok(tuckRec!(P, "fd")(cast(long) fd));
+}
+
+/// An EMPTY result means the peer closed cleanly - not an error, so callers
+/// test `.data.length == 0` rather than matching a variant.
+R recv(R)(long fd, long max)
+{
+    alias P = typeof(R.value);
+    if (max <= 0) return tok(tuckRec!(P, "data")(""));
+    auto buf = new char[cast(size_t) max];
+    for (;;)
+    {
+        tuckAwaitRead(fd);
+        auto n = sock.recv(cast(int) fd, buf.ptr, buf.length, 0);
+        if (n > 0) return tok(tuckRec!(P, "data")(buf[0 .. n].idup));
+        if (n == 0) return tok(tuckRec!(P, "data")(""));
+        auto e = errno_.errno;
+        if (e != errno_.EAGAIN && e != errno_.EWOULDBLOCK)
+            return terr!P(netErrnoCode(e));
+    }
+}
+
+/// Sends ALL of it, suspending on write-readiness whenever the kernel buffer
+/// fills. A partial write is not surfaced: the caller asked to send a value.
+R send(R)(long fd, string data)
+{
+    alias P = typeof(R.value);
+    size_t sent = 0;
+    while (sent < data.length)
+    {
+        auto n = sock.send(cast(int) fd, data.ptr + sent, data.length - sent,
+                           sock.MSG_NOSIGNAL);
+        if (n > 0) sent += n;
+        else
+        {
+            auto e = errno_.errno;
+            if (e == errno_.EAGAIN || e == errno_.EWOULDBLOCK) tuckAwaitWrite(fd);
+            else return terr!P(netErrnoCode(e));
+        }
+    }
+    return tok(tuckRec!(P, "sent")(cast(long) sent));
+}
+
+/// Closes an fd. Errors are ignored: there is nothing a caller can do.
+void close(long fd)
+{
+    posixClose(cast(int) fd);
+}
+
 R nowMs(R)()
 {
     import std.datetime.systime : Clock;
-    return tuckRec!(R, "ms")(
+    return tuckRec!(R, "epochMs")(
         cast(ulong)(Clock.currStdTime / 10_000 - 62_135_596_800_000L));
 }
 
+/// The reactor's timer: a task's sleep suspends only that task, and main's
+/// runs the scheduler for the duration (tuckSleep).
 void sleepMs(uint ms)
 {
-    import core.thread : Thread;
-    import core.time : msecs;
-    Thread.sleep(msecs(ms));
+    tuckSleep(ms);
 }
 
 // --- a demo async source -----------------------------------------------

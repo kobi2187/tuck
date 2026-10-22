@@ -70,6 +70,7 @@ import compiler/codegen_d_emit  # emitD/emitDModule: same reasoning as
                                 # codegen_emit above, for the D backend.
 import compiler/ast_serializer
 import compiler/modules
+import compiler/type_identity   # a type name two modules declare (A88)
 import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
 import compiler/actor_mode
@@ -579,12 +580,16 @@ proc checkOrDie(path: string, loaded: var seq[LoadedModule],
   let importedRes = importedResources(loaded, sigOnly)
   let programKinds = declaredResourceKinds(loaded)
   let pendingNames = importedPendingNames(loaded)
+  var groups = initTable[string, Table[string, Demands]]()
+  for lm in loaded:
+    for name, reqs in groupRequirements(lm.m.decls): groups[name] = reqs
   let t0 = vBegin(psVerifyEffects)
   defer: vEnd(psVerifyEffects, t0)
   try:
     for lm in loaded:
       let ts = epochTime()
-      verifyModuleEffects(lm.m, imported, importedRes, programKinds, pendingNames)
+      verifyModuleEffects(lm.m, imported, importedRes, programKinds, pendingNames,
+                          groups)
       vSub(lm.name, ts)
     # Who may touch a slab (TK-AC08/09): whole-program, after typecheck
     # because it reads the checker's stamps (slab ops, slab derefs, callee
@@ -697,6 +702,13 @@ proc checkProgram(path: string, needBodies = false,
   for lm in result.mitems: resolveWhenBlocks(lm.m, buildTarget)  # spec §8.3
   block:
     let t0 = vBegin(psInjectTypes)
+    # A type name two modules declare: each its own (`cli::Entry`), and a bare
+    # name two imports provide is refused (A88). Before injection, which
+    # copies types by name.
+    try:
+      qualifyCollidingTypes(result)
+    except SemanticError as err:
+      dieSemanticError(path, err)
     hoistSatisfierData(result)   # a satisfier the interface's module cannot see (A27)
     injectImportedTypes(result)  # imported types are visible unqualified
     composeImportedMixins(result)  # `+ Mixin` from another module (A29)
@@ -1128,6 +1140,7 @@ when isMainModule:
       if stageStr == "load":
         dumpTree(mods, fmt)
       else:
+        qualifyCollidingTypes(loaded)
         hoistSatisfierData(loaded)
         injectImportedTypes(loaded)
         if stageStr == "inject-types":
@@ -1663,13 +1676,16 @@ when isMainModule:
           # phase), so `module` is still author-relative to `path`, exactly
           # like `externLib` above.
           var implDirs: HashSet[string]
-          for d in m.decls:
-            if d == nil or d.kind != dkExtern: continue
-            for mem in d.mixinMembers:
-              if mem.kind != dkFn or not mem.isExtern: continue
-              for (backend, module) in mem.externImpl:
-                if backend != "d": continue
-                implDirs.incl(parentDir(path) / module.parentDir())
+          # Every module's, each against its OWN file: a shim named by an
+          # imported module sits beside that module, not beside the entry (A82).
+          for lm in prog:
+            for d in lm.m.decls:
+              if d == nil or d.kind != dkExtern: continue
+              for mem in d.mixinMembers:
+                if mem.kind != dkFn or not mem.isExtern: continue
+                for (backend, module) in mem.externImpl:
+                  if backend != "d": continue
+                  implDirs.incl(parentDir(lm.path) / module.parentDir())
           var implIArgs = ""
           for dir in implDirs: implIArgs.add(" -I" & quoteShell(dir))
           # TUCK_DMD_EXTRA: flags appended verbatim (`-version=tuckTrack`

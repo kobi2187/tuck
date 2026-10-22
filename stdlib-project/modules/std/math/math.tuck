@@ -340,7 +340,9 @@ fn checkText() -> int:
     return 18
   let bad = {t: "abc"} parseDecimal
   let twice = {t: "1.2.3"} parseDecimal
-  if bad.ok or twice.ok:
+  if bad.ok:
+    return 19
+  if twice.ok:
     return 19
   return 0
 

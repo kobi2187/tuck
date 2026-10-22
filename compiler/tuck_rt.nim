@@ -20,9 +20,80 @@ type
     err*: uint16   # app-wide error code; meaningful only when status == tsErr
     value*: T
 
+# --- the text of a float --------------------------------------------------
+# ONE rule on every backend (A67, ruled 2026-10-22), so the runtime writes the
+# text itself rather than taking the host's: Python's `repr`. The shortest
+# digits that read back as the same value; fixed notation for a decimal
+# exponent from -4 to 15, keeping `.0` on a whole number (`1.0`, `100.0`);
+# otherwise `1e+22`, `1.2e-05`; `nan`, `inf`, `-inf`, `-0.0`. The digits come
+# from C's snprintf("%.*e") and strtod, which all three runtimes call, so
+# they cannot differ; the layout below is written out identically in
+# tuckrt/tuck_rt.odin and tuckrt_d/tuck_rt.d.
+proc cSnprintf(buf: cstring, n: csize_t, frmt: cstring): cint
+  {.importc: "snprintf", header: "<stdio.h>", varargs.}
+proc cStrtod(s: cstring, rest: ptr cstring): cdouble
+  {.importc: "strtod", header: "<stdlib.h>".}
+
+proc tuckFloatLayout(neg: bool, digitsIn: string, exp: int): string =
+  ## Shortest digits `d1d2...` meaning d1.d2... x 10^exp, laid out.
+  var digits = digitsIn
+  while digits.len > 1 and digits[^1] == '0': digits.setLen(digits.len - 1)
+  let n = digits.len
+  var body = ""
+  if exp >= -4 and exp < 16:
+    if exp >= 0:
+      if n <= exp + 1:
+        body = digits & repeat('0', exp + 1 - n) & ".0"
+      else:
+        body = digits[0 .. exp] & "." & digits[exp + 1 .. ^1]
+    else:
+      body = "0." & repeat('0', -exp - 1) & digits
+  else:
+    body = digits[0 .. 0]
+    if n > 1: body.add("." & digits[1 .. ^1])
+    let e = abs(exp)
+    body.add(if exp < 0: "e-" else: "e+")
+    if e < 10: body.add('0')
+    body.add($e)
+  if neg: "-" & body else: body
+
+proc tuckShortestE(x: float64, single: bool): string =
+  ## `x` as C's "%.*e" at the fewest digits that read back as `x` (as an f32,
+  ## when `single`): `1.2e-05`, `1e+00`.
+  var buf: array[64, char]
+  for p in 0 .. 17:
+    discard cSnprintf(cast[cstring](addr buf[0]), 64, "%.*e", cint(p), x)
+    let back = float64(cStrtod(cast[cstring](addr buf[0]), nil))
+    if (single and float32(back) == float32(x)) or (not single and back == x):
+      break
+  $cast[cstring](addr buf[0])
+
+proc tuckSplitE(text: string): tuple[digits: string, exp: int] =
+  ## `-1.25e+03` -> ("125", 3): the mantissa's digits and the exponent.
+  var i = 0
+  if text[i] == '-': inc i
+  while i < text.len and text[i] != 'e':
+    if text[i] != '.': result.digits.add(text[i])
+    inc i
+  result.exp = parseInt(text[i + 1 .. ^1])
+
+proc tuckFloatText*(x: float64, single: bool): string =
+  ## The text of a float (see above). `single`: the value is an f32, whose
+  ## shortest digits are the ones that read back as the same f32.
+  if x != x: return "nan"
+  if x == Inf: return "inf"
+  if x == NegInf: return "-inf"
+  let neg = x < 0.0 or (x == 0.0 and 1.0 / x < 0.0)
+  if x == 0.0: return (if neg: "-0.0" else: "0.0")
+  let (digits, exp) = tuckSplitE(tuckShortestE(x, single))
+  tuckFloatLayout(neg, digits, exp)
+
 proc toStr*[T](value: T): string =
-  ## Any value as its string form, through Nim's `$`.
-  $value
+  ## Any value as its string form: a float by the one rule above, anything
+  ## else through Nim's `$`.
+  when T is float32: tuckFloatText(float64(value), true)
+  elif T is float64: tuckFloatText(value, false)
+  else: $value
 
 proc tuckSeqBounds(index, length: int, op: string) =
   ## Raises IndexDefect unless `0 <= index < length`; `op` names the access.
@@ -1519,6 +1590,38 @@ proc listDir*(path: string): seq[string] =
   for _, p in os.walkDir(path, relative = true): result.add p
   algorithm.sort(result)
 
+proc fsErrno[T](e: cint): TuckResult[T] =
+  ## errno from a metadata call (stat, rename, rmdir) onto the FsError
+  ## variants, the same buckets in all three runtimes.
+  if e == posix.ENOENT or e == posix.ENOTDIR: terr[T](errCode("fs/FsError.NotFound"))
+  elif e == posix.EACCES or e == posix.EPERM: terr[T](errCode("fs/FsError.AccessDenied"))
+  elif e == posix.ENOTEMPTY or e == posix.EEXIST: terr[T](errCode("fs/FsError.NotEmpty"))
+  else: terr[T](errCode("fs/FsError.IoFailed"))
+
+proc pathInfo*(path: string): TuckResult[tuple[isFolder: bool, isLink: bool,
+                                                bytes: int, modifiedMs: int]] =
+  ## lstat: a final symbolic link is reported as a link, not followed. NOT
+  ## offloaded, same rationale as fileExists.
+  var st: posix.Stat
+  if posix.lstat(path.cstring, st) != 0:
+    return fsErrno[tuple[isFolder: bool, isLink: bool, bytes: int,
+                         modifiedMs: int]](posix.errno)
+  let ms = int(st.st_mtim.tv_sec) * 1000 + int(st.st_mtim.tv_nsec) div 1_000_000
+  tok((isFolder: posix.S_ISDIR(st.st_mode), isLink: posix.S_ISLNK(st.st_mode),
+       bytes: int(st.st_size), modifiedMs: ms))
+
+proc cRename(a, b: cstring): cint {.importc: "rename", header: "<stdio.h>".}
+
+proc renamePath*(path, to: string): TuckResult[tuple[]] =
+  ## rename(2): atomic within one filesystem, replacing a file at `to`.
+  if cRename(path.cstring, to.cstring) != 0: return fsErrno[tuple[]](posix.errno)
+  tokVoid()
+
+proc removeFolder*(path: string): TuckResult[tuple[]] =
+  ## rmdir(2): an empty folder only.
+  if posix.rmdir(path.cstring) != 0: return fsErrno[tuple[]](posix.errno)
+  tokVoid()
+
 proc makeDir*(path: string): TuckResult[tuple[]] =
   ## NOT offloaded, same rationale as fileExists. Idempotent by an explicit
   ## check rather than relying on os.createDir's own already-exists
@@ -1539,6 +1642,12 @@ proc printLine*(text: string) =
   ## a varargs of `$` conversions, which copies every string it is given.
   stdout.write(text)
   stdout.write("\n")
+
+proc printError*(text: string) =
+  ## Writes `text` and a newline to stderr, at once.
+  stderr.write(text)
+  stderr.write("\n")
+  stderr.flushFile()
 
 type
   ReadLineReq = object
@@ -1748,12 +1857,58 @@ proc runCommand*(line: string): int =
   ## goes, and returns its exit code. Blocks the caller until it ends.
   osproc.execCmd(line)
 
-proc argCount*(): tuple[count: int] =
+proc argCount*(): tuple[total: int] =
   ## How many command-line arguments were passed, not counting the program.
-  (count: paramCount())
+  ## `total`, not `count`: std/seq's fn `count` would make a `count` field
+  ## unreadable in any module importing both (A83).
+  (total: paramCount())
 proc argAt*(index: int): tuple[arg: string] =
-  ## Command-line argument `index` (1-based; 0 is the program).
+  ## Command-line argument `index` (1-based; 0 is the program); "" outside
+  ## 0 .. argCount, as on Odin and D (A85) — paramStr raises instead.
+  if index < 0 or index > paramCount(): return (arg: "")
   (arg: paramStr(index))
+
+# --- signals as values (std/sys) ----------------------------------------------
+# One signalfd for the process: every watched signal is blocked for normal
+# delivery and read from it instead, so receiving one is reading a descriptor,
+# which the reactor can await like a socket.
+type SignalfdInfo {.importc: "struct signalfd_siginfo",
+                   header: "<sys/signalfd.h>".} = object
+  ssi_signo: uint32
+var SFD_NONBLOCK {.importc, header: "<sys/signalfd.h>".}: cint
+var SFD_CLOEXEC {.importc, header: "<sys/signalfd.h>".}: cint
+proc c_signalfd(fd: cint, mask: ptr posix.Sigset, flags: cint): cint {.
+  importc: "signalfd", header: "<sys/signalfd.h>".}
+proc c_pthread_sigmask(how: cint, s, old: ptr posix.Sigset): cint {.
+  importc: "pthread_sigmask", header: "<signal.h>".}
+proc c_raise(sig: cint): cint {.importc: "raise", header: "<signal.h>".}
+
+var gSigMask: posix.Sigset
+var gSigFd: cint = -1
+
+proc watchSignal*(number: int) =
+  ## Block `number` for the calling thread and route it to the signalfd.
+  if gSigFd < 0: discard posix.sigemptyset(gSigMask)
+  discard posix.sigaddset(gSigMask, cint(number))
+  discard c_pthread_sigmask(posix.SIG_BLOCK, addr gSigMask, nil)
+  gSigFd = c_signalfd(gSigFd, addr gSigMask, SFD_NONBLOCK or SFD_CLOEXEC)
+
+proc nextSignal*(timeoutMs: int): TuckResult[tuple[number: int]] =
+  ## The next watched signal, or none after `timeoutMs`. In a task the wait
+  ## suspends only that task; from main, the scheduler runs while it waits.
+  if gSigFd < 0: return tnone[tuple[number: int]]()
+  var info: SignalfdInfo
+  while true:
+    let n = posix.read(gSigFd, addr info, sizeof(info))
+    if n == sizeof(info): return tok((number: int(info.ssi_signo)))
+    if n >= 0 or (posix.errno != posix.EAGAIN and posix.errno != posix.EWOULDBLOCK):
+      return tnone[tuple[number: int]]()
+    if not tuckAwaitReadOrTimeout(int(gSigFd), timeoutMs):
+      return tnone[tuple[number: int]]()
+
+proc raiseSignal*(number: int) =
+  ## raise(3): to the calling thread, which is the one that blocked it.
+  discard c_raise(cint(number))
 
 proc getEnv*(name: string): TuckResult[tuple[value: string]] =
   ## The environment variable `name`, or none when it is unset.
@@ -1766,9 +1921,9 @@ proc exit*(code: int) =
   ## Ends the process with `code` at once.
   quit(code)
 
-proc nowMs*(): tuple[ms: uint64] =
+proc nowMs*(): tuple[epochMs: uint64] =
   ## Wall-clock time in milliseconds since the Unix epoch.
-  (ms: uint64(epochTime() * 1000))
+  (epochMs: uint64(epochTime() * 1000))
 proc sleepMs*(ms: uint32) =
   ## The reactor's timer, NOT the worker and NOT os.sleep. A sleep is the one
   ## "blocking" op that was never blocking-by-nature: waiting for a deadline is
@@ -1780,8 +1935,7 @@ proc sleepMs*(ms: uint32) =
   ## actor and every timer, for the full duration.
   ## inCoroutine rather than a bare `running()`: --threads:on puts
   ## system.running(Thread) in scope, which otherwise wins overload resolution.
-  if inCoroutine(): tuckSleep(int(ms))
-  else: os.sleep(int(ms))   # no scheduler to yield to
+  tuckSleep(int(ms))   # from main, the scheduler runs for the duration
 
 # Memory-mapped registers (spec 8): every access is a volatile load or store, so
 # the optimiser cannot cache a read across statements or drop a write.

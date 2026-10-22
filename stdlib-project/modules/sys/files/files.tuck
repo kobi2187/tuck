@@ -1,0 +1,418 @@
+# sys.files — the file operations programs reach for, over std/fs.
+#
+# `std/fs` reads and writes whole files; this adds the usual conveniences on
+# top, in Tuck: lines in and out, copying, writing under folders that may not
+# exist yet, full paths for a folder's entries, and whole trees: walking,
+# removing, copying and measuring one. Failure is the FsError of the underlying
+# call, passed through.
+#
+# A symbolic link is never followed into: it is reported, removed or copied as
+# what it is, so a link to a parent folder cannot make a walk endless.
+import fs
+import seq
+import str
+import text
+import path
+import stream
+import encoding
+import mmap
+
+# The lines of a file, without their line ends (`\n` or `\r\n`). A final line
+# end does not make a final empty line.
+fn textLines({text: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  let raw = {t: text, at: "\n"} split
+  for i in 0 .. raw.len - 1:
+    var line = raw[i]
+    if {t: line, suffix: "\r"} endsWith:
+      let cut = {t: line} byteCount - 1
+      let head = {t: line, start: 0, stop: cut} slice
+      if head.ok:
+        line = head.value
+    out = {items: out, value: line} push
+  if out.len > 0 and out[out.len - 1] == "":
+    let shorter = {items: out} withoutLast
+    return shorter
+  return out
+
+fn withoutLast({items: Seq[str]}) -> Seq[str]:
+  var out: Seq[str] = []
+  for i in 0 .. items.len - 2:
+    out = {items: out, value: items[i]} push
+  return out
+
+# Every line followed by `\n`.
+fn joinLines({lines: Seq[str]}) -> str:
+  var out = ""
+  for i in 0 .. lines.len - 1:
+    out = out + lines[i] + "\n"
+  return out
+
+fn readLines({path: str}) -> !{lines: Seq[str]} [io: fs, error: FsError]:
+  let r = {path: path} readFile
+  if not r.ok:
+    err r.err
+  let parts = {text: r.value.content} textLines
+  return {lines: parts}
+
+fn writeLines({path: str, lines: Seq[str]}) -> !void [io: fs, error: FsError]:
+  let body = {lines: lines} joinLines
+  let w = {path: path, content: body} writeFile
+  if not w.ok:
+    err w.err
+
+# `writeFile`, creating the folders above `path` first.
+fn writeFileIn({path: str, content: str}) -> !void [io: fs, error: FsError]:
+  let dir = {p: path} parent
+  let made = {path: dir} makeDir
+  if not made.ok:
+    err made.err
+  let w = {path: path, content: content} writeFile
+  if not w.ok:
+    err w.err
+
+fn copyFile({src: str, dst: str}) -> !void [io: fs, error: FsError]:
+  let r = {path: src} readFile
+  if not r.ok:
+    err r.err
+  let w = {path: dst, content: r.value.content} writeFileIn
+  if not w.ok:
+    err w.err
+
+# The entries of a folder as paths under it, sorted as `listDir` sorts them.
+fn entriesOf({dir: str}) -> Seq[str] [io: fs]:
+  let names = {path: dir} listDir
+  var out: Seq[str] = []
+  for i in 0 .. names.len - 1:
+    let full = {base: dir, rel: names[i]} join
+    out = {items: out, value: full} push
+  return out
+
+# --- whole trees ------------------------------------------------------------------
+# One thing found by a walk: its path, whether it is a folder, and its size.
+type Found:
+  path: str
+  isFolder: bool
+  bytes: int
+
+# Everything under `root`, depth first, a folder before its contents and the
+# names in sorted order; `root` itself is not listed. A file as `root` has
+# nothing under it.
+fn walk({root: str}) -> !Seq[Found] [io: fs, error: FsError]:
+  var out: Seq[Found] = []
+  let names = {path: root} listDir
+  for i in 0 .. names.len - 1:
+    let full = {base: root, rel: names[i]} join
+    let info = {path: full} pathInfo
+    if not info.ok:
+      err info.err
+    let isFolder = info.value.isFolder
+    let f = {path: full, isFolder: isFolder, bytes: info.value.bytes} Found
+    out = {items: out, value: f} push
+    if isFolder:
+      let inner = {root: full} walk
+      if not inner.ok:
+        err inner.err
+      for k in 0 .. inner.value.len - 1:
+        out = {items: out, value: inner.value[k]} push
+  return out
+
+# Remove `path` and, for a folder, everything under it.
+fn removeTree({path: str}) -> !void [io: fs, error: FsError]:
+  let info = {path: path} pathInfo
+  if not info.ok:
+    err info.err
+  if not info.value.isFolder:
+    let r = {path: path} removeFile
+    if not r.ok:
+      err r.err
+    return
+  let names = {path: path} listDir
+  for i in 0 .. names.len - 1:
+    let full = {base: path, rel: names[i]} join
+    let inner = {path: full} removeTree
+    if not inner.ok:
+      err inner.err
+  let r = {path: path} removeFolder
+  if not r.ok:
+    err r.err
+
+# A copy of `src` (a file or a whole folder) at `dst`.
+fn copyTree({src: str, dst: str}) -> !void [io: fs, error: FsError]:
+  let info = {path: src} pathInfo
+  if not info.ok:
+    err info.err
+  if not info.value.isFolder:
+    let c = {src: src, dst: dst} copyFile
+    if not c.ok:
+      err c.err
+    return
+  let made = {path: dst} makeDir
+  if not made.ok:
+    err made.err
+  let names = {path: src} listDir
+  for i in 0 .. names.len - 1:
+    let from1 = {base: src, rel: names[i]} join
+    let to1 = {base: dst, rel: names[i]} join
+    let inner = {src: from1, dst: to1} copyTree
+    if not inner.ok:
+      err inner.err
+
+# The bytes of every file under `root` (or of `root`, a file).
+fn treeSize({root: str}) -> !int [io: fs, error: FsError]:
+  let info = {path: root} pathInfo
+  if not info.ok:
+    err info.err
+  if not info.value.isFolder:
+    return info.value.bytes
+  let all = {root: root} walk
+  if not all.ok:
+    err all.err
+  var total = 0
+  for i in 0 .. all.value.len - 1:
+    if not all.value[i].isFolder:
+      total = total + all.value[i].bytes
+  return total
+
+# --- streams over files: providers for std sys.io's groups ---------------------------
+# A reader over a MAPPING of the file (sys.mmap): opened once, and each pull
+# copies only the chunk it returns, so reading a large file never holds it
+# whole. It reads the file as it was when opened. And a sink that appends.
+type FileReader:
+  mapped: Mapping
+  pos: int
+
+type FileSink:
+  path: str
+
+fn fileReader({path: str}) -> !FileReader [io: fs, error: MapError]:
+  let m = {path: path} mapFile
+  if not m.ok:
+    err m.err
+  return {mapped: m.value, pos: 0} FileReader
+
+# Release the mapping; the reader reads nothing after.
+fn closeReader({r: FileReader}) -> void [io: fs]:
+  {m: r.mapped} unmapFile
+
+fn fileSink({path: str}) -> FileSink:
+  return {path: path} FileSink
+
+# Up to `max` bytes from where the reader stands; an empty chunk at the end.
+fn pull({self: FileReader, max: int}) -> {next: FileReader, data: Seq[u8]} [io: fs]:
+  let out = {m: self.mapped, start: self.pos, n: max} window
+  let advanced = {mapped: self.mapped, pos: self.pos + out.len} FileReader
+  return {next: advanced, data: out}
+
+# --- searching a file in place ------------------------------------------------------
+# The lines of a file, counted over a mapping: nothing is read into memory.
+fn countLines({path: str}) -> !int [io: fs, error: MapError]:
+  let m = {path: path} mapFile
+  if not m.ok:
+    err m.err
+  let n = {m: m.value} lineCount
+  {m: m.value} unmapFile
+  return n
+
+# One line that matched: its 1-based number and its text.
+type Hit:
+  line: int
+  text: str
+
+# Every line containing `what`, each once, in order. The file is searched in
+# place: line numbers come from counting newlines between matches, and only
+# the matching lines are copied out.
+fn grepFile({path: str, what: str}) -> !Seq[Hit] [io: fs, error: MapError]:
+  let m = {path: path} mapFile
+  if not m.ok:
+    err m.err
+  let f = m.value
+  let nl = {value: 10} u8
+  var hits: Seq[Hit] = []
+  var line = 1
+  var scanned = 0
+  var lastLine = 0
+  let at = {m: f, what: what} allMatches
+  for i in 0 .. at.len - 1:
+    line = line + {m: f, value: nl, start: scanned, n: at[i] - scanned} countIn
+    scanned = at[i]
+    if line != lastLine:
+      lastLine = line
+      let text = {m: f, at: at[i]} lineAround
+      if text.ok:
+        let hit = {line: line, text: text.value} Hit
+        hits = {items: hits, value: hit} push
+  {m: f} unmapFile
+  return hits
+
+fn put({self: FileSink, data: Seq[u8]}) -> FileSink [io: fs]:
+  let text = {bytes: data} fromBytes
+  let w = {path: self.path, content: text} appendFile
+  if not w.ok:
+    return self
+  return self
+
+# --- checks ---------------------------------------------------------------------
+fn checkLines() -> int [io, io: fs]:
+  let a = {text: "one\ntwo\r\nthree\n"} textLines
+  if a.len != 3 or a[1] != "two" or a[2] != "three":
+    return 1
+  let b = {text: "x\n\ny"} textLines
+  if b.len != 3 or b[1] != "":
+    return 2
+  let c = {text: ""} textLines
+  if c.len != 0:
+    return 3
+  let d = {lines: ["a", "b"]} joinLines
+  if d != "a\nb\n":
+    return 4
+  return checkDisk
+
+fn checkDisk() -> int [io, io: fs]:
+  # Relative: each backend runs in its own folder, so concurrent runs of this
+  # check never share files.
+  let root = "tuck-files-check"
+  let file = {base: root, rel: "deep/er/notes.txt"} join
+  let one: Seq[str] = ["alpha", "beta", "gamma"]
+  let made = {path: file, content: "x"} writeFileIn
+  if not made.ok:
+    return 10
+  let w2 = {path: file, lines: one} writeLines
+  if not w2.ok:
+    return 11
+  let r = {path: file} readLines
+  if not r.ok:
+    return 12
+  if r.value.lines.len != 3 or r.value.lines[2] != "gamma":
+    return 13
+  let copy = {base: root, rel: "other/copy.txt"} join
+  let c = {src: file, dst: copy} copyFile
+  if not c.ok:
+    return 14
+  let r2 = {path: copy} readLines
+  if not r2.ok:
+    return 15
+  if r2.value.lines.len != 3 or r2.value.lines[0] != "alpha":
+    return 16
+  let missing = {path: root + "/nope.txt"} readLines
+  if missing.ok:
+    return 17
+  let inside = {dir: root + "/other"} entriesOf
+  if inside.len != 1 or inside[0] != root + "/other/copy.txt":
+    return 18
+  let streamed = checkStreams
+  if streamed != 0:
+    return streamed
+  let trees = checkTrees
+  if trees != 0:
+    return trees
+  let gone1 = {path: file} removeFile
+  let gone2 = {path: copy} removeFile
+  if not gone1.ok:
+    return 19
+  if not gone2.ok:
+    return 19
+  return 0
+
+fn checkStreams() -> int [io, io: fs]:
+  let target = "tuck-files-check/stream/out.txt"
+  let made = {path: target, content: ""} writeFileIn
+  if not made.ok:
+    return 60
+  let text = "first line\nsecond line\n"
+  let raw = {t: text} bytesOf
+  let src = {bytes: raw} memReader
+  let sink = {path: target} fileSink
+  let done = {src: src, dst: sink, limit: 1000} copyTo
+  if done.moved != 23:
+    return 61
+  let opened = {path: target} fileReader
+  if not opened.ok:
+    return 68
+  let reader = opened.value
+  let l1 = {s: reader} readLine
+  if not l1.ok:
+    return 62
+  if {bytes: l1.value.data} fromBytes != "first line":
+    return 63
+  let l2 = {s: l1.value.next} readLine
+  if not l2.ok:
+    return 64
+  if {bytes: l2.value.data} fromBytes != "second line":
+    return 65
+  let l3 = {s: l2.value.next} readLine
+  if l3.ok:
+    return 66
+  {r: reader} closeReader
+  let lines = {path: target} countLines
+  if not lines.ok:
+    return 90
+  if lines.value != 2:
+    return 91
+  let hits = {path: target, what: "line"} grepFile
+  if not hits.ok:
+    return 92
+  if hits.value.len != 2 or hits.value[1].line != 2 or hits.value[1].text != "second line":
+    return 93
+  let one = {path: target, what: "first"} grepFile
+  if not one.ok:
+    return 94
+  if one.value.len != 1 or one.value[0].line != 1:
+    return 95
+  let absent = {path: target + ".nope", what: "x"} grepFile
+  if absent.ok:
+    return 96
+  let gone = {path: target} removeFile
+  if not gone.ok:
+    return 67
+  return 0
+
+fn checkTrees() -> int [io, io: fs]:
+  let root = "tuck-files-trees"
+  {path: root} removeTree discard
+  let a = {path: root + "/a/one.txt", content: "12345"} writeFileIn
+  let b = {path: root + "/a/deeper/two.txt", content: "abc"} writeFileIn
+  let c = {path: root + "/b.txt", content: "z"} writeFileIn
+  if not a.ok:
+    return 70
+  if not b.ok:
+    return 70
+  if not c.ok:
+    return 70
+  let found = {root: root} walk
+  if not found.ok:
+    return 71
+  let want: Seq[str] = ["a", "a/deeper", "a/deeper/two.txt", "a/one.txt", "b.txt"]
+  if found.value.len != want.len:
+    return 72
+  for i in 0 .. want.len - 1:
+    if found.value[i].path != root + "/" + want[i]:
+      return 73 + i
+  if not found.value[0].isFolder or found.value[4].isFolder:
+    return 80
+  let size = {root: root} treeSize
+  if not size.ok:
+    return 81
+  if size.value != 9:
+    return 82
+  let copied = {src: root + "/a", dst: root + "/copy"} copyTree
+  if not copied.ok:
+    return 83
+  let copySize = {root: root + "/copy"} treeSize
+  if not copySize.ok:
+    return 84
+  if copySize.value != 8:
+    return 85
+  let removed = {path: root} removeTree
+  if not removed.ok:
+    return 86
+  if {path: root} fileExists:
+    return 87
+  let again = {path: root} removeTree
+  if again.ok:
+    return 88
+  return 0
+
+fn main() -> int [io, io: fs]:
+  let a = checkLines
+  return a

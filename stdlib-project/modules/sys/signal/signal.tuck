@@ -1,0 +1,156 @@
+# sys.signal — OS signals received as values, over std/sys.
+#
+# Never a handler: a signal handler interrupts the program anywhere, so it may
+# not safely touch the filesystem, allocate or take a lock — and a program that
+# must leave a resumable file behind on Ctrl-C needs to do exactly that. So a
+# signal is something the program ASKS for: `onSignal` starts routing one to the
+# program instead of to its default action, and `awaitSignal` answers the next
+# one, or none when the time is up. In a task the wait suspends only that task,
+# so a server can keep serving while one task waits for SIGTERM.
+#
+# Call `onSignal` early, before actors start: the routing is per thread, and a
+# thread started afterwards inherits it. Numbers are Linux's.
+import sys
+import scheduler
+import time
+
+type Signal:
+  | SigHup
+  | SigInt
+  | SigQuit
+  | SigUsr1
+  | SigUsr2
+  | SigTerm
+
+fn numberOf({sig: Signal}) -> int:
+  match sig:
+    SigHup: return 1
+    SigInt: return 2
+    SigQuit: return 3
+    SigUsr1: return 10
+    SigUsr2: return 12
+    SigTerm: return 15
+
+# The signal with OS number `number`, or none for one this module does not name
+# (a process killed by signal 9 reports 9, which no program can catch).
+fn signalOf({number: int}) -> Signal?:
+  if number == 1:
+    return SigHup
+  if number == 2:
+    return SigInt
+  if number == 3:
+    return SigQuit
+  if number == 10:
+    return SigUsr1
+  if number == 12:
+    return SigUsr2
+  if number == 15:
+    return SigTerm
+  return none
+
+fn nameOf({sig: Signal}) -> str:
+  match sig:
+    SigHup: return "SIGHUP"
+    SigInt: return "SIGINT"
+    SigQuit: return "SIGQUIT"
+    SigUsr1: return "SIGUSR1"
+    SigUsr2: return "SIGUSR2"
+    SigTerm: return "SIGTERM"
+
+# Start receiving `sig` as a value instead of its default action.
+fn onSignal({sig: Signal}) -> void [io: sys]:
+  let n = {sig: sig} numberOf
+  {number: n} watchSignal
+
+# The next signal received, or none after `timeoutMs`.
+fn awaitSignal({timeoutMs: int}) -> Signal? [io: sys]:
+  let r = {timeoutMs: timeoutMs} nextSignal
+  if not r.ok:
+    return none
+  return {number: r.value.number} signalOf
+
+# Send `sig` to this program (to the calling thread).
+fn raiseOwn({sig: Signal}) -> void [io: sys]:
+  let n = {sig: sig} numberOf
+  {number: n} raiseSignal
+
+# --- checks ---------------------------------------------------------------------
+fn checkNames() -> int:
+  let all: Seq[Signal] = [SigHup, SigInt, SigQuit, SigUsr1, SigUsr2, SigTerm]
+  for i in 0 .. all.len - 1:
+    let n = {sig: all[i]} numberOf
+    let back = {number: n} signalOf
+    if not back.ok:
+      return 1
+    if back.value != all[i]:
+      return 2
+  let kill = {number: 9} signalOf
+  if kill.ok:
+    return 3
+  if {sig: SigTerm} nameOf != "SIGTERM":
+    return 4
+  return 0
+
+fn checkMain() -> int [io: sys]:
+  {sig: SigUsr1} onSignal
+  {sig: SigUsr2} onSignal
+  let quiet = {timeoutMs: 20} awaitSignal
+  if quiet.ok:
+    return 10
+  {sig: SigUsr2} raiseOwn
+  {sig: SigUsr1} raiseOwn
+  # both were pending: the kernel hands standard signals lowest number first
+  let first = {timeoutMs: 1000} awaitSignal
+  let second = {timeoutMs: 1000} awaitSignal
+  if not first.ok:
+    return 11
+  if not second.ok:
+    return 12
+  if first.value != SigUsr1 or second.value != SigUsr2:
+    return 13
+  return 0
+
+# A task waits (suspended on the reactor) while another sends the signal.
+actor Outcome [queue: 8]:
+  got: int = 0
+  done: bool = false
+
+  on report({code: int}):
+    got = code
+    done = true
+
+fn finished() -> bool:
+  return Outcome.done
+
+task waiter({timeoutMs: int}) -> void [io, io: sys]:
+  let s = {timeoutMs: timeoutMs} awaitSignal
+  if not s.ok:
+    Outcome send report {code: 20}
+    return
+  if s.value != SigTerm:
+    Outcome send report {code: 21}
+    return
+  Outcome send report {code: 0}
+  return
+
+task sender({delayMs: u32}) -> void [io, io: sys, io: clock]:
+  {ms: delayMs} sleepMs
+  {sig: SigTerm} raiseOwn
+  return
+
+fn checkTask() -> int [io, io: sys, io: clock]:
+  {sig: SigTerm} onSignal
+  {timeoutMs: 3000} waiter
+  {delayMs: 50} sender
+  Outcome.waitUntil {pred: :finished}
+  {} scheduler::stop
+  return Outcome.got
+
+fn main() -> int [io, io: sys, io: clock]:
+  let a = checkNames
+  if a != 0:
+    return a
+  let b = checkMain
+  if b != 0:
+    return b
+  return checkTask

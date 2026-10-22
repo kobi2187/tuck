@@ -70,6 +70,7 @@ type
                                        # already hoisted — one signature per
                                        # task, unlike anonymous records,
                                        # so the task's own name IS the key
+    taskSpawnHoisted*: HashSet[string]  # the same, for fire-and-forget spawns
 
 proc odinType*(ctx: var OdinCodegenCtx, t: Type): string
   ## Forward-declared: recStructName/odinTupleType/odinAppType/odinFuncType
@@ -157,20 +158,6 @@ proc validatorName*(ctx: OdinCodegenCtx, typeName: string): string =
   ## The proc that validates an invariant-carrying type, qualified with its
   ## module when the type is imported (R11, A31).
   ctx.importPrefix(typeName) & "__validated_" & typeName
-
-proc qualifyEnumOwner*(ctx: OdinCodegenCtx, owner: string): string =
-  ## An enum owner reached through its module when the TYPE it belongs to was
-  ## imported. `importedTypeQualifier` above already does this for a type in
-  ## TYPE position; a bare tag and a match-arm label are the two places the
-  ## same name appears in VALUE position, and neither was qualified — so a sum
-  ## declared in another module produced `tuck_Order.Before` and "Undeclared
-  ## name" beside a correctly qualified `cmp.tuck_flipped`.
-  ##
-  ## `enumTagOwner` answers `TKind` for a payload sum, so the decl whose
-  ## origin to look up is that name minus the suffix.
-  let typeName = if owner.endsWith("Kind"): owner[0 ..< owner.len - 4]
-                 else: owner
-  ctx.pkgQualifier(moduleDeclaringType(ctx.module, typeName)) & owner
 
 proc odinNamedFallback*(ctx: OdinCodegenCtx, t: Type): string =
   ## A name the primitive table did not cover.

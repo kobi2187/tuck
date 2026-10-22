@@ -1,0 +1,214 @@
+# jsonq — pretty-print a JSON document, or the part of it a path names.
+#
+#   jsonq [PATH] [--compact] [--raw] < doc.json
+#
+# PATH is jq's simple form: `.` for the whole document, `.name` for a member,
+# `[2]` for an element, chained as `.users[0].name`. Output is indented by two
+# spaces, or one line with --compact; --raw prints a string result without its
+# quotes. Exit 2 when stdin is not JSON or PATH is not a path, 1 when PATH
+# names nothing in the document.
+import console
+import seq
+import str
+import text
+import convert
+import cli
+import encoding
+
+type Step:
+  | Member({name: str})
+  | Element({position: int})
+
+# --- the path ----------------------------------------------------------------------
+fn startsStep({c: str}) -> bool:
+  return c == "." or c == "["
+
+# Where the member name that starts at `start` ends: the next `.` or `[`.
+fn nameEnd({path: str, start: int}) -> int:
+  let n = {t: path} byteCount
+  var j = start
+  for j < n:
+    let c = {s: path, index: j} charAt
+    if {c: c} startsStep:
+      return j
+    j = j + 1
+  return n
+
+fn memberStep({path: str, start: int, stop: int}) -> Step?:
+  if stop == start:
+    return none
+  let word = {t: path, start: start, stop: stop} slice
+  if not word.ok:
+    return none
+  return {name: word.value} Step.Member
+
+# `[N]` at `open`: the element step and where it ends, or none.
+fn elementStep({path: str, open: int}) -> {step: Step, next: int}?:
+  let n = {t: path} byteCount
+  let rest = {t: path, start: open + 1, stop: n} slice
+  if not rest.ok:
+    return none
+  let close = {t: rest.value, what: "]"} find
+  if not close.ok:
+    return none
+  let digits = {t: rest.value, start: 0, stop: close.value} slice
+  if not digits.ok:
+    return none
+  let n = {t: digits.value} parseInt
+  if not n.ok:
+    return none
+  let at = {value: n.value} int
+  let s = {position: at} Step.Element
+  return {step: s, next: open + close.value + 2}
+
+# The steps a path names, or none when it is not a path.
+fn parsePath({path: str}) -> Seq[Step]?:
+  var steps: Seq[Step] = []
+  if path == ".":
+    return steps
+  let n = {t: path} byteCount
+  var i = 0
+  for i < n:
+    let c = {s: path, index: i} charAt
+    if c == ".":
+      let stop = {path: path, start: i + 1} nameEnd
+      let s = {path: path, start: i + 1, stop: stop} memberStep
+      if not s.ok:
+        return none
+      steps = {items: steps, value: s.value} push
+      i = stop
+    elif c == "[":
+      let e = {path: path, open: i} elementStep
+      if not e.ok:
+        return none
+      steps = {items: steps, value: e.value.step} push
+      i = e.value.next
+    else:
+      return none
+  return steps
+
+fn follow({doc: Json, steps: Seq[Step]}) -> Json?:
+  var here = doc
+  for i in 0 .. steps.len - 1:
+    let s = steps[i]
+    var next: Json? = none
+    match s:
+      Member: next = {j: here, key: s.name} jsonGet
+      Element: next = {j: here, index: s.position} jsonAt
+    if not next.ok:
+      return none
+    here = next.value
+  return here
+
+# --- printing ----------------------------------------------------------------------
+# A whole number prints without a fraction, as jq does: `3`, not `3.0`.
+fn numberText({n: f64}) -> str:
+  let limit = 1000000000000000.0
+  if n > 0.0 - limit and n < limit:
+    let whole = {value: n} i64
+    if {value: whole} f64 == n:
+      return {value: whole} toStr
+  return {value: n} toStr
+
+fn indent({depth: int}) -> str:
+  var out = ""
+  for i in 0 .. depth - 1:
+    out = out + "  "
+  return out
+
+# What goes between two items, and around a non-empty bracket's inside.
+fn gap({depth: int, compact: bool}) -> str:
+  if compact:
+    return ""
+  return "\n" + {depth: depth} indent
+
+fn arrayOut({items: Seq[Json], depth: int, compact: bool}) -> str:
+  if items.len == 0:
+    return "[]"
+  let inner = {depth: depth + 1, compact: compact} gap
+  var out = "["
+  for i in 0 .. items.len - 1:
+    let one = {j: items[i], depth: depth + 1, compact: compact} render
+    if i > 0:
+      out = out + ","
+    out = out + inner + one
+  let outer = {depth: depth, compact: compact} gap
+  return out + outer + "]"
+
+fn objectOut({keys: Seq[str], vals: Seq[Json], depth: int, compact: bool}) -> str:
+  if keys.len == 0:
+    return "{}"
+  let inner = {depth: depth + 1, compact: compact} gap
+  var colon = ": "
+  if compact:
+    colon = ":"
+  var out = "{"
+  for i in 0 .. keys.len - 1:
+    let k = {s: keys[i]} quoted
+    let v = {j: vals[i], depth: depth + 1, compact: compact} render
+    if i > 0:
+      out = out + ","
+    out = out + inner + k + colon + v
+  let outer = {depth: depth, compact: compact} gap
+  return out + outer + "}"
+
+fn render({j: Json, depth: int, compact: bool}) -> str:
+  match j:
+    JNull: return "null"
+    JBool: return {b: j.b} boolText
+    JNum: return {n: j.n} numberText
+    JStr: return {s: j.s} quoted
+    JArr: return {items: j.items, depth: depth, compact: compact} arrayOut
+    JObj: return {keys: j.keys, vals: j.vals, depth: depth, compact: compact} objectOut
+
+# --- the program -------------------------------------------------------------------
+fn command() -> Command:
+  let compact = {name: "compact", shortName: "c", kind: AFlag, help: "one line", required: false} spec
+  let raw = {name: "raw", shortName: "r", kind: AFlag, help: "a string without quotes", required: false} spec
+  let args: Seq[ArgSpec] = [compact, raw]
+  let noSubs: Seq[Command] = []
+  return {name: "jsonq", help: "print JSON, or the part a path names", args: args, subcommands: noSubs} Command
+
+fn readAll() -> str [io: console]:
+  var lines: Seq[str] = []
+  for true:
+    let got = readLine
+    if not got.ok:
+      return {parts: lines, sep: "\n"} joinStr
+    lines = {items: lines, value: got.value.line} push
+  return ""
+
+fn main() -> int [io, io: sys, io: console]:
+  let argv = commandLine
+  let parsed = {c: command, argv: argv} tryParse
+  if not parsed.ok:
+    let usage = {c: command} usageOf
+    {text: usage} printLine
+    return 2
+  let a = parsed.value
+  var path = "."
+  if a.positional.len > 0:
+    path = a.positional[0]
+  let steps = {path: path} parsePath
+  if not steps.ok:
+    {text: "jsonq: not a path: " + path} printLine
+    return 2
+  let input = readAll
+  let doc = {t: input} parseJson
+  if not doc.ok:
+    {text: "jsonq: stdin is not JSON"} printLine
+    return 2
+  let found = {doc: doc.value, steps: steps.value} follow
+  if not found.ok:
+    {text: "jsonq: nothing at " + path} printLine
+    return 1
+  let compact = {a: a, name: "compact"} hasFlag
+  if {a: a, name: "raw"} hasFlag:
+    match found.value:
+      JStr:
+        {text: found.value.s} printLine
+        return 0
+      _: discard
+  let out = {j: found.value, depth: 0, compact: compact} render
+  {text: out} printLine
+  return 0
