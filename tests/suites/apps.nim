@@ -368,8 +368,11 @@ proc run*(t: var T) =
             ".tuck " & b.flag & " --stdlib:stdlib-project --root:" & t.root &
             " > build.log 2>&1"], verb = vBuild)
         builds.add (key, bIdx)
-      let cmd = "cd " & dir & " && printf %s " & quoteShell(c.input) & " | ./" &
-                c.file & b.suffix & " " & c.args
+      # The feeding printf's own stderr is not the program's: a program that
+      # exits before reading its input (a usage error) closes the pipe, and
+      # printf's "I/O error" would land in the captured output by timing.
+      let cmd = "cd " & dir & " && printf %s " & quoteShell(c.input) &
+                " 2>/dev/null | ./" & c.file & b.suffix & " " & c.args
       runs.add (c, b, t.needCmdAfter(@["sh", "-c", cmd], bIdx,
                                      proc (d: string) = discard, dir, verb = vRun))
   if t.phase == pCollect: return
