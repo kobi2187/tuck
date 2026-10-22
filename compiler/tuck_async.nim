@@ -84,22 +84,57 @@ proc tuckYield*() =
     schedule(self)
     coroYield()
 
+# --- waiting from main --------------------------------------------------------
+# An [io] call may be made from ANY fn that declares the effect, not only from
+# a task (ruled 2026-10-22). Main is not a coroutine, so it cannot park; it
+# LENDS its thread to the scheduler instead — running ready tasks, the reactor
+# and timers — until its own fd is ready, the way awaitResult already waits
+# for a task's result. The other tasks keep running meanwhile: main accepting
+# a connection that a task of the same program makes is the case that needs
+# it. Before this, the wait raised "called outside coroutine".
+import std/posix as tuckposix
+import std/tables
+
+proc tuckLendUntil(fd: int, events: cshort, timeoutMs: int): bool =
+  ## Run the scheduler until `fd` has `events` (true) or `timeoutMs` passes
+  ## (false; a negative timeout never passes).
+  if gLoop == nil: gLoop = newEventLoop()
+  let start = getMonoTime()
+  var p = tuckposix.TPollfd(fd: cint(fd), events: events)
+  while true:
+    p.revents = 0
+    if tuckposix.poll(addr p, 1, 0) > 0: return true
+    let spent = int((getMonoTime().ticks - start.ticks) div 1_000_000)
+    if timeoutMs >= 0 and spent >= timeoutMs: return false
+    if runNext(): continue
+    if gLoop.waiters.len == 0:
+      # Nothing else can make progress: just wait on the fd itself.
+      p.revents = 0
+      let left = if timeoutMs < 0: -1 else: timeoutMs - spent
+      return tuckposix.poll(addr p, 1, cint(left)) > 0
+    discard gLoop.runOnce(1)
+
 proc tuckAwaitRead*(fd: TuckFd) =
   ## Suspend the current task until `fd` is readable (an [io] yield point).
-  gLoop.waitForRead(fd)
+  if running() == nil: discard tuckLendUntil(fd.int, tuckposix.POLLIN, -1)
+  else: gLoop.waitForRead(fd)
 
 proc tuckAwaitWrite*(fd: TuckFd) =
   ## Suspend the current task until `fd` is writable.
-  gLoop.waitForWrite(fd)
+  if running() == nil: discard tuckLendUntil(fd.int, tuckposix.POLLOUT, -1)
+  else: gLoop.waitForWrite(fd)
 
 proc tuckAwaitReadOrTimeout*(fd: TuckFd, timeoutMs: int): bool =
   ## Suspend until `fd` is readable OR timeoutMs elapses. true = readable,
   ## false = timed out. The operation-timeout primitive (spec §9.3).
-  gLoop.waitForReadOrTimeout(fd, timeoutMs)
+  if running() == nil: tuckLendUntil(fd.int, tuckposix.POLLIN, timeoutMs)
+  else: gLoop.waitForReadOrTimeout(fd, timeoutMs)
 
 proc tuckSleep*(ms: int) =
   ## Cooperative sleep: suspend this coroutine for `ms`, driven by the reactor.
-  gLoop.waitTimer(ms)
+  ## From main, the scheduler runs for the duration instead.
+  if running() == nil: discard tuckLendUntil(-1, 0, ms)
+  else: gLoop.waitTimer(ms)
 
 import std/posix
 

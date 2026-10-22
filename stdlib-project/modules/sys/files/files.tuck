@@ -308,7 +308,9 @@ fn checkDisk() -> int [io, io: fs]:
     return trees
   let gone1 = {path: file} removeFile
   let gone2 = {path: copy} removeFile
-  if not gone1.ok or not gone2.ok:
+  if not gone1.ok:
+    return 19
+  if not gone2.ok:
     return 19
   return 0
 
@@ -371,7 +373,11 @@ fn checkTrees() -> int [io, io: fs]:
   let a = {path: root + "/a/one.txt", content: "12345"} writeFileIn
   let b = {path: root + "/a/deeper/two.txt", content: "abc"} writeFileIn
   let c = {path: root + "/b.txt", content: "z"} writeFileIn
-  if not a.ok or not b.ok or not c.ok:
+  if not a.ok:
+    return 70
+  if not b.ok:
+    return 70
+  if not c.ok:
     return 70
   let found = {root: root} walk
   if not found.ok:

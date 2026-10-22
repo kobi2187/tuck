@@ -20,9 +20,80 @@ type
     err*: uint16   # app-wide error code; meaningful only when status == tsErr
     value*: T
 
+# --- the text of a float --------------------------------------------------
+# ONE rule on every backend (A67, ruled 2026-10-22), so the runtime writes the
+# text itself rather than taking the host's: Python's `repr`. The shortest
+# digits that read back as the same value; fixed notation for a decimal
+# exponent from -4 to 15, keeping `.0` on a whole number (`1.0`, `100.0`);
+# otherwise `1e+22`, `1.2e-05`; `nan`, `inf`, `-inf`, `-0.0`. The digits come
+# from C's snprintf("%.*e") and strtod, which all three runtimes call, so
+# they cannot differ; the layout below is written out identically in
+# tuckrt/tuck_rt.odin and tuckrt_d/tuck_rt.d.
+proc cSnprintf(buf: cstring, n: csize_t, frmt: cstring): cint
+  {.importc: "snprintf", header: "<stdio.h>", varargs.}
+proc cStrtod(s: cstring, rest: ptr cstring): cdouble
+  {.importc: "strtod", header: "<stdlib.h>".}
+
+proc tuckFloatLayout(neg: bool, digitsIn: string, exp: int): string =
+  ## Shortest digits `d1d2...` meaning d1.d2... x 10^exp, laid out.
+  var digits = digitsIn
+  while digits.len > 1 and digits[^1] == '0': digits.setLen(digits.len - 1)
+  let n = digits.len
+  var body = ""
+  if exp >= -4 and exp < 16:
+    if exp >= 0:
+      if n <= exp + 1:
+        body = digits & repeat('0', exp + 1 - n) & ".0"
+      else:
+        body = digits[0 .. exp] & "." & digits[exp + 1 .. ^1]
+    else:
+      body = "0." & repeat('0', -exp - 1) & digits
+  else:
+    body = digits[0 .. 0]
+    if n > 1: body.add("." & digits[1 .. ^1])
+    let e = abs(exp)
+    body.add(if exp < 0: "e-" else: "e+")
+    if e < 10: body.add('0')
+    body.add($e)
+  if neg: "-" & body else: body
+
+proc tuckShortestE(x: float64, single: bool): string =
+  ## `x` as C's "%.*e" at the fewest digits that read back as `x` (as an f32,
+  ## when `single`): `1.2e-05`, `1e+00`.
+  var buf: array[64, char]
+  for p in 0 .. 17:
+    discard cSnprintf(cast[cstring](addr buf[0]), 64, "%.*e", cint(p), x)
+    let back = float64(cStrtod(cast[cstring](addr buf[0]), nil))
+    if (single and float32(back) == float32(x)) or (not single and back == x):
+      break
+  $cast[cstring](addr buf[0])
+
+proc tuckSplitE(text: string): tuple[digits: string, exp: int] =
+  ## `-1.25e+03` -> ("125", 3): the mantissa's digits and the exponent.
+  var i = 0
+  if text[i] == '-': inc i
+  while i < text.len and text[i] != 'e':
+    if text[i] != '.': result.digits.add(text[i])
+    inc i
+  result.exp = parseInt(text[i + 1 .. ^1])
+
+proc tuckFloatText*(x: float64, single: bool): string =
+  ## The text of a float (see above). `single`: the value is an f32, whose
+  ## shortest digits are the ones that read back as the same f32.
+  if x != x: return "nan"
+  if x == Inf: return "inf"
+  if x == NegInf: return "-inf"
+  let neg = x < 0.0 or (x == 0.0 and 1.0 / x < 0.0)
+  if x == 0.0: return (if neg: "-0.0" else: "0.0")
+  let (digits, exp) = tuckSplitE(tuckShortestE(x, single))
+  tuckFloatLayout(neg, digits, exp)
+
 proc toStr*[T](value: T): string =
-  ## Any value as its string form, through Nim's `$`.
-  $value
+  ## Any value as its string form: a float by the one rule above, anything
+  ## else through Nim's `$`.
+  when T is float32: tuckFloatText(float64(value), true)
+  elif T is float64: tuckFloatText(value, false)
+  else: $value
 
 proc tuckSeqBounds(index, length: int, op: string) =
   ## Raises IndexDefect unless `0 <= index < length`; `op` names the access.
@@ -1824,7 +1895,7 @@ proc watchSignal*(number: int) =
 
 proc nextSignal*(timeoutMs: int): TuckResult[tuple[number: int]] =
   ## The next watched signal, or none after `timeoutMs`. In a task the wait
-  ## suspends only that task; in `main` it is a plain poll.
+  ## suspends only that task; from main, the scheduler runs while it waits.
   if gSigFd < 0: return tnone[tuple[number: int]]()
   var info: SignalfdInfo
   while true:
@@ -1832,13 +1903,8 @@ proc nextSignal*(timeoutMs: int): TuckResult[tuple[number: int]] =
     if n == sizeof(info): return tok((number: int(info.ssi_signo)))
     if n >= 0 or (posix.errno != posix.EAGAIN and posix.errno != posix.EWOULDBLOCK):
       return tnone[tuple[number: int]]()
-    if inCoroutine():
-      if not tuckAwaitReadOrTimeout(int(gSigFd), timeoutMs):
-        return tnone[tuple[number: int]]()
-    else:
-      var pfd = posix.TPollfd(fd: gSigFd, events: posix.POLLIN)
-      if posix.poll(addr pfd, 1, cint(timeoutMs)) <= 0:
-        return tnone[tuple[number: int]]()
+    if not tuckAwaitReadOrTimeout(int(gSigFd), timeoutMs):
+      return tnone[tuple[number: int]]()
 
 proc raiseSignal*(number: int) =
   ## raise(3): to the calling thread, which is the one that blocked it.
@@ -1869,8 +1935,7 @@ proc sleepMs*(ms: uint32) =
   ## actor and every timer, for the full duration.
   ## inCoroutine rather than a bare `running()`: --threads:on puts
   ## system.running(Thread) in scope, which otherwise wins overload resolution.
-  if inCoroutine(): tuckSleep(int(ms))
-  else: os.sleep(int(ms))   # no scheduler to yield to
+  tuckSleep(int(ms))   # from main, the scheduler runs for the duration
 
 # Memory-mapped registers (spec 8): every access is a volatile load or store, so
 # the optimiser cannot cache a read across statements or drop a write.

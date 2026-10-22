@@ -84,8 +84,12 @@ proc joinedName*(owner, part: string): string =
   owner & KindSeparator & part
 
 proc prefixed*(name: string, kind: NameKind): string =
-  ## `name` spelled as a `kind`.
-  MangledPrefix & $kind & KindSeparator & name
+  ## `name` spelled as a `kind`. A type two modules declare is named with its
+  ## module (`cli::Entry`, type_identity): the `::` becomes the separator, so
+  ## each is an identifier of its own (`tuckˑtypeˑcliˑEntry`), and a module
+  ## name's hyphen, no identifier character in any host, an underscore.
+  MangledPrefix & $kind & KindSeparator &
+    name.replace("::", KindSeparator).replace("-", "_")
 
 proc moduleSlug*(id: ModuleId): string =
   ## The module's name as a file or directory stem: `mod_<slug>` on disk, the

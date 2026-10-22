@@ -724,7 +724,9 @@ fn checkApi() -> int:
 fn checkEdges() -> int:
   let bad = {pattern: "(ab", caseless: false} tryCompile
   let star = {pattern: "*a", caseless: false} tryCompile
-  if bad.ok or star.ok:
+  if bad.ok:
+    return 25
+  if star.ok:
     return 25
   let loud = {pattern: "HeLLo", caseless: true} tryCompile
   if not loud.ok:

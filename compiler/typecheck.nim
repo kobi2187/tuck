@@ -1878,10 +1878,36 @@ proc synthBinary(tc: var TypeChecker, e: Expr): Type =
 # spec 4.4b: union two branch states — narrowing is never discarded,
 # only widened to the union of what the branches could produce
 
+proc wrapperOkRead(cond: Expr): Expr =
+  ## The first `.ok` of a `T?`/`!T` read anywhere in `cond`, or nil.
+  if cond == nil: return nil
+  for n in cond.nodes:
+    if n.kind == exkField and n.fieldName == "ok" and n.receiver != nil and
+       isWrapper(semLayer.typeFor(n.receiver)):
+      return n
+
+proc failIfGuardNotAlone(cond: Expr) =
+  ## A condition testing `.ok` is that test alone, `x.ok` or `not x.ok`
+  ## (TK-TY46, ruled 2026-10-22): a guard inside `and`/`or` narrows nothing.
+  ## Call after the condition is synthesized: the receiver's type decides.
+  let guard = wrapperOkRead(cond)
+  if guard == nil: return
+  let inner = if cond.kind == exkUnary and cond.unaryOp == uoNot: cond.operand
+              else: cond
+  if inner == guard: return
+  let name = guardKey(guard.receiver)
+  let shown = if name != "": name else: "the value"
+  fail(dcTyGuardNotAlone, "the `" & shown & ".ok` test shares its condition " &
+       "with more, so it guards nothing: only a lone `" & shown & ".ok` (or `not " &
+       shown & ".ok`) lets the branch read `" & shown & ".value`. Fix: nest — " &
+       "`if " & shown & ".ok:` with the rest of the condition inside it; for " &
+       "`or`, one early return per guard", cond.span)
+
 proc checkCondition(tc: var TypeChecker, cond: Expr, sp: Span) =
   ## A condition must be a plain bool — an unhandled fallible result is the
   ## common mistake and gets its own message.
   let condT = tc.synthesize(cond)
+  failIfGuardNotAlone(cond)
   if isWrapper(condT):
     fail("Type Error: unhandled " & typeName(condT) & " in condition — test " &
          "`.ok`, or pass it to a handling function", cond.span)
@@ -4749,6 +4775,7 @@ proc synthWhile(tc: var TypeChecker, e: Expr): Type =
   let guard = tc.okGuardName(e.whileCond)
   if e.whileCond != nil:
     let ct = tc.synthesize(e.whileCond)
+    failIfGuardNotAlone(e.whileCond)
     if not isFlexible(ct) and typeName(ct) != "bool":
       fail("Type Error: loop condition must be bool, got " & typeName(ct),
            e.whileCond.span)

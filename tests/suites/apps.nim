@@ -323,6 +323,19 @@ const Cases: seq[AppCase] = @[
    "Content-Length: 16\r\n" &
    "\r\n" &
    "400 Bad Request\n", 0),
+  # map's Entry and cli's Entry, one program (A88)
+  ("wordfreq", "wordfreq", "sample.txt --top 5", "",
+   "5 the\n" &
+   "3 dog\n" &
+   "3 fox\n" &
+   "2 a\n" &
+   "2 is\n", 0),
+  ("wordfreq", "wordfreq", "sample.txt --top 3 --min-length 4", "",
+   "2 lazy\n" &
+   "2 quick\n" &
+   "1 brown\n", 0),
+  ("wordfreq", "wordfreq", "nope.txt", "",
+   "wordfreq: cannot read nope.txt\n", 1),
 ]
 
 type Backend = tuple[label, flag, suffix: string]

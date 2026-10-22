@@ -147,6 +147,8 @@ type
     dcTyArithOnRecord = "TK-TY43"       ## arithmetic on a record, not on a number
     dcTyAmbiguousVariant = "TK-TY44"    ## a bare variant name two sum types declare, with nothing to decide
     dcTyAnonToNamed = "TK-TY45"         ## an anonymous record value passed where a named record is expected
+    dcTyGuardNotAlone = "TK-TY46"       ## `.ok` of a `?T`/`!T` combined with more in one condition
+    dcTyAmbiguousType = "TK-TY47"       ## a bare type name two imports both declare
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -536,6 +538,24 @@ proc parseExplanation(d: DiagCode): string =
     "where the named type is wanted is fine, because the place names the " &
     "type. Fix: build the value with the type, `{x: 3} P`, or state it on " &
     "the binding (`let q: P = ...`, `const q: P = ...`)."
+  of dcTyAmbiguousType:
+    "Two modules this one imports each declare a type of this name, and a " &
+    "bare name cannot say which is meant. Each module's type is its own: a " &
+    "value of one does not have the other's fields. Ruled 2026-10-22: the " &
+    "importer qualifies it. Fix: write `cli::Entry` or `map::Entry` — in a " &
+    "type, a construction (`{...} cli::Entry`) or a variant (`cli::Entry.X`). " &
+    "A module that declares the name itself means its own by the bare name, " &
+    "and one import alone providing it is not ambiguous."
+  of dcTyGuardNotAlone:
+    "A condition that tests `.ok` of a `T?` or `!T` is that test alone: " &
+    "`if r.ok:` or `if not r.ok:` (an `elif` and a conditional `for` the " &
+    "same). The guard is what lets the branch read `r.value`, and a guard " &
+    "mixed into `and`/`or` reads as one while narrowing nothing: in " &
+    "`if r.ok and n > 0:` the branch still cannot read `r.value`, and in " &
+    "`if not a.ok or not b.ok: return` neither is known after it. Ruled " &
+    "2026-10-22. Fix: nest the test, `if r.ok:` and inside it `if n > 0:`; " &
+    "for `or`, one early return per guard: `if not a.ok: return 1` then " &
+    "`if not b.ok: return 1`."
   of dcTyNoneNoPlace:
     "`none` is the absent value of a `T?` — no `next` yet, no result, nothing " &
     "found. It names no T itself, so it takes one from where it is written: " &

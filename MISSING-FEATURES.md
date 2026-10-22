@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (2)
+## A. Open bugs (0)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -118,11 +118,12 @@ it in.
   packages are imported as `odin_fmt` / `odin_os` when the program has such a
   module. Found finishing `std.cli`.
 
-- **A67 (issue #155) — `toStr` of an integral float prints differently per
-  backend.** `{value: 1.0} toStr` is `1.0` on Nim, `1` on Odin and D: the text of
-  a float is whatever each host does, and nothing in the spec rules. Needs a
-  ruling (suggested: shortest round-trip text with `.0` kept), then one rule in
-  all three runtimes. Found writing the JSON parser for `std.encoding`.
+- **A67 (issue #155) — `toStr` of a float printed differently per backend.**
+  `{value: 1.0} toStr` was `1.0` on Nim, `1` on Odin and D, and D cut every
+  float to 6 digits. Ruled 2026-10-22: one text, `1.0`, made explicitly. Fixed:
+  each runtime takes the shortest round-trip digits from C's snprintf/strtod
+  and lays them out as Python's `repr` does. Found writing the JSON parser for
+  `std.encoding`.
 
 - **A68 (issue #156) — a local named like a fn captured the call to it.**
   `xs.len + len` with `let len = 2` built `len(xs) + len` calling the local.
@@ -246,13 +247,14 @@ it in.
   Fixed: the else-branch (and an `elif` chain in it) is narrowed; the
   then-branch is not. Found writing the `guess` app.
 
-- **A88 (issue #177) — OPEN: two imports declaring one type name, the first
-  silently wins.** `injectImportedTypes` keeps one `Entry` when two imported
-  modules each declare one, and a named type carries only its name, so the
-  second module's values are checked against the first's fields. Blocks the
-  `wordfreq` app (cli's `Entry` against map's `Entry[K, V]`). Awaiting a ruling:
-  type identity by declaring module, or an ambiguity error when the bare name
-  is used. Pin: "A88: two imports may each declare a type of one name".
+- **A88 (issue #177) — two imports declaring one type name, the first
+  silently won.** `injectImportedTypes` kept one `Entry` when two imported
+  modules each declared one, and a named type carried only its name, so the
+  second module's values were checked against the first's fields. Ruled
+  2026-10-22: each is its own type, and the importer qualifies. Fixed
+  (`compiler/type_identity.nim`): a type name two modules declare is named with
+  its module (`cli::Entry`) wherever it is meant, and a bare name two imports
+  provide is `TK-TY47`. Unblocked the `wordfreq` app.
 
 - **A89 (issue #178) — a bare variant of a payload sum was emitted as a Kind
   tag.** `var o = Nothing`, where `Open` also has `InList({tag: str})`, printed
@@ -287,6 +289,14 @@ it in.
   "ambiguous" although the event declares `fault: Fault`; the same value in a
   construction, a call or an assignment was not. Fixed: the event's fields
   are the payload's hints. Found reviving the `web-downloader` app.
+
+- **A94 (issue #183) — an `[io]` wait outside a task aborted at run time.**
+  `accept` called from `main` (declaring `[io: net]`, which the checker
+  accepts) died with "cannot await outside a coroutine" on every backend.
+  Ruled 2026-10-22: async code runs in any fn that declares the effect.
+  Fixed: from `main` the thread runs the scheduler until the fd is ready, as
+  `awaitResult` did; `sleepMs` and `nextSignal` there too. Found writing the
+  `serve` app.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so

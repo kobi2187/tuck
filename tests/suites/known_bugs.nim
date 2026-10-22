@@ -2449,12 +2449,15 @@ fn main() -> int:
   let b = {n: 0} find
   let c = {n: 2} find
   var r = 0
-  if a.ok and c.ok:
+  let both = a.ok and c.ok
+  if both:
     r = r + 2
-  if a.ok xor b.ok:
+  let one = a.ok xor b.ok
+  if one:
     r = r + 1
   return r
 """
+  # Bound first: a condition testing `.ok` is that test alone (TK-TY46).
   t.hostRuns "...and `.ok` presence tests combine with and/xor on every backend", 3
 
   # The checker traces which variants a fn can return, so a transition out
@@ -3959,10 +3962,10 @@ fn byteLen({t: str}) -> int:
   t.quietly: t.hostRuns "A66: a Tuck module named fmt builds on every backend", 4
   t.bugFixed "A66: a Tuck module named fmt builds on every backend"
 
-  # A67. `toStr` of an integral float prints "1.0" on Nim and "1" on Odin and D:
-  # the text of a float is whatever each host does, and the spec says nothing.
-  # The pin asserts the Nim text (".0" kept, so a float stays visibly one) on
-  # every backend; the ruling is open (issue #155). Found writing std.encoding.
+  # A67. `toStr` of an integral float printed "1.0" on Nim and "1" on Odin and
+  # D, and D cut every float to 6 digits. Ruled 2026-10-22: one text, `1.0`,
+  # made by the runtime itself rather than the host's formatter (Python's
+  # repr, issue #155). Found writing std.encoding.
   t.src """
 import str
 
@@ -3971,7 +3974,26 @@ fn main() -> int:
   return {t: s} byteCount
 """
   t.quietly: t.hostRuns "A67: an integral float prints the same text on every backend", 3
-  t.bugOpen "A67: an integral float prints the same text on every backend"
+  t.bugFixed "A67: an integral float prints the same text on every backend"
+
+  t.src """
+import console
+import seq
+import str
+
+fn main() -> int [io: console]:
+  let xs: Seq[f64] = [1.0, 100.0, 3.141592653589793, 0.000012, 123456789.0, 10000000000000000.0, 0.0 - 0.5]
+  var parts: Seq[str] = []
+  for x in xs:
+    let t = {value: x} toStr
+    parts = {items: parts, value: t} push
+  let line = {parts: parts, sep: " "} joinStr
+  {text: line} printLine
+  return 0
+"""
+  t.quietly: t.hostRuns("A67: every float prints as Python's repr on every backend", 0,
+    r"1\.0[ ]100\.0[ ]3\.141592653589793[ ]1\.2e-05[ ]123456789\.0[ ]1e\+16[ ]-0\.5")
+  t.bugFixed "A67: every float prints as Python's repr on every backend"
 
   # A68. A local named like a fn captured the fn's call: `xs.len` beside
   # `let len = 2` mangled the callee to the local (issue #156). Found writing
@@ -4485,7 +4507,9 @@ fn main() -> int:
 
   # A88. Two imports declaring one type name: the first one silently won
   # (issue #177). Found writing the wordfreq app (cli's Entry against map's
-  # Entry[K, V]). Each module's fns return their own Entry.
+  # Entry[K, V]). Ruled 2026-10-22: each module's type is its own, and a bare
+  # name two imports provide is an error the user resolves by qualifying.
+  # Each module's fns return their own Entry.
   t.src """
 import lefty
 import righty
@@ -4517,7 +4541,61 @@ fn makeRight() -> Entry:
   return {size: 4} Entry
 """)
   t.quietly: t.hostRuns "A88: two imports may each declare a type of one name", 34
-  t.bugOpen "A88: two imports may each declare a type of one name"
+  t.bugFixed "A88: two imports may each declare a type of one name"
+
+  t.src """
+import lefty
+import righty
+
+fn sizeOf({e: righty::Entry}) -> int:
+  return e.size
+
+fn main() -> int:
+  let l = makeLeft
+  let r = makeRight
+  let e: lefty::Entry = {word: "b", hits: 1} lefty::Entry
+  return l.hits * 10 + {e: r} sizeOf + e.hits
+"""
+  t.addFile("lefty.tuck", """public:
+  Entry
+  makeLeft
+
+type Entry:
+  word: str
+  hits: int
+
+fn makeLeft() -> Entry:
+  return {word: "a", hits: 3} Entry
+""")
+  t.addFile("righty.tuck", """public:
+  Entry
+  makeRight
+
+type Entry:
+  size: int
+
+fn makeRight() -> Entry:
+  return {size: 4} Entry
+""")
+  t.quietly: t.hostRuns "...`mod::Entry` names one of them, in a type and a construction", 35
+  t.bugFixed "...`mod::Entry` names one of them, in a type and a construction"
+
+  t.src """
+import lefty
+import righty
+
+fn main() -> int:
+  let e = {word: "b", hits: 1} Entry
+  return e.hits
+"""
+  t.addFile("lefty.tuck", """type Entry:
+  word: str
+  hits: int
+""")
+  t.addFile("righty.tuck", """type Entry:
+  size: int
+""")
+  t.badCheck "...and a bare name both provide is refused, naming both", "TK-TY47.*lefty::Entry.*righty::Entry"
 
   # A89. A bare payload-free variant of a payload sum (`var o = Nothing`) was
   # emitted as its Kind enum's tag, not a value of the sum (issue #178).
@@ -4659,5 +4737,79 @@ fn main() -> int [io: console]:
 """
   t.quietly: t.hostRuns "A93: a raise payload takes its event's field types", 3, "hung up"
   t.bugFixed "A93: a raise payload takes its event's field types"
+
+  # A94. An [io] wait outside a task aborted at run time — "cannot await
+  # outside a coroutine" — though the checker accepted the fn's [io: net]
+  # (issue #183). Ruled: async code runs in any fn that declares the effect.
+  # Main now lends its thread to the scheduler while it waits. Found writing
+  # the serve app.
+  t.src """
+import net
+import time
+
+# main serves the connection itself, from a plain fn: its accept and recv wait
+# while the client task runs. Before, an [io] wait outside a task aborted.
+actor Result [queue: 8]:
+  code: int = 0
+  ready: bool = false
+
+  on put({c: int}):
+    code = c
+    ready = true
+
+task client({port: int}) -> void [io: net]:
+  let c = {host: "127.0.0.1", port: port} connect
+  if not c.ok:
+    Result send put {c: 1}
+    return
+  {fd: c.value.fd, data: "ping"} send discard
+  let r = {fd: c.value.fd, max: 16} recv
+  {fd: c.value.fd} close
+  if r.ok:
+    if r.value.data == "pong":
+      Result send put {c: 40}
+      return
+  Result send put {c: 3}
+  return
+
+fn answerOne({lfd: int}) -> int [io: net]:
+  let c = {fd: lfd} accept
+  if not c.ok:
+    return 100
+  let got = {fd: c.value.fd, max: 16} recv
+  if not got.ok:
+    return 101
+  {fd: c.value.fd, data: "pong"} send discard
+  {fd: c.value.fd} close
+  if got.value.data == "ping":
+    return 2
+  return 102
+
+fn done() -> bool:
+  return Result.ready
+
+# The backends may run at once, so each takes the first port it can have.
+fn firstFree({from1: int}) -> {fd: int, port: int} [io: net]:
+  var p = from1
+  for p < from1 + 50:
+    let l = {port: p} listen
+    if l.ok:
+      return {fd: l.value.fd, port: p}
+    p = p + 1
+  return {fd: 0 - 1, port: 0}
+
+fn main() -> int [io: net, io: clock]:
+  let l = {from1: 34611} firstFree
+  if l.fd < 0:
+    return 9
+  {port: l.port} client
+  let served = {lfd: l.fd} answerOne
+  {ms: 5} sleepMs
+  Result.waitUntil {pred: :done}
+  {fd: l.fd} close
+  return Result.code + served
+"""
+  t.quietly: t.hostRuns "A94: an [io] fn waits on the network outside a task", 42
+  t.bugFixed "A94: an [io] fn waits on the network outside a task"
 
   t.finish()

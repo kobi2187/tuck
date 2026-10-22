@@ -2002,11 +2002,34 @@ fn find({n: int}) -> ?{value: int} [io]:
 fn main() -> int [io]:
   let a = {n: 1} find
   let b = {n: 2} find
-  if a.ok and b.ok:
-    return 1
+  if a.ok:
+    if b.ok:
+      return a.value.value + b.value.value
   return 0
 """
-  t.okCheck "...presence is tested with `.ok`: `if a.ok and b.ok:`"
+  t.okCheck "...presence is tested with `.ok`, one guard to a condition"
+
+  # Ruled 2026-10-22: a condition testing `.ok` is that test alone. Mixed
+  # into `and`/`or` it looked like a guard and narrowed nothing.
+  for cond in ["a.ok and b.ok", "not a.ok or n > 0", "n > 0 and a.ok",
+               "not (a.ok and b.ok)"]:
+    t.src "fn find({n: int}) -> ?{value: int}:\n  return {value: n}\n\n" &
+          "fn f({n: int}) -> int:\n  let a = {n: 1} find\n  let b = {n: 2} find\n" &
+          "  if " & cond & ":\n    return 1\n  return 0\n\n" &
+          "fn main() -> int:\n  return {n: 1} f\n"
+    t.badCheck "a `.ok` guard stands alone in its condition: `" & cond & "`", "TK-TY46"
+  t.src """
+fn find({n: int}) -> ?{value: int}:
+  return {value: n}
+
+fn main() -> int:
+  var r = {n: 1} find
+  var k = 0
+  for r.ok and k < 3:
+    k = k + 1
+  return k
+"""
+  t.badCheck "...a conditional `for` the same", "TK-TY46"
 
   t.src """
 type Door:

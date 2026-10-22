@@ -14,7 +14,8 @@ Found on the way:
 - `std/console` could not write to stderr, so a server's log either mixed with
   its output or, through a pipe, sat in stdout's buffer until exit. It gained
   `printError`, unbuffered, on all three runtimes.
-- Net calls block on the reactor, so they must run inside a task: the first
-  draft called `accept` from `main` and aborted with "cannot await outside a
-  coroutine" on every backend. That is the documented model (spec §9.2), but
-  `tuck ch` accepts the draft; the error arrives only at run time.
+- The first draft called `accept` from `main` and aborted with "cannot await
+  outside a coroutine" on every backend, though `tuck ch` accepted it. Ruled
+  2026-10-22 that any fn declaring `[io]`/`[io: net]` may wait; fixed as A94
+  (issue #183). The server keeps its task per connection, which is what lets
+  slow clients not hold each other up.

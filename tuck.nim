@@ -70,6 +70,7 @@ import compiler/codegen_d_emit  # emitD/emitDModule: same reasoning as
                                 # codegen_emit above, for the D backend.
 import compiler/ast_serializer
 import compiler/modules
+import compiler/type_identity   # a type name two modules declare (A88)
 import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
 import compiler/actor_mode
@@ -701,6 +702,13 @@ proc checkProgram(path: string, needBodies = false,
   for lm in result.mitems: resolveWhenBlocks(lm.m, buildTarget)  # spec §8.3
   block:
     let t0 = vBegin(psInjectTypes)
+    # A type name two modules declare: each its own (`cli::Entry`), and a bare
+    # name two imports provide is refused (A88). Before injection, which
+    # copies types by name.
+    try:
+      qualifyCollidingTypes(result)
+    except SemanticError as err:
+      dieSemanticError(path, err)
     hoistSatisfierData(result)   # a satisfier the interface's module cannot see (A27)
     injectImportedTypes(result)  # imported types are visible unqualified
     composeImportedMixins(result)  # `+ Mixin` from another module (A29)
@@ -1132,6 +1140,7 @@ when isMainModule:
       if stageStr == "load":
         dumpTree(mods, fmt)
       else:
+        qualifyCollidingTypes(loaded)
         hoistSatisfierData(loaded)
         injectImportedTypes(loaded)
         if stageStr == "inject-types":

@@ -88,12 +88,83 @@ tuckStrOwned :: proc(s: string) -> string {
 	return strings.clone(s)
 }
 
+// The text of a float: ONE rule on every backend (A67), written out the same
+// in tuck_rt.nim, which explains it. Digits from C's snprintf and strtod;
+// the layout is Python's `repr`.
+@(private)
+tuck_float_layout :: proc(neg: bool, digits_in: string, exp: int) -> string {
+	digits := digits_in
+	for len(digits) > 1 && digits[len(digits) - 1] == '0' {
+		digits = digits[:len(digits) - 1]
+	}
+	n := len(digits)
+	b := strings.builder_make()
+	if neg { strings.write_byte(&b, '-') }
+	if exp >= -4 && exp < 16 {
+		if exp >= 0 {
+			if n <= exp + 1 {
+				strings.write_string(&b, digits)
+				for _ in 0 ..< exp + 1 - n { strings.write_byte(&b, '0') }
+				strings.write_string(&b, ".0")
+			} else {
+				strings.write_string(&b, digits[:exp + 1])
+				strings.write_byte(&b, '.')
+				strings.write_string(&b, digits[exp + 1:])
+			}
+		} else {
+			strings.write_string(&b, "0.")
+			for _ in 0 ..< -exp - 1 { strings.write_byte(&b, '0') }
+			strings.write_string(&b, digits)
+		}
+	} else {
+		strings.write_string(&b, digits[:1])
+		if n > 1 {
+			strings.write_byte(&b, '.')
+			strings.write_string(&b, digits[1:])
+		}
+		e := exp < 0 ? -exp : exp
+		strings.write_string(&b, exp < 0 ? "e-" : "e+")
+		if e < 10 { strings.write_byte(&b, '0') }
+		strings.write_int(&b, e)
+	}
+	return strings.to_string(b)
+}
+
+tuck_float_text :: proc(x: f64, single: bool) -> string {
+	if x != x { return strings.clone("nan") }
+	if math.is_inf(x, 1) { return strings.clone("inf") }
+	if math.is_inf(x, -1) { return strings.clone("-inf") }
+	neg := math.sign_bit(x)
+	if x == 0 { return strings.clone(neg ? "-0.0" : "0.0") }
+	buf: [64]u8
+	for p in 0 ..= 17 {
+		libc.snprintf(cast([^]libc.char)&buf[0], 64, "%.*e", i32(p), x)
+		back := f64(libc.strtod(cstring(&buf[0]), nil))
+		if (single && f32(back) == f32(x)) || (!single && back == x) { break }
+	}
+	text := string(cstring(&buf[0]))
+	digits := strings.builder_make()
+	defer strings.builder_destroy(&digits)
+	i := 0
+	if text[i] == '-' { i += 1 }
+	for i < len(text) && text[i] != 'e' {
+		if text[i] != '.' { strings.write_byte(&digits, text[i]) }
+		i += 1
+	}
+	exp, _ := strconv.parse_int(text[i + 1:])
+	return tuck_float_layout(neg, strings.to_string(digits), exp)
+}
+
 toStr :: proc(value: $T) -> string {
 	// cstring is a bare char* from C: aprint would format the POINTER, not
 	// the text. Odin's string(cstr) walks to the NUL and copies, which is
 	// what crossing the FFI boundary into a Tuck string has to mean.
 	when T == cstring {
 		return strings.clone(string(value))
+	} else when T == f64 {
+		return tuck_float_text(value, false)
+	} else when T == f32 {
+		return tuck_float_text(f64(value), true)
 	} else {
 		return fmt.aprint(value)
 	}
@@ -1971,13 +2042,7 @@ nextSignal :: proc(timeoutMs: int) -> TuckResult(SignalNumber) {
 			return tok(SignalNumber{number = signo})
 		}
 		if err != .EAGAIN do return tnone(SignalNumber)
-		if inCoroutine() {
-			if !tuckAwaitReadOrTimeout(gSigFd, timeoutMs) do return tnone(SignalNumber)
-		} else {
-			fds := []linux.Poll_Fd{{fd = linux.Fd(gSigFd), events = {.IN}}}
-			ready, _ := linux.poll(fds, i32(timeoutMs))
-			if ready <= 0 do return tnone(SignalNumber)
-		}
+		if !tuckAwaitReadOrTimeout(gSigFd, timeoutMs) do return tnone(SignalNumber)
 	}
 }
 
@@ -2023,9 +2088,5 @@ nowMs :: proc() -> NowMs {
 // time.sleep here used to halt the process: the scheduler, the reactor, every
 // actor and every timer, for the full duration.
 sleepMs :: proc(ms: u32) {
-	if activeCoroutine != nil {
-		tuckSleep(int(ms))
-	} else {
-		time.sleep(time.Duration(ms) * time.Millisecond)   // no scheduler to yield to
-	}
+	tuckSleep(int(ms))   // from main, the scheduler runs for the duration
 }

@@ -151,7 +151,71 @@ void printError(string s) {
 
 // `toStr` — the universal stringifier. tuck_rt.nim spells it `$value`; D's
 // std.conv.text is the same "any value to its display form" operation.
-string toStr(T)(T value) { return text(value); }
+// The text of a float: ONE rule on every backend (A67), written out the same
+// in tuck_rt.nim, which explains it. Digits from C's snprintf and strtod;
+// the layout is Python's `repr`.
+private string tuckFloatLayout(bool neg, string digits, long exp) {
+    while (digits.length > 1 && digits[$ - 1] == '0') digits = digits[0 .. $ - 1];
+    immutable n = cast(long) digits.length;
+    string body;
+    if (exp >= -4 && exp < 16) {
+        if (exp >= 0) {
+            if (n <= exp + 1) {
+                body = digits;
+                foreach (_; 0 .. exp + 1 - n) body ~= '0';
+                body ~= ".0";
+            } else {
+                body = digits[0 .. exp + 1] ~ "." ~ digits[exp + 1 .. $];
+            }
+        } else {
+            body = "0.";
+            foreach (_; 0 .. -exp - 1) body ~= '0';
+            body ~= digits;
+        }
+    } else {
+        body = digits[0 .. 1];
+        if (n > 1) body ~= "." ~ digits[1 .. $];
+        immutable e = exp < 0 ? -exp : exp;
+        body ~= exp < 0 ? "e-" : "e+";
+        if (e < 10) body ~= '0';
+        body ~= text(e);
+    }
+    return neg ? "-" ~ body : body;
+}
+
+string tuckFloatText(double x, bool single) {
+    import core.stdc.stdio : snprintf;
+    import core.stdc.stdlib : strtod;
+    import std.math : isNaN, isInfinity, signbit;
+    import std.conv : to;
+    if (isNaN(x)) return "nan";
+    if (isInfinity(x)) return x > 0 ? "inf" : "-inf";
+    immutable neg = signbit(x) != 0;
+    if (x == 0) return neg ? "-0.0" : "0.0";
+    char[64] buf;
+    foreach (p; 0 .. 18) {
+        snprintf(buf.ptr, buf.length, "%.*e", cast(int) p, x);
+        immutable back = strtod(buf.ptr, null);
+        if ((single && cast(float) back == cast(float) x) || (!single && back == x)) break;
+    }
+    import core.stdc.string : strlen;
+    string t = buf[0 .. strlen(buf.ptr)].idup;
+    string digits;
+    size_t i = 0;
+    if (t[i] == '-') i++;
+    while (i < t.length && t[i] != 'e') {
+        if (t[i] != '.') digits ~= t[i];
+        i++;
+    }
+    long exp = to!long(t[i + 1 .. $][0] == '+' ? t[i + 2 .. $] : t[i + 1 .. $]);
+    return tuckFloatLayout(neg, digits, exp);
+}
+
+string toStr(T)(T value) {
+    static if (is(T == double)) return tuckFloatText(value, false);
+    else static if (is(T == float)) return tuckFloatText(value, true);
+    else return text(value);
+}
 
 // !T is a result, ?T is an option: absence is a first-class state, not a
 // reserved error code. !T uses Ok/Err, ?T uses Ok/Absent, !?T may be any.
@@ -1670,7 +1734,6 @@ void watchSignal(long number)
 R nextSignal(R)(long timeoutMs)
 {
     import core.sys.linux.sys.signalfd : signalfd_siginfo;
-    import core.sys.posix.poll : pollfd, poll, POLLIN;
     import core.sys.posix.unistd : read;
     import core.stdc.errno : errno, EAGAIN, EWOULDBLOCK;
     alias P = typeof(R.value);
@@ -1681,15 +1744,7 @@ R nextSignal(R)(long timeoutMs)
         auto n = read(gSigFd, &info, info.sizeof);
         if (n == info.sizeof) return tok(tuckRec!(P, "number")(cast(long) info.ssi_signo));
         if (n >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) return tnone!P();
-        if (inCoroutine())
-        {
-            if (!tuckAwaitReadOrTimeout(gSigFd, timeoutMs)) return tnone!P();
-        }
-        else
-        {
-            pollfd pfd = pollfd(gSigFd, POLLIN, 0);
-            if (poll(&pfd, 1, cast(int) timeoutMs) <= 0) return tnone!P();
-        }
+        if (!tuckAwaitReadOrTimeout(gSigFd, timeoutMs)) return tnone!P();
     }
 }
 
@@ -1918,11 +1973,11 @@ R nowMs(R)()
         cast(ulong)(Clock.currStdTime / 10_000 - 62_135_596_800_000L));
 }
 
+/// The reactor's timer: a task's sleep suspends only that task, and main's
+/// runs the scheduler for the duration (tuckSleep).
 void sleepMs(uint ms)
 {
-    import core.thread : Thread;
-    import core.time : msecs;
-    Thread.sleep(msecs(ms));
+    tuckSleep(ms);
 }
 
 // --- a demo async source -----------------------------------------------
