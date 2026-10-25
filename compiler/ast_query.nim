@@ -723,7 +723,7 @@ proc memberDeclOf*(m: Module, owner, calleeName: string): Decl =
       # `noise` becomes `tuck_noise` whenever a top-level fn shares the name.
       # Both spellings mean this member. Same comparison
       # resolution.poolHandleName makes, for the same reason.
-      if mem.name == calleeName or prefixed(mem.name, nkFn) == calleeName:
+      if spells(calleeName, mem.name, nkFn):
         return mem
   nil
 
@@ -769,7 +769,7 @@ proc memberCallShape(e: Expr): bool =
 proc ifaceMemberNamed(d: Decl, callee: string): Decl =
   for mem in d.ifaceMembers:
     if mem != nil and mem.kind == dkFn and
-       (mem.name == callee or prefixed(mem.name, nkFn) == callee):
+       spells(callee, mem.name, nkFn):
       return mem
 
 proc ifaceMemberDecl*(res: Resolution, m: Module, e: Expr): Decl =
@@ -864,9 +864,9 @@ proc constDeclFor*(m: Module, raw: string): Decl =
   # Local first means a module's own const shadows another's; an AMBIGUOUS name
   # (declared differently in two modules) stays unresolved rather than
   # resolving to whichever loaded first.
-  result = m.findDecl(dkConst, raw)
-  if result == nil: result = m.findDecl(dkConst, prefixed(raw, nkConst))
-  if result != nil or raw in semLayer.ambiguousConsts: return
+  for d in m.decls:
+    if d != nil and d.kind == dkConst and spells(d.name, raw, nkConst): return d
+  if raw in semLayer.ambiguousConsts: return
   result = semLayer.constNames.getOrDefault(raw, nil)
   if result == nil: result = semLayer.constNames.getOrDefault(prefixed(raw, nkConst), nil)
 

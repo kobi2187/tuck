@@ -1857,6 +1857,26 @@ proc runCommand*(line: string): int =
   ## goes, and returns its exit code. Blocks the caller until it ends.
   osproc.execCmd(line)
 
+proc cPopen(cmd, mode: cstring): pointer {.importc: "popen", header: "<stdio.h>".}
+proc cPclose(f: pointer): cint {.importc: "pclose", header: "<stdio.h>".}
+proc cFread(buf: pointer, size, n: csize_t, f: pointer): csize_t
+  {.importc: "fread", header: "<stdio.h>".}
+
+proc captureCommand*(line: string): tuple[code: int, output: string] =
+  ## Runs `line` through the shell (C's popen, as the Odin and D runtimes do)
+  ## and answers its stdout and exit status: the code it exited with, or 128 +
+  ## N when signal N ended it. stderr is not captured.
+  let f = cPopen(cstring(line), "r")
+  if f == nil: return (code: 127, output: "")
+  var buf: array[4096, char]
+  while true:
+    let n = cFread(addr buf[0], 1, csize_t(buf.len), f)
+    if n == 0: break
+    for i in 0 ..< int(n): result.output.add(buf[i])
+  let status = int(cPclose(f))
+  result.code = if (status and 0x7f) == 0: (status shr 8) and 0xff
+                else: 128 + (status and 0x7f)
+
 proc argCount*(): tuple[total: int] =
   ## How many command-line arguments were passed, not counting the program.
   ## `total`, not `count`: std/seq's fn `count` would make a `count` field

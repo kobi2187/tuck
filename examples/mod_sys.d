@@ -23,6 +23,10 @@ long runCommand(string line) {
     return rt.runCommand(line);
 }
 
+tuckˑmodˑshapes_43_literal_payload.TRec_code_output!(long, string) captureCommand(string line) {
+    return rt.captureCommand!(tuckˑmodˑshapes_43_literal_payload.TRec_code_output!(long, string))(line);
+}
+
 void watchSignal(long number) {
     rt.watchSignal(number);
 }

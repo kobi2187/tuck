@@ -1601,6 +1601,31 @@ long runCommand(string line)
     return wait(spawnShell(line));
 }
 
+/// Runs `line` through the shell (popen) and answers its stdout and exit
+/// status: the code it exited with, or 128 + N when signal N ended it. stderr
+/// is not captured. The same in tuck_rt.nim and tuckrt/tuck_rt.odin.
+R captureCommand(R)(string line)
+{
+    import core.stdc.stdio : FILE, fread;
+    import core.sys.posix.stdio : popen, pclose;
+    import std.string : toStringz;
+    R r;
+    FILE* f = popen(toStringz(line), "r");
+    if (f is null) { r.code = 127; r.output = ""; return r; }
+    char[4096] buf;
+    string out_;
+    for (;;)
+    {
+        auto n = fread(buf.ptr, 1, buf.length, f);
+        if (n == 0) break;
+        out_ ~= buf[0 .. n].idup;
+    }
+    immutable status = pclose(f);
+    r.code = (status & 0x7f) == 0 ? (status >> 8) & 0xff : 128 + (status & 0x7f);
+    r.output = out_;
+    return r;
+}
+
 bool fileExists(string path)
 {
     import std.file : exists;

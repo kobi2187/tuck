@@ -91,6 +91,13 @@ proc prefixed*(name: string, kind: NameKind): string =
   MangledPrefix & $kind & KindSeparator &
     name.replace("::", KindSeparator).replace("-", "_")
 
+proc spells*(actual, written: string, kind: NameKind): bool =
+  ## Is `actual` the name `written`, before or after mangling? A lookup that
+  ## runs on both sides of the mangling pass meets either spelling — a decl
+  ## renamed, a reference the checker made and mangling never walked — and
+  ## asks this rather than spelling the prefix out again (#60).
+  actual == written or actual == prefixed(written, kind)
+
 proc moduleSlug*(id: ModuleId): string =
   ## The module's name as a file or directory stem: `mod_<slug>` on disk, the
   ## part of `moduleAlias` after the prefix. A hyphen is not an identifier

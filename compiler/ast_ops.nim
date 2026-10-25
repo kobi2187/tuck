@@ -441,14 +441,18 @@ iterator ownTypes*(d: Decl): Type =
     of dkRegistry:
       for v in d.variants:
         for f in v.fields: yield f.typ
+    # A stated type (`const p: P = ...`). Missing it here left the type
+    # unmangled, and D, which prints it, named an undeclared `P` (#126).
+    of dkConst:
+      if d.constType != nil: yield d.constType
     # Nothing to yield. dkRegister's fields are `bit N` ranges, never a
-    # user-named type; dkExpr/dkConst/dkStaticAssert carry expressions whose
+    # user-named type; dkExpr/dkStaticAssert carry expressions whose
     # types the expression walk reaches; dkErrors a policy name; dkImport a
     # module path; dkSelect arm bodies; dkSatisfies interface NAMES, resolved
     # by conformance. dkMixin/dkExtern/dkPending/dkInterface/dkWhen hold only
     # members — childDecls reaches those. dkArena names no type: its slabs,
     # one per element type, are dkSlabs of their own.
-    of dkArena, dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
+    of dkArena, dkRegister, dkExpr, dkStaticAssert, dkErrors, dkImport,
        dkSelect, dkSatisfies, dkMixin, dkExtern, dkPending, dkInterface,
        dkGroup, dkWhen, dkPublic, dkResources:
       discard

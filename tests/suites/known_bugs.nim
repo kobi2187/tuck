@@ -4812,4 +4812,45 @@ fn main() -> int [io: net, io: clock]:
   t.quietly: t.hostRuns "A94: an [io] fn waits on the network outside a task", 42
   t.bugFixed "A94: an [io] fn waits on the network outside a task"
 
+  # #126. A const typed as a named record: the stated type was never mangled
+  # (ast_ops.ownTypes skipped dkConst), so D, which prints it, named an
+  # undeclared `P`. Nim and Odin infer it from the value.
+  t.src """
+type P:
+  x: int
+
+const p: P = {x: 3} P
+
+fn main() -> int:
+  return p.x
+"""
+  t.quietly: t.hostRuns "#126: a const may be typed as a named record, on every backend", 3
+  t.bugFixed "#126: a const may be typed as a named record, on every backend"
+
+  # #93. On Odin, whose strings have no capacity, `s = s + x` copied the whole
+  # string every time: quadratic (200k appends 1.5s; 2M about 270s, against
+  # well under 0.1s on Nim and D). An append now grows the block geometrically
+  # and writes into its slack. Each run is killed at 10s, which the quadratic
+  # version is far past at this size; the content is checked too.
+  t.src """
+import str
+
+fn main() -> int:
+  var s = "<"
+  var i = 0
+  for i < 1000000:
+    s = s + "ab"
+    i = i + 1
+  s = s + ">"
+  if {t: s} byteCount != 2000002:
+    return 1
+  if {s: s, index: 1} charAt != "a" or {s: s, index: 1999999} charAt != "a":
+    return 2
+  if {s: s, index: 2000000} charAt != "b" or {s: s, index: 2000001} charAt != ">":
+    return 3
+  return 9
+"""
+  t.quietly: t.hostRuns "#93: a str grown by appends stays linear on Odin", 9
+  t.bugFixed "#93: a str grown by appends stays linear on Odin"
+
   t.finish()

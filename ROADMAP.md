@@ -24,6 +24,36 @@ to be the thing most of the queue depends on:
 > for unique features we should run a lowering pass, the rewrite pass,
 > instead of doing it in codegen.
 
+### Open GitHub issues, sorted (2026-10-25)
+
+Re-validated against `main` on 2026-10-23: 37 issues found fixed were closed, each
+with its evidence, and #93, #126, #128 and #60 were fixed in the same pass. What is
+left is ordered by what unblocks what. There are **no open bug pins**.
+
+1. **Rulings first; each blocks its group.**
+   - #15: in-flight results. `resp.ok` as a select source needs a call that is
+     started without being awaited, which spec §9.2 (binding awaits) does not
+     allow. This blocks example 16 and the task form of typed select sources.
+   - #104: memory. Record layout, how D passes large records, and whether D frees
+     promptly.
+   - #17: the spelling of variant sets in fn signatures. The semantics are ruled.
+   - #57: which single-expression positions take a block.
+2. **Architecture: decide once, print three times.** #106 (written runtime contract,
+   one runtime test suite) first, then #24 (stage boundaries). #24's decision on an
+   indexing stage waits on #106, #22 and #23.
+3. **The effect system's cheap payoffs, cheapest first.**
+   - #63: the per-fn effect report. `tuck effects` exists; a stable file mode and
+     `main` are what is missing.
+   - #62: the const evaluator calls effect-free fns.
+   - #69: opt-in memoization, gated on effect-freedom.
+   - #70: generated extern mocks.
+   - #71: the effect trust root. The spec note is cheap; the module change is not.
+   - #66: the static resource-acquisition graph.
+4. **Features, unblocked but unscheduled.** #10 (correlation tokens; hashing exists
+   now) and #91 (binary layout syntax; needs a design).
+5. **Ongoing.** #107: programs of 5,000–10,000 lines. The weekend apps are 200–300
+   lines each; the largest Tuck file is 843 lines.
+
 ### Handoff 2026-10-12
 
 `thoughts/shared/plans/2026-10-12-handoff.md` says what just landed (memory

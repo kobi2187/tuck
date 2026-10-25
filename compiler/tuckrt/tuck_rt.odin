@@ -174,11 +174,52 @@ tuckConcat :: proc(a, b: string) -> string {
 	return strings.concatenate({a, b})
 }
 
+// glibc's answer to "how big is this block really": a string's spare capacity
+// is read off its allocation, never remembered beside it, so it cannot go stale.
+foreign import tuck_malloc_c "system:c"
+@(default_calling_convention = "c")
+foreign tuck_malloc_c {
+	malloc_usable_size :: proc(ptr: rawptr) -> uint ---
+}
+
+// How many bytes the heap block under `s` can hold from `s`'s first byte on,
+// or -1 when that cannot be known (not the plain heap allocator, or nothing
+// allocated). The heap allocator keeps the block's own start just before the
+// bytes it hands out (base:runtime heap_allocator_proc).
+@(private)
+tuckStrRoom :: proc(s: string) -> int {
+	if raw_data(s) == nil || context.allocator.procedure != runtime.heap_allocator_proc do return -1
+	base := ([^]rawptr)(raw_data(s))[-1]
+	return int(malloc_usable_size(base)) - int(uintptr(raw_data(s)) - uintptr(base))
+}
+
 // `s += t` on a str its body owns (the ownership rules decided it): the new
-// bytes replace the old, which are freed. Odin's strings do not grow, so it
-// is a concatenation and a free, in one call.
+// bytes replace the old. An Odin string has no capacity, so growth gives it
+// some: a new block of twice what is needed, sliced to the string's length —
+// the heap frees by pointer, so the slack goes with it — and an append that
+// fits writes into the slack. A loop of `s = s + x` was quadratic (#93):
+// 1.5s for 200k appends where Nim and D took 11ms.
 tuckStrAppend :: proc(s: ^string, t: string) {
+	if len(t) == 0 do return
 	old := s^
+	n := len(old)
+	need := n + len(t)
+	if tuckStrRoom(old) >= need {
+		buf := ([^]u8)(raw_data(old))
+		copy(buf[n:need], t)
+		s^ = string(buf[:need])
+		return
+	}
+	if context.allocator.procedure == runtime.heap_allocator_proc {
+		grown, err := make([]u8, max(2 * need, 32))
+		if err == nil {
+			copy(grown, old)
+			copy(grown[n:], t)
+			if raw_data(old) != nil { delete(old) }
+			s^ = string(grown[:need])
+			return
+		}
+	}
 	s^ = strings.concatenate({old, t})
 	if raw_data(old) != nil { delete(old) }
 }
@@ -1522,6 +1563,11 @@ ArgCount :: struct {
 	total: int,
 }
 
+Captured :: struct {
+	code:   int,
+	output: string,
+}
+
 ArgValue :: struct {
 	arg: string,
 }
@@ -1996,6 +2042,34 @@ runCommand :: proc(line: string) -> int {
 	status := int(libc.system(cmd))
 	if status & 0x7f == 0 do return (status >> 8) & 0xff
 	return 128 + (status & 0x7f)
+}
+
+// popen/pclose are POSIX, not C, so core:c/libc does not declare them.
+foreign import tuck_posix_c "system:c"
+@(default_calling_convention = "c")
+foreign tuck_posix_c {
+	popen :: proc(command: cstring, mode: cstring) -> ^libc.FILE ---
+	pclose :: proc(stream: ^libc.FILE) -> i32 ---
+}
+
+// Runs `line` through the shell (popen) and answers its stdout and exit status:
+// the code it exited with, or 128 + N when signal N ended it. stderr is not
+// captured. The same in tuck_rt.nim and tuck_rt.d.
+captureCommand :: proc(line: string) -> Captured {
+	cmd := strings.clone_to_cstring(line)
+	defer delete(cmd)
+	f := popen(cmd, "r")
+	if f == nil do return Captured{code = 127, output = strings.clone("")}
+	b := strings.builder_make()
+	buf: [4096]u8
+	for {
+		n := libc.fread(&buf[0], 1, len(buf), f)
+		if n == 0 do break
+		strings.write_bytes(&b, buf[:n])
+	}
+	status := int(pclose(f))
+	code := status & 0x7f == 0 ? (status >> 8) & 0xff : 128 + (status & 0x7f)
+	return Captured{code = code, output = strings.to_string(b)}
 }
 
 argCount :: proc() -> ArgCount {

@@ -2,10 +2,10 @@
 #
 # `ExitStatus` is the point of this module: a process either exited with a code
 # or was killed by a signal, never both, and a `match` must say what it does
-# for each. The only host call underneath is `runCommand` (std/sys), which runs a
-# shell line to completion and returns one integer, so that is what `run`
-# offers. Spawning with pipes, a pid handle, `wait` and `signalTo` need more
-# host calls than exist yet.
+# for each. The host calls underneath are `runCommand` and `captureCommand`
+# (std/sys), which run a shell line to completion: `run` lets its output through,
+# `capture` hands its stdout back. Spawning with pipes, a pid handle, `wait` and
+# `signalTo` need more host calls than exist yet.
 #
 # By the POSIX shell convention a status of 128 + N means "killed by signal N";
 # anything below 128 is an exit code.
@@ -42,6 +42,19 @@ fn run({line: str}) -> ExitStatus [io]:
   let raw = {line: line} runCommand
   return {raw: raw} statusOf
 
+# What a captured command wrote to stdout, and how it ended.
+type Captured:
+  status: ExitStatus
+  output: str
+
+# Run `line` through the shell, wait for it, and answer what it wrote to
+# stdout and how it ended. stderr is not captured: it goes where the program's
+# own goes.
+fn capture({line: str}) -> Captured [io]:
+  let got = {line: line} captureCommand
+  let s = {raw: got.code} statusOf
+  return {status: s, output: got.output} Captured
+
 fn checkStatus() -> int:
   let ok = {raw: 0} statusOf
   if not {s: ok} succeeded:
@@ -72,8 +85,27 @@ fn checkRun() -> int [io]:
     return 9
   return 0
 
+fn checkCapture() -> int [io]:
+  let both = {line: "printf 'a\\nb\\n'; exit 2"} capture
+  if both.output != "a\nb\n":
+    return 10
+  if {s: both.status} describe != "exited 2":
+    return 11
+  let quiet = {line: "true"} capture
+  if quiet.output != "":
+    return 12
+  if not {s: quiet.status} succeeded:
+    return 13
+  let killed = {line: "kill -9 $$"} capture
+  if {s: killed.status} describe != "killed by signal 9":
+    return 14
+  return 0
+
 fn main() -> int [io]:
   let a = checkStatus
   if a != 0:
     return a
-  return checkRun
+  let b = checkRun
+  if b != 0:
+    return b
+  return checkCapture
