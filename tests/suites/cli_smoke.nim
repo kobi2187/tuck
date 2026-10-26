@@ -527,6 +527,67 @@ fn main() -> void [io]:
     fail "good case broke after index warm"
   removeDir(d)
 
+proc caseManifest(w: Work) =
+  ## The effect manifest (#63): a committed file of every callable's declared
+  ## effects. Unchanged code checks clean, twice — cold, then with the import
+  ## restored from the signature index, which once dropped it from the file —
+  ## and a fn that gains an effect fails the check, naming the line.
+  let d = caseDir("manifest")
+  discard d.write("lib.tuck", "fn step({v: int}) -> int:\n  return v + 1\n")
+  let main = d.write("m.tuck", "import lib\n\nfn main() -> int:\n  return {v: 1} step\n")
+  let file = d / "effects.txt"
+  if sh(@["./tuck", "effects", main, "--root:" & d, "--write:" & file]).rc != 0:
+    fail "manifest not written"
+  if not readFile(file).contains("lib.step  fn  []"):
+    fail "manifest does not list the imported fn: " & readFile(file)
+  for pass in ["cold", "warm"]:
+    let (rc, outp) = sh(@["./tuck", "effects", main, "--root:" & d, "--check:" & file])
+    if rc != 0: fail "unchanged program fails the manifest check on " & pass & ": " & outp
+  discard d.write("lib.tuck", "import console\n\nfn step({v: int}) -> int [io: console]:\n" &
+                  "  {text: \"x\"} printLine\n  return v + 1\n")
+  discard d.write("m.tuck", "import lib\n\nfn main() -> int [io: console]:\n  return {v: 1} step\n")
+  let (rc, outp) = sh(@["./tuck", "effects", main, "--root:" & d, "--check:" & file])
+  if rc == 0: fail "a fn that gained [io: console] passed the manifest check"
+  if not outp.contains("+ lib.step  fn  [io: console]"):
+    fail "the check does not name the changed line: " & outp
+  removeDir(d)
+
+proc caseMock(w: Work) =
+  ## The mock surface (#70): `tuck mock` lists exactly the externs reachable
+  ## from the entry file, not every extern declared, and `--mock` builds a
+  ## program whose C header does not exist, each such extern a logging stub
+  ## returning the zero value, on every backend present.
+  let d = caseDir("mock")
+  let src = d.write("app.tuck", """
+extern [c, header: "nowhere.h"]:
+  fn dial({host: str, port: int}) -> int [io]
+  fn hangup({fd: int}) -> void [io]
+
+fn connect({host: str}) -> int [io]:
+  return {host: host, port: 80} dial
+
+fn main() -> int:
+  let fd = {host: "example.org"} connect
+  return fd + 4
+""")
+  let (rc, outp) = sh(@["./tuck", "mock", src, "--root:" & getCurrentDir()])
+  if rc != 0: fail "tuck mock failed: " & outp
+  if not outp.contains("app  dial({host: str, port: int}) -> int [io]"):
+    fail "the reachable extern is not listed: " & outp
+  if outp.contains("hangup"): fail "an unreachable extern is listed: " & outp
+  for (flag, exe, suffix) in [("", "nim", ""), ("--odin", "odin", "_odin"),
+                              ("--dlang", "dmd", "_d")]:
+    if findExe(exe) == "": continue
+    var args = @["./tuck", "build", src, "--mock", "-o:" & d / "out",
+                 "--root:" & getCurrentDir()]
+    if flag != "": args.add flag
+    let (brc, bout) = sh(args)
+    if brc != 0: fail "--mock " & flag & " build failed: " & bout.strip()
+    let (xrc, xout) = sh(@[d / "out" / ("app" & suffix)])
+    if xrc != 4 or not xout.contains("dial invoked"):
+      fail "--mock " & flag & " binary: exit " & $xrc & ", output " & xout
+  removeDir(d)
+
 proc caseSlabIndex(w: Work) =
   ## A module declaring a pool or a slab is resolved BY NAME (`Ints.new`,
   ## `Cells.acquire`), which a cached entry of fn signatures cannot carry —
@@ -890,7 +951,8 @@ fn main() -> int:
     "case_nullary": caseNullary, "case_matchret": caseMatchret,
     "case_seqat": caseSeqat, "case_index": caseIndex, "case_pool": casePool,
     "case_effects": caseEffects, "case_bytype": caseBytype,
-    "case_slabindex": caseSlabIndex,
+    "case_slabindex": caseSlabIndex, "case_manifest": caseManifest,
+    "case_mock": caseMock,
   }
 
   # The example family: build one example, check its exit code. Nine

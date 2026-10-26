@@ -15,7 +15,7 @@ struct TRec_id_name_length(T_id, T_name, T_length) {
     T_length length;
 }
 
-void tuckˑfnˑplayTrack(T)(T payload) {
+void tuckˑfnˑplayTrack(T0, T1, T2)(T0 p0, T1 p1, T2 p2) {
     stderr.writeln("TUCK PENDING: playTrack invoked (not implemented)");
 }
 
@@ -23,7 +23,7 @@ void tuckˑfnˑmain() {
     TRec_trackId_title_durationMs!(long, string, long) tuckˑvˑexternalTrack = TRec_trackId_title_durationMs!(long, string, long)(trackId: 42L, title: ("Slow Jam").idup, durationMs: 215000L);
     TRec_id_name_length!(long, string, long) tuckˑvˑplayerInput = TRec_id_name_length!(long, string, long)(id: tuckˑvˑexternalTrack.trackId, name: tuckˑvˑexternalTrack.title, length: tuckˑvˑexternalTrack.durationMs);
     scope(exit) rt.tuckDrop(tuckˑvˑplayerInput.name);
-    tuckˑfnˑplayTrack(tuckˑvˑplayerInput);
+    tuckˑfnˑplayTrack(tuckˑvˑplayerInput.id, tuckˑvˑplayerInput.name, tuckˑvˑplayerInput.length);
     return;
 }
 

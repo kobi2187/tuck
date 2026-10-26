@@ -47,10 +47,8 @@ proc collectFnSig*(tc: var TypeChecker, d: Decl, top: bool) =
   if d.isExtern and d.name notin semLayer.externs: semLayer.externs[d.name] = d
   if top: recordFnBody(d)
   tc.addFnDecl(d.name, d)
-  # NOT pending: a pending fn emits a generic one-payload stub
-  # (genPendingStub), so its real params are ({payload: T},) — nothing like its
-  # DECLARED params, which is what topLevelFns's consumers (lowering,
-  # codegen's explodeRecordArg/genCall) would explode against.
+  # NOT pending: a top-level pending fn is one written `...` (markUnimplemented),
+  # recorded through recordCallParams's member path like a `pending:` block's.
   if top and not d.isPending:
     tc.topLevelFns.incl(d.name)
     tc.topLevelFnDecl[d.name] = d

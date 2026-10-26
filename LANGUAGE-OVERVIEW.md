@@ -993,10 +993,40 @@ calling task.
 Markers that appear in working code: `[io]`, `[irq_safe]`, `[stack: N]`,
 `[unsafe]`, `[priority]`, `[error: E]`, `[emit: "..."]`.
 
-**`[io]` is the only enforced effect.** A pure fn calling an `[io]` fn →
-`requires effect [io]` (`tests/suites/typecheck.nim`). Effects cross module boundaries
+**`[io]` is enforced, and so are its kinds.** A pure fn calling an `[io]` fn →
+`requires effect [io]` (`tests/suites/typecheck.nim`); a fn calling an `[io: net]`
+one must declare `[io: net]` or plain `[io]` (`TK-EF01`). Effects cross module boundaries
 from source *and from the cache* — `tests/suites/cli_smoke.nim` runs the check twice,
 cold and warm, and both must reject identically.
+
+**An effect-free fn runs at build time** (#62). A `const` may be computed by
+calling a fn that declares no capability (`[pure]` and the other restrictions
+are fine), so a size can be worked out rather than written:
+`const Cap = {users: 4} slots`, then `[queue: Cap]` or `Array[Cap, int]`. The
+evaluator knows `let`/`var`, assignment, `if`/`elif`/`else`, `return`,
+arithmetic, comparisons and calls, recursion included, over integers, and
+nothing else (no loops); outside that the const is "not a number the compiler
+knows", as before. A fn declaring `[io]` is refused ("must be pure"). The const
+becomes its number before any backend sees it (`tests/suites/typecheck.nim`).
+
+**The effect manifest** (#63) makes effect creep a diff. `tuck effects FILE
+--write:effects.txt` lists every callable in the program, its imports included,
+with its DECLARED effects and resource kinds, one sorted line each, with no
+positions and no timestamps. `--check:effects.txt` prints each line that
+changed (`- lib.step  fn  []` / `+ lib.step  fn  [io: console]`) and exits 1, so a
+dependency that gained IO fails CI. Declared, not inferred: the file restates
+the source and cannot drift from it (`tests/suites/cli_smoke.nim`, case_manifest).
+
+**The mock surface** (#70) answers "what do I have to stub to test this?"
+mechanically. Effects originate only at declared signatures, and the only
+signatures with no Tuck body behind them are externs, so `tuck mock FILE`
+(`--from:FN` for one fn) lists exactly the externs reachable on the call graph,
+nothing declared-but-unused. `tuck build FILE --mock` builds with each of the
+program's OWN reachable externs (not the stdlib's) turned into a `pending`
+stub: the call is logged (`TUCK PENDING: dial invoked`) and returns the zero
+value. So an app whose C header does not exist yet still builds and runs, and
+its log is the record of what it asked the world for. The web-downloader runs
+this way on all three backends (`tests/suites/cli_smoke.nim`, case_mock).
 
 > **`[no_alloc]` and `[may_block]` appear in NO example and NO test.** They
 > parse and propagate; they have no checker meaning. Do not rely on them.

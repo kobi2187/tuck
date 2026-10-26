@@ -2,6 +2,15 @@
 
 A CLI tool in the spirit of `wget`/`aria2c`: given one or more URLs (or a `-i urls.txt` list), download to disk with resumable range requests, N-way parallel connections per host, a live progress display, retry/backoff on transient failures, and an optional recursive mode (follow same-origin links one level deep).
 
+## Running it before `netdl.h` exists
+
+`downloader.tuck` binds its socket and file calls to `netdl.h`, which does not
+exist yet. `tuck mock downloader.tuck` lists exactly the externs it reaches
+(dial, ask, take, putAt, onDisk, sizeOf, say), and
+`tuck b downloader.tuck --mock` builds it with each one stubbed: a logged call
+that returns the zero value. It runs on all three backends; a zero-byte answer
+from `sizeOf` once broke Chunk's invariant, which is how that case got handled.
+
 ## Why this is a good validation target
 It is the single best app in this set for stressing the `std.net.http` / `sys.net` / `std.async` boundary: resuming a partial download requires correct interaction between HTTP range headers, filesystem append semantics, and cancellation (Ctrl-C mid-download should leave a resumable partial file, not a corrupt one).
 

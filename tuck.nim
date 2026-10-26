@@ -71,6 +71,8 @@ import compiler/codegen_d_emit  # emitD/emitDModule: same reasoning as
 import compiler/ast_serializer
 import compiler/modules
 import compiler/type_identity   # a type name two modules declare (A88)
+import compiler/effect_manifest
+import compiler/mock_surface  # `tuck effects --manifest` (#63)
 import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
 import compiler/actor_mode
@@ -167,14 +169,36 @@ effects. For tools outside the compiler; Tuck code cannot reflect.
   --tuck   print a Tuck module instead: row types (DescType, DescField,
            DescVariant, DescFn, DescParam) and typed const tables
            (descTypes, ...), for a tool written in Tuck to import.""",
-  "effects": """tuck effects file.tuck
+  "effects": """tuck effects file.tuck [--manifest | --write:PATH | --check:PATH]
 tuck ef file.tuck
 
 Check the file, then report, per top-level fn in it: the markers it
 declares, the capabilities its body needs, the restrictions the compiler
 derives it could carry (pure, no_alloc, irq_safe, bounded-depth), and the
 markers you could add. Derived, never inferred silently: add the marker to
-the signature to make it a promise. Unknown callees give no fact.""",
+the signature to make it a promise. Unknown callees give no fact.
+
+  --manifest      print the effect manifest instead: every callable in the
+                  program, its imports included, with its DECLARED effects and
+                  resource kinds, one sorted line each (issue #63)
+  --write:PATH    write that manifest to PATH, to commit beside the code
+  --check:PATH    compare against a committed manifest: print each line that
+                  changed (`- old`, `+ new`) and exit 1 if any did, so a fn
+                  that gained an effect is a failed CI step, not a surprise""",
+  "mock": """tuck mock file.tuck [--from:FN]
+
+Print the mock surface (issue #70): every extern reachable on the call
+graph from the entry file's fns (or from FN alone), with its signature and
+declared effects. Effects originate only at declared signatures, so this is
+exactly what a test has to fake, no more and no less. An extern the stdlib
+declares is listed and marked; one the program declares itself is what
+`--mock` stubs.
+
+  --from:FN   walk from one fn of the entry file instead of all of them
+
+`tuck build file.tuck --mock` builds with each of the program's own
+reachable externs replaced by a pending stub: it logs the call and returns
+the zero value, so an app whose C side does not exist yet still runs.""",
   "test": """tuck test file-or-folder [--properties] [--cases:N] [--seed:N]
                     [--except:a,b] [--out:FILE]
 
@@ -350,6 +374,31 @@ proc dieSyntax(err: ref SyntaxError) {.noreturn.} =
     stderr.writeLine "  " & explainCode(err.code)
   stderr.writeLine ""
   quit(1)
+
+proc effectsVerb(prog: seq[LoadedModule], opts: seq[string]) =
+  ## `tuck effects`: the per-fn report, or the manifest (#63) printed,
+  ## written or checked.
+  var writeTo, checkAgainst = ""
+  for o in opts:
+    if o.startsWith("--write:"): writeTo = o["--write:".len .. ^1]
+    elif o.startsWith("--check:"): checkAgainst = o["--check:".len .. ^1]
+  if writeTo == "" and checkAgainst == "" and "--manifest" notin opts:
+    stdout.write effectReportText
+    return
+  let manifest = manifestOf(prog)
+  if "--manifest" in opts: stdout.write manifest
+  if writeTo != "":
+    writeFile(writeTo, manifest)
+    echo "wrote ", writeTo
+  if checkAgainst != "":
+    if not fileExists(checkAgainst):
+      die("tuck: no manifest at " & checkAgainst & " (write one with --write:PATH)")
+    let changes = manifestChanges(readFile(checkAgainst), manifest)
+    if changes.len > 0:
+      echo "effect manifest changed (", changes.len, " line(s)) against ", checkAgainst, ":"
+      for c in changes: echo "  ", c
+      quit(1)
+    echo "effect manifest unchanged"
 
 proc dieSemanticError(path: string, err: ref SemanticError) {.noreturn.} =
   ## typecheckProgram's own errors already carry file:line:col in `err.msg`
@@ -699,6 +748,7 @@ proc checkProgram(path: string, needBodies = false,
   ## (with `verifyStages`) assert the tree between stages. Dies on any error.
   var sigOnly: Table[string, IndexEntry]
   (result, sigOnly) = loadOrDie(path, needBodies)
+  let mocked = stubMockedExterns(result)   # `--mock`'s second pass (#70)
   for lm in result.mitems: resolveWhenBlocks(lm.m, buildTarget)  # spec §8.3
   block:
     let t0 = vBegin(psInjectTypes)
@@ -735,8 +785,10 @@ proc checkProgram(path: string, needBodies = false,
   # else; a warning beside a rejection is noise.
   for w in takeWarnings():
     stderr.writeLine(path & ":" & $w.line & ":" & $w.col & ": " & w.msg)
-  # program checked clean: refresh the signature index for future checks
-  updateIndex(parentDir(absolutePath(path)), result, moduleSigs)
+  # program checked clean: refresh the signature index for future checks —
+  # unless externs were stubbed, which is not the program the index describes
+  if mocked == 0:
+    updateIndex(parentDir(absolutePath(path)), result, moduleSigs)
   report("PENDING", "unimplemented", pendingEntries(result, sigOnly))
   report("SHORTCUTS", "routed to the global error handler", shortcuts)
   if reportNarrowing:
@@ -1056,8 +1108,23 @@ when isMainModule:
     runPropertyTests(path, opts, verifyStages)
   of "effects", "ef":
     effectReportOn = true
-    discard checkProgram(path, verifyStages = verifyStages)
-    stdout.write effectReportText
+    # The manifest lists every module's callables, so each is loaded whole:
+    # one restored from the signature index carries no declarations, and a
+    # warm cache would drop it from the file.
+    let wantsManifest = opts.anyIt(it == "--manifest" or
+      it.startsWith("--write:") or it.startsWith("--check:"))
+    let prog = checkProgram(path, needBodies = wantsManifest,
+                            verifyStages = verifyStages)
+    effectsVerb(prog, opts)
+  of "mock":
+    let prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
+    var root = ""
+    for o in opts:
+      if o.startsWith("--from:"): root = o["--from:".len .. ^1]
+    try:
+      stdout.write formatSurface(mockSurface(prog, path, root), root)
+    except ValueError as err:
+      die("tuck: " & err.msg)
   of "ssa":
     # The SSA graph of every body in THIS file (not its imports), with each
     # read's FINAL verdict — what `tests/ssa/*.ssa` pins.
@@ -1187,7 +1254,15 @@ when isMainModule:
           "inject-types, resolve-refs, typecheck, verify-effects, mangle, " &
           "lowering, emitting)")
   of "compile", "c", "build", "b":
-    let prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
+    var prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
+    if "--mock" in opts:
+      # Issue #70: the program's own reachable externs become pending stubs.
+      # The walk needs a checked program (it reads the call stamps), and the
+      # stubs need checking as what they now are, so: check, choose, recheck.
+      mockedExterns = mockedOf(mockSurface(prog, path, ""))
+      semLayer = newResolution()   # the second check builds its own, whole
+      prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
+      stderr.writeLine "tuck: --mock stubbed " & $mockedExterns.len & " extern(s)"
     var outDir = parentDir(path)
     for o in opts:
       if o.startsWith("-o:"): outDir = o[3 .. ^1]

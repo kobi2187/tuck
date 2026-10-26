@@ -9,7 +9,7 @@ struct tuckˑtypeˑFeed {
     long episodes;
 }
 
-tuckˑmodˑshapes_14_task.TRec_feed!(tuckˑtypeˑFeed) tuckˑfnˑparse(T)(T payload) {
+tuckˑmodˑshapes_14_task.TRec_feed!(tuckˑtypeˑFeed) tuckˑfnˑparse(T0)(T0 p0) {
     stderr.writeln("TUCK PENDING: parse invoked (not implemented)");
     return typeof(return).init;
 }

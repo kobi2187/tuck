@@ -4853,4 +4853,54 @@ fn main() -> int:
   t.quietly: t.hostRuns "#93: a str grown by appends stays linear on Odin", 9
   t.bugFixed "#93: a str grown by appends stays linear on Odin"
 
+  # A95. `[0; 32]` into `Array[Big, int]` with `const Big = 32` was "expects
+  # Array[Big, int] but got Array[32, int]": a type compares an Array's size by
+  # its text, and the fill literal kept its own. It now takes the
+  # destination's spelling when the two agree in value, as a list does.
+  t.src """
+const Big = 32
+
+fn main() -> int:
+  let a: Array[Big, int] = [7; 32]
+  return a[31]
+"""
+  t.quietly: t.hostRuns "A95: a fill literal fills an Array sized by a const", 7
+  t.bugFixed "A95: a fill literal fills an Array sized by a const"
+
+  # A96. A `pending` fn taking two fields did not build on any backend: every
+  # stub took one generic `payload: T`, and the call site spreads a payload
+  # into one argument per field (`put(1, "x")`), "extra argument given". A
+  # record held in a variable was not spread at all. The stub now takes one
+  # generic parameter per declared one, and the call records its params like
+  # any fn's. Found running the web-downloader under `--mock` (#70).
+  t.src """
+pending:
+  fn put({a: int, b: str}) -> int
+
+fn viaVar() -> int:
+  let q = {a: 2, b: "y"}
+  return q put
+
+fn main() -> int:
+  let r = {a: 1, b: "x"} put
+  return r + {} viaVar + 3
+"""
+  t.quietly: t.hostRuns "A96: a two-field pending fn builds and runs its stub", 3,
+                        "TUCK PENDING: put"
+  t.bugFixed "A96: a two-field pending fn builds and runs its stub"
+
+  # A97. `{...} task discard` on the Nim backend emitted `discard
+  # tuckSpawnJobDrop(...)`, and the spawn is void: "has no type". A spawn
+  # already drops the result nobody awaits, so the `discard` goes.
+  t.src """
+task work({n: int}) -> int:
+  return n
+
+fn main() -> int:
+  {n: 1} work discard
+  return 5
+"""
+  t.quietly: t.hostRuns "A97: discarding a spawned task builds on Nim", 5
+  t.bugFixed "A97: discarding a spawned task builds on Nim"
+
   t.finish()

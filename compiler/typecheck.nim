@@ -2654,10 +2654,13 @@ proc recordCallParams(tc: var TypeChecker, fnName: string, params: seq[Param],
   if e.kind != exkCall: return
   if fnName notin tc.topLevelFns:
     # A member fn: known to fnDecls (which indexes members too) but not to
-    # topLevelFns. Pending stubs stay out for the reason given above — their
-    # emitted params are ({payload: T},), nothing like the declared ones.
+    # topLevelFns — an extern's and a `pending:` block's included. A pending
+    # stub takes one generic parameter per DECLARED one (genPendingStub, each
+    # backend), so its payload explodes like anyone's. It used to take one
+    # `payload: T`, and a two-field call did not compile (issue #70). A
+    # member taking `self` keeps no stub of that shape, so stays out.
     let d = tc.declOfFn(fnName)
-    if d == nil or d.kind != dkFn or d.isPending: return
+    if d == nil or d.kind != dkFn or d.isPending and d.takesSelf(): return
   var names: seq[string]
   for p in params: names.add(p.name)
   setCallParams(semLayer, e, names)
@@ -4508,8 +4511,17 @@ proc synthFill(tc: var TypeChecker, e: Expr): Type =
     fail(dcTyFillValue, "`[v; N]` copies one value into every slot, so its " &
          "element is a number, a bool, a char or an enum — not " &
          typeName(elemT), v.span)
+  # The size as the destination spells it, when the two agree in value: a
+  # type compares sizes by their text, so `[0; 32]` into `Array[Big, int]`
+  # with `const Big = 32` was "expects Array[Big, int] but got Array[32, int]"
+  # (A95). A list literal already takes the destination's size this way.
+  var sizeT = Type(span: e.span, kind: tkNamed, name: text)
+  if place != nil and place.base.name == "Array" and place.args.len == 2 and
+     place.args[0] != nil and place.args[0].kind == tkNamed:
+    let want = constIntOf(tc.module, place.args[0].name)
+    if want.isSome and want.get == n: sizeT = place.args[0]
   Type(span: e.span, kind: tkApp, base: tc.namedType("Array", e.span),
-       args: @[Type(span: e.span, kind: tkNamed, name: text), elemT])
+       args: @[sizeT, elemT])
 
 proc synthUnary(tc: var TypeChecker, e: Expr): Type =
   ## `not` yields bool; every other unary keeps its operand's type.

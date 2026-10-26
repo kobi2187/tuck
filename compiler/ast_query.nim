@@ -848,6 +848,10 @@ proc callWritesSelf*(res: Resolution, m: Module, e: Expr): bool =
 # runs, which is why this exists and why it only covers the subset a size
 # needs.
 
+const ConstDepthLimit = 64
+  ## Const references and calls deep: what ends `const A = B` / `const B = A`
+  ## and a recursion that never bottoms out.
+
 proc evalConstExpr*(m: Module, e: Expr, depth = 0): Option[int]
 
 proc constDeclFor*(m: Module, raw: string): Decl =
@@ -885,7 +889,7 @@ proc constIntOf*(m: Module, text: string, depth = 0): Option[int] =
   # A NAME: one const, evaluated. Depth-bounded rather than cycle-tracked —
   # `const A = B` / `const B = A` is a declaration cycle the checker has its
   # own opinion about, and this only needs to not hang.
-  if depth > 16: return none(int)
+  if depth > ConstDepthLimit: return none(int)
   # Either spelling: an attribute's text is never mangled, and by codegen the
   # const decl has been renamed, so `[queue: Fan]` must still find
   # `const tuck_Fan`. Same comparison resolution.poolHandleName and
@@ -895,42 +899,201 @@ proc constIntOf*(m: Module, text: string, depth = 0): Option[int] =
   evalConstExpr(m, d.constVal, depth + 1)
 
 
-proc evalConstExpr*(m: Module, e: Expr, depth = 0): Option[int] =
-  ## The constant subset: an integer literal, a const name, arithmetic over
-  ## those. NOT a call, a field read, or anything whose value needs the
-  ## program to run — a size that cannot be worked out here is refused with a
-  ## diagnostic rather than passed to the backend to discover.
-  if e == nil or depth > 16: return none(int)
+# --- the constant evaluator ----------------------------------------------------
+# What a size, a queue length or a const may be worked out from at compile
+# time: integer literals, consts, arithmetic, comparisons, and CALLS to fns that
+# declare no effects (#62). A fn that cannot touch the world is total ("pure
+# functions are total"), so running it during the build is safe; the gate is a
+# property the checker already enforces, not a promise the author makes. The
+# interpreter knows `let`/`var`, assignment, `if`/`elif`/`else` and `return`
+# over integers, and nothing else: no loops, no fields, no other types. Outside
+# that the answer is "unknown", reported where the value was needed, exactly as
+# an unknown name is.
+type ConstEnv = Table[string, int]
+  ## A callee's parameters and locals while its body is evaluated.
+
+const ConstStepLimit = 100_000
+  ## Evaluation steps per answer, so a deep tree recursion cannot stall the build.
+
+var constSteps: int
+
+proc evalIn(m: Module, e: Expr, env: ConstEnv, depth: int): Option[int]
+
+proc fnNamed(m: Module, name: string): Decl =
+  ## The fn `name` calls: this module's first, else the program's.
+  for x in m.decls:
+    if x != nil and x.kind == dkFn and spells(x.name, name, nkFn): return x
+  if name in semLayer.ambiguousFns: return nil
+  result = semLayer.fnBodies.getOrDefault(name, nil)
+  if result == nil: result = semLayer.fnBodies.getOrDefault(prefixed(name, nkFn), nil)
+
+proc constCallable(d: Decl): bool =
+  ## A plain fn with a body that declares no capability — only restrictions
+  ## (`[pure]`, `[no_alloc]`, ...) — and no type parameters.
+  if d == nil or d.kind != dkFn or d.fnBody == nil or d.isExtern or
+     d.fnGenerics.len > 0: return false
+  for mk in d.fnEffects:
+    if mk notin {emPure, emNoAlloc, emIrqSafe, emNoRecursion}: return false
+  true
+
+proc constFnFor(m: Module, name: string): Decl =
+  ## The fn a constant may call, or nil, which is then "unknown".
+  let d = fnNamed(m, name)
+  if constCallable(d): d else: nil
+
+type ConstStep = enum csNext, csReturn, csFail
+
+proc runConstBody(m: Module, e: Expr, env: var ConstEnv, depth: int,
+                  ret: var int): ConstStep
+
+proc returnConst(v: Option[int], ret: var int): ConstStep =
+  ## A value that ends the body, or a failure when there is none.
+  if v.isNone: return csFail
+  ret = v.get
+  csReturn
+
+proc runConstBlock(m: Module, e: Expr, env: var ConstEnv, depth: int,
+                   ret: var int): ConstStep =
+  for i, st in e.stmts:
+    if i == e.stmts.high and st.kind in {exkLit, exkVar, exkBinary, exkUnary, exkCall}:
+      # The last statement's value is the body's (the implicit return).
+      return returnConst(evalIn(m, st, env, depth), ret)
+    let r = runConstBody(m, st, env, depth, ret)
+    if r != csNext: return r
+  csNext
+
+proc runConstAssign(m: Module, e: Expr, env: var ConstEnv, depth: int): ConstStep =
+  ## `let x = ...`, `var x = ...` or `x = ...` of a local already bound.
+  if e.target == nil or e.target.kind != exkVar: return csFail
+  if not e.isDecl and e.target.name notin env: return csFail
+  let v = evalIn(m, e.assignVal, env, depth)
+  if v.isNone: return csFail
+  env[e.target.name] = v.get
+  csNext
+
+proc runConstBody(m: Module, e: Expr, env: var ConstEnv, depth: int,
+                  ret: var int): ConstStep =
+  ## One statement of a callee's body: carry on, return `ret`, or give up.
+  if e == nil: return csNext
+  inc constSteps
+  if constSteps > ConstStepLimit: return csFail
   case e.kind
-  of exkLit:
-    if e.litKind != lkInt: return none(int)
-    try: return some(parseInt(e.litValue.replace("_", "")))
-    except ValueError: return none(int)
-  of exkVar:
-    # A const's initialiser is walked AFTER mangling too, so its references
-    # carry the renamed spelling; constIntOf accepts both.
-    return constIntOf(m, e.name, depth + 1)
-  of exkUnary:
-    let v = evalConstExpr(m, e.operand, depth + 1)
-    if v.isNone: return none(int)
-    if e.unaryOp == uoNeg: return some(-v.get)
-    return none(int)
+  of exkBlock: runConstBlock(m, e, env, depth, ret)
+  of exkAssign: runConstAssign(m, e, env, depth)
+  of exkReturn: returnConst(evalIn(m, e.returnVal, env, depth), ret)
+  of exkIf:
+    let c = evalIn(m, e.cond, env, depth)
+    if c.isNone: return csFail
+    runConstBody(m, if c.get != 0: e.thenBranch else: e.elseBranch, env, depth, ret)
+  else: csFail
+
+proc callConst(m: Module, d: Decl, payload: Expr, env: ConstEnv,
+               depth: int): Option[int] =
+  ## `{args} f` with `f` a constant-callable fn: its body, run on the args.
+  if depth > ConstDepthLimit: return none(int)
+  var inner: ConstEnv
+  for p in d.fnParams:
+    var found = false
+    if payload != nil and payload.kind == exkStruct:
+      for (name, val) in payload.fields:
+        if name == p.name:
+          let v = evalIn(m, val, env, depth)
+          if v.isNone: return none(int)
+          inner[p.name] = v.get
+          found = true
+    if not found: return none(int)
+  var ret = 0
+  if runConstBody(m, d.fnBody, inner, depth + 1, ret) == csReturn: some(ret)
+  else: none(int)
+
+proc checkedAdd(l, r: int): Option[int] =
+  ## Tuck's arithmetic is checked: an overflow traps at run time, so at build
+  ## time it is "not a number the compiler knows", never a wrapped value and
+  ## never a crash of the compiler itself.
+  if (r > 0 and l > high(int) - r) or (r < 0 and l < low(int) - r): none(int)
+  else: some(l + r)
+
+proc checkedMul(l, r: int): Option[int] =
+  if l == 0 or r == 0: return some(0)
+  if abs(float(l) * float(r)) >= 9.2e18: return none(int)
+  some(l * r)
+
+proc checkedDiv(op: BinOp, l, r: int): Option[int] =
+  ## `div` and `mod`, with the two operands that trap at run time unknown.
+  if r == 0 or (l == low(int) and r == -1): none(int)
+  elif op == boDivInt: some(l div r)
+  else: some(l mod r)
+
+proc constBinary(op: BinOp, l, r: int): Option[int] =
+  case op
+  of boAdd: checkedAdd(l, r)
+  of boSub: (if r == low(int): none(int) else: checkedAdd(l, -r))
+  of boMul: checkedMul(l, r)
+  of boDivInt, boMod: checkedDiv(op, l, r)
+  of boEq: some(ord(l == r))
+  of boNeq: some(ord(l != r))
+  of boLt: some(ord(l < r))
+  of boGt: some(ord(l > r))
+  of boLe: some(ord(l <= r))
+  of boGe: some(ord(l >= r))
+  of boAnd: some(ord(l != 0 and r != 0))
+  of boOr: some(ord(l != 0 or r != 0))
+  of boXor, boDivFloat, boRangeIncl, boRangeExcl: none(int)
+
+proc constLit(e: Expr): Option[int] =
+  ## An integer or a bool literal (a bool as 0 or 1).
+  if e.litKind == lkBool: return some(ord(e.litValue == "true"))
+  if e.litKind != lkInt: return none(int)
+  try: some(parseInt(e.litValue.replace("_", "")))
+  except ValueError: none(int)
+
+proc constName(m: Module, e: Expr, env: ConstEnv, depth: int): Option[int] =
+  ## A local, a const, or a bare nullary call (`twelve`). A const's
+  ## initialiser is walked AFTER mangling too, so its references carry the
+  ## renamed spelling; constIntOf accepts both.
+  if e.name in env: return some(env[e.name])
+  let c = constIntOf(m, e.name, depth + 1)
+  if c.isSome: return c
+  let f = constFnFor(m, e.name)
+  if f != nil and f.fnParams.len == 0: return callConst(m, f, nil, env, depth + 1)
+  none(int)
+
+proc constCall(m: Module, e: Expr, env: ConstEnv, depth: int): Option[int] =
+  if e.callee == nil or e.callee.kind != exkVar: return none(int)
+  let f = constFnFor(m, e.callee.name)
+  if f == nil: return none(int)
+  callConst(m, f, (if e.args.len == 1: e.args[0] else: nil), env, depth + 1)
+
+proc constUnary(m: Module, e: Expr, env: ConstEnv, depth: int): Option[int] =
+  let v = evalIn(m, e.operand, env, depth)
+  if v.isNone: return none(int)
+  case e.unaryOp
+  of uoNeg: (if v.get == low(int): none(int) else: some(-v.get))
+  of uoNot: some(ord(v.get == 0))
+  of uoComposition: none(int)
+
+proc evalIn(m: Module, e: Expr, env: ConstEnv, depth: int): Option[int] =
+  if e == nil or depth > ConstDepthLimit: return none(int)
+  case e.kind
+  of exkLit: constLit(e)
+  of exkVar: constName(m, e, env, depth)
+  of exkCall: constCall(m, e, env, depth)
+  of exkUnary: constUnary(m, e, env, depth)
   of exkBinary:
-    let l = evalConstExpr(m, e.left, depth + 1)
+    let l = evalIn(m, e.left, env, depth)
     if l.isNone: return none(int)
-    let r = evalConstExpr(m, e.right, depth + 1)
+    let r = evalIn(m, e.right, env, depth)
     if r.isNone: return none(int)
-    case e.binOp
-    of boAdd: some(l.get + r.get)
-    of boSub: some(l.get - r.get)
-    of boMul: some(l.get * r.get)
-    of boDivInt:
-      if r.get == 0: none(int) else: some(l.get div r.get)
-    of boMod:
-      if r.get == 0: none(int) else: some(l.get mod r.get)
-    else: none(int)
+    constBinary(e.binOp, l.get, r.get)
   else:
     none(int)
+
+proc evalConstExpr*(m: Module, e: Expr, depth = 0): Option[int] =
+  ## The constant subset described above. A size that cannot be worked out
+  ## here is refused with a diagnostic rather than passed to the backend to
+  ## discover.
+  if depth == 0: constSteps = 0
+  evalIn(m, e, initTable[string, int](), depth)
 
 proc sumHasPayload*(body: Type): bool =
   ## Does any variant of this sum carry fields? The branch key for four

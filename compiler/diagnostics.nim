@@ -933,7 +933,9 @@ proc ruleExplanation(d: DiagCode): string =
     "A `pool`'s `count` and an `arena`'s `size` ARE the allocation — the " &
     "footprint is fixed at compile time, which is the entire point of both " &
     "(spec 7.2, 7.3). So the number must be positive: zero or negative is " &
-    "not a smaller reservation, it is one that cannot hold anything. Fix: " &
+    "not a smaller reservation, it is one that cannot hold anything. The " &
+    "number is a literal or a `const`, and a const may be computed by a fn " &
+    "that declares no effects (`const Cap = {users: 4} slots`, #62). Fix: " &
     "give a real count or size."
   of dcMeArenaInert:
     "Retired 2026-10-04, when the arena was built over slabs (slab proposal " &
@@ -1048,7 +1050,9 @@ proc ruleExplanation(d: DiagCode): string =
     "An actor's `[queue: N]` is the exact capacity of its mailbox ring, so N " &
     "must be a positive whole number. Zero or negative is not a smaller " &
     "mailbox, it is a broken one — the emitted ring divides by its capacity, " &
-    "so the program builds and then dies on the first send. Fix: give a real " &
+    "so the program builds and then dies on the first send. N is a literal " &
+    "or a `const`, and a const may be computed by a fn that declares no " &
+    "effects (`const Cap = {users: 4} slots`, #62). Fix: give a real " &
     "count, or drop the attribute to take the default."
   of dcIvUnknownField:
     "An `invariant:` predicate may only name fields of the type it is " &

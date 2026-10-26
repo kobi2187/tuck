@@ -16,7 +16,7 @@ TRec_id_name_length :: struct ($T_id: typeid, $T_name: typeid, $T_length: typeid
 	length: T_length,
 }
 
-tuckˑfnˑplayTrack :: proc(payload: $T) {
+tuckˑfnˑplayTrack :: proc(p0: $T0, p1: $T1, p2: $T2) {
 	fmt.println("TUCK PENDING: playTrack invoked (not implemented)")
 }
 
@@ -24,7 +24,7 @@ tuckˑfnˑmain :: proc () {
   tuckˑvˑexternalTrack := TRec_trackId_title_durationMs(int, string, int){trackId = 42, title = rt.tuckStrOwned("Slow Jam"), durationMs = 215000}
   tuckˑvˑplayerInput := TRec_id_name_length(int, string, int){id = tuckˑvˑexternalTrack.trackId, name = tuckˑvˑexternalTrack.title, length = tuckˑvˑexternalTrack.durationMs}
   defer rt.tuckDrop(tuckˑvˑplayerInput.name)
-  tuckˑfnˑplayTrack(tuckˑvˑplayerInput)
+  tuckˑfnˑplayTrack(tuckˑvˑplayerInput.id, tuckˑvˑplayerInput.name, tuckˑvˑplayerInput.length)
   return
 }
 

@@ -111,7 +111,9 @@ The gate prints "tighten --debt/--heavy to N" when it has slack.
 *correct* behaviour as a real assertion plus a marker: `bugOpen` expects it to
 fail and reports it; `bugFixed` makes it a permanent regression guard. When a
 `bugOpen` assertion starts passing the suite fails and tells you to flip the
-marker. Nothing is ever deleted.
+marker. Nothing is ever deleted. `tests/suites/roadmap.nim` does the same for
+ROADMAP.md's status claims (`featureDone` / `featureMissing`): finishing a
+roadmap item flips its marker, and the suite names the ROADMAP line to correct.
 
 **Diagnostic numbers are permanent.** `compiler/diagnostics.nim` is the registry
 (`TK-` + two-letter category + number). A deleted diagnostic *retires* its

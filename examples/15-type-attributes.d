@@ -39,7 +39,7 @@ struct tuckˑactorˑUartDriver {
 __gshared tuckˑactorˑUartDriver tuckˑactorˑUartDriverSingleton;
 
 
-rt.TuckResult!(TRec_value!(ushort)) tuckˑfnˑreadSensor(T)(T payload) {
+rt.TuckResult!(TRec_value!(ushort)) tuckˑfnˑreadSensor(T0)(T0 p0) {
     stderr.writeln("TUCK PENDING: readSensor invoked (not implemented)");
     return typeof(return).init;
 }

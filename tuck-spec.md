@@ -662,6 +662,29 @@ An `[irq_safe]` function calling an `[io]` function is a compile error — one
 instance of the general rule above (`io` is simply not in an `[irq_safe]`
 fn's declared budget), not a special case.
 
+**What the markers guarantee, and what they do not** (issue #71). Every effect
+originates at a declared signature, and an `extern` declares its own. So the
+discipline holds against MISTAKES: no fn performs an effect its signature does
+not state, at any depth. It does not hold against an ADVERSARY. A module can
+declare an extern that writes to disk with no marker at all:
+
+```tuck-rejected
+extern [c, header: "stdio.h"]:
+  fn puts({s: str}) -> int          # no [io], though it writes
+
+fn pure({n: int}) -> int:           # declares nothing, and checks clean
+  {s: "backdoor"} puts discard
+  return n
+```
+
+The checker is right by its own rules here: the extern said it does nothing.
+Two smaller openings are deliberate: `main` may do anything, and a spawned
+task's effects are not charged to its spawner. The real fix is a module-system
+one, not an effect-system one: an importer grants an extern its effects, or an
+untrusted module may not declare externs. It is unscheduled. Until then the
+effect manifest (`tuck effects --check`, #63) is the practical guard: a new
+extern is a new line in the diff, shown with exactly the effects it claims.
+
 ---
 
 ## Part 4: Types

@@ -298,6 +298,21 @@ it in.
   `awaitResult` did; `sleepMs` and `nextSignal` there too. Found writing the
   `serve` app.
 
+- **A95 (issue #185) — a fill literal could not fill an Array sized by a
+  const.** `let a: Array[Big, int] = [7; 32]` with `const Big = 32` was
+  "expects Array[Big, int] but got Array[32, int]": a size compares by its
+  text, and the fill kept its own. Fixed: it takes the destination's spelling
+  when the values agree. Found testing #62.
+
+- **A96 (issue #186) — a `pending` fn taking two fields did not build.** Every
+  backend's stub took one generic `payload: T`, while the call site spreads a
+  payload into one argument per field: "extra argument given" on all three.
+  Fixed: one generic parameter per declared one. Found by `--mock` (#70).
+
+- **A97 (issue #187) — `{...} task discard` did not build on Nim.** A spawn is
+  a void statement and Nim rejects `discard` of one. Fixed: no `discard` over
+  a spawn. Found by the web-downloader under `--mock`.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

@@ -610,6 +610,32 @@ proc bugOpen*(t: var T, name: string) =
     t.open.inc
     echo &"  OPEN  {name} (known bug, still reproduces)"
 
+# --- ROADMAP claims ---------------------------------------------------------
+#
+# `known_bugs`' two markers, for a different claim: not "this is broken" but
+# "ROADMAP says this is (not) built". A roadmap row is prose and goes stale the
+# day the work lands; an assertion beside it cannot. `tests/suites/roadmap.nim`
+# is where they live.
+
+proc featureDone*(t: var T, name: string) =
+  ## The preceding quiet assertion shows a ROADMAP item IS built: it must keep
+  ## passing, like `bugFixed`.
+  if t.phase == pCollect: return
+  if t.lastSkipped: t.skip name & " (roadmap: done)"; return
+  if t.lastOk: t.ok name & " (roadmap: done)"
+  else: t.no name, "REGRESSED — ROADMAP records this as built"
+
+proc featureMissing*(t: var T, name: string) =
+  ## The preceding quiet assertion states how a ROADMAP item WILL behave, and
+  ## it is not built yet: expected to fail. When it passes, the suite fails
+  ## until the marker becomes `featureDone` and the ROADMAP line is updated.
+  if t.phase == pCollect: return
+  if t.lastSkipped: t.skip name & " (roadmap: missing)"; return
+  if t.lastOk:
+    t.no name, "NOW BUILT — flip featureMissing to featureDone and update ROADMAP.md"
+  else:
+    echo &"  TODO  {name} (roadmap: not built yet)"
+
 # --- free-form escapes ---------------------------------------------------
 #
 # A few suites assert things the DSL does not cover — greping the compiler's

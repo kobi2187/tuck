@@ -18,14 +18,21 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string
 
 proc genPendingStub*(d: Decl): string =
   ## A `pending` fn as a Nim stub that prints "TUCK PENDING" to stderr when
-  ## called. Generic over its one payload argument, so any call shape the
-  ## checker accepted still compiles.
-  # Tuck call sites pass one whole payload struct; the Tuck checker already
-  # verified its shape against the pending signature. The Nim stub is generic
-  # so any payload representation is absorbed.
+  ## called. One generic parameter per declared one, so any argument types
+  ## the checker accepted still compile — a pending signature may name types
+  ## nothing declares yet.
+  # A call site spreads a record payload into one argument per field, as it
+  # does for any fn (`{a: 1, b: "x"} put` is `put(1, "x")`), so the stub takes
+  # them the same way. One `payload: T` used to absorb a one-field call only:
+  # a second field was "extra argument given" (issue #70, found by --mock).
   let fnNameSanitized = d.name.replace(".", "_").replace("::", "_")
   let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
-  let paramStr = if d.fnParams.len > 0: "[T](payload: T)" else: "()"
+  var gens, ps: seq[string]
+  for i in 0 ..< d.fnParams.len:
+    gens.add "T" & $i
+    ps.add "p" & $i & ": T" & $i
+  let paramStr = if ps.len > 0: "[" & gens.join(", ") & "](" & ps.join(", ") & ")"
+                 else: "()"
   return "proc " & fnNameSanitized & "*" & paramStr & ": " & retTypeStr &
          " =\n  stderr.writeLine(\"TUCK PENDING: " & d.writtenName &
          " invoked (not implemented)\")\n"

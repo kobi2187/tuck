@@ -458,11 +458,16 @@ proc genDValidate*(ctx: var DCodegenCtx, d: Decl): string =
 proc genDPendingStub*(ctx: var DCodegenCtx, mem: Decl): string =
   ## A pending fn runs as a stub: log to stderr (the Nim backend's stream —
   ## the Odin one prints to stdout, a divergence recorded in the ledger),
-  ## return the zero value. The payload rides a template param exactly like
-  ## the Nim backend's generic stub, absorbing any record representation.
+  ## return the zero value. Each argument rides a template param exactly like
+  ## the Nim backend's generic stub, one per declared parameter.
   if mem.kind != dkFn: return ""
   let retStr = ctx.dType(mem.fnReturnType)
-  let params = if mem.fnParams.len > 0: "(T)(T payload)" else: "()"
+  var gens, ps: seq[string]
+  for i in 0 ..< mem.fnParams.len:
+    gens.add "T" & $i
+    ps.add "T" & $i & " p" & $i
+  let params = if ps.len > 0: "(" & gens.join(", ") & ")(" & ps.join(", ") & ")"
+               else: "()"
   result = retStr & " " & mem.name & params & " {\n" &
            "    stderr.writeln(\"TUCK PENDING: " & mem.writtenName &
            " invoked (not implemented)\");\n"

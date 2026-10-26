@@ -105,7 +105,11 @@ proc genPendingStub*(ctx: var OdinCodegenCtx, d: Decl): string =
   let ind = "  ".repeat(ctx.indent)
   let fnNameSanitized = d.name.replace(".", "_").replace("::", "_")
   let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
-  let paramStr = if d.fnParams.len > 0: "(payload: $T)" else: "()"
+  # One polymorphic parameter per declared one: a call spreads a record
+  # payload into one argument per field (see the Nim backend's genPendingStub).
+  var ps: seq[string]
+  for i in 0 ..< d.fnParams.len: ps.add "p" & $i & ": $T" & $i
+  let paramStr = "(" & ps.join(", ") & ")"
   let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
   var res = ind & fnNameSanitized & " :: proc" & paramStr & retStr & " {\n" &
             ind & "\tfmt.println(\"TUCK PENDING: " & d.writtenName &
