@@ -1210,3 +1210,56 @@ fn main() -> int [io, resource: udp]:
 """
   t.hostRuns "a stale handle reports identically on every runtime", 1,
              "finish of a stale handle for slot 0: tenancy 1, slot is on 2"
+
+  # --- a handle nobody releases (TK-RS12) -----------------------------------
+  #
+  # The build-time twin of OPEN RESOURCES: a local whose ONLY use is `.ok` is
+  # reported where it is bound. Every other use counts as handling it, so the
+  # three correct shapes below — `defer: finish`, handing it on, returning it
+  # — stay quiet, and only `leaky` is named.
+  const handles = """
+resources:
+  slot [cap: 2]
+
+fn take({fd: int}) -> ?SlotHandle [resource: slot]:
+  return acquire fd, slot
+
+fn give({h: SlotHandle}) -> int [resource: slot]:
+  finish h, slot
+  return 1
+
+fn viaDefer({fd: int}) -> int [resource: slot]:
+  let h = {fd: fd} take
+  if h.ok:
+    defer:
+      finish h.value, slot
+    return 1
+  return 0
+
+fn handedOn({fd: int}) -> int [resource: slot]:
+  let h = {fd: fd} take
+  if h.ok:
+    return {h: h.value} give
+  return 0
+
+fn returned({fd: int}) -> ?SlotHandle [resource: slot]:
+  let h = acquire fd, slot
+  return h
+"""
+  t.src handles & """
+fn leaky({fd: int}) -> int [resource: slot]:
+  let h = {fd: fd} take
+  if h.ok:
+    return 1
+  return 0
+
+fn main() -> int:
+  return {fd: 4} leaky
+"""
+  t.checkSays "a handle only ever tested with .ok is reported (TK-RS12)",
+              "'h' holds a slot handle that 'leaky' never finishes"
+  t.src handles & """
+fn main() -> int:
+  return {fd: 1} viaDefer + {fd: 2} handedOn
+"""
+  t.checkSilent "a finished, handed-on or returned handle is not", "TK-RS12"

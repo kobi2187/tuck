@@ -223,6 +223,7 @@ type
     dcRsCannotClose = "TK-RS09"         ## a state the closing one cannot be reached from
     dcRsBadStatesType = "TK-RS10"       ## `states:` names no sum type, or one with no edges
     dcRsIncoherent = "TK-RS11"          ## two knobs on one kind that cannot both mean anything
+    dcRsUnfinished = "TK-RS12"          ## a handle whose only use is `.ok`: never finished or handed on
 
 const UncodedNote* = """
 UNCODED DIAGNOSTICS. `dcNone` exists because codes are being adopted site by
@@ -1149,6 +1150,15 @@ proc ruleExplanation(d: DiagCode): string =
     "policy runs a sweep for it to size. Checked across every site that " &
     "declares the kind, since an app adding a cap is what makes a library's " &
     "`on_full` start to mean something."
+  of dcRsUnfinished:
+    "A warning. A local holds a resource handle (from `acquire`, or from a " &
+    "call that returns one), and the fn only ever tests it with `.ok`: it is " &
+    "never finished, returned, passed on or stored. So it stays open until " &
+    "the program exits, where OPEN RESOURCES lists it. Fix: release it where " &
+    "the work with it ends, usually `defer: finish h.value, kind` right " &
+    "inside the `if h.ok:` guard, so every path out of the scope releases " &
+    "it. Any other use of the handle counts as handling it, so this never " &
+    "fires on a handle that goes somewhere."
   of dcRsBadStatesType:
     "`states: T` points a resource kind at its protocol: T must be a sum " &
     "type carrying a `transitions:` block. The kind NAMES it rather than " &

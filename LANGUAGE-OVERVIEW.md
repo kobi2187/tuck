@@ -1448,11 +1448,13 @@ often than written, and the reader should not have to find the declaration of
 `sock` to learn which registry this touches. It costs nothing at runtime: the
 kind names the table directly.
 
-> **§7.4's static acquire-must-finish check is not built.** Both halves now
-> have a shape to match on, so it is writable — but the *escape* arm is
-> already sound by construction (the registry closes at exit, which is what
-> §7.4 says makes the local analysis sufficient), and the OPEN RESOURCES
-> report answers the same question at runtime meanwhile.
+**A handle nobody releases is reported at build time** (TK-RS12, a warning).
+A local whose only use is `if h.ok:` — never finished, returned, passed on or
+stored — is named at its binding, the same leak OPEN RESOURCES lists at exit,
+found before the program runs. Any other use counts as handling it, so
+`defer: finish h.value, kind` inside the guard, returning `h`, or handing
+`h.value` to a fn all stay quiet. Not path-sensitive: a handle finished on one
+branch only is not caught, which is why `defer` is the idiom.
 
 **A kind may NAME its protocol** — a sealed sum type, declared separately:
 

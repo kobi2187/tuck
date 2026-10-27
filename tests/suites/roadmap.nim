@@ -267,7 +267,9 @@ fn main() -> int:
   t.featureMissing "Message priority: an [urgent] handler"
 
   # "## Partial — Resource registry ... MISSING: §7.4's static
-  # acquire-must-finish check". A handle acquired and never finished.
+  # acquire-must-finish check". Built 2026-10-27 as a warning (TK-RS12), the
+  # build-time twin of the OPEN RESOURCES report at exit: a handle whose only
+  # use is `.ok`.
   t.src """
 resources:
   conn [cap: 4]
@@ -285,8 +287,8 @@ fn leak({port: int}) -> int [io, resource: conn]:
 fn main() -> int:
   return 0
 """
-  t.quietly: t.badCheck "§7.4: an acquire never finished is refused", "finish"
-  t.featureMissing "§7.4: an acquire never finished is refused"
+  t.quietly: t.checkSays "§7.4: an acquire never finished is reported", "TK-RS12"
+  t.featureDone "§7.4: an acquire never finished is reported"
 
 proc run*(t: var T) =
   ## Registers every ROADMAP claim as an assertion of the built behaviour,

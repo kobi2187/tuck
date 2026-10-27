@@ -72,7 +72,8 @@ import compiler/ast_serializer
 import compiler/modules
 import compiler/type_identity   # a type name two modules declare (A88)
 import compiler/effect_manifest
-import compiler/mock_surface  # `tuck effects --manifest` (#63)
+import compiler/mock_surface
+import compiler/resource_leaks  # `tuck effects --manifest` (#63)
 import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
 import compiler/actor_mode
@@ -644,6 +645,9 @@ proc checkOrDie(path: string, loaded: var seq[LoadedModule],
     # because it reads the checker's stamps (slab ops, slab derefs, callee
     # decls), which typecheckProgram resets on entry.
     checkSlabOwnership(loaded)
+    # A handle only ever tested with `.ok` (TK-RS12): the entry module only,
+    # as warnings are printed against its path. Reads the checker's types.
+    warnUnfinishedHandles(loaded[^1].m, programKinds)
     if verifyStages: verifyEffectsAssertions(loaded)
   except SemanticError as err:
     dieSemanticError(path, err)

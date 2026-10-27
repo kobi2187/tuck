@@ -2043,11 +2043,14 @@ the unbuilt together would be dishonest:
   it. The table is emitted at the first site in dependency order,
   which is a dependency of every later one — it has to be, since a library's
   own acquire site calls into that table.
-- **Not built:** the static acquire-must-finish check above. Both halves now
-  have a shape to match on, so it is writable; the *escape* arm is already
-  sound by construction — the registry closes at exit, which is exactly what
-  this section says makes the local analysis sufficient — and the OPEN
-  RESOURCES report answers the same question at runtime meanwhile.
+- **Built, as a warning (TK-RS12, 2026-10-27):** the conservative half of the
+  static acquire-must-finish check. A local holding a handle whose only use
+  is testing `.ok` is reported where it is bound: never finished, returned,
+  passed on or stored. Any other use counts as handling it, so the check
+  never fires on a handle that goes somewhere. A warning, because OPEN
+  RESOURCES at exit is a report too and a program may hold a handle to the
+  end on purpose. Path-sensitive checking (finished on one branch, not the
+  other) is not done; `defer: finish` is the idiom that makes it moot.
 - **Deliberately deferred:** single-owner (non-copyable) handles. They would
   make per-variable state tracking *complete* — turning use-after-finish into
   a compile-time error rather than a caught runtime one — but this section
