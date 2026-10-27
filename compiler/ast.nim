@@ -1043,6 +1043,8 @@ type
                                 # parameters the body owns (rule P). A call
                                 # hands them over; the copying wrapper `f`
                                 # of a moved twin copies each one first.
+      isUrgent*: bool    # `on reset() [urgent]:` — taken ahead of every
+                         # ordinary message (spec §9.1, message priority)
       isOnHandler*: bool # spelled `on name(...)`: in an actor, a MESSAGE
                          # handler; a `fn` there is a member the actor's own
                          # code calls (A24). Both parse to dkFn.

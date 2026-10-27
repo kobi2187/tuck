@@ -532,7 +532,7 @@ suite: #11 recursive types, #12 hashing, #16 numeric sigils, #32 resources,
 #68 property tests, #69 `fn memo`, #70 mocks, #74 liveness. #33 is closed.) (**#18 generic actors** is done and
 closed: one singleton per instantiation, expanded before typecheck.)
 
-**Message priority** (owner, 2026-09-28; not built, `roadmap.nim` featureMissing). An actor taking an urgent message
+**Message priority** (owner, 2026-09-28; BUILT 2026-10-27 as designed here, with the urgent mailbox taking the actor's own `queue` and `on_full` rather than knobs of its own — `mailbox_full`, `roadmap.nim`). An actor taking an urgent message
 ahead of the ones already waiting — a `reset` or `cancel` stuck behind a
 backlog of `send`s. It belongs on the HANDLER, not the actor
 (`on reset() [urgent]:`), because `[priority: high]` on an actor reads as

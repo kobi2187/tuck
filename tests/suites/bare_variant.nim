@@ -97,7 +97,7 @@ type Queue:
   | QueueFast
   | QueueSlow
 
-decision route({urgent: bool}) -> Queue:
+decision route({rush: bool}) -> Queue:
   | true  -> QueueFast
   | false -> QueueSlow
 

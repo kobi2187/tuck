@@ -219,6 +219,24 @@ proc actorOnFull*(d: Decl): OnFull =
     for p in OnFull:
       if $p == attr.value: return p
 
+const UrgentMailbox* = "urgent"
+  ## The second mailbox of an actor with an `[urgent]` handler. A field of the
+  ## emitted state, named by a reserved word so no actor field can collide.
+
+proc actorHasUrgent*(d: Decl): bool =
+  ## Does the actor take any message `[urgent]`? Only then does it carry the
+  ## second mailbox, so an actor without one costs exactly what it did.
+  if d == nil or d.kind != dkActor: return false
+  for h in d.handlers:
+    if h != nil and h.kind == dkFn and h.isOnHandler and h.isUrgent: return true
+
+proc urgentSend*(d: Decl, handler: string): bool =
+  ## Is a send of `handler` to actor `d` an urgent one?
+  if d == nil or d.kind != dkActor: return false
+  for h in d.handlers:
+    if h != nil and h.kind == dkFn and h.isOnHandler and h.name == handler:
+      return h.isUrgent
+
 proc actorLabel*(d: Decl, fallback: string): string =
   ## The actor's name as its author wrote it, for a runtime message.
   if d == nil: fallback else: writtenName(d)

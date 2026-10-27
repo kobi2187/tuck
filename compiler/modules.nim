@@ -482,7 +482,7 @@ proc importedShape(d: Decl, sp: Span): Decl =
       handlers.add Decl(kind: dkFn, name: h.name, fnParams: h.fnParams,
                         fnReturnType: h.fnReturnType, fnEffects: h.fnEffects,
                         fnGenerics: h.fnGenerics, isOnHandler: h.isOnHandler,
-                        span: sp)
+                        isUrgent: h.isUrgent, span: sp)
     Decl(kind: dkActor, name: d.name, attrs: d.attrs, actorFields: d.actorFields,
          handlers: handlers, span: sp)
   else:

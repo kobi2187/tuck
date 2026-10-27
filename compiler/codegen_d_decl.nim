@@ -235,9 +235,17 @@ proc genDDrain*(d: Decl): string =
   ## forever and yields itself, here the runtime owns the loop, so this
   ## returns a bool. Same behaviour, one less place to get the yield wrong.
   let singleton = actorSingletonName(d.name)
+  # `[urgent]` (spec §9.1): the urgent mailbox first, and again after EACH
+  # ordinary message — the Nim backend's genActorDrain.
+  proc takeUrgent(at: string): string =
+    if not actorHasUrgent(d): return ""
+    at & "foreach (ref u; " & singleton & "." & UrgentMailbox & ") {\n" &
+      at & "    handleMsg_" & d.name & "(" & singleton & ", u);\n" &
+      at & "    rt.tuckCheckWaiters();\n" &
+      at & "    did = true;\n" & at & "}\n"
   "__gshared void* " & actorSlotName(d.name) & ";\n\n" &
     "bool drain_" & d.name & "() {\n" &
-    "    bool did = false;\n" &
+    "    bool did = false;\n" & takeUrgent("    ") &
     # The mailbox swaps its two buffers once and then hands each message over
     # in place, so this loop holds no lock and copies nothing — the same
     # shape genActorDrain emits for Nim.
@@ -247,7 +255,8 @@ proc genDDrain*(d: Decl): string =
     # condition becomes true, and one that went true and false again inside a
     # batch would be missed by a once-per-pass check.
     "        rt.tuckCheckWaiters();\n" &
-    "        did = true;\n    }\n    return did;\n}\n\n"
+    "        did = true;\n" & takeUrgent("        ") &
+    "    }\n    return did;\n}\n\n"
 
 proc dExternTodo*(mem: Decl): string =
   ## Why this extern cannot emit a binding yet, or "" when it can. A TODO
@@ -624,12 +633,13 @@ proc genDSendHelper*(ctx: var DCodegenCtx, d: Decl,
   # stop the program, or drop — the bare enqueue every send used to be.
   let msg = d.name & "Msg(" & ctorArgs & ")"
   let actor = "\"" & actorLabel(d, d.name) & "\""
+  let box = "self." & (if urgentSend(d, h.name): UrgentMailbox else: "mailbox")
   let enqueue =
     case actorOnFull(d)
-    of ofDrop: "cast(void) rt.enqueue(self.mailbox, " & msg & ")"
-    of ofWait: "rt.sendWaiting(self.mailbox, " & msg & ", " &
+    of ofDrop: "cast(void) rt.enqueue(" & box & ", " & msg & ")"
+    of ofWait: "rt.sendWaiting(" & box & ", " & msg & ", " &
                actorSlotName(d.name) & ", " & actor & ")"
-    of ofAssert: "rt.sendAsserting(self.mailbox, " & msg & ", " & actor & ")"
+    of ofAssert: "rt.sendAsserting(" & box & ", " & msg & ", " & actor & ")"
   "void send" & h.name.capitalize() & "_" & d.name & "(ref " & d.name &
     " self" & sep & params.join(", ") & ") {\n" & copies &
     "    " & enqueue & ";\n    rt.tuckNotifySend(" & actorSlotName(d.name) &
@@ -645,6 +655,9 @@ proc genDActorState*(ctx: var DCodegenCtx, d: Decl,
   if hasMessages:
     fields.add("    rt.Mailbox!(" & d.name & "Msg, " & actorQueueSize(ctx.module, d) &
                ") mailbox;")
+    if actorHasUrgent(d):
+      fields.add("    rt.Mailbox!(" & d.name & "Msg, " &
+                 actorQueueSize(ctx.module, d) & ") " & UrgentMailbox & ";")
   if fields.len == 0: fields.add("    // no state")
   "struct " & d.name & " {\n" & fields.join("\n") & "\n}\n\n"
 

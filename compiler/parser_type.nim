@@ -250,11 +250,13 @@ type
     view*: string
     badIo*: string   # `[io: <name>]` naming no kind; the parser reports it
     depth*: int   # [recursion: N] — recursion allowed to N nested calls; 0 = unset
+    urgent*: bool # `on reset() [urgent]:` — a message that jumps the queue
 
 proc takeAttr*(tail: var SignatureTail, name, value: string): bool =
-  ## Folds one valued signature attribute into `tail`; false when `name` is
-  ## not one of them.
+  ## Folds one signature attribute that is not an effect marker into
+  ## `tail`; false when `name` is not one of them.
   case name
+  of "urgent": tail.urgent = value == ""   # `on reset() [urgent]:` (§9.1)
   of "error": tail.errTypes.add(value)   # [error: FsError | NetError]
   of "emit": tail.emit = value
   of "resource": tail.resources.add(value)  # [resource: udp] §7.4

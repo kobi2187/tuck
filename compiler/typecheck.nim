@@ -6749,6 +6749,21 @@ proc addHoistedWriters(mods: seq[tuple[name, path: string, m: Module]],
             if mo != nil and mo.id in writers and mc.id.isSet:
               writers.incl mc.id
 
+proc checkUrgentPlacement(mods: seq[tuple[name, path: string, m: Module]]) =
+  ## `[urgent]` (TK-AC13) only on an actor's `on` handler: the one thing that
+  ## receives a message, so the one thing a message priority can mean.
+  for (_, _, m) in mods:
+    var handlers: seq[Decl]
+    for a in m.decls(dkActor):
+      for h in a.handlers:
+        if h != nil and h.kind == dkFn and h.isOnHandler: handlers.add h
+    for d in m.allDecls:
+      if d != nil and d.kind == dkFn and d.isUrgent and d notin handlers and
+         d.origin == NoModule:
+        fail(dcAcUrgentPlace, "'" & d.name & "' is marked [urgent], which " &
+             "only an actor's `on` handler may be: it is a message that " &
+             "jumps the actor's queue. Fix: remove [urgent]", d.span)
+
 proc checkSelfWrites(mods: seq[tuple[name, path: string, m: Module]]) =
   ## A member that changes its object may be called on a `var` only — never
   ## on a parameter or a `let` (ruled 2026-09-28: a parameter is immutable
@@ -6820,6 +6835,7 @@ proc typecheckExpanding*(mods: var seq[tuple[name, path: string, m: Module]],
   recordQualifiedFns(mods)
   checkIfaceMatchesComplete(mods)
   checkSelfWrites(mods)
+  checkUrgentPlacement(mods)
 
 proc typecheckProgram*(mods: seq[tuple[name, path: string, m: Module]],
                        preSigs = initTable[string, seq[SigInfo]]()): seq[string] {.discardable.} =

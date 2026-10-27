@@ -164,4 +164,58 @@ fn main() -> int:
   t.src everyMessage.replace("[queue: 2]", "[queue: 2, priority: high]")
   t.badCheck "...and so is `priority`, which no actor takes", "no attribute 'priority'"
 
+  # --- message priority: `on reset() [urgent]:` -------------------------------
+  #
+  # An urgent message is taken ahead of every ordinary one already waiting
+  # (spec §9.1). `hold` keeps the actor busy while main queues five bumps, the
+  # reset and three more; the reset must run before ANY bump (exit 40), where
+  # an ordinary reset runs after the first five (45). On every backend, in
+  # every actor mode, and from another module.
+  const urgentActor = """
+actor Box [queue: 16]:
+  n: int = 0
+  seen: int = -1
+  spin: int = 0
+
+  on hold():
+    # long enough that main queues everything below before this ends
+    for i in 0 ..< 30_000_000:
+      spin = spin + 1
+
+  on bump():
+    n += 1
+
+  on reset() [urgent]:
+    # how many bumps ran before the reset: 0 when it jumped the queue
+    seen = n
+"""
+  const urgentMain = """
+fn done() -> bool:
+  return Box.n == 8
+
+fn main() -> int:
+  Box send hold {}
+  for i in 0 ..< 5:
+    Box send bump {}
+  Box send reset {}
+  for i in 0 ..< 3:
+    Box send bump {}
+  Box.waitUntil {pred: :done}
+  return Box.seen + 40
+"""
+  t.src urgentActor & urgentMain
+  t.okCheck "[urgent] on an actor's `on` handler checks"
+  t.hostRuns "an urgent message jumps the queue, on every backend", 40
+  for mode in ["single", "batch"]:
+    let (ub, ur) = t.buildAndRunUnder(mode)
+    t.assertModeRun("...and under --actors:" & mode, ub, ur, 40, "")
+  t.src urgentActor.replace(" [urgent]", "") & urgentMain
+  t.hostRuns "...where an ordinary one waits its turn", 45
+  t.src "import box\n" & urgentMain
+  t.addFile "box.tuck", urgentActor
+  t.hostRuns "...and an actor imported from another module keeps it", 40
+  t.src "fn f() -> int [urgent]:\n  return 1\n\nfn main() -> int:\n  return {} f\n"
+  t.badCheck "[urgent] anywhere but an actor's `on` handler is refused (TK-AC13)",
+             "TK-AC13"
+
   t.finish()

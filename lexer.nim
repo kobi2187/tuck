@@ -182,7 +182,7 @@ const keywords = {
   "big_endian": tkAttr, "little_endian": tkAttr, "invariant": tkAttr,
   "io": tkAttr, "unsafe": tkAttr, "may_block": tkAttr, "no_alloc": tkAttr,
   "irq_safe": tkAttr,
-  "error": tkAttr, "stack": tkAttr, "no_recursion": tkAttr, "recursion": tkAttr, "align": tkAttr, "priority": tkAttr, "pure": tkAttr
+  "error": tkAttr, "stack": tkAttr, "no_recursion": tkAttr, "recursion": tkAttr, "align": tkAttr, "priority": tkAttr, "urgent": tkAttr, "pure": tkAttr
 }.toTable()
 
 proc getLineContext*(source: string, targetLine: int): string =

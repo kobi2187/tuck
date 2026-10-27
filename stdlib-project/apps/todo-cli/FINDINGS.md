@@ -65,7 +65,7 @@ looking for a problem with `[]` — which was fine.
 
 ```tuck
 match t.prio:
-  Urgent: urgent = urgent + 1
+  Urgent: pressing = pressing + 1
   _: discard
 ```
 Emitted `of _:`. `_` is Nim's ignore-identifier and illegal as a branch label:

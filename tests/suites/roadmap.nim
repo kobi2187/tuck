@@ -249,7 +249,9 @@ fn flacRate() -> int:
 proc missingItems(t: var T) =
   ## Items ROADMAP lists as not built, still not built.
 
-  # "Message priority (owner, 2026-09-28) ... `on reset() [urgent]:`".
+  # "Message priority (owner, 2026-09-28) ... `on reset() [urgent]:`". Built
+  # 2026-10-27; what it DOES (jumps the queue, on every backend and actor
+  # mode) is asserted in `mailbox_full`.
   t.src """
 actor Box:
   n: int = 0
@@ -264,7 +266,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.okCheck "Message priority: an [urgent] handler"
-  t.featureMissing "Message priority: an [urgent] handler"
+  t.featureDone "Message priority: an [urgent] handler"
 
   # "## Partial — Resource registry ... MISSING: §7.4's static
   # acquire-must-finish check". Built 2026-10-27 as a warning (TK-RS12), the

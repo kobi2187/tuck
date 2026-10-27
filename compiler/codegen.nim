@@ -1232,9 +1232,10 @@ proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
   # The enqueue is the actor's `on_full` (R6): the message is built once and
   # handed to the wrapper, which waits, stops or — `drop` — is the bare
   # enqueue every send used to be.
-  let mb = singleton & ".mailbox"
-  let msg = msgType & "(" & ctorArgs & ")"
   let target = actorDeclNamed(ctx.module, ctx.realModules, e.sendActor)
+  let mb = singleton & "." &
+           (if urgentSend(target, e.sendHandler): UrgentMailbox else: "mailbox")
+  let msg = msgType & "(" & ctorArgs & ")"
   let actor = actorLabel(target, e.sendActor)
   let enqueue =
     case actorOnFull(target)
@@ -1242,7 +1243,10 @@ proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
     of ofWait: "sendWaiting(" & mb & ", " & msg & ", " &
                actorSlotName(e.sendActor) & ", " & escape(actor) & ")"
     of ofAssert: "sendAsserting(" & mb & ", " & msg & ", " & escape(actor) & ")"
-  enqueue & "\n" & ind & "tuckNotifySend(" & actorSlotName(e.sendActor) & ")"
+  # An urgent send is handed over at once, batch or not (`flushNow`).
+  let flush = if urgentSend(target, e.sendHandler): "\n" & ind & "flushNow(" & mb & ")"
+              else: ""
+  enqueue & flush & "\n" & ind & "tuckNotifySend(" & actorSlotName(e.sendActor) & ")"
 
 proc selectTimeoutMs(ctx: var CodegenCtx, arm: SelectArm): string =
   ## The `timeout` arm's deadline as a plain int of milliseconds.

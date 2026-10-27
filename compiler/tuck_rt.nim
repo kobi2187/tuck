@@ -1261,17 +1261,33 @@ when TuckActorsBatch:
   proc stagingFor[T; Cap: static int](mb: var Mailbox[T, Cap]): ptr Staging[T, Cap] =
     ## This thread's staging buffer for mailbox `mb`, created (and registered
     ## for flushing) on first use.
-    var st {.threadvar.}: Staging[T, Cap]
-    if not st.registered:
-      st.registered = true
-      st.mb = addr mb
-      # So the thread can flush everything it holds without naming any of it
-      # — see tuck_async.tuckFlushStaged.
-      tuckRegisterFlush(flushHook[T, Cap], flushDueHook[T, Cap],
-                        addr st)
-    addr st
+    ##
+    ## Keyed by the MAILBOX, not by its type. It was one threadvar per
+    ## `[T, Cap]`, which was one per actor only while every mailbox had a
+    ## message type of its own; an actor's `[urgent]` mailbox shares its
+    ## ordinary one's type, and their sends landed in one staging buffer,
+    ## handed to whichever mailbox registered first.
+    var all {.threadvar.}: seq[ptr Staging[T, Cap]]
+    for st in all:
+      if st.mb == addr mb: return st
+    # One per (thread, mailbox), for the thread's life: never freed.
+    let st = create(Staging[T, Cap])
+    st.registered = true
+    st.mb = addr mb
+    # So the thread can flush everything it holds without naming any of it
+    # — see tuck_async.tuckFlushStaged.
+    tuckRegisterFlush(flushHook[T, Cap], flushDueHook[T, Cap], st)
+    all.add st
+    st
 
 
+
+proc flushNow*[T; Cap: static int](mb: var Mailbox[T, Cap]) =
+  ## Hand over what this thread has staged for `mb` at once: an `[urgent]`
+  ## send does not wait for its batch to fill. A no-op outside batch mode,
+  ## where every send is already handed over as it is made.
+  when TuckActorsBatch:
+    handOver(stagingFor(mb)[])
 
 proc enqueue*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: T): bool =
   ## Sends `msg` to the mailbox; false when it is full and the message was

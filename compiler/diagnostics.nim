@@ -198,6 +198,7 @@ type
     dcAcShutdown = "TK-AC10"            ## a `shutdown` arm, or a send of `shutdown`
     dcAcArmShape = "TK-AC11"            ## an `on select` arm longer than one line or call
     dcAcArmReturn = "TK-AC12"           ## an `on select` arm that `return`s
+    dcAcUrgentPlace = "TK-AC13"         ## `[urgent]` on anything but an actor's `on` handler
     dcMeSizeCount = "TK-ME01"           ## a pool/arena size or count is not positive
     dcMeArenaInert = "TK-ME02"          ## RETIRED 2026-10-04: the arena is built
     dcMeSlabInValue = "TK-ME03"         ## a slab declared inside an object or mixin
@@ -996,6 +997,13 @@ proc ruleExplanation(d: DiagCode): string =
     "body hidden in a table of what is waited on, and the table is what a " &
     "reader scans. Fix: move the work into a fn (an actor's member fn, or a " &
     "task's helper) and make the arm call it: `| done -> {}: {} finish`."
+  of dcAcUrgentPlace:
+    "`[urgent]` marks a MESSAGE as one that jumps the queue: an actor takes " &
+    "every waiting urgent message before the next ordinary one, so a " &
+    "`reset` or `cancel` is not stuck behind a backlog of sends. Only an " &
+    "actor's `on` handler receives messages, so only it may carry the " &
+    "marker; on a fn, a member or a task it would mean nothing. Fix: remove " &
+    "it, or move the work into an `on` handler of the actor."
   of dcAcArmReturn:
     "An `on select` arm is void and ends nothing: an actor has no listening " &
     "loop for it to leave and no caller to hand a value to (a message is " &

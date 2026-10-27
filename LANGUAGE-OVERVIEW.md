@@ -385,7 +385,7 @@ gets its own copy of `join`, checked again as plain code; a Flac and an Mp3
 together, or an interface value, are refused (`tests/suites/interfaces.nim`).
 
 > **Attribute words are reserved words** (`error`, `stack`, `align`,
-> `priority`, `volatile`, `io`, and the rest of the lexer's attribute list).
+> `priority`, `urgent`, `volatile`, `io`, and the rest of the lexer's attribute list).
 > They name nothing: not a field, a parameter (a decision column included),
 > a local, a fn, a member, a handler, a variant, a module, or a type
 > argument (`Box[error]` is refused; type arguments are Capitalized). A name
@@ -863,6 +863,31 @@ gone entirely (`tests/suites/actor_result.nim`).
 > plain actors: `Box[int]` and `Box[str]` are two singletons with two
 > mailboxes. A generic actor nobody instantiates is refused (`TK-TY28`), not
 > dropped (`tests/suites/declarations.nim`).
+
+### Message priority — `on reset() [urgent]:`
+
+A handler marked `[urgent]` receives messages that jump the queue: the actor
+takes every waiting urgent message before its next ordinary one, so a `reset`
+or `cancel` is not stuck behind a backlog of sends. Two levels only, normal
+and urgent, and the marker is on the HANDLER — the message, not the actor.
+
+```tuck
+actor Worker [queue: 64]:
+  queued: int = 0
+
+  on job({n: int}):
+    queued += n
+
+  on cancel() [urgent]:      # runs before any job already waiting
+    queued = 0
+```
+
+An actor with an urgent handler carries a second mailbox, sized by its
+`queue` and governed by its `on_full`; one without pays nothing. The order
+promise narrows to "one sender's messages are handled in order WITHIN a
+level". Only an actor's `on` handler may be urgent (TK-AC13). Run-verified on
+every backend and in every `--actors:` mode, and across a module boundary
+(`tests/suites/mailbox_full.nim`).
 
 ### Liveness — `Actor.alive` and `Actor.pingUs`
 

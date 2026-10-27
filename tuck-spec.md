@@ -2308,6 +2308,17 @@ actors whose full mailboxes each wait on the next can hang; that is what
 An actor takes these two attributes, `queue` and `on_full`, and no others
 (TK-AC07).
 
+**Message priority** (built 2026-10-27). A handler marked `[urgent]` —
+`on cancel() [urgent]:` — receives messages that jump the queue: the actor
+takes every waiting urgent message before its next ordinary one, including
+between two ordinary messages of a batch it has already taken. Two levels,
+normal and urgent; numbered levels invite priority inversion. The marker is
+the HANDLER's, because a priority on the actor would read as "this actor
+before other actors", which the OS schedules. An actor with an urgent handler
+carries a second mailbox of the same `queue` and `on_full`. The promise below
+narrows to one sender's messages being handled in order within a level, which
+is the point. `[urgent]` anywhere but an actor's `on` handler is TK-AC13.
+
 **No order is promised between two senders** (ruled 2026-09-28, #84). When
 two senders each send to one actor, which message it handles first is
 whatever the runtime finds fastest, and it can differ by `--actors:` mode and

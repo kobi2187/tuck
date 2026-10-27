@@ -514,6 +514,9 @@ proc genActorState*(ctx: var CodegenCtx, d: Decl, msgTypeName,
   for f in d.actorFields:
     fieldsStr.add("  " & f.name & "*: " & ctx.fieldType(d.name, f))
   fieldsStr.add("  mailbox*: Mailbox[" & msgTypeName & ", " & queueSize & "]")
+  if actorHasUrgent(d):
+    fieldsStr.add("  " & UrgentMailbox & "*: Mailbox[" & msgTypeName & ", " &
+                  queueSize & "]")
   "type " & d.name & "* = ref object\n" & fieldsStr.join("\n") & "\n"
 
 proc genActorDispatch*(ctx: CodegenCtx, d: Decl, msgTypeName: string,
@@ -545,7 +548,7 @@ proc genActorDispatch*(ctx: CodegenCtx, d: Decl, msgTypeName: string,
   "proc handleMsg*(self: " & d.name & ", msg: " & msgTypeName & ") =\n  case msg." & TagField & "\n" &
     handlerCases.join("\n") & "\n"
 
-proc genActorDrain*(drainName, singleton: string): string =
+proc genActorDrain*(drainName, singleton: string, urgent = false): string =
   ## The drain closure: take everything waiting, dispatch it, report progress.
   ## The scheduler registers this; it never sees the concrete Msg type.
   ##
@@ -556,6 +559,15 @@ proc genActorDrain*(drainName, singleton: string): string =
     "proc " & drainName & "(): bool {.gcsafe.} =\n" &
     "  {.cast(gcsafe).}:\n" &
     "    result = false\n"
+  # `[urgent]` (spec §9.1): the urgent mailbox is emptied first, and again
+  # after EACH ordinary message, so an urgent one sent while a backlog is
+  # being worked through is taken next rather than after it.
+  let takeUrgent =
+    "for u in messages(" & singleton & "." & UrgentMailbox & "):\n" &
+    "  handleMsg(" & singleton & ", u)\n" &
+    "  tuckCheckWaiters()\n" &
+    "  result = true"
+  if urgent: result.add takeUrgent.indent(4) & "\n"
   result.add(
     "    for m in messages(" & singleton & ".mailbox):\n" &
     "      handleMsg(" & singleton & ", m)\n" &
@@ -565,6 +577,7 @@ proc genActorDrain*(drainName, singleton: string): string =
     # Costs one length check when nobody is waiting.
     "      tuckCheckWaiters()\n" &
     "      result = true\n")
+  if urgent: result.add takeUrgent.indent(6) & "\n"
 
 proc genActor*(ctx: var CodegenCtx, d: Decl): string =
   ## An actor as Nim: message kinds and envelope, the ref-object state, its
@@ -596,7 +609,7 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
     if f.default != nil: inits.add(f.name & ": " & ctx.genExpr(f.default))
   let singletonStr = "let " & singleton & "* = " & d.name & "(" &
                      inits.join(", ") & ")\n"
-  let drainStr = genActorDrain(drainName, singleton)
+  let drainStr = genActorDrain(drainName, singleton, actorHasUrgent(d))
   var memberStr = ""
   for m in actorMemberFns(d): memberStr.add ctx.genActorMemberFn(m, d.name) & "\n"
   # auto-registration hook: main's prologue calls registerActors()
