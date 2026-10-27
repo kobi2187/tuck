@@ -1,0 +1,105 @@
+# kvmap — a string-keyed hash map with expiry, for the kv store.
+#
+# Separate chaining over FNV-1a (core.hash): a Seq of buckets, each a Seq of
+# slots, doubled when the load passes 3/4. Written here rather than taken from
+# alloc/map, whose Table finds a key by scanning every entry — fine for a
+# config file, not for a store under load.
+#
+# Expiry is a LOGICAL clock: an entry carries the tick it dies at (0 = never),
+# and every read is given `now`. Nothing here reads a real clock, so a test
+# replays the same ticks and gets the same answers.
+import hash
+import seq
+import str
+
+type Slot:
+  key: str
+  value: str
+  diesAt: int
+
+type KvMap:
+  buckets: Seq[Seq[Slot]]
+  live: int
+
+const FirstSize = 8
+
+fn emptyBuckets({n: int}) -> Seq[Seq[Slot]]:
+  var out: Seq[Seq[Slot]] = []
+  for i in 0 ..< n:
+    let empty: Seq[Slot] = []
+    out = {items: out, value: empty} push
+  return out
+
+fn newMap() -> KvMap:
+  let buckets = {n: FirstSize} emptyBuckets
+  return {buckets: buckets, live: 0} KvMap
+
+fn bucketOf({key: str, size: int}) -> int:
+  let h = {data: key} hashStr
+  return (h % (size ~u64)) ~int
+
+fn alive({s: Slot, now: int}) -> bool:
+  return s.diesAt == 0 or s.diesAt > now
+
+fn lookup({m: KvMap, key: str, now: int}) -> Slot?:
+  let at = {key: key, size: m.buckets.len} bucketOf
+  let b = m.buckets[at]
+  for i in 0 ..< b.len:
+    let s = b[i]
+    if s.key == key:
+      if {s: s, now: now} alive:
+        return s
+      return
+  return
+
+fn without({b: Seq[Slot], key: str}) -> Seq[Slot]:
+  var out: Seq[Slot] = []
+  for i in 0 ..< b.len:
+    if b[i].key != key:
+      out = {items: out, value: b[i]} push
+  return out
+
+fn placed({buckets: Seq[Seq[Slot]], s: Slot}) -> Seq[Seq[Slot]]:
+  var out = buckets
+  let at = {key: s.key, size: out.len} bucketOf
+  let b = {b: out[at], key: s.key} without
+  out[at] = {items: b, value: s} push
+  return out
+
+fn grown({m: KvMap}) -> KvMap:
+  var next = {n: m.buckets.len * 2} emptyBuckets
+  for i in 0 ..< m.buckets.len:
+    let b = m.buckets[i]
+    for j in 0 ..< b.len:
+      next = {buckets: next, s: b[j]} placed
+  return {buckets: next, live: m.live} KvMap
+
+fn put({m: KvMap, key: str, value: str, diesAt: int, now: int}) -> KvMap:
+  var live = m.live
+  let had = {m: m, key: key, now: now} lookup
+  if not had.ok:
+    live = live + 1
+  let s = {key: key, value: value, diesAt: diesAt} Slot
+  let buckets = {buckets: m.buckets, s: s} placed
+  var out = {buckets: buckets, live: live} KvMap
+  if out.live * 4 > out.buckets.len * 3:
+    out = {m: out} grown
+  return out
+
+fn drop({m: KvMap, key: str, now: int}) -> {table: KvMap, had: bool}:
+  let had = {m: m, key: key, now: now} lookup
+  var buckets = m.buckets
+  let at = {key: key, size: buckets.len} bucketOf
+  buckets[at] = {b: buckets[at], key: key} without
+  let live = if had.ok: m.live - 1 else: m.live
+  let table = {buckets: buckets, live: live} KvMap
+  return {table: table, had: had.ok}
+
+fn keysAt({m: KvMap, now: int}) -> Seq[str]:
+  var out: Seq[str] = []
+  for i in 0 ..< m.buckets.len:
+    let b = m.buckets[i]
+    for j in 0 ..< b.len:
+      if {s: b[j], now: now} alive:
+        out = {items: out, value: b[j].key} push
+  return out

@@ -28,7 +28,7 @@ proc tuckResourcesShutdown*() =
   shutdownResources(tuckRes_file)
   shutdownResources(tuckRes_net)
 
-proc tuckˑfnˑrawOpenUdp*[T](payload: T): int =
+proc tuckˑfnˑrawOpenUdp*[T0](p0: T0): int =
   stderr.writeLine("TUCK PENDING: rawOpenUdp invoked (not implemented)")
 
 

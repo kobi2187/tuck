@@ -105,7 +105,11 @@ proc genPendingStub*(ctx: var OdinCodegenCtx, d: Decl): string =
   let ind = "  ".repeat(ctx.indent)
   let fnNameSanitized = d.name.replace(".", "_").replace("::", "_")
   let retTypeStr = if d.fnReturnType != nil: ctx.odinType(d.fnReturnType) else: "void"
-  let paramStr = if d.fnParams.len > 0: "(payload: $T)" else: "()"
+  # One polymorphic parameter per declared one: a call spreads a record
+  # payload into one argument per field (see the Nim backend's genPendingStub).
+  var ps: seq[string]
+  for i in 0 ..< d.fnParams.len: ps.add "p" & $i & ": $T" & $i
+  let paramStr = "(" & ps.join(", ") & ")"
   let retStr = if retTypeStr != "void": " -> " & retTypeStr else: ""
   var res = ind & fnNameSanitized & " :: proc" & paramStr & retStr & " {\n" &
             ind & "\tfmt.println(\"TUCK PENDING: " & d.writtenName &
@@ -720,6 +724,9 @@ proc genActorState*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   var fields = ctx.actorFieldLines(d)
   fields.add(ind & "\tmailbox: rt.Mailbox(" & d.name & "Msg, " &
              mailboxSize(ctx.module, d) & "),")
+  if actorHasUrgent(d):
+    fields.add(ind & "\t" & UrgentMailbox & ": rt.Mailbox(" & d.name & "Msg, " &
+               mailboxSize(ctx.module, d) & "),")
   ind & d.name & " :: struct {\n" & fields.join("\n") & "\n" & ind & "}\n\n"
 
 proc newHandlerCtx*(ctx: OdinCodegenCtx, d: Decl): OdinCodegenCtx =
@@ -776,9 +783,19 @@ proc genDrain*(d: Decl, ind: string): string =
   ## D do not have the bug because there the RUNTIME owns the actor loop and
   ## makes this decision — the drain merely reports whether it did work.
   let singleton = actorSingletonName(d.name)
+  # `[urgent]` (spec §9.1): the urgent mailbox first, and again after EACH
+  # ordinary message — the Nim backend's genActorDrain, as a slice loop.
+  proc takeUrgent(at: string): string =
+    if not actorHasUrgent(d): return ""
+    at & "ub, un := rt.takeBatch(&" & singleton & "." & UrgentMailbox & ")\n" &
+      at & "for j in 0 ..< un {\n" &
+      at & "\thandleMsg_" & d.name & "(&" & singleton & ", ub[j])\n" &
+      at & "\trt.tuckCheckWaiters()\n" &
+      at & "\tdidWork = true\n" &
+      at & "}\n"
   "\n" & ind & actorSlotName(d.name) & ": rawptr\n" &
     "\n" & ind & "drain_" & d.name & " :: proc() -> bool {\n" &
-    ind & "\tdidWork := false\n" &
+    ind & "\tdidWork := false\n" & takeUrgent(ind & "\t") &
     # takeBatch swaps the mailbox's two buffers once and returns what was
     # waiting, so this loop holds no lock and copies nothing — the same shape
     # genActorDrain emits for Nim, spelled as a slice because Odin has no
@@ -790,20 +807,20 @@ proc genDrain*(d: Decl, ind: string): string =
     # condition becomes true, and one that went true and false again inside a
     # batch would be missed by a once-per-pass check.
     ind & "\t\trt.tuckCheckWaiters()\n" &
-    ind & "\t\tdidWork = true\n" &
+    ind & "\t\tdidWork = true\n" & takeUrgent(ind & "\t\t") &
     ind & "\t}\n" &
     ind & "\treturn didWork\n" & ind & "}\n"
 
-proc odinEnqueue(d: Decl, msg: string): string =
+proc odinEnqueue(d: Decl, msg: string, box = "mailbox"): string =
   ## A send helper's enqueue of `msg` under the actor's `on_full` (R6): wait
   ## for room (the default), stop the program, or drop — the bare enqueue
   ## every send used to be.
   let actor = "\"" & actorLabel(d, d.name) & "\""
   case actorOnFull(d)
-  of ofDrop: "_ = rt.enqueue(&self.mailbox, " & msg & ")"
-  of ofWait: "rt.sendWaiting(&self.mailbox, " & msg & ", " &
+  of ofDrop: "_ = rt.enqueue(&self." & box & ", " & msg & ")"
+  of ofWait: "rt.sendWaiting(&self." & box & ", " & msg & ", " &
              actorSlotName(d.name) & ", " & actor & ")"
-  of ofAssert: "rt.sendAsserting(&self.mailbox, " & msg & ", " & actor & ")"
+  of ofAssert: "rt.sendAsserting(&self." & box & ", " & msg & ", " & actor & ")"
 
 proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
                    ind: string): string =
@@ -838,7 +855,9 @@ proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
   let sep = if params.len > 0: ", " else: ""
   "\n" & ind & "send" & h.name.capitalize() & "_" & d.name & " :: proc(self: ^" &
     d.name & sep & params.join(", ") & ") {\n" & copies &
-    ind & "\t" & odinEnqueue(d, d.name & "Msg{" & ctorArgs & "}") & "\n" &
+    ind & "\t" & odinEnqueue(d, d.name & "Msg{" & ctorArgs & "}",
+                             if urgentSend(d, h.name): UrgentMailbox
+                             else: "mailbox") & "\n" &
     # The send NOTIFIES. It never did: the actor parks on a condvar when its
     # mailbox comes up empty, so a send to a parked Odin actor was a lost
     # wakeup — the message sat in the ring and nothing arrived to drain it

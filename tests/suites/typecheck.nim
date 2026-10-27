@@ -2780,6 +2780,91 @@ fn main() -> int:
   t.badCheck "an unresolvable queue size says what is wanted",
              "a\\ literal,\\ or\\ a\\ `const`\\ naming\\ one"
 
+  # #62: a const may be computed by a fn that declares no effects: it cannot
+  # touch the world, so running it at build time is safe. The evaluator knows
+  # let/var, if, return, comparisons and calls (recursion included), over
+  # integers; the const becomes its number before any backend sees it.
+  t.src """
+fn pow2({n: int}) -> int:
+  if n == 0:
+    return 1
+  let half = {n: n - 1} pow2
+  return half * 2
+
+fn slots({users: int}) -> int:
+  let raw = users * 3
+  if raw > 20:
+    return 20
+  return raw
+
+const Cap = {users: 4} slots
+const Big = {n: 5} pow2
+
+actor Sink [queue: Cap]:
+  k: int = 0
+
+  on put({v: int}):
+    k = v
+
+fn main() -> int:
+  let a: Array[Big, int] = [0; 32]
+  return Cap + Big + a[3]
+"""
+  t.okCheck "a const may call an effect-free fn, and size a queue and an Array"
+  t.emits "...and codegen emits the NUMBER", "Mailbox\\[[^,]*,\\ 12\\]"
+  t.hostRuns "...and is that number on every backend", 44
+
+  t.src """
+import console
+
+fn noisy({n: int}) -> int [io: console]:
+  {text: "x"} printLine
+  return n
+
+const Cap = {n: 4} noisy
+
+fn main() -> int:
+  return Cap
+"""
+  t.badCheck "...but not a fn that declares an effect", "must be pure"
+
+  t.src """
+fn spin({n: int}) -> int:
+  return {n: n + 1} spin
+
+const Cap = {n: 1} spin
+
+actor Sink [queue: Cap]:
+  k: int = 0
+
+  on put({v: int}):
+    k = v
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "...and a recursion that never ends is refused, not hung on", "TK-AC01"
+
+  t.src """
+fn grow({n: int}) -> int:
+  if n == 0:
+    return 1
+  let r = {n: n - 1} grow
+  return r * 1000
+
+const Cap = {n: 10} grow
+
+actor Sink [queue: Cap]:
+  k: int = 0
+
+  on put({v: int}):
+    k = v
+
+fn main() -> int:
+  return 0
+"""
+  t.badCheck "...and an overflow is refused, as it would trap at run time", "TK-AC01"
+
   # The remaining two size positions check in the PARSER, which has one
   # declaration and no module — so they hand the spelling on and the checker
   # settles it. All five now take one grammar.

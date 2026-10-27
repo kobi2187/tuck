@@ -149,17 +149,18 @@ proc memberOfActor(a: Decl, name: string): Decl =
 proc calleeOf(s: Scan, home: int, actor: Decl, call: Expr): Decl =
   ## The declaration a call reaches, or nil for a builtin, an extern, a
   ## local fn value or anything else with no body here.
-  result = semLayer.declFor(call)
-  if result != nil: return
-  if call.callee != nil and call.callee.kind == exkQualified:
-    return s.qualifiedFn(home, call.callee)
-  if call.callee == nil or call.callee.kind != exkVar: return nil
-  result = memberOfActor(actor, call.callee.name)
-  if result != nil: return
-  for lm in s.mods:
-    result = memberCallDecl(semLayer, lm.m, call)
+  # An actor's own member first: inside the actor a bare name means it.
+  if semLayer.declFor(call) == nil and call.callee != nil and
+     call.callee.kind == exkVar:
+    result = memberOfActor(actor, call.callee.name)
     if result != nil: return
-  result = s.fnNamed(home, call.callee.name)
+  result = calleeDecl(semLayer, s.mods[home].m, call)
+  if result != nil and result.fnBody != nil: return
+  # A member of an IMPORTED object: the importer holds its signature only,
+  # and this pass reads bodies, so take it from the module that declares it.
+  for lm in s.mods:
+    let member = memberCallDecl(semLayer, lm.m, call)
+    if member != nil and member.fnBody != nil: return member
 
 proc isFnValue(n: Expr): bool =
   ## A name whose value is a fn — a callback being handed on.

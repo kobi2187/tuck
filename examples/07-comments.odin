@@ -13,7 +13,7 @@ TRec_url_timeout :: struct ($T_url: typeid, $T_timeout: typeid) {
 	timeout: T_timeout,
 }
 
-tuckˑfnˑfetch :: proc(payload: $T) -> TRec_status(int) {
+tuckˑfnˑfetch :: proc(p0: $T0) -> TRec_status(int) {
 	fmt.println("TUCK PENDING: fetch invoked (not implemented)")
 	return {}
 }
@@ -22,7 +22,7 @@ tuckˑfnˑfetch :: proc(payload: $T) -> TRec_status(int) {
 tuckˑfnˑmain :: proc () {
   tuckˑvˑconfig := TRec_url_timeout(string, int){url = rt.tuckStrOwned("https://api.example.com"), timeout = 100}
   defer rt.tuckDrop(tuckˑvˑconfig.url)
-  tuckˑvˑresult := tuckˑfnˑfetch(tuckˑvˑconfig)
+  tuckˑvˑresult := tuckˑfnˑfetch(tuckˑvˑconfig.url)
   return
 }
 

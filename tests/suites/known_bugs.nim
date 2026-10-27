@@ -4812,4 +4812,200 @@ fn main() -> int [io: net, io: clock]:
   t.quietly: t.hostRuns "A94: an [io] fn waits on the network outside a task", 42
   t.bugFixed "A94: an [io] fn waits on the network outside a task"
 
+  # #126. A const typed as a named record: the stated type was never mangled
+  # (ast_ops.ownTypes skipped dkConst), so D, which prints it, named an
+  # undeclared `P`. Nim and Odin infer it from the value.
+  t.src """
+type P:
+  x: int
+
+const p: P = {x: 3} P
+
+fn main() -> int:
+  return p.x
+"""
+  t.quietly: t.hostRuns "#126: a const may be typed as a named record, on every backend", 3
+  t.bugFixed "#126: a const may be typed as a named record, on every backend"
+
+  # #93. On Odin, whose strings have no capacity, `s = s + x` copied the whole
+  # string every time: quadratic (200k appends 1.5s; 2M about 270s, against
+  # well under 0.1s on Nim and D). An append now grows the block geometrically
+  # and writes into its slack. Each run is killed at 10s, which the quadratic
+  # version is far past at this size; the content is checked too.
+  t.src """
+import str
+
+fn main() -> int:
+  var s = "<"
+  var i = 0
+  for i < 1000000:
+    s = s + "ab"
+    i = i + 1
+  s = s + ">"
+  if {t: s} byteCount != 2000002:
+    return 1
+  if {s: s, index: 1} charAt != "a" or {s: s, index: 1999999} charAt != "a":
+    return 2
+  if {s: s, index: 2000000} charAt != "b" or {s: s, index: 2000001} charAt != ">":
+    return 3
+  return 9
+"""
+  t.quietly: t.hostRuns "#93: a str grown by appends stays linear on Odin", 9
+  t.bugFixed "#93: a str grown by appends stays linear on Odin"
+
+  # A95. `[0; 32]` into `Array[Big, int]` with `const Big = 32` was "expects
+  # Array[Big, int] but got Array[32, int]": a type compares an Array's size by
+  # its text, and the fill literal kept its own. It now takes the
+  # destination's spelling when the two agree in value, as a list does.
+  t.src """
+const Big = 32
+
+fn main() -> int:
+  let a: Array[Big, int] = [7; 32]
+  return a[31]
+"""
+  t.quietly: t.hostRuns "A95: a fill literal fills an Array sized by a const", 7
+  t.bugFixed "A95: a fill literal fills an Array sized by a const"
+
+  # A96. A `pending` fn taking two fields did not build on any backend: every
+  # stub took one generic `payload: T`, and the call site spreads a payload
+  # into one argument per field (`put(1, "x")`), "extra argument given". A
+  # record held in a variable was not spread at all. The stub now takes one
+  # generic parameter per declared one, and the call records its params like
+  # any fn's. Found running the web-downloader under `--mock` (#70).
+  t.src """
+pending:
+  fn put({a: int, b: str}) -> int
+
+fn viaVar() -> int:
+  let q = {a: 2, b: "y"}
+  return q put
+
+fn main() -> int:
+  let r = {a: 1, b: "x"} put
+  return r + {} viaVar + 3
+"""
+  t.quietly: t.hostRuns "A96: a two-field pending fn builds and runs its stub", 3,
+                        "TUCK PENDING: put"
+  t.bugFixed "A96: a two-field pending fn builds and runs its stub"
+
+  # A97. `{...} task discard` on the Nim backend emitted `discard
+  # tuckSpawnJobDrop(...)`, and the spawn is void: "has no type". A spawn
+  # already drops the result nobody awaits, so the `discard` goes.
+  t.src """
+task work({n: int}) -> int:
+  return n
+
+fn main() -> int:
+  {n: 1} work discard
+  return 5
+"""
+  t.quietly: t.hostRuns "A97: discarding a spawned task builds on Nim", 5
+  t.bugFixed "A97: discarding a spawned task builds on Nim"
+
+  # A98. An object satisfying an interface from a module it imports had its
+  # data hoisted into the generated `iface_variants` (A27), and every OTHER
+  # module saw it through that data-only copy: no `satisfies` lines and no
+  # members. So `{s: f} rate` was "does not declare satisfies AudioSource"
+  # and `f.sampleRate` was "no field" anywhere but the object's own module.
+  # The importer now sees it from its home module, and Odin and D name its
+  # struct by the generated module and its members by the home one.
+  t.src """
+import audio
+import codecs
+
+fn rate({s: AudioSource}) -> int:
+  return s.sampleRate
+
+fn main() -> int:
+  let f = Flac{bits: 16}
+  return ({s: f} rate /i 1000) + (f.sampleRate /i 1000) - 96
+"""
+  t.addFile "audio.tuck", """
+interface AudioSource:
+  fn sampleRate({self: Self}) -> int
+"""
+  t.addFile "codecs.tuck", """
+import audio
+
+object Flac:
+  satisfies AudioSource
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+"""
+  t.quietly: t.hostRuns "A98: an imported satisfier keeps its interface and members", 96
+  t.bugFixed "A98: an imported satisfier keeps its interface and members"
+
+  # A99. `match` on a str with string-literal arms never compiled: the pattern
+  # printer (ast_query.genPatternStr) dropped the quotes, so `"GET":` became
+  # `of GET:` / `case .GET:` / `case GET:` on the three backends. Found
+  # writing the kv-store app's protocol parser (#107).
+  t.src """
+fn code({verb: str}) -> int:
+  match verb:
+    "GET": return 1
+    "DEL": return 2
+    _: return 3
+
+fn main() -> int:
+  return {verb: "DEL"} code + {verb: "nope"} code
+"""
+  t.quietly: t.hostRuns "A99: a match on a str with string arms", 5
+  t.bugFixed "A99: a match on a str with string arms"
+
+  # A100. A QUALIFIED call (`lib::add`) got no ownership treatment: the
+  # ownership rules find a callee by name in `fnBodies`, which held bare names
+  # only, so an argument was not moved into a parameter the callee consumes,
+  # and both sides freed it — a crash on Nim. A call is qualified exactly when
+  # the bare name is ambiguous, so this hit the code that most needed it.
+  t.src """
+import lib
+
+fn main() -> int:
+  let empty: Seq[str] = []
+  var b = {items: empty} Bag
+  for i in 0 ..< 3:
+    b = {b: b, s: "x"} lib::add
+  return b.items.len
+"""
+  t.addFile "lib.tuck", """
+import seq
+
+type Bag:
+  items: Seq[str]
+
+fn add({b: Bag, s: str}) -> Bag:
+  var out = b
+  out.items = {items: out.items, value: s} push
+  return out
+"""
+  t.quietly: t.hostRuns "A100: a qualified call moves into a consuming parameter", 3
+  t.bugFixed "A100: a qualified call moves into a consuming parameter"
+
+  # A101. The same blind spot in the effect check: a fn declaring nothing
+  # could print through `lib::shout` and check clean, while the bare `shout`
+  # was TK-EF01. The effect table was keyed both ways; the call side only
+  # ever read a bare name. One call key (`ast_ops.callKey`) for every pass,
+  # and a stage check (`assertCallEdges`) that every call to a fn with a body
+  # was resolved, whatever its spelling.
+  t.src """
+import lib
+
+fn quiet() -> int:
+  return {s: "x"} lib::shout
+
+fn main() -> int:
+  return {} quiet
+"""
+  t.addFile "lib.tuck", """
+import console
+
+fn shout({s: str}) -> int [io: console]:
+  {text: s} printLine
+  return 1
+"""
+  t.quietly: t.badCheck "A101: a qualified call carries its callee's effects", "TK-EF01"
+  t.bugFixed "A101: a qualified call carries its callee's effects"
+
   t.finish()

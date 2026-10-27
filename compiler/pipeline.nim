@@ -262,6 +262,66 @@ proc assertTreeIds*(stage: string, mods: seq[Module]) =
   ## Every node has an id and no two nodes share one (tree_invariants).
   report(stage & " ids", idErrors(mods))
 
+proc requirementNames(mods: seq[Module]): HashSet[string] =
+  ## Every requirement any interface or group of the program declares: what a
+  ## generic body may call through its bound, wherever the bound comes from.
+  for m in mods:
+    for d in m.decls:
+      if d != nil and d.kind in {dkInterface, dkGroup}:
+        for mem in d.childDecls:
+          if mem != nil: result.incl mem.name
+
+proc dispatchedCall(res: Resolution, m: Module, d: Decl, n: Expr, key: string,
+                    required: HashSet[string]): bool =
+  ## A call with no single callee by design: through a fn-valued parameter,
+  ## a member call (its receiver picks it), or a bound's requirement inside a
+  ## generic body (each satisfier's member in turn).
+  for p in d.fnParams:
+    if p.name == key: return true
+  memberCallee(res, m, n) != "" or d.fnGenerics.len > 0 and key in required
+
+proc missingEdge(res: Resolution, m: Module, d: Decl, n: Expr,
+                 required: HashSet[string]): string =
+  ## "" unless `n` is a call to a fn with a body that the checker left
+  ## without an edge.
+  if n.kind != exkCall or res.declFor(n) != nil: return ""
+  let key = callKey(n.callee)
+  if key.len == 0 or dispatchedCall(res, m, d, n, key, required): return ""
+  var target = res.programFn(key)
+  if target == nil and n.callee.kind == exkVar: target = m.findFn(key)
+  if target != nil and target.kind == dkFn and target.fnBody != nil:
+    result = "call of '" & key & "' at " & nameOf(m.id) & ":" &
+             $n.span.line & ":" & $n.span.col & " has no callee edge"
+
+proc callEdgeErrors(res: Resolution, mods: seq[Module]): seq[string] =
+  ## Every call to a fn with a body carries the edge the checker records
+  ## (`ast_query.calleeDecl`'s first answer), whatever its spelling.
+  ##
+  ## The reason it is asserted: passes used to find a callee by reading the
+  ## name off the call themselves, each knowing some spellings and not
+  ## others, and a spelling one did not know was not an error — it was read
+  ## as "a fn with no body, which borrows and does nothing", silently. A
+  ## qualified call skipped the ownership rules that way (A100) and the
+  ## effect check (A101). Now the checker resolves every spelling once, and a
+  ## spelling it misses stops the build here instead.
+  ##
+  ## Two calls have no single callee by design, and are not asked for one: a
+  ## call through a fn-valued PARAMETER (`{acc, x} combine`), and inside a
+  ## generic fn, a call of a requirement its bound declares (`{self: k} put`
+  ## with `K: Sink`), which reaches each satisfier's member in turn.
+  let required = requirementNames(mods)
+  for m in mods:
+    for d in m.allDecls:
+      if d == nil or d.kind notin {dkFn, dkTask} or d.fnBody == nil: continue
+      for n in d.fnBody.nodes:
+        let why = missingEdge(res, m, d, n, required)
+        if why.len > 0: result.add why
+
+proc assertCallEdges*(res: Resolution, mods: seq[Module]) =
+  ## After psTypecheck: every call to a fn with a body was resolved by the
+  ## checker (`callEdgeErrors`).
+  report("typecheck call edges", callEdgeErrors(res, mods))
+
 proc assertTypeEdges*(res: Resolution, mods: seq[Module]) =
   ## After psTypecheck: every declared named type is linked (#21).
   report("typecheck edges", typeEdgeErrors(res, mods))

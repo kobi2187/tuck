@@ -174,10 +174,11 @@ fn open({sock: int, path: str, host: str, c: Chunk}) -> int [io]:
 # one expression, so a wakeup's work is `sip` and the loop is here.
 fn stream({sock: int, path: str, base: int, index: int, need: int}) -> int [io]:
   var got = 0
-  for got < need:
+  var live = true
+  for live and got < need:
     on select:
       | read sock -> {}: got = {sock: sock, path: path, base: base, got: got, index: index, need: need} sip
-      | timeout {20.s} -> {}: return got
+      | timeout {20.s} -> {}: live = false
   return got
 
 # A chunk owns its socket, its offset and its deadline, and reports through
@@ -221,6 +222,10 @@ fn spanOf({total: int, parts: int, i: int, have: int}) -> Chunk:
 # parallel section is: carve, start, wait.
 fn fetch({host: str, port: int, path: str, parts: int}) -> int [io, resource: conn]:
   let total = {host: host, port: port, path: path} sizeOf
+  # Nothing to carve: an empty range per chunk would break Chunk's invariant
+  # (found by `tuck b --mock`, whose sizeOf answers 0).
+  if total <= 0:
+    return 0
   Progress send sized {bytes: total}
   Download.raise Sized {total: total}
   for i in 0 ..< parts:
@@ -260,6 +265,6 @@ fn main() -> int [io, resource: conn]:
   let host = "example.org"
   let path = "/big.iso"
   let bytes = {host: host, port: 80, path: path, parts: 8} fetch
-  let took = ({} nowMs) - started
+  let took = (({} nowMs).epochMs - started.epochMs) int
   Download.raise Finished {bytes: bytes, ms: took}
   return 0

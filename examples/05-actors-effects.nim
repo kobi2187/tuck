@@ -41,10 +41,10 @@ var tuckˑactorˑCounterSlot*: pointer
 proc registerActortuckˑactorˑCounter*() =
   tuckˑactorˑCounterSlot = tuckStartActor(draintuckˑactorˑCounter)
 
-proc tuckˑfnˑreadSensor*[T](payload: T): TuckResult[tuple[value: uint16]] =
+proc tuckˑfnˑreadSensor*[T0](p0: T0): TuckResult[tuple[value: uint16]] =
   stderr.writeLine("TUCK PENDING: readSensor invoked (not implemented)")
 
-proc fetchFeed*[T](payload: T): TuckResult[tuple[feed: tuckˑtypeˑFeed]] =
+proc fetchFeed*[T0](p0: T0): TuckResult[tuple[feed: tuckˑtypeˑFeed]] =
   stderr.writeLine("TUCK PENDING: fetchFeed invoked (not implemented)")
 
 

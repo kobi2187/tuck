@@ -119,6 +119,20 @@ proc enumDomain*(m: Module, t: Type): seq[string] =
 
 # --- SourceName: the name the user wrote -----------------------------------
 
+proc callKey*(callee: Expr): string =
+  ## The ONE spelling every pass uses to name what a call reaches: `name` for
+  ## a bare callee, `mod::name` for a qualified one, "" for anything else (a
+  ## fn value, a field). Each pass used to read `callee.name` off an `exkVar`
+  ## and skip the rest, so a qualified call (`lib::f`) was invisible to the
+  ## ownership rules (A100) and to the effect check (A101) alike.
+  if callee == nil: return ""
+  case callee.kind
+  of exkVar: callee.name
+  of exkQualified:
+    if callee.modulePath.len > 0: callee.modulePath[^1] & "::" & callee.qualName
+    else: callee.qualName
+  else: ""
+
 proc writtenName*(e: Expr): string =
   ## What the user wrote for this expression's name. Use it for anything the
   ## user sees or that must be stable across backends — never for an emitted
@@ -441,14 +455,18 @@ iterator ownTypes*(d: Decl): Type =
     of dkRegistry:
       for v in d.variants:
         for f in v.fields: yield f.typ
+    # A stated type (`const p: P = ...`). Missing it here left the type
+    # unmangled, and D, which prints it, named an undeclared `P` (#126).
+    of dkConst:
+      if d.constType != nil: yield d.constType
     # Nothing to yield. dkRegister's fields are `bit N` ranges, never a
-    # user-named type; dkExpr/dkConst/dkStaticAssert carry expressions whose
+    # user-named type; dkExpr/dkStaticAssert carry expressions whose
     # types the expression walk reaches; dkErrors a policy name; dkImport a
     # module path; dkSelect arm bodies; dkSatisfies interface NAMES, resolved
     # by conformance. dkMixin/dkExtern/dkPending/dkInterface/dkWhen hold only
     # members — childDecls reaches those. dkArena names no type: its slabs,
     # one per element type, are dkSlabs of their own.
-    of dkArena, dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
+    of dkArena, dkRegister, dkExpr, dkStaticAssert, dkErrors, dkImport,
        dkSelect, dkSatisfies, dkMixin, dkExtern, dkPending, dkInterface,
        dkGroup, dkWhen, dkPublic, dkResources:
       discard

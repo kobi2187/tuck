@@ -252,6 +252,9 @@ proc genSaturatingCtor(satBase, calleeStr, arg: string): string =
   let satFn = if unsigned: "tuckSat" else: "tuckSatI"
   calleeStr & "(" & satFn & "[" & satBase & "](" & widen & "(" & arg & ")))"
 
+proc genDiscard(ctx: var CodegenCtx, e: Expr): string
+  ## Defined after genExpr, which it calls.
+
 proc genSpawnCall(ctx: var CodegenCtx, calleeStr, callName: string,
                   args: seq[string]): string =
   ## Calling a task SCHEDULES it as a coroutine — it runs concurrently, main
@@ -935,10 +938,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkMatch: ctx.genExprMatch(e)
   of exkReturn: ctx.genReturn(e)
   of exkRaise: ctx.genRaise(e)
-  of exkDiscard:
-    # Nim's own `discard` is the identical construct, spelling and all.
-    if e.discardVal != nil: "discard " & ctx.genExpr(e.discardVal)
-    else: "discard"
+  of exkDiscard: ctx.genDiscard(e)
   of exkTripleDot: "discard"   # `...` outside a fn body: a no-op statement
   of exkChain:
     raiseAssert "codegen: a `..` chain reached the emitter; lowering_chains " &
@@ -978,6 +978,18 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkSlabCell:
     # The value in the cell a reference names (lowering_slab), checked.
     slabCellValue(e.cellSlab.refName, ctx.genExpr(e.cellRef))
+
+
+proc genDiscard(ctx: var CodegenCtx, e: Expr): string =
+  ## Nim's own `discard` is the identical construct, spelling and all —
+  ## except over a task call, which SPAWNS: the spawn is a void statement
+  ## that already drops the result nobody awaits, and Nim rejects `discard`
+  ## of a void ("has no type", A97).
+  let v = e.discardVal
+  if v == nil: "discard"
+  elif v.kind == exkCall and v.callee != nil and v.callee.kind == exkVar and
+       ctx.index.isTaskName(v.callee.name): ctx.genExpr(v)
+  else: "discard " & ctx.genExpr(v)
 
 proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
   ## Emitting an assignment TARGET. A bracket index must address the element
@@ -1220,9 +1232,10 @@ proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
   # The enqueue is the actor's `on_full` (R6): the message is built once and
   # handed to the wrapper, which waits, stops or — `drop` — is the bare
   # enqueue every send used to be.
-  let mb = singleton & ".mailbox"
-  let msg = msgType & "(" & ctorArgs & ")"
   let target = actorDeclNamed(ctx.module, ctx.realModules, e.sendActor)
+  let mb = singleton & "." &
+           (if urgentSend(target, e.sendHandler): UrgentMailbox else: "mailbox")
+  let msg = msgType & "(" & ctorArgs & ")"
   let actor = actorLabel(target, e.sendActor)
   let enqueue =
     case actorOnFull(target)
@@ -1230,7 +1243,10 @@ proc genExprSend(ctx: var CodegenCtx, e: Expr): string =
     of ofWait: "sendWaiting(" & mb & ", " & msg & ", " &
                actorSlotName(e.sendActor) & ", " & escape(actor) & ")"
     of ofAssert: "sendAsserting(" & mb & ", " & msg & ", " & escape(actor) & ")"
-  enqueue & "\n" & ind & "tuckNotifySend(" & actorSlotName(e.sendActor) & ")"
+  # An urgent send is handed over at once, batch or not (`flushNow`).
+  let flush = if urgentSend(target, e.sendHandler): "\n" & ind & "flushNow(" & mb & ")"
+              else: ""
+  enqueue & flush & "\n" & ind & "tuckNotifySend(" & actorSlotName(e.sendActor) & ")"
 
 proc selectTimeoutMs(ctx: var CodegenCtx, arm: SelectArm): string =
   ## The `timeout` arm's deadline as a plain int of milliseconds.

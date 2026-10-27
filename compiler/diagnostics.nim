@@ -198,6 +198,7 @@ type
     dcAcShutdown = "TK-AC10"            ## a `shutdown` arm, or a send of `shutdown`
     dcAcArmShape = "TK-AC11"            ## an `on select` arm longer than one line or call
     dcAcArmReturn = "TK-AC12"           ## an `on select` arm that `return`s
+    dcAcUrgentPlace = "TK-AC13"         ## `[urgent]` on anything but an actor's `on` handler
     dcMeSizeCount = "TK-ME01"           ## a pool/arena size or count is not positive
     dcMeArenaInert = "TK-ME02"          ## RETIRED 2026-10-04: the arena is built
     dcMeSlabInValue = "TK-ME03"         ## a slab declared inside an object or mixin
@@ -223,6 +224,7 @@ type
     dcRsCannotClose = "TK-RS09"         ## a state the closing one cannot be reached from
     dcRsBadStatesType = "TK-RS10"       ## `states:` names no sum type, or one with no edges
     dcRsIncoherent = "TK-RS11"          ## two knobs on one kind that cannot both mean anything
+    dcRsUnfinished = "TK-RS12"          ## a handle whose only use is `.ok`: never finished or handed on
 
 const UncodedNote* = """
 UNCODED DIAGNOSTICS. `dcNone` exists because codes are being adopted site by
@@ -933,7 +935,9 @@ proc ruleExplanation(d: DiagCode): string =
     "A `pool`'s `count` and an `arena`'s `size` ARE the allocation — the " &
     "footprint is fixed at compile time, which is the entire point of both " &
     "(spec 7.2, 7.3). So the number must be positive: zero or negative is " &
-    "not a smaller reservation, it is one that cannot hold anything. Fix: " &
+    "not a smaller reservation, it is one that cannot hold anything. The " &
+    "number is a literal or a `const`, and a const may be computed by a fn " &
+    "that declares no effects (`const Cap = {users: 4} slots`, #62). Fix: " &
     "give a real count or size."
   of dcMeArenaInert:
     "Retired 2026-10-04, when the arena was built over slabs (slab proposal " &
@@ -993,6 +997,13 @@ proc ruleExplanation(d: DiagCode): string =
     "body hidden in a table of what is waited on, and the table is what a " &
     "reader scans. Fix: move the work into a fn (an actor's member fn, or a " &
     "task's helper) and make the arm call it: `| done -> {}: {} finish`."
+  of dcAcUrgentPlace:
+    "`[urgent]` marks a MESSAGE as one that jumps the queue: an actor takes " &
+    "every waiting urgent message before the next ordinary one, so a " &
+    "`reset` or `cancel` is not stuck behind a backlog of sends. Only an " &
+    "actor's `on` handler receives messages, so only it may carry the " &
+    "marker; on a fn, a member or a task it would mean nothing. Fix: remove " &
+    "it, or move the work into an `on` handler of the actor."
   of dcAcArmReturn:
     "An `on select` arm is void and ends nothing: an actor has no listening " &
     "loop for it to leave and no caller to hand a value to (a message is " &
@@ -1048,7 +1059,9 @@ proc ruleExplanation(d: DiagCode): string =
     "An actor's `[queue: N]` is the exact capacity of its mailbox ring, so N " &
     "must be a positive whole number. Zero or negative is not a smaller " &
     "mailbox, it is a broken one — the emitted ring divides by its capacity, " &
-    "so the program builds and then dies on the first send. Fix: give a real " &
+    "so the program builds and then dies on the first send. N is a literal " &
+    "or a `const`, and a const may be computed by a fn that declares no " &
+    "effects (`const Cap = {users: 4} slots`, #62). Fix: give a real " &
     "count, or drop the attribute to take the default."
   of dcIvUnknownField:
     "An `invariant:` predicate may only name fields of the type it is " &
@@ -1145,6 +1158,15 @@ proc ruleExplanation(d: DiagCode): string =
     "policy runs a sweep for it to size. Checked across every site that " &
     "declares the kind, since an app adding a cap is what makes a library's " &
     "`on_full` start to mean something."
+  of dcRsUnfinished:
+    "A warning. A local holds a resource handle (from `acquire`, or from a " &
+    "call that returns one), and the fn only ever tests it with `.ok`: it is " &
+    "never finished, returned, passed on or stored. So it stays open until " &
+    "the program exits, where OPEN RESOURCES lists it. Fix: release it where " &
+    "the work with it ends, usually `defer: finish h.value, kind` right " &
+    "inside the `if h.ok:` guard, so every path out of the scope releases " &
+    "it. Any other use of the handle counts as handling it, so this never " &
+    "fires on a handle that goes somewhere."
   of dcRsBadStatesType:
     "`states: T` points a resource kind at its protocol: T must be a sum " &
     "type carrying a `transitions:` block. The kind NAMES it rather than " &

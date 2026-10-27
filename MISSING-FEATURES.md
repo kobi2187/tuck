@@ -298,6 +298,44 @@ it in.
   `awaitResult` did; `sleepMs` and `nextSignal` there too. Found writing the
   `serve` app.
 
+- **A95 (issue #185) — a fill literal could not fill an Array sized by a
+  const.** `let a: Array[Big, int] = [7; 32]` with `const Big = 32` was
+  "expects Array[Big, int] but got Array[32, int]": a size compares by its
+  text, and the fill kept its own. Fixed: it takes the destination's spelling
+  when the values agree. Found testing #62.
+
+- **A96 (issue #186) — a `pending` fn taking two fields did not build.** Every
+  backend's stub took one generic `payload: T`, while the call site spreads a
+  payload into one argument per field: "extra argument given" on all three.
+  Fixed: one generic parameter per declared one. Found by `--mock` (#70).
+
+- **A97 (issue #187) — `{...} task discard` did not build on Nim.** A spawn is
+  a void statement and Nim rejects `discard` of one. Fixed: no `discard` over
+  a spawn. Found by the web-downloader under `--mock`.
+
+- **A98 (issue #188) — an object satisfying an imported interface lost its
+  interface and its members everywhere but its own module.** Its data is
+  hoisted into `iface_variants` (A27), and importers were shown that data-only
+  copy: `{s: f} rate` "does not declare satisfies", `f.sampleRate` "no field".
+  Fixed: an importer of the home module sees the object from there; Odin and D
+  name its struct by the generated module and its members by the home one.
+
+- **A99 (issue #189) — a `match` on a str with string arms never compiled.**
+  The pattern printer dropped the quotes: `"GET":` became `of GET:` on Nim,
+  `case .GET:` on Odin, `case GET:` on D. Fixed. Found by the kv-store app.
+
+- **A100 (issue #190) — a qualified call skipped ownership.** `lib::add {b}`
+  did not move `b` into a parameter `add` consumes, and both sides freed it
+  (a crash on Nim): the ownership rules looked callees up by bare name only.
+  Fixed: fns are also filed under `module::name`. Found by the kv-store app.
+
+- **A101 (issue #191) — a qualified call escaped the effect check.** A fn
+  declaring nothing could do IO through `lib::shout`; the bare `shout` was
+  TK-EF01. Same root as A100. Fixed structurally: one call key for every
+  pass (`ast_ops.callKey`), the checker records the callee for every
+  spelling, one reader (`ast_query.calleeDecl`), and a stage check
+  (`assertCallEdges`) that fails the build when a call is left unresolved.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

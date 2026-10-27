@@ -18,14 +18,21 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string
 
 proc genPendingStub*(d: Decl): string =
   ## A `pending` fn as a Nim stub that prints "TUCK PENDING" to stderr when
-  ## called. Generic over its one payload argument, so any call shape the
-  ## checker accepted still compiles.
-  # Tuck call sites pass one whole payload struct; the Tuck checker already
-  # verified its shape against the pending signature. The Nim stub is generic
-  # so any payload representation is absorbed.
+  ## called. One generic parameter per declared one, so any argument types
+  ## the checker accepted still compile — a pending signature may name types
+  ## nothing declares yet.
+  # A call site spreads a record payload into one argument per field, as it
+  # does for any fn (`{a: 1, b: "x"} put` is `put(1, "x")`), so the stub takes
+  # them the same way. One `payload: T` used to absorb a one-field call only:
+  # a second field was "extra argument given" (issue #70, found by --mock).
   let fnNameSanitized = d.name.replace(".", "_").replace("::", "_")
   let retTypeStr = if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
-  let paramStr = if d.fnParams.len > 0: "[T](payload: T)" else: "()"
+  var gens, ps: seq[string]
+  for i in 0 ..< d.fnParams.len:
+    gens.add "T" & $i
+    ps.add "p" & $i & ": T" & $i
+  let paramStr = if ps.len > 0: "[" & gens.join(", ") & "](" & ps.join(", ") & ")"
+                 else: "()"
   return "proc " & fnNameSanitized & "*" & paramStr & ": " & retTypeStr &
          " =\n  stderr.writeLine(\"TUCK PENDING: " & d.writtenName &
          " invoked (not implemented)\")\n"
@@ -507,6 +514,9 @@ proc genActorState*(ctx: var CodegenCtx, d: Decl, msgTypeName,
   for f in d.actorFields:
     fieldsStr.add("  " & f.name & "*: " & ctx.fieldType(d.name, f))
   fieldsStr.add("  mailbox*: Mailbox[" & msgTypeName & ", " & queueSize & "]")
+  if actorHasUrgent(d):
+    fieldsStr.add("  " & UrgentMailbox & "*: Mailbox[" & msgTypeName & ", " &
+                  queueSize & "]")
   "type " & d.name & "* = ref object\n" & fieldsStr.join("\n") & "\n"
 
 proc genActorDispatch*(ctx: CodegenCtx, d: Decl, msgTypeName: string,
@@ -538,7 +548,7 @@ proc genActorDispatch*(ctx: CodegenCtx, d: Decl, msgTypeName: string,
   "proc handleMsg*(self: " & d.name & ", msg: " & msgTypeName & ") =\n  case msg." & TagField & "\n" &
     handlerCases.join("\n") & "\n"
 
-proc genActorDrain*(drainName, singleton: string): string =
+proc genActorDrain*(drainName, singleton: string, urgent = false): string =
   ## The drain closure: take everything waiting, dispatch it, report progress.
   ## The scheduler registers this; it never sees the concrete Msg type.
   ##
@@ -549,6 +559,15 @@ proc genActorDrain*(drainName, singleton: string): string =
     "proc " & drainName & "(): bool {.gcsafe.} =\n" &
     "  {.cast(gcsafe).}:\n" &
     "    result = false\n"
+  # `[urgent]` (spec §9.1): the urgent mailbox is emptied first, and again
+  # after EACH ordinary message, so an urgent one sent while a backlog is
+  # being worked through is taken next rather than after it.
+  let takeUrgent =
+    "for u in messages(" & singleton & "." & UrgentMailbox & "):\n" &
+    "  handleMsg(" & singleton & ", u)\n" &
+    "  tuckCheckWaiters()\n" &
+    "  result = true"
+  if urgent: result.add takeUrgent.indent(4) & "\n"
   result.add(
     "    for m in messages(" & singleton & ".mailbox):\n" &
     "      handleMsg(" & singleton & ", m)\n" &
@@ -558,6 +577,7 @@ proc genActorDrain*(drainName, singleton: string): string =
     # Costs one length check when nobody is waiting.
     "      tuckCheckWaiters()\n" &
     "      result = true\n")
+  if urgent: result.add takeUrgent.indent(6) & "\n"
 
 proc genActor*(ctx: var CodegenCtx, d: Decl): string =
   ## An actor as Nim: message kinds and envelope, the ref-object state, its
@@ -589,7 +609,7 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
     if f.default != nil: inits.add(f.name & ": " & ctx.genExpr(f.default))
   let singletonStr = "let " & singleton & "* = " & d.name & "(" &
                      inits.join(", ") & ")\n"
-  let drainStr = genActorDrain(drainName, singleton)
+  let drainStr = genActorDrain(drainName, singleton, actorHasUrgent(d))
   var memberStr = ""
   for m in actorMemberFns(d): memberStr.add ctx.genActorMemberFn(m, d.name) & "\n"
   # auto-registration hook: main's prologue calls registerActors()

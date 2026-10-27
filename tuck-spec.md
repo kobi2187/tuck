@@ -662,6 +662,29 @@ An `[irq_safe]` function calling an `[io]` function is a compile error — one
 instance of the general rule above (`io` is simply not in an `[irq_safe]`
 fn's declared budget), not a special case.
 
+**What the markers guarantee, and what they do not** (issue #71). Every effect
+originates at a declared signature, and an `extern` declares its own. So the
+discipline holds against MISTAKES: no fn performs an effect its signature does
+not state, at any depth. It does not hold against an ADVERSARY. A module can
+declare an extern that writes to disk with no marker at all:
+
+```tuck-rejected
+extern [c, header: "stdio.h"]:
+  fn puts({s: str}) -> int          # no [io], though it writes
+
+fn pure({n: int}) -> int:           # declares nothing, and checks clean
+  {s: "backdoor"} puts discard
+  return n
+```
+
+The checker is right by its own rules here: the extern said it does nothing.
+Two smaller openings are deliberate: `main` may do anything, and a spawned
+task's effects are not charged to its spawner. The real fix is a module-system
+one, not an effect-system one: an importer grants an extern its effects, or an
+untrusted module may not declare externs. It is unscheduled. Until then the
+effect manifest (`tuck effects --check`, #63) is the practical guard: a new
+extern is a new line in the diff, shown with exactly the effects it claims.
+
 ---
 
 ## Part 4: Types
@@ -2020,11 +2043,14 @@ the unbuilt together would be dishonest:
   it. The table is emitted at the first site in dependency order,
   which is a dependency of every later one — it has to be, since a library's
   own acquire site calls into that table.
-- **Not built:** the static acquire-must-finish check above. Both halves now
-  have a shape to match on, so it is writable; the *escape* arm is already
-  sound by construction — the registry closes at exit, which is exactly what
-  this section says makes the local analysis sufficient — and the OPEN
-  RESOURCES report answers the same question at runtime meanwhile.
+- **Built, as a warning (TK-RS12, 2026-10-27):** the conservative half of the
+  static acquire-must-finish check. A local holding a handle whose only use
+  is testing `.ok` is reported where it is bound: never finished, returned,
+  passed on or stored. Any other use counts as handling it, so the check
+  never fires on a handle that goes somewhere. A warning, because OPEN
+  RESOURCES at exit is a report too and a program may hold a handle to the
+  end on purpose. Path-sensitive checking (finished on one branch, not the
+  other) is not done; `defer: finish` is the idiom that makes it moot.
 - **Deliberately deferred:** single-owner (non-copyable) handles. They would
   make per-variable state tracking *complete* — turning use-after-finish into
   a compile-time error rather than a caught runtime one — but this section
@@ -2281,6 +2307,17 @@ actors whose full mailboxes each wait on the next can hang; that is what
 `wait` means, and why `drop` and `assert` exist. Any other word is TK-AC06.
 An actor takes these two attributes, `queue` and `on_full`, and no others
 (TK-AC07).
+
+**Message priority** (built 2026-10-27). A handler marked `[urgent]` —
+`on cancel() [urgent]:` — receives messages that jump the queue: the actor
+takes every waiting urgent message before its next ordinary one, including
+between two ordinary messages of a batch it has already taken. Two levels,
+normal and urgent; numbered levels invite priority inversion. The marker is
+the HANDLER's, because a priority on the actor would read as "this actor
+before other actors", which the OS schedules. An actor with an urgent handler
+carries a second mailbox of the same `queue` and `on_full`. The promise below
+narrows to one sender's messages being handled in order within a level, which
+is the point. `[urgent]` anywhere but an actor's `on` handler is TK-AC13.
 
 **No order is promised between two senders** (ruled 2026-09-28, #84). When
 two senders each send to one actor, which message it handles first is

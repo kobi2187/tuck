@@ -9,6 +9,10 @@ extern:
   # Runs `line` through the shell, its output going where the program's own
   # goes, and returns the exit code. Blocks until the command ends.
   fn runCommand({line: str}) -> int [io: sys]
+  # Runs `line` through the shell and answers what it wrote to stdout, and its
+  # exit status (128 + N when signal N ended it). stderr is not captured; it
+  # goes where the program's own goes. Blocks until the command ends.
+  fn captureCommand({line: str}) -> {code: int, output: str} [io: sys]
   # Signals as values, never as handlers (a handler cannot safely run program
   # code). `watchSignal` blocks signal `number` for the calling thread and
   # routes it to one descriptor; call it before starting actors or tasks, which

@@ -17,7 +17,7 @@ void tuckResourcesShutdown() {
     rt.shutdownResources(tuckRes_net);
 }
 
-long tuckˑfnˑrawOpenUdp(T)(T payload) {
+long tuckˑfnˑrawOpenUdp(T0)(T0 p0) {
     stderr.writeln("TUCK PENDING: rawOpenUdp invoked (not implemented)");
     return typeof(return).init;
 }

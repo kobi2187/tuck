@@ -41,13 +41,7 @@ proc calleeOf*(res: Resolution, m: Module, call: Expr): Decl =
   ## The fn a call reaches: as the checker resolved it, else by name (calls
   ## that lowering built carry no resolution of their own), an imported
   ## extern included.
-  result = res.declFor(call)
-  if result == nil and call.callee != nil and call.callee.kind == exkVar:
-    result = m.findFn(call.callee.name)
-    if result == nil: result = res.externs.getOrDefault(call.callee.name)
-    # A fn another module declares: found by name, unless two modules share it.
-    if result == nil and call.callee.name notin res.ambiguousFns:
-      result = res.fnBodies.getOrDefault(call.callee.name)
+  result = res.calleeDecl(m, call)
   if result != nil and result.kind notin {dkFn, dkTask}: result = nil
 
 proc paramFed(d: Decl, a: ArgOf): string =

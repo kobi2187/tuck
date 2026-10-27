@@ -62,7 +62,7 @@ sendReset_tuckˑactorˑCounter :: proc(self: ^tuckˑactorˑCounter) {
 	rt.tuckNotifySend(tuckˑactorˑCounterSlot)
 }
 
-tuckˑfnˑreadSensor :: proc(payload: $T) -> rt.TuckResult(TRec_value(u16)) {
+tuckˑfnˑreadSensor :: proc(p0: $T0) -> rt.TuckResult(TRec_value(u16)) {
 	fmt.println("TUCK PENDING: readSensor invoked (not implemented)")
 	return {}
 }
@@ -70,7 +70,7 @@ tuckˑfnˑreadSensor :: proc(payload: $T) -> rt.TuckResult(TRec_value(u16)) {
 tuckˑobjectˑPodcastApp :: struct {
 }
 
-fetchFeed :: proc(payload: $T) -> rt.TuckResult(TRec_feed(tuckˑtypeˑFeed)) {
+fetchFeed :: proc(p0: $T0) -> rt.TuckResult(TRec_feed(tuckˑtypeˑFeed)) {
 	fmt.println("TUCK PENDING: fetchFeed invoked (not implemented)")
 	return {}
 }

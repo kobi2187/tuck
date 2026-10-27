@@ -31,7 +31,7 @@ tuckResourcesShutdown :: proc() {
 	rt.shutdownResources(&tuckRes_net)
 }
 
-tuckˑfnˑrawOpenUdp :: proc(payload: $T) -> int {
+tuckˑfnˑrawOpenUdp :: proc(p0: $T0) -> int {
 	fmt.println("TUCK PENDING: rawOpenUdp invoked (not implemented)")
 	return {}
 }

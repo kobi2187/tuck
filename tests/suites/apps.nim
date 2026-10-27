@@ -336,6 +336,65 @@ const Cases: seq[AppCase] = @[
    "1 brown\n", 0),
   ("wordfreq", "wordfreq", "nope.txt", "",
    "wordfreq: cannot read nope.txt\n", 1),
+  # a session: every command, its errors, a snapshot mid-way, expiry by TICK
+  ("kv-store-server", "kv", "--dir fresh --reset",
+   "SET name tuck\n" &
+   "GET name\n" &
+   "SET hits 41\n" &
+   "INCR hits\n" &
+   "INCR fresh\n" &
+   "SET temp x EX 5\n" &
+   "TTL temp\n" &
+   "TTL name\n" &
+   "TTL nope\n" &
+   "EXPIRE name 100\n" &
+   "COUNT\n" &
+   "KEYS\n" &
+   "SAVE\n" &
+   "SET after snapshot\n" &
+   "DEL hits\n" &
+   "DEL hits\n" &
+   "TICK 5\n" &
+   "GET temp\n" &
+   "COUNT\n" &
+   "INCR name\n" &
+   "set lower case\n" &
+   "FROB x\n" &
+   "SET onlykey\n" &
+   "TICK -1\n" &
+   "QUIT\n",
+   "recovered 0 keys at tick 0 (0 lines)\n" &
+   "OK\n" &
+   "tuck\n" &
+   "OK\n" &
+   "42\n" &
+   "1\n" &
+   "OK\n" &
+   "5\n" &
+   "-1\n" &
+   "-2\n" &
+   "1\n" &
+   "4\n" &
+   "4 fresh hits name temp\n" &
+   "OK\n" &
+   "OK\n" &
+   "1\n" &
+   "0\n" &
+   "OK 5\n" &
+   "(nil)\n" &
+   "3\n" &
+   "ERR value is not an integer\n" &
+   "OK\n" &
+   "ERR unknown command FROB\n" &
+   "ERR wrong number of arguments for SET\n" &
+   "ERR TICK needs a count of ticks\n" &
+   "BYE\n", 0),
+  # recovery: the snapshot, then the log on top; reads only, so the fixture
+  # stays as committed
+  ("kv-store-server", "kv", "--dir recover",
+   "KEYS\nGET after\nGET hits\nTTL name\nTTL fresh\nGET lower\nCOUNT\n",
+   "recovered 4 keys at tick 5 (9 lines)\n4 after fresh lower name\nsnapshot\n" &
+   "(nil)\n95\n-1\ncase\n4\n", 0),
 ]
 
 type Backend = tuple[label, flag, suffix: string]

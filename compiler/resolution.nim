@@ -179,7 +179,7 @@ proc isPoolHandleType*(m: Module, name: string): bool =
     # handle type is not, because the checker synthesised it and mangling
     # walks the AST, which never held it. Compare both spellings rather than
     # teaching mangle about a type that does not exist in the tree.
-    if d.name == pool or d.name == prefixed(pool, nkPool): return true
+    if spells(d.name, pool, nkPool): return true
   return false
 
 proc isImportedPoolHandle*(m: Module, real: ModuleMap,
@@ -617,6 +617,17 @@ proc resolveTo*(r: Resolution, e: Expr, d: Decl) =
   ensureId(e)
   r.decls[d.id] = d
   r.declOf[e.id] = d.id
+
+proc programFn*(r: Resolution, key: string): Decl =
+  ## A fn of the whole program by its call key (`ast_ops.callKey`): a Tuck fn
+  ## with a body, under `name` unless two modules declare it, or always under
+  ## `mod::name`; else an extern, by its bare name. nil when nothing matches.
+  if key.len == 0: return nil
+  if key notin r.ambiguousFns:
+    result = r.fnBodies.getOrDefault(key)
+    if result != nil: return
+  let bare = if "::" in key: key.rsplit("::", 1)[1] else: key
+  result = r.externs.getOrDefault(bare)
 
 proc declFor*(r: Resolution, e: Expr): Decl =
   ## The declaration this expression refers to, or nil if the checker never

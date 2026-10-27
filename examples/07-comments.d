@@ -12,7 +12,7 @@ struct TRec_url_timeout(T_url, T_timeout) {
     T_timeout timeout;
 }
 
-TRec_status!(long) tuckˑfnˑfetch(T)(T payload) {
+TRec_status!(long) tuckˑfnˑfetch(T0)(T0 p0) {
     stderr.writeln("TUCK PENDING: fetch invoked (not implemented)");
     return typeof(return).init;
 }
@@ -21,7 +21,7 @@ TRec_status!(long) tuckˑfnˑfetch(T)(T payload) {
 void tuckˑfnˑmain() {
     TRec_url_timeout!(string, long) tuckˑvˑconfig = TRec_url_timeout!(string, long)(url: ("https://api.example.com").idup, timeout: 100L);
     scope(exit) rt.tuckDrop(tuckˑvˑconfig.url);
-    TRec_status!(long) tuckˑvˑresult = tuckˑfnˑfetch(tuckˑvˑconfig);
+    TRec_status!(long) tuckˑvˑresult = tuckˑfnˑfetch(tuckˑvˑconfig.url);
     return;
 }
 

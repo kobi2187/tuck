@@ -57,6 +57,7 @@ import property_tests
 import recursive_types
 import resources
 import resources_rt
+import roadmap
 import slabs
 import ssa
 import ssa_golden
@@ -129,6 +130,7 @@ let registry: seq[Entry] = @[
   ("recursive_types",     SuiteProc(recursive_types.run),     false),
   ("resources",           SuiteProc(resources.run),           false),
   ("resources_rt",        SuiteProc(resources_rt.run),        false),
+  ("roadmap",             SuiteProc(roadmap.run),             false),
   ("slabs",               SuiteProc(slabs.run),               false),
   ("ssa",                 SuiteProc(ssa.run),                 false),
   ("ssa_golden",          SuiteProc(ssa_golden.run),          false),

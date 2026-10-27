@@ -1,0 +1,4 @@
+SETAT after snapshot 0
+DEL hits
+CLOCK 5
+SETAT lower case 0

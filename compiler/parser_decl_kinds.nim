@@ -451,7 +451,11 @@ proc parseImportDecl*(p: var Parser, sp: Span): Decl =
   ## `import name` — one module per line, resolved later by the loader.
   discard p.advance()
   let modName = p.expectName("Expected module name after 'import'").value
-  Decl(span: sp, kind: dkImport, name: modName)
+  result = Decl(span: sp, kind: dkImport, name: modName)
+  # `import iter {find -> iterFind}`: Tuck's one rename spelling, for a name
+  # that would collide (import_renames.nim).
+  if p.current().kind == tkLBrace:
+    result.importRenames = p.parseRenameList("an import")
 
 proc siftSatisfies*(members: seq[Decl], sats: var seq[string],
                     renames: var seq[(string, string, string)]): seq[Decl] =
@@ -671,6 +675,11 @@ proc parseEffectList*(p: var Parser, tail: var SignatureTail, strict = true) =
     let effName = p.expectAttrName("Expected effect marker").value
     if effName == "error":
       p.parseErrorTypes(tail.errTypes)
+    elif effName == "urgent":
+      # A word of this bracket only, NOT reserved: `urgent` stays usable as a
+      # field or a parameter (the todo app has one). The checker allows it on
+      # an actor's `on` handler alone.
+      tail.urgent = true
     elif p.parseBindingAttr(tail, effName) or
          p.parseCountOrKind(tail, effName, effSp):
       discard
@@ -1292,7 +1301,8 @@ proc parseFnDecl*(p: var Parser, sp: Span): Decl =
        fnParams: params, fnReturnType: retType, fnEffects: sig.effects,
        fnBody: body, fnErrorTypes: sig.errTypes, isInline: isInline,
        fnDepth: sig.depth, isMemo: isMemo, memoSize: memoSize,
-       fnResourceKinds: sig.resources, isOnHandler: fromOn)
+       fnResourceKinds: sig.resources, isOnHandler: fromOn,
+       isUrgent: sig.urgent)
   # `fn f(...) -> T:` whose whole body is `...` IS a pending signature that
   # happens to be written inline, so it becomes one rather than growing a
   # second, quieter way to mean the same thing.

@@ -218,7 +218,7 @@ fn main() -> int:
   t.emitsD "M3: record shape hoists as a TRec template",
            r"struct TRec_hits_title\(T_hits, T_title\) \{"
   t.emitsD "M3: pending stub is a function template",
-           r"tuckˑfnˑfetch\(T\)\(T payload\) \{"
+           r"tuckˑfnˑfetch\(T0\)\(T0 p0\) \{"
   t.emitsD "M3: pending stub logs to stderr like the Nim backend",
            r"stderr\.writeln\(""TUCK PENDING: fetch invoked"
   t.emitsD "M3: pending stub returns the zero value",
@@ -528,19 +528,19 @@ type Action:
   | drop
   | send
 
-decision route({p: Priority, urgent: bool}) -> Action:
+decision route({p: Priority, rush: bool}) -> Action:
   | low   false -> drop
   | low   true  -> send
   | high  _     -> send
 
 fn main() -> int:
-  let a = {p: Priority.low, urgent: false} route
+  let a = {p: Priority.low, rush: false} route
   if a == Action.drop:
     return 3
   return 1
 """
   t.emitsD "decision: enumerable columns collapse to one packed-key switch",
-           r"switch \(\(\(cast\(long\)\(p\) \* 2L\) \+ cast\(long\)\(urgent\)\)\)"
+           r"switch \(\(\(cast\(long\)\(p\) \* 2L\) \+ cast\(long\)\(rush\)\)\)"
   t.emitsD "decision: a packed key is an int, so the last group is default",
            r"default:\s+return "
   t.runsD "decision: the table picks the first matching row", 3, dmdExe

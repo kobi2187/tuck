@@ -111,7 +111,9 @@ The gate prints "tighten --debt/--heavy to N" when it has slack.
 *correct* behaviour as a real assertion plus a marker: `bugOpen` expects it to
 fail and reports it; `bugFixed` makes it a permanent regression guard. When a
 `bugOpen` assertion starts passing the suite fails and tells you to flip the
-marker. Nothing is ever deleted.
+marker. Nothing is ever deleted. `tests/suites/roadmap.nim` does the same for
+ROADMAP.md's status claims (`featureDone` / `featureMissing`): finishing a
+roadmap item flips its marker, and the suite names the ROADMAP line to correct.
 
 **Diagnostic numbers are permanent.** `compiler/diagnostics.nim` is the registry
 (`TK-` + two-letter category + number). A deleted diagnostic *retires* its
@@ -135,6 +137,14 @@ delegates to `jsony`.
 `nodes` / `children` / `childSlots` walk under one expression. The hand-rolled
 `allFns` + tasks + `dkExpr` walk, once copied into ten passes, never reached a
 select arm or an initialiser.
+
+**A call's callee is `ast_query.calleeDecl`, never re-derived from its name.**
+The checker resolves every spelling once (local, imported, `mod::fn`, extern)
+and records the edge; `assertCallEdges` fails the build when a call to a fn
+with a body has none. Passes that each read `callee.name` off an `exkVar`
+never saw `mod::fn`: the ownership rules freed a consumed argument twice
+(A100) and the effect check let IO through (A101). A key for a name-keyed
+table is `ast_ops.callKey` (`name` or `mod::name`), not `callee.name`.
 
 **Each construct gets its own AST node kind.** `on select` got real `exkSelect` /
 `dkSelect` nodes rather than being smuggled in as a `match` with a fake subject.

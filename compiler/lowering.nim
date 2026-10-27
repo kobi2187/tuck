@@ -437,6 +437,25 @@ proc lowerTailReturns(m: Module) =
     elif d.kind == dkTask and d.fnBody != nil and returnsValue(d.fnReturnType):
       injectTailReturn(d.fnBody)
 
+proc foldConstCalls(res: Resolution, m: Module) =
+  ## A const computed by calling an effect-free fn (#62) becomes the number
+  ## it evaluates to. No backend may call a fn in a const's initializer (Odin
+  ## refuses one at global scope), and a size that names the const (`[queue:
+  ## Cap]`) must find a number. Before the calls below are lowered, while the
+  ## arguments are still the payload the evaluator reads. A const with no
+  ## call keeps the expression it was written as.
+  for d in m.decls(dkConst):
+    let e = d.constVal
+    if e == nil or e.kind == exkLit: continue
+    var calls = false
+    for n in e.nodes:
+      if n.kind == exkCall or (n.kind == exkVar and res.hasCall(n)): calls = true
+    if not calls: continue
+    let v = evalConstExpr(m, e)
+    if v.isSome:
+      d.constVal = Expr(id: e.id, span: e.span, kind: exkLit, litKind: lkInt,
+                        litValue: $v.get)
+
 proc lowerModule*(res: Resolution, m: Module, real: ModuleMap) =
   ## Rewrite a module in place into the simpler form the backends expect.
   ## `real` is the rest of the program — an object in another module that
@@ -445,6 +464,7 @@ proc lowerModule*(res: Resolution, m: Module, real: ModuleMap) =
   # before anything tries to emit one. First, because the phases below read
   # field types.
   boxRecursiveEdges(res, m)
+  foldConstCalls(res, m)
   lowerSlabDerefs(res, m)
   # A decision table becomes an ordinary body — a `match` over a packed key,
   # or an `if` chain — before anything below walks fn bodies, so the calls

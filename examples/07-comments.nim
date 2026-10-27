@@ -13,13 +13,13 @@ proc transitionTo*(self: var tuckˑtypeˑLightState, target: tuckˑtypeˑLightSt
     raise newException(ValueError, "Invalid transition " & $self & " -> " & $target)
   self = target
 
-proc tuckˑfnˑfetch*[T](payload: T): tuple[status: int] =
+proc tuckˑfnˑfetch*[T0](p0: T0): tuple[status: int] =
   stderr.writeLine("TUCK PENDING: fetch invoked (not implemented)")
 
 
 proc tuckˑfnˑmain*(): void =
   var tuckˑvˑconfig = (url: tuckCopy("https://api.example.com"), timeout: 100)
   defer: tuckDrop(tuckˑvˑconfig.url)
-  var tuckˑvˑresult = tuckˑfnˑfetch(tuckˑvˑconfig)
+  var tuckˑvˑresult = tuckˑfnˑfetch(tuckˑvˑconfig.url)
   return
 

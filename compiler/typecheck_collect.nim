@@ -21,15 +21,20 @@ proc failIfPendingClash*(tc: TypeChecker, d: Decl) =
   fail("Pending Error: '" & d.name &
        "' is implemented — remove it from the pending block", d.span)
 
-proc recordFnBody(d: Decl) =
-  ## A top-level fn with a body joins the program-wide table the ownership
-  ## rules read for calls into other modules. Under both spellings: the
-  ## checker sees `split`, the ownership pass the mangled `tuckˑfnˑsplit` the
-  ## same declaration is renamed to.
+proc recordFnBody(tc: TypeChecker, d: Decl) =
+  ## A top-level fn with a body joins the program-wide table every pass reads
+  ## a callee from (`Resolution.programFn`). Under both spellings of its own
+  ## name — the checker sees `split`, later passes the mangled `tuckˑfnˑsplit`
+  ## — and each of those bare and qualified (`text::split`), since a call may
+  ## be written either way. The qualified key is never ambiguous, which is
+  ## exactly when a call is qualified (A100). Filed as each module is
+  ## collected, dependencies first, so an importer's calls find it.
   if d.fnBody == nil or d.isExtern: return
+  let home = nameOf(tc.module.id)
   for key in [d.name, prefixed(d.name, nkFn)]:
     if key notin semLayer.fnBodies: semLayer.fnBodies[key] = d
     elif semLayer.fnBodies[key] != d: semLayer.ambiguousFns.incl key
+    if home.len > 0: semLayer.fnBodies[home & "::" & key] = d
 
 proc collectFnSig*(tc: var TypeChecker, d: Decl, top: bool) =
   ## A fn joins the signature catalog, and is indexed so a resolved call can
@@ -45,12 +50,10 @@ proc collectFnSig*(tc: var TypeChecker, d: Decl, top: bool) =
       break
   indexDecl(semLayer, d)
   if d.isExtern and d.name notin semLayer.externs: semLayer.externs[d.name] = d
-  if top: recordFnBody(d)
+  if top: tc.recordFnBody(d)
   tc.addFnDecl(d.name, d)
-  # NOT pending: a pending fn emits a generic one-payload stub
-  # (genPendingStub), so its real params are ({payload: T},) — nothing like its
-  # DECLARED params, which is what topLevelFns's consumers (lowering,
-  # codegen's explodeRecordArg/genCall) would explode against.
+  # NOT pending: a top-level pending fn is one written `...` (markUnimplemented),
+  # recorded through recordCallParams's member path like a `pending:` block's.
   if top and not d.isPending:
     tc.topLevelFns.incl(d.name)
     tc.topLevelFnDecl[d.name] = d

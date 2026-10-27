@@ -385,7 +385,7 @@ gets its own copy of `join`, checked again as plain code; a Flac and an Mp3
 together, or an interface value, are refused (`tests/suites/interfaces.nim`).
 
 > **Attribute words are reserved words** (`error`, `stack`, `align`,
-> `priority`, `volatile`, `io`, and the rest of the lexer's attribute list).
+> `priority`, `urgent`, `volatile`, `io`, and the rest of the lexer's attribute list).
 > They name nothing: not a field, a parameter (a decision column included),
 > a local, a fn, a member, a handler, a variant, a module, or a type
 > argument (`Box[error]` is refused; type arguments are Capitalized). A name
@@ -864,6 +864,31 @@ gone entirely (`tests/suites/actor_result.nim`).
 > mailboxes. A generic actor nobody instantiates is refused (`TK-TY28`), not
 > dropped (`tests/suites/declarations.nim`).
 
+### Message priority — `on reset() [urgent]:`
+
+A handler marked `[urgent]` receives messages that jump the queue: the actor
+takes every waiting urgent message before its next ordinary one, so a `reset`
+or `cancel` is not stuck behind a backlog of sends. Two levels only, normal
+and urgent, and the marker is on the HANDLER — the message, not the actor.
+
+```tuck
+actor Worker [queue: 64]:
+  queued: int = 0
+
+  on job({n: int}):
+    queued += n
+
+  on cancel() [urgent]:      # runs before any job already waiting
+    queued = 0
+```
+
+An actor with an urgent handler carries a second mailbox, sized by its
+`queue` and governed by its `on_full`; one without pays nothing. The order
+promise narrows to "one sender's messages are handled in order WITHIN a
+level". Only an actor's `on` handler may be urgent (TK-AC13). Run-verified on
+every backend and in every `--actors:` mode, and across a module boundary
+(`tests/suites/mailbox_full.nim`).
+
 ### Liveness — `Actor.alive` and `Actor.pingUs`
 
 Every actor answers two built-in calls, from any client, with no code in the
@@ -993,10 +1018,40 @@ calling task.
 Markers that appear in working code: `[io]`, `[irq_safe]`, `[stack: N]`,
 `[unsafe]`, `[priority]`, `[error: E]`, `[emit: "..."]`.
 
-**`[io]` is the only enforced effect.** A pure fn calling an `[io]` fn →
-`requires effect [io]` (`tests/suites/typecheck.nim`). Effects cross module boundaries
+**`[io]` is enforced, and so are its kinds.** A pure fn calling an `[io]` fn →
+`requires effect [io]` (`tests/suites/typecheck.nim`); a fn calling an `[io: net]`
+one must declare `[io: net]` or plain `[io]` (`TK-EF01`). Effects cross module boundaries
 from source *and from the cache* — `tests/suites/cli_smoke.nim` runs the check twice,
 cold and warm, and both must reject identically.
+
+**An effect-free fn runs at build time** (#62). A `const` may be computed by
+calling a fn that declares no capability (`[pure]` and the other restrictions
+are fine), so a size can be worked out rather than written:
+`const Cap = {users: 4} slots`, then `[queue: Cap]` or `Array[Cap, int]`. The
+evaluator knows `let`/`var`, assignment, `if`/`elif`/`else`, `return`,
+arithmetic, comparisons and calls, recursion included, over integers, and
+nothing else (no loops); outside that the const is "not a number the compiler
+knows", as before. A fn declaring `[io]` is refused ("must be pure"). The const
+becomes its number before any backend sees it (`tests/suites/typecheck.nim`).
+
+**The effect manifest** (#63) makes effect creep a diff. `tuck effects FILE
+--write:effects.txt` lists every callable in the program, its imports included,
+with its DECLARED effects and resource kinds, one sorted line each, with no
+positions and no timestamps. `--check:effects.txt` prints each line that
+changed (`- lib.step  fn  []` / `+ lib.step  fn  [io: console]`) and exits 1, so a
+dependency that gained IO fails CI. Declared, not inferred: the file restates
+the source and cannot drift from it (`tests/suites/cli_smoke.nim`, case_manifest).
+
+**The mock surface** (#70) answers "what do I have to stub to test this?"
+mechanically. Effects originate only at declared signatures, and the only
+signatures with no Tuck body behind them are externs, so `tuck mock FILE`
+(`--from:FN` for one fn) lists exactly the externs reachable on the call graph,
+nothing declared-but-unused. `tuck build FILE --mock` builds with each of the
+program's OWN reachable externs (not the stdlib's) turned into a `pending`
+stub: the call is logged (`TUCK PENDING: dial invoked`) and returns the zero
+value. So an app whose C header does not exist yet still builds and runs, and
+its log is the record of what it asked the world for. The web-downloader runs
+this way on all three backends (`tests/suites/cli_smoke.nim`, case_mock).
 
 > **`[no_alloc]` and `[may_block]` appear in NO example and NO test.** They
 > parse and propagate; they have no checker meaning. Do not rely on them.
@@ -1022,6 +1077,24 @@ prefix stays **gradual** — `{volume: 3} audio::play` typechecks
 (`tests/suites/typecheck.nim`), so a sketch compiles before its modules exist.
 
 Module resolution needs `--root:`.
+
+**A fn two imports both export is written qualified, or renamed at the
+import** (ruled 2026-10-27; there is no overloading). The rename is Tuck's
+one rename spelling, `{old -> new}`:
+
+```tuck
+import kvmap {put -> putEntry}
+import files                     # also exports a `put`
+
+fn main() -> int:
+  return 0
+```
+
+In the importing module `putEntry` means `kvmap::put` everywhere, calls and
+`:putEntry` references alike; nothing past the load knows a rename existed
+(`compiler/import_renames.nim`). Renaming a name the module does not export,
+or onto a name the importer already declares, is refused. A TYPE is not
+renamed this way: a colliding type is written qualified (`mod::Type`, below).
 
 **A type two modules declare is two types** (ruled 2026-10-22, A88). Each is
 its module's own: `cli::Entry` and `map::Entry` have their own fields, and a
@@ -1418,11 +1491,13 @@ often than written, and the reader should not have to find the declaration of
 `sock` to learn which registry this touches. It costs nothing at runtime: the
 kind names the table directly.
 
-> **§7.4's static acquire-must-finish check is not built.** Both halves now
-> have a shape to match on, so it is writable — but the *escape* arm is
-> already sound by construction (the registry closes at exit, which is what
-> §7.4 says makes the local analysis sufficient), and the OPEN RESOURCES
-> report answers the same question at runtime meanwhile.
+**A handle nobody releases is reported at build time** (TK-RS12, a warning).
+A local whose only use is `if h.ok:` — never finished, returned, passed on or
+stored — is named at its binding, the same leak OPEN RESOURCES lists at exit,
+found before the program runs. Any other use counts as handling it, so
+`defer: finish h.value, kind` inside the guard, returning `h`, or handing
+`h.value` to a fn all stay quiet. Not path-sensitive: a handle finished on one
+branch only is not caught, which is why `defer` is the idiom.
 
 **A kind may NAME its protocol** — a sealed sum type, declared separately:
 

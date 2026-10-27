@@ -24,6 +24,49 @@ to be the thing most of the queue depends on:
 > for unique features we should run a lowering pass, the rewrite pass,
 > instead of doing it in codegen.
 
+**Roadmap claims are TESTED (2026-10-26):** `tests/suites/roadmap.nim` holds one
+assertion per status claim below, marked `featureDone` or `featureMissing`. A
+missing item that starts working fails the suite and names the line to fix, so
+a row here can no longer silently go stale. Run `./tests/run roadmap`.
+
+### Open GitHub issues, sorted (2026-10-25)
+
+Re-validated against `main` on 2026-10-23: 37 issues found fixed were closed, each
+with its evidence, and #93, #126, #128 and #60 were fixed in the same pass. What is
+left is ordered by what unblocks what. There are **no open bug pins**.
+
+1. **Rulings first; each blocks its group.**
+   - #15: in-flight results. `resp.ok` as a select source needs a call that is
+     started without being awaited, which spec §9.2 (binding awaits) does not
+     allow. This blocks example 16 and the task form of typed select sources.
+   - #104: memory. Record layout, how D passes large records, and whether D frees
+     promptly.
+   - #17: the spelling of variant sets in fn signatures. The semantics are ruled.
+   - #57: which single-expression positions take a block.
+2. **Architecture: decide once, print three times.** #106 (written runtime contract,
+   one runtime test suite) first, then #24 (stage boundaries). #24's decision on an
+   indexing stage waits on #106, #22 and #23.
+3. **The effect system's cheap payoffs, cheapest first.**
+   - #63: the per-fn effect report. **Built 2026-10-25**: `tuck effects FILE
+     --manifest | --write:PATH | --check:PATH` (`cli_smoke` case_manifest).
+   - #62: the const evaluator calls effect-free fns. **Built 2026-10-25**
+     (`ast_query.evalConstExpr`, folded by `lowering.foldConstCalls`).
+   - #69: opt-in memoization. Already built 2026-10-14: `fn memo name(...)` and
+     `fn memo(N) name(...)`, on a `[pure]` fn (TK-EF08), with a warning for an
+     unbounded cache (TK-EF09). Tests are in `effect_fix`.
+   - #70: generated extern mocks. **Built 2026-10-25**: `tuck mock FILE` prints
+     the reachable externs, `tuck build --mock` stubs the program's own
+     (`cli_smoke` case_mock). The web-downloader runs this way.
+   - #71: the effect trust root. Spec note written 2026-10-25 (tuck-spec §3.7);
+     the module change is not scheduled.
+   - #66: **parked 2026-10-27**, re-scoped to one warning (a constant task count
+     over an `on_full: error` cap). Deadlock detection was dropped: an acquire
+     never waits, so there is no deadlock to find. See the issue.
+4. **Features, unblocked but unscheduled.** #10 (correlation tokens; hashing exists
+   now) and #91 (binary layout syntax; needs a design).
+5. **Ongoing.** #107: programs of 5,000–10,000 lines. The weekend apps are 200–300
+   lines each; the largest Tuck file is 843 lines.
+
 ### Handoff 2026-10-12
 
 `thoughts/shared/plans/2026-10-12-handoff.md` says what just landed (memory
@@ -382,7 +425,7 @@ closure no longer exist in any `codegen_*.nim`.
 | — | **#45** | **FIXED 2026-09-26** — `Pool.read {h}` / `Pool.write {h, value}` through the handle, and `Pool.addr {h}` (a `Buf`) for an extern only (TK-TY08). Pool ops are their own node, `exkPoolOp`; a pool is no longer capped at 64 cells. `tests/suites/pools.nim` | — | — |
 | — | **#42** | **FIXED 2026-09-26** (ruled: a cell starts ABSENT) — `read` is a `?T`, so zeroed storage is never read as a value; a written value is a validated construction; `addr` on an invariant-carrying element is TK-TY31 | — | — |
 | S2.4 | **#85** | ~~extend `<uninit>` to actor fields~~ **DONE 2026-09-28** (R8 = a): every actor field has an initialiser or is `T?` (TK-TY35); a `T?` field starts absent and takes a plain `T` (`lowering_optional`) | S | S1.1 |
-| S2.5 | **#55** | a fired `timeout` answers right at 100× the deadline | M | — |
+| — | **#55** | **CLOSED 2026-10-23** — a fired `timeout` answers at its deadline | — | — |
 | S2.6 | **#15** | typed select sources, task form; unblocks `examples/16` | M | — |
 | — | **#20** | **FIXED 2026-09-26** — a member call's payload (`b.grow {...}`, and a mutator's `s.withPort {...}`) binds by the same subset / name / type passes as any call; the method form had its own by-name loop (`typecheck.bindPayloadFields`, `tests/suites/auto_alias.nim`) | — | — |
 | — | **#36** | **FIXED 2026-09-26** — `mod::Type` in a type position: the parser keeps the qualifier, the checker confirms the module declares (and exports) the type | — | — |
@@ -393,7 +436,7 @@ closure no longer exist in any `codegen_*.nim`.
 | # | issue | | size |
 |---|---|---|---|
 | S3.1 | **#43** | ~~Odin invariant guard~~ **DONE 2026-09-26**: guarded by `tuckNoInvariants` (`#config`), a runtime call not `assert` (which `-disable-assert` stripped), the same message and exit 1 on all three (D aborted, 134). **DONE 2026-09-28** (R9 = b): `tuck build --no-invariants` sets the define on each backend (Nim `-d:`, Odin `-define:`, D `-version=`); `cli_smoke` runs it on all three | M |
-| S3.2 | **#30** | D: ~~volatile registers~~ (done 2026-10-19, all three backends), `[saturating]`, `tuckConcat` | M |
+| — | **#30** | **CLOSED 2026-10-23** — D: volatile registers (2026-10-19), `[saturating]` (roadmap suite: clamps on all three), `tuckConcat` | — |
 | S3.3 | — | ~~the D runtime has no networking~~ **DONE 2026-10-20**: `std/net` in `tuck_rt.d`; `42-net-echo` and `sys.net` run on D | L |
 | S3.4 | **#31** | the flake is Odin's own LLVM verifier; pin the Odin version | S |
 | S3.5 | — | **runtime speed parity, found by `benches/memory` (2026-09-25).** Memory is flat on all three; TIME is not: copy_loop Nim 12 ms vs Odin 97 vs D 372; chain Nim 4.6x Odin; overwrite/transfer D 8–11x the others. Causes unconfirmed — see `benches/SCORES.md`, which also has the same programs with the collectors OFF | M |
@@ -410,7 +453,7 @@ closure no longer exist in any `codegen_*.nim`.
 | # | issue | | size |
 |---|---|---|---|
 | — | **#21** | *moved to M1.5* — it is on the spine | — |
-| S5.1 | **#22** | `callParamsFor` for pending fns, distinct ctors, combinators | M |
+| — | **#22** | **CLOSED** — call params for pending fns too since A96 (2026-10-25, roadmap suite) | — |
 | S5.2 | **#23** | superlinear emit; closes as a consequence of #21 + #22. Nim is already linear | — |
 
 ### S7 — Kind-scoped mangling (user proposal, 2026-09-22) — DONE 2026-09-25 (3fd86f5, #78)
@@ -474,7 +517,7 @@ RULED 2026-09-27, and implemented:
   Member type params `fn splice[A: Self, B: Self]` built (compile-time
   only; TK-TY33 through an interface value), and an interface as a generic
   fn's bound, `fn join[T: AudioSource]` (one clone per object type,
-  `iface_generics`). Not yet: calling such a fn from another module.
+  `iface_generics`). Callable from another module too since 2026-10-27: the clone is made in the calling module (`roadmap.nim`, R13).
 - **Type test on an interface value** (2026-09-28): `match v: | Flac f ->`,
   complete with an arm per satisfier or `| _ ->`; TK-TY34.
 - **A parameter is immutable, like `let`** (2026-09-28): a member that
@@ -483,12 +526,13 @@ RULED 2026-09-27, and implemented:
 
 ### Deferred — completely missing, not scheduled
 
-#12 hashing · #11 recursive types ·
-#10 correlation tokens · #16 numeric sigils · #17 · #32 · #33 · #57 ·
-#66/#68/#69/#70 · #71 · #74 · DNS. (**#18 generic actors** is done and
+#10 correlation tokens · #17 · #57 · #66 · #71 (module half) · DNS.
+(Built since this line was written, each asserted in `roadmap.nim` or its own
+suite: #11 recursive types, #12 hashing, #16 numeric sigils, #32 resources,
+#68 property tests, #69 `fn memo`, #70 mocks, #74 liveness. #33 is closed.) (**#18 generic actors** is done and
 closed: one singleton per instantiation, expanded before typecheck.)
 
-**Message priority** (owner, 2026-09-28). An actor taking an urgent message
+**Message priority** (owner, 2026-09-28; BUILT 2026-10-27 as designed here, with the urgent mailbox taking the actor's own `queue` and `on_full` rather than knobs of its own — `mailbox_full`, `roadmap.nim`). An actor taking an urgent message
 ahead of the ones already waiting — a `reset` or `cancel` stuck behind a
 backlog of `send`s. It belongs on the HANDLER, not the actor
 (`on reset() [urgent]:`), because `[priority: high]` on an actor reads as
@@ -1082,16 +1126,16 @@ and those must stay green.
 ## Partial
 | Feature | Spec | Missing piece |
 |---|---|---|
-| Static transition checking | 4.4b | CORE DONE 2026-07-13: per-var variant sets (Type@Variant), reassignment-as-transition vs the table, if/match/loop set merges, match narrowing, param full-set entry, module-local return tracing, sealed-RHS exemption. Caught a real bug in ex 20 on first run. Ceilings: cross-module fns → full set; helper fns building sealed variants need [unsafe]; match arms single-line; optional debug assertion emission not done |
+| Static transition checking | 4.4b | CORE DONE 2026-07-13: per-var variant sets (Type@Variant), reassignment-as-transition vs the table, if/match/loop set merges, match narrowing, param full-set entry, module-local return tracing, sealed-RHS exemption. Caught a real bug in ex 20 on first run. Ceilings: cross-module fns → full set; helper fns building sealed variants need [unsafe]; optional debug assertion emission not done |
 | Invariants | 4.7 | construction + return sites DONE (2026-07-11; validate() auto-inserted, `when not defined(release)` strips). mutation sites, extern boundaries and `!T`-wrapped returns ALL DONE 2026-07-13 — every production site now validates (constructions, returns, `..` chains, extern call sites; !T payloads validate transitively via construction). Both backends, runtime-verified. Ruling: BLOCK syntax only |
 | Actors | 9.1 | DONE 2026-08-05. Stackful minicoro coroutines, static ring mailboxes, cooperative scheduler + epoll reactor. `on <name>` and `on select` handlers both work on both backends (26/27 run-gated at 55). Ceiling: tuckNotifySend broadcast-wakes every actor per send, not the addressee |
 | Tasks | 9.2 | DONE 2026-08-05 — but STACKFUL coroutines, not the state-machine transform this row assumed. `[io]` calls are yield points; binding a task's result awaits it. Ceiling: on Odin a task WITH ARGUMENTS still emits a direct call (proc literals cannot capture), so its body runs off-coroutine |
 | bake | 3.5 | v1 DONE 2026-07-13 (Factor-fry: :name refs, fn→auto generic lowering, slot.invoke; ex 03 green+runtime-verified). Beef bake = delegate-type ceiling. True Tuck-IR inlining later if ever needed |
 | alias restructuring | 2.5 | DONE 2026-07-13 (typed renamed record, both backends; ex 18 green). Non-exkVar payload args still not exploded (double-eval; bind-to-temp later) |
 | pool / slab / arena | 7.2/7.3 | pool DONE (acquire/release, read/write/addr). Slab and arena DONE 2026-10-04 (slab proposal P0–P4): references by index with a tenancy per cell, chunked storage that never copies, ownership checks (TK-AC08/09), the arena as a lifetime over a slab per element type with a byte budget — run-gated on all three (examples 13, 48; `slabs` suite). Open: generic code over slabs (proposal §12); the arena's "cannot outlive" is a run-time check, a static one later |
-| Resource registry | 7.4 | 2026-09-14: `resources:` declaration (per-kind cap/policy/on_full/on_finish/sweep_batch, block-level policy default), `[resource: k]` marker validated (TK-RS01/02) and propagated through the effect machinery (TK-RS03, cross-module), the registry table in all three runtimes (strict/lazy/exit, inline ~75% watermark sweep, LIFO close-all, stale-handle generation catch — 19 rules pinned per runtime by `tests/suites/resources_rt.nim`), per-kind `<Kind>Handle` type, and the `OPEN RESOURCES` report + close-all at exit. `defer` landed with it as a GENERAL statement on all three backends. Release is `finish <handle>, <kind>` (ruled 2026-09-14): the kind is redundant against the handle's type and CHECKED (TK-RS04), so finishing into the wrong registry is a compile error. `on_full` and `on_finish` reach the table as closed vocabularies, the latter as real syscalls. The registry surface is a symmetric pair, `acquire <raw>, <kind>` / `finish <handle>, <kind>`, one parser building both (TK-RS04/05); the raw fd exists between the extern's return and the acquire and nowhere else, and the acquire site is filled from the span so the leak report can name it. A kind may also NAME a PROTOCOL — `db [cap: 4096, states: DbState]`, where DbState is a sealed sum type with `transitions:` (ruled 2026-09-14, decoupled: a `resources:` block is a deployment decision, the protocol of an OS service is the library's). The library writes only the states, never the handle; initial and terminal are DERIVED, and the machine is checked for what a resource needs (TK-RS06..10, including "the closing state is reachable from every state"). The registry is untouched: handle and table unchanged. Protocols are validated, NOT yet tracked — narrowing a handle through the machine needs a surface for a library op to name the edge it walks, a further ruling. A kind is declared ONCE by the library that owns it and apps import it — verified end-to-end, after fixing two bugs an import exposed: `main`'s blanket kind budget was its own module's kinds rather than the program's, and it REPLACED main's declared marker instead of unioning it, so the one workaround was a no-op too. A kind may be declared by MORE THAN ONE site, one knob each (ruled 2026-09-14): the library declares the protocol and on_finish, the app declares cap/policy/sweep_batch. Per knob, with a later site OVERRIDING an earlier one — a library ships a default, the app deploying it gets the last word. Not file order: modules are dep-first, so the importer overrides the imported. `states` is the exception and refuses a second setting (TK-RS02), since a protocol is what the service does rather than a default. Coherence moved out of the parser to the merged kind (TK-RS11) — a library's `on_full` is incoherent alone and correct once an app adds a cap. The table emits at the first site in dependency order, which is where a library's own acquire site can reach it; re-opens emit nothing, so no backend learns about re-opening. Also: `on_finish: none` now parses (it lexes as a keyword, so it was reserved even where only a name can appear). MISSING: §7.4's static acquire-must-finish check — writable now that both halves have a shape, but its escape arm is already sound by construction. DEFERRED by ruling: single-owner handles (affine types), a language-wide feature rather than a resource one — and not a prerequisite for protocol tracking, which stays sound under copy because a stale `finish` is a missed error the generation check catches, not a false rejection |
+| Resource registry | 7.4 | 2026-09-14: `resources:` declaration (per-kind cap/policy/on_full/on_finish/sweep_batch, block-level policy default), `[resource: k]` marker validated (TK-RS01/02) and propagated through the effect machinery (TK-RS03, cross-module), the registry table in all three runtimes (strict/lazy/exit, inline ~75% watermark sweep, LIFO close-all, stale-handle generation catch — 19 rules pinned per runtime by `tests/suites/resources_rt.nim`), per-kind `<Kind>Handle` type, and the `OPEN RESOURCES` report + close-all at exit. `defer` landed with it as a GENERAL statement on all three backends. Release is `finish <handle>, <kind>` (ruled 2026-09-14): the kind is redundant against the handle's type and CHECKED (TK-RS04), so finishing into the wrong registry is a compile error. `on_full` and `on_finish` reach the table as closed vocabularies, the latter as real syscalls. The registry surface is a symmetric pair, `acquire <raw>, <kind>` / `finish <handle>, <kind>`, one parser building both (TK-RS04/05); the raw fd exists between the extern's return and the acquire and nowhere else, and the acquire site is filled from the span so the leak report can name it. A kind may also NAME a PROTOCOL — `db [cap: 4096, states: DbState]`, where DbState is a sealed sum type with `transitions:` (ruled 2026-09-14, decoupled: a `resources:` block is a deployment decision, the protocol of an OS service is the library's). The library writes only the states, never the handle; initial and terminal are DERIVED, and the machine is checked for what a resource needs (TK-RS06..10, including "the closing state is reachable from every state"). The registry is untouched: handle and table unchanged. Protocols are validated, NOT yet tracked — narrowing a handle through the machine needs a surface for a library op to name the edge it walks, a further ruling. A kind is declared ONCE by the library that owns it and apps import it — verified end-to-end, after fixing two bugs an import exposed: `main`'s blanket kind budget was its own module's kinds rather than the program's, and it REPLACED main's declared marker instead of unioning it, so the one workaround was a no-op too. A kind may be declared by MORE THAN ONE site, one knob each (ruled 2026-09-14): the library declares the protocol and on_finish, the app declares cap/policy/sweep_batch. Per knob, with a later site OVERRIDING an earlier one — a library ships a default, the app deploying it gets the last word. Not file order: modules are dep-first, so the importer overrides the imported. `states` is the exception and refuses a second setting (TK-RS02), since a protocol is what the service does rather than a default. Coherence moved out of the parser to the merged kind (TK-RS11) — a library's `on_full` is incoherent alone and correct once an app adds a cap. The table emits at the first site in dependency order, which is where a library's own acquire site can reach it; re-opens emit nothing, so no backend learns about re-opening. Also: `on_finish: none` now parses (it lexes as a keyword, so it was reserved even where only a name can appear). BUILT 2026-10-27 as a warning (TK-RS12, `resource_leaks.nim`): the conservative half of §7.4's acquire-must-finish check — a handle whose only use is `.ok`. Not path-sensitive. DEFERRED by ruling: single-owner handles (affine types), a language-wide feature rather than a resource one — and not a prerequisite for protocol tracking, which stays sound under copy because a stale `finish` is a missed error the generation check catches, not a false rejection |
 | Interfaces | 5.2/5.3 | DONE. `satisfies` is checked at compile time; an interface value is a TAGGED VARIANT THAT COPIES, not a fat pointer — dispatch is a switch on the tag calling the concrete member fn, so there is no table, no thunk, and no lifetime question (escape analysis was deleted with the pointer design). Both backends |
-| Type composition `+` | 4.5 | conflict detection unverified |
+| Type composition `+` | 4.5 | DONE: a field contributed twice is TK-TY05 (roadmap suite) |
 | match | — | exhaustiveness DONE: every match over a closed domain (sum type, bool, error enum) must cover all cases or end in `_`. Open domains (int/str) unchecked, as in Nim |
 | Effects | 3.7 | switch to implicit propagation (ruling above) |
 | ~~Beef backend~~ | — | REMOVED 2026-07-28. Frozen since the Odin backend landed, never compile-verified here (no BeefBuild), and every new construct meant a third unchecked emitter arm. Odin is the second backend |
@@ -1105,7 +1149,8 @@ and those must stay green.
   form lowers `read <fd>` / `timeout <ms>` only — dotted sources (`resp.ok`,
   `timeout.5s`) still parse as opaque strings, which is what blocks ex 16.
   Scheduler §9.4 is done (see Partial above).
-- Stack-depth budgets `[stack: N]` §6.2
+- ~~Stack-depth budgets `[stack: N]` §6.2~~ RETIRED: `[stack: N]` is TK-EF06;
+  `[no_recursion]` and `[recursion: N]` replace it (roadmap suite)
 - ~~Complexity limit §6.3 (ruling: hard error)~~ IMPLEMENTED for release,
   verified 2026-09-13: `tuck b --release` REJECTS a function over the budget
   with `TK-CX02` ("--release requires them under it"), and a normal build
@@ -1120,10 +1165,8 @@ and those must stay green.
   accepted and emits `of Wibble:`, which nim refuses. See issue #35
 - ~~Visibility (pub/private)~~ DONE 2026-09-11: a `public:` block lists bare
   names, and the restriction reaches all three backends' visibility markers.
-  Imported types resolve by bare name across a module boundary. STILL
-  MISSING: `mod::Type` in a TYPE position — `let p: geo::Point = …` is
-  "Expected `Assign` here, found `::`" (verified 2026-09-12). Nested module
-  paths untested.
+  Imported types resolve by bare name across a module boundary, and
+  `mod::Type` works in a type position too (#36; roadmap suite).
 
 ## Broken-example map (2026-07-13: Nim gate 21/25, Beef 20/25)
 Remaining: 11 → when + pool + attr features (main-only ruling landed 2026-07-13); 16 → on select (actor-runtime
@@ -1319,15 +1362,13 @@ below are that shape reused.
   generalization rather than a new mechanism. Open ruling: closed kind list or
   open, and whether bare `[io]` is the union.
 
-- **#66 — the contention graph.** A task's `[resource: k]` set is its
-  contention footprint, known statically. NOT auto-parallelism — the
-  web-downloader disproves that, since all eight chunk tasks share the one
-  `conn` kind. What it actually buys: **deadlock freedom by declared ordering**
-  (A holds `X` acquires `Y`, B holds `Y` acquires `X` is a cycle in a static
-  graph, so a compile error rather than a 3am page), **capacity arithmetic**
-  (`cap: 8` plus per-task demand answers "can this exhaust and hang?" — with
-  `on_full: absent` it cannot, with `on_full: error` it can), and scheduling
-  hints. Every fact it reads is already declared and already checked.
+- **#66 — the contention graph.** PARKED 2026-10-27 after checking it against
+  the compiler. An acquire never waits (`on_full` is `absent` or `error`), so
+  the deadlock it promised to find cannot happen, and a per-kind contention
+  report repeats what the effect manifest already prints. What is left is one
+  warning: a constant number of tasks that may hold a kind at once, over its
+  cap, under `on_full: error`. Kept in the issue for when a fixed-shape
+  (embedded) program needs it.
 
 - **#67 — actor isolation as a checked property.** A handler declaring no
   effects provably cannot touch anything outside its actor. Turns the

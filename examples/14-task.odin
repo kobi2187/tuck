@@ -10,7 +10,7 @@ tuckˑtypeˑFeed :: struct {
 	episodes: int,
 }
 
-tuckˑfnˑparse :: proc(payload: $T) -> tuckˑmodˑshapes_14_task.TRec_feed(tuckˑtypeˑFeed) {
+tuckˑfnˑparse :: proc(p0: $T0) -> tuckˑmodˑshapes_14_task.TRec_feed(tuckˑtypeˑFeed) {
 	fmt.println("TUCK PENDING: parse invoked (not implemented)")
 	return {}
 }

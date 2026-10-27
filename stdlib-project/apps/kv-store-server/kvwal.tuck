@@ -1,0 +1,101 @@
+# kvwal — durability: a write-ahead log of every change, and a snapshot.
+#
+# Every change is appended to the log BEFORE it is applied, as one line, with
+# the expiry written as an absolute tick (`SETAT key value diesAt`), so a
+# replay lands on exactly the state that was acknowledged whatever the clock
+# says now. `SAVE` writes every live key to the snapshot and empties the log;
+# start-up loads the snapshot, then replays the log on top.
+#
+# Lines are the protocol's own words, so `cat kv.log` is readable and a log
+# survives a change of the in-memory layout.
+import fs
+import files
+import text
+import convert
+import seq
+import str
+import kvmap {put -> putEntry}
+
+type Replayed:
+  table: KvMap
+  now: int
+  lines: int
+
+fn record({path: str, line: str}) -> bool [io: fs]:
+  let wrote = {path: path, content: line + "\n"} appendFile
+  return wrote.ok
+
+fn setLine({key: str, value: str, diesAt: int}) -> str:
+  return "SETAT " + key + " " + value + " " + diesAt.toStr
+
+fn delLine({key: str}) -> str:
+  return "DEL " + key
+
+fn clockLine({now: int}) -> str:
+  return "CLOCK " + now.toStr
+
+fn wordAt({w: Seq[str], i: int}) -> str:
+  if i < w.len:
+    return w[i]
+  return ""
+
+fn intAt({w: Seq[str], i: int}) -> int:
+  let word = {w: w, i: i} wordAt
+  let n = {t: word} parseInt
+  if n.ok:
+    return n.value ^int
+  return 0
+
+fn applyLine({r: Replayed, line: str}) -> Replayed:
+  let w = {t: line, at: " "} split
+  let verb = {w: w, i: 0} wordAt
+  var table = r.table
+  var now = r.now
+  let key = {w: w, i: 1} wordAt
+  if verb == "SETAT":
+    let value = {w: w, i: 2} wordAt
+    let diesAt = {w: w, i: 3} intAt
+    table = {m: table, key: key, value: value, diesAt: diesAt, now: now} putEntry
+  elif verb == "DEL":
+    let gone = {m: table, key: key, now: now} drop
+    table = gone.table
+  elif verb == "CLOCK":
+    now = {w: w, i: 1} intAt
+  return {table: table, now: now, lines: r.lines + 1} Replayed
+
+fn replayFile({r: Replayed, path: str}) -> Replayed [io: fs]:
+  let got = {path: path} readLines
+  if not got.ok:
+    return r
+  var out = r
+  for i in 0 ..< got.value.lines.len:
+    let line = got.value.lines[i]
+    if line != "":
+      out = {r: out, line: line} applyLine
+  return out
+
+fn recover({snapshot: str, log: str}) -> Replayed [io: fs]:
+  let empty = {} newMap
+  let start = {table: empty, now: 0, lines: 0} Replayed
+  let fromSnap = {r: start, path: snapshot} replayFile
+  return {r: fromSnap, path: log} replayFile
+
+fn snapshotLines({table: KvMap, now: int}) -> Seq[str]:
+  let clock = {now: now} clockLine
+  var lines: Seq[str] = [clock]
+  for i in 0 ..< table.buckets.len:
+    let b = table.buckets[i]
+    for j in 0 ..< b.len:
+      let s = b[j]
+      if {s: s, now: now} alive:
+        let line = {key: s.key, value: s.value, diesAt: s.diesAt} setLine
+        lines = {items: lines, value: line} push
+  return lines
+
+fn save({table: KvMap, now: int, snapshot: str, log: str}) -> bool [io: fs]:
+  let lines = {table: table, now: now} snapshotLines
+  let wrote = {path: snapshot, lines: lines} writeLines
+  if not wrote.ok:
+    return false
+  let cleared = {path: log, content: ""} writeFile
+  return cleared.ok
