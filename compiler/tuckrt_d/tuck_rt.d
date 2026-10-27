@@ -469,7 +469,11 @@ private void tuckSeqBounds(long index, long length, string op)
 /// `at` — brackets are grammar, so they must work without `import seq`,
 /// and the reserved `tuck` prefix keeps them clear of a user's own `at`.
 /// std/seq.tuck's `at`/`setAt` stay as the explicit spelling, delegating.
-T tuckAt(T)(T[] items, long index)
+/// A REFERENCE to the element, not a copy — Nim's `lent T`. By value, every
+/// `xs[i].field` read copied the whole element: n-body's 56-byte record was
+/// copied some 20 times per pair of planets (benches/game). A caller that
+/// keeps the element (`T x = xs[i]`) still gets its own copy by assignment.
+ref T tuckAt(T)(T[] items, long index)
 {
     tuckSeqBounds(index, cast(long) items.length, "at");
     return items[index];

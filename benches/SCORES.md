@@ -1029,3 +1029,37 @@ was quadratic on every backend. It now reads the answers off the declaration
 it is already visiting. Odin's `genRecordType` also built a throwaway context
 per type, and a context holds its module by value, so each one copied every
 declaration; it is now built only for a type that has an invariant.
+
+## Benchmarks Game (2026-10-27)
+
+`benches/game/run.sh`: the Benchmarks Game programs in idiomatic Tuck, NOT
+tuned; every speed-up goes into the compiler (`benches/game/README.md`).
+Best of 3, release builds, against `gcc -O2` of the same algorithm.
+
+**Release builds, before anything else.** n-body at 5M steps:
+
+| | C | Nim | Odin | D |
+|---|---|---|---|---|
+| first build | 0.53 s | 4.80 s (9x) | 0.59 s | 18.76 s (35x) |
+| Nim `-flto`, D `-inline` | | 0.80 s | | 12.86 s |
+| D `tuckAt` returns `ref T` | | | | 1.25 s |
+
+Two causes, both every program's. Nim emits one C file per module, so with no
+link-time optimisation nothing in tuck_rt (`tuckAt`, its bounds check, `sqrt`)
+could inline into a loop: `--release` now passes `-flto`. dmd inlines nothing
+across modules without `-inline`, and D's `tuckAt` returned the element BY
+VALUE, so every `xs[i].field` read copied the whole element (Nim's returns
+`lent T`); it returns `ref T` now.
+
+**Baseline after those two** (seconds, and the ratio to C):
+
+| program | C | Nim | Odin | D |
+|---|---|---|---|---|
+| binary-trees 16 | 0.373 | 1.648 (4.4x) | 5.154 (13.8x) | 6.191 (16.5x) |
+| fannkuch-redux 10 | 0.251 | 1.999 (7.9x) | 2.711 (10.8x) | 5.297 (21.1x) |
+| n-body 5M | 0.471 | 0.742 (1.5x) | 0.508 (1.0x) | 1.034 (2.1x) |
+| spectral-norm 2000 | 0.230 | 0.631 (2.7x) | 0.279 (1.2x) | 0.482 (2.0x) |
+
+Gaps the programs hit, to fix in the language rather than work around: no
+exponent float literals (`4.84e+00` lexes as `4.84` then a call of `e`), and
+no fixed-precision float format (each program carries a `fixed9`).
