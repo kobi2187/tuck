@@ -39,24 +39,24 @@ proc registerActortuckˑactorˑResult*() =
   tuckˑactorˑResultSlot = tuckStartActor(draintuckˑactorˑResult)
 
 proc tuckˑtaskˑserve*(lfd: int): void =
-  var tuckˑvˑc = tuckˑmodˑnet.accept(lfd)
+  var tuckˑvˑc = (tuckYield(); tuckˑmodˑnet.accept(lfd))
   if tuckˑvˑc.ok:
     if true:
-      var tuckOwnTmp1 = tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256)
+      var tuckOwnTmp1 = (tuckYield(); tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256))
       defer: tuckDrop(tuckOwnTmp1)
       discard tuckOwnTmp1
-      discard tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "pong")
-      tuckˑmodˑnet.close(tuckˑvˑc.value.fd)
+      discard (tuckYield(); tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "pong"))
+      (tuckYield(); tuckˑmodˑnet.close(tuckˑvˑc.value.fd))
   return
 
 proc tuckˑtaskˑclient*(port: int): void =
-  var tuckˑvˑc = tuckˑmodˑnet.connect("127.0.0.1", port)
+  var tuckˑvˑc = (tuckYield(); tuckˑmodˑnet.connect("127.0.0.1", port))
   if tuckˑvˑc.ok:
     if true:
-      discard tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "ping")
-      var tuckˑvˑr = tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256)
+      discard (tuckYield(); tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "ping"))
+      var tuckˑvˑr = (tuckYield(); tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256))
       defer: tuckDrop(tuckˑvˑr)
-      tuckˑmodˑnet.close(tuckˑvˑc.value.fd)
+      (tuckYield(); tuckˑmodˑnet.close(tuckˑvˑc.value.fd))
       if tuckˑvˑr.ok:
         if true:
           if (tuckˑvˑr.value.data == "pong"):

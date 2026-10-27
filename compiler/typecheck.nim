@@ -154,7 +154,6 @@ import resolution
 import ast_query
 import rewrite   # isLiteralPayload — recognize the wrap the pass introduced
 import typecheck_util
-import name_prefix   # prefixed: a fn under its mangled name too (A100)
 export typecheck_util
 import typecheck_state
 export typecheck_state
@@ -3658,7 +3657,13 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   # instead of scanning the decl list to re-derive it.
   # A payload call names a fn directly, so prefer the top-level one over an
   # object member that shares the name.
-  let calleeDecl = tc.topLevelDeclOfFn(calleeName)
+  # EVERY spelling resolves here, once: a local fn, an imported one written
+  # bare, `mod::fn`, an extern. Later passes read this edge (ast_query.
+  # calleeDecl) instead of each re-deriving it from the name it happens to
+  # know how to read; the stage check `assertCallEdges` holds every call to
+  # a fn with a body to having one.
+  var calleeDecl = tc.topLevelDeclOfFn(calleeName)
+  if calleeDecl == nil: calleeDecl = semLayer.programFn(callKey(e.callee))
   if calleeDecl != nil:
     resolveTo(semLayer, e, calleeDecl)
   # The other half of TK-TY27: this call NAMED the fn, so it reaches the
@@ -6784,22 +6789,6 @@ proc checkSelfWrites(mods: seq[tuple[name, path: string, m: Module]]) =
     failSelfWrite(call, if call.member != nil: call.member.name
                         else: call.ifaceMember)
 
-proc recordQualifiedFns(mods: seq[tuple[name, path: string, m: Module]]) =
-  ## Every top-level fn with a body, also under `module::name`: what a
-  ## qualified call (`kvmap::put`) names. The ownership rules read a callee
-  ## from `fnBodies`, and found a qualified one nowhere, so its argument was
-  ## not moved into a parameter the callee consumes and both sides freed it
-  ## (A100). The bare-name key cannot serve: a name two modules declare is
-  ## ambiguous there, and that is exactly when a call is qualified. Both
-  ## spellings of the fn's own name, as recordFnBody files them, since the
-  ## ownership pass reads the mangled tree.
-  for (name, _, m) in mods:
-    for d in m.decls:
-      if d == nil or d.kind != dkFn or d.fnBody == nil or d.isExtern or
-         d.origin != NoModule: continue
-      for key in [d.name, prefixed(d.name, nkFn)]:
-        semLayer.fnBodies[name & "::" & key] = d
-
 const MaxExpansionRounds = 16
   ## Rounds of interface-bounded generic expansion (iface_generics) before
   ## the checker gives up: each round expands the calls one more level of
@@ -6832,7 +6821,6 @@ proc typecheckExpanding*(mods: var seq[tuple[name, path: string, m: Module]],
     for (name, path, m) in mods: fillIds(m)
     result = checkProgramOnce(mods, preSigs)
   for i in 0 ..< mods.len: dropIfaceGenerics(mods[i].m)
-  recordQualifiedFns(mods)
   checkIfaceMatchesComplete(mods)
   checkSelfWrites(mods)
   checkUrgentPlacement(mods)

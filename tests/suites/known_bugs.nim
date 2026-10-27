@@ -4983,4 +4983,29 @@ fn add({b: Bag, s: str}) -> Bag:
   t.quietly: t.hostRuns "A100: a qualified call moves into a consuming parameter", 3
   t.bugFixed "A100: a qualified call moves into a consuming parameter"
 
+  # A101. The same blind spot in the effect check: a fn declaring nothing
+  # could print through `lib::shout` and check clean, while the bare `shout`
+  # was TK-EF01. The effect table was keyed both ways; the call side only
+  # ever read a bare name. One call key (`ast_ops.callKey`) for every pass,
+  # and a stage check (`assertCallEdges`) that every call to a fn with a body
+  # was resolved, whatever its spelling.
+  t.src """
+import lib
+
+fn quiet() -> int:
+  return {s: "x"} lib::shout
+
+fn main() -> int:
+  return {} quiet
+"""
+  t.addFile "lib.tuck", """
+import console
+
+fn shout({s: str}) -> int [io: console]:
+  {text: s} printLine
+  return 1
+"""
+  t.quietly: t.badCheck "A101: a qualified call carries its callee's effects", "TK-EF01"
+  t.bugFixed "A101: a qualified call carries its callee's effects"
+
   t.finish()

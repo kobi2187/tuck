@@ -110,8 +110,10 @@ proc callEffects(c: var Checker, e: Expr, res: var Demands) =
   ## effects and resource kinds, and the async mark that goes with [io].
   ## A pool operation (the other thing the checker stamps) declares none.
   if e.kind != exkCall: return
-  let calleeName = if e.callee != nil and e.callee.kind == exkVar: e.callee.name
-                   else: ""
+  # `callKey`: `name` or `mod::name`, the two keys the imported-effects table
+  # is filed under. Reading `callee.name` off an exkVar alone let a qualified
+  # call to an [io] fn through as pure, and unmarked as a suspend point (A101).
+  let calleeName = callKey(e.callee)
   if calleeName != "":
       # Calling a TASK is a spawn — it decouples the [io] work onto the
       # scheduler, so the task's effects do NOT propagate to the caller and
@@ -271,9 +273,7 @@ proc resolveCallee(c: Checker, call: Expr): Callee =
   ## know whether the callee is known at all, so an unplaceable name is
   ## `ckUnknown` rather than "declares nothing".
   if call.kind != exkCall: return Callee(kind: ckUnknown)
-  let name = if call.callee != nil and call.callee.kind == exkVar:
-               call.callee.name
-             else: ""
+  let name = callKey(call.callee)
   if name == "": return Callee(kind: ckUnknown)
   if name in c.taskNames: return Callee(kind: ckTask, name: name)
   let member = memberCallDecl(semLayer, c.module, call)

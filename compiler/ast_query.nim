@@ -766,6 +766,30 @@ proc memberCallDecl*(res: Resolution, m: Module, e: Expr): Decl =
     return nil
   memberDeclOf(m, memberOwner(m, memberRecvType(res, e)), e.callee.name)
 
+proc calleeDecl*(res: Resolution, m: Module, call: Expr): Decl =
+  ## THE answer to "which declaration does this call reach", for every pass
+  ## that needs one: the ownership rules, slab ownership, the mock surface.
+  ## Each of them used to derive it for itself from the callee's NAME, and
+  ## each knew a different subset of the spellings — the ownership rules and
+  ## the effect check never knew `mod::fn` (A100, A101).
+  ##
+  ##  1. the edge the checker recorded, for every spelling it resolved —
+  ##     local, imported, qualified, extern (`assertCallEdges` holds it to
+  ##     that);
+  ##  2. a member call, by its receiver's type — never by the bare name,
+  ##     which a top-level fn may share (#50);
+  ##  3. a call lowering built after the check, which carries no edge: the
+  ##     module's own fn by name, then the program's by its call key.
+  if call == nil or call.kind != exkCall: return nil
+  result = res.declFor(call)
+  if result != nil: return
+  result = memberCallDecl(res, m, call)
+  if result != nil: return
+  let key = callKey(call.callee)
+  if key.len == 0: return nil
+  if call.callee.kind == exkVar: result = m.findFn(key)
+  if result == nil: result = res.programFn(key)
+
 proc memberCallShape(e: Expr): bool =
   ## Is `e` NOT a call with a named callee and a receiver in args[0]?
   e == nil or e.kind != exkCall or e.callee == nil or

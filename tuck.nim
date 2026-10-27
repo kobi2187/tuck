@@ -624,6 +624,7 @@ proc checkOrDie(path: string, loaded: var seq[LoadedModule],
     for lm in loaded: checkedMods.add(lm.m)
     assertTreeIds("typecheck", checkedMods)
     assertTypeEdges(semLayer, checkedMods)
+    assertCallEdges(semLayer, checkedMods)
     assertNoMissingTypes(checkedMods)
     assertSsaWellFormed(semLayer, checkedMods)
   let imported = importedEffects(loaded, sigOnly)

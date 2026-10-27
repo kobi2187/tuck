@@ -10,7 +10,7 @@ proc tuckˑfnˑparse*[T0](p0: T0): tuple[feed: tuckˑtypeˑFeed] =
 
 
 proc tuckˑtaskˑfetchFeed*(url: string): TuckResult[tuple[feed: tuckˑtypeˑFeed]] =
-  var tuckˑvˑresp = tuckˑmodˑhttp.tuckˑfnˑget(url)
+  var tuckˑvˑresp = (tuckYield(); tuckˑmodˑhttp.tuckˑfnˑget(url))
   defer: tuckDrop(tuckˑvˑresp)
   if tuckˑvˑresp.ok:
     if true:

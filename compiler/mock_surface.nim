@@ -74,8 +74,10 @@ proc calleeOf(g: Graph, module: string, n: Expr): Decl =
              elif semLayer.hasCall(n): semLayer.call(n)
              else: nil
   if call == nil or call.callee == nil: return nil
-  let member = memberCallDecl(semLayer, g.moduleNamed(module), call)
-  if member != nil: return member
+  # The shared answer first (ast_query.calleeDecl): the checker's edge for
+  # every spelling, or a member by its receiver.
+  let d = calleeDecl(semLayer, g.moduleNamed(module), call)
+  if d != nil and d.kind in {dkFn, dkTask}: return d
   case call.callee.kind
   of exkVar: g.lookup(module, call.callee.name)
   of exkQualified:

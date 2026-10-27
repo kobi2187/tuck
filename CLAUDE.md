@@ -138,6 +138,14 @@ delegates to `jsony`.
 `allFns` + tasks + `dkExpr` walk, once copied into ten passes, never reached a
 select arm or an initialiser.
 
+**A call's callee is `ast_query.calleeDecl`, never re-derived from its name.**
+The checker resolves every spelling once (local, imported, `mod::fn`, extern)
+and records the edge; `assertCallEdges` fails the build when a call to a fn
+with a body has none. Passes that each read `callee.name` off an `exkVar`
+never saw `mod::fn`: the ownership rules freed a consumed argument twice
+(A100) and the effect check let IO through (A101). A key for a name-keyed
+table is `ast_ops.callKey` (`name` or `mod::name`), not `callee.name`.
+
 **Each construct gets its own AST node kind.** `on select` got real `exkSelect` /
 `dkSelect` nodes rather than being smuggled in as a `match` with a fake subject.
 The clever reuse always costs more later, because every downstream stage has to

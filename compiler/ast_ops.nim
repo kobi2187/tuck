@@ -119,6 +119,20 @@ proc enumDomain*(m: Module, t: Type): seq[string] =
 
 # --- SourceName: the name the user wrote -----------------------------------
 
+proc callKey*(callee: Expr): string =
+  ## The ONE spelling every pass uses to name what a call reaches: `name` for
+  ## a bare callee, `mod::name` for a qualified one, "" for anything else (a
+  ## fn value, a field). Each pass used to read `callee.name` off an `exkVar`
+  ## and skip the rest, so a qualified call (`lib::f`) was invisible to the
+  ## ownership rules (A100) and to the effect check (A101) alike.
+  if callee == nil: return ""
+  case callee.kind
+  of exkVar: callee.name
+  of exkQualified:
+    if callee.modulePath.len > 0: callee.modulePath[^1] & "::" & callee.qualName
+    else: callee.qualName
+  else: ""
+
 proc writtenName*(e: Expr): string =
   ## What the user wrote for this expression's name. Use it for anything the
   ## user sees or that must be stable across backends — never for an emitted

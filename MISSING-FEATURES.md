@@ -329,6 +329,13 @@ it in.
   (a crash on Nim): the ownership rules looked callees up by bare name only.
   Fixed: fns are also filed under `module::name`. Found by the kv-store app.
 
+- **A101 (issue #191) — a qualified call escaped the effect check.** A fn
+  declaring nothing could do IO through `lib::shout`; the bare `shout` was
+  TK-EF01. Same root as A100. Fixed structurally: one call key for every
+  pass (`ast_ops.callKey`), the checker records the callee for every
+  spelling, one reader (`ast_query.calleeDecl`), and a stage check
+  (`assertCallEdges`) that fails the build when a call is left unresolved.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own
