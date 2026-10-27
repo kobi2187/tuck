@@ -1104,3 +1104,8 @@ tree costs, whose one-element Seq per edge is #205.
 than a PBM bitmap): C 3.48s, Nim 1.0x, Odin 1.0x, D 2.5x. The emitted D is the
 same loop as the C one (`foreach` over a range, scalar doubles, no calls
 left); the gap is dmd's floating-point codegen, which is #208's ldc2 question.
+
+**fasta** (`benches/game/fasta`, 2.5M): C 0.34s, Nim 1.5x, Odin 1.4x, D 3.6x. Output is
+byte-identical to C on all three. Each line is a fresh `Seq[u8]` pushed one
+byte at a time, then `fromBytes`; D's share is the GC-allocated line per 60
+letters (#208), and the push-then-convert shape is what #210 (reserve) targets.

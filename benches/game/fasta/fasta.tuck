@@ -1,0 +1,111 @@
+# fasta (the Benchmarks Game): DNA sequences written in FASTA, one repeated
+# from a fixed text and two drawn at random from weighted alphabets with the
+# game's linear congruential generator. Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+const Width = 60
+const Im = 139968
+const Ia = 3877
+const Ic = 29573
+
+const Alu = "GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGGTCAGGAGTTCGAGACCAGCCTGGCCAACATGGTGAAACCCCGTCTCTACTAAAAATACAAAAATTAGCCGGGCGTGGTGGCGCGCGCCTGTAATCCCAGCTACTCGGGAGGCTGAGGCAGGAGAATCGCTTGAACCCGGGAGGCGGAGGTTGCAGTGAGCCGAGATCGCGCCACTGCACTCCAGCCTGGGCGACAGAGCGAGACTCCGTCTCAAAAA"
+
+type Pick:
+  ch: u8
+  p: f64
+
+fn pick({ch: str, p: f64}) -> Pick:
+  let b = {t: ch, index: 0} byteAt
+  return {ch: b, p: p} Pick
+
+fn iub() -> Seq[Pick]:
+  var out: Seq[Pick] = []
+  var acc = 0.0
+  let chars = ["a", "c", "g", "t", "B", "D", "H", "K", "M", "N", "R", "S", "V", "W", "Y"]
+  let probs = [0.27, 0.12, 0.12, 0.27, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02]
+  for i in 0 ..< chars.len:
+    acc = acc + probs[i]
+    let e = {ch: chars[i], p: acc} pick
+    out = {items: out, value: e} push
+  return out
+
+fn homosapiens() -> Seq[Pick]:
+  var out: Seq[Pick] = []
+  var acc = 0.0
+  let chars = ["a", "c", "g", "t"]
+  let probs = [0.3029549426680, 0.1979883004921, 0.1975473066391, 0.3015094502008]
+  for i in 0 ..< chars.len:
+    acc = acc + probs[i]
+    let e = {ch: chars[i], p: acc} pick
+    out = {items: out, value: e} push
+  return out
+
+# One step of the generator, scaled to [0, 1).
+fn next({seed: int}) -> int:
+  return (seed * Ia + Ic) % Im
+
+fn choose({table: Seq[Pick], r: f64}) -> u8:
+  for e in table:
+    if r < e.p:
+      return e.ch
+  return table[table.len - 1].ch
+
+fn header({id: str, desc: str}) -> void [io: console]:
+  let text = ">" + id + " " + desc
+  {text: text} printLine
+
+# The text, cycled, in lines of Width.
+fn repeatFasta({id: str, desc: str, text: str, n: int}) -> void [io: console]:
+  {id: id, desc: desc} header
+  let size = {t: text} byteCount
+  var pos = 0
+  var left = n
+  for left > 0:
+    let take = if left < Width: left else: Width
+    var line: Seq[u8] = []
+    for k in 0 ..< take:
+      let b = {t: text, index: pos} byteAt
+      line = {items: line, value: b} push
+      pos = (pos + 1) % size
+    let s = {bytes: line} fromBytes
+    {text: s} printLine
+    left = left - take
+
+# n letters drawn from the table; the seed is returned for the next block.
+fn randomFasta({id: str, desc: str, table: Seq[Pick], n: int, seed: int}) -> int [io: console]:
+  {id: id, desc: desc} header
+  var s = seed
+  var left = n
+  for left > 0:
+    let take = if left < Width: left else: Width
+    var line: Seq[u8] = []
+    for k in 0 ..< take:
+      s = {seed: s} next
+      let r = (s ~f64) /f (Im ~f64)
+      let b = {table: table, r: r} choose
+      line = {items: line, value: b} push
+    let str = {bytes: line} fromBytes
+    {text: str} printLine
+    left = left - take
+  return s
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 1000
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  {id: "ONE", desc: "Homo sapiens alu", text: Alu, n: n * 2} repeatFasta
+  let iubs = {} iub
+  let s1 = {id: "TWO", desc: "IUB ambiguity codes", table: iubs, n: n * 3, seed: 42} randomFasta
+  let hs = {} homosapiens
+  let s2 = {id: "THREE", desc: "Homo sapiens frequency", table: hs, n: n * 5, seed: s1} randomFasta
+  return 0
