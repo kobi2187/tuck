@@ -449,6 +449,26 @@ ulong hash(string data)
     return h;
 }
 
+// splitmix64's finalizer: spreads an integer's bits so the low ones, which a
+// table indexes by, depend on all of them. The same on every backend.
+ulong tuckMix(ulong x)
+{
+    ulong z = x + 0x9e3779b97f4a7c15UL;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9UL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebUL;
+    return z ^ (z >> 31);
+}
+
+// The hash of any key a table can hold: a string by its bytes (FNV-1a, as
+// `hash`), an integer, bool or enum by value, anything else by its text.
+ulong hashKey(T)(T key)
+{
+    static if (is(T == string)) return hash(key);
+    else static if (__traits(isIntegral, T) || is(T == bool) || is(T == enum))
+        return tuckMix(cast(ulong) key);
+    else return hash(text(key));
+}
+
 // seq access. Bounds are a PRECONDITION: violating one is a program error
 // that aborts with the site, not an error value (mirrors tuck_rt.nim's
 // IndexDefect; D's own bounds check would say the same thing, but this

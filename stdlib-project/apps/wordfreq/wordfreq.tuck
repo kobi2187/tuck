@@ -59,7 +59,7 @@ fn before({a: Count, b: Count}) -> bool:
   return a.word < b.word
 
 fn tally({words: Seq[str], minLen: int}) -> Seq[Count]:
-  var counts: Table[str, int] = {entries: []} Table
+  var counts: Table[str, int] = {entries: [], slots: []} Table
   for i in 0 .. words.len - 1:
     let w = words[i]
     if {t: w} byteCount >= minLen:

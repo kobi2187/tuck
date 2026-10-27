@@ -776,6 +776,29 @@ hash :: proc(data: string) -> u64 {
 	return h
 }
 
+// splitmix64's finalizer: spreads an integer's bits so the low ones, which a
+// table indexes by, depend on all of them. The same on every backend.
+tuckMix :: proc(x: u64) -> u64 {
+	z := x + 0x9e3779b97f4a7c15
+	z = (z ~ (z >> 30)) * 0xbf58476d1ce4e5b9
+	z = (z ~ (z >> 27)) * 0x94d049bb133111eb
+	return z ~ (z >> 31)
+}
+
+// The hash of any key a table can hold: a string by its bytes (FNV-1a, as
+// `hash`), an integer, bool or enum by value, anything else by its text.
+hashKey :: proc(key: $T) -> u64 {
+	when T == string {
+		return hash(key)
+	} else when intrinsics.type_is_integer(T) || intrinsics.type_is_boolean(T) || intrinsics.type_is_enum(T) {
+		return tuckMix(u64(key))
+	} else {
+		text := fmt.aprint(key)
+		defer delete(text)
+		return hash(text)
+	}
+}
+
 // spec 7.2: a fixed byte buffer handed out by bumping a cursor. No
 // fragmentation, no per-object free — reset reclaims everything at once.
 BumpArena :: struct($Size: int) {

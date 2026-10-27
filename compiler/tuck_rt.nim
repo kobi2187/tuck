@@ -2023,6 +2023,23 @@ proc hash*(data: string): uint64 =
   for c in data:
     result = (result xor uint64(ord(c))) * 1099511628211'u64
 
+proc tuckMix(x: uint64): uint64 =
+  ## splitmix64's finalizer: spreads an integer's bits so the low ones, which a
+  ## table indexes by, depend on all of them. The same on every backend.
+  var z = x + 0x9e3779b97f4a7c15'u64
+  z = (z xor (z shr 30)) * 0xbf58476d1ce4e5b9'u64
+  z = (z xor (z shr 27)) * 0x94d049bb133111eb'u64
+  z xor (z shr 31)
+
+proc hashKey*[T](key: T): uint64 =
+  ## The hash of any key a table can hold: a string by its bytes (FNV-1a, as
+  ## `hash`), an integer, bool or enum by value, anything else by its text.
+  when T is string: hash(key)
+  elif T is SomeUnsignedInt: tuckMix(uint64(key))
+  elif T is SomeSignedInt: tuckMix(cast[uint64](int64(key)))
+  elif T is bool or T is enum: tuckMix(uint64(ord(key)))
+  else: hash($key)
+
 # The single runtime facade: tuck_rt re-exports the async runtime so every
 # emitted program imports ONLY tuck_rt and reaches rt AND async names
 # (readFile, waitUntil, openSource, ...) uniformly. arsenal is bundled as the

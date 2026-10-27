@@ -1,18 +1,24 @@
-# alloc.map — a key/value table.
+# alloc.map — a key/value table, hashed.
 #
 # Tuck has no map at all: `Seq[T]` and `Array[N, T]` are the whole collection
 # surface, which is why this is the highest-value module in the alloc tier —
 # six modules downstream want one.
 #
-# REPRESENTATION: a Seq of entries, scanned linearly. That is deliberate and
-# it is not the end state. The API is opaque to callers — nothing here hands
-# out an index or a bucket — so open addressing over two parallel Seqs can
-# replace the inside without touching a single call site. It waits on a
-# measurement, not on a design.
+# REPRESENTATION: the entries live DENSE, in insertion order, in a Seq; beside
+# them an open-addressing index (`slots`, linear probing) maps hash(key) to a
+# position in `entries`, -1 for an empty slot. `get`, `set` and `has` are O(1)
+# on average, the index is doubled when it is half full, and `keys`, `values`
+# and `pairs` come out in insertion order for free. `remove` rebuilds, O(n):
+# deletion from a probe sequence needs tombstones, and that waits on a
+# measurement that wants it.
+#
+# A key is hashed by core.hash's `hashKey`: a str by its bytes, an integer,
+# bool or enum by value, anything else by its text. Equality is `==`.
 #
 # Value semantics all the way: every mutating verb RETURNS the new table, the
 # same convention std/seq's `push` follows, because a Seq can reallocate and
 # there is no shared backing store to write through.
+import hash
 import seq
 
 type Entry[K, V]:
@@ -21,21 +27,46 @@ type Entry[K, V]:
 
 type Table[K, V]:
   entries: Seq[Entry[K, V]]
+  slots: Seq[int]
 
 # There is no `newTable` fn, and that is the point: a construction under a
-# stated type IS the constructor. `var rooms: Table[str, int] = {entries: []}
-# Table` binds K and V from the annotation, so a nullary generic fn — which
-# nothing could ever infer K and V for — is not needed.
+# stated type IS the constructor. `var rooms: Table[str, int] = {entries: [],
+# slots: []} Table` binds K and V from the annotation, so a nullary generic fn
+# — which nothing could ever infer K and V for — is not needed.
 
-# The one scan every other verb is written on: where `key` lives, or -1.
-# Returning an int rather than `int?` is on purpose — this is private
-# machinery, and the callers all want to branch on it rather than guard it.
+const FirstSlots = 8
+
+# Where `key` lives in the index, or the empty slot where it would go. The
+# index is never full (it is doubled at half), so the probe always ends.
+# Requires a non-empty index.
+fn slotOf[K, V]({entries: Seq[Entry[K, V]], slots: Seq[int], key: K}) -> int:
+  let n = slots.len
+  let h = {key: key} hashKey
+  var i = (h % (n ~u64)) ~int
+  for slots[i] >= 0 and entries[slots[i]].key != key:
+    i = (i + 1) % n
+  return i
+
+# The position of `key` in `entries`, or -1.
 fn indexOf[K, V]({t: Table[K, V], key: K}) -> int:
-  for i in 0 .. t.entries.len - 1:
-    let e = t.entries[i]
-    if e.key == key:
-      return i
-  return 0 - 1
+  if t.slots.len == 0:
+    return 0 - 1
+  let s = {entries: t.entries, slots: t.slots, key: key} slotOf
+  return t.slots[s]
+
+fn emptySlots({n: int}) -> Seq[int]:
+  var out: Seq[int] = []
+  for i in 0 ..< n:
+    out = {items: out, value: 0 - 1} push
+  return out
+
+# The same entries under an index of `n` slots.
+fn reindexed[K, V]({entries: Seq[Entry[K, V]], n: int}) -> Table[K, V]:
+  var slots = {n: n} emptySlots
+  for i in 0 ..< entries.len:
+    let s = {entries: entries, slots: slots, key: entries[i].key} slotOf
+    slots[s] = i
+  return {entries: entries, slots: slots} Table
 
 fn has[K, V]({t: Table[K, V], key: K}) -> bool:
   return {t: t, key: key} indexOf >= 0
@@ -52,15 +83,24 @@ fn get[K, V]({t: Table[K, V], key: K}) -> V?:
 # Replaces in place when the key is present, appends when it is not — so a
 # table never holds two entries for one key, which is what makes the linear
 # scan's FIRST hit the right one.
+# Replaces in place when the key is present, appends when it is not — so a
+# table never holds two entries for one key.
 fn set[K, V]({t: Table[K, V], key: K, value: V}) -> Table[K, V]:
   let at = {t: t, key: key} indexOf
   var es = t.entries
   let fresh = {key: key, value: value} Entry
   if at >= 0:
     es[at] = fresh
-    return {entries: es} Table
+    return {entries: es, slots: t.slots} Table
+  var grown = t
+  if (es.len + 1) * 2 > t.slots.len:
+    let n = if t.slots.len == 0: FirstSlots else: t.slots.len * 2
+    grown = {entries: es, n: n} reindexed
+  var slots = grown.slots
+  let s = {entries: es, slots: slots, key: key} slotOf
+  slots[s] = es.len
   es = {items: es, value: fresh} push
-  return {entries: es} Table
+  return {entries: es, slots: slots} Table
 
 # Rust's `entry(k).or_insert(v)` in one verb: the existing value wins.
 fn getOrSet[K, V]({t: Table[K, V], key: K, value: V}) -> Table[K, V]:
@@ -68,19 +108,20 @@ fn getOrSet[K, V]({t: Table[K, V], key: K, value: V}) -> Table[K, V]:
     return t
   return {t: t, key: key, value: value} set
 
-# Rebuilt without the key rather than shuffled in place: order is not part of
-# this type's contract, and a rebuild is the one form that says so.
+# Rebuilt without the key rather than shuffled in place: order is the order of
+# insertion, and a rebuild is the one form that keeps it.
 fn remove[K, V]({t: Table[K, V], key: K}) -> Table[K, V]:
   var es: Seq[Entry[K, V]] = []
-  for i in 0 .. t.entries.len - 1:
+  for i in 0 ..< t.entries.len:
     let e = t.entries[i]
     if e.key != key:
       es = {items: es, value: e} push
-  return {entries: es} Table
+  return {entries: es, n: t.slots.len} reindexed
 
 fn clear[K, V]({t: Table[K, V]}) -> Table[K, V]:
   let empty: Seq[Entry[K, V]] = []
-  return {entries: empty} Table
+  let unindexed: Seq[int] = []
+  return {entries: empty, slots: unindexed} Table
 
 fn keys[K, V]({t: Table[K, V]}) -> Seq[K]:
   var acc: Seq[K] = []
@@ -97,8 +138,40 @@ fn values[K, V]({t: Table[K, V]}) -> Seq[V]:
 fn pairs[K, V]({t: Table[K, V]}) -> Seq[Entry[K, V]]:
   return t.entries
 
+# Enough keys to force several doublings of the index, a replace of each, and
+# a removal that must leave every other key findable.
+fn checkMany() -> int:
+  var t: Table[int, int] = {entries: [], slots: []} Table
+  for i in 0 ..< 1000:
+    t = {t: t, key: i * 7, value: i} set
+  if {t: t} count != 1000:
+    return 20
+  for i in 0 ..< 1000:
+    let g = {t: t, key: i * 7} get
+    if not g.ok:
+      return 21
+    if g.value != i:
+      return 22
+  if {t: t, key: 3} has:
+    return 23
+  for i in 0 ..< 1000:
+    t = {t: t, key: i * 7, value: i + 1} set
+  if {t: t} count != 1000:
+    return 24
+  t = {t: t, key: 14} remove
+  if {t: t} count != 999:
+    return 25
+  if {t: t, key: 14} has:
+    return 26
+  let g = {t: t, key: 700} get
+  if not g.ok:
+    return 27
+  if g.value != 101:
+    return 28
+  return 0
+
 fn main() -> int:
-  var rooms: Table[str, int] = {entries: []} Table
+  var rooms: Table[str, int] = {entries: [], slots: []} Table
   rooms = {t: rooms, key: "lobby", value: 1} set
   rooms = {t: rooms, key: "attic", value: 2} set
   if {t: rooms} count != 2:
@@ -144,4 +217,4 @@ fn main() -> int:
   rooms = {t: rooms} clear
   if {t: rooms} count != 0:
     return 13
-  return 0
+  return {} checkMany

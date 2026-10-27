@@ -19,6 +19,16 @@ import bits
 import str
 import seq
 
+# The hash of ANY key a table can hold — the one primitive here that Tuck
+# cannot write for itself, because it is generic over the key's type and the
+# host knows what a type is. A str by its bytes (the same FNV-1a as hashStr),
+# an integer, bool or enum by value (splitmix64's finalizer, so the low bits
+# a table indexes by depend on all of them), anything else by its text. Every
+# backend gives the same number, so a table built on one is laid out like the
+# same table on another.
+extern:
+  fn hashKey[T]({key: T}) -> u64 [pure]
+
 fn fnvOffsetBasis() -> u64:
   return 14695981039346656037
 
