@@ -1,0 +1,5 @@
+CLOCK 0
+SETAT hits 42 0
+SETAT name tuck 100
+SETAT fresh 1 0
+SETAT temp x 5

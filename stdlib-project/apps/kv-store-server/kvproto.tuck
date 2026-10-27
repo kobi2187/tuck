@@ -1,0 +1,113 @@
+# kvproto — the line protocol: one command per line, words split by spaces.
+#
+#   SET key value [EX ticks]   GET key        DEL key       INCR key
+#   EXPIRE key ticks           TTL key        KEYS          COUNT
+#   TICK n                     SAVE           QUIT
+#
+# A value is one word. Command words are case-insensitive, keys are not. A line
+# that is not a command parses to `Bad`, carrying the reason the client sees.
+import text
+import convert
+import seq
+
+type Command:
+  | Set({key: str, value: str, ttl: int})
+  | Get({key: str})
+  | Del({key: str})
+  | Incr({key: str})
+  | Expire({key: str, ttl: int})
+  | Ttl({key: str})
+  | Keys
+  | Count
+  | Tick({ticks: int})
+  | Save
+  | Quit
+  | Bad({why: str})
+
+fn words({line: str}) -> Seq[str]:
+  let parts = {t: line, at: " "} split
+  var out: Seq[str] = []
+  for i in 0 ..< parts.len:
+    if parts[i] != "":
+      out = {items: out, value: parts[i]} push
+  return out
+
+fn number({word: str}) -> int?:
+  let n = {t: word} parseInt
+  if not n.ok:
+    return
+  return n.value ^int
+
+fn wrongArity({verb: str}) -> Command:
+  return Command.Bad {why: "wrong number of arguments for " + verb}
+
+fn ttlCommand({key: str, word: str}) -> Command:
+  let n = {word: word} number
+  if not n.ok:
+    return Command.Bad {why: "not a number: " + word}
+  if n.value <= 0:
+    return Command.Bad {why: "ttl must be positive"}
+  return Command.Expire {key: key, ttl: n.value}
+
+fn setCommand({w: Seq[str]}) -> Command:
+  if w.len == 3:
+    return Command.Set {key: w[1], value: w[2], ttl: 0}
+  if w.len != 5 or ({t: w[3]} toUpperAscii) != "EX":
+    return {verb: "SET"} wrongArity
+  let n = {word: w[4]} number
+  if not n.ok:
+    return Command.Bad {why: "not a number: " + w[4]}
+  if n.value <= 0:
+    return Command.Bad {why: "ttl must be positive"}
+  return Command.Set {key: w[1], value: w[2], ttl: n.value}
+
+fn keyCommand({verb: str, w: Seq[str]}) -> Command:
+  if w.len != 2:
+    return {verb: verb} wrongArity
+  let k = w[1]
+  match verb:
+    "GET": return Command.Get {key: k}
+    "DEL": return Command.Del {key: k}
+    "INCR": return Command.Incr {key: k}
+    _: return Command.Ttl {key: k}
+
+fn bareCommand({verb: str, w: Seq[str]}) -> Command:
+  if w.len != 1:
+    return {verb: verb} wrongArity
+  match verb:
+    "KEYS": return Command.Keys
+    "COUNT": return Command.Count
+    "SAVE": return Command.Save
+    _: return Command.Quit
+
+fn tickCommand({w: Seq[str]}) -> Command:
+  if w.len != 2:
+    return {verb: "TICK"} wrongArity
+  let n = {word: w[1]} number
+  if not n.ok:
+    return Command.Bad {why: "TICK needs a count of ticks"}
+  if n.value < 0:
+    return Command.Bad {why: "TICK needs a count of ticks"}
+  return Command.Tick {ticks: n.value}
+
+fn parse({line: str}) -> Command:
+  let w = {line: line} words
+  if w.len == 0:
+    return Command.Bad {why: "empty line"}
+  let verb = {t: w[0]} toUpperAscii
+  match verb:
+    "SET": return {w: w} setCommand
+    "GET": return {verb: verb, w: w} keyCommand
+    "DEL": return {verb: verb, w: w} keyCommand
+    "INCR": return {verb: verb, w: w} keyCommand
+    "TTL": return {verb: verb, w: w} keyCommand
+    "KEYS": return {verb: verb, w: w} bareCommand
+    "COUNT": return {verb: verb, w: w} bareCommand
+    "SAVE": return {verb: verb, w: w} bareCommand
+    "QUIT": return {verb: verb, w: w} bareCommand
+    "TICK": return {w: w} tickCommand
+    "EXPIRE":
+      if w.len != 3:
+        return {verb: verb} wrongArity
+      return {key: w[1], word: w[2]} ttlCommand
+    _: return Command.Bad {why: "unknown command " + w[0]}

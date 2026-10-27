@@ -515,7 +515,12 @@ proc genPatternStr*(p: Pattern): string =
                         "unlowered (lowering_match_binds)"
   of pkTypeTest: raiseAssert "genPatternStr: a type-test arm reached an " &
                             "emitter unlowered (lowering_iface)"
-  of pkLit: p.litValue
+  of pkLit:
+    # A string pattern is a string literal in every backend's `case`. It was
+    # printed bare, so `"GET":` became `of GET:` and no `match` on a str ever
+    # compiled (A99).
+    if p.litKind == lkStr: "\"" & escapeStringLit(p.litValue) & "\""
+    else: p.litValue
   of pkOr: genPatternStr(p.left) & ", " & genPatternStr(p.right)
   of pkRecord, pkTuple: "_"   # destructuring binds; as a label it tests nothing
 

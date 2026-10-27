@@ -48,6 +48,12 @@ proc calleeOf*(res: Resolution, m: Module, call: Expr): Decl =
     # A fn another module declares: found by name, unless two modules share it.
     if result == nil and call.callee.name notin res.ambiguousFns:
       result = res.fnBodies.getOrDefault(call.callee.name)
+  elif result == nil and call.callee != nil and call.callee.kind == exkQualified and
+       call.callee.modulePath.len > 0:
+    # `mod::fn`: filed under its qualified name by recordQualifiedFns (A100).
+    let q = call.callee.modulePath[^1] & "::" & call.callee.qualName
+    result = res.fnBodies.getOrDefault(q)
+    if result == nil: result = res.externs.getOrDefault(call.callee.qualName)
   if result != nil and result.kind notin {dkFn, dkTask}: result = nil
 
 proc paramFed(d: Decl, a: ArgOf): string =

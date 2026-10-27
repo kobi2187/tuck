@@ -320,6 +320,15 @@ it in.
   Fixed: an importer of the home module sees the object from there; Odin and D
   name its struct by the generated module and its members by the home one.
 
+- **A99 (issue #189) — a `match` on a str with string arms never compiled.**
+  The pattern printer dropped the quotes: `"GET":` became `of GET:` on Nim,
+  `case .GET:` on Odin, `case GET:` on D. Fixed. Found by the kv-store app.
+
+- **A100 (issue #190) — a qualified call skipped ownership.** `lib::add {b}`
+  did not move `b` into a parameter `add` consumes, and both sides freed it
+  (a crash on Nim): the ownership rules looked callees up by bare name only.
+  Fixed: fns are also filed under `module::name`. Found by the kv-store app.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

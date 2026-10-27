@@ -4937,4 +4937,50 @@ object Flac:
   t.quietly: t.hostRuns "A98: an imported satisfier keeps its interface and members", 96
   t.bugFixed "A98: an imported satisfier keeps its interface and members"
 
+  # A99. `match` on a str with string-literal arms never compiled: the pattern
+  # printer (ast_query.genPatternStr) dropped the quotes, so `"GET":` became
+  # `of GET:` / `case .GET:` / `case GET:` on the three backends. Found
+  # writing the kv-store app's protocol parser (#107).
+  t.src """
+fn code({verb: str}) -> int:
+  match verb:
+    "GET": return 1
+    "DEL": return 2
+    _: return 3
+
+fn main() -> int:
+  return {verb: "DEL"} code + {verb: "nope"} code
+"""
+  t.quietly: t.hostRuns "A99: a match on a str with string arms", 5
+  t.bugFixed "A99: a match on a str with string arms"
+
+  # A100. A QUALIFIED call (`lib::add`) got no ownership treatment: the
+  # ownership rules find a callee by name in `fnBodies`, which held bare names
+  # only, so an argument was not moved into a parameter the callee consumes,
+  # and both sides freed it — a crash on Nim. A call is qualified exactly when
+  # the bare name is ambiguous, so this hit the code that most needed it.
+  t.src """
+import lib
+
+fn main() -> int:
+  let empty: Seq[str] = []
+  var b = {items: empty} Bag
+  for i in 0 ..< 3:
+    b = {b: b, s: "x"} lib::add
+  return b.items.len
+"""
+  t.addFile "lib.tuck", """
+import seq
+
+type Bag:
+  items: Seq[str]
+
+fn add({b: Bag, s: str}) -> Bag:
+  var out = b
+  out.items = {items: out.items, value: s} push
+  return out
+"""
+  t.quietly: t.hostRuns "A100: a qualified call moves into a consuming parameter", 3
+  t.bugFixed "A100: a qualified call moves into a consuming parameter"
+
   t.finish()

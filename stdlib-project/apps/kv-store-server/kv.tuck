@@ -1,0 +1,195 @@
+# kv — a small key-value store with a write-ahead log (redis-lite).
+#
+#   kv [--dir PATH] [--reset]   commands on stdin, one reply line per command
+#
+# `--reset` starts empty, forgetting what PATH held. PATH is made if missing.
+# State lives in PATH/kv.snapshot and PATH/kv.log (default: the current
+# directory). Start-up loads the snapshot and replays the log, so killing the
+# process loses nothing that was acknowledged: a change is in the log before
+# its reply is printed. Time is a logical clock that only `TICK` moves, so a
+# run is repeatable — the property a test of crash recovery needs most.
+#
+# The protocol is kvproto's; the map is kvmap's; durability is kvwal's.
+import console
+import fs
+import cli
+import convert
+import iter
+import seq
+import str
+import kvmap
+import kvproto
+import kvwal
+
+type Store:
+  table: KvMap
+  now: int
+  log: str
+  snapshot: str
+
+type Step:
+  store: Store
+  reply: str
+  done: bool
+
+fn answer({store: Store, text: str}) -> Step:
+  return {store: store, reply: text, done: false} Step
+
+fn changed({store: Store, table: KvMap, text: str}) -> Step:
+  let next = {table: table, now: store.now, log: store.log, snapshot: store.snapshot} Store
+  return {store: next, text: text} answer
+
+# --- reads ---------------------------------------------------------------------
+fn getValue({store: Store, key: str}) -> str:
+  let s = {m: store.table, key: key, now: store.now} lookup
+  if s.ok:
+    return s.value.value
+  return "(nil)"
+
+fn ttlOf({store: Store, key: str}) -> int:
+  let s = {m: store.table, key: key, now: store.now} lookup
+  if not s.ok:
+    return -2
+  if s.value.diesAt == 0:
+    return -1
+  return s.value.diesAt - store.now
+
+fn listKeys({store: Store}) -> str:
+  let keys = {m: store.table, now: store.now} keysAt
+  let sorted = {items: keys} sort
+  var out = keys.len.toStr
+  for i in 0 ..< sorted.len:
+    out = out + " " + sorted[i]
+  return out
+
+# --- writes: logged, then applied -----------------------------------------------
+fn setKey({store: Store, key: str, value: str, ttl: int}) -> Step [io: fs]:
+  let diesAt = if ttl > 0: store.now + ttl else: 0
+  let line = {key: key, value: value, diesAt: diesAt} setLine
+  if not {path: store.log, line: line} record:
+    return {store: store, text: "ERR log write failed"} answer
+  let table = {m: store.table, key: key, value: value, diesAt: diesAt, now: store.now} kvmap::put
+  return {store: store, table: table, text: "OK"} changed
+
+fn delKey({store: Store, key: str}) -> Step [io: fs]:
+  let had = {m: store.table, key: key, now: store.now} lookup
+  if not had.ok:
+    return {store: store, text: "0"} answer
+  let line = {key: key} delLine
+  if not {path: store.log, line: line} record:
+    return {store: store, text: "ERR log write failed"} answer
+  let gone = {m: store.table, key: key, now: store.now} drop
+  return {store: store, table: gone.table, text: "1"} changed
+
+fn incrKey({store: Store, key: str}) -> Step [io: fs]:
+  let s = {m: store.table, key: key, now: store.now} lookup
+  var n = 0
+  var diesAt = 0
+  if s.ok:
+    let parsed = {t: s.value.value} parseInt
+    if not parsed.ok:
+      return {store: store, text: "ERR value is not an integer"} answer
+    n = parsed.value ^int
+    diesAt = s.value.diesAt
+  n = n + 1
+  let text = n.toStr
+  let line = {key: key, value: text, diesAt: diesAt} setLine
+  if not {path: store.log, line: line} record:
+    return {store: store, text: "ERR log write failed"} answer
+  let table = {m: store.table, key: key, value: text, diesAt: diesAt, now: store.now} kvmap::put
+  return {store: store, table: table, text: text} changed
+
+fn expireKey({store: Store, key: str, ttl: int}) -> Step [io: fs]:
+  let s = {m: store.table, key: key, now: store.now} lookup
+  if not s.ok:
+    return {store: store, text: "0"} answer
+  let diesAt = store.now + ttl
+  let line = {key: key, value: s.value.value, diesAt: diesAt} setLine
+  if not {path: store.log, line: line} record:
+    return {store: store, text: "ERR log write failed"} answer
+  let table = {m: store.table, key: key, value: s.value.value, diesAt: diesAt, now: store.now} kvmap::put
+  return {store: store, table: table, text: "1"} changed
+
+fn tick({store: Store, ticks: int}) -> Step [io: fs]:
+  let now = store.now + ticks
+  let line = {now: now} clockLine
+  if not {path: store.log, line: line} record:
+    return {store: store, text: "ERR log write failed"} answer
+  let next = {table: store.table, now: now, log: store.log, snapshot: store.snapshot} Store
+  return {store: next, text: "OK " + now.toStr} answer
+
+fn saveAll({store: Store}) -> Step [io: fs]:
+  let ok = {table: store.table, now: store.now, snapshot: store.snapshot, log: store.log} save
+  if not ok:
+    return {store: store, text: "ERR save failed"} answer
+  return {store: store, text: "OK"} answer
+
+# --- dispatch -------------------------------------------------------------------
+fn run({store: Store, c: kvproto::Command}) -> Step [io: fs]:
+  match c:
+    Set: return {store: store, key: c.key, value: c.value, ttl: c.ttl} setKey
+    Get:
+      let v = {store: store, key: c.key} getValue
+      return {store: store, text: v} answer
+    Del: return {store: store, key: c.key} delKey
+    Incr: return {store: store, key: c.key} incrKey
+    Expire: return {store: store, key: c.key, ttl: c.ttl} expireKey
+    Ttl:
+      let t = {store: store, key: c.key} ttlOf
+      return {store: store, text: t.toStr} answer
+    Keys:
+      let ks = {store: store} listKeys
+      return {store: store, text: ks} answer
+    Count:
+      let live = {m: store.table, now: store.now} keysAt
+      return {store: store, text: live.len.toStr} answer
+    Tick: return {store: store, ticks: c.ticks} tick
+    Save: return {store: store} saveAll
+    Quit: return {store: store, reply: "BYE", done: true} Step
+    Bad: return {store: store, text: "ERR " + c.why} answer
+
+fn dirOf({argv: Seq[str]}) -> str:
+  for i in 0 ..< argv.len:
+    if argv[i] == "--dir" and i + 1 < argv.len:
+      return argv[i + 1]
+  return "."
+
+fn hasFlag({argv: Seq[str], flag: str}) -> bool:
+  for i in 0 ..< argv.len:
+    if argv[i] == flag:
+      return true
+  return false
+
+fn prepare({dir: str, snapshot: str, log: str, reset: bool}) -> void [io: fs]:
+  if not {path: dir} fileExists:
+    let made = {path: dir} makeDir
+    if not made.ok:
+      return
+  if reset:
+    # Either may be missing already; that is the state asked for.
+    {path: snapshot} removeFile discard
+    {path: log} removeFile discard
+
+fn main() -> int [io: console, io: fs, io: sys]:
+  let argv = {} commandLine
+  let dir = {argv: argv} dirOf
+  let snapshot = dir + "/kv.snapshot"
+  let log = dir + "/kv.log"
+  let reset = {argv: argv, flag: "--reset"} hasFlag
+  {dir: dir, snapshot: snapshot, log: log, reset: reset} prepare
+  let r = {snapshot: snapshot, log: log} recover
+  var store = {table: r.table, now: r.now, log: log, snapshot: snapshot} Store
+  let live = {m: store.table, now: store.now} keysAt
+  {text: "recovered " + live.len.toStr + " keys at tick " + r.now.toStr + " (" + r.lines.toStr + " lines)"} printLine
+  var running = true
+  for running:
+    let got = {} readLine
+    if not got.ok:
+      running = false
+    else:
+      let c = {line: got.value.line} parse
+      let step = {store: store, c: c} run
+      {text: step.reply} printLine
+      store = step.store
+      running = not step.done
+  return 0
