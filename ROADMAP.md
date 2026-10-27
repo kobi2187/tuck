@@ -57,8 +57,11 @@ left is ordered by what unblocks what. There are **no open bug pins**.
    - #70: generated extern mocks. **Built 2026-10-25**: `tuck mock FILE` prints
      the reachable externs, `tuck build --mock` stubs the program's own
      (`cli_smoke` case_mock). The web-downloader runs this way.
-   - #71: the effect trust root. The spec note is cheap; the module change is not.
-   - #66: the static resource-acquisition graph.
+   - #71: the effect trust root. Spec note written 2026-10-25 (tuck-spec §3.7);
+     the module change is not scheduled.
+   - #66: **parked 2026-10-27**, re-scoped to one warning (a constant task count
+     over an `on_full: error` cap). Deadlock detection was dropped: an acquire
+     never waits, so there is no deadlock to find. See the issue.
 4. **Features, unblocked but unscheduled.** #10 (correlation tokens; hashing exists
    now) and #91 (binary layout syntax; needs a design).
 5. **Ongoing.** #107: programs of 5,000–10,000 lines. The weekend apps are 200–300
@@ -1359,15 +1362,13 @@ below are that shape reused.
   generalization rather than a new mechanism. Open ruling: closed kind list or
   open, and whether bare `[io]` is the union.
 
-- **#66 — the contention graph.** A task's `[resource: k]` set is its
-  contention footprint, known statically. NOT auto-parallelism — the
-  web-downloader disproves that, since all eight chunk tasks share the one
-  `conn` kind. What it actually buys: **deadlock freedom by declared ordering**
-  (A holds `X` acquires `Y`, B holds `Y` acquires `X` is a cycle in a static
-  graph, so a compile error rather than a 3am page), **capacity arithmetic**
-  (`cap: 8` plus per-task demand answers "can this exhaust and hang?" — with
-  `on_full: absent` it cannot, with `on_full: error` it can), and scheduling
-  hints. Every fact it reads is already declared and already checked.
+- **#66 — the contention graph.** PARKED 2026-10-27 after checking it against
+  the compiler. An acquire never waits (`on_full` is `absent` or `error`), so
+  the deadlock it promised to find cannot happen, and a per-kind contention
+  report repeats what the effect manifest already prints. What is left is one
+  warning: a constant number of tasks that may hold a kind at once, over its
+  cap, under `on_full: error`. Kept in the issue for when a fixed-shape
+  (embedded) program needs it.
 
 - **#67 — actor isolation as a checked property.** A handler declaring no
   effects provably cannot touch anything outside its actor. Turns the
