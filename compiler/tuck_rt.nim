@@ -95,16 +95,25 @@ proc toStr*[T](value: T): string =
   elif T is float64: tuckFloatText(value, false)
   else: $value
 
-proc tuckSeqBounds(index, length: int, op: string) =
+proc tuckOutOfBounds(index, length: int, op: string) {.noinline, noreturn.} =
+  ## The cold half of tuckSeqBounds: the message is built only on failure,
+  ## out of line, so the check itself is small enough to inline.
+  raise newException(IndexDefect,
+    op & ": index " & $index & " out of bounds for seq of length " & $length)
+
+proc tuckSeqBounds(index, length: int, op: string) {.inline.} =
   ## Raises IndexDefect unless `0 <= index < length`; `op` names the access.
   ##
   ## Bounds are a PRECONDITION: violating one is a program error,
   ## reported with the caller's file/line, not an error value the caller matches.
-  if index < 0 or index >= length:
-    raise newException(IndexDefect,
-      op & ": index " & $index & " out of bounds for seq of length " & $length)
+  ##
+  ## INLINE, with the failure out of line: every `xs[i]` in a loop is a call
+  ## to tuckAt/tuckSetAt, and with the message built here they were too big
+  ## to inline even under LTO — 40% of fannkuch's time was the calls
+  ## themselves (benches/game).
+  if index < 0 or index >= length: tuckOutOfBounds(index, length, op)
 
-proc tuckAt*[T](items: seq[T], index: int): lent T =
+proc tuckAt*[T](items: seq[T], index: int): lent T {.inline.} =
   ## What `xs[i]` lowers to: a bounds-checked read.
   ##
   ## A BORROW (`lent`), not a copy. By value, reading an element that owns
@@ -146,7 +155,7 @@ proc ord*(ch: string): int =
   tuckSeqBounds(0, ch.len, "ord")
   system.ord(ch[0])
 
-proc tuckSetAt*[T](items: var seq[T], index: int, value: T) =
+proc tuckSetAt*[T](items: var seq[T], index: int, value: T) {.inline.} =
   ## What `xs[i] = v` lowers to: a bounds-checked write, in place.
   tuckSeqBounds(index, items.len, "setAt")
   tuckReplace(items[index], value)   # the old element is dropped, `value` kept
@@ -156,7 +165,7 @@ proc setAt*[T](items: var seq[T], index: int, value: T) =
   ## `xs[i] = v`.
   tuckSetAt(items, index, value)
 
-proc tuckArrayAt*[N: static int, T](items: array[N, T], index: int): lent T =
+proc tuckArrayAt*[N: static int, T](items: array[N, T], index: int): lent T {.inline.} =
   ## A bounds-checked read of a fixed `Array[N, T]`.
   ##
   ## `Array[N, T]` needs its OWN pair, separate from tuckAt/tuckSetAt above.
@@ -172,7 +181,7 @@ proc tuckArrayAt*[N: static int, T](items: array[N, T], index: int): lent T =
   items[index]
 
 proc tuckArraySetAt*[N: static int, T](items: var array[N, T], index: int,
-                                       value: T) =
+                                       value: T) {.inline.} =
   ## A bounds-checked write into a fixed `Array[N, T]`, in place; the length
   ## is the type's `N`.
   tuckSeqBounds(index, N, "setAt")

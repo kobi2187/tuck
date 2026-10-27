@@ -78,7 +78,19 @@ proc tuckDrop*[T](x: var T) =
 proc tuckCopy*[T](x: T): T {.inline.} =
   ## A value sharing nothing with `x`: Nim's own assignment, which under
   ## `--mm:none` copies a seq or string and what they hold.
-  result = x
+  ##
+  ## A seq of plain values (no storage of their own) is copied as one block:
+  ## Nim's assignment walks it element by element through genericAssign,
+  ## which was most of a copy's cost (benches/game, fannkuch).
+  when T is seq:
+    when supportsCopyMem(typeof(x[0])):
+      result = newSeqUninit[typeof(x[0])](x.len)
+      if x.len > 0:
+        copyMem(addr result[0], unsafeAddr x[0], x.len * sizeof(x[0]))
+    else:
+      result = x
+  else:
+    result = x
 
 proc tuckBits*[T](x: T): T {.inline.} =
   ## `x`'s bits as a value of its own: a parameter the body owns, adopted

@@ -1063,3 +1063,27 @@ VALUE, so every `xs[i].field` read copied the whole element (Nim's returns
 Gaps the programs hit, to fix in the language rather than work around: no
 exponent float literals (`4.84e+00` lexes as `4.84` then a call of `e`), and
 no fixed-precision float format (each program carries a `fixed9`).
+
+**fannkuch-redux: a copy per flip, and calls the C compiler would not inline.**
+
+| fannkuch 10 | Nim | Odin | D |
+|---|---|---|---|
+| baseline | 1.999 (7.9x) | 2.711 (10.8x) | 5.297 (21.1x) |
+| reads lifted ahead of a sink | 1.427 (5.7x) | 1.143 (4.6x) | 1.208 (4.8x) |
+| inline accessors, block copy | 0.854 (3.5x) | 1.145 (4.7x) | 1.094 (4.5x) |
+
+`p = {p: p, k: p[0]} flipped` copied the whole Seq every flip: `p[0]` is read
+after the argument `p` (rule E, left to right), so the sink was not p's final
+use. The ownership pass now binds such a read, a plain value with no effect,
+to a temporary ahead of the statement, and the sink moves
+(`ownership_write.liftReadsBeforeSink`). Every `x = f(x, x.field)` gets it.
+
+Then the profile: 40% of the Nim run was calls to `tuckAt`/`tuckSetAt` that
+did not inline even under LTO, because the bounds check built its error
+message in line. The message moved to a cold `{.noinline.}` proc and the
+accessors are `{.inline.}`. And `tuckCopy` of a Seq of plain values is one
+`copyMem` rather than Nim's element-by-element `genericAssign`.
+
+**Next.** binary-trees: a recursive edge is a one-element `[dynamic]`, and
+Odin's drop and copy walk every value through runtime type info, re-walking
+the element TYPE (`tuckHasHeap`) for every element.
