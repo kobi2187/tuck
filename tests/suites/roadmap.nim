@@ -198,6 +198,54 @@ fn main() -> int:
   t.quietly: t.hostRuns "S5.1 #22: call params for pending fns", 5
   t.featureDone "S5.1 #22: call params for pending fns"
 
+proc crossModuleItems(t: var T) =
+  ## "### S6 — R13 ... an interface as a generic fn's bound ... Not yet:
+  ## calling such a fn from another module". Built 2026-10-27: the clone is
+  ## made in the CALLING module, the usual shape being a library declaring
+  ## the interface and the fn, an app declaring the object. Here both: an
+  ## object of the app, one of a third module, and the library's own helper
+  ## called from the generic body.
+  t.src """
+import audio
+import codecs
+
+object Mp3:
+  satisfies AudioSource
+  bitrate: int
+  fn sampleRate({self: Mp3}) -> int:
+    return 44100
+
+fn main() -> int:
+  let m = Mp3{bitrate: 3}
+  let f = Flac{bits: 16}
+  return {a: m} rateOf + {a: f} rateOf + {} flacRate
+"""
+  t.addFile "audio.tuck", """
+interface AudioSource:
+  fn sampleRate({self: Self}) -> int
+
+fn khz({hz: int}) -> int:
+  return hz /i 1000
+
+fn rateOf[T: AudioSource]({a: T}) -> int:
+  return {hz: a.sampleRate} khz
+"""
+  t.addFile "codecs.tuck", """
+import audio
+
+object Flac:
+  satisfies AudioSource
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+
+fn flacRate() -> int:
+  let f = Flac{bits: 24}
+  return {a: f} rateOf
+"""
+  t.quietly: t.hostRuns "R13: an interface-bounded generic called across modules", 236
+  t.featureDone "R13: an interface-bounded generic called across modules"
+
 proc missingItems(t: var T) =
   ## Items ROADMAP lists as not built, still not built.
 
@@ -240,34 +288,10 @@ fn main() -> int:
   t.quietly: t.badCheck "§7.4: an acquire never finished is refused", "finish"
   t.featureMissing "§7.4: an acquire never finished is refused"
 
-  # "### S6 — R13 ... an interface as a generic fn's bound ... Not yet:
-  # calling such a fn from another module".
-  t.src """
-import audio
-
-fn main() -> int:
-  let m = Mp3{bitrate: 3}
-  return {a: m} rateOf
-"""
-  t.addFile "audio.tuck", """
-interface AudioSource:
-  fn sampleRate({self: Self}) -> int
-
-object Mp3:
-  satisfies AudioSource
-  bitrate: int
-  fn sampleRate({self: Mp3}) -> int:
-    return 44100
-
-fn rateOf[T: AudioSource]({a: T}) -> int:
-  return a.sampleRate /i 1000
-"""
-  t.quietly: t.runs "R13: an interface-bounded generic called across modules", 44
-  t.featureMissing "R13: an interface-bounded generic called across modules"
-
 proc run*(t: var T) =
   ## Registers every ROADMAP claim as an assertion of the built behaviour,
   ## marked `featureDone` (a guard) or `featureMissing` (expected to fail).
   t.doneItems()
+  t.crossModuleItems()
   t.missingItems()
   t.finish()

@@ -313,6 +313,13 @@ it in.
   a void statement and Nim rejects `discard` of one. Fixed: no `discard` over
   a spawn. Found by the web-downloader under `--mock`.
 
+- **A98 (issue #188) — an object satisfying an imported interface lost its
+  interface and its members everywhere but its own module.** Its data is
+  hoisted into `iface_variants` (A27), and importers were shown that data-only
+  copy: `{s: f} rate` "does not declare satisfies", `f.sampleRate` "no field".
+  Fixed: an importer of the home module sees the object from there; Odin and D
+  name its struct by the generated module and its members by the home one.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

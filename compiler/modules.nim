@@ -525,6 +525,35 @@ proc injectable(m: Module): seq[Decl] =
        d.origin == NoModule:
       result.add d
 
+type Hoisted = Table[string, tuple[home: string, d: Decl]]
+  ## Objects whose data was hoisted (iface_hoist, A27), by name: the module
+  ## that declares each, and the declaration.
+
+proc hoistedObjects(prog: seq[LoadedModule]): Hoisted =
+  for lm in prog:
+    for d in lm.m.decls:
+      if d != nil and d.kind == dkObject and d.hoistedTo != "" and
+         d.origin == NoModule:
+        result[d.name] = (lm.name, d)
+
+proc seenElsewhere(hoisted: Hoisted, importer: Module, imp, name: string): bool =
+  ## A hoisted object is offered by its home module AND by the generated one;
+  ## an importer of the home module takes it from there, members included.
+  ## The data-only copy has none, so `f.sampleRate` was "no field" outside
+  ## the object's own module (A98).
+  name in hoisted and imp != hoisted[name].home and
+    hoisted[name].home in importsOf(importer)
+
+proc carryHoisted(hoisted: Hoisted, copy: Decl) =
+  ## An importer's copy of a hoisted object: marked so a backend names its
+  ## struct by the generated module, and carrying the `satisfies` lines a
+  ## data-only copy lacks — without them it satisfied nothing (A98).
+  if copy.kind != dkObject or copy.name notin hoisted: return
+  let orig = hoisted[copy.name].d
+  copy.hoistedTo = orig.hoistedTo
+  copy.satisfies = orig.satisfies
+  copy.satisfiesRenames = orig.satisfiesRenames
+
 proc injectImportedTypes*(prog: var seq[LoadedModule]) =
   ## Make each module's imported types — and objects — visible unqualified in
   ## the importer.
@@ -535,6 +564,7 @@ proc injectImportedTypes*(prog: var seq[LoadedModule]) =
   # the block existed.
   var exportsByName = initTable[string, (bool, HashSet[string])]()
   for lm in prog: exportsByName[lm.name] = exportedNames(lm.m)
+  let hoisted = hoistedObjects(prog)
   for i in 0 ..< prog.len:
     for imp in importsOf(prog[i].m):
       let (restricted, allowed) = exportsByName.getOrDefault(imp, (false, initHashSet[string]()))
@@ -543,11 +573,13 @@ proc injectImportedTypes*(prog: var seq[LoadedModule]) =
         # (its own, whose data moved to a generated module, or a copy placed
         # there): one wins.
         if (restricted and td.name notin allowed) or
-           prog[i].m.holdsType(td.name): continue
+           prog[i].m.holdsType(td.name) or
+           hoisted.seenElsewhere(prog[i].m, imp, td.name): continue
         # importedCopy numbers it (and everything in it) afresh: a type
         # reference resolves TO this decl, and an edge needs an id to point
         # at (#21).
         let marked = importedCopy(td, imp)
+        hoisted.carryHoisted(marked)
         prog[i].m.decls.insert(marked, 0)
 
 proc composeImportedMixins*(prog: var seq[LoadedModule]) =

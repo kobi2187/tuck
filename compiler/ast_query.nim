@@ -803,9 +803,12 @@ proc memberCalleeModule*(res: Resolution, m: Module, e: Expr): ModuleId =
   let owner = memberOwner(m, memberRecvType(res, e))
   # An object whose DATA moved to a generated module (iface_hoist) still has
   # its members here: they are this module's, not the generated one's.
+  # An importer's copy of such an object: its members are in its home module,
+  # which is the copy's origin, not where its data went (A98).
   for d in m.decls:
-    if d != nil and d.kind == dkObject and d.name == owner and
-       not isImportedCopy(d): return NoModule
+    if d != nil and d.kind == dkObject and d.name == owner:
+      if not isImportedCopy(d): return NoModule
+      if d.hoistedTo != "": return d.origin
   moduleDeclaringType(m, owner)
 
 proc callWritesSelf*(res: Resolution, m: Module, e: Expr): bool =
@@ -1330,8 +1333,9 @@ proc moduleDeclaringType*(module: Module, name: string): ModuleId =
   for d in module.decls:
     if d == nil or d.kind notin {dkType, dkObject, dkInterface} or d.name != name: continue
     # A type whose data moved to a generated module (iface_hoist) is declared
-    # here but lives there.
-    if d.hoistedTo != "" and not isImportedCopy(d): return moduleId(d.hoistedTo)
+    # here but lives there — and so does an importer's copy of it, whose
+    # origin is the home module that still holds its members (A98).
+    if d.hoistedTo != "": return moduleId(d.hoistedTo)
     return d.origin
   NoModule
 

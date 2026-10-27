@@ -24,24 +24,30 @@
 import std/[tables, sets]
 import ast, ast_ops, ast_query, resolution
 
+type Program* = seq[tuple[name, path: string, m: Module]]
+
 proc boundedByIface(m: Module, d: Decl): seq[int] =
-  ## Indexes of `d`'s type params bounded by an interface this module
-  ## declares.
-  if d == nil or d.kind != dkFn: return
+  ## Indexes of `d`'s type params bounded by an interface `m` declares —
+  ## `m` being the module that declares `d`.
+  if d == nil or d.kind != dkFn or d.origin != NoModule: return
   for i in 0 ..< min(d.fnGenerics.len, d.fnGenericBounds.len):
     for b in d.fnGenericBounds[i]:
       if m.findDecl(dkInterface, groupNameOf(b)) != nil:
         result.add(i)
         break
 
-proc concreteArgs(m: Module, args: seq[Type], idx: seq[int]): seq[Type] =
+proc isObject(prog: Program, name: string): bool =
+  for (_, _, m) in prog:
+    if m.findDecl(dkObject, name) != nil: return true
+
+proc concreteArgs(prog: Program, args: seq[Type], idx: seq[int]): seq[Type] =
   ## The bounded params' types at one call, or empty when any is not a
   ## declared object — a type param of an enclosing generic body, which a
   ## later round sees concrete.
   for i in idx:
     if i >= args.len: return @[]
     let t = args[i]
-    if t == nil or t.kind != tkNamed or m.findDecl(dkObject, t.name) == nil:
+    if t == nil or t.kind != tkNamed or not prog.isObject(t.name):
       return @[]
     result.add(t)
 
@@ -80,15 +86,30 @@ proc calleeName(e: Expr): string =
     e.callee.name
   else: ""
 
-proc expandIfaceGenerics*(res: Resolution, m: var Module): bool =
-  ## One round over module `m`: every call to an interface-bounded fn whose
-  ## bounded params are objects here is pointed at its clone, made on first
+type Generic = tuple[home: Module, d: Decl, idx: seq[int]]
+
+proc genericsOf(prog: Program): Table[string, Generic] =
+  ## Every interface-bounded fn in the program, by name, with the module that
+  ## declares it (whose interfaces bound it).
+  for (_, _, m) in prog:
+    for d in m.decls:
+      let idx = boundedByIface(m, d)
+      if idx.len > 0: result[d.name] = (m, d, idx)
+
+proc expandIfaceGenerics*(res: Resolution, prog: var Program, at: int): bool =
+  ## One round over module `prog[at]`: every call to an interface-bounded fn
+  ## whose bounded params are objects is pointed at its clone, made on first
   ## use. True when a call was retargeted — the program must be checked
   ## again.
-  var generic = initTable[string, Decl]()
-  for d in m.decls:
-    if boundedByIface(m, d).len > 0: generic[d.name] = d
+  ##
+  ## The clone goes in the CALLING module, wherever the generic is declared.
+  ## The usual shape is a library declaring the interface and the generic fn
+  ## and an app declaring the object: only the app can see both. The body is
+  ## the library's, written against names the library sees; a bare name it
+  ## uses resolves in the app through the import, as any imported fn's does.
+  let generic = genericsOf(prog)
   if generic.len == 0: return false
+  var m = prog[at].m
   var declared = initHashSet[string]()
   for d in m.decls:
     if d != nil: declared.incl(d.name)
@@ -98,17 +119,17 @@ proc expandIfaceGenerics*(res: Resolution, m: var Module): bool =
       let name = calleeName(n)
       if name notin generic or not n.id.isSet or
          n.id notin res.ifaceInstances: continue
-      let d = generic[name]
-      let idx = boundedByIface(m, d)
-      let args = concreteArgs(m, res.ifaceInstances[n.id], idx)
+      let g = generic[name]
+      let args = concreteArgs(prog, res.ifaceInstances[n.id], g.idx)
       if args.len == 0: continue
       let inst = instName(name, args)
       if inst notin declared:
-        clones.add(expandOne(d, idx, args, inst))
+        clones.add(expandOne(g.d, g.idx, args, inst))
         declared.incl(inst)
       n.callee.name = inst
       result = true
   for c in clones: m.decls.add(c)
+  prog[at].m = m
 
 proc dropIfaceGenerics*(m: var Module) =
   ## Remove the generic originals once every call reaches a clone. Never

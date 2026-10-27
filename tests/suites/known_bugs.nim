@@ -4903,4 +4903,38 @@ fn main() -> int:
   t.quietly: t.hostRuns "A97: discarding a spawned task builds on Nim", 5
   t.bugFixed "A97: discarding a spawned task builds on Nim"
 
+  # A98. An object satisfying an interface from a module it imports had its
+  # data hoisted into the generated `iface_variants` (A27), and every OTHER
+  # module saw it through that data-only copy: no `satisfies` lines and no
+  # members. So `{s: f} rate` was "does not declare satisfies AudioSource"
+  # and `f.sampleRate` was "no field" anywhere but the object's own module.
+  # The importer now sees it from its home module, and Odin and D name its
+  # struct by the generated module and its members by the home one.
+  t.src """
+import audio
+import codecs
+
+fn rate({s: AudioSource}) -> int:
+  return s.sampleRate
+
+fn main() -> int:
+  let f = Flac{bits: 16}
+  return ({s: f} rate /i 1000) + (f.sampleRate /i 1000) - 96
+"""
+  t.addFile "audio.tuck", """
+interface AudioSource:
+  fn sampleRate({self: Self}) -> int
+"""
+  t.addFile "codecs.tuck", """
+import audio
+
+object Flac:
+  satisfies AudioSource
+  bits: int
+  fn sampleRate({self: Flac}) -> int:
+    return 96000
+"""
+  t.quietly: t.hostRuns "A98: an imported satisfier keeps its interface and members", 96
+  t.bugFixed "A98: an imported satisfier keeps its interface and members"
+
   t.finish()

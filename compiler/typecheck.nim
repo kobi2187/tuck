@@ -3031,11 +3031,6 @@ proc recordIfaceInstance(tc: TypeChecker, fnName: string, sig: FnSig,
     for b in bs:
       if tc.ifaceDecls.hasKey(groupNameOf(b)): bounded = true
   if not bounded: return
-  if tc.module.findDecl(dkFn, fnName) == nil:
-    fail("Type Error: '" & fnName & "' has a type parameter bounded by an " &
-         "interface and is declared in another module; such a fn is " &
-         "expanded per object type in the module that declares it, so it " &
-         "can only be called from there for now", e.span)
   var args: seq[Type]
   for g in sig.generics: args.add(bindings.getOrDefault(g))
   ensureId(e)
@@ -6794,7 +6789,7 @@ proc typecheckExpanding*(mods: var seq[tuple[name, path: string, m: Module]],
   while true:
     var expanded = false
     for i in 0 ..< mods.len:
-      if expandIfaceGenerics(semLayer, mods[i].m): expanded = true
+      if expandIfaceGenerics(semLayer, mods, i): expanded = true
     if not expanded: break
     inc rounds
     if rounds > MaxExpansionRounds:
