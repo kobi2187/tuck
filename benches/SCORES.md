@@ -1099,3 +1099,8 @@ linked by `NodesRef?`, freed per cell, as the C reference does.
 
 Both stay: the slab is how fast a Tuck tree is; the sum type is what a VALUE
 tree costs, whose one-element Seq per edge is #205.
+
+**mandelbrot** (`benches/game/mandelbrot`, 8000, prints the count inside rather
+than a PBM bitmap): C 3.48s, Nim 1.0x, Odin 1.0x, D 2.5x. The emitted D is the
+same loop as the C one (`foreach` over a range, scalar doubles, no calls
+left); the gap is dmd's floating-point codegen, which is #208's ldc2 question.
