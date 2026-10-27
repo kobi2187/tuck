@@ -1,0 +1,80 @@
+# binary-trees (the Benchmarks Game), the slab way: nodes live in a slab and
+# link by reference, built and freed one cell at a time — what a tree is in
+# Tuck when it is a structure of cells rather than a value. Compare
+# ../binarytrees, the same program with a recursive sum type. Not tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+type Node:
+  left: NodesRef?
+  right: NodesRef?
+
+slab Nodes = Node
+
+fn bottomUp({depth: int}) -> NodesRef:
+  if depth == 0:
+    return Nodes.new {left: none, right: none}
+  let l = {depth: depth - 1} bottomUp
+  let r = {depth: depth - 1} bottomUp
+  return Nodes.new {left: l, right: r}
+
+fn check({n: NodesRef}) -> int:
+  let l = n.left
+  let r = n.right
+  if l.ok:
+    if r.ok:
+      return 1 + {n: l.value} check + {n: r.value} check
+  return 1
+
+fn release({n: NodesRef}) -> void:
+  let l = n.left
+  let r = n.right
+  if l.ok:
+    {n: l.value} release
+  if r.ok:
+    {n: r.value} release
+  Nodes.free {r: n}
+
+fn shift({n: int}) -> int:
+  var out = 1
+  for i in 0 ..< n:
+    out = out * 2
+  return out
+
+fn line({count: int, depth: int, total: int}) -> str:
+  return count.toStr + "\t trees of depth " + depth.toStr + "\t check: " + total.toStr
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 10
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let maxDepth = if n < 6: 6 else: n
+  let stretch = {depth: maxDepth + 1} bottomUp
+  let stretchCheck = {n: stretch} check
+  {n: stretch} release
+  {text: "stretch tree of depth " + (maxDepth + 1).toStr + "\t check: " + stretchCheck.toStr} printLine
+  let longLived = {depth: maxDepth} bottomUp
+  var depth = 4
+  for depth <= maxDepth:
+    let iterations = {n: maxDepth - depth + 4} shift
+    var total = 0
+    for i in 0 ..< iterations:
+      let t = {depth: depth} bottomUp
+      total = total + {n: t} check
+      {n: t} release
+    let text = {count: iterations, depth: depth, total: total} line
+    {text: text} printLine
+    depth = depth + 2
+  let longCheck = {n: longLived} check
+  {n: longLived} release
+  {text: "long lived tree of depth " + maxDepth.toStr + "\t check: " + longCheck.toStr} printLine
+  return 0

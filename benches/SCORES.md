@@ -1087,3 +1087,15 @@ accessors are `{.inline.}`. And `tuckCopy` of a Seq of plain values is one
 **Next.** binary-trees: a recursive edge is a one-element `[dynamic]`, and
 Odin's drop and copy walk every value through runtime type info, re-walking
 the element TYPE (`tuckHasHeap`) for every element.
+
+**binary-trees, the slab way** (`benches/game/slabtrees`). A tree that is a
+structure of cells, not a value, lives in a slab in Tuck: `slab Nodes = Node`,
+linked by `NodesRef?`, freed per cell, as the C reference does.
+
+| binary-trees 16 | Nim | Odin | D |
+|---|---|---|---|
+| recursive sum type (`binarytrees`) | 3.4x | 10.5x | 12.7x |
+| slab of nodes (`slabtrees`) | 2.4x | 3.7x | 2.9x |
+
+Both stay: the slab is how fast a Tuck tree is; the sum type is what a VALUE
+tree costs, whose one-element Seq per edge is #205.
