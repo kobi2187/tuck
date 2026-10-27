@@ -17,7 +17,7 @@ import convert
 import iter
 import seq
 import str
-import kvmap
+import kvmap {put -> putEntry}
 import kvproto
 import kvwal
 
@@ -68,7 +68,7 @@ fn setKey({store: Store, key: str, value: str, ttl: int}) -> Step [io: fs]:
   let line = {key: key, value: value, diesAt: diesAt} setLine
   if not {path: store.log, line: line} record:
     return {store: store, text: "ERR log write failed"} answer
-  let table = {m: store.table, key: key, value: value, diesAt: diesAt, now: store.now} kvmap::put
+  let table = {m: store.table, key: key, value: value, diesAt: diesAt, now: store.now} putEntry
   return {store: store, table: table, text: "OK"} changed
 
 fn delKey({store: Store, key: str}) -> Step [io: fs]:
@@ -96,7 +96,7 @@ fn incrKey({store: Store, key: str}) -> Step [io: fs]:
   let line = {key: key, value: text, diesAt: diesAt} setLine
   if not {path: store.log, line: line} record:
     return {store: store, text: "ERR log write failed"} answer
-  let table = {m: store.table, key: key, value: text, diesAt: diesAt, now: store.now} kvmap::put
+  let table = {m: store.table, key: key, value: text, diesAt: diesAt, now: store.now} putEntry
   return {store: store, table: table, text: text} changed
 
 fn expireKey({store: Store, key: str, ttl: int}) -> Step [io: fs]:
@@ -107,7 +107,7 @@ fn expireKey({store: Store, key: str, ttl: int}) -> Step [io: fs]:
   let line = {key: key, value: s.value.value, diesAt: diesAt} setLine
   if not {path: store.log, line: line} record:
     return {store: store, text: "ERR log write failed"} answer
-  let table = {m: store.table, key: key, value: s.value.value, diesAt: diesAt, now: store.now} kvmap::put
+  let table = {m: store.table, key: key, value: s.value.value, diesAt: diesAt, now: store.now} putEntry
   return {store: store, table: table, text: "1"} changed
 
 fn tick({store: Store, ticks: int}) -> Step [io: fs]:

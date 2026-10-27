@@ -1129,6 +1129,9 @@ type
       resKinds*: seq[ResourceKindDef]  # spec §7.4, one per line of the block
     of dkImport:
       importTarget*: ModuleId  # the module this import loads; its name is Decl.name
+      importRenames*: seq[(string, string)]
+        ## `import iter {find -> iterFind}` — (old, new) pairs; applied by
+        ## import_renames before anything resolves a name
     of dkSelect:
       selectArms*: seq[SelectArm]
 

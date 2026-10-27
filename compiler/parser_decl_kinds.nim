@@ -451,7 +451,11 @@ proc parseImportDecl*(p: var Parser, sp: Span): Decl =
   ## `import name` — one module per line, resolved later by the loader.
   discard p.advance()
   let modName = p.expectName("Expected module name after 'import'").value
-  Decl(span: sp, kind: dkImport, name: modName)
+  result = Decl(span: sp, kind: dkImport, name: modName)
+  # `import iter {find -> iterFind}`: Tuck's one rename spelling, for a name
+  # that would collide (import_renames.nim).
+  if p.current().kind == tkLBrace:
+    result.importRenames = p.parseRenameList("an import")
 
 proc siftSatisfies*(members: seq[Decl], sats: var seq[string],
                     renames: var seq[(string, string, string)]): seq[Decl] =

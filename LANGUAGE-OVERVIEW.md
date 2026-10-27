@@ -1078,6 +1078,24 @@ prefix stays **gradual** — `{volume: 3} audio::play` typechecks
 
 Module resolution needs `--root:`.
 
+**A fn two imports both export is written qualified, or renamed at the
+import** (ruled 2026-10-27; there is no overloading). The rename is Tuck's
+one rename spelling, `{old -> new}`:
+
+```tuck
+import kvmap {put -> putEntry}
+import files                     # also exports a `put`
+
+fn main() -> int:
+  return 0
+```
+
+In the importing module `putEntry` means `kvmap::put` everywhere, calls and
+`:putEntry` references alike; nothing past the load knows a rename existed
+(`compiler/import_renames.nim`). Renaming a name the module does not export,
+or onto a name the importer already declares, is refused. A TYPE is not
+renamed this way: a colliding type is written qualified (`mod::Type`, below).
+
 **A type two modules declare is two types** (ruled 2026-10-22, A88). Each is
 its module's own: `cli::Entry` and `map::Entry` have their own fields, and a
 value of one is not a value of the other. A module that declares the name

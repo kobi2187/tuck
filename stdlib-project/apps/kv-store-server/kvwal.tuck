@@ -14,7 +14,7 @@ import text
 import convert
 import seq
 import str
-import kvmap
+import kvmap {put -> putEntry}
 
 type Replayed:
   table: KvMap
@@ -55,7 +55,7 @@ fn applyLine({r: Replayed, line: str}) -> Replayed:
   if verb == "SETAT":
     let value = {w: w, i: 2} wordAt
     let diesAt = {w: w, i: 3} intAt
-    table = {m: table, key: key, value: value, diesAt: diesAt, now: now} kvmap::put
+    table = {m: table, key: key, value: value, diesAt: diesAt, now: now} putEntry
   elif verb == "DEL":
     let gone = {m: table, key: key, now: now} drop
     table = gone.table

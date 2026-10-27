@@ -1101,4 +1101,38 @@ fn main() -> int:
   t.hostBuilds "...and every backend's host compiler accepts them"
   t.runs "...and they compute through the right module", 24
 
+  # --- renaming at the import (ruled 2026-10-27) -----------------------------
+  #
+  # Two imports exporting `find`: one is renamed where it comes in, the other
+  # is written qualified. A renamed fn is reachable as a call and as a `:fn`
+  # value, on every backend; nothing downstream knows the rename existed.
+  t.src """
+import a {find -> findIn, twice -> double}
+import b
+
+fnsig Step = {n: int} -> int
+
+fn apply({f: Step, n: int}) -> int:
+  return {n: n} f
+
+fn main() -> int:
+  let xs: Seq[int] = [1, 2]
+  let i = {xs: xs, x: 2} findIn
+  let j = {t: "x"} b::find
+  return i + j + {f: :double, n: 5} apply
+"""
+  t.addFile "a.tuck", "fn find({xs: Seq[int], x: int}) -> int:\n  return 7\n\n" &
+                      "fn twice({n: int}) -> int:\n  return n * 2\n\n" &
+                      "type Box:\n  v: int\n"
+  t.addFile "b.tuck", "fn find({t: str}) -> int:\n  return 1\n"
+  t.okCheck "import {old -> new} renames a fn where it comes in"
+  t.hostRuns "...as a call and as a fn value, on every backend", 18
+  for (rename, why) in [("nope -> x", "exports no fn 'nope'"),
+                        ("Box -> B", "a type is not renamed at the import"),
+                        ("twice -> main", "already a name in this module")]:
+    t.src "import a {" & rename & "}\n\nfn main() -> int:\n  return 0\n"
+    t.addFile "a.tuck", "fn twice({n: int}) -> int:\n  return n * 2\n\n" &
+                        "type Box:\n  v: int\n"
+    t.badCheck "a rename that cannot mean anything is refused: " & rename, why
+
   t.finish()

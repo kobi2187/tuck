@@ -21,8 +21,9 @@ committed snapshot and log (`tests/suites/apps.nim`).
 1. **Name collisions across imports, with no way to import less.** No
    overloading (a ruling), so every shared name must be qualified or renamed:
    `files` exports a member `put`, `iter` (imported for `sort` alone) exports
-   `find`. A selective import, `import iter (sort)`, would remove both. This
-   is the one that will grow with program size.
+   `find`. Ruled 2026-10-27: write it qualified, or rename it at the
+   import. The rename was built for this: `import kvmap {put -> putEntry}`
+   is what `kv` and `kvwal` now write.
 2. **No multi-pattern match arm.** `"GET", "DEL": ...` is not syntax, so the
    dispatch repeats one arm per word. The AST has an or-pattern (`pkOr`, used
    by decision tables) and every backend prints it; only a spelling is

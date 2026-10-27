@@ -73,7 +73,8 @@ import compiler/modules
 import compiler/type_identity   # a type name two modules declare (A88)
 import compiler/effect_manifest
 import compiler/mock_surface
-import compiler/resource_leaks  # `tuck effects --manifest` (#63)
+import compiler/resource_leaks
+import compiler/import_renames  # `tuck effects --manifest` (#63)
 import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
 import compiler/actor_mode
@@ -755,6 +756,12 @@ proc checkProgram(path: string, needBodies = false,
   (result, sigOnly) = loadOrDie(path, needBodies)
   let mocked = stubMockedExterns(result)   # `--mock`'s second pass (#70)
   for lm in result.mitems: resolveWhenBlocks(lm.m, buildTarget)  # spec §8.3
+  # `import m {old -> new}`: before anything resolves a name, so every later
+  # stage sees only `m::old`.
+  try:
+    applyImportRenames(result)
+  except RenameError as err:
+    die(err.msg)
   block:
     let t0 = vBegin(psInjectTypes)
     # A type name two modules declare: each its own (`cli::Entry`), and a bare
