@@ -50,7 +50,7 @@ proc movedCallInto(res: Resolution, m: Module, call: Expr,
   ## instant the new one lands.
   if call == nil or call.kind != exkCall: return false
   if call.callee == nil or call.callee.kind != exkVar: return false
-  if movedFnParam(res, m, m.findFn(call.callee.name)) == "": return false
+  if movedFnParam(res, m, calleeDecl(res, m, call)) == "": return false
   call.args.len >= 1 and call.args[0] != nil and
     call.args[0].kind == exkVar and call.args[0].name == targetName
 
@@ -61,7 +61,7 @@ proc decideTakesTwin(res: Resolution, m: Module, e: Expr): bool =
   ## assignment emitter ever sees that call.
   e.kind == exkCall and e.callee != nil and e.callee.kind == exkVar and
     e.args.len > 0 and e.args[0] != nil and
-    movedFnParam(res, m, m.findFn(e.callee.name)) != "" and
+    movedFnParam(res, m, calleeDecl(res, m, e)) != "" and
     memberCallee(res, m, e) == ""
 
 proc decideThreaded(res: Resolution, m: Module, e: Expr): Expr =

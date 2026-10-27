@@ -60,13 +60,14 @@ fn emptySlots({n: int}) -> Seq[int]:
     out = {items: out, value: 0 - 1} push
   return out
 
-# The same entries under an index of `n` slots.
-fn reindexed[K, V]({entries: Seq[Entry[K, V]], n: int}) -> Table[K, V]:
+# An index of `n` slots over `entries`. Returns the index alone, so the
+# entries are only read, never copied into a result.
+fn indexed[K, V]({entries: Seq[Entry[K, V]], n: int}) -> Seq[int]:
   var slots = {n: n} emptySlots
   for i in 0 ..< entries.len:
     let s = {entries: entries, slots: slots, key: entries[i].key} slotOf
     slots[s] = i
-  return {entries: entries, slots: slots} Table
+  return slots
 
 fn has[K, V]({t: Table[K, V], key: K}) -> bool:
   return {t: t, key: key} indexOf >= 0
@@ -81,22 +82,19 @@ fn get[K, V]({t: Table[K, V], key: K}) -> V?:
   return t.entries[at].value
 
 # Replaces in place when the key is present, appends when it is not — so a
-# table never holds two entries for one key, which is what makes the linear
-# scan's FIRST hit the right one.
-# Replaces in place when the key is present, appends when it is not — so a
-# table never holds two entries for one key.
+# table never holds two entries for one key. Each part of `t` is taken once, so
+# a caller's last use of the table moves it through instead of copying it.
 fn set[K, V]({t: Table[K, V], key: K, value: V}) -> Table[K, V]:
   let at = {t: t, key: key} indexOf
   var es = t.entries
+  var slots = t.slots
   let fresh = {key: key, value: value} Entry
   if at >= 0:
     es[at] = fresh
-    return {entries: es, slots: t.slots} Table
-  var grown = t
-  if (es.len + 1) * 2 > t.slots.len:
-    let n = if t.slots.len == 0: FirstSlots else: t.slots.len * 2
-    grown = {entries: es, n: n} reindexed
-  var slots = grown.slots
+    return {entries: es, slots: slots} Table
+  if (es.len + 1) * 2 > slots.len:
+    let n = if slots.len == 0: FirstSlots else: slots.len * 2
+    slots = {entries: es, n: n} indexed
   let s = {entries: es, slots: slots, key: key} slotOf
   slots[s] = es.len
   es = {items: es, value: fresh} push
@@ -116,7 +114,8 @@ fn remove[K, V]({t: Table[K, V], key: K}) -> Table[K, V]:
     let e = t.entries[i]
     if e.key != key:
       es = {items: es, value: e} push
-  return {entries: es, n: t.slots.len} reindexed
+  let slots = {entries: es, n: t.slots.len} indexed
+  return {entries: es, slots: slots} Table
 
 fn clear[K, V]({t: Table[K, V]}) -> Table[K, V]:
   let empty: Seq[Entry[K, V]] = []

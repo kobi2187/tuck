@@ -1109,3 +1109,18 @@ left); the gap is dmd's floating-point codegen, which is #208's ldc2 question.
 byte-identical to C on all three. Each line is a fresh `Seq[u8]` pushed one
 byte at a time, then `fromBytes`; D's share is the GC-allocated line per 60
 letters (#208), and the push-then-convert shape is what #210 (reserve) targets.
+
+**k-nucleotide** (`benches/game/knucleotide`, 1M letters; the sequence comes from
+fasta's generator instead of stdin; k-mers are 2-bit codes in `Table[int, int]`):
+C 0.22s, Nim 3.1x, Odin 2.2x, D 2.8x, output identical.
+
+Two things came out of it, both in the compiler or stdlib, neither in the program:
+- `alloc/map`'s Table scanned every entry (#204). It is now an open-addressing
+  index over dense, insertion-ordered entries, on a `hashKey[T]` primitive (a str
+  by FNV-1a, an integer/bool/enum by a splitmix64 finalizer), identical on every
+  backend.
+- The first Odin and D run took 38s and 27s at 20000 letters against 0.2s on
+  Nim: `table = {t: table, ..} set` copied the whole table, because the pass that
+  picks the moved twin found a callee with `m.findFn(name)`, which sees only the
+  current module (A102, the third pass to learn only some spellings after A100
+  and A101). It asks `calleeDecl` now.
