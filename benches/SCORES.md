@@ -1133,3 +1133,13 @@ complement, split into lines), so the cost is the per-element push: on D it is a
 druntime `~=` call plus a pointer compare per byte (`tuckPush`). Both #210
 (reserve when the length is known: here `n`, `dna.len` and `Width`) and a
 cheaper D push are aimed at it; neither is done yet.
+
+**pidigits** (`benches/game/pidigits`, 3000 digits; a base-10^9 limb bignum of our
+own, `bignat.tuck`, because the stdlib has none and the C reference could not use
+GMP here either - there is no gmp.h on the machine, so C runs the same limb
+algorithm): C 1.19s, Nim 3.6x, Odin 1.6x, D 15.5x, digits identical. Every
+operation builds a fresh Seq limb by limb with `push`, so D's gap is again the
+per-element `~=` call (reverse-complement shows the same 15-17x). The Tuck
+program is the unbounded spigot as written in the game; its accumulator goes
+negative after a digit, which is why `bignat` has a signed `Big` beside the
+natural numbers.
