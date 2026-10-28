@@ -1143,3 +1143,13 @@ per-element `~=` call (reverse-complement shows the same 15-17x). The Tuck
 program is the unbounded spigot as written in the game; its accumulator goes
 negative after a digit, which is why `bignat` has a signed `Big` beside the
 natural numbers.
+
+**regex-redux** (`benches/game/regexredux`, 400000 letters, generated; counts nine
+variant patterns and makes five substitutions through std.regex; C reference is
+glibc's POSIX `regexec`): C 0.13s, Nim 25.9x, Odin 34x, D 71x. Counts and lengths
+are identical on all three. Callgrind on Nim: 45% is `genericAssign`, memcpy and
+malloc/free. The VM's loop does `let ins = re.prog[pc]` and `let t =
+threads[sp]` on every step; each binding is a DEEP COPY of a record that owns a
+Seq (`Inst.ranges`, `Thread.caps`), plus a `defer` that frees it. The binding is
+only ever read. Filed as a performance idea: a `let` of an element that is only
+read should borrow, not copy.
