@@ -5035,4 +5035,25 @@ fn add({bag: Seq[int], x: int}) -> Seq[int]:
                          r"tuckˑmodˑlib\.tuckˑfnˑadd_moved\("
   t.bugFixed "A102: an imported threading fn is called through its twin"
 
+  # ...and the same fn spelled `lib::add` took the copying wrapper too: the
+  # twin decision required a bare callee name.
+  t.src """
+import lib
+
+fn main() -> int:
+  var xs: Seq[int] = [1]
+  for i in 0 ..< 4:
+    xs = {bag: xs, x: i} lib::add
+  return xs.len
+"""
+  t.addFile "lib.tuck", """
+fn add({bag: Seq[int], x: int}) -> Seq[int]:
+  var out = bag
+  out[0] = x
+  return out
+"""
+  t.quietly: t.emitsOdin "A102: a qualified threading call takes the twin too",
+                         r"tuckˑmodˑlib\.tuckˑfnˑadd_moved\("
+  t.bugFixed "A102: a qualified threading call takes the twin too"
+
   t.finish()

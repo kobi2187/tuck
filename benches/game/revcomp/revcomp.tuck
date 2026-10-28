@@ -1,0 +1,75 @@
+# reverse-complement (the Benchmarks Game): write a DNA sequence backwards,
+# each letter replaced by its complement, in lines of 60. The game reads FASTA
+# from stdin; this one draws the sequence from fasta's generator over the 15
+# IUPAC codes, so the program takes one number. Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+const Width = 60
+const Im = 139968
+const Ia = 3877
+const Ic = 29573
+const Codes = "acgtBDHKMNRSVWY"
+const Pairs = "TGCAVHDMKNYSBWR"
+
+fn sequence({n: int}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  var seed = 42
+  for i in 0 ..< n:
+    seed = (seed * Ia + Ic) % Im
+    let at = seed % 15
+    let c = {t: Codes, index: at} byteAt
+    out = {items: out, value: c} push
+  return out
+
+# complement[letter] is the letter's complement.
+fn complements() -> Seq[u8]:
+  var table: Seq[u8] = []
+  for i in 0 ..< 256:
+    table = {items: table, value: 0} push
+  for i in 0 ..< 15:
+    let from = {t: Codes, index: i} byteAt
+    let to = {t: Pairs, index: i} byteAt
+    table[from ^int] = to
+  return table
+
+fn reverseComplement({dna: Seq[u8]}) -> Seq[u8]:
+  let table = {} complements
+  var out: Seq[u8] = []
+  var i = dna.len - 1
+  for i >= 0:
+    let c = table[dna[i] ^int]
+    out = {items: out, value: c} push
+    i = i - 1
+  return out
+
+fn printLines({dna: Seq[u8]}) -> void [io: console]:
+  var pos = 0
+  for pos < dna.len:
+    var line: Seq[u8] = []
+    var k = 0
+    for k < Width and pos < dna.len:
+      line = {items: line, value: dna[pos]} push
+      pos = pos + 1
+      k = k + 1
+    let s = {bytes: line} fromBytes
+    {text: s} printLine
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 1000
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let dna = {n: n} sequence
+  let rc = {dna: dna} reverseComplement
+  {text: ">ONE Reverse complement"} printLine
+  {dna: rc} printLines
+  return 0

@@ -49,7 +49,7 @@ proc movedCallInto(res: Resolution, m: Module, call: Expr,
   ## is assigned back over (`x = f(x, ...)`)? The old value is dead the
   ## instant the new one lands.
   if call == nil or call.kind != exkCall: return false
-  if call.callee == nil or call.callee.kind != exkVar: return false
+  if call.callee == nil or call.callee.kind notin {exkVar, exkQualified}: return false
   if movedFnParam(res, m, calleeDecl(res, m, call)) == "": return false
   call.args.len >= 1 and call.args[0] != nil and
     call.args[0].kind == exkVar and call.args[0].name == targetName
@@ -59,7 +59,7 @@ proc decideTakesTwin(res: Resolution, m: Module, e: Expr): bool =
   ## The one that matters beyond an assignment is RETURN:
   ## `return {sl: up, c: c} relight` with `up` dead there and owned — no
   ## assignment emitter ever sees that call.
-  e.kind == exkCall and e.callee != nil and e.callee.kind == exkVar and
+  e.kind == exkCall and e.callee != nil and e.callee.kind in {exkVar, exkQualified} and
     e.args.len > 0 and e.args[0] != nil and
     movedFnParam(res, m, calleeDecl(res, m, e)) != "" and
     memberCallee(res, m, e) == ""
