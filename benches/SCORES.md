@@ -1153,3 +1153,38 @@ threads[sp]` on every step; each binding is a DEEP COPY of a record that owns a
 Seq (`Inst.ranges`, `Thread.caps`), plus a `defer` that frees it. The binding is
 only ever read. Filed as a performance idea: a `let` of an element that is only
 read should borrow, not copy.
+
+## Benchmarks Game, after the view-binding and counted-fill passes (2026-10-28)
+
+All eleven programs, output identical to C on every backend. The machine was ~1.5x
+slower than during the first round (C binary-trees 0.40s against 0.25s), so compare
+ratios, not seconds; an A/B of the compiler before and after (binary-trees, Nim:
+1.67s and 1.65s, same minute) shows the compiler did not slow it.
+
+| program | Nim | Odin | D |
+|---|---|---|---|
+| n-body | 1.6x | 1.2x | 2.3x |
+| spectral-norm | 2.3x | 1.2x | 2.0x |
+| mandelbrot | 0.9x | 1.0x | 1.8x |
+| fannkuch-redux | 2.9x | 4.3x | 4.0x |
+| binary-trees, sum type | 4.0x | 12.0x | 14.6x |
+| binary-trees, slab | 1.9x | 4.7x | 2.4x |
+| fasta | 1.1x | 1.4x | 1.6x |
+| k-nucleotide | 2.9x | 2.7x | 3.4x |
+| reverse-complement | 2.6x | 2.2x | 6.4x |
+| pidigits | 2.4x | 1.4x | 9.8x |
+| regex-redux | 11.1x | 19.3x | 51.4x |
+
+Two compiler changes did it, neither touching a program (one program, reverse-
+complement, now spells two counting loops as ranges):
+
+- **A `let` that only reads is a view (#213).** `let ins = prog[pc]` no longer deep-
+  copies a record that owns a Seq and frees the copy. regex-redux Nim 25.9x -> 11.1x,
+  Odin 34x -> 19.3x, D 71x -> 51.4x; callgrind on Nim 558M -> 255M instructions.
+- **A counted loop that pushes reserves once (#210).** reverse-complement Nim 4.5x ->
+  2.6x, D 16.8x -> 6.4x; fasta D 3.6x -> 1.6x; pidigits D 15.5x -> 9.8x. Nim's
+  `tuckPush` is inline for the common case, and growing is out of line.
+
+What is left, by size: regex-redux (the engine allocates a captures Seq per thread),
+the sum-type binary-trees (#205, #206), pidigits and reverse-complement on D (pushes
+in loops that are not counted `for` ranges), fannkuch (#207).
