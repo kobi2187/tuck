@@ -638,6 +638,9 @@ type
     of exkFor:
       iter*: Pattern
       iterable*, body*: Expr
+      fillTargets*: seq[Expr]  # prepared only (append_fill): the Seqs this
+                               # counted loop pushes to once per iteration;
+                               # each backend reserves them before the loop
     of exkWhile:
       whileCond*: Expr        # nil = infinite loop (`loop:`)
       whileBody*: Expr
@@ -714,6 +717,9 @@ type
                                    # READ of it the source wrote, so its stamps
                                    # (final use, owner field) stay attached
       appendValue*: Expr           # what is added at the end
+      appendFilled*: bool          # prepared only (append_fill): room for this
+                                   # push was reserved before its loop, so it
+                                   # may store without asking
       appendFreesOld*: bool        # a str grown in a place the body owns
                                    # (ownership_write): the old bytes are
                                    # its, and freed where a backend frees

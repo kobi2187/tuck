@@ -1034,6 +1034,8 @@ proc genList(ctx: var OdinCodegenCtx, e: Expr): string =
                else: ctx.odinType(t)
   prefix & "{" & parts.join(", ") & "}"
 
+proc movedAssignTarget(ctx: OdinCodegenCtx, t: Expr): string
+
 proc genFor(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## Odin's range-for yields the index natively, so `for idx, item in xs:`
   ## needs no counter to maintain.
@@ -1052,7 +1054,13 @@ proc genFor(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
                  genPatternStr(e.iter.elems[0])
              else: genPatternStr(e.iter)
   let bodyStr = ctx.genIndented(e.body)
-  ind & "for " & vars & " in " & iterStr & " {\n" & bodyStr & "\n" & ind & "}"
+  var reserve = ""
+  if e.fillTargets.len > 0:     # a counted loop that pushes: room first (#210)
+    let n = "(" & ctx.genOdinExpr(it.right) & " - " & ctx.genOdinExpr(it.left) &
+            (if it.binOp == boRangeIncl: " + 1)" else: ")")
+    for t in e.fillTargets:
+      reserve.add ind & "rt.tuckReserve(&" & ctx.movedAssignTarget(t) & ", " & n & ")\n"
+  reserve & ind & "for " & vars & " in " & iterStr & " {\n" & bodyStr & "\n" & ind & "}"
 
 proc genWhile(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## `for <cond>:` (and bare `loop:`) — Odin has ONE loop keyword and `while`

@@ -199,4 +199,84 @@ fn main() -> int:
 """
   t.hostRuns("a view that is returned is copied there", 7)
 
+  # A counted loop that pushes once per iteration reserves first (#210), and
+  # its pushes store without asking. The loop below qualifies; the ones after
+  # it each break one condition, and keep the plain push.
+  t.src """
+import seq
+
+fn fill({n: int}) -> Seq[int]:
+  var out: Seq[int] = []
+  for i in 0 ..< n:
+    out = {items: out, value: i * 2} push
+  return out
+
+fn main() -> int:
+  let xs = {n: 5} fill
+  return xs.len + xs[4]
+"""
+  t.emits "a counted loop that pushes reserves its room first",
+          r"tuckReserve\(tuckˑvˑout, \(n - 0\)\)"
+  t.emitsD "...and on D its pushes store without asking",
+           r"rt\.tuckPushFilled\(tuckˑvˑout"
+  t.emitsOdin "...and Odin reserves too",
+              r"rt\.tuckReserve\(&tuckˑvˑout, \(n - 0\)\)"
+  t.hostRuns("...and the filled Seq is what the loop made", 13)
+
+  # An early exit means not every iteration pushes: no reservation.
+  t.src """
+import seq
+
+fn some({n: int}) -> Seq[int]:
+  var out: Seq[int] = []
+  for i in 0 ..< n:
+    if i == 3:
+      break
+    out = {items: out, value: i} push
+  return out
+
+fn main() -> int:
+  let xs = {n: 10} some
+  return xs.len
+"""
+  t.omits "a loop that can leave early reserves nothing", r"tuckReserve"
+  t.hostRuns("...and still pushes only what it pushed", 3)
+
+  # The loop reading what it has built would see a length it has not reached.
+  t.src """
+import seq
+
+fn running({n: int}) -> Seq[int]:
+  var out: Seq[int] = [1]
+  for i in 1 ..< n:
+    out = {items: out, value: out[i - 1] + 1} push
+  return out
+
+fn main() -> int:
+  let xs = {n: 6} running
+  return xs[5]
+"""
+  t.omits "a loop that reads its own Seq reserves nothing", r"tuckReserve"
+  t.hostRuns("...and the reads see the pushes so far", 6)
+
+  # A bound that calls something is evaluated once, by the loop alone.
+  t.src """
+import seq
+
+fn bound({k: int}) -> int:
+  return k + 2
+
+fn calls({k: int}) -> Seq[int]:
+  var out: Seq[int] = []
+  for i in 0 ..< {k: k} bound:
+    out = {items: out, value: i} push
+  return out
+
+fn main() -> int:
+  let xs = {k: 3} calls
+  return xs.len
+"""
+  t.omits "a bound that is a call reserves nothing", r"tuckReserve"
+  t.hostRuns("...and the loop still runs it once", 5)
+
   t.finish()

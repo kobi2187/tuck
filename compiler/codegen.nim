@@ -658,7 +658,13 @@ proc genFor(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## A `for` loop; the loop pattern's names become Nim's loop variables.
   let iterStr = loopVarNames(e.iter)
   let iterable = ctx.genExpr(e.iterable)
-  ind & "for " & iterStr & " in " & iterable & ":\n" & ctx.genIndented(e.body)
+  var reserve = ""
+  if e.fillTargets.len > 0:     # a counted loop that pushes: room first (#210)
+    let r = e.iterable
+    let n = "(" & ctx.genExpr(r.right) & " - " & ctx.genExpr(r.left) &
+            (if r.binOp == boRangeIncl: " + 1)" else: ")")
+    for t in e.fillTargets: reserve.add ind & "tuckReserve(" & t.name & ", " & n & ")\n"
+  reserve & ind & "for " & iterStr & " in " & iterable & ":\n" & ctx.genIndented(e.body)
 
 proc genWhile(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## A `while` loop; a condition-less `loop` is `while true`.

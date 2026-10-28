@@ -103,6 +103,23 @@ void tuckPush(T)(ref T[] xs, T v) {
     if (old !is null && xs.ptr !is old) tuckFreeBlock(cast(void*) old);
 }
 
+/// Room for `extra` more elements, so the pushes of a counted loop that is
+/// about to make them need not ask (append_fill). A block that had to move
+/// is freed, as `tuckPush` does.
+void tuckReserve(T)(ref T[] xs, long extra) {
+    if (extra <= 0) return;
+    auto old = xs.ptr;
+    xs.reserve(xs.length + cast(size_t) extra);
+    if (old !is null && xs.ptr !is old) tuckFreeBlock(cast(void*) old);
+}
+
+/// A push whose room `tuckReserve` made before the loop: the slice grows by
+/// one and the element is stored, with no call into the runtime's append.
+void tuckPushFilled(T)(ref T[] xs, T v) {
+    xs = xs.ptr[0 .. xs.length + 1];
+    xs[$ - 1] = v;
+}
+
 /// `s += t` on a str the body owns: the same, for its bytes.
 void tuckStrAppend(ref string s, string t) {
     import core.memory : GC;

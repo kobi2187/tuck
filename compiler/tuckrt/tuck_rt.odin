@@ -776,6 +776,12 @@ hash :: proc(data: string) -> u64 {
 	return h
 }
 
+// Room for `extra` more elements, so the appends of a counted loop that is
+// about to make them find it (append_fill).
+tuckReserve :: proc(xs: ^[dynamic]$T, extra: int) {
+	if extra > 0 { reserve(xs, len(xs^) + extra) }
+}
+
 // splitmix64's finalizer: spreads an integer's bits so the low ones, which a
 // table indexes by, depend on all of them. The same on every backend.
 tuckMix :: proc(x: u64) -> u64 {

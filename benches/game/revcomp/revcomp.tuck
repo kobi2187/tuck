@@ -39,22 +39,20 @@ fn complements() -> Seq[u8]:
 fn reverseComplement({dna: Seq[u8]}) -> Seq[u8]:
   let table = {} complements
   var out: Seq[u8] = []
-  var i = dna.len - 1
-  for i >= 0:
-    let c = table[dna[i] ^int]
+  for k in 0 ..< dna.len:
+    let c = table[dna[dna.len - 1 - k] ^int]
     out = {items: out, value: c} push
-    i = i - 1
   return out
 
+# The sequence in lines of Width.
 fn printLines({dna: Seq[u8]}) -> void [io: console]:
-  var pos = 0
-  for pos < dna.len:
+  let lines = (dna.len + Width - 1) /i Width
+  for n in 0 ..< lines:
+    let start = n * Width
+    let take = if dna.len - start < Width: dna.len - start else: Width
     var line: Seq[u8] = []
-    var k = 0
-    for k < Width and pos < dna.len:
-      line = {items: line, value: dna[pos]} push
-      pos = pos + 1
-      k = k + 1
+    for k in 0 ..< take:
+      line = {items: line, value: dna[start + k]} push
     let s = {bytes: line} fromBytes
     {text: s} printLine
 
