@@ -103,6 +103,23 @@ void tuckPush(T)(ref T[] xs, T v) {
     if (old !is null && xs.ptr !is old) tuckFreeBlock(cast(void*) old);
 }
 
+/// Room for `extra` more elements, so the pushes of a counted loop that is
+/// about to make them need not ask (append_fill). A block that had to move
+/// is freed, as `tuckPush` does.
+void tuckReserve(T)(ref T[] xs, long extra) {
+    if (extra <= 0) return;
+    auto old = xs.ptr;
+    xs.reserve(xs.length + cast(size_t) extra);
+    if (old !is null && xs.ptr !is old) tuckFreeBlock(cast(void*) old);
+}
+
+/// A push whose room `tuckReserve` made before the loop: the slice grows by
+/// one and the element is stored, with no call into the runtime's append.
+void tuckPushFilled(T)(ref T[] xs, T v) {
+    xs = xs.ptr[0 .. xs.length + 1];
+    xs[$ - 1] = v;
+}
+
 /// `s += t` on a str the body owns: the same, for its bytes.
 void tuckStrAppend(ref string s, string t) {
     import core.memory : GC;
@@ -449,6 +466,26 @@ ulong hash(string data)
     return h;
 }
 
+// splitmix64's finalizer: spreads an integer's bits so the low ones, which a
+// table indexes by, depend on all of them. The same on every backend.
+ulong tuckMix(ulong x)
+{
+    ulong z = x + 0x9e3779b97f4a7c15UL;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9UL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebUL;
+    return z ^ (z >> 31);
+}
+
+// The hash of any key a table can hold: a string by its bytes (FNV-1a, as
+// `hash`), an integer, bool or enum by value, anything else by its text.
+ulong hashKey(T)(T key)
+{
+    static if (is(T == string)) return hash(key);
+    else static if (__traits(isIntegral, T) || is(T == bool) || is(T == enum))
+        return tuckMix(cast(ulong) key);
+    else return hash(text(key));
+}
+
 // seq access. Bounds are a PRECONDITION: violating one is a program error
 // that aborts with the site, not an error value (mirrors tuck_rt.nim's
 // IndexDefect; D's own bounds check would say the same thing, but this
@@ -469,7 +506,11 @@ private void tuckSeqBounds(long index, long length, string op)
 /// `at` — brackets are grammar, so they must work without `import seq`,
 /// and the reserved `tuck` prefix keeps them clear of a user's own `at`.
 /// std/seq.tuck's `at`/`setAt` stay as the explicit spelling, delegating.
-T tuckAt(T)(T[] items, long index)
+/// A REFERENCE to the element, not a copy — Nim's `lent T`. By value, every
+/// `xs[i].field` read copied the whole element: n-body's 56-byte record was
+/// copied some 20 times per pair of planets (benches/game). A caller that
+/// keeps the element (`T x = xs[i]`) still gets its own copy by assignment.
+ref T tuckAt(T)(T[] items, long index)
 {
     tuckSeqBounds(index, cast(long) items.length, "at");
     return items[index];

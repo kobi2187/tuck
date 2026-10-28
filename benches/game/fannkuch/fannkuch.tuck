@@ -1,0 +1,93 @@
+# fannkuch-redux (the Benchmarks Game): for every permutation of 1..n, count
+# the pancake flips that bring 1 to the front; report a checksum and the most
+# flips. Permutations in the order the reference visits them (rotations
+# driven by a count vector). Written plainly and not tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+type Result:
+  checksum: int
+  maxFlips: int
+
+fn identity({n: int}) -> Seq[int]:
+  var out: Seq[int] = []
+  for i in 0 ..< n:
+    out = {items: out, value: i} push
+  return out
+
+# Reverse the first k + 1 elements.
+fn flipped({p: Seq[int], k: int}) -> Seq[int]:
+  var out = p
+  var lo = 0
+  var hi = k
+  for lo < hi:
+    let t = out[lo]
+    out[lo] = out[hi]
+    out[hi] = t
+    lo = lo + 1
+    hi = hi - 1
+  return out
+
+fn flips({perm: Seq[int]}) -> int:
+  var p = perm
+  var count = 0
+  for p[0] != 0:
+    p = {p: p, k: p[0]} flipped
+    count = count + 1
+  return count
+
+# Move the first element of p[0..r] to position r.
+fn rotated({p: Seq[int], r: int}) -> Seq[int]:
+  var out = p
+  let first = out[0]
+  for i in 0 ..< r:
+    out[i] = out[i + 1]
+  out[r] = first
+  return out
+
+fn fannkuch({n: int}) -> Result:
+  var perm = {n: n} identity
+  var count = {n: n} identity
+  var checksum = 0
+  var maxFlips = 0
+  var sign = 1
+  var r = n
+  var going = true
+  for going:
+    for r != 1:
+      count[r - 1] = r
+      r = r - 1
+    let f = {perm: perm} flips
+    if f > maxFlips:
+      maxFlips = f
+    checksum = checksum + sign * f
+    sign = 0 - sign
+    var advanced = false
+    for not advanced and r < n:
+      perm = {p: perm, r: r} rotated
+      count[r] = count[r] - 1
+      if count[r] > 0:
+        advanced = true
+      else:
+        r = r + 1
+    if not advanced:
+      going = false
+  return {checksum: checksum, maxFlips: maxFlips} Result
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 7
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let res = {n: n} fannkuch
+  {text: res.checksum.toStr} printLine
+  {text: "Pfannkuchen(" + n.toStr + ") = " + res.maxFlips.toStr} printLine
+  return 0

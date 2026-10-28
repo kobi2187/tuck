@@ -78,7 +78,19 @@ proc tuckDrop*[T](x: var T) =
 proc tuckCopy*[T](x: T): T {.inline.} =
   ## A value sharing nothing with `x`: Nim's own assignment, which under
   ## `--mm:none` copies a seq or string and what they hold.
-  result = x
+  ##
+  ## A seq of plain values (no storage of their own) is copied as one block:
+  ## Nim's assignment walks it element by element through genericAssign,
+  ## which was most of a copy's cost (benches/game, fannkuch).
+  when T is seq:
+    when supportsCopyMem(typeof(x[0])):
+      result = newSeqUninit[typeof(x[0])](x.len)
+      if x.len > 0:
+        copyMem(addr result[0], unsafeAddr x[0], x.len * sizeof(x[0]))
+    else:
+      result = x
+  else:
+    result = x
 
 proc tuckBits*[T](x: T): T {.inline.} =
   ## `x`'s bits as a value of its own: a parameter the body owns, adopted
@@ -105,9 +117,9 @@ proc tuckMove*[T](x: var T): T {.inline.} =
   copyMem(addr result, addr x, sizeof(T))
   zeroMem(addr x, sizeof(T))
 
-proc tuckPush*[T](xs: var seq[T], v: T) =
-  ## `xs` grown by `v`, in place; `v` is stored by its bits. A block that
-  ## had to move is freed (Nim's own `add` leaves it behind).
+proc tuckPushGrow[T](xs: var seq[T], v: T) {.noinline.} =
+  ## The slow half of `tuckPush`: a block that is not the seq's own, or has no
+  ## room. A block that had to move is freed (Nim's own `add` leaves it behind).
   var h = headOf(xs)
   if h == nil or (h.reserved and flagBits) != 0:
     let n = if h == nil: 0 else: h.len
@@ -127,6 +139,38 @@ proc tuckPush*[T](xs: var seq[T], v: T) =
           unsafeAddr v, sizeof(T))
   inc h.len
   copyMem(addr xs, addr h, sizeof(pointer))
+
+proc tuckPush*[T](xs: var seq[T], v: T) {.inline.} =
+  ## `xs` grown by `v`, in place; `v` is stored by its bits. The room check is
+  ## inline, so a push that has room is a compare and a store; growing is the
+  ## out-of-line `tuckPushGrow`.
+  let h = headOf(xs)
+  if h != nil and (h.reserved and flagBits) == 0 and h.len < h.reserved:
+    copyMem(cast[pointer](cast[int](h) + headSize + h.len * sizeof(T)),
+            unsafeAddr v, sizeof(T))
+    inc h.len
+  else:
+    tuckPushGrow(xs, v)
+
+proc tuckReserve*[T](xs: var seq[T], extra: int) =
+  ## Room for `extra` more elements, so the pushes of a counted loop that is
+  ## about to make them find it (append_fill). Nothing to do for `extra <= 0`.
+  if extra <= 0: return
+  let h = headOf(xs)
+  let n = if h == nil: 0 else: h.len
+  let want = n + extra
+  var nh: ptr SeqHead
+  if h != nil and (h.reserved and flagBits) == 0:
+    if h.reserved >= want: return
+    nh = cast[ptr SeqHead](heapGrow(h, csize_t(headSize + want * sizeof(T))))
+  else:
+    nh = cast[ptr SeqHead](heapAlloc(csize_t(headSize + want * sizeof(T))))
+    if n > 0:
+      copyMem(cast[pointer](cast[int](nh) + headSize),
+              cast[pointer](cast[int](h) + headSize), n * sizeof(T))
+    nh.len = n
+  nh.reserved = want
+  copyMem(addr xs, addr nh, sizeof(pointer))
 
 proc tuckStrAppend*(s: var string, t: string) =
   ## `s &= t`, in place, freeing the block a growth left behind.

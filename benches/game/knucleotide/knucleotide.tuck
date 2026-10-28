@@ -1,0 +1,91 @@
+# k-nucleotide (the Benchmarks Game): count the k-mers of a DNA sequence in a
+# hash table. The game reads the sequence from stdin; this one draws it from
+# the fasta program's generator, so the program takes one number. A k-mer is
+# its 2-bit-per-base code, an int. Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import map
+import seq
+import str
+
+const Im = 139968
+const Ia = 3877
+const Ic = 29573
+
+# a, c, g, t as 0..3 by the game's frequencies.
+fn base({r: f64}) -> int:
+  if r < 0.3029549426680:
+    return 0
+  if r < 0.5009432431601:
+    return 1
+  if r < 0.6984905497992:
+    return 2
+  return 3
+
+fn sequence({n: int}) -> Seq[int]:
+  var out: Seq[int] = []
+  var seed = 42
+  for i in 0 ..< n:
+    seed = (seed * Ia + Ic) % Im
+    let r = (seed ~f64) /f (Im ~f64)
+    let b = {r: r} base
+    out = {items: out, value: b} push
+  return out
+
+fn power({base: int, exp: int}) -> int:
+  var r = 1
+  for i in 0 ..< exp:
+    r = r * base
+  return r
+
+# How many times each k-mer occurs.
+fn counts({dna: Seq[int], k: int}) -> Table[int, int]:
+  var t: Table[int, int] = {entries: [], slots: []} Table
+  let modulus = {base: 4, exp: k} power
+  var code = 0
+  for i in 0 ..< dna.len:
+    code = (code * 4 + dna[i]) % modulus
+    if i >= k - 1:
+      let seen = {t: t, key: code} get
+      let prior = if seen.ok: seen.value else: 0
+      t = {t: t, key: code, value: prior + 1} set
+  return t
+
+# A k-mer written as letters, in the same 2-bit code.
+fn encode({word: str}) -> int:
+  var code = 0
+  for i in 0 ..< {t: word} byteCount:
+    let c = {t: word, index: i} byteAt
+    let v = if c == 67: 1 else: if c == 71: 2 else: if c == 84: 3 else: 0
+    code = code * 4 + v
+  return code
+
+fn countOf({dna: Seq[int], word: str}) -> int:
+  let k = {t: word} byteCount
+  let t = {dna: dna, k: k} counts
+  let key = {word: word} encode
+  let seen = {t: t, key: key} get
+  if seen.ok:
+    return seen.value
+  return 0
+
+fn report({dna: Seq[int], word: str}) -> void [io: console]:
+  let c = {dna: dna, word: word} countOf
+  let line = c.toStr + "\t" + word
+  {text: line} printLine
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 1000
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let dna = {n: n} sequence
+  for w in ["A", "C", "G", "T", "AA", "AT", "GG", "GGT", "GGTA", "GGTATT", "GGTATTTTAATT", "GGTATTTTAATTTATAGT"]:
+    {dna: dna, word: w} report
+  return 0

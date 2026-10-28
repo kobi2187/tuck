@@ -115,4 +115,168 @@ fn main() -> int:
   # 2 + 3 + 1 + 1, pinned on all three backends.
   t.hostRuns("a freed parameter is never one the caller still reads", 7)
 
+  # A `let` that is only read is a VIEW of what it reads (#213): no copy where
+  # it is bound, no drop at the end. regex-redux's VM did `let ins = prog[pc]`
+  # on every instruction, a deep copy of a record owning a Seq.
+  t.src """
+type Inst:
+  op: int
+  ranges: Seq[int]
+
+fn weigh({prog: Seq[Inst], at: int}) -> int:
+  let ins = prog[at]
+  return ins.op + ins.ranges.len
+
+fn main() -> int:
+  let prog = [{op: 1, ranges: [1, 2]} Inst, {op: 2, ranges: [3]} Inst]
+  return {prog: prog, at: 1} weigh
+"""
+  t.okCheck "a read-only let of an element checks"
+  t.emits "...is the element's own bits, not a copy",
+          r"tuckˑvˑins = tuckBits\(tuck_rt\.tuckAt\(prog"
+  t.omits "...and nothing frees it", r"tuckDrop\(tuckˑvˑins"
+  t.omitsOdin "...nor does the Odin body", r"delete\(tuckˑvˑins"
+  t.hostRuns("...and it computes the same", 3)
+
+  # The view ends where the source may change: a write to the source while the
+  # binding is still read keeps the copy.
+  t.src """
+type Inst:
+  op: int
+  ranges: Seq[int]
+
+fn old({prog: Seq[Inst]}) -> int:
+  var p = prog
+  let ins = p[0]
+  p[0] = {op: 9, ranges: [7, 7, 7]} Inst
+  return ins.op + ins.ranges.len
+
+fn main() -> int:
+  let prog = [{op: 1, ranges: [1, 2]} Inst]
+  return {prog: prog} old
+"""
+  t.emits "a write to the source while the binding is read keeps the copy",
+          r"tuckˑvˑins = tuckCopy\(tuck_rt\.tuckAt\(tuckˑvˑp"
+  t.hostRuns("...and the binding sees the old value", 3)
+
+  # A source handed to a consuming parameter is gone after the call.
+  t.src """
+type Inst:
+  op: int
+  ranges: Seq[int]
+
+fn keep({p: Seq[Inst]}) -> Seq[Inst]:
+  return p
+
+fn after({prog: Seq[Inst]}) -> int:
+  var p = prog
+  let ins = p[0]
+  let kept = {p: p} keep
+  return ins.op + ins.ranges.len + kept.len
+
+fn main() -> int:
+  let prog = [{op: 1, ranges: [1, 2]} Inst]
+  return {prog: prog} after
+"""
+  t.emits "a source consumed while the binding is read keeps the copy",
+          r"tuckˑvˑins = tuckCopy\("
+  t.hostRuns("...and the binding outlives it", 4)
+
+  # A view that leaves the function is copied at the one place it leaves.
+  t.src """
+type Inst:
+  op: int
+  ranges: Seq[int]
+
+fn first({prog: Seq[Inst]}) -> Inst:
+  let ins = prog[0]
+  return ins
+
+fn main() -> int:
+  let prog = [{op: 4, ranges: [1, 2, 3]} Inst]
+  let got = {prog: prog} first
+  return got.op + got.ranges.len
+"""
+  t.hostRuns("a view that is returned is copied there", 7)
+
+  # A counted loop that pushes once per iteration reserves first (#210), and
+  # its pushes store without asking. The loop below qualifies; the ones after
+  # it each break one condition, and keep the plain push.
+  t.src """
+import seq
+
+fn fill({n: int}) -> Seq[int]:
+  var out: Seq[int] = []
+  for i in 0 ..< n:
+    out = {items: out, value: i * 2} push
+  return out
+
+fn main() -> int:
+  let xs = {n: 5} fill
+  return xs.len + xs[4]
+"""
+  t.emits "a counted loop that pushes reserves its room first",
+          r"tuckReserve\(tuckˑvˑout, \(n - 0\)\)"
+  t.emitsD "...and on D its pushes store without asking",
+           r"rt\.tuckPushFilled\(tuckˑvˑout"
+  t.emitsOdin "...and Odin reserves too",
+              r"rt\.tuckReserve\(&tuckˑvˑout, \(n - 0\)\)"
+  t.hostRuns("...and the filled Seq is what the loop made", 13)
+
+  # An early exit means not every iteration pushes: no reservation.
+  t.src """
+import seq
+
+fn some({n: int}) -> Seq[int]:
+  var out: Seq[int] = []
+  for i in 0 ..< n:
+    if i == 3:
+      break
+    out = {items: out, value: i} push
+  return out
+
+fn main() -> int:
+  let xs = {n: 10} some
+  return xs.len
+"""
+  t.omits "a loop that can leave early reserves nothing", r"tuckReserve"
+  t.hostRuns("...and still pushes only what it pushed", 3)
+
+  # The loop reading what it has built would see a length it has not reached.
+  t.src """
+import seq
+
+fn running({n: int}) -> Seq[int]:
+  var out: Seq[int] = [1]
+  for i in 1 ..< n:
+    out = {items: out, value: out[i - 1] + 1} push
+  return out
+
+fn main() -> int:
+  let xs = {n: 6} running
+  return xs[5]
+"""
+  t.omits "a loop that reads its own Seq reserves nothing", r"tuckReserve"
+  t.hostRuns("...and the reads see the pushes so far", 6)
+
+  # A bound that calls something is evaluated once, by the loop alone.
+  t.src """
+import seq
+
+fn bound({k: int}) -> int:
+  return k + 2
+
+fn calls({k: int}) -> Seq[int]:
+  var out: Seq[int] = []
+  for i in 0 ..< {k: k} bound:
+    out = {items: out, value: i} push
+  return out
+
+fn main() -> int:
+  let xs = {k: 3} calls
+  return xs.len
+"""
+  t.omits "a bound that is a call reserves nothing", r"tuckReserve"
+  t.hostRuns("...and the loop still runs it once", 5)
+
   t.finish()

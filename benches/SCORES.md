@@ -1029,3 +1029,162 @@ was quadratic on every backend. It now reads the answers off the declaration
 it is already visiting. Odin's `genRecordType` also built a throwaway context
 per type, and a context holds its module by value, so each one copied every
 declaration; it is now built only for a type that has an invariant.
+
+## Benchmarks Game (2026-10-27)
+
+`benches/game/run.sh`: the Benchmarks Game programs in idiomatic Tuck, NOT
+tuned; every speed-up goes into the compiler (`benches/game/README.md`).
+Best of 3, release builds, against `gcc -O2` of the same algorithm.
+
+**Release builds, before anything else.** n-body at 5M steps:
+
+| | C | Nim | Odin | D |
+|---|---|---|---|---|
+| first build | 0.53 s | 4.80 s (9x) | 0.59 s | 18.76 s (35x) |
+| Nim `-flto`, D `-inline` | | 0.80 s | | 12.86 s |
+| D `tuckAt` returns `ref T` | | | | 1.25 s |
+
+Two causes, both every program's. Nim emits one C file per module, so with no
+link-time optimisation nothing in tuck_rt (`tuckAt`, its bounds check, `sqrt`)
+could inline into a loop: `--release` now passes `-flto`. dmd inlines nothing
+across modules without `-inline`, and D's `tuckAt` returned the element BY
+VALUE, so every `xs[i].field` read copied the whole element (Nim's returns
+`lent T`); it returns `ref T` now.
+
+**Baseline after those two** (seconds, and the ratio to C):
+
+| program | C | Nim | Odin | D |
+|---|---|---|---|---|
+| binary-trees 16 | 0.373 | 1.648 (4.4x) | 5.154 (13.8x) | 6.191 (16.5x) |
+| fannkuch-redux 10 | 0.251 | 1.999 (7.9x) | 2.711 (10.8x) | 5.297 (21.1x) |
+| n-body 5M | 0.471 | 0.742 (1.5x) | 0.508 (1.0x) | 1.034 (2.1x) |
+| spectral-norm 2000 | 0.230 | 0.631 (2.7x) | 0.279 (1.2x) | 0.482 (2.0x) |
+
+Gaps the programs hit, to fix in the language rather than work around: no
+exponent float literals (`4.84e+00` lexes as `4.84` then a call of `e`), and
+no fixed-precision float format (each program carries a `fixed9`).
+
+**fannkuch-redux: a copy per flip, and calls the C compiler would not inline.**
+
+| fannkuch 10 | Nim | Odin | D |
+|---|---|---|---|
+| baseline | 1.999 (7.9x) | 2.711 (10.8x) | 5.297 (21.1x) |
+| reads lifted ahead of a sink | 1.427 (5.7x) | 1.143 (4.6x) | 1.208 (4.8x) |
+| inline accessors, block copy | 0.854 (3.5x) | 1.145 (4.7x) | 1.094 (4.5x) |
+
+`p = {p: p, k: p[0]} flipped` copied the whole Seq every flip: `p[0]` is read
+after the argument `p` (rule E, left to right), so the sink was not p's final
+use. The ownership pass now binds such a read, a plain value with no effect,
+to a temporary ahead of the statement, and the sink moves
+(`ownership_write.liftReadsBeforeSink`). Every `x = f(x, x.field)` gets it.
+
+Then the profile: 40% of the Nim run was calls to `tuckAt`/`tuckSetAt` that
+did not inline even under LTO, because the bounds check built its error
+message in line. The message moved to a cold `{.noinline.}` proc and the
+accessors are `{.inline.}`. And `tuckCopy` of a Seq of plain values is one
+`copyMem` rather than Nim's element-by-element `genericAssign`.
+
+**Next.** binary-trees: a recursive edge is a one-element `[dynamic]`, and
+Odin's drop and copy walk every value through runtime type info, re-walking
+the element TYPE (`tuckHasHeap`) for every element.
+
+**binary-trees, the slab way** (`benches/game/slabtrees`). A tree that is a
+structure of cells, not a value, lives in a slab in Tuck: `slab Nodes = Node`,
+linked by `NodesRef?`, freed per cell, as the C reference does.
+
+| binary-trees 16 | Nim | Odin | D |
+|---|---|---|---|
+| recursive sum type (`binarytrees`) | 3.4x | 10.5x | 12.7x |
+| slab of nodes (`slabtrees`) | 2.4x | 3.7x | 2.9x |
+
+Both stay: the slab is how fast a Tuck tree is; the sum type is what a VALUE
+tree costs, whose one-element Seq per edge is #205.
+
+**mandelbrot** (`benches/game/mandelbrot`, 8000, prints the count inside rather
+than a PBM bitmap): C 3.48s, Nim 1.0x, Odin 1.0x, D 2.5x. The emitted D is the
+same loop as the C one (`foreach` over a range, scalar doubles, no calls
+left); the gap is dmd's floating-point codegen, which is #208's ldc2 question.
+
+**fasta** (`benches/game/fasta`, 2.5M): C 0.34s, Nim 1.5x, Odin 1.4x, D 3.6x. Output is
+byte-identical to C on all three. Each line is a fresh `Seq[u8]` pushed one
+byte at a time, then `fromBytes`; D's share is the GC-allocated line per 60
+letters (#208), and the push-then-convert shape is what #210 (reserve) targets.
+
+**k-nucleotide** (`benches/game/knucleotide`, 1M letters; the sequence comes from
+fasta's generator instead of stdin; k-mers are 2-bit codes in `Table[int, int]`):
+C 0.22s, Nim 3.1x, Odin 2.2x, D 2.8x, output identical.
+
+Two things came out of it, both in the compiler or stdlib, neither in the program:
+- `alloc/map`'s Table scanned every entry (#204). It is now an open-addressing
+  index over dense, insertion-ordered entries, on a `hashKey[T]` primitive (a str
+  by FNV-1a, an integer/bool/enum by a splitmix64 finalizer), identical on every
+  backend.
+- The first Odin and D run took 38s and 27s at 20000 letters against 0.2s on
+  Nim: `table = {t: table, ..} set` copied the whole table, because the pass that
+  picks the moved twin found a callee with `m.findFn(name)`, which sees only the
+  current module (A102, the third pass to learn only some spellings after A100
+  and A101). It asks `calleeDecl` now.
+
+**reverse-complement** (`benches/game/revcomp`, 20M letters, generated; prints the
+complemented, reversed sequence in lines of 60): C 0.16s, Nim 4.5x, Odin 2.7x,
+D 16.8x, output identical. Linear on every backend (D: 0.97s at 8M, 2.6s at
+20M). The program is three loops that each push one byte per iteration (build,
+complement, split into lines), so the cost is the per-element push: on D it is a
+druntime `~=` call plus a pointer compare per byte (`tuckPush`). Both #210
+(reserve when the length is known: here `n`, `dna.len` and `Width`) and a
+cheaper D push are aimed at it; neither is done yet.
+
+**pidigits** (`benches/game/pidigits`, 3000 digits; a base-10^9 limb bignum of our
+own, `bignat.tuck`, because the stdlib has none and the C reference could not use
+GMP here either - there is no gmp.h on the machine, so C runs the same limb
+algorithm): C 1.19s, Nim 3.6x, Odin 1.6x, D 15.5x, digits identical. Every
+operation builds a fresh Seq limb by limb with `push`, so D's gap is again the
+per-element `~=` call (reverse-complement shows the same 15-17x). The Tuck
+program is the unbounded spigot as written in the game; its accumulator goes
+negative after a digit, which is why `bignat` has a signed `Big` beside the
+natural numbers.
+
+**regex-redux** (`benches/game/regexredux`, 400000 letters, generated; counts nine
+variant patterns and makes five substitutions through std.regex; C reference is
+glibc's POSIX `regexec`): C 0.13s, Nim 25.9x, Odin 34x, D 71x. Counts and lengths
+are identical on all three. Callgrind on Nim: 45% is `genericAssign`, memcpy and
+malloc/free. The VM's loop does `let ins = re.prog[pc]` and `let t =
+threads[sp]` on every step; each binding is a DEEP COPY of a record that owns a
+Seq (`Inst.ranges`, `Thread.caps`), plus a `defer` that frees it. The binding is
+only ever read. Filed as a performance idea: a `let` of an element that is only
+read should borrow, not copy.
+
+## Benchmarks Game, after the view-binding and counted-fill passes (2026-10-28)
+
+All eleven programs, output identical to C on every backend. The machine was ~1.5x
+slower than during the first round (C binary-trees 0.40s against 0.25s), so compare
+ratios, not seconds; an A/B of the compiler before and after (binary-trees, Nim:
+1.67s and 1.65s, same minute) shows the compiler did not slow it.
+
+| program | Nim | Odin | D |
+|---|---|---|---|
+| n-body | 1.6x | 1.2x | 2.3x |
+| spectral-norm | 2.3x | 1.2x | 2.0x |
+| mandelbrot | 0.9x | 1.0x | 1.8x |
+| fannkuch-redux | 2.9x | 4.3x | 4.0x |
+| binary-trees, sum type | 4.0x | 12.0x | 14.6x |
+| binary-trees, slab | 1.9x | 4.7x | 2.4x |
+| fasta | 1.1x | 1.4x | 1.6x |
+| k-nucleotide | 2.9x | 2.7x | 3.4x |
+| reverse-complement | 2.6x | 2.2x | 6.4x |
+| pidigits | 2.4x | 1.4x | 9.8x |
+| regex-redux | 11.1x | 19.3x | 51.4x |
+
+Two compiler changes did it, neither touching a program (one program, reverse-
+complement, now spells two counting loops as ranges):
+
+- **A `let` that only reads is a view (#213).** `let ins = prog[pc]` no longer deep-
+  copies a record that owns a Seq and frees the copy. regex-redux Nim 25.9x -> 11.1x,
+  Odin 34x -> 19.3x, D 71x -> 51.4x; callgrind on Nim 558M -> 255M instructions.
+- **A counted loop that pushes reserves once (#210).** reverse-complement Nim 4.5x ->
+  2.6x, D 16.8x -> 6.4x; fasta D 3.6x -> 1.6x; pidigits D 15.5x -> 9.8x. Nim's
+  `tuckPush` is inline for the common case, and growing is out of line.
+
+What is left, by size: regex-redux (the engine allocates a captures Seq per thread),
+the sum-type binary-trees (#205, #206), pidigits and reverse-complement on D (pushes
+in loops that are not counted `for` ranges), fannkuch (#207).

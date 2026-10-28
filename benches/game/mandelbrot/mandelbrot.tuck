@@ -1,0 +1,47 @@
+# mandelbrot (the Benchmarks Game): which points of the square [-1.5,0.5] x
+# [-1,1] stay bounded for 50 iterations of z = z*z + c. The game writes a PBM
+# bitmap; this prints the count of points inside, so the output is one line
+# to compare. Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+const Limit = 50
+
+# Does c stay bounded for Limit iterations?
+fn inside({cr: f64, ci: f64}) -> bool:
+  var zr = 0.0
+  var zi = 0.0
+  for k in 0 ..< Limit:
+    let nr = zr * zr - zi * zi + cr
+    zi = 2.0 * zr * zi + ci
+    zr = nr
+    if zr * zr + zi * zi > 4.0:
+      return false
+  return true
+
+fn countInside({n: int}) -> int:
+  var count = 0
+  for y in 0 ..< n:
+    for x in 0 ..< n:
+      let cr = 2.0 * (x ~f64) /f (n ~f64) - 1.5
+      let ci = 2.0 * (y ~f64) /f (n ~f64) - 1.0
+      if {cr: cr, ci: ci} inside:
+        count += 1
+  return count
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 200
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let c = {n: n} countInside
+  {text: c.toStr} printLine
+  return 0

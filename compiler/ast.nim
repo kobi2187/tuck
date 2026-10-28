@@ -638,6 +638,9 @@ type
     of exkFor:
       iter*: Pattern
       iterable*, body*: Expr
+      fillTargets*: seq[Expr]  # prepared only (append_fill): the Seqs this
+                               # counted loop pushes to once per iteration;
+                               # each backend reserves them before the loop
     of exkWhile:
       whileCond*: Expr        # nil = infinite loop (`loop:`)
       whileBody*: Expr
@@ -653,6 +656,10 @@ type
       dropsOldDeep*: bool  # and that drop walks the old value (rule G), as
                            # an `exkDrop`'s `dropDeep` does
       isMutable*: bool  # true only for `var`
+      viewBinding*: bool  # prepared only (ownership_views): a `let` that is a
+                          # VIEW of the place it reads — no copy at the
+                          # binding, no drop at its scope's end; a sink of it
+                          # copies, as of any place the body does not own
       inChain*: bool    # a step of a lowered `..` chain: NOT re-validated on
                         # its own — the chain validates once, at its end
                         # (exkValidate), as it always has
@@ -710,6 +717,9 @@ type
                                    # READ of it the source wrote, so its stamps
                                    # (final use, owner field) stay attached
       appendValue*: Expr           # what is added at the end
+      appendFilled*: bool          # prepared only (append_fill): room for this
+                                   # push was reserved before its loop, so it
+                                   # may store without asking
       appendFreesOld*: bool        # a str grown in a place the body owns
                                    # (ownership_write): the old bytes are
                                    # its, and freed where a backend frees

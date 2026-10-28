@@ -73,6 +73,7 @@ import lowering_combinator
 import twin_calls
 import call_args
 import ownership_nodes
+import append_fill
 import ownership_check
 import ownership_write
 import ownership_rules
@@ -183,6 +184,7 @@ proc prepareCommon(prog: seq[LoadedModule], semLayer: Resolution): BackendTree =
     # statements they replace; an emitter then prints the node instead of
     # re-deciding from a predicate.
     materializeAppends(semLayer, lm.m)
+    markFills(semLayer, lm.m)                  # a counted loop that pushes (#210)
     dumpParams(semLayer, lm.m)                 # TUCK_DEBUG_OWN=params (P)
     dumpDrops(semLayer, lm.m)                  # TUCK_DEBUG_OWN=drops (D, M)
     writeRules(semLayer, lm.m)                 # copies, drops, resets (S-M)

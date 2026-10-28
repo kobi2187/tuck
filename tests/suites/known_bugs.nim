@@ -5008,4 +5008,52 @@ fn shout({s: str}) -> int [io: console]:
   t.quietly: t.badCheck "A101: a qualified call carries its callee's effects", "TK-EF01"
   t.bugFixed "A101: a qualified call carries its callee's effects"
 
+  # A102. A MOVED TWIN WAS NEVER CALLED ACROSS A MODULE. Odin and D emit a
+  # container-threading fn twice, `f` (copies its argument) and `f_moved`
+  # (consumes it), and `x = f(x, ..)` calls the twin. The pass that decides
+  # that found the callee with `m.findFn(name)`, which searches the CURRENT
+  # module only, so an imported fn was never seen as threading anything: every
+  # `table = {t: table, ..} set` copied the whole table. A hashed Table's
+  # k-nucleotide took 38s on Odin where the same program took 0.2s on Nim.
+  # It asks `calleeDecl` now, the one answer every other pass uses.
+  t.src """
+import lib
+
+fn main() -> int:
+  var xs: Seq[int] = []
+  for i in 0 ..< 4:
+    xs = {bag: xs, x: i} add
+  return xs.len
+"""
+  t.addFile "lib.tuck", """
+fn add({bag: Seq[int], x: int}) -> Seq[int]:
+  var out = bag
+  out[0] = x
+  return out
+"""
+  t.quietly: t.emitsOdin "A102: an imported threading fn is called through its twin",
+                         r"tuckˑmodˑlib\.tuckˑfnˑadd_moved\("
+  t.bugFixed "A102: an imported threading fn is called through its twin"
+
+  # ...and the same fn spelled `lib::add` took the copying wrapper too: the
+  # twin decision required a bare callee name.
+  t.src """
+import lib
+
+fn main() -> int:
+  var xs: Seq[int] = [1]
+  for i in 0 ..< 4:
+    xs = {bag: xs, x: i} lib::add
+  return xs.len
+"""
+  t.addFile "lib.tuck", """
+fn add({bag: Seq[int], x: int}) -> Seq[int]:
+  var out = bag
+  out[0] = x
+  return out
+"""
+  t.quietly: t.emitsOdin "A102: a qualified threading call takes the twin too",
+                         r"tuckˑmodˑlib\.tuckˑfnˑadd_moved\("
+  t.bugFixed "A102: a qualified threading call takes the twin too"
+
   t.finish()
