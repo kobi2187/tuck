@@ -1124,3 +1124,12 @@ Two things came out of it, both in the compiler or stdlib, neither in the progra
   picks the moved twin found a callee with `m.findFn(name)`, which sees only the
   current module (A102, the third pass to learn only some spellings after A100
   and A101). It asks `calleeDecl` now.
+
+**reverse-complement** (`benches/game/revcomp`, 20M letters, generated; prints the
+complemented, reversed sequence in lines of 60): C 0.16s, Nim 4.5x, Odin 2.7x,
+D 16.8x, output identical. Linear on every backend (D: 0.97s at 8M, 2.6s at
+20M). The program is three loops that each push one byte per iteration (build,
+complement, split into lines), so the cost is the per-element push: on D it is a
+druntime `~=` call plus a pointer compare per byte (`tuckPush`). Both #210
+(reserve when the length is known: here `n`, `dna.len` and `Width`) and a
+cheaper D push are aimed at it; neither is done yet.
