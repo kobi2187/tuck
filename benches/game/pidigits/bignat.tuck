@@ -1,0 +1,85 @@
+# bignat — natural numbers of any size: a Seq of base-10^9 limbs, least
+# significant first, no leading zero limb (zero is the empty Seq). The stdlib
+# has no big integer yet, and the Benchmarks Game's pidigits needs one; this
+# holds exactly what that program uses. Every verb returns the new number.
+import seq
+
+const Base = 1000000000
+
+fn natFromInt({n: int}) -> Seq[int]:
+  var out: Seq[int] = []
+  if n > 0:
+    out = {items: out, value: n} push
+  return out
+
+# a * m, for 0 <= m < Base (so every carry stays inside an i64).
+fn natMulSmall({a: Seq[int], m: int}) -> Seq[int]:
+  var out: Seq[int] = []
+  if m == 0:
+    return out
+  var carry = 0
+  for i in 0 ..< a.len:
+    let x = a[i] * m + carry
+    out = {items: out, value: x % Base} push
+    carry = x /i Base
+  if carry > 0:
+    out = {items: out, value: carry} push
+  return out
+
+fn natAdd({a: Seq[int], b: Seq[int]}) -> Seq[int]:
+  var out: Seq[int] = []
+  var carry = 0
+  let n = if a.len > b.len: a.len else: b.len
+  for i in 0 ..< n:
+    var x = carry
+    if i < a.len:
+      x = x + a[i]
+    if i < b.len:
+      x = x + b[i]
+    out = {items: out, value: x % Base} push
+    carry = x /i Base
+  if carry > 0:
+    out = {items: out, value: carry} push
+  return out
+
+# a - b, requires a >= b.
+fn natSub({a: Seq[int], b: Seq[int]}) -> Seq[int]:
+  var out: Seq[int] = []
+  var borrow = 0
+  for i in 0 ..< a.len:
+    var x = a[i] - borrow
+    if i < b.len:
+      x = x - b[i]
+    borrow = 0
+    if x < 0:
+      x = x + Base
+      borrow = 1
+    out = {items: out, value: x} push
+  var n = out.len
+  for n > 0 and out[n - 1] == 0:
+    n = n - 1
+  var trimmed: Seq[int] = []
+  for i in 0 ..< n:
+    trimmed = {items: trimmed, value: out[i]} push
+  return trimmed
+
+# -1, 0 or 1.
+fn natCmp({a: Seq[int], b: Seq[int]}) -> int:
+  if a.len != b.len:
+    return if a.len < b.len: 0 - 1 else: 1
+  var i = a.len - 1
+  for i >= 0:
+    if a[i] != b[i]:
+      return if a[i] < b[i]: 0 - 1 else: 1
+    i = i - 1
+  return 0
+
+# floor(a / b) when the quotient is small (it is a decimal digit here), by
+# subtracting b until it no longer fits.
+fn natQuotient({a: Seq[int], b: Seq[int]}) -> int:
+  var rest = a
+  var q = 0
+  for {a: rest, b: b} natCmp >= 0:
+    rest = {a: rest, b: b} natSub
+    q = q + 1
+  return q
