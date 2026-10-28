@@ -39,7 +39,7 @@
 import tables, sets, strutils
 import ast, ast_ops, ast_query
 import resolution
-import ownership_rules, ownership_elab, ownership_nodes
+import ownership_rules, ownership_elab, ownership_nodes, ownership_views
 from twin_calls import markBuilt
 from ssa_ir import rootOf
 
@@ -131,7 +131,7 @@ proc walkAssign(w: var Writer, n: Expr) =
   ## The value is a sink (copied where it is bound); the take is noticed.
   let outer = w.refills
   w.refills = if n.target != nil: pathOf(n.target) else: ""
-  w.visit(n.assignVal, uSink, NoArg)
+  w.visit(n.assignVal, if n.viewBinding: uBorrow else: uSink, NoArg)
   w.refills = outer
 
 proc walk(w: var Writer, e: Expr, use: Use, arg: ArgOf) =
@@ -571,6 +571,7 @@ proc writeRules*(res: Resolution, m: Module) =
     for p in d.fnParams:
       if res.owning(m, p.typ) and res.consumes(m, d, p.name, w.memo):
         d.ownedParams.add p.name
+    res.markViews(m, d, w.memo)
     w.liftAll(d)
     w.writeCopies(d)
     sources[d.id] = w.rulesDrops(d)

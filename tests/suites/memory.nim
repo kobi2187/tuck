@@ -115,4 +115,88 @@ fn main() -> int:
   # 2 + 3 + 1 + 1, pinned on all three backends.
   t.hostRuns("a freed parameter is never one the caller still reads", 7)
 
+  # A `let` that is only read is a VIEW of what it reads (#213): no copy where
+  # it is bound, no drop at the end. regex-redux's VM did `let ins = prog[pc]`
+  # on every instruction, a deep copy of a record owning a Seq.
+  t.src """
+type Inst:
+  op: int
+  ranges: Seq[int]
+
+fn weigh({prog: Seq[Inst], at: int}) -> int:
+  let ins = prog[at]
+  return ins.op + ins.ranges.len
+
+fn main() -> int:
+  let prog = [{op: 1, ranges: [1, 2]} Inst, {op: 2, ranges: [3]} Inst]
+  return {prog: prog, at: 1} weigh
+"""
+  t.okCheck "a read-only let of an element checks"
+  t.emits "...is the element's own bits, not a copy",
+          r"tuckˑvˑins = tuckBits\(tuck_rt\.tuckAt\(prog"
+  t.omits "...and nothing frees it", r"tuckDrop\(tuckˑvˑins"
+  t.omitsOdin "...nor does the Odin body", r"delete\(tuckˑvˑins"
+  t.hostRuns("...and it computes the same", 3)
+
+  # The view ends where the source may change: a write to the source while the
+  # binding is still read keeps the copy.
+  t.src """
+type Inst:
+  op: int
+  ranges: Seq[int]
+
+fn old({prog: Seq[Inst]}) -> int:
+  var p = prog
+  let ins = p[0]
+  p[0] = {op: 9, ranges: [7, 7, 7]} Inst
+  return ins.op + ins.ranges.len
+
+fn main() -> int:
+  let prog = [{op: 1, ranges: [1, 2]} Inst]
+  return {prog: prog} old
+"""
+  t.emits "a write to the source while the binding is read keeps the copy",
+          r"tuckˑvˑins = tuckCopy\(tuck_rt\.tuckAt\(tuckˑvˑp"
+  t.hostRuns("...and the binding sees the old value", 3)
+
+  # A source handed to a consuming parameter is gone after the call.
+  t.src """
+type Inst:
+  op: int
+  ranges: Seq[int]
+
+fn keep({p: Seq[Inst]}) -> Seq[Inst]:
+  return p
+
+fn after({prog: Seq[Inst]}) -> int:
+  var p = prog
+  let ins = p[0]
+  let kept = {p: p} keep
+  return ins.op + ins.ranges.len + kept.len
+
+fn main() -> int:
+  let prog = [{op: 1, ranges: [1, 2]} Inst]
+  return {prog: prog} after
+"""
+  t.emits "a source consumed while the binding is read keeps the copy",
+          r"tuckˑvˑins = tuckCopy\("
+  t.hostRuns("...and the binding outlives it", 4)
+
+  # A view that leaves the function is copied at the one place it leaves.
+  t.src """
+type Inst:
+  op: int
+  ranges: Seq[int]
+
+fn first({prog: Seq[Inst]}) -> Inst:
+  let ins = prog[0]
+  return ins
+
+fn main() -> int:
+  let prog = [{op: 4, ranges: [1, 2, 3]} Inst]
+  let got = {prog: prog} first
+  return got.op + got.ranges.len
+"""
+  t.hostRuns("a view that is returned is copied there", 7)
+
   t.finish()

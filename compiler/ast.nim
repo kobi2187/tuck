@@ -653,6 +653,10 @@ type
       dropsOldDeep*: bool  # and that drop walks the old value (rule G), as
                            # an `exkDrop`'s `dropDeep` does
       isMutable*: bool  # true only for `var`
+      viewBinding*: bool  # prepared only (ownership_views): a `let` that is a
+                          # VIEW of the place it reads — no copy at the
+                          # binding, no drop at its scope's end; a sink of it
+                          # copies, as of any place the body does not own
       inChain*: bool    # a step of a lowered `..` chain: NOT re-validated on
                         # its own — the chain validates once, at its end
                         # (exkValidate), as it always has

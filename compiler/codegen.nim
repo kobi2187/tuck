@@ -1120,7 +1120,10 @@ proc genExprAssign(ctx: var CodegenCtx, e: Expr): string =
   let taskResult = ctx.genTaskAssignment(e)
   if taskResult != "": return taskResult
   let targetStr = ctx.genAssignTarget(e.target)
-  let valStr = ctx.genExpr(e.assignVal)
+  var valStr = ctx.genExpr(e.assignVal)
+  # A view (ownership_views) is the place's own bits, which Nim's assignment
+  # would deep-copy: it owns nothing, and nothing drops it.
+  if e.viewBinding: valStr = "tuckBits(" & valStr & ")"
   if e.target.kind == exkVar:
     let declResult = ctx.genVarDeclaration(e, targetStr, valStr)
     if declResult != "": return declResult

@@ -413,6 +413,9 @@ proc overwriteField(w: var DropWalk, n: Expr, path: string) =
 proc walkAssign(w: var DropWalk, n: Expr) =
   ## The value is evaluated (and may move things), then the place is
   ## defined: a new owned place, or an owned place losing its old value.
+  if n.viewBinding:
+    w.walkExpr(n.assignVal, uBorrow)   # looked at, not taken; owns nothing
+    return
   w.walkExpr(n.assignVal, uSink)
   let t = n.target
   if t == nil or w.res.isOwnerField(t): return
@@ -636,6 +639,11 @@ proc patternNames(p: Pattern, names: var seq[string]) =
   of pkTypeTest: names.add p.bindAs
   of pkWild, pkLit: discard
 
+proc bindLocal(ps: var Places, n: Expr) =
+  ## A local the body binds is a place; it owns it unless it is a view.
+  ps.all.incl n.target.name
+  if not n.viewBinding: ps.owned.incl n.target.name
+
 proc placesOf*(res: Resolution, m: Module, d: Decl,
               memo: var ConsumeMemo): Places =
   ## Every parameter and every local a body binds; it owns the locals and
@@ -648,8 +656,7 @@ proc placesOf*(res: Resolution, m: Module, d: Decl,
   for n in d.fnBody.nodes:
     if n.kind == exkAssign and n.target != nil and n.target.kind == exkVar and
        not res.isOwnerField(n.target):
-      result.all.incl n.target.name
-      result.owned.incl n.target.name
+      result.bindLocal(n)
   # What a `for` or a `match` binds is a VIEW of what it walks: a place, but
   # not the body's own, so a sink of it copies and nothing drops it.
   var bound: seq[string]
