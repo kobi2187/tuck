@@ -12,21 +12,23 @@ import str
 type Spigot:
   numer: Seq[int]
   denom: Seq[int]
-  accum: Seq[int]
+  accum: Big
   k: int
 
 fn start() -> Spigot:
   let one = {n: 1} natFromInt
   let zero = {n: 0} natFromInt
-  return {numer: one, denom: one, accum: zero, k: 0} Spigot
+  let accum = {n: zero} bigFromNat
+  return {numer: one, denom: one, accum: accum, k: 0} Spigot
 
 # Fold the next term of the series in.
 fn nextTerm({s: Spigot}) -> Spigot:
   let k = s.k + 1
   let y2 = k * 2 + 1
   let doubled = {a: s.numer, m: 2} natMulSmall
-  let sum = {a: s.accum, b: doubled} natAdd
-  let accum = {a: sum, m: y2} natMulSmall
+  let twice = {n: doubled} bigFromNat
+  let sum = {a: s.accum, b: twice} bigAdd
+  let accum = {a: sum, m: y2} bigMulSmall
   let numer = {a: s.numer, m: k} natMulSmall
   let denom = {a: s.denom, m: y2} natMulSmall
   return {numer: numer, denom: denom, accum: accum, k: k} Spigot
@@ -34,14 +36,16 @@ fn nextTerm({s: Spigot}) -> Spigot:
 # floor((numer * nth + accum) / denom)
 fn extract({s: Spigot, nth: int}) -> int:
   let scaled = {a: s.numer, m: nth} natMulSmall
-  let total = {a: scaled, b: s.accum} natAdd
+  let total = {a: scaled, b: s.accum.mag} natAdd
   return {a: total, b: s.denom} natQuotient
 
 # Remove digit d from the front of the remaining expansion.
 fn eliminate({s: Spigot, d: int}) -> Spigot:
   let taken = {a: s.denom, m: d} natMulSmall
-  let rest = {a: s.accum, b: taken} natSub
-  let accum = {a: rest, m: 10} natMulSmall
+  let owed = {n: taken} bigFromNat
+  let less = {a: owed} bigNeg
+  let rest = {a: s.accum, b: less} bigAdd
+  let accum = {a: rest, m: 10} bigMulSmall
   let numer = {a: s.numer, m: 10} natMulSmall
   return {numer: numer, denom: s.denom, accum: accum, k: s.k} Spigot
 
@@ -57,7 +61,7 @@ fn digitsOf({n: int}) -> void [io: console]:
   var shown = 0
   for shown < n:
     s = {s: s} nextTerm
-    if {a: s.numer, b: s.accum} natCmp <= 0:
+    if not s.accum.neg and {a: s.numer, b: s.accum.mag} natCmp <= 0:
       let d = {s: s, nth: 3} extract
       let e = {s: s, nth: 4} extract
       if d == e:

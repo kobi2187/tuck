@@ -83,3 +83,33 @@ fn natQuotient({a: Seq[int], b: Seq[int]}) -> int:
     rest = {a: rest, b: b} natSub
     q = q + 1
   return q
+
+# A signed number: pidigits' accumulator dips below zero after a digit comes
+# out. Zero is never negative.
+type Big:
+  neg: bool
+  mag: Seq[int]
+
+fn bigFromNat({n: Seq[int]}) -> Big:
+  return {neg: false, mag: n} Big
+
+fn bigAdd({a: Big, b: Big}) -> Big:
+  if a.neg == b.neg:
+    let sum = {a: a.mag, b: b.mag} natAdd
+    return {neg: a.neg, mag: sum} Big
+  let c = {a: a.mag, b: b.mag} natCmp
+  if c == 0:
+    let zero: Seq[int] = []
+    return {neg: false, mag: zero} Big
+  if c > 0:
+    let diff = {a: a.mag, b: b.mag} natSub
+    return {neg: a.neg, mag: diff} Big
+  let diff = {a: b.mag, b: a.mag} natSub
+  return {neg: b.neg, mag: diff} Big
+
+fn bigNeg({a: Big}) -> Big:
+  return {neg: not a.neg and a.mag.len > 0, mag: a.mag} Big
+
+fn bigMulSmall({a: Big, m: int}) -> Big:
+  let mag = {a: a.mag, m: m} natMulSmall
+  return {neg: a.neg and mag.len > 0, mag: mag} Big
