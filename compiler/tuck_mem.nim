@@ -21,6 +21,16 @@ import std/typetraits
 # A seq and a string are one pointer to a block that begins with two words,
 # the length and the capacity; `tuckPush` and `tuckStrAppend` know that
 # layout (Nim 2.2.4, pinned in CI), `static` below checks the part they rely on.
+# Nim's own `copyMem`/`zeroMem` are calls into its system module (`nimCopyMem`,
+# `nimSetMem`, and `__memcpy_chk` under fortification) that the C compiler does
+# not inline, so moving a one-word seq was a call: 789k of them were 14% of
+# fannkuch's instructions. Named straight at libc, a copy of a size the compiler
+# can see is a move.
+proc cMemcpy(dest, src: pointer, n: csize_t) {.importc: "memcpy", header: "<string.h>".}
+proc cMemset(dest: pointer, c: cint, n: csize_t) {.importc: "memset", header: "<string.h>".}
+template fastCopy(dest, src: pointer, n: untyped) = cMemcpy(dest, src, csize_t(n))
+template fastZero(dest: pointer, n: untyped) = cMemset(dest, 0, csize_t(n))
+
 proc heapAlloc(n: csize_t): pointer {.importc: "malloc", header: "<stdlib.h>".}
 proc heapGrow(p: pointer, n: csize_t): pointer {.importc: "realloc", header: "<stdlib.h>".}
 proc heapFree(p: pointer) {.importc: "free", header: "<stdlib.h>".}
@@ -52,7 +62,7 @@ proc dropBlock[T](x: var T) =
   ## literal, a shallow seq), and `x` left empty.
   let h = headOf(x)
   if h != nil and (h.reserved and flagBits) == 0: heapFree(h)
-  zeroMem(addr x, sizeof(T))
+  fastZero(addr x, sizeof(T))
 
 proc dropSeq[T](x: var seq[T]) =
   ## Each element first when it owns storage, then the block.
@@ -86,7 +96,7 @@ proc tuckCopy*[T](x: T): T {.inline.} =
     when supportsCopyMem(typeof(x[0])):
       result = newSeqUninit[typeof(x[0])](x.len)
       if x.len > 0:
-        copyMem(addr result[0], unsafeAddr x[0], x.len * sizeof(x[0]))
+        fastCopy(addr result[0], unsafeAddr x[0], x.len * sizeof(x[0]))
     else:
       result = x
   else:
@@ -95,27 +105,27 @@ proc tuckCopy*[T](x: T): T {.inline.} =
 proc tuckBits*[T](x: T): T {.inline.} =
   ## `x`'s bits as a value of its own: a parameter the body owns, adopted
   ## (`var x = tuckBits(x)`). The caller's storage is now this one's.
-  copyMem(addr result, unsafeAddr x, sizeof(T))
+  fastCopy(addr result, unsafeAddr x, sizeof(T))
 
 proc tuckStore*[T](dst: var T, src: T) {.inline.} =
   ## `dst = src` by bits. `src` is built here or moved in; the assignment
   ## Nim would write copies it again, and loses the original.
-  copyMem(addr dst, unsafeAddr src, sizeof(T))
+  fastCopy(addr dst, unsafeAddr src, sizeof(T))
 
 proc tuckReplace*[T](dst: var T, src: T) {.inline.} =
   ## An overwrite that drops the old value (rule D). `src` is already built.
   mixin tuckDrop
   tuckDrop(dst)
-  copyMem(addr dst, unsafeAddr src, sizeof(T))
+  fastCopy(addr dst, unsafeAddr src, sizeof(T))
 
 proc tuckReset*[T](x: var T) {.inline.} =
   ## Empty a place whose value moved away, so its drop frees nothing.
-  zeroMem(addr x, sizeof(T))
+  fastZero(addr x, sizeof(T))
 
 proc tuckMove*[T](x: var T): T {.inline.} =
   ## The value in `x` (its final read), and `x` emptied.
-  copyMem(addr result, addr x, sizeof(T))
-  zeroMem(addr x, sizeof(T))
+  fastCopy(addr result, addr x, sizeof(T))
+  fastZero(addr x, sizeof(T))
 
 proc tuckPushGrow[T](xs: var seq[T], v: T) {.noinline.} =
   ## The slow half of `tuckPush`: a block that is not the seq's own, or has no
@@ -126,7 +136,7 @@ proc tuckPushGrow[T](xs: var seq[T], v: T) {.noinline.} =
     let cap = max(4, n + n div 2 + 1)
     let nh = cast[ptr SeqHead](heapAlloc(csize_t(headSize + cap * sizeof(T))))
     if n > 0:
-      copyMem(cast[pointer](cast[int](nh) + headSize),
+      fastCopy(cast[pointer](cast[int](nh) + headSize),
               cast[pointer](cast[int](h) + headSize), n * sizeof(T))
     nh.len = n
     nh.reserved = cap
@@ -135,10 +145,10 @@ proc tuckPushGrow[T](xs: var seq[T], v: T) {.noinline.} =
     let cap = max(4, h.reserved * 2)
     h = cast[ptr SeqHead](heapGrow(h, csize_t(headSize + cap * sizeof(T))))
     h.reserved = cap
-  copyMem(cast[pointer](cast[int](h) + headSize + h.len * sizeof(T)),
+  fastCopy(cast[pointer](cast[int](h) + headSize + h.len * sizeof(T)),
           unsafeAddr v, sizeof(T))
   inc h.len
-  copyMem(addr xs, addr h, sizeof(pointer))
+  fastCopy(addr xs, addr h, sizeof(pointer))
 
 proc tuckPush*[T](xs: var seq[T], v: T) {.inline.} =
   ## `xs` grown by `v`, in place; `v` is stored by its bits. The room check is
@@ -146,7 +156,7 @@ proc tuckPush*[T](xs: var seq[T], v: T) {.inline.} =
   ## out-of-line `tuckPushGrow`.
   let h = headOf(xs)
   if h != nil and (h.reserved and flagBits) == 0 and h.len < h.reserved:
-    copyMem(cast[pointer](cast[int](h) + headSize + h.len * sizeof(T)),
+    fastCopy(cast[pointer](cast[int](h) + headSize + h.len * sizeof(T)),
             unsafeAddr v, sizeof(T))
     inc h.len
   else:
@@ -166,11 +176,11 @@ proc tuckReserve*[T](xs: var seq[T], extra: int) =
   else:
     nh = cast[ptr SeqHead](heapAlloc(csize_t(headSize + want * sizeof(T))))
     if n > 0:
-      copyMem(cast[pointer](cast[int](nh) + headSize),
+      fastCopy(cast[pointer](cast[int](nh) + headSize),
               cast[pointer](cast[int](h) + headSize), n * sizeof(T))
     nh.len = n
   nh.reserved = want
-  copyMem(addr xs, addr nh, sizeof(pointer))
+  fastCopy(addr xs, addr nh, sizeof(pointer))
 
 proc tuckStrAppend*(s: var string, t: string) =
   ## `s &= t`, in place, freeing the block a growth left behind.
@@ -184,7 +194,7 @@ proc tuckStrAppend*(s: var string, t: string) =
     let cap = max(16, (n + m) * 2)
     let nh = cast[ptr SeqHead](heapAlloc(csize_t(headSize + cap + 1)))
     if n > 0:
-      copyMem(cast[pointer](cast[int](nh) + headSize),
+      fastCopy(cast[pointer](cast[int](nh) + headSize),
               cast[pointer](cast[int](h) + headSize), n)
     nh.reserved = cap
     h = nh
@@ -193,11 +203,11 @@ proc tuckStrAppend*(s: var string, t: string) =
     h = cast[ptr SeqHead](heapGrow(h, csize_t(headSize + cap + 1)))
     h.reserved = cap
   let src = if aliased: h else: th
-  copyMem(cast[pointer](cast[int](h) + headSize + n),
+  fastCopy(cast[pointer](cast[int](h) + headSize + n),
           cast[pointer](cast[int](src) + headSize), m)
   h.len = n + m
   cast[ptr char](cast[int](h) + headSize + n + m)[] = '\0'
-  copyMem(addr s, addr h, sizeof(pointer))
+  fastCopy(addr s, addr h, sizeof(pointer))
 
 
 proc tuckStrTruncate*(s: var string, n: int) =

@@ -95,6 +95,12 @@ proc toStr*[T](value: T): string =
   elif T is float64: tuckFloatText(value, false)
   else: $value
 
+# `{.inline.}` is a hint, and the C compiler declined it: `tuckAt` stayed a call
+# at hundreds of thousands of sites in fannkuch, a third of its instructions.
+# These are a compare, a branch and a load; every call to one is meant to be
+# the access itself. (24.0M instructions against 42.3M for fannkuch 8.)
+{.pragma: hot, codegenDecl: "static inline __attribute__((always_inline)) $# $#$#".}
+
 proc tuckOutOfBounds(index, length: int, op: string) {.noinline, noreturn.} =
   ## The cold half of tuckSeqBounds: the message is built only on failure,
   ## out of line, so the check itself is small enough to inline.
@@ -113,7 +119,7 @@ proc tuckSeqBounds(index, length: int, op: string) {.inline.} =
   ## themselves (benches/game).
   if index < 0 or index >= length: tuckOutOfBounds(index, length, op)
 
-proc tuckAt*[T](items: seq[T], index: int): lent T {.inline.} =
+proc tuckAt*[T](items: seq[T], index: int): lent T {.inline, hot.} =
   ## What `xs[i]` lowers to: a bounds-checked read.
   ##
   ## A BORROW (`lent`), not a copy. By value, reading an element that owns
@@ -165,7 +171,7 @@ proc setAt*[T](items: var seq[T], index: int, value: T) =
   ## `xs[i] = v`.
   tuckSetAt(items, index, value)
 
-proc tuckArrayAt*[N: static int, T](items: array[N, T], index: int): lent T {.inline.} =
+proc tuckArrayAt*[N: static int, T](items: array[N, T], index: int): lent T {.inline, hot.} =
   ## A bounds-checked read of a fixed `Array[N, T]`.
   ##
   ## `Array[N, T]` needs its OWN pair, separate from tuckAt/tuckSetAt above.
@@ -181,7 +187,7 @@ proc tuckArrayAt*[N: static int, T](items: array[N, T], index: int): lent T {.in
   items[index]
 
 proc tuckArraySetAt*[N: static int, T](items: var array[N, T], index: int,
-                                       value: T) {.inline.} =
+                                       value: T) {.inline, hot.} =
   ## A bounds-checked write into a fixed `Array[N, T]`, in place; the length
   ## is the type's `N`.
   tuckSeqBounds(index, N, "setAt")
