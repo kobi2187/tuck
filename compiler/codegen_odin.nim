@@ -19,7 +19,7 @@ import twin_calls  # which calls take the moved twin — decided in prepare
 from twin_shape import seqFieldNames
 from ast_ops import pathOf
 from ownership_rules import constructs
-from ownership_elab import owning
+from ownership_elab import owning, dropsDeep
 
 import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
@@ -1032,6 +1032,13 @@ proc genList(ctx: var OdinCodegenCtx, e: Expr): string =
   let t = ctx.res.typeFor(e)
   let prefix = if t == nil or (seqElem(t) == nil and not isFixedArray(t)): ""
                else: ctx.odinType(t)
+  # A non-empty Seq is built by one allocation of exactly its elements: the
+  # compound literal `[dynamic]T{a}` is a make and an append each, and a
+  # recursive sum's edge is a one-element Seq built on every node.
+  if parts.len > 0 and not ctx.atGlobalScope and t != nil and
+     seqElem(t) != nil and not isFixedArray(t):
+    return "rt.tuckSeqFrom([" & $parts.len & "]" & ctx.odinType(seqElem(t)) &
+           "{" & parts.join(", ") & "})"
   prefix & "{" & parts.join(", ") & "}"
 
 proc movedAssignTarget(ctx: OdinCodegenCtx, t: Expr): string
@@ -1350,13 +1357,36 @@ proc genBlock(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ctx.indent = saved
   lines.join("\n")
 
+proc payloadSumNamed*(ctx: OdinCodegenCtx, t: Type): bool =
+  ## A payload sum of this module with a derived `_drop` (codegen_odin_decl):
+  ## not generic, so its name alone says which procedure.
+  if t == nil or t.kind != tkNamed: return false
+  let d = ctx.module.findDecl(dkType, t.name)
+  d != nil and d.typeBody != nil and d.typeBody.kind == tkSum and
+    sumHasPayload(d.typeBody) and d.generics.len == 0
+
+proc odinDrop*(ctx: var OdinCodegenCtx, t: Type, path: string,
+               deep: bool): string =
+  ## What releases the value at `path`: one buffer (`delete`), a procedure
+  ## derived from its type when it is a payload sum or a Seq of them (rule G,
+  ## read off the type once instead of off Odin's type information on every
+  ## drop), else the runtime's walk.
+  if not deep: return "delete(" & path & ")"
+  if ctx.payloadSumNamed(t): return ctx.odinType(t) & "_drop(" & path & ")"
+  let elem = if t == nil: nil else: seqElem(t)
+  if elem != nil and ctx.payloadSumNamed(elem):
+    # One statement (a block), because a scope-end drop is `defer`red and a
+    # `defer` covers exactly one.
+    return "{ for &tuckEl in " & path & " { " & ctx.odinType(elem) &
+           "_drop(tuckEl) }; delete(" & path & ") }"
+  "rt.tuckDrop(" & path & ")"
+
 proc genDrop(ctx: var OdinCodegenCtx, e: Expr): string =
   ## Release what a place owns (ownership_nodes decided which, and where).
   ## The place prints as its path: a local or parameter is never an owner
   ## field or a register, so there is nothing for a lookup to add. A Seq of
   ## plain values is one buffer; anything else is walked (rule G).
-  if e.dropDeep: "rt.tuckDrop(" & pathOf(e.dropped) & ")"
-  else: "delete(" & pathOf(e.dropped) & ")"
+  ctx.odinDrop(e.dropType, pathOf(e.dropped), e.dropDeep)
 
 proc genDefer(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## `defer:` (spec §7.4). Odin has `defer` natively, with the same scope-exit
@@ -1497,7 +1527,8 @@ proc dropThenStore(ctx: var OdinCodegenCtx, e: Expr, tgt, valStr: string): strin
   let ind = "  ".repeat(ctx.indent)
   result = next & " := " & valStr & "\n" & ind
   if e.dropsOldDeep:
-    return result & "rt.tuckDrop(" & tgt & ")\n" & ind & tgt & " = " & next
+    return result & ctx.odinDrop(ctx.res.typeFor(e.target), tgt, true) & "\n" &
+           ind & tgt & " = " & next
   # A record owns its Seq fields, so dropping one drops each of them.
   let fields = seqFieldNames(ctx.res, ctx.module, ctx.res.typeFor(e.target))
   if fields.len == 0: result.add "delete(" & tgt & ")\n" & ind

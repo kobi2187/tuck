@@ -395,6 +395,19 @@ tuckTrackReport :: proc() -> int {
 	}
 }
 
+// A Seq built from its elements: one allocation of exactly their count (a
+// compound literal is a make and an append for each element). The elements
+// come as a fixed array, so each converts to the element type where it is
+// written (a variant to its sum) and none is passed through a variadic.
+tuckSeqFrom :: proc(items: [$N]$T) -> [dynamic]T {
+	items := items
+	bytes, _ := runtime.mem_alloc_non_zeroed(N * size_of(T), align_of(T), context.allocator)
+	runtime.mem_copy_non_overlapping(raw_data(bytes), &items, N * size_of(T))
+	return transmute([dynamic]T)runtime.Raw_Dynamic_Array{
+		data = raw_data(bytes), len = N, cap = N, allocator = context.allocator,
+	}
+}
+
 tuckSeqCopy :: proc(items: [dynamic]$T) -> [dynamic]T {
 	out: [dynamic]T
 	if len(items) == 0 { return out }

@@ -23,6 +23,9 @@ type
       ## typecheck fills it, everything after reads it — visible instead of a
       ## comment on checkOrDie.
     definedVars*: HashSet[string]
+    atGlobalScope*: bool
+      ## Printing a package-level initialiser: Odin cannot call a procedure
+      ## that needs a `context` there, so a Seq literal stays a literal.
     indent*: int
     module*: Module
     hoisted*: seq[string]  # named decls hoisted out of field positions

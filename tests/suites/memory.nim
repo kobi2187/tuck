@@ -279,4 +279,38 @@ fn main() -> int:
   t.omits "a bound that is a call reserves nothing", r"tuckReserve"
   t.hostRuns("...and the loop still runs it once", 5)
 
+  # Odin drops a payload sum by a procedure derived from the type (#206), not
+  # by reading type information on every drop, and builds a Seq literal with
+  # one exact allocation.
+  t.src """
+type Tree:
+  | Leaf
+  | Node({left: Tree, right: Tree})
+
+fn count({t: Tree}) -> int:
+  match t:
+    Leaf: return 0
+    Node: return 1 + {t: t.left} count + {t: t.right} count
+
+fn build({d: int}) -> Tree:
+  if d == 0:
+    return Tree.Leaf
+  let l = {d: d - 1} build
+  let r = {d: d - 1} build
+  return Tree.Node {left: l, right: r}
+
+fn main() -> int:
+  let t = {d: 3} build
+  return {t: t} count
+"""
+  t.emitsOdin "a payload sum gets a drop derived from its type",
+              r"tuckˑtypeˑTree_drop :: proc\(x: tuckˑtypeˑTree\)"
+  t.emitsOdin "...its edge is dropped by calling it", r"for &tuckEl in v\.left \{ tuckˑtypeˑTree_drop\(tuckEl\)"
+  t.emitsOdin "...and a value of the sum by calling it",
+              r"defer tuckˑtypeˑTree_drop\(tuckˑvˑt\)"
+  t.omitsOdin "...with no walk of type information left for it",
+              r"rt\.tuckDrop\(tuckˑvˑt\)"
+  t.emitsOdin "a Seq literal is one exact allocation", r"rt\.tuckSeqFrom\(\[1\]tuckˑtypeˑTree\{"
+  t.hostRuns("...and the tree is built, counted and freed", 7)
+
   t.finish()

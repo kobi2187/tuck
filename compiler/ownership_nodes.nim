@@ -125,12 +125,13 @@ proc materializeAppends*(res: Resolution, m: Module) =
     if changed and d.id.isSet:
       res.ssaGraphs.del((d.id, ssLowered))
 
-proc dropOf(name, slot: string, span: Span, deep = false): Expr =
+proc dropOf(name, slot: string, span: Span, deep = false, ty: Type = nil): Expr =
   ## `defer drop(name.slot)` — the place as a path ("" slot: the whole value).
   var place = Expr(span: span, kind: exkVar, name: name)
   if slot.len > 0:
     place = Expr(span: span, kind: exkField, receiver: place, fieldName: slot)
-  let drop = Expr(span: span, kind: exkDrop, dropped: place, dropDeep: deep)
+  let drop = Expr(span: span, kind: exkDrop, dropped: place, dropDeep: deep,
+                  dropType: ty)
   result = Expr(span: span, kind: exkDefer, deferReleases: true,
                 deferBody: Expr(span: span, kind: exkBlock, stmts: @[drop]))
   fillIdsIn(result)     # every node after prepare has one (assertTreeIds)
@@ -145,6 +146,8 @@ type DropSource* = object
     ## parameter slots the body owns, dropped at its every exit
   deep*: HashSet[string]
     ## `place & "\t" & slot` of each slot whose drop walks it (rule G)
+  types*: Table[string, Type]
+    ## the type each deep slot holds, by the same key
   deepOverwrites*: HashSet[NodeId]
     ## the overwrites whose old value is walked when it is dropped (rule G)
 
@@ -183,7 +186,8 @@ proc dropsAfter(w: DropWalk, n: Expr, defined: var HashSet[string]): seq[Expr] =
   if fresh and (n.isDecl or not threaded):
     defined.incl name
     for slot in w.src.atScopeExit.getOrDefault(name):
-      result.add dropOf(name, slot, n.span, w.deepAt(name, slot))
+      result.add dropOf(name, slot, n.span, w.deepAt(name, slot),
+                        w.src.types.getOrDefault(name & "\t" & slot))
   elif not fresh:
     n.dropsOld = w.dropsOldOf(n)
     n.dropsOldDeep = n.dropsOld and n.id in w.src.deepOverwrites
@@ -243,7 +247,8 @@ proc materializeParamDrops(d: Decl, src: DropSource) =
     "body to put its drops in"
   var drops: seq[Expr]
   for (p, slot) in src.paramDrops:
-    drops.add dropOf(p, slot, d.fnBody.span, p & "\t" & slot in src.deep)
+    drops.add dropOf(p, slot, d.fnBody.span, p & "\t" & slot in src.deep,
+                     src.types.getOrDefault(p & "\t" & slot))
   d.fnBody.stmts = drops & d.fnBody.stmts
 
 type DropsOf* = proc (d: Decl): DropSource

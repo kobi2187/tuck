@@ -557,7 +557,9 @@ proc rulesDrops(w: var Writer, d: Decl): DropSource =
     if not w.resetAfter(d, read, w.resetPart(read)): w.copyInstead(read)
   scopeEndDrops(d, plan, unreset, result)
   for k, t in plan.slotTypes:
-    if w.res.dropsDeep(w.m, t): result.deep.incl k
+    if w.res.dropsDeep(w.m, t):
+      result.deep.incl k
+      result.types[k] = t
   w.overwriteDrops(d, plan, unreset, result)
 
 proc writeRules*(res: Resolution, m: Module) =

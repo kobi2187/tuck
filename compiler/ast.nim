@@ -739,6 +739,10 @@ type
       dropDeep*: bool              # rule G: its storage nests (or may), so
                                    # the drop walks it (`rt.tuckDrop`); else
                                    # it is a Seq of plain values (`delete`)
+      dropType*: Type              # the type of what the slot holds, when the
+                                   # rules know it: lets a backend drop it by
+                                   # a procedure derived from the type instead
+                                   # of one that reads type information
     of exkIfaceCall:
       dispatchRecv*: Expr          # the interface value, evaluated once
       dispatchIface*: string       # the interface's (mangled) type name
