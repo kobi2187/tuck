@@ -1215,3 +1215,43 @@ per `GC.malloc`/`GC.free`), so the lever there is the allocator, not the drop.
 Found on the way, by the test written for it: iterating a Seq of unions BY VALUE
 in Odin (`for el in xs`) reads past the element (valgrind: invalid read, 8 bytes
 after the block). The generated drop iterates by reference (`for &el in xs`).
+
+## Found by profiling the generated code (2026-11-01)
+
+Every change below came from `valgrind --tool=callgrind` on the emitted program (a
+`nim` wrapper adding `--debugger:native` for line-level data on Nim; `odin build -debug`
+on Odin), not from reading code and guessing. Counts are instructions at the sizes
+shown, which do not move with the machine.
+
+| program (size) | backend | before | after | what the profile found |
+|---|---|---|---|---|
+| fannkuch 8 | Nim | 49.7M | 24.0M | 789k calls to `nimCopyMem` (14%) to move one word; `tuckAt` left a call by gcc despite `{.inline.}` |
+| fannkuch 8 | Odin | 75.3M | 24.1M | `tuckSetAt` ran the reflective `tuckDrop` on every replaced element: 42% on a Seq of ints; `tuckSeqCopy` was a resize and a zero-fill |
+| k-nucleotide 20000 | Odin | 81.5M | 59.0M | the same walk, for a struct of ints; now answered once per type |
+| pidigits 300 | D | 703M | 146.6M | the loops bounded by `a.len` were not being reserved (the commonest bound was refused by the pass) |
+| reverse-complement 20000 | D | 8.39M | 3.99M | the counted-fill pass and range loops |
+| pidigits 300 | Odin | 170.2M | 162.0M | `append` inside a reserved loop |
+
+One thing profiling ruled out: fannkuch is NOT bound by bounds checks. Removing them
+entirely made the Nim count go UP (49.7M -> 60.1M); on Odin, `-no-bounds-check
+-disable-assert` moved the time by 3%. #207 (drop provable bounds checks) would not
+have helped this program.
+
+Wall-clock after all of it, same run (C in seconds):
+
+| program | Nim | Odin | D |
+|---|---|---|---|
+| n-body | 2.3x | 1.1x | 2.2x |
+| spectral-norm | 2.1x | 1.2x | 2.1x |
+| mandelbrot | 0.9x | 0.9x | 1.9x |
+| fannkuch-redux | 1.4x | 1.4x | 3.9x |
+| binary-trees, sum type | 4.5x | 8.5x | 16.1x |
+| binary-trees, slab | 2.7x | 4.4x | 3.4x |
+| fasta | 1.0x | 1.1x | 1.5x |
+| k-nucleotide | 2.8x | 1.4x | 2.8x |
+| reverse-complement | 2.0x | 2.0x | 2.7x |
+| pidigits | 1.8x | 1.0x | 1.6x |
+| regex-redux | 7.2x | 16.7x | 62.7x |
+
+(n-body and spectral-norm read worse on Nim than the earlier round only because C
+ran faster this time; their instruction counts did not change.)
