@@ -1188,3 +1188,30 @@ complement, now spells two counting loops as ranges):
 What is left, by size: regex-redux (the engine allocates a captures Seq per thread),
 the sum-type binary-trees (#205, #206), pidigits and reverse-complement on D (pushes
 in loops that are not counted `for` ranges), fannkuch (#207).
+
+## Odin: derived drops and exact Seq literals (2026-11-01)
+
+Wall-clock ratios in this file move with the machine (C binary-trees took 0.40s in one
+round and 0.27s in the next, on the same box), so this entry is in callgrind
+instructions, which do not. binary-trees 10, sum-type tree, Odin:
+
+| step | instructions |
+|---|---|
+| before | 247.8M |
+| Seq literal as one exact allocation (`rt.tuckSeqFrom`) | 224.8M (-9%) |
+| + `S_drop` derived from the sum type, replacing the type-info walk | 161.8M (-35%) |
+| + non-zeroed allocation (the elements are written at once) | 129.7M (-48%) |
+| + drop iterates by reference | 119.5M (-52%) |
+
+Wall-clock, same minute: ~12x C before, ~8.5-10x after. What is left is allocation
+(malloc, free, the allocator proc: ~60%): each node still holds two one-element Seqs.
+A heap box for a recursive edge (#205) would cut the per-edge header; the slab
+version of the same tree stays the fast one (4.3x here).
+
+D has the same tree at 15-19x. It already derives a typed `tuckFree` per type; its cost
+is the collector's allocation path itself (a lock, a block-info lookup and an atomic
+per `GC.malloc`/`GC.free`), so the lever there is the allocator, not the drop.
+
+Found on the way, by the test written for it: iterating a Seq of unions BY VALUE
+in Odin (`for el in xs`) reads past the element (valgrind: invalid read, 8 bytes
+after the block). The generated drop iterates by reference (`for &el in xs`).
