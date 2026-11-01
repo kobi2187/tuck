@@ -32,6 +32,16 @@
 import ast, ast_ops, ast_query
 import resolution
 
+proc simpleBound(res: Resolution, e: Expr): bool
+
+proc lengthOfPlace(res: Resolution, e: Expr): bool =
+  ## `xs.len`, resolved to the call it is: reading a length changes nothing,
+  ## and it is by far the commonest bound (`for i in 0 ..< a.len`).
+  let c = res.call(e)
+  c != nil and c.kind == exkCall and c.callee != nil and
+    c.callee.kind == exkVar and c.callee.name in ["len", "count"] and
+    c.args.len == 1 and res.simpleBound(c.args[0])
+
 proc simpleBound(res: Resolution, e: Expr): bool =
   ## Names, numbers and arithmetic: evaluating it twice changes nothing.
   if e == nil: return false
@@ -39,8 +49,8 @@ proc simpleBound(res: Resolution, e: Expr): bool =
   of exkLit: e.litKind == lkInt
   of exkVar: true
   of exkField:
-    e.dotArg == nil and not res.hasCall(e) and e.receiver != nil and
-      res.simpleBound(e.receiver)
+    if res.hasCall(e): res.lengthOfPlace(e)
+    else: e.dotArg == nil and e.receiver != nil and res.simpleBound(e.receiver)
   of exkBinary:
     e.binOp in {boAdd, boSub, boMul} and res.simpleBound(e.left) and
       res.simpleBound(e.right)

@@ -313,4 +313,23 @@ fn main() -> int:
   t.emitsOdin "a Seq literal is one exact allocation", r"rt\.tuckSeqFrom\(\[1\]tuckˑtypeˑTree\{"
   t.hostRuns("...and the tree is built, counted and freed", 7)
 
+  # The commonest bound of all, `xs.len`, qualifies: reading a length is not a
+  # side effect, so evaluating it for the reservation and again for the loop is
+  # unseen.
+  t.src """
+import seq
+
+fn doubled({xs: Seq[int]}) -> Seq[int]:
+  var out: Seq[int] = []
+  for i in 0 ..< xs.len:
+    out = {items: out, value: xs[i] * 2} push
+  return out
+
+fn main() -> int:
+  let ys = {xs: [1, 2, 3]} doubled
+  return ys[0] + ys[1] + ys[2]
+"""
+  t.emits "a bound that is a Seq's length reserves its room", r"tuckReserve\(tuckˑvˑout, \(getLength\(xs\) - 0\)\)"
+  t.hostRuns("...and the doubled Seq is right", 12)
+
   t.finish()

@@ -1574,7 +1574,9 @@ proc genAppend(ctx: var OdinCodegenCtx, e: Expr): string =
   ## leaves them otherwise (an actor's field may hold a static literal).
   let target = ctx.movedAssignTarget(e.appendTarget)
   let value = ctx.genOdinExpr(e.appendValue)
-  if e.appendsElement: "append(&" & target & ", " & value & ")"
+  if e.appendsElement and e.appendFilled:   # room reserved before the loop
+    "rt.tuckPushFilled(&" & target & ", " & value & ")"
+  elif e.appendsElement: "append(&" & target & ", " & value & ")"
   elif e.appendFreesOld: "rt.tuckStrAppend(&" & target & ", " & value & ")"
   else: target & " = rt.tuckConcat(" & target & ", " & value & ")"
 
