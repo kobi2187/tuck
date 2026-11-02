@@ -261,6 +261,102 @@ fn main() -> int:
   t.emitsOdin "...and Odin", r"rt\.tuckReserve\(&tuckˑvˑout, len\(xs\)\)"
   t.hostRuns("...and the result is right", 9)
 
+  # Many shapes of fill loop, one program: whichever get a reserve, the
+  # answer is the same (610 mod 256) on every backend.
+  t.src """
+import seq
+
+type P = { a: int, b: Seq[int] }
+
+fn range1({n: int}) -> Seq[int]:
+  var o: Seq[int] = []
+  for i in 0 .. n:
+    o = {items: o, value: i} push
+  return o
+
+fn fromField({p: P}) -> Seq[int]:
+  var o: Seq[int] = []
+  for x in p.b:
+    o = {items: o, value: x + p.a} push
+  return o
+
+fn twoPush({xs: Seq[int]}) -> Seq[int]:
+  var o: Seq[int] = []
+  for x in xs:
+    o = {items: o, value: x} push
+    o = {items: o, value: x * 10} push
+  return o
+
+fn twoTargets({xs: Seq[int]}) -> int:
+  var a: Seq[int] = []
+  var b: Seq[int] = []
+  for x in xs:
+    a = {items: a, value: x} push
+    b = {items: b, value: x * 3} push
+  return a.len + b[2]
+
+fn condPush({xs: Seq[int]}) -> Seq[int]:
+  var o: Seq[int] = []
+  for x in xs:
+    if x > 1:
+      o = {items: o, value: x} push
+  return o
+
+fn nested({xs: Seq[int]}) -> Seq[int]:
+  var o: Seq[int] = []
+  for x in xs:
+    for y in xs:
+      o = {items: o, value: x * y} push
+  return o
+
+fn prefilled({xs: Seq[int]}) -> Seq[int]:
+  var o: Seq[int] = [100, 200]
+  for x in xs:
+    o = {items: o, value: x} push
+  return o
+
+fn readsSelf({xs: Seq[int]}) -> Seq[int]:
+  var o: Seq[int] = [0]
+  for x in xs:
+    o = {items: o, value: o.len + x} push
+  return o
+
+fn emptyIter() -> int:
+  let e: Seq[int] = []
+  var o: Seq[int] = []
+  for x in e:
+    o = {items: o, value: x} push
+  return o.len
+
+fn sum({xs: Seq[int]}) -> int:
+  var s = 0
+  for x in xs:
+    s = s + x
+  return s
+
+fn main() -> int:
+  let xs = [1, 2, 3, 4]
+  let p = { a: 5, b: [1, 2, 3] } P
+  let r = {n: 3} range1
+  let f = {p: p} fromField
+  let t = {xs: xs} twoPush
+  let c = {xs: xs} condPush
+  let n = {xs: xs} nested
+  let pf = {xs: xs} prefilled
+  let rs = {xs: xs} readsSelf
+  let tt = {xs: xs} twoTargets
+  let e = emptyIter
+  let s1 = {xs: r} sum
+  let s2 = {xs: f} sum
+  let s3 = {xs: t} sum
+  let s4 = {xs: c} sum
+  let s5 = {xs: n} sum
+  let s6 = {xs: pf} sum
+  let s7 = {xs: rs} sum
+  return s1 + s2 * 2 + s3 + s4 + s5 + s6 + s7 + tt + e
+"""
+  t.hostRuns("every fill-loop shape computes the same", 98)
+
   # The loop reading what it has built would see a length it has not reached.
   t.src """
 import seq
