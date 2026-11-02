@@ -188,7 +188,8 @@ foreign tuck_malloc_c {
 // bytes it hands out (base:runtime heap_allocator_proc).
 @(private)
 tuckStrRoom :: proc(s: string) -> int {
-	if raw_data(s) == nil || context.allocator.procedure != runtime.heap_allocator_proc do return -1
+	if raw_data(s) == nil || !tuckHeapLike() do return -1
+	if inArena(raw_data(s)) do return arenaCapacity(raw_data(s)) // 0 for an interior slice: no room
 	base := ([^]rawptr)(raw_data(s))[-1]
 	return int(malloc_usable_size(base)) - int(uintptr(raw_data(s)) - uintptr(base))
 }
@@ -210,7 +211,7 @@ tuckStrAppend :: proc(s: ^string, t: string) {
 		s^ = string(buf[:need])
 		return
 	}
-	if context.allocator.procedure == runtime.heap_allocator_proc {
+	if tuckHeapLike() {
 		grown, err := make([]u8, max(2 * need, 32))
 		if err == nil {
 			copy(grown, old)
@@ -326,7 +327,8 @@ tuckTrackAllocator :: proc() -> mem.Allocator {
 		}
 		return mem.tracking_allocator(&gTrack)
 	} else {
-		return context.allocator
+		tuckArenaInit()
+		return mem.Allocator{procedure = tuckArenaProc, data = nil}
 	}
 }
 

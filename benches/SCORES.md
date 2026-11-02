@@ -1276,3 +1276,7 @@ fannkuch 8: 67.8M -> 33.7M (C: 10.7M); regex-redux 6000: 385M -> 167M
 Arena lock with acquire/release instead of seq-cst: fannkuch 8 32.4M, binary-trees 10 83.3M.
 
 Per-thread free lists in the arena (no lock on the hot path): fannkuch 8 30.9M, binary-trees 10 73.6M (from 297M), regex-redux 6000 136M (from 662M).
+
+## Odin: the same arena as the allocator (callgrind instructions)
+
+`tuck_arena.odin` wraps the heap allocator: blocks up to 4 KB from mmap size-class segments with thread-local free lists; the rest, and over-aligned requests, go to the heap. binary-trees 10: 119.5M -> 75.5M; fannkuch 8: 24.1M -> 19.8M. Output equal to C on all four programs checked.
