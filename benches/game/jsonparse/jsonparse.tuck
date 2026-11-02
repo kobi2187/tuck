@@ -1,0 +1,173 @@
+# jsonparse: parse a generated JSON document into a sum-type tree, fold it, and print it back (after Are-We-Fast-Yet's Json).
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+type Json:
+  | Null
+  | Num({v: int})
+  | Text({s: str})
+  | List({items: Seq[Json]})
+  | Obj({keys: Seq[str], vals: Seq[Json]})
+
+type Parsed:
+  v: Json
+  pos: int
+
+type ParsedStr:
+  s: str
+  pos: int
+
+fn skip({t: str, pos: int}) -> int:
+  var p = pos
+  let n = {t: t} byteCount
+  for p < n and {t: t, index: p} byteAt == 32:
+    p = p + 1
+  return p
+
+fn parseText({t: str, pos: int}) -> ParsedStr:
+  var p = pos + 1
+  var bytes: Seq[u8] = []
+  for {t: t, index: p} byteAt != 34:
+    let ch = {t: t, index: p} byteAt
+    bytes = {items: bytes, value: ch} push
+    p = p + 1
+  let text = {bytes: bytes} fromBytes
+  return {s: text, pos: p + 1} ParsedStr
+
+fn parseNum({t: str, pos: int}) -> Parsed:
+  var p = pos
+  var v = 0
+  var going = true
+  for going:
+    let b = {t: t, index: p} byteAt
+    if b >= 48 and b <= 57:
+      v = v * 10 + (b ^int) - 48
+      p = p + 1
+    else:
+      going = false
+  let num = Json.Num {v: v}
+  return {v: num, pos: p} Parsed
+
+fn parseValue({t: str, pos: int}) -> Parsed:
+  let p = {t: t, pos: pos} skip
+  let b = {t: t, index: p} byteAt
+  if b == 123:
+    return {t: t, pos: p + 1} parseObj
+  if b == 91:
+    return {t: t, pos: p + 1} parseList
+  if b == 34:
+    let s = {t: t, pos: p} parseText
+    let tx = Json.Text {s: s.s}
+    return {v: tx, pos: s.pos} Parsed
+  if b == 110:
+    let nl = Json.Null
+    return {v: nl, pos: p + 4} Parsed
+  return {t: t, pos: p} parseNum
+
+fn parseList({t: str, pos: int}) -> Parsed:
+  var items: Seq[Json] = []
+  var p = {t: t, pos: pos} skip
+  if {t: t, index: p} byteAt == 93:
+    let empty = Json.List {items: items}
+    return {v: empty, pos: p + 1} Parsed
+  var going = true
+  for going:
+    let one = {t: t, pos: p} parseValue
+    items = {items: items, value: one.v} push
+    p = {t: t, pos: one.pos} skip
+    if {t: t, index: p} byteAt == 44:
+      p = p + 1
+    else:
+      going = false
+  let lst = Json.List {items: items}
+  return {v: lst, pos: p + 1} Parsed
+
+fn parseObj({t: str, pos: int}) -> Parsed:
+  var keys: Seq[str] = []
+  var vals: Seq[Json] = []
+  var p = {t: t, pos: pos} skip
+  if {t: t, index: p} byteAt == 125:
+    let empty = Json.Obj {keys: keys, vals: vals}
+    return {v: empty, pos: p + 1} Parsed
+  var going = true
+  for going:
+    let kp = {t: t, pos: p} skip
+    let k = {t: t, pos: kp} parseText
+    let colon = {t: t, pos: k.pos} skip
+    let one = {t: t, pos: colon + 1} parseValue
+    keys = {items: keys, value: k.s} push
+    vals = {items: vals, value: one.v} push
+    p = {t: t, pos: one.pos} skip
+    if {t: t, index: p} byteAt == 44:
+      p = p + 1
+    else:
+      going = false
+  let obj = Json.Obj {keys: keys, vals: vals}
+  return {v: obj, pos: p + 1} Parsed
+
+# The total of every number and every string's length in the tree.
+fn fold({j: Json}) -> int:
+  match j:
+    Null: return 0
+    Num: return j.v
+    Text: return {t: j.s} byteCount
+    List:
+      var s = 0
+      for x in j.items:
+        s = s + {j: x} fold
+      return s
+    Obj:
+      var s = 0
+      for i in 0 ..< j.vals.len:
+        s = s + {t: j.keys[i]} byteCount + {j: j.vals[i]} fold
+      return s
+
+fn render({j: Json}) -> str:
+  match j:
+    Null: return "null"
+    Num: return j.v.toStr
+    Text: return "\"" + j.s + "\""
+    List:
+      var s = "["
+      for i in 0 ..< j.items.len:
+        if i > 0:
+          s = s + ","
+        s = s + {j: j.items[i]} render
+      return s + "]"
+    Obj:
+      var s = "{"
+      for i in 0 ..< j.vals.len:
+        if i > 0:
+          s = s + ","
+        s = s + "\"" + j.keys[i] + "\":" + {j: j.vals[i]} render
+      return s + "}"
+
+fn document({n: int}) -> str:
+  var s = "["
+  for i in 0 ..< n:
+    if i > 0:
+      s = s + ", "
+    s = s + "{\"id\": " + i.toStr + ", \"name\": \"item" + i.toStr + "\", \"tags\": [\"a\", \"bb\", null], \"score\": " + (i * 7 % 100).toStr + "}"
+  return s + "]"
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 1000
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let doc = {n: n} document
+  let parsed = {t: doc, pos: 0} parseValue
+  let total = {j: parsed.v} fold
+  let again = {j: parsed.v} render
+  let r = total * 1000003 + {t: again} byteCount
+  {text: r.toStr} printLine
+  return 0

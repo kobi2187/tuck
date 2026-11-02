@@ -1288,3 +1288,86 @@ Worst ratios found: D levenshtein 22x and lcs 29x (pushes into blocks past the a
 strbuild (`s = s + n.toStr + ","` in a loop): Nim was quadratic (2M appends > 13 min); the chain is now regrouped as `s + (a + b)` so it appends in place: Nim 0.23s, Odin 0.43s, D 0.98s.
 
 D strings through the arena (tuckCat, tuckStrAppend, str copy): wordcount 80.0M -> 43.9M instr (0.58s -> 0.36s); strbuild 0.98s -> 0.52s. Remaining wordcount cost is the stdlib Table and toStr. Wave-2 table (C / Nim / Odin / D, wall s): wordcount 0.008 / 11.5x / 24.3x / 72.3x before this change (C uses a counter array, so not like-for-like); floatloop 0.277 / 0.9x / 1.0x / 2.8x; queens 0.025 / 1.5x / 1.4x / 1.4x.
+
+## Nim: a small-block allocator over glibc (release builds)
+
+`compiler/tuck_malloc.c`, linked by tuck_mem.nim in release builds on Linux: size-class segments, no headers, per-thread free lists; big blocks and aligned requests go to glibc. Wall seconds before -> after: wordcount 0.122 -> 0.080, binary-trees 1.18 -> 0.87, slabtrees 0.94 -> 0.73; k-nucleotide and regex-redux within noise.
+
+Nim release: -U_FORTIFY_SOURCE (memcpy was compiled to __memcpy_chk, 8% of regex-redux): regex-redux 0.705 -> 0.652 s, binary-trees 0.87 -> 0.76 s.
+
+Odin: a derived `_drop` for records that own storage (like payload sums), instead of the reflective walk: regex-redux 6000: 206M -> 171M instructions.
+
+## Full table, ranked worst-first (taken before the Nim allocator, FORTIFY and Odin record-drop changes above)
+
+Worst ratios to C (Nim / Odin / D): wordcount 15 / 25 / 49 (C is a counter array, not like-for-like), regex-redux 6 / 13 / 13, lcs 3.8 / 2.6 / 6.3, levenshtein 3.5 / 2.9 / 6.1, ackermann 1.4 / 4.8 / 5.7, slabtrees 3.4 / 5.6 / 3.6, binary-trees 3.3 / 4.7 / 4.4, strbuild 1.0 / 2.2 / 3.8, n-body 1.6 / 1.3 / 3.7, matmul 3.5 / 1.1 / 2.2, records 2.8 / 2.4 / 3.4, k-nucleotide 3.2 / 1.5 / 3.4, fib 1.2 / 1.3 / 3.4. Everything else is within 2.5x; collatz, divisors, gcdsum, life and tak match or beat C.
+
+```
+program                 C              Nim             Odin                D
+ackermann           0.152     0.222 (1.4x)     0.742 (4.8x)     0.873 (5.7x)
+binarytrees         0.355     1.184 (3.3x)     1.674 (4.7x)     1.571 (4.4x)
+collatz             0.536     0.669 (1.2x)      0.351 (.6x)     0.645 (1.2x)
+divisors           11.230    11.259 (1.0x)      7.967 (.7x)     11.167 (.9x)
+fannkuch            0.248     0.362 (1.4x)     0.307 (1.2x)     0.408 (1.6x)
+fasta               0.446     0.450 (1.0x)     0.484 (1.0x)     0.629 (1.4x)
+fib                 0.085     0.108 (1.2x)     0.114 (1.3x)     0.290 (3.4x)
+floatloop           0.310      0.295 (.9x)      0.282 (.9x)     0.788 (2.5x)
+gcdsum              1.556     1.588 (1.0x)      1.345 (.8x)     1.565 (1.0x)
+hashmap             0.121     0.280 (2.3x)     0.251 (2.0x)     0.403 (3.3x)
+heapsort            0.165     0.333 (2.0x)     0.234 (1.4x)     0.257 (1.5x)
+knucleotide         0.216     0.692 (3.2x)     0.326 (1.5x)     0.752 (3.4x)
+lcs                 0.042     0.161 (3.8x)     0.112 (2.6x)     0.265 (6.3x)
+levenshtein         0.049     0.172 (3.5x)     0.146 (2.9x)     0.301 (6.1x)
+life                0.062     0.062 (1.0x)      0.028 (.4x)     0.090 (1.4x)
+mandelbrot          6.506      6.407 (.9x)      6.229 (.9x)    12.307 (1.8x)
+matmul              0.067     0.236 (3.5x)     0.079 (1.1x)     0.151 (2.2x)
+nbody               0.318     0.520 (1.6x)     0.432 (1.3x)     1.200 (3.7x)
+pidigits            1.375     2.458 (1.7x)      1.359 (.9x)     1.776 (1.2x)
+qsort               0.098     0.138 (1.4x)     0.124 (1.2x)     0.166 (1.6x)
+queens              0.027     0.042 (1.5x)     0.033 (1.2x)     0.036 (1.3x)
+records             0.053     0.153 (2.8x)     0.128 (2.4x)     0.182 (3.4x)
+regexredux          0.116     0.726 (6.2x)    1.546 (13.3x)    1.517 (13.0x)
+revcomp             0.140     0.298 (2.1x)     0.264 (1.8x)     0.324 (2.3x)
+sieve               0.236     0.338 (1.4x)     0.313 (1.3x)     0.361 (1.5x)
+slabtrees           0.274     0.937 (3.4x)     1.545 (5.6x)     0.996 (3.6x)
+spectralnorm        0.243     0.632 (2.6x)     0.283 (1.1x)     0.372 (1.5x)
+strbuild            0.132     0.142 (1.0x)     0.295 (2.2x)     0.512 (3.8x)
+tak                 0.163     0.215 (1.3x)     0.180 (1.1x)     0.176 (1.0x)
+wordcount           0.008    0.122 (15.2x)    0.199 (24.8x)    0.393 (49.1x)
+```
+
+Nim release: --overflowChecks:off. The spec leaves int/i64 unchecked (ruling 2026-08-25) and narrow integers trap through the compiler's own overflowPlan, so Nim's native checks only cost time: matmul 0.236 -> 0.105 s (3.5x -> 1.6x C), permute 0.789 -> 0.678 s.
+
+## Wave 3 (after Are-We-Fast-Yet and kostya/benchmarks), wall seconds (C / Nim / Odin / D)
+
+```
+program                 C              Nim             Odin                D
+brainfuck           0.020     0.042 (2.1x)     0.034 (1.7x)     0.040 (2.0x)
+jsonparse           0.143     0.179 (1.2x)     0.466 (3.2x)     0.613 (4.2x)
+scheduler           0.263     1.753 (6.6x)     0.296 (1.1x)    2.883 (10.9x)
+permute             0.172     0.789 (4.5x)     0.192 (1.1x)     0.479 (2.7x)
+```
+
+scheduler (a sum-type task passed through a tasks Seq, 100M steps) is the one real outlier: 6.6x on Nim and 10.9x on D, 1.1x on Odin. Instructions per step are only 3-4x C's; the wall-clock gap is a dependency chain through memory (each step's result addresses the next step's task, passing through 40-byte Step/Task copies). Odin keeps them in registers. Nim and D would need scalar replacement of those aggregates; not done. permute is bounds checks (17% of instructions) plus Nim's overflow checks (now off).
+
+## Wave 4: Richards and Havlak, and what they found
+
+richards (full Are-We-Fast-Yet port; 2322 queued / 928 held verified) and havlak (loop recognition) were 88-116x C and "did not finish" when first written. Both pointed at copies the compiler made and the author never asked for:
+
+- `return {w: v, next: v.n}`, `v = f(v, v.n)` and `let a = f(v, v.n); v = a.w`: a value handed on whole beside a read of itself was deep-copied (the read ran after the move, so the sink was not the final use). The read is now bound ahead and the sink moves; a first dry pass runs before parameter consumption is memoised, so `f(w, w.n)` makes `w` an owned parameter. Richards: 0 deep copies (was 5 per step).
+- `x.f = {items: x.f, value: v} push` copied the whole Seq per push (only plain names appended in place). Havlak, 150k edges in a record: over a minute -> 0.15 s.
+
+Measured after both (wall s, C / Nim / Odin / D):
+
+```
+program                 C              Nim             Odin                D
+richards            0.077    1.759 (22.8x)    0.841 (10.9x)    2.220 (28.8x)
+havlak              0.058     0.125 (2.1x)     0.127 (2.1x)     0.195 (3.3x)
+scheduler           0.181     1.637 (9.0x)     0.282 (1.5x)    2.633 (14.5x)
+permute             0.178     1.008 (5.6x)     0.180 (1.0x)     0.557 (3.1x)
+matmul              0.057     0.110 (1.9x)     0.076 (1.3x)     0.163 (2.8x)
+jsonparse           0.150     0.156 (1.0x)     0.607 (4.0x)     0.468 (3.1x)
+binarytrees         0.427     0.786 (1.8x)     1.730 (4.0x)     1.518 (3.5x)
+wordcount           0.007    0.090 (12.8x)    0.192 (27.4x)    0.420 (60.0x)
+```
+
+Richards is still 11-29x. Its `World` is a 12-field record handed through ~6 calls a step; each hop moves ~300 bytes with memcpy, where C passes a pointer. Next lead: a consumed parameter that comes back in the result (`w = f(w)`) could be passed by reference and mutated in place; the existing moved-twin machinery (twin_calls) is the place to start. scheduler (9x Nim, 14.5x D) is the same shape with small sum types. std/bits gained popCount, leadingZeros, trailingZeros, rotate*, byteSwap and int forms in this round.

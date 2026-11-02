@@ -14,6 +14,11 @@ tuckˑtypeˑEthernetFrame :: struct {
 	ethertype: u16,
 }
 
+tuckˑtypeˑEthernetFrame_drop :: proc(x: tuckˑtypeˑEthernetFrame) {
+  rt.tuckDrop(x.dst)
+  rt.tuckDrop(x.src)
+}
+
 tuckˑtypeˑTemperature :: struct {
 	celsius: f32,
 }

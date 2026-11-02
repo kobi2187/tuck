@@ -1,6 +1,8 @@
 #+feature dynamic-literals
 package main
 
+import rt "./tuckrt"
+
 TRec_title_duration_playSpeed_volume_speed :: struct ($T_title: typeid, $T_duration: typeid, $T_playSpeed: typeid, $T_volume: typeid, $T_speed: typeid) {
 	title: T_title,
 	duration: T_duration,
@@ -13,6 +15,10 @@ tuckˑtypeˑEpisode :: struct {
 	title: string,
 	duration: u32,
 	playSpeed: f64,
+}
+
+tuckˑtypeˑEpisode_drop :: proc(x: tuckˑtypeˑEpisode) {
+  rt.tuckDrop(x.title)
 }
 
 tuckˑtypeˑPlayerPrefs :: struct {
@@ -34,4 +40,6 @@ tuckˑfnˑplay :: proc (episode: tuckˑtypeˑEpisode, prefs: tuckˑtypeˑPlayerP
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
+	rt.tuckTrackCheck()
 }

@@ -1,0 +1,84 @@
+# scheduler: tasks of four kinds, a sum type, pass packets round-robin; polymorphic dispatch (after Richards).
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+type Task:
+  | Idle({ticks: int})
+  | Worker({handled: int, acc: int})
+  | Handler({handled: int, last: int})
+  | Device({seen: int})
+
+type Packet:
+  kind: int
+  value: int
+
+# One step of a task given a packet: the next state of the task, and the
+# packet it hands on.
+type Step:
+  next: Task
+  emit: Packet
+
+fn stepTask({t: Task, p: Packet}) -> Step:
+  match t:
+    Idle:
+      let n = Task.Idle {ticks: t.ticks + 1}
+      let o = {kind: 1, value: p.value + 1} Packet
+      return {next: n, emit: o} Step
+    Worker:
+      let acc = (t.acc * 31 + p.value) % 1000003
+      let n = Task.Worker {handled: t.handled + 1, acc: acc}
+      let o = {kind: 2, value: acc} Packet
+      return {next: n, emit: o} Step
+    Handler:
+      let v = if p.value % 2 == 0: p.value /i 2 else: 3 * p.value + 1
+      let n = Task.Handler {handled: t.handled + 1, last: v}
+      let o = {kind: 3, value: v} Packet
+      return {next: n, emit: o} Step
+    Device:
+      let n = Task.Device {seen: t.seen + p.value % 7}
+      let o = {kind: 0, value: p.value} Packet
+      return {next: n, emit: o} Step
+
+fn score({t: Task}) -> int:
+  match t:
+    Idle: return t.ticks
+    Worker: return t.handled + t.acc
+    Handler: return t.handled + t.last
+    Device: return t.seen
+
+fn run({rounds: int}) -> int:
+  let t0 = Task.Idle {ticks: 0}
+  let t1 = Task.Worker {handled: 0, acc: 7}
+  let t2 = Task.Handler {handled: 0, last: 0}
+  let t3 = Task.Device {seen: 0}
+  var tasks: Seq[Task] = [t0, t1, t2, t3]
+  var pkt = {kind: 0, value: 1} Packet
+  var at = 0
+  for r in 0 ..< rounds:
+    let cur = tasks[at]
+    let s = {t: cur, p: pkt} stepTask
+    tasks[at] = s.next
+    pkt = s.emit
+    at = pkt.kind
+  var total = 0
+  for t in tasks:
+    total = (total + {t: t} score) % 1000000007
+  return total
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 1000
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let r = {rounds: n} run
+  {text: r.toStr} printLine
+  return 0

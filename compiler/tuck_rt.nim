@@ -1,5 +1,6 @@
 # compiler/tuck_rt.nim
 ## Shared Tuck compiler runtime implementation for static environments.
+import std/bitops
 import std/macros
 import std/typetraits
 import ./tuck_mem
@@ -288,6 +289,31 @@ proc shiftRight*(a: uint64, by: int): uint64 {.inline.} =
   ## Logical right shift; a shift at or past the width is 0, as for
   ## `shiftLeft`.
   if by >= 64 or by < 0: 0'u64 else: a shr by
+
+proc popCount*(a: uint64): int {.inline.} =
+  ## The number of set bits.
+  countSetBits(a)
+
+proc leadingZeros*(a: uint64): int {.inline.} =
+  if a == 0: 64 else: countLeadingZeroBits(a)
+
+proc trailingZeros*(a: uint64): int {.inline.} =
+  if a == 0: 64 else: countTrailingZeroBits(a)
+
+proc rotateLeft*(a: uint64, by: int): uint64 {.inline.} =
+  ## Rotation by `by` modulo 64.
+  let n = by and 63
+  if n == 0: a else: (a shl n) or (a shr (64 - n))
+
+proc rotateRight*(a: uint64, by: int): uint64 {.inline.} =
+  let n = by and 63
+  if n == 0: a else: (a shr n) or (a shl (64 - n))
+
+proc byteSwap*(a: uint64): uint64 {.inline.} =
+  var r = 0'u64
+  for i in 0 ..< 8:
+    r = (r shl 8) or ((a shr (i * 8)) and 0xFF'u64)
+  r
 
 proc tuckConcat*(a, b: string): string {.inline.} =
   ## What `str + str` lowers to: a new string, both inputs untouched.

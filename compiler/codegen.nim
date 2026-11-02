@@ -734,8 +734,19 @@ proc genUnary(ctx: var CodegenCtx, e: Expr): string =
                 "member reached the expression emitter"
   opStr & ctx.genExpr(e.operand)
 
+proc isIntegerType(t: Type): bool =
+  t != nil and t.kind == tkNamed and t.name in
+    ["int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "usize"]
+
 proc genCast(ctx: var CodegenCtx, e: Expr): string =
   ## `x ~u16` / `x ^u32`: Nim's own conversion, `uint16(x)`.
+  ##
+  ## A NARROWING `~` between integers drops the high bits, as it does on Odin
+  ## and D (`cast(T)`, `T(x)`). Nim's `T(x)` is range-checked and raised
+  ## RangeDefect on `0xFFFF_FFFF_FFFF_FFFF ~int`: the `cast` is the wrap.
+  if not e.castWiden and e.castType.isIntegerType and
+     ctx.res.typeFor(e.castOperand).isIntegerType:
+    return "cast[" & genType(e.castType) & "](" & ctx.genExpr(e.castOperand) & ")"
   genType(e.castType) & "(" & ctx.genExpr(e.castOperand) & ")"
 
 proc genDroppedResult(ctx: var CodegenCtx, s: Expr, stmtCode: string): string =
@@ -1058,7 +1069,7 @@ proc genAppend(ctx: var CodegenCtx, e: Expr): string =
   ## — bare on the left, qualified on the right — and Nim rejected it as an
   ## undeclared identifier. The other two backends had the same hole. EV-9.
   let t = e.appendTarget
-  let tgt = if ctx.res.isOwnerField(t): "self." & t.name else: t.name
+  let tgt = if ctx.res.isOwnerField(t): "self." & t.name else: pathOf(t)
   let value = ctx.genExpr(e.appendValue)
   if e.appendsElement: "tuckPush(" & tgt & ", " & value & ")"
   else: "tuckStrAppend(" & tgt & ", " & value & ")"

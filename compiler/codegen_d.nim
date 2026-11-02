@@ -919,7 +919,7 @@ proc movedAssignTarget(ctx: DCodegenCtx, t: Expr): string =
   ## qualified on the right, bare on the left. Rejected here and by Odin;
   ## Nim was correct only because its backend never takes this path. EV-9.
   if ctx.res.isOwnerField(t): "self." & t.name
-  else: t.name
+  else: pathOf(t)
 
 proc genDLocalDecl(ctx: var DCodegenCtx, e: Expr, valStr: string): string
 
@@ -1258,7 +1258,7 @@ proc genDList(ctx: var DCodegenCtx, e: Expr): string =
   for item in e.items: parts.add(ctx.genDExpr(item))
   # Through the runtime, so the block comes from the arena rather than the
   # collector's allocator (about 340 instructions a literal).
-  if parts.len == 0: return "[" & "]"
+  if parts.len == 0 or ctx.res.typeFor(e).isFixedArray: return "[" & parts.join(", ") & "]"
   "rt.tuckSeqOf([" & parts.join(", ") & "])"
 
 proc dPatternStr(ctx: var DCodegenCtx, pat: Pattern): string =

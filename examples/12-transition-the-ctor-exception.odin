@@ -7,8 +7,16 @@ tuckˑtypeˑConfig :: struct {
 	url: string,
 }
 
+tuckˑtypeˑConfig_drop :: proc(x: tuckˑtypeˑConfig) {
+  rt.tuckDrop(x.url)
+}
+
 tuckˑtypeˑFeed :: struct {
 	title: string,
+}
+
+tuckˑtypeˑFeed_drop :: proc(x: tuckˑtypeˑFeed) {
+  rt.tuckDrop(x.title)
 }
 
 tuckˑtypeˑSocket :: struct {
@@ -70,12 +78,12 @@ tuckˑtypeˑPlayerState_eq :: proc(a, b: tuckˑtypeˑPlayerState) -> bool {
 tuckˑtypeˑPlayerState_drop :: proc(x: tuckˑtypeˑPlayerState) {
   #partial switch v in x {
   case tuckˑtypeˑPlayerState_Unloaded:
-    rt.tuckDrop(v.config)
+    tuckˑtypeˑConfig_drop(v.config)
   case tuckˑtypeˑPlayerState_Loading:
-    rt.tuckDrop(v.config)
+    tuckˑtypeˑConfig_drop(v.config)
   case tuckˑtypeˑPlayerState_Ready:
-    rt.tuckDrop(v.config)
-    rt.tuckDrop(v.feed)
+    tuckˑtypeˑConfig_drop(v.config)
+    tuckˑtypeˑFeed_drop(v.feed)
   }
 }
 canTransition_tuckˑtypeˑPlayerState :: proc(frm: tuckˑtypeˑPlayerStateKind, to: tuckˑtypeˑPlayerStateKind) -> bool {

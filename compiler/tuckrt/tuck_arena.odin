@@ -54,6 +54,16 @@ inArena :: #force_inline proc "contextless" (p: rawptr) -> bool {
 	return gArenaBase != 0 && uintptr(p) - gArenaBase < uintptr(ARENA_SEG * ARENA_CLASSES)
 }
 
+// Does offset `off` of class `c`'s segment start a block? A power-of-two class
+// is a mask; the others need the remainder.
+@(private)
+arenaIsStart :: #force_inline proc "contextless" (off, c: int) -> bool {
+	cb := arenaClassBytes[c]
+	in_seg := off & (ARENA_SEG - 1)
+	if cb & (cb - 1) == 0 do return in_seg & (cb - 1) == 0
+	return in_seg % cb == 0
+}
+
 // How many bytes the arena block starting at `p` holds, or 0 when `p` is not
 // the start of one.
 @(private)
@@ -61,7 +71,7 @@ arenaCapacity :: #force_inline proc "contextless" (p: rawptr) -> int {
 	if !inArena(p) do return 0
 	off := int(uintptr(p) - gArenaBase)
 	c := off / ARENA_SEG
-	if (off % ARENA_SEG) % arenaClassBytes[c] != 0 do return 0
+	if !arenaIsStart(off, c) do return 0
 	return arenaClassBytes[c]
 }
 
@@ -89,7 +99,7 @@ arenaTake :: proc "contextless" (size: int) -> rawptr {
 arenaGive :: proc "contextless" (p: rawptr) {
 	off := int(uintptr(p) - gArenaBase)
 	c := off / ARENA_SEG
-	if (off % ARENA_SEG) % arenaClassBytes[c] != 0 do return   // an interior slice: its block's business
+	if !arenaIsStart(off, c) do return   // an interior slice: its block's business
 	([^]rawptr)(p)[0] = tArenaCache[c]
 	tArenaCache[c] = p
 }
@@ -100,7 +110,7 @@ tuckArenaProc :: proc(data: rawptr, mode: mem.Allocator_Mode, size, alignment: i
 	case .Alloc, .Alloc_Non_Zeroed:
 		if size > 0 && size <= ARENA_MAX && alignment <= 16 && gArenaBase != 0 {
 			if p := arenaTake(size); p != nil {
-				if mode == .Alloc do mem.zero(p, size)
+				if mode == .Alloc do intrinsics.mem_zero(p, size)
 				return ([^]byte)(p)[:size], nil
 			}
 		}

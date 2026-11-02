@@ -31,6 +31,12 @@ proc cMemset(dest: pointer, c: cint, n: csize_t) {.importc: "memset", header: "<
 template fastCopy(dest, src: pointer, n: untyped) = cMemcpy(dest, src, csize_t(n))
 template fastZero(dest: pointer, n: untyped) = cMemset(dest, 0, csize_t(n))
 
+# Release builds link a small-block allocator over glibc's (tuck_malloc.c):
+# every block this runtime and the program allocate is freed by hand, so
+# malloc/free are the hot path of anything that builds trees, strings, Seqs.
+when defined(release) and defined(linux) and not defined(tuckNoArena):
+  {.compile: "tuck_malloc.c".}
+
 proc heapAlloc(n: csize_t): pointer {.importc: "malloc", header: "<stdlib.h>".}
 proc heapGrow(p: pointer, n: csize_t): pointer {.importc: "realloc", header: "<stdlib.h>".}
 proc heapFree(p: pointer) {.importc: "free", header: "<stdlib.h>".}

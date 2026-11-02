@@ -1,0 +1,300 @@
+# richards: the OS-kernel simulation of Are-We-Fast-Yet (tasks, packet queues, a scheduler), as value-semantics Tuck: packets and control blocks are parallel Seqs in one World that each step returns updated.
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+import bits
+
+const IdIdle = 0
+const IdWorker = 1
+const IdHandlerA = 2
+const IdHandlerB = 3
+const IdDeviceA = 4
+const IdDeviceB = 5
+const KindDevice = 0
+const KindWork = 1
+const DataSize = 4
+
+# Packets: a link to the next (-1 is none), the id of the task it is for, a
+# kind, a1 and four a2 slots (flat, packet * 4 + i). Control blocks, indexed by
+# task id: link in the scheduler's list, priority, the head of its packet
+# queue, a state, the task's kind (0 idle, 1 worker, 2 handler, 3 device) and
+# its two registers.
+type World:
+  plink: Seq[int]
+  pid: Seq[int]
+  pkind: Seq[int]
+  pa1: Seq[int]
+  pa2: Seq[int]
+  tlink: Seq[int]
+  tpri: Seq[int]
+  tqueue: Seq[int]
+  tstate: Seq[int]
+  tkind: Seq[int]
+  tv1: Seq[int]
+  tv2: Seq[int]
+  head: int
+  current: int
+  curId: int
+  queued: int
+  held: int
+
+type Next:
+  w: World
+  next: int
+
+fn emptyWorld() -> World:
+  return {plink: [], pid: [], pkind: [], pa1: [], pa2: [], tlink: [], tpri: [],
+          tqueue: [], tstate: [], tkind: [], tv1: [], tv2: [], head: -1,
+          current: -1, curId: -1, queued: 0, held: 0} World
+
+# A new packet; its index is `next`.
+fn packet({w: World, link: int, id: int, kind: int}) -> Next:
+  var v = w
+  let at = v.plink.len
+  v.plink = {items: v.plink, value: link} push
+  v.pid = {items: v.pid, value: id} push
+  v.pkind = {items: v.pkind, value: kind} push
+  v.pa1 = {items: v.pa1, value: 0} push
+  for i in 0 ..< DataSize:
+    v.pa2 = {items: v.pa2, value: 0} push
+  return {w: v, next: at} Next
+
+# A control block, added to the front of the scheduler's list.
+fn addTask({w: World, id: int, prio: int, queue: int, kind: int, v1: int, v2: int}) -> World:
+  var v = w
+  v.tlink = {items: v.tlink, value: v.head} push
+  v.tpri = {items: v.tpri, value: prio} push
+  v.tqueue = {items: v.tqueue, value: queue} push
+  let state = if queue < 0: 2 else: 3
+  v.tstate = {items: v.tstate, value: state} push
+  v.tkind = {items: v.tkind, value: kind} push
+  v.tv1 = {items: v.tv1, value: v1} push
+  v.tv2 = {items: v.tv2, value: v2} push
+  v.head = id
+  v.current = id
+  return v
+
+fn heldOrSuspended({state: int}) -> bool:
+  return state >= 4 or state == 2
+
+fn markHeld({w: World, id: int}) -> World:
+  var v = w
+  if v.tstate[id] < 4:
+    v.tstate[id] = v.tstate[id] + 4
+  return v
+
+fn markNotHeld({w: World, id: int}) -> World:
+  var v = w
+  if v.tstate[id] >= 4:
+    v.tstate[id] = v.tstate[id] - 4
+  return v
+
+fn markSuspended({w: World, id: int}) -> World:
+  var v = w
+  if v.tstate[id] % 4 < 2:
+    v.tstate[id] = v.tstate[id] + 2
+  return v
+
+fn markRunnable({w: World, id: int}) -> World:
+  var v = w
+  if v.tstate[id] % 2 == 0:
+    v.tstate[id] = v.tstate[id] + 1
+  return v
+
+# Append `p` to the packet queue starting at `queue`; `next` is the new head.
+fn addTo({w: World, p: int, queue: int}) -> Next:
+  var v = w
+  v.plink[p] = -1
+  if queue < 0:
+    return {w: v, next: p} Next
+  var n = queue
+  for v.plink[n] >= 0:
+    n = v.plink[n]
+  v.plink[n] = p
+  return {w: v, next: queue} Next
+
+fn release({w: World, id: int}) -> Next:
+  let v = {w: w, id: id} markNotHeld
+  if v.tpri[id] > v.tpri[v.current]:
+    return {w: v, next: id} Next
+  return {w: v, next: v.current} Next
+
+fn holdCurrent({w: World}) -> Next:
+  var v = w
+  v.held = v.held + 1
+  v = {w: v, id: v.current} markHeld
+  return {w: v, next: v.tlink[v.current]} Next
+
+fn suspendCurrent({w: World}) -> Next:
+  let v = {w: w, id: w.current} markSuspended
+  return {w: v, next: v.current} Next
+
+# Send packet `p` to the task it is addressed to.
+fn queuePacket({w: World, p: int}) -> Next:
+  var v = w
+  let t = v.pid[p]
+  v.queued = v.queued + 1
+  v.plink[p] = -1
+  v.pid[p] = v.curId
+  if v.tqueue[t] < 0:
+    v.tqueue[t] = p
+    v = {w: v, id: t} markRunnable
+    if v.tpri[t] > v.tpri[v.current]:
+      return {w: v, next: t} Next
+  else:
+    let a = {w: v, p: p, queue: v.tqueue[t]} addTo
+    v = a.w
+    v.tqueue[t] = a.next
+  return {w: v, next: v.current} Next
+
+fn runIdle({w: World, id: int}) -> Next:
+  var v = w
+  v.tv2[id] = v.tv2[id] - 1
+  if v.tv2[id] == 0:
+    return {w: v} holdCurrent
+  let r = v.tv1[id]
+  if r % 2 == 0:
+    v.tv1[id] = r /i 2
+    return {w: v, id: IdDeviceA} release
+  let half = (r /i 2) ~u64
+  let mixed = {a: half, b: 53256 ~u64} bitXor
+  v.tv1[id] = mixed ~int
+  return {w: v, id: IdDeviceB} release
+
+fn runWorker({w: World, id: int, p: int}) -> Next:
+  var v = w
+  if p < 0:
+    return {w: v} suspendCurrent
+  if v.tv1[id] == IdHandlerA:
+    v.tv1[id] = IdHandlerB
+  else:
+    v.tv1[id] = IdHandlerA
+  v.pid[p] = v.tv1[id]
+  v.pa1[p] = 0
+  for i in 0 ..< DataSize:
+    var n = v.tv2[id] + 1
+    if n > 26:
+      n = 1
+    v.tv2[id] = n
+    v.pa2[p * DataSize + i] = n
+  return {w: v, p: p} queuePacket
+
+fn runHandler({w: World, id: int, p: int}) -> Next:
+  var v = w
+  if p >= 0:
+    if v.pkind[p] == KindWork:
+      let a = {w: v, p: p, queue: v.tv1[id]} addTo
+      v = a.w
+      v.tv1[id] = a.next
+    else:
+      let a = {w: v, p: p, queue: v.tv2[id]} addTo
+      v = a.w
+      v.tv2[id] = a.next
+  let work = v.tv1[id]
+  if work >= 0:
+    let count = v.pa1[work]
+    if count < DataSize:
+      let dev = v.tv2[id]
+      if dev >= 0:
+        v.tv2[id] = v.plink[dev]
+        v.pa1[dev] = v.pa2[work * DataSize + count]
+        v.pa1[work] = count + 1
+        return {w: v, p: dev} queuePacket
+    else:
+      v.tv1[id] = v.plink[work]
+      return {w: v, p: work} queuePacket
+  return {w: v} suspendCurrent
+
+fn runDevice({w: World, id: int, p: int}) -> Next:
+  var v = w
+  if p < 0:
+    let held = v.tv1[id]
+    if held < 0:
+      return {w: v} suspendCurrent
+    v.tv1[id] = -1
+    return {w: v, p: held} queuePacket
+  v.tv1[id] = p
+  return {w: v} holdCurrent
+
+# Run control block `id` once: take the packet at the head of its queue if it
+# has one waiting, hand it to the task, and return the control block to run next.
+fn runTcb({w: World, id: int}) -> Next:
+  var v = w
+  var p = -1
+  if v.tstate[id] == 3:
+    p = v.tqueue[id]
+    v.tqueue[id] = v.plink[p]
+    if v.tqueue[id] < 0:
+      v.tstate[id] = 0
+    else:
+      v.tstate[id] = 1
+  let kind = v.tkind[id]
+  if kind == 0:
+    return {w: v, id: id} runIdle
+  if kind == 1:
+    return {w: v, id: id, p: p} runWorker
+  if kind == 2:
+    return {w: v, id: id, p: p} runHandler
+  return {w: v, id: id, p: p} runDevice
+
+fn schedule({w: World}) -> World:
+  var v = w
+  var cur = v.head
+  for cur >= 0:
+    if {state: v.tstate[cur]} heldOrSuspended:
+      cur = v.tlink[cur]
+    else:
+      v.current = cur
+      v.curId = cur
+      let r = {w: v, id: cur} runTcb
+      v = r.w
+      cur = r.next
+  return v
+
+fn benchmark({count: int}) -> int:
+  var w = emptyWorld
+  w = {w: w, id: IdIdle, prio: 0, queue: -1, kind: 0, v1: 1, v2: count} addTask
+  w.tstate[IdIdle] = 0
+  var q = -1
+  var made = {w: w, link: q, id: IdWorker, kind: KindWork} packet
+  w = made.w
+  q = made.next
+  made = {w: w, link: q, id: IdWorker, kind: KindWork} packet
+  w = made.w
+  q = made.next
+  w = {w: w, id: IdWorker, prio: 1000, queue: q, kind: 1, v1: IdHandlerA, v2: 0} addTask
+  q = -1
+  for i in 0 ..< 3:
+    made = {w: w, link: q, id: IdDeviceA, kind: KindDevice} packet
+    w = made.w
+    q = made.next
+  w = {w: w, id: IdHandlerA, prio: 2000, queue: q, kind: 2, v1: -1, v2: -1} addTask
+  q = -1
+  for i in 0 ..< 3:
+    made = {w: w, link: q, id: IdDeviceB, kind: KindDevice} packet
+    w = made.w
+    q = made.next
+  w = {w: w, id: IdHandlerB, prio: 3000, queue: q, kind: 2, v1: -1, v2: -1} addTask
+  w = {w: w, id: IdDeviceA, prio: 4000, queue: -1, kind: 3, v1: -1, v2: 0} addTask
+  w = {w: w, id: IdDeviceB, prio: 5000, queue: -1, kind: 3, v1: -1, v2: 0} addTask
+  w = {w: w} schedule
+  return w.queued * 100000 + w.held
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 1000
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  var total = 0
+  for i in 0 ..< n:
+    total = total + {count: 1000} benchmark
+  {text: total.toStr} printLine
+  return 0

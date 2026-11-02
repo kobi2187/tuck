@@ -1,0 +1,209 @@
+# havlak: Havlak loop recognition (DFS numbering, union-find, header and worklist processing) on a generated control-flow graph of nested loops and diamonds, after Are-We-Fast-Yet's Havlak. Edges are flat arrays; adjacency is built by counting sort.
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+type Cfg:
+  efrom: Seq[int]
+  eto: Seq[int]
+  made: int
+
+type At:
+  g: Cfg
+  node: int
+
+fn newNode({g: Cfg}) -> At:
+  var v = g
+  let id = v.made
+  v.made = id + 1
+  return {g: v, node: id} At
+
+fn edge({g: Cfg, a: int, b: int}) -> Cfg:
+  var v = g
+  v.efrom = {items: v.efrom, value: a} push
+  v.eto = {items: v.eto, value: b} push
+  return v
+
+fn diamond({g: Cfg, entry: int}) -> At:
+  var v = g
+  let a = {g: v} newNode
+  let b = {g: a.g} newNode
+  let j = {g: b.g} newNode
+  v = {g: j.g, a: entry, b: a.node} edge
+  v = {g: v, a: entry, b: b.node} edge
+  v = {g: v, a: a.node, b: j.node} edge
+  v = {g: v, a: b.node, b: j.node} edge
+  return {g: v, node: j.node} At
+
+# A loop whose body is a diamond and, below depth 0, two nested loops.
+fn loopRegion({g: Cfg, entry: int, depth: int}) -> At:
+  let h = {g: g} newNode
+  var v = {g: h.g, a: entry, b: h.node} edge
+  let d = {g: v, entry: h.node} diamond
+  v = d.g
+  var cur = d.node
+  if depth > 0:
+    let r1 = {g: v, entry: cur, depth: depth - 1} loopRegion
+    let r2 = {g: r1.g, entry: r1.node, depth: depth - 1} loopRegion
+    v = r2.g
+    cur = r2.node
+  v = {g: v, a: cur, b: h.node} edge
+  let x = {g: v} newNode
+  v = {g: x.g, a: h.node, b: x.node} edge
+  return {g: v, node: x.node} At
+
+type Csr:
+  start: Seq[int]
+  adj: Seq[int]
+
+# Adjacency by counting sort: for each node, the `other` ends of the edges whose `key` end it is.
+fn adjacency({n: int, key: Seq[int], other: Seq[int]}) -> Csr:
+  var start: Seq[int] = []
+  for i in 0 ..< n + 1:
+    start = {items: start, value: 0} push
+  for e in key:
+    start[e + 1] = start[e + 1] + 1
+  for i in 0 ..< n:
+    start[i + 1] = start[i + 1] + start[i]
+  var fill: Seq[int] = []
+  for i in 0 ..< n:
+    fill = {items: fill, value: start[i]} push
+  var adj: Seq[int] = []
+  for i in 0 ..< key.len:
+    adj = {items: adj, value: 0} push
+  for i in 0 ..< key.len:
+    let k = key[i]
+    adj[fill[k]] = other[i]
+    fill[k] = fill[k] + 1
+  return {start: start, adj: adj} Csr
+
+type Dfs:
+  number: Seq[int]
+  nodes: Seq[int]
+  last: Seq[int]
+
+fn depthFirst({n: int, succ: Csr}) -> Dfs:
+  var number: Seq[int] = []
+  var last: Seq[int] = []
+  var cursor: Seq[int] = []
+  var dstack: Seq[int] = []
+  for i in 0 ..< n:
+    number = {items: number, value: -1} push
+    last = {items: last, value: 0} push
+    cursor = {items: cursor, value: succ.start[i]} push
+    dstack = {items: dstack, value: 0} push
+  var nodes: Seq[int] = [0]
+  number[0] = 0
+  var sp = 1
+  var counter = 1
+  for sp > 0:
+    let top = dstack[sp - 1]
+    if cursor[top] < succ.start[top + 1]:
+      let s = succ.adj[cursor[top]]
+      cursor[top] = cursor[top] + 1
+      if number[s] < 0:
+        number[s] = counter
+        nodes = {items: nodes, value: s} push
+        counter = counter + 1
+        dstack[sp] = s
+        sp = sp + 1
+    else:
+      last[number[top]] = counter - 1
+      sp = sp - 1
+  return {number: number, nodes: nodes, last: last} Dfs
+
+fn find({parent: Seq[int], x: int}) -> int:
+  var r = x
+  for parent[r] != r:
+    r = parent[r]
+  return r
+
+fn ancestor({w: int, v: int, last: Seq[int]}) -> bool:
+  return w <= v and v <= last[w]
+
+fn loops({n: int, preds: Csr, d: Dfs}) -> int:
+  let size = d.nodes.len
+  var parent: Seq[int] = []
+  var header: Seq[int] = []
+  var stamp: Seq[int] = []
+  for i in 0 ..< size:
+    parent = {items: parent, value: i} push
+    header = {items: header, value: 0} push
+    stamp = {items: stamp, value: -1} push
+  var found = 0
+  var irreducible = 0
+  var w = size - 1
+  for w >= 0:
+    var pool: Seq[int] = []
+    let node = d.nodes[w]
+    var kind = 0
+    for k in preds.start[node] ..< preds.start[node + 1]:
+      let v = d.number[preds.adj[k]]
+      if v >= 0 and {w: w, v: v, last: d.last} ancestor:
+        if v != w:
+          let r = {parent: parent, x: v} find
+          pool = {items: pool, value: r} push
+          stamp[r] = w
+        else:
+          kind = 2
+    if pool.len > 0:
+      kind = 1
+    var work = pool
+    var qi = 0
+    for qi < work.len:
+      let x = work[qi]
+      qi = qi + 1
+      let xn = d.nodes[x]
+      for k in preds.start[xn] ..< preds.start[xn + 1]:
+        let y = d.number[preds.adj[k]]
+        if y >= 0 and not {w: x, v: y, last: d.last} ancestor:
+          let yd = {parent: parent, x: y} find
+          if not {w: w, v: yd, last: d.last} ancestor:
+            kind = 3
+          else:
+            if yd != w and stamp[yd] != w:
+              work = {items: work, value: yd} push
+              pool = {items: pool, value: yd} push
+              stamp[yd] = w
+    if pool.len > 0 or kind == 2:
+      found = found + 1
+      if kind == 3:
+        irreducible = irreducible + 1
+      for x in pool:
+        header[x] = w
+        parent[x] = w
+    w = w - 1
+  var sum = 0
+  for h in header:
+    sum = (sum + h) % 1000000007
+  return found * 1000003 + irreducible * 1009 + sum
+
+fn analyze({regions: int}) -> int:
+  var g = {efrom: [], eto: [], made: 1} Cfg
+  var cur = 0
+  for i in 0 ..< regions:
+    let r = {g: g, entry: cur, depth: 4} loopRegion
+    g = r.g
+    cur = r.node
+  let n = g.made
+  let succ = {n: n, key: g.efrom, other: g.eto} adjacency
+  let preds = {n: n, key: g.eto, other: g.efrom} adjacency
+  let d = {n: n, succ: succ} depthFirst
+  return {n: n, preds: preds, d: d} loops
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 100
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let r = {regions: n} analyze
+  {text: r.toStr} printLine
+  return 0

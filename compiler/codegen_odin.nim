@@ -1358,13 +1358,23 @@ proc genBlock(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ctx.indent = saved
   lines.join("\n")
 
+proc recordOwns*(ctx: OdinCodegenCtx, d: Decl): bool =
+  ## A plain record of this module with a field that owns storage: it gets a
+  ## derived `_drop` (codegen_odin_decl), like a payload sum.
+  if d.typeBody == nil or d.typeBody.kind != tkRecord or d.generics.len > 0 or
+     d.typeExternHeader != "": return false
+  for f in d.typeBody.fields:
+    if ctx.res.owning(ctx.module, f.typ): return true
+
 proc payloadSumNamed*(ctx: OdinCodegenCtx, t: Type): bool =
-  ## A payload sum of this module with a derived `_drop` (codegen_odin_decl):
-  ## not generic, so its name alone says which procedure.
+  ## A payload sum, or a record that owns storage, of this module with a
+  ## derived `_drop` (codegen_odin_decl): not generic, so its name alone says
+  ## which procedure.
   if t == nil or t.kind != tkNamed: return false
   let d = ctx.module.findDecl(dkType, t.name)
-  d != nil and d.typeBody != nil and d.typeBody.kind == tkSum and
-    sumHasPayload(d.typeBody) and d.generics.len == 0
+  if d == nil or d.typeBody == nil or d.generics.len > 0: return false
+  if d.typeBody.kind == tkSum: return sumHasPayload(d.typeBody)
+  ctx.recordOwns(d)
 
 proc odinDrop*(ctx: var OdinCodegenCtx, t: Type, path: string,
                deep: bool): string =
@@ -1457,7 +1467,7 @@ proc movedAssignTarget(ctx: OdinCodegenCtx, t: Expr): string =
   ## qualified on the right, bare on the left. Rejected here and by D; Nim
   ## was correct only because its backend never takes this path. EV-9.
   if ctx.res.isOwnerField(t): "self." & t.name
-  else: t.name
+  else: pathOf(t)
 
 proc genOdinCopy(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A whole value copied (ownership_write decided where, rule G what).
