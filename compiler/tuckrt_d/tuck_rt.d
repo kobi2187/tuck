@@ -490,16 +490,23 @@ ulong hashKey(T)(T key)
 // that aborts with the site, not an error value (mirrors tuck_rt.nim's
 // IndexDefect; D's own bounds check would say the same thing, but this
 // keeps the message and the op name identical across backends).
-private void tuckSeqBounds(long index, long length, string op)
+// The failure is out of line and the check is forced inline: with the report
+// in the same body, dmd would not inline it, and every `xs[i]` was a call (10%
+// of fannkuch on D, by callgrind).
+private noreturn tuckOutOfBounds(long index, long length, string op)
 {
     import core.stdc.stdlib : abort;
     import std.stdio : stderr;
+    stderr.writeln(op, ": index ", index,
+                   " out of bounds for seq of length ", length);
+    abort();
+}
+
+pragma(inline, true)
+private void tuckSeqBounds(long index, long length, string op)
+{
     if (index < 0 || index >= length)
-    {
-        stderr.writeln(op, ": index ", index,
-                       " out of bounds for seq of length ", length);
-        abort();
-    }
+        tuckOutOfBounds(index, length, op);
 }
 
 /// `xs[i]` bracket sugar lowers to tuckAt/tuckSetAt, NOT to std/seq's
