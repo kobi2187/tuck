@@ -1,0 +1,34 @@
+# divisors: the sum of the divisor counts of 1..n, by trial division.
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+fn divisorCount({x: int}) -> int:
+  var count = 0
+  var d = 1
+  for d * d <= x:
+    if x % d == 0:
+      count = count + 1
+      if d * d != x:
+        count = count + 1
+    d = d + 1
+  return count
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 100
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  var s = 0
+  for i in 1 ..< n + 1:
+    s = s + {x: i} divisorCount
+  {text: s.toStr} printLine
+  return 0

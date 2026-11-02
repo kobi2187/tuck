@@ -1,0 +1,29 @@
+# ackermann: the Ackermann function at (3, n); recursion depth and call cost.
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+fn ack({m: int, n: int}) -> int:
+  if m == 0:
+    return n + 1
+  if n == 0:
+    return {m: m - 1, n: 1} ack
+  let inner = {m: m, n: n - 1} ack
+  return {m: m - 1, n: inner} ack
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 8
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let r = {m: 3, n: n} ack
+  {text: r.toStr} printLine
+  return 0

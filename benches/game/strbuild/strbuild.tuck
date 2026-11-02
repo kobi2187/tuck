@@ -1,0 +1,32 @@
+# strbuild: build one long string by appending numbers, then count its digit bytes.
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+fn digits({s: str}) -> int:
+  var c = 0
+  for i in 0 ..< {t: s} byteCount:
+    let b = {t: s, index: i} byteAt
+    if b >= 48 and b <= 57:
+      c = c + 1
+  return c
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 1000
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  var s = ""
+  for i in 0 ..< n:
+    s = s + i.toStr + ","
+  let r = {s: s} digits
+  {text: r.toStr} printLine
+  return 0

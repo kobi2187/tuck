@@ -1,0 +1,35 @@
+# sieve: count the primes below n with the sieve of Eratosthenes.
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+fn primes({n: int}) -> int:
+  var composite: Seq[bool] = []
+  for i in 0 ..< n + 1:
+    composite = {items: composite, value: false} push
+  var count = 0
+  for i in 2 ..< n:
+    if not composite[i]:
+      count = count + 1
+      var j = i * i
+      for j < n:
+        composite[j] = true
+        j = j + i
+  return count
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 100
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let r = {n: n} primes
+  {text: r.toStr} printLine
+  return 0

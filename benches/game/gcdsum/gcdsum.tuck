@@ -1,0 +1,33 @@
+# gcdsum: the sum of gcd(i, j) over a square, by Euclid's loop.
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+fn gcd({a: int, b: int}) -> int:
+  var x = a
+  var y = b
+  for y != 0:
+    let t = x % y
+    x = y
+    y = t
+  return x
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 100
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  var s = 0
+  for i in 1 ..< n:
+    for j in 1 ..< n:
+      s = s + {a: i, b: j} gcd
+  {text: s.toStr} printLine
+  return 0
