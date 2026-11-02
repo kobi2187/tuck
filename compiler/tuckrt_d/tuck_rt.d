@@ -729,6 +729,21 @@ ulong bitOr(ulong a, ulong b) { return a | b; }
 ulong bitXor(ulong a, ulong b) { return a ^ b; }
 ulong bitNot(ulong a) { return ~a; }
 
+long popCount(ulong a) { import core.bitop : popcnt; return popcnt(a); }
+long leadingZeros(ulong a) { import core.bitop : bsr; return a == 0 ? 64 : 63 - bsr(a); }
+long trailingZeros(ulong a) { import core.bitop : bsf; return a == 0 ? 64 : bsf(a); }
+ulong rotateLeft(ulong a, long by)
+{
+    immutable n = cast(uint)(by & 63);
+    return n == 0 ? a : (a << n) | (a >> (64 - n));
+}
+ulong rotateRight(ulong a, long by)
+{
+    immutable n = cast(uint)(by & 63);
+    return n == 0 ? a : (a >> n) | (a << (64 - n));
+}
+ulong byteSwap(ulong a) { import core.bitop : bswap; return bswap(a); }
+
 /// A shift at or past the width is 0, not undefined — C leaves `x << 64`
 /// undefined and each backend inherits that, so the guard lives here.
 ulong shiftLeft(ulong a, long by)

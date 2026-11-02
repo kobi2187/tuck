@@ -1483,6 +1483,17 @@ proc plainVarAssign*(e: Expr): bool =
   e != nil and e.kind == exkAssign and not e.isDecl and
     e.target != nil and e.target.kind == exkVar
 
+proc placeAssign*(e: Expr): bool =
+  ## `x = <value>` or `x.f.g = <value>`: a name, or fields down from one. The
+  ## place a build loop appends to may be a field of a local record.
+  if e == nil or e.kind != exkAssign or e.isDecl or e.target == nil: return false
+  var t = e.target
+  while t != nil and t.kind == exkField and t.dotArg == nil: t = t.receiver
+  # Not through a member's `self`: it is passed by reference and another
+  # argument may be the same object (`k.grow {other: k}`), which the copy this
+  # replaces kept apart.
+  t != nil and t.kind == exkVar and (t == e.target or t.name != "self")
+
 proc isRtPushCall(call: Expr): bool =
   ## A runtime `push` with its payload still a struct literal. Matched on the
   ## UNMANGLED name: mangling runs before codegen, so a user's own `fn push`
@@ -1494,7 +1505,7 @@ proc isRtPushCall(call: Expr): bool =
 
 proc pushCallOf(res: Resolution, e: Expr): Expr =
   ## The runtime `push` call this plain assignment's value is, or nil.
-  if not plainVarAssign(e): return nil
+  if not placeAssign(e): return nil
   var call = e.assignVal
   if call != nil and res.hasCall(call): call = res.call(call)
   if not isRtPushCall(call): return nil
@@ -1528,7 +1539,8 @@ proc selfAppendParts*(res: Resolution, e: Expr): tuple[read, value: Expr] =
     if f.name == "items": items = f.value
     elif f.name == "value": value = f.value
   if items == nil or value == nil: return
-  if items.kind != exkVar or items.name != e.target.name: return
+  if items.kind notin {exkVar, exkField} or pathOf(items) != pathOf(e.target):
+    return
   (items, value)
 
 proc copiedValue*(e: Expr): Expr =

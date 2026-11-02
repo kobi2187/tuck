@@ -17,6 +17,10 @@ tuckˑtypeˑCtx :: struct {
 	op: tuckˑfnsigˑBinOp,
 }
 
+tuckˑtypeˑCtx_drop :: proc(x: tuckˑtypeˑCtx) {
+  rt.tuckDrop(x.op)
+}
+
 tuckˑfnˑplus :: proc (a: int, b: int) -> int {
   return (a + b)
 }

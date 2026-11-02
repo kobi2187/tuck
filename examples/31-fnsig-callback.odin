@@ -10,6 +10,10 @@ tuckˑtypeˑCalc :: struct {
 	add: tuckˑfnsigˑAdder,
 }
 
+tuckˑtypeˑCalc_drop :: proc(x: tuckˑtypeˑCalc) {
+  rt.tuckDrop(x.add)
+}
+
 tuckˑfnˑplus :: proc (a: int, b: int) -> int {
   return (a + b)
 }

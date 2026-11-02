@@ -24,3 +24,85 @@ extern:
   # guards it once rather than three times.
   fn shiftLeft({a: u64, by: int}) -> u64 [pure, no_alloc]
   fn shiftRight({a: u64, by: int}) -> u64 [pure, no_alloc]
+
+  # Counting and rotating: the building blocks bitsets, hashes, PRNGs and
+  # codecs keep rewriting. Each is one machine instruction on most targets.
+  fn popCount({a: u64}) -> int [pure, no_alloc]
+  # Leading and trailing zero bits; both answer 64 for 0.
+  fn leadingZeros({a: u64}) -> int [pure, no_alloc]
+  fn trailingZeros({a: u64}) -> int [pure, no_alloc]
+  # Rotate by `by` places, taken modulo 64, so any `by` is defined.
+  fn rotateLeft({a: u64, by: int}) -> u64 [pure, no_alloc]
+  fn rotateRight({a: u64, by: int}) -> u64 [pure, no_alloc]
+  # Reverse the byte order (endianness swap).
+  fn byteSwap({a: u64}) -> u64 [pure, no_alloc]
+
+# ---- on `int` -------------------------------------------------------------
+#
+# The u64 forms above are the primitives. Most Tuck code holds an `int`, and
+# `~u64` / `~int` keep every bit (two's complement), so these are the same
+# operations without the casts at the call site.
+fn andInt({a: int, b: int}) -> int [pure, no_alloc]:
+  let x = a ~u64
+  let y = b ~u64
+  let r = {a: x, b: y} bitAnd
+  return r ~int
+
+fn orInt({a: int, b: int}) -> int [pure, no_alloc]:
+  let x = a ~u64
+  let y = b ~u64
+  let r = {a: x, b: y} bitOr
+  return r ~int
+
+fn xorInt({a: int, b: int}) -> int [pure, no_alloc]:
+  let x = a ~u64
+  let y = b ~u64
+  let r = {a: x, b: y} bitXor
+  return r ~int
+
+fn notInt({a: int}) -> int [pure, no_alloc]:
+  let x = a ~u64
+  let r = {a: x} bitNot
+  return r ~int
+
+fn shiftLeftInt({a: int, by: int}) -> int [pure, no_alloc]:
+  let x = a ~u64
+  let r = {a: x, by: by} shiftLeft
+  return r ~int
+
+# Logical: zeros come in from the left, whatever the sign.
+fn shiftRightLogicalInt({a: int, by: int}) -> int [pure, no_alloc]:
+  let x = a ~u64
+  let r = {a: x, by: by} shiftRight
+  return r ~int
+
+# Arithmetic: the sign bit is copied in (floor division by a power of 2).
+fn shiftRightInt({a: int, by: int}) -> int [pure, no_alloc]:
+  if a >= 0:
+    return {a: a, by: by} shiftRightLogicalInt
+  let flipped = {a: a} notInt
+  let shifted = {a: flipped, by: by} shiftRightLogicalInt
+  return {a: shifted} notInt
+
+# ---- single bits -----------------------------------------------------------
+# The `n` low bits set; 0 for n <= 0, all 64 for n >= 64.
+fn lowMask({n: int}) -> u64 [pure, no_alloc]:
+  let ones = {a: 0 ~u64} bitNot
+  if n >= 64:
+    return ones
+  let high = {a: ones, by: n} shiftLeft
+  return {a: high} bitNot
+
+fn testBit({a: u64, i: int}) -> bool [pure, no_alloc]:
+  let shifted = {a: a, by: i} shiftRight
+  let low = {a: shifted, b: 1 ~u64} bitAnd
+  return low == (1 ~u64)
+
+fn setBit({a: u64, i: int}) -> u64 [pure, no_alloc]:
+  let bit = {a: 1 ~u64, by: i} shiftLeft
+  return {a: a, b: bit} bitOr
+
+fn clearBit({a: u64, i: int}) -> u64 [pure, no_alloc]:
+  let bit = {a: 1 ~u64, by: i} shiftLeft
+  let inverted = {a: bit} bitNot
+  return {a: a, b: inverted} bitAnd

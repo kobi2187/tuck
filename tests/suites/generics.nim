@@ -145,6 +145,54 @@ fn main() -> int:
   t.hostBuilds "...and every backend narrows it"
   t.runs "...to the low byte", 0
 
+  # std/bits' foundational pieces, one program, known answers: each failing
+  # check sets its own bit of the exit code (0 = all right).
+  t.src """
+import bits
+
+fn bad({ok: bool, bit: int}) -> int:
+  if ok:
+    return 0
+  return bit
+
+fn main() -> int:
+  var code = 0
+  let x = 240 ~u64
+  let pc = {a: x} popCount
+  code = code + {ok: pc == 4, bit: 1} bad
+  let lz = {a: 1 ~u64} leadingZeros
+  code = code + {ok: lz == 63, bit: 2} bad
+  let tz = {a: 8 ~u64} trailingZeros
+  code = code + {ok: tz == 3, bit: 4} bad
+  let z = {a: 0 ~u64} trailingZeros
+  code = code + {ok: z == 64, bit: 8} bad
+  let rl = {a: 1 ~u64, by: 65} rotateLeft
+  code = code + {ok: rl == (2 ~u64), bit: 16} bad
+  let rr = {a: 1 ~u64, by: 1} rotateRight
+  let top = {a: 1 ~u64, by: 63} shiftLeft
+  code = code + {ok: rr == top, bit: 32} bad
+  let bs = {a: 1 ~u64} byteSwap
+  let hi = {a: 1 ~u64, by: 56} shiftLeft
+  code = code + {ok: bs == hi, bit: 64} bad
+  let sh = {a: -8, by: 1} shiftRightInt
+  code = code + {ok: sh == -4, bit: 128} bad
+  let lg = {a: 12, by: 2} shiftRightLogicalInt
+  code = code + {ok: lg == 3, bit: 256} bad
+  let tb = {a: 5 ~u64, i: 2} testBit
+  code = code + {ok: tb, bit: 512} bad
+  let sb = {a: 5 ~u64, i: 1} setBit
+  code = code + {ok: sb == (7 ~u64), bit: 1024} bad
+  let cb = {a: 7 ~u64, i: 0} clearBit
+  code = code + {ok: cb == (6 ~u64), bit: 2048} bad
+  let lm = {n: 4} lowMask
+  code = code + {ok: lm == (15 ~u64), bit: 4096} bad
+  let xi = {a: 12, b: 10} xorInt
+  code = code + {ok: xi == 6, bit: 8192} bad
+  return code
+"""
+  t.okCheck "std/bits' counting, rotating and int forms check"
+  t.hostRuns "...and compute the known answers on every backend", 0
+
   # --- an arm body does not inherit the SUBJECT's width --------------------
   # The expected-type channel is set to the match subject so a bare variant
   # in an arm body resolves (it was called `expectedVariantType`). Offering

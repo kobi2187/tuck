@@ -1,0 +1,108 @@
+# brainfuck: an interpreter for a nested-loop program; a tight match-and-index loop (after kostya/benchmarks).
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+# '>' 0  '<' 1  '+' 2  '-' 3  '[' 4  ']' 5
+fn opOf({b: int}) -> int:
+  if b == 62:
+    return 0
+  if b == 60:
+    return 1
+  if b == 43:
+    return 2
+  if b == 45:
+    return 3
+  if b == 91:
+    return 4
+  if b == 93:
+    return 5
+  return 6
+
+fn compile({src: str}) -> Seq[int]:
+  var ops: Seq[int] = []
+  for i in 0 ..< {t: src} byteCount:
+    let b = {t: src, index: i} byteAt
+    let code = {b: b ^int} opOf
+    ops = {items: ops, value: code} push
+  return ops
+
+# For every bracket, the index of its partner.
+fn jumps({ops: Seq[int]}) -> Seq[int]:
+  var out: Seq[int] = []
+  for i in 0 ..< ops.len:
+    out = {items: out, value: 0} push
+  for i in 0 ..< ops.len:
+    if ops[i] == 4:
+      var depth = 1
+      var j = i + 1
+      for depth > 0:
+        if ops[j] == 4:
+          depth = depth + 1
+        if ops[j] == 5:
+          depth = depth - 1
+        if depth > 0:
+          j = j + 1
+      out[i] = j
+      out[j] = i
+  return out
+
+fn program({n: int}) -> str:
+  var s = ""
+  for i in 0 ..< n:
+    s = s + "+"
+  s = s + "[>"
+  for i in 0 ..< 100:
+    s = s + "+"
+  s = s + "[>"
+  for i in 0 ..< 100:
+    s = s + "+"
+  s = s + "[>+<-]<-]<-]"
+  return s
+
+fn run({ops: Seq[int], jump: Seq[int]}) -> int:
+  var tape: Seq[int] = []
+  for i in 0 ..< 1000:
+    tape = {items: tape, value: 0} push
+  var pc = 0
+  var ptr = 0
+  var steps = 0
+  for pc < ops.len:
+    let op = ops[pc]
+    if op == 0:
+      ptr = ptr + 1
+    if op == 1:
+      ptr = ptr - 1
+    if op == 2:
+      tape[ptr] = (tape[ptr] + 1) % 256
+    if op == 3:
+      tape[ptr] = (tape[ptr] + 255) % 256
+    if op == 4:
+      if tape[ptr] == 0:
+        pc = jump[pc]
+    if op == 5:
+      if tape[ptr] != 0:
+        pc = jump[pc]
+    pc = pc + 1
+    steps = steps + 1
+  return steps * 256 + tape[3]
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 200
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let src = {n: n} program
+  let ops = {src: src} compile
+  let jump = {ops: ops} jumps
+  let r = {ops: ops, jump: jump} run
+  {text: r.toStr} printLine
+  return 0

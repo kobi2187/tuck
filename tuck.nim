@@ -1643,7 +1643,7 @@ when isMainModule:
           # tuck_rt — `tuckAt`, the bounds check, `sqrt` — can be inlined
           # into the program's loops. n-body ran 9x C without it, 1.5x with
           # it (benches/game, SCORES.md).
-          if wantRelease: " -d:release --passC:-flto --passL:-flto "
+          if wantRelease: " -d:release --passC:-flto --passL:-flto --passC:-U_FORTIFY_SOURCE --passC:-D_FORTIFY_SOURCE=0 --overflowChecks:off "
           else: " --opt:none -d:tuckFast " & pickFastCC()
         # Nim derives its cache dir from the MODULE NAME, so two tuck builds
         # of different programs that happen to share a basename (every

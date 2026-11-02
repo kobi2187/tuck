@@ -11,6 +11,10 @@ tuckˑtypeˑJar :: struct {
 	label: string,
 }
 
+tuckˑtypeˑJar_drop :: proc(x: tuckˑtypeˑJar) {
+  rt.tuckDrop(x.label)
+}
+
 tuckˑfnˑmain :: proc () {
   tuckˑvˑn := 99
   tuckOwnTmp1 := tuckˑmodˑstr.toStr(tuckˑvˑn)

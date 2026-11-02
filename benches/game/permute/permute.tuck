@@ -1,0 +1,49 @@
+# permute: generate every permutation of 0..n-1 with Heap's algorithm, folding a checksum (after Are-We-Fast-Yet's Permute).
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+fn permutations({n: int}) -> int:
+  var a: Seq[int] = []
+  var c: Seq[int] = []
+  for i in 0 ..< n:
+    a = {items: a, value: i} push
+    c = {items: c, value: 0} push
+  var sum = 0
+  var count = 1
+  var i = 0
+  for i < n:
+    if c[i] < i:
+      if i % 2 == 0:
+        let t = a[0]
+        a[0] = a[i]
+        a[i] = t
+      else:
+        let t = a[c[i]]
+        a[c[i]] = a[i]
+        a[i] = t
+      c[i] = c[i] + 1
+      count = count + 1
+      sum = (sum + a[0] * 31 + a[n - 1]) % 1000000007
+      i = 0
+    else:
+      c[i] = 0
+      i = i + 1
+  return sum * 7 + count
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 9
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let r = {n: n} permutations
+  {text: r.toStr} printLine
+  return 0

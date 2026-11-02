@@ -246,6 +246,21 @@ shiftRight :: proc(a: u64, by: int) -> u64 {
 	return a >> u64(by)
 }
 
+popCount :: proc(a: u64) -> int { return int(intrinsics.count_ones(a)) }
+leadingZeros :: proc(a: u64) -> int { return int(intrinsics.count_leading_zeros(a)) }
+trailingZeros :: proc(a: u64) -> int { return int(intrinsics.count_trailing_zeros(a)) }
+rotateLeft :: proc(a: u64, by: int) -> u64 {
+	n := u64(by) & 63
+	if n == 0 { return a }
+	return (a << n) | (a >> (64 - n))
+}
+rotateRight :: proc(a: u64, by: int) -> u64 {
+	n := u64(by) & 63
+	if n == 0 { return a }
+	return (a >> n) | (a << (64 - n))
+}
+byteSwap :: proc(a: u64) -> u64 { return intrinsics.byte_swap(a) }
+
 // seq access. Bounds are a PRECONDITION: violating one is a program error,
 // not an error value the caller matches.
 // `xs[i]` bracket sugar lowers to tuckAt/tuckSetAt, NOT to std/seq's

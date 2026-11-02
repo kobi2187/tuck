@@ -17,6 +17,10 @@ tuckˑtypeˑFeed :: struct {
 	episodeCount: int,
 }
 
+tuckˑtypeˑFeed_drop :: proc(x: tuckˑtypeˑFeed) {
+  rt.tuckDrop(x.title)
+}
+
 tuckˑactorˑCounterMsgKind :: enum { msgIncrement, msgReset }
 tuckˑactorˑCounterMsg :: struct {
 	tuckTag: tuckˑactorˑCounterMsgKind,

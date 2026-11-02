@@ -7,8 +7,16 @@ tuckˑtypeˑConfig :: struct {
 	url: string,
 }
 
+tuckˑtypeˑConfig_drop :: proc(x: tuckˑtypeˑConfig) {
+  rt.tuckDrop(x.url)
+}
+
 tuckˑtypeˑFeed :: struct {
 	title: string,
+}
+
+tuckˑtypeˑFeed_drop :: proc(x: tuckˑtypeˑFeed) {
+  rt.tuckDrop(x.title)
 }
 
 tuckˑtypeˑAudioPlayer :: struct {
@@ -23,9 +31,18 @@ tuckˑtypeˑEpisode :: struct {
 	name: string,
 }
 
+tuckˑtypeˑEpisode_drop :: proc(x: tuckˑtypeˑEpisode) {
+  rt.tuckDrop(x.name)
+}
+
 tuckˑtypeˑPair :: struct {
 	key: string,
 	val: string,
+}
+
+tuckˑtypeˑPair_drop :: proc(x: tuckˑtypeˑPair) {
+  rt.tuckDrop(x.key)
+  rt.tuckDrop(x.val)
 }
 
 tuckˑtypeˑPodcastPlayerLifecycle_Unloaded :: struct {
@@ -89,14 +106,14 @@ tuckˑtypeˑPodcastPlayerLifecycle_eq :: proc(a, b: tuckˑtypeˑPodcastPlayerLif
 tuckˑtypeˑPodcastPlayerLifecycle_drop :: proc(x: tuckˑtypeˑPodcastPlayerLifecycle) {
   #partial switch v in x {
   case tuckˑtypeˑPodcastPlayerLifecycle_Unloaded:
-    rt.tuckDrop(v.config)
+    tuckˑtypeˑConfig_drop(v.config)
   case tuckˑtypeˑPodcastPlayerLifecycle_Loading:
-    rt.tuckDrop(v.config)
+    tuckˑtypeˑConfig_drop(v.config)
   case tuckˑtypeˑPodcastPlayerLifecycle_Ready:
-    rt.tuckDrop(v.config)
-    rt.tuckDrop(v.feed)
+    tuckˑtypeˑConfig_drop(v.config)
+    tuckˑtypeˑFeed_drop(v.feed)
   case tuckˑtypeˑPodcastPlayerLifecycle_Error:
-    rt.tuckDrop(v.config)
+    tuckˑtypeˑConfig_drop(v.config)
     rt.tuckDrop(v.reason)
   }
 }

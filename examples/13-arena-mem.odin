@@ -9,6 +9,10 @@ tuckˑtypeˑEthernetFrame :: struct {
 	bytes: [128]u8,
 }
 
+tuckˑtypeˑEthernetFrame_drop :: proc(x: tuckˑtypeˑEthernetFrame) {
+  rt.tuckDrop(x.bytes)
+}
+
 tuckˑtypeˑHeader :: struct {
 	len: int,
 	frame: rt.SlabRef,

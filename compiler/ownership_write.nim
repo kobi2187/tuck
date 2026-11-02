@@ -49,6 +49,8 @@ type Writer = object
   memo: ConsumeMemo
   ps: Places
   refills: string     ## the place the enclosing assignment defines (the take)
+  dry: bool           ## a first look: mark final reads, bind nothing
+  redefined: string   ## the local the NEXT statement assigns whole, from a value that never reads it
 
 proc owns(w: Writer, t: Type): bool =
   ## Does a value of `t` own storage (rule G)?
@@ -206,6 +208,7 @@ proc isTemporary(w: Writer, n: Expr): bool =
 type Lift = object
   lifted: seq[Expr]   ## bindings to insert before the statement, in order
   effects: bool       ## something with an effect already ran in it
+  leaving: bool       ## the statement is a `return`/`raise`: nothing runs after it
 
 proc pure(w: Writer, n: Expr): bool =
   ## A call that can run earlier without anyone seeing: a fn with a body
@@ -232,6 +235,9 @@ proc readsLocal(w: Writer, n: Expr, name: string): tuple[reads, final: bool] =
     if x.kind == exkVar and x.name == name:
       result.reads = true
       if w.res.isLastUse(x): result.final = true
+    elif x.kind in {exkField, exkBracket} and w.res.isLastUse(x) and
+         rootOf(pathOf(x)) == name:
+      result.final = true      # the liveness stamps a read like `w.n` on the read
 
 proc quiet(w: Writer, n: Expr): bool =
   ## Can `n` run earlier without anyone seeing: no call with an effect,
@@ -243,23 +249,33 @@ proc quiet(w: Writer, n: Expr): bool =
   true
 
 proc sinksLocal(w: var Writer, op: Operand): bool =
-  ## Is `op` a local, handed whole to a parameter that consumes it?
+  ## Is `op` a local, handed whole to a parameter that consumes it, or
+  ## stored whole into a record being built?
   let v = op.child
-  op.use == uArg and v != nil and v.kind == exkVar and w.consumed(op.arg) and
-    w.owns(w.res.typeFor(v))
+  v != nil and v.kind == exkVar and w.owns(w.res.typeFor(v)) and
+    (op.use == uSink or op.use == uArg and w.consumed(op.arg))
 
 proc liftOtherReads(w: var Writer, ops: seq[Operand], i: int, L: var Lift) =
   ## Every other operand that reads the local `ops[i]` sinks, yields a plain
   ## value and runs no effect: bound ahead of the statement. If one held the
   ## local's final read, the sink holds it now.
   let v = ops[i].child
+  var left = false          # a read of the local stays where it was
   for j, other in ops:
     if j == i or other.child == nil or other.use == uMutBorrow: continue
     let (reads, final) = w.readsLocal(other.child, v.name)
-    if not reads or w.owns(w.res.typeFor(other.child)) or
-       not w.quiet(other.child): continue
-    L.lifted.add w.res.bindHere(other.child)
+    if not reads: continue
+    if w.owns(w.res.typeFor(other.child)) or not w.quiet(other.child):
+      left = true
+      continue
+    if not w.dry: L.lifted.add w.res.bindHere(other.child)
     if final: w.res.markLastUseId(v.id)
+  # A `return` is the last thing that runs: with every other read of the
+  # local bound ahead, the sink is its final use whatever the liveness said
+  # (a local moved on another path and dropped at the scope's end was never
+  # marked, so `return {w: v, next: v.n}` copied it, once per call).
+  # `v = f(v, v.n)`: the assignment redefines `v`, so the old value is just as dead.
+  if (L.leaving or w.refills == v.name or w.redefined == v.name) and not left: w.res.markLastUseId(v.id)
 
 proc liftReadsBeforeSink(w: var Writer, call: Expr, L: var Lift) =
   ## `p = {p: p, k: p[0]} flipped`: the argument `p` goes to a parameter that
@@ -282,7 +298,7 @@ proc liftSelf(w: var Writer, n: Expr, use: Use, arg: ArgOf, L: var Lift,
   let sink = use == uSink or (use == uArg and w.consumed(arg))
   if not sink and use notin {uThrough, uProject, uNone} and
        w.isTemporary(n) and not before:
-    L.lifted.add w.res.bindHere(n)
+    if not w.dry: L.lifted.add w.res.bindHere(n)
     L.effects = before
   elif (n.kind == exkCall or w.res.hasCall(n)) and not w.pure(n):
     L.effects = true
@@ -304,7 +320,7 @@ proc lift(w: var Writer, n: Expr, use: Use, arg: ArgOf, L: var Lift,
     return
   if not w.res.isPlaceRead(n):
     let c = if n.kind notin ByOwnKind and w.res.hasCall(n): w.res.call(n) else: n
-    if c.kind == exkCall: w.liftReadsBeforeSink(c, L)
+    if c.kind in {exkCall, exkStruct}: w.liftReadsBeforeSink(c, L)
     for o in w.operands(c, use, arg): w.lift(o.child, o.use, o.arg, L)
   if not own: w.liftSelf(n, use, arg, L, before)
 
@@ -317,8 +333,12 @@ proc liftStatement(w: var Writer, s: Expr): seq[Expr] =
     w.refills = if s.target != nil: pathOf(s.target) else: ""
     w.lift(s.assignVal, uSink, NoArg, L, own = true)
     w.refills = outer
-  of exkReturn: w.lift(s.returnVal, uSink, NoArg, L)
-  of exkRaise: w.lift(s.raiseVal, uSink, NoArg, L)
+  of exkReturn:
+    L.leaving = true
+    w.lift(s.returnVal, uSink, NoArg, L)
+  of exkRaise:
+    L.leaving = true
+    w.lift(s.raiseVal, uSink, NoArg, L)
   of exkFor: w.lift(s.iterable, uBorrow, NoArg, L)
   of exkIf: w.lift(s.cond, uBorrow, NoArg, L)
   of exkMatch: w.lift(s.subject, uBorrow, NoArg, L)
@@ -355,14 +375,25 @@ iterator armSlots(body: Expr): var Expr =
     of exkWhile: yield n.whileBody
     else: discard
 
+proc redefinedBy(w: Writer, b: Expr, i: int): string =
+  ## `v = a.w` as statement `i` of `b`, where `a.w` never reads `v`: the value
+  ## `v` holds before it is dead, so the statement before may hand it on.
+  if i >= b.stmts.len: return ""
+  let n = b.stmts[i]
+  if n.kind == exkAssign and not n.isDecl and n.target != nil and
+     n.target.kind == exkVar and n.assignVal != nil and
+     not n.assignVal.mentionsName(n.target.name): n.target.name
+  else: ""
+
 proc liftAll(w: var Writer, d: Decl) =
   ## Every block's statements, each given the bindings it needs; a branch or
   ## arm that is one statement gets a block only when it needs one.
-  w.ps = w.res.placesOf(w.m, d, w.memo)
+  if not w.dry:          # asking now would memoise the answers the marks below change
+    w.ps = w.res.placesOf(w.m, d, w.memo)
   for slot in d.fnBody.armSlots:
     if slot == nil or slot.kind notin ArmStatements: continue
     let lifted = w.liftStatement(slot)
-    if lifted.len > 0:
+    if lifted.len > 0 and not w.dry:
       slot = asBlock(slot)
       slot.stmts = lifted & slot.stmts
   var blocks: seq[Expr]
@@ -371,9 +402,11 @@ proc liftAll(w: var Writer, d: Decl) =
   for b in blocks:
     var i = 0
     while i < b.stmts.len:
+      w.redefined = w.redefinedBy(b, i + 1)
       let lifted = w.liftStatement(b.stmts[i])
-      for j, l in lifted: b.stmts.insert(l, i + j)
-      i += lifted.len + 1
+      if not w.dry:
+        for j, l in lifted: b.stmts.insert(l, i + j)
+      i += (if w.dry: 1 else: lifted.len + 1)
 
 # --- rule M: a place moved on some paths is reset where it moves ---------------
 
@@ -569,6 +602,13 @@ proc writeRules*(res: Resolution, m: Module) =
   ## tree every backend prints. Run after the appends are made.
   var w = Writer(res: res, m: m)
   var sources: Table[NodeId, DropSource]
+  # A first look at every body, before any answer to "does it consume its
+  # parameter" is memoised: a parameter handed on whole beside a read of
+  # itself (`f(w, w.n)`) is seen as consumed, the read being bound ahead later.
+  w.dry = true
+  for d in m.allFnsAndTasks:
+    if d != nil and d.fnBody != nil: w.liftAll(d)
+  w.dry = false
   for d in m.allFnsAndTasks:
     if d == nil or d.fnBody == nil: continue
     d.ownedParams = @[]

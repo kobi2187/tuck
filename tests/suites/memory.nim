@@ -109,7 +109,7 @@ fn main() -> int:
   # Rule P: `rebuild` only reads `p`, so it borrows it, and the caller frees
   # the value the call rebuilt from, once the new one exists.
   t.emitsOdin "the caller frees what a borrowing call rebuilt from",
-              r"tuckNext1 := tuckˑfnˑrebuild_moved\(tuckˑvˑa, 5\)\n\s*rt\.tuckDrop\(tuckˑvˑa\)"
+              r"tuckNext1 := tuckˑfnˑrebuild_moved\(tuckˑvˑa, 5\)\n\s*tuckˑtypeˑPair_drop\(tuckˑvˑa\)"
   t.omitsOdin "...and the twin that hands its own back does not",
               r"defer delete\(q\.items\)"
   # 2 + 3 + 1 + 1, pinned on all three backends.
@@ -394,6 +394,32 @@ fn main() -> int:
   return {t: s} byteCount + {t: u} byteCount
 """
   t.hostRuns("a chain that reads the target elsewhere is left alone", 8)
+
+  # `a.items = {items: a.items, value: v} push` grows the field IN PLACE, like
+  # a local: it was a copy of the whole Seq per push (a graph builder that
+  # kept its edge lists in a record took over a minute for 150k edges).
+  t.src """
+import seq
+
+type Acc:
+  items: Seq[int]
+  n: int
+
+fn build({n: int}) -> Acc:
+  var a = {items: [], n: 0} Acc
+  for i in 0 ..< n:
+    a.items = {items: a.items, value: i} push
+    a.n = a.n + 1
+  return a
+
+fn main() -> int:
+  let a = {n: 100000} build
+  return (a.items.len + a.items[99999] + a.n) % 200
+"""
+  t.emits "a push onto a field of a local appends in place", r"tuckPush\(tuckˑvˑa\.items"
+  t.emitsD "...on D too", r"rt\.tuckPush\(tuckˑvˑa\.items"
+  t.emitsOdin "...and Odin", r"append\(&tuckˑvˑa\.items"
+  t.hostRuns("...and the field holds what was pushed", 199)
 
   # The loop reading what it has built would see a length it has not reached.
   t.src """

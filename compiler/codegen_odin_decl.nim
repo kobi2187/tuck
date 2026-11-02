@@ -596,6 +596,16 @@ proc genSumDropProc(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
     result.add(lines)
   result.add(ind & "  }\n" & ind & "}\n")
 
+proc genRecordDropProc(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## `R_drop`: frees what a record owns, field by field, by the type's own
+  ## shape (rule G) rather than by Odin's type information at every drop.
+  if not ctx.recordOwns(d): return ""
+  var lines = ""
+  for f in d.typeBody.fields:
+    lines.add(ctx.fieldDropLine(f.typ, "x." & f.name, ind & "  "))
+  "\n" & ind & d.name & "_drop :: proc(x: " & d.name & ") {\n" & lines &
+    ind & "}\n"
+
 proc genSumType*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## A sum type is a plain enum unless it carries payloads or declares
   ## transitions.
@@ -671,6 +681,7 @@ proc genRecordType*(ctx: var OdinCodegenCtx, d: Decl): string =
     res.add(ind & "__validated_" & d.name & " :: proc(v: " & d.name & ") -> " &
             d.name & " {\n" & ind & "\tvalidate_" & d.name & "(v)\n" &
             ind & "\treturn v\n" & ind & "}\n")
+  res.add(ctx.genRecordDropProc(d, ind))
   # manager types carry functionality: member fns join the catalog
   for member in d.typeMembers:
     if member.kind == dkFn:
