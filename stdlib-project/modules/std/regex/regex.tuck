@@ -38,7 +38,6 @@ type Regex:
   prog: Seq[Inst]
   groups: int
   caseless: bool
-  starts: Seq[bool]  # byte -> can a match begin with it; empty: any position may
 
 type Match:
   start: int
@@ -367,10 +366,7 @@ fn tryCompile({pattern: str, caseless: bool}) -> Regex?:
   prog = {prog: prog, node: parsed.value.node} emit
   prog = {prog: prog, op: 5, x: 1, y: 0} pushInst
   prog = {prog: prog, op: 8, x: 0, y: 0} pushInst
-  let unfiltered: Seq[bool] = []
-  let probe = {prog: prog, groups: parsed.value.groups, caseless: caseless, starts: unfiltered} Regex
-  let starts = {re: probe} firstBytes
-  return {prog: prog, groups: parsed.value.groups, caseless: caseless, starts: starts} Regex
+  return {prog: prog, groups: parsed.value.groups, caseless: caseless} Regex
 
 # --- running a program ---------------------------------------------------------
 fn lowerOf({c: int}) -> int:
@@ -405,59 +401,6 @@ fn classHas({ins: Inst, c: int, caseless: bool}) -> bool:
   if ins.neg:
     return not hit
   return hit
-
-# --- which bytes can begin a match -----------------------------------------------
-#
-# A match that cannot be empty, and does not begin at an anchor or at `.`, begins
-# with one of a few bytes. Finding them is a walk over the program's free moves
-# (save, jump, split) to the instructions that consume a byte. `search` then
-# skips every start position whose byte is not among them, instead of running
-# the whole machine, with its captures and thread stack, to fail on the first
-# byte. Anything the walk cannot summarise (`.`, an anchor, a program that can
-# match nothing at all) means no filter: every position is tried, as before.
-
-fn markByte({first: Seq[bool], at: int}) -> Seq[bool]:
-  var out = first
-  out[at] = true
-  return out
-
-fn firstBytes({re: Regex}) -> Seq[bool]:
-  var seen: Seq[bool] = []
-  for i in 0 ..< re.prog.len:
-    seen = {items: seen, value: false} push
-  var first: Seq[bool] = []
-  for b in 0 ..< 256:
-    first = {items: first, value: false} push
-  var work: Seq[int] = [0]
-  var cursor = 0
-  var unbounded = false
-  for cursor < work.len and not unbounded:
-    let pc = work[cursor]
-    cursor = cursor + 1
-    if not seen[pc]:
-      seen[pc] = true
-      let ins = re.prog[pc]
-      if ins.op == 5:
-        work = {items: work, value: pc + 1} push
-      elif ins.op == 4:
-        work = {items: work, value: ins.x} push
-      elif ins.op == 3:
-        work = {items: work, value: ins.x} push
-        work = {items: work, value: ins.y} push
-      elif ins.op == 0:
-        for b in 0 ..< 256:
-          if {a: ins.x, b: b, caseless: re.caseless} sameChar:
-            first = {first: first, at: b} markByte
-      elif ins.op == 2:
-        for b in 0 ..< 256:
-          if {ins: ins, c: b, caseless: re.caseless} classHas:
-            first = {first: first, at: b} markByte
-      else:
-        unbounded = true
-  if unbounded:
-    let anywhere: Seq[bool] = []
-    return anywhere
-  return first
 
 type Thread:
   pc: int
@@ -575,23 +518,11 @@ fn search({re: Regex, subject: str, start: int}) -> Run:
   let n = {t: subject} byteCount
   var s = start
   for s <= n:
-    if {re: re, subject: subject, at: s, n: n} canStart:
-      let r = {re: re, subject: subject, start: s, whole: false, budget: stepBudget} execute
-      if r.ok or r.tooComplex:
-        return r
+    let r = {re: re, subject: subject, start: s, whole: false, budget: stepBudget} execute
+    if r.ok or r.tooComplex:
+      return r
     s = s + 1
   return failed
-
-# Can a match begin at `at`? Only if its byte is one a match can begin with
-# (`firstBytes`); no filter, or the end of the subject for a pattern that needs
-# a byte, are answered here too.
-fn canStart({re: Regex, subject: str, at: int, n: int}) -> bool:
-  if re.starts.len == 0:
-    return true
-  if at >= n:
-    return false
-  let b = {t: subject, index: at} byteAt
-  return re.starts[b ^int]
 
 fn matchAt({subject: str, caps: Seq[int], which: int}) -> Match?:
   let a = caps[which * 2]
@@ -714,8 +645,7 @@ fn compiled({pattern: str}) -> Regex:
   if r.ok:
     return r.value
   let empty: Seq[Inst] = []
-  let nothing: Seq[bool] = []
-  return {prog: empty, groups: 0, caseless: false, starts: nothing} Regex
+  return {prog: empty, groups: 0, caseless: false} Regex
 
 fn first({pattern: str, subject: str}) -> str:
   let re = {pattern: pattern} compiled
@@ -819,42 +749,6 @@ fn checkEdges() -> int:
   let nasty = {pattern: "(a*)*b"} compiled
   if not {re: nasty, subject: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac"} gaveUp:
     return 33
-  return checkPrefilter
-
-fn countOf({pattern: str, subject: str}) -> int:
-  let re = {pattern: pattern} compiled
-  let found = {re: re, subject: subject} findAll
-  return found.len
-
-# The first-byte filter (`firstBytes`) must never hide a match: each shape that
-# changes which start positions are tried, with a count worked out by hand.
-fn checkPrefilter() -> int:
-  if {pattern: "cat|dog", subject: "a dog and a cat and a dog"} countOf != 3:
-    return 40       # branches that start with different bytes
-  if {pattern: "[xy]z", subject: "az xz yz bz"} countOf != 2:
-    return 41       # a class
-  if {pattern: "[^a]b", subject: "xb ab yb"} countOf != 2:
-    return 42       # a negated class
-  let loud = {pattern: "HeLLo", caseless: true} tryCompile
-  if not loud.ok:
-    return 43
-  let three = {re: loud.value, subject: "hello HELLO Hello"} findAll
-  if three.len != 3:
-    return 44       # caseless: either case begins a match
-  let star = {pattern: "a*"} compiled
-  let empty = {re: star, subject: "xyz"} findFirst
-  if not empty.ok:
-    return 45       # can match nothing: every position is tried
-  if {pattern: "^ab", subject: "ab ab"} countOf != 1:
-    return 46       # an anchor: no filter
-  if {pattern: ".b", subject: "xb yb"} countOf != 2:
-    return 47       # any byte: no filter
-  if {pattern: "b$", subject: "ab ab"} countOf != 1:
-    return 48
-  if {pattern: "zzz", subject: "abc"} countOf != 0:
-    return 49
-  if {pattern: "c", subject: "abc"} countOf != 1:
-    return 50       # the last byte of the subject
   return 0
 
 fn main() -> int:
