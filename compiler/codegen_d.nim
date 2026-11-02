@@ -1255,7 +1255,10 @@ proc genDList(ctx: var DCodegenCtx, e: Expr): string =
   ## A list literal as a D array literal.
   var parts: seq[string]
   for item in e.items: parts.add(ctx.genDExpr(item))
-  "[" & parts.join(", ") & "]"
+  # Through the runtime, so the block comes from the arena rather than the
+  # collector's allocator (about 340 instructions a literal).
+  if parts.len == 0: return "[" & "]"
+  "rt.tuckSeqOf([" & parts.join(", ") & "])"
 
 proc dPatternStr(ctx: var DCodegenCtx, pat: Pattern): string =
   ## One arm's pattern as a D case label. A bare tag qualifies to its enum;

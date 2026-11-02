@@ -82,9 +82,9 @@ long tuckˑfnˑdepth(tuckˑtypeˑExpr e) {
 long tuckˑfnˑmain() {
     tuckˑtypeˑExpr tuckˑvˑthree = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Num, tuckˑvariantˑnum: tuckˑtypeˑExpr_Num(value: 3L));
     tuckˑtypeˑExpr tuckˑvˑfour = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Num, tuckˑvariantˑnum: tuckˑtypeˑExpr_Num(value: 4L));
-    tuckˑtypeˑExpr tuckˑvˑsum = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Add, tuckˑvariantˑadd: tuckˑtypeˑExpr_Add(left: [tuckˑvˑthree], right: [tuckˑvˑfour]));
-    tuckˑtypeˑExpr tuckˑvˑneg = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Neg, tuckˑvariantˑneg: tuckˑtypeˑExpr_Neg(operand: [rt.tuckCopy(tuckˑvˑsum)]));
-    tuckˑtypeˑExpr tuckˑvˑwhole = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Add, tuckˑvariantˑadd: tuckˑtypeˑExpr_Add(left: [tuckˑvˑsum], right: [tuckˑvˑneg]));
+    tuckˑtypeˑExpr tuckˑvˑsum = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Add, tuckˑvariantˑadd: tuckˑtypeˑExpr_Add(left: rt.tuckSeqOf([tuckˑvˑthree]), right: rt.tuckSeqOf([tuckˑvˑfour])));
+    tuckˑtypeˑExpr tuckˑvˑneg = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Neg, tuckˑvariantˑneg: tuckˑtypeˑExpr_Neg(operand: rt.tuckSeqOf([rt.tuckCopy(tuckˑvˑsum)])));
+    tuckˑtypeˑExpr tuckˑvˑwhole = tuckˑtypeˑExpr(kind: tuckˑtypeˑExprKind.Add, tuckˑvariantˑadd: tuckˑtypeˑExpr_Add(left: rt.tuckSeqOf([tuckˑvˑsum]), right: rt.tuckSeqOf([tuckˑvˑneg])));
     scope(exit) rt.tuckDrop(tuckˑvˑwhole);
     return ((tuckˑfnˑeval(tuckˑvˑwhole) + tuckˑfnˑdepth(tuckˑvˑwhole)) - 4L);
 }

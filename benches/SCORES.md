@@ -1255,3 +1255,16 @@ Wall-clock after all of it, same run (C in seconds):
 
 (n-body and spectral-norm read worse on Nim than the earlier round only because C
 ran faster this time; their instruction counts did not change.)
+
+## D: a size-class arena for Seq blocks (callgrind instructions)
+
+Every D Seq block was allocated and freed through the collector (~340 and ~250
+instructions). `tuck_arena.d` serves blocks up to 4 KB from mmap'd size-class
+segments (no headers; class from address; spinlock per class); list literals go
+through `rt.tuckSeqOf`, copies/pushes/reserves through the arena.
+
+| program | before | after |
+|---|---|---|
+| binary-trees (sum type) 10 | 297M | 92.6M |
+| regex-redux 6000 | 662.6M | 384.7M |
+| fannkuch 8 | 67.4M | 67.8M (no change) |

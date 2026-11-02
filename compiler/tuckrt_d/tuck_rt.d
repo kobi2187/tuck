@@ -20,6 +20,7 @@ import core.atomic : cas, atomicLoad, atomicStore;
 // reaches everything through `rt`, so tuck_rt re-exports it — mirroring
 // tuck_rt.nim, which fronts tuck_async the same way.
 public import tuck_coro;
+public import tuck_arena;
 
 /// MEMORY IS THE PROGRAM'S. The ownership rules decide every copy, move and
 /// drop (compiler/ownership_write.nim) and the emitted program carries them
@@ -29,6 +30,7 @@ public import tuck_coro;
 shared static this() {
     import core.memory : GC;
     GC.disable();
+    tuckArenaInit();
 }
 
 /// `-version=tuckTrack`: the bytes the program allocated and never freed,
@@ -94,13 +96,62 @@ void tuckReplace(T)(ref T place, T value) {
     place = value;
 }
 
-/// `xs += v` on a Seq: grown in place; when growth moved the block, the old
-/// one is freed (it was only `xs`'s).
-void tuckPush(T)(ref T[] xs, T v) {
-    import core.memory : GC;
+/// Move `xs` into an arena block of room for `room` elements (when that is
+/// small enough), freeing the block it left. False: too big, the caller grows
+/// it the collector's way.
+private bool tuckArenaMove(T)(ref T[] xs, size_t room) {
+    import core.stdc.string : memcpy;
+    immutable bytes = room * T.sizeof;
+    auto q = tuckArenaAlloc(bytes);
+    if (q is null) return false;
+    auto n = xs.length;
+    if (n) memcpy(q, xs.ptr, n * T.sizeof);
     auto old = xs.ptr;
+    xs = (cast(T*) q)[0 .. n];
+    if (old !is null) tuckFreeBlock(cast(void*) old);
+    return true;
+}
+
+/// A list literal `[a, b]` as a Seq: the elements are laid out on the stack
+/// (a static array) and copied into one arena block. Big or compile-time
+/// literals stay the collector's.
+T[] tuckSeqOf(T, size_t N)(auto ref T[N] a) {
+    import core.stdc.string : memcpy;
+    if (!__ctfe && N * T.sizeof <= 4096) {
+        auto q = tuckArenaAlloc(N * T.sizeof);
+        if (q !is null) {
+            memcpy(q, a.ptr, N * T.sizeof);
+            return (cast(T*) q)[0 .. N];
+        }
+    }
+    return a[].dup;
+}
+
+/// `xs += v` on a Seq: grown in place; when growth moved the block, the old
+/// one is freed (it was only `xs`'s). Small blocks live in the arena.
+void tuckPush(T)(ref T[] xs, T v) {
+    immutable n = xs.length;
+    if (xs.ptr !is null && tuckArenaCapacity(xs.ptr) >= (n + 1) * T.sizeof) {
+        xs = xs.ptr[0 .. n + 1];
+        xs[n] = v;
+        return;
+    }
+    if ((n + 1) * T.sizeof <= 2048 && tuckArenaMove(xs, n < 2 ? 4 : n * 2)) {
+        xs = xs.ptr[0 .. n + 1];
+        xs[n] = v;
+        return;
+    }
+    auto old = xs.ptr;
+    if (tuckArenaContains(old)) {          // outgrew the arena: to the collector
+        auto g = new T[](n);
+        g[] = xs[];
+        tuckFreeBlock(cast(void*) old);
+        xs = g;
+        old = null;
+    }
+    auto before = xs.ptr;
     xs ~= v;
-    if (old !is null && xs.ptr !is old) tuckFreeBlock(cast(void*) old);
+    if (before !is null && xs.ptr !is before) tuckFreeBlock(cast(void*) before);
 }
 
 /// Room for `extra` more elements, so the pushes of a counted loop that is
@@ -108,8 +159,17 @@ void tuckPush(T)(ref T[] xs, T v) {
 /// is freed, as `tuckPush` does.
 void tuckReserve(T)(ref T[] xs, long extra) {
     if (extra <= 0) return;
+    immutable want = xs.length + cast(size_t) extra;
+    if (xs.ptr !is null && tuckArenaCapacity(xs.ptr) >= want * T.sizeof) return;
+    if (want * T.sizeof <= 4096 && tuckArenaMove(xs, want)) return;
+    if (tuckArenaContains(xs.ptr)) {
+        auto g = new T[](xs.length);
+        g[] = xs[];
+        tuckFreeBlock(cast(void*) xs.ptr);
+        xs = g;
+    }
     auto old = xs.ptr;
-    xs.reserve(xs.length + cast(size_t) extra);
+    xs.reserve(want);
     if (old !is null && xs.ptr !is old) tuckFreeBlock(cast(void*) old);
 }
 
@@ -140,7 +200,16 @@ T tuckCopy(T)(T v) {
         alias E = typeof(v[0]);
         static if (is(E == immutable)) return v.idup;   // a str: its own bytes
         else {
-            auto r = new E[](v.length);
+            E[] r;
+            if (v.length && v.length * E.sizeof <= 4096) {
+                import core.stdc.string : memset;
+                auto q = tuckArenaAlloc(v.length * E.sizeof);
+                if (q !is null) {
+                    memset(q, 0, v.length * E.sizeof);
+                    r = (cast(E*) q)[0 .. v.length];
+                }
+            }
+            if (r.length != v.length) r = new E[](v.length);
             foreach (i, ref x; v) r[i] = tuckCopy(x);
             return r;
         }

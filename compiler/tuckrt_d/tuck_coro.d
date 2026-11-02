@@ -18,6 +18,7 @@
 // Linux only, like the Odin runtime.
 module tuck_coro;
 
+import tuck_arena;
 import core.stdc.stdlib : abort;
 import std.stdio : stderr;
 import core.sys.posix.unistd : read, write, close, pipe2, pipe;
@@ -813,6 +814,7 @@ private struct ActorSlot
 void tuckFreeBlock(void* p) {
     import core.memory : GC;
     if (p is null) return;
+    if (tuckArenaFree(p)) return;
     auto info = GC.query(p);
     if (info.base is null) return;
     if (p is info.base || (info.size > 2048 && p is info.base + 16))
