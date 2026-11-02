@@ -20,7 +20,7 @@
 /// spinlock around a list pop or a bump.
 module tuck_arena;
 
-import core.atomic : atomicStore, atomicLoad, cas;
+import core.atomic : atomicStore, atomicLoad, cas, MemoryOrder;
 import core.sys.posix.sys.mman : mmap, PROT_READ, PROT_WRITE, MAP_PRIVATE,
     MAP_ANON, MAP_FAILED;
 
@@ -72,12 +72,12 @@ void tuckArenaInit()
 
 private void lockSeg(ref Seg s) nothrow @nogc
 {
-    while (!cas(&s.lock, 0, 1)) {}
+    while (!cas!(MemoryOrder.acq, MemoryOrder.raw)(&s.lock, 0, 1)) {}
 }
 
 private void unlockSeg(ref Seg s) nothrow @nogc
 {
-    atomicStore(s.lock, 0);
+    atomicStore!(MemoryOrder.rel)(s.lock, 0);
 }
 
 /// A block of at least `bytes` (a multiple of 16, uninitialised), or null when

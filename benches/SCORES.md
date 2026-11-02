@@ -1272,3 +1272,5 @@ through `rt.tuckSeqOf`, copies/pushes/reserves through the arena.
 Follow-up: Seq `.dup` copies also go through the arena (`rt.tuckDupSeq`):
 fannkuch 8: 67.8M -> 33.7M (C: 10.7M); regex-redux 6000: 385M -> 167M
 (from 662M); binary-trees 10: 92.6M (C: 28.9M).
+
+Arena lock with acquire/release instead of seq-cst: fannkuch 8 32.4M, binary-trees 10 83.3M.
