@@ -370,6 +370,31 @@ fn main() -> int:
 """
   t.hostRuns("an empty list argument builds on every backend", 0)
 
+  # `s = s + a + b` appends in place too (the chain is regrouped as
+  # `s + (a + b)`): a loop of them was quadratic.
+  t.src """
+import str
+
+fn main() -> int:
+  var s = ""
+  for i in 0 ..< 5:
+    s = s + "a" + "," + "-"
+  return {t: s} byteCount
+"""
+  t.emits "a chained concat onto the target appends in place", r"tuckStrAppend\(tuckˑvˑs"
+  t.hostRuns("...and builds the same string", 15)
+  t.src """
+import str
+
+fn main() -> int:
+  var s = "ab"
+  s = s + s + "c"
+  var u = "x"
+  u = "p" + u + "q"
+  return {t: s} byteCount + {t: u} byteCount
+"""
+  t.hostRuns("a chain that reads the target elsewhere is left alone", 8)
+
   # The loop reading what it has built would see a length it has not reached.
   t.src """
 import seq

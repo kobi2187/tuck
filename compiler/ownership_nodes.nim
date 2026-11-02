@@ -97,8 +97,45 @@ proc stillNeeded(res: Resolution, parts: tuple[read, value: Expr]) =
     if x.kind in {exkVar, exkField} and rootOf(pathOf(x)) == root:
       res.lastUses.excl x.id
 
+proc concatChain(top: Expr): seq[Expr] =
+  ## The left-leaning `+` nodes of a string concatenation, outermost first.
+  var x = top
+  while x != nil and x.kind == exkBinary and isStringConcat(x):
+    result.add x
+    x = x.left
+
+proc regroup(chain: seq[Expr], target: Expr) =
+  ## ((t + a1) + a2) + .. -> t + ((a1 + a2) + ..), the same nodes moved.
+  var rest: seq[Expr]              # the operands after the target, in order
+  for i in countdown(chain.high, 0): rest.add chain[i].right
+  chain[^1].left = rest[0]
+  chain[^1].right = rest[1]
+  for i in countdown(chain.high - 1, 1):
+    chain[i].left = chain[i + 1]
+    chain[i].right = rest[chain.high - i + 1]
+  chain[0].left = target
+  chain[0].right = chain[1]
+
+proc reassociateConcat(res: Resolution, n: Expr) =
+  ## `s = s + a + b` parses as `((s + a) + b)`: the target is not the LEFT
+  ## operand, so it was a full copy of `s` per statement (a loop building a
+  ## string this way is quadratic: 2M appends ran past 13 minutes on Nim).
+  ## String concatenation is associative, so the chain is regrouped as
+  ## `s + (a + b)`, which is the shape `selfConcatParts` appends in place.
+  ## Evaluation order of a, b is unchanged.
+  if not plainVarAssign(n): return
+  let chain = concatChain(n.assignVal)
+  if chain.len < 2: return
+  let target = chain[^1].left
+  if target == nil or target.kind != exkVar or target.name != n.target.name:
+    return
+  for c in chain:
+    if mentionsName(c.right, n.target.name): return
+  regroup(chain, target)
+
 proc materialize(res: Resolution, n: Expr): bool =
   ## Rewrites `n` if it is an append assigned back over its own argument.
+  res.reassociateConcat(n)
   let pushed = selfAppendParts(res, n)
   if pushed.value != nil:
     res.stillNeeded(pushed)
