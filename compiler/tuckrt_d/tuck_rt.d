@@ -193,12 +193,47 @@ void tuckPushFilled(T)(ref T[] xs, T v) {
     xs[$ - 1] = v;
 }
 
-/// `s += t` on a str the body owns: the same, for its bytes.
+/// `a ~ b` on strs: the result is a fresh block, from the arena when it fits.
+string tuckCat(string a, string b) {
+    import core.stdc.string : memcpy;
+    immutable n = a.length + b.length;
+    if (n == 0) return "";
+    if (n <= 1048576) {
+        auto q = cast(char*) tuckArenaAlloc(n);
+        if (q !is null) {
+            if (a.length) memcpy(q, a.ptr, a.length);
+            if (b.length) memcpy(q + a.length, b.ptr, b.length);
+            return cast(string) q[0 .. n];
+        }
+    }
+    return a ~ b;
+}
+
+/// `s += t` on a str the body owns: the same, for its bytes. In place while the
+/// arena block has room; otherwise a block twice the size.
 void tuckStrAppend(ref string s, string t) {
-    import core.memory : GC;
-    auto old = s.ptr;
+    import core.stdc.string : memcpy;
+    if (t.length == 0) return;
+    immutable n = s.length, need = n + t.length;
+    if (s.ptr !is null && tuckArenaCapacity(s.ptr) >= need) {
+        memcpy(cast(char*) s.ptr + n, t.ptr, t.length);
+        s = cast(string) s.ptr[0 .. need];
+        return;
+    }
+    if (need <= 524288) {
+        auto q = cast(char*) tuckArenaAlloc(need < 32 ? 32 : need * 2);
+        if (q !is null) {
+            if (n) memcpy(q, s.ptr, n);
+            memcpy(q + n, t.ptr, t.length);
+            auto old = s.ptr;
+            s = cast(string) q[0 .. need];
+            if (old !is null) tuckFreeBlock(cast(void*) old);
+            return;
+        }
+    }
+    auto before = s.ptr;
     s ~= t;
-    if (old !is null && s.ptr !is old) tuckFreeBlock(cast(void*) old);
+    if (before !is null && s.ptr !is before) tuckFreeBlock(cast(void*) before);
 }
 
 /// A deep copy (rule G): a value of `T` that shares no storage with `v`. A
@@ -211,7 +246,7 @@ T tuckCopy(T)(T v) {
         return v.tuckDup();
     } else static if (isDynamicArray!T) {
         alias E = typeof(v[0]);
-        static if (is(E == immutable)) return v.idup;   // a str: its own bytes
+        static if (is(E == immutable)) return tuckCat(v, "");   // a str: its own bytes
         else {
             E[] r;
             if (v.length && v.length * E.sizeof <= 4096) {

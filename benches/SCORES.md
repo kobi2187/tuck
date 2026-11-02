@@ -1286,3 +1286,5 @@ Per-thread free lists in the arena (no lock on the hot path): fannkuch 8 30.9M, 
 Worst ratios found: D levenshtein 22x and lcs 29x (pushes into blocks past the arena's 4 KB, then the collector's `~=`), Nim matmul 6.7x, Odin/D ackermann 4-5x, D fib 3.4x, D hashmap 3.5x. Fixed in this pass: the D arena now serves blocks to 1 MB (levenshtein/lcs 1.1s -> 0.3s); Nim's second bounds check inside tuckAt/tuckSetAt removed (matmul 15.3M -> 10.8M instructions); Nim `queens` did not build (an empty list argument lifted to an untyped temp) — fixed.
 
 strbuild (`s = s + n.toStr + ","` in a loop): Nim was quadratic (2M appends > 13 min); the chain is now regrouped as `s + (a + b)` so it appends in place: Nim 0.23s, Odin 0.43s, D 0.98s.
+
+D strings through the arena (tuckCat, tuckStrAppend, str copy): wordcount 80.0M -> 43.9M instr (0.58s -> 0.36s); strbuild 0.98s -> 0.52s. Remaining wordcount cost is the stdlib Table and toStr. Wave-2 table (C / Nim / Odin / D, wall s): wordcount 0.008 / 11.5x / 24.3x / 72.3x before this change (C uses a counter array, so not like-for-like); floatloop 0.277 / 0.9x / 1.0x / 2.8x; queens 0.025 / 1.5x / 1.4x / 1.4x.

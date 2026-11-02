@@ -582,7 +582,7 @@ proc genDBinary(ctx: var DCodegenCtx, e: Expr): string =
   ## A binary expression, parenthesised. `str + str` is D's `~`; a range
   ## outside a `for` header has no D value and is refused.
   if isStringConcat(e):
-    return "(" & ctx.genDExpr(e.left) & " ~ " & ctx.genDExpr(e.right) & ")"
+    return "rt.tuckCat(" & ctx.genDExpr(e.left) & ", " & ctx.genDExpr(e.right) & ")"
   if e.binOp in {boRangeIncl, boRangeExcl}:
     return dUnsupported("a range outside a for loop")
   if e.binOp in {boAdd, boSub, boMul}:
