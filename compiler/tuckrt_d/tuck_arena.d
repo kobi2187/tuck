@@ -46,6 +46,10 @@ private struct Seg
 
 private __gshared ubyte* base;
 private __gshared Seg[Classes] segs;
+/// Each thread's own free lists: a block freed here is reused here, with no
+/// lock. (Module-level variables are thread-local in D.) The shared segment
+/// is touched only to carve a fresh block.
+private void*[Classes] cache;
 private __gshared ubyte[MaxSmall / 16 + 1] classOf;   // (bytes + 15) / 16 -> class
 
 /// Reserve the range and fill the class table. A failed reservation leaves the
@@ -86,12 +90,15 @@ void* tuckArenaAlloc(size_t bytes) nothrow @nogc
 {
     if (base is null || bytes == 0 || bytes > MaxSmall) return null;
     immutable c = classOf[(bytes + 15) >> 4];
+    void* p = cache[c];
+    if (p !is null)
+    {
+        cache[c] = *cast(void**) p;
+        return p;
+    }
     auto s = &segs[c];
     lockSeg(*s);
-    void* p = s.free;
-    if (p !is null)
-        s.free = *cast(void**) p;
-    else if (s.bump + ClassBytes[c] <= s.end)
+    if (s.bump + ClassBytes[c] <= s.end)
     {
         p = s.bump;
         s.bump += ClassBytes[c];
@@ -127,10 +134,7 @@ bool tuckArenaFree(void* p) nothrow @nogc
     immutable off = cast(size_t)(cast(ubyte*) p - base);
     immutable c = off / SegBytes;
     if ((off % SegBytes) % ClassBytes[c] != 0) return true;
-    auto s = &segs[c];
-    lockSeg(*s);
-    *cast(void**) p = s.free;
-    s.free = p;
-    unlockSeg(*s);
+    *cast(void**) p = cache[c];
+    cache[c] = p;
     return true;
 }
