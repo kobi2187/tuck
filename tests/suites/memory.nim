@@ -357,6 +357,19 @@ fn main() -> int:
 """
   t.hostRuns("every fill-loop shape computes the same", 98)
 
+  # An empty list passed as an argument is lifted to a temp, which Nim cannot
+  # type from `@[]`: the temp carries its type.
+  t.src """
+import seq
+
+fn count({xs: Seq[int]}) -> int:
+  return xs.len
+
+fn main() -> int:
+  return {xs: []} count
+"""
+  t.hostRuns("an empty list argument builds on every backend", 0)
+
   # The loop reading what it has built would see a length it has not reached.
   t.src """
 import seq

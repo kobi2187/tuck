@@ -30,10 +30,12 @@ version (linux) private enum int MAP_NORESERVE = 0x4000;
 else private enum int MAP_NORESERVE = 0;
 
 private enum size_t SegBytes = 256UL << 20;       // virtual, untouched until used
-private immutable size_t[24] ClassBytes = [
+private immutable size_t[32] ClassBytes = [
     16, 32, 48, 64, 80, 96, 112, 128, 160, 192, 224, 256,
-    320, 384, 448, 512, 640, 768, 896, 1024, 1536, 2048, 3072, 4096];
-private enum size_t MaxSmall = 4096;
+    320, 384, 448, 512, 640, 768, 896, 1024, 1536, 2048, 3072, 4096,
+    8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576];
+private enum size_t SmallTable = 4096;   // classOf covers up to here
+private enum size_t MaxSmall = 1048576;
 private enum size_t Classes = ClassBytes.length;
 
 private struct Seg
@@ -50,7 +52,7 @@ private __gshared Seg[Classes] segs;
 /// lock. (Module-level variables are thread-local in D.) The shared segment
 /// is touched only to carve a fresh block.
 private void*[Classes] cache;
-private __gshared ubyte[MaxSmall / 16 + 1] classOf;   // (bytes + 15) / 16 -> class
+private __gshared ubyte[SmallTable / 16 + 1] classOf;   // (bytes + 15) / 16 -> class
 
 /// Reserve the range and fill the class table. A failed reservation leaves the
 /// arena off: every call then answers "not ours" and the collector serves.
@@ -89,7 +91,13 @@ private void unlockSeg(ref Seg s) nothrow @nogc
 void* tuckArenaAlloc(size_t bytes) nothrow @nogc
 {
     if (base is null || bytes == 0 || bytes > MaxSmall) return null;
-    immutable c = classOf[(bytes + 15) >> 4];
+    size_t c;
+    if (bytes <= SmallTable) c = classOf[(bytes + 15) >> 4];
+    else
+    {
+        c = 24;                       // 8 KB
+        while (ClassBytes[c] < bytes) ++c;
+    }
     void* p = cache[c];
     if (p !is null)
     {
@@ -109,13 +117,17 @@ void* tuckArenaAlloc(size_t bytes) nothrow @nogc
 
 /// How many bytes the block starting at `p` can hold, or 0 when `p` is not the
 /// start of an arena block (null, the collector's, a literal, an interior slice).
+pragma(inline, true)
 size_t tuckArenaCapacity(const(void)* p) nothrow @nogc
 {
     immutable off = cast(size_t)(cast(const(ubyte)*) p - base);
     if (base is null || off >= SegBytes * Classes) return 0;
     immutable c = off / SegBytes;
-    if ((off % SegBytes) % ClassBytes[c] != 0) return 0;
-    return ClassBytes[c];
+    immutable cb = ClassBytes[c];
+    immutable inSeg = off & (SegBytes - 1);
+    // A power-of-two class is tested with a mask; the others need the remainder.
+    if ((cb & (cb - 1)) == 0 ? (inSeg & (cb - 1)) != 0 : inSeg % cb != 0) return 0;
+    return cb;
 }
 
 /// Is `p` anywhere inside the arena (a block start or not)?

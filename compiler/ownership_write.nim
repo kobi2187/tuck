@@ -187,6 +187,8 @@ proc bindHere(res: Resolution, n: Expr): Expr =
   let target = res.typed(Expr(span: val.span, kind: exkVar, name: name), t)
   result = Expr(span: val.span, kind: exkAssign, target: target,
                 assignVal: val, isDecl: true)
+  # `[]` says nothing about its element type; Nim cannot infer it for a temp.
+  if val.kind == exkList and val.items.len == 0: result.declType = t
   fillIdsIn(result)
   markBuilt(result)
   markBuilt(n)

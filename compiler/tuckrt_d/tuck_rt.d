@@ -130,7 +130,7 @@ T[] tuckSeqOf(T, size_t N)(auto ref T[N] a) {
 /// `.dup` of a Seq of plain values, into the arena when small.
 T[] tuckDupSeq(T)(const(T)[] v) {
     import core.stdc.string : memcpy;
-    if (v.length && v.length * T.sizeof <= 4096) {
+    if (v.length && v.length * T.sizeof <= 1048576) {
         auto q = tuckArenaAlloc(v.length * T.sizeof);
         if (q !is null) {
             memcpy(q, v.ptr, v.length * T.sizeof);
@@ -149,7 +149,7 @@ void tuckPush(T)(ref T[] xs, T v) {
         xs[n] = v;
         return;
     }
-    if ((n + 1) * T.sizeof <= 2048 && tuckArenaMove(xs, n < 2 ? 4 : n * 2)) {
+    if ((n + 1) * T.sizeof <= 524288 && tuckArenaMove(xs, n < 2 ? 4 : n * 2)) {
         xs = xs.ptr[0 .. n + 1];
         xs[n] = v;
         return;
@@ -174,7 +174,7 @@ void tuckReserve(T)(ref T[] xs, long extra) {
     if (extra <= 0) return;
     immutable want = xs.length + cast(size_t) extra;
     if (xs.ptr !is null && tuckArenaCapacity(xs.ptr) >= want * T.sizeof) return;
-    if (want * T.sizeof <= 4096 && tuckArenaMove(xs, want)) return;
+    if (want * T.sizeof <= 1048576 && tuckArenaMove(xs, want)) return;
     if (tuckArenaContains(xs.ptr)) {
         auto g = new T[](xs.length);
         g[] = xs[];

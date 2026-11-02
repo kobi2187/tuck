@@ -1280,3 +1280,7 @@ Per-thread free lists in the arena (no lock on the hot path): fannkuch 8 30.9M, 
 ## Odin: the same arena as the allocator (callgrind instructions)
 
 `tuck_arena.odin` wraps the heap allocator: blocks up to 4 KB from mmap size-class segments with thread-local free lists; the rest, and over-aligned requests, go to the heap. binary-trees 10: 119.5M -> 75.5M; fannkuch 8: 24.1M -> 19.8M. Output equal to C on all four programs checked.
+
+## Wave 2 (19 new programs) — first measurements, wall seconds (C / Nim / Odin / D)
+
+Worst ratios found: D levenshtein 22x and lcs 29x (pushes into blocks past the arena's 4 KB, then the collector's `~=`), Nim matmul 6.7x, Odin/D ackermann 4-5x, D fib 3.4x, D hashmap 3.5x. Fixed in this pass: the D arena now serves blocks to 1 MB (levenshtein/lcs 1.1s -> 0.3s); Nim's second bounds check inside tuckAt/tuckSetAt removed (matmul 15.3M -> 10.8M instructions); Nim `queens` did not build (an empty list argument lifted to an untyped temp) — fixed.

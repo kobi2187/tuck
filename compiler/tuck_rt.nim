@@ -119,6 +119,9 @@ proc tuckSeqBounds(index, length: int, op: string) {.inline.} =
   ## themselves (benches/game).
   if index < 0 or index >= length: tuckOutOfBounds(index, length, op)
 
+{.push boundChecks: off.}
+# The bounds are checked once, by tuckSeqBounds; Nim's own check on the index
+# below would be a second, identical one.
 proc tuckAt*[T](items: seq[T], index: int): lent T {.inline, hot.} =
   ## What `xs[i]` lowers to: a bounds-checked read.
   ##
@@ -136,6 +139,7 @@ proc tuckAt*[T](items: seq[T], index: int): lent T {.inline, hot.} =
   ## `at`/`setAt` stay as the explicit spelling and delegate here.
   tuckSeqBounds(index, items.len, "at")
   items[index]
+{.pop.}
 
 proc at*[T](items: seq[T], index: int): T =
   ## std/seq's explicit `at`: the same bounds-checked read as `xs[i]`.
@@ -161,10 +165,12 @@ proc ord*(ch: string): int =
   tuckSeqBounds(0, ch.len, "ord")
   system.ord(ch[0])
 
+{.push boundChecks: off.}
 proc tuckSetAt*[T](items: var seq[T], index: int, value: T) {.inline.} =
   ## What `xs[i] = v` lowers to: a bounds-checked write, in place.
   tuckSeqBounds(index, items.len, "setAt")
   tuckReplace(items[index], value)   # the old element is dropped, `value` kept
+{.pop.}
 
 proc setAt*[T](items: var seq[T], index: int, value: T) =
   ## std/seq's explicit `setAt`: the same bounds-checked write as
