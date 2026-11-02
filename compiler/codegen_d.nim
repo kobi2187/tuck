@@ -1237,8 +1237,9 @@ proc genDFor(ctx: var DCodegenCtx, e: Expr): string =
   var reserve = ""
   if e.fillTargets.len > 0:     # a counted loop that pushes: room first (#210)
     let r = e.iterable
-    let n = "(" & ctx.genDExpr(r.right) & " - " & ctx.genDExpr(r.left) &
-            (if r.binOp == boRangeIncl: " + 1)" else: ")")
+    let n = if r.kind == exkVar: "(" & ctx.genDExpr(r) & ").length"
+            else: "(" & ctx.genDExpr(r.right) & " - " & ctx.genDExpr(r.left) &
+                  (if r.binOp == boRangeIncl: " + 1)" else: ")")
     for t in e.fillTargets:
       reserve.add ctx.indD & "rt.tuckReserve(" & ctx.movedAssignTarget(t) & ", " & n & ");\n"
   reserve & ctx.indD & "foreach (" & dForVars(e) & "; " & iterStr & ") {\n" &

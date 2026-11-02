@@ -1063,8 +1063,9 @@ proc genFor(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   let bodyStr = ctx.genIndented(e.body)
   var reserve = ""
   if e.fillTargets.len > 0:     # a counted loop that pushes: room first (#210)
-    let n = "(" & ctx.genOdinExpr(it.right) & " - " & ctx.genOdinExpr(it.left) &
-            (if it.binOp == boRangeIncl: " + 1)" else: ")")
+    let n = if it.kind == exkVar: "len(" & ctx.genOdinExpr(it) & ")"
+            else: "(" & ctx.genOdinExpr(it.right) & " - " & ctx.genOdinExpr(it.left) &
+                  (if it.binOp == boRangeIncl: " + 1)" else: ")")
     for t in e.fillTargets:
       reserve.add ind & "rt.tuckReserve(&" & ctx.movedAssignTarget(t) & ", " & n & ")\n"
   reserve & ind & "for " & vars & " in " & iterStr & " {\n" & bodyStr & "\n" & ind & "}"

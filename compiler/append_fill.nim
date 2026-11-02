@@ -62,6 +62,12 @@ proc countedRange(res: Resolution, loop: Expr): bool =
   r != nil and r.kind == exkBinary and r.binOp in {boRangeExcl, boRangeIncl} and
     res.simpleBound(r.left) and res.simpleBound(r.right)
 
+proc iteratesSeq(res: Resolution, loop: Expr): bool =
+  ## `for x in xs` over a Seq held in a local: the trip count is `xs.len`.
+  let it = loop.iterable
+  it != nil and it.kind == exkVar and loop.iter != nil and
+    loop.iter.kind == pkVar and seqElem(res.typeFor(it)) != nil
+
 proc leavesEarly(body: Expr): bool =
   for n in body.nodes:
     if n.kind in {exkBreak, exkContinue, exkReturn, exkRaise}: return true
@@ -75,18 +81,21 @@ proc declaredIn(body: Expr, name: string): bool =
     if n.kind == exkAssign and n.isDecl and n.target != nil and
        n.target.kind == exkVar and n.target.name == name: return true
 
-proc fillable(res: Resolution, body: Expr, push: Expr): bool =
+proc fillable(res: Resolution, loop: Expr, body: Expr, push: Expr): bool =
   ## Is this top-level push the only thing the body does with its target?
   let t = push.appendTarget
   push.appendsElement and t != nil and t.kind == exkVar and
     not res.isOwnerField(t) and body.mentions(t.name) == 1 and
-    not body.declaredIn(t.name)
+    not body.declaredIn(t.name) and
+    (loop.iterable == nil or loop.iterable.kind != exkVar or
+     loop.iterable.name != t.name)
 
 proc markLoop(res: Resolution, loop: Expr) =
   if loop.body == nil or loop.body.kind != exkBlock or
-     not res.countedRange(loop) or loop.body.leavesEarly: return
+     not (res.countedRange(loop) or res.iteratesSeq(loop)) or
+     loop.body.leavesEarly: return
   for s in loop.body.stmts:
-    if s != nil and s.kind == exkAppend and res.fillable(loop.body, s):
+    if s != nil and s.kind == exkAppend and res.fillable(loop, loop.body, s):
       s.appendFilled = true
       loop.fillTargets.add s.appendTarget
 

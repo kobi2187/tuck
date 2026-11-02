@@ -661,8 +661,9 @@ proc genFor(ctx: var CodegenCtx, e: Expr, ind: string): string =
   var reserve = ""
   if e.fillTargets.len > 0:     # a counted loop that pushes: room first (#210)
     let r = e.iterable
-    let n = "(" & ctx.genExpr(r.right) & " - " & ctx.genExpr(r.left) &
-            (if r.binOp == boRangeIncl: " + 1)" else: ")")
+    let n = if r.kind == exkVar: "len(" & r.name & ")"
+            else: "(" & ctx.genExpr(r.right) & " - " & ctx.genExpr(r.left) &
+                  (if r.binOp == boRangeIncl: " + 1)" else: ")")
     for t in e.fillTargets: reserve.add ind & "tuckReserve(" & t.name & ", " & n & ")\n"
   reserve & ind & "for " & iterStr & " in " & iterable & ":\n" & ctx.genIndented(e.body)
 

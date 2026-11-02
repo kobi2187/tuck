@@ -242,6 +242,25 @@ fn main() -> int:
   t.omits "a loop that can leave early reserves nothing", r"tuckReserve"
   t.hostRuns("...and still pushes only what it pushed", 3)
 
+  # `for x in xs` knows its trip count too: xs.len.
+  t.src """
+import seq
+
+fn doubled({xs: Seq[int]}) -> Seq[int]:
+  var out: Seq[int] = []
+  for x in xs:
+    out = {items: out, value: x * 2} push
+  return out
+
+fn main() -> int:
+  let d = [1, 2, 3] doubled
+  return d.len + d[2]
+"""
+  t.emits "a for over a Seq reserves its length", r"tuckReserve\(tuckˑvˑout, len\(xs\)\)"
+  t.emitsD "...and on D", r"rt\.tuckReserve\(tuckˑvˑout, \(xs\)\.length\)"
+  t.emitsOdin "...and Odin", r"rt\.tuckReserve\(&tuckˑvˑout, len\(xs\)\)"
+  t.hostRuns("...and the result is right", 9)
+
   # The loop reading what it has built would see a length it has not reached.
   t.src """
 import seq
