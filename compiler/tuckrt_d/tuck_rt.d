@@ -127,6 +127,19 @@ T[] tuckSeqOf(T, size_t N)(auto ref T[N] a) {
     return a[].dup;
 }
 
+/// `.dup` of a Seq of plain values, into the arena when small.
+T[] tuckDupSeq(T)(const(T)[] v) {
+    import core.stdc.string : memcpy;
+    if (v.length && v.length * T.sizeof <= 4096) {
+        auto q = tuckArenaAlloc(v.length * T.sizeof);
+        if (q !is null) {
+            memcpy(q, v.ptr, v.length * T.sizeof);
+            return (cast(T*) q)[0 .. v.length];
+        }
+    }
+    return v.dup;
+}
+
 /// `xs += v` on a Seq: grown in place; when growth moved the block, the old
 /// one is freed (it was only `xs`'s). Small blocks live in the arena.
 void tuckPush(T)(ref T[] xs, T v) {

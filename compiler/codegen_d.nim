@@ -846,7 +846,7 @@ proc genDCopy(ctx: var DCodegenCtx, e: Expr): string =
   ## values, else the runtime's deep copy. The emitter only prints it.
   let valStr = ctx.genDExpr(e.copied)
   case e.copyKind
-  of cpSeq: "(" & valStr & ").dup"
+  of cpSeq: "rt.tuckDupSeq(" & valStr & ")"
   of cpDeep: "rt.tuckCopy(" & valStr & ")"
   of cpStatic: "(" & valStr & ").idup"     # a str's own bytes, to drop
 

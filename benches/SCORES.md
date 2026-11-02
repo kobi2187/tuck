@@ -1268,3 +1268,7 @@ through `rt.tuckSeqOf`, copies/pushes/reserves through the arena.
 | binary-trees (sum type) 10 | 297M | 92.6M |
 | regex-redux 6000 | 662.6M | 384.7M |
 | fannkuch 8 | 67.4M | 67.8M (no change) |
+
+Follow-up: Seq `.dup` copies also go through the arena (`rt.tuckDupSeq`):
+fannkuch 8: 67.8M -> 33.7M (C: 10.7M); regex-redux 6000: 385M -> 167M
+(from 662M); binary-trees 10: 92.6M (C: 28.9M).
