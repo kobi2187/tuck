@@ -39,7 +39,7 @@
 import tables, sets, strutils
 import ast, ast_ops, ast_query
 import resolution
-import ownership_rules, ownership_elab, ownership_nodes
+import ownership_rules, ownership_elab, ownership_nodes, ownership_views
 from twin_calls import markBuilt
 from ssa_ir import rootOf
 
@@ -131,7 +131,7 @@ proc walkAssign(w: var Writer, n: Expr) =
   ## The value is a sink (copied where it is bound); the take is noticed.
   let outer = w.refills
   w.refills = if n.target != nil: pathOf(n.target) else: ""
-  w.visit(n.assignVal, uSink, NoArg)
+  w.visit(n.assignVal, if n.viewBinding: uBorrow else: uSink, NoArg)
   w.refills = outer
 
 proc walk(w: var Writer, e: Expr, use: Use, arg: ArgOf) =
@@ -187,6 +187,8 @@ proc bindHere(res: Resolution, n: Expr): Expr =
   let target = res.typed(Expr(span: val.span, kind: exkVar, name: name), t)
   result = Expr(span: val.span, kind: exkAssign, target: target,
                 assignVal: val, isDecl: true)
+  # `[]` says nothing about its element type; Nim cannot infer it for a temp.
+  if val.kind == exkList and val.items.len == 0: result.declType = t
   fillIdsIn(result)
   markBuilt(result)
   markBuilt(n)
@@ -224,6 +226,55 @@ proc conditional(n: Expr): bool =
              exkDefer} or
     (n.kind == exkBinary and n.binOp in {boAnd, boOr})
 
+proc readsLocal(w: Writer, n: Expr, name: string): tuple[reads, final: bool] =
+  ## Does `n` read local `name`, and is one of those reads its final one?
+  for x in n.nodes:
+    if x.kind == exkVar and x.name == name:
+      result.reads = true
+      if w.res.isLastUse(x): result.final = true
+
+proc quiet(w: Writer, n: Expr): bool =
+  ## Can `n` run earlier without anyone seeing: no call with an effect,
+  ## nothing evaluated conditionally, nothing written?
+  for x in n.nodes:
+    if conditional(x) or x.kind in {exkAssign, exkSend}: return false
+    if (x.kind == exkCall or x.kind notin ByOwnKind and w.res.hasCall(x)) and
+       not w.pure(x): return false
+  true
+
+proc sinksLocal(w: var Writer, op: Operand): bool =
+  ## Is `op` a local, handed whole to a parameter that consumes it?
+  let v = op.child
+  op.use == uArg and v != nil and v.kind == exkVar and w.consumed(op.arg) and
+    w.owns(w.res.typeFor(v))
+
+proc liftOtherReads(w: var Writer, ops: seq[Operand], i: int, L: var Lift) =
+  ## Every other operand that reads the local `ops[i]` sinks, yields a plain
+  ## value and runs no effect: bound ahead of the statement. If one held the
+  ## local's final read, the sink holds it now.
+  let v = ops[i].child
+  for j, other in ops:
+    if j == i or other.child == nil or other.use == uMutBorrow: continue
+    let (reads, final) = w.readsLocal(other.child, v.name)
+    if not reads or w.owns(w.res.typeFor(other.child)) or
+       not w.quiet(other.child): continue
+    L.lifted.add w.res.bindHere(other.child)
+    if final: w.res.markLastUseId(v.id)
+
+proc liftReadsBeforeSink(w: var Writer, call: Expr, L: var Lift) =
+  ## `p = {p: p, k: p[0]} flipped`: the argument `p` goes to a parameter that
+  ## consumes it, but `p[0]` is read AFTER it (rule E, left to right), so the
+  ## sink is not p's final use and copies the whole Seq — every call.
+  ##
+  ## `p[0]` yields a plain value and runs no effect, so it may run first:
+  ## it is bound to a temporary ahead of the statement, and if it held p's
+  ## final read, the sink holds it now and MOVES. A deduction every
+  ## `x = f(x, x.field)` gets (benches/game, fannkuch).
+  if L.effects: return
+  let ops = w.operands(call, uNone, NoArg)
+  for i, sink in ops:
+    if w.sinksLocal(sink): w.liftOtherReads(ops, i, L)
+
 proc liftSelf(w: var Writer, n: Expr, use: Use, arg: ArgOf, L: var Lift,
               before: bool) =
   ## `n` itself, its operands done: named if a rule needs it named; `before`
@@ -253,6 +304,7 @@ proc lift(w: var Writer, n: Expr, use: Use, arg: ArgOf, L: var Lift,
     return
   if not w.res.isPlaceRead(n):
     let c = if n.kind notin ByOwnKind and w.res.hasCall(n): w.res.call(n) else: n
+    if c.kind == exkCall: w.liftReadsBeforeSink(c, L)
     for o in w.operands(c, use, arg): w.lift(o.child, o.use, o.arg, L)
   if not own: w.liftSelf(n, use, arg, L, before)
 
@@ -507,7 +559,9 @@ proc rulesDrops(w: var Writer, d: Decl): DropSource =
     if not w.resetAfter(d, read, w.resetPart(read)): w.copyInstead(read)
   scopeEndDrops(d, plan, unreset, result)
   for k, t in plan.slotTypes:
-    if w.res.dropsDeep(w.m, t): result.deep.incl k
+    if w.res.dropsDeep(w.m, t):
+      result.deep.incl k
+      result.types[k] = t
   w.overwriteDrops(d, plan, unreset, result)
 
 proc writeRules*(res: Resolution, m: Module) =
@@ -521,6 +575,7 @@ proc writeRules*(res: Resolution, m: Module) =
     for p in d.fnParams:
       if res.owning(m, p.typ) and res.consumes(m, d, p.name, w.memo):
         d.ownedParams.add p.name
+    res.markViews(m, d, w.memo)
     w.liftAll(d)
     w.writeCopies(d)
     sources[d.id] = w.rulesDrops(d)

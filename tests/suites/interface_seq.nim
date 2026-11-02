@@ -94,7 +94,7 @@ fn main() -> int:
   t.quietly: t.omitsOdin "", "tuckˑfnˑtotal\\(\\{"
   t.bugFixed "Odin: a list literal can reach a Seq parameter"
   t.emitsOdin "...the element type is the INTERFACE, not the first element's type",
-              r"\[dynamic\]Animal\{"
+              r"tuckSeqFrom\(\[2\]\S*Animal\{"
 
   # A single-element list still works — the common degenerate case.
   t.src IFACE & """

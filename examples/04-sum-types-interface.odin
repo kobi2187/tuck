@@ -86,6 +86,21 @@ tuckˑtypeˑPodcastPlayerLifecycle_eq :: proc(a, b: tuckˑtypeˑPodcastPlayerLif
   return false
 }
 
+tuckˑtypeˑPodcastPlayerLifecycle_drop :: proc(x: tuckˑtypeˑPodcastPlayerLifecycle) {
+  #partial switch v in x {
+  case tuckˑtypeˑPodcastPlayerLifecycle_Unloaded:
+    rt.tuckDrop(v.config)
+  case tuckˑtypeˑPodcastPlayerLifecycle_Loading:
+    rt.tuckDrop(v.config)
+  case tuckˑtypeˑPodcastPlayerLifecycle_Ready:
+    rt.tuckDrop(v.config)
+    rt.tuckDrop(v.feed)
+  case tuckˑtypeˑPodcastPlayerLifecycle_Error:
+    rt.tuckDrop(v.config)
+    rt.tuckDrop(v.reason)
+  }
+}
+
 // interface Storable: no satisfying types
 
 tuckˑfnˑloadEpisode :: proc (self: tuckˑobjectˑPodcastApp, episode: tuckˑtypeˑEpisode) -> tuckˑobjectˑPodcastApp {

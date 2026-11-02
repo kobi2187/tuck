@@ -109,6 +109,11 @@ tuckˑtypeˑPlayerState_eq :: proc(a, b: tuckˑtypeˑPlayerState) -> bool {
   }
   return false
 }
+
+tuckˑtypeˑPlayerState_drop :: proc(x: tuckˑtypeˑPlayerState) {
+  #partial switch v in x {
+  }
+}
 canTransition_tuckˑtypeˑPlayerState :: proc(frm: tuckˑtypeˑPlayerStateKind, to: tuckˑtypeˑPlayerStateKind) -> bool {
 	switch frm {
 	case .Idle: return to == .Decoding

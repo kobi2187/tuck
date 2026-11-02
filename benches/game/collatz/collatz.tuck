@@ -1,0 +1,42 @@
+# collatz: the longest Collatz chain below n, found by walking each one.
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+fn chain({start: int}) -> int:
+  var x = start
+  var steps = 0
+  for x != 1:
+    if x % 2 == 0:
+      x = x /i 2
+    else:
+      x = 3 * x + 1
+    steps = steps + 1
+  return steps
+
+fn longest({n: int}) -> int:
+  var best = 0
+  var arg = 1
+  for i in 1 ..< n:
+    let s = {start: i} chain
+    if s > best:
+      best = s
+      arg = i
+  return arg * 1000 + best % 1000
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 100
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let r = {n: n} longest
+  {text: r.toStr} printLine
+  return 0

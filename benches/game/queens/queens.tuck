@@ -1,0 +1,44 @@
+# queens: count the placements of n queens, extending a Seq of columns row by row.
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+fn safe({placed: Seq[int], col: int}) -> bool:
+  let row = placed.len
+  for r in 0 ..< row:
+    let c = placed[r]
+    if c == col:
+      return false
+    if c - col == row - r:
+      return false
+    if col - c == row - r:
+      return false
+  return true
+
+fn solve({placed: Seq[int], n: int}) -> int:
+  if placed.len == n:
+    return 1
+  var count = 0
+  for col in 0 ..< n:
+    if {placed: placed, col: col} safe:
+      let next = {items: placed, value: col} push
+      let k = {placed: next, n: n} solve
+      count = count + k
+  return count
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 8
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let r = {placed: [], n: n} solve
+  {text: r.toStr} printLine
+  return 0

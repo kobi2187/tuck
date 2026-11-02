@@ -7,3 +7,6 @@
 # for the fuller Hashable design this is a first slice of.
 extern:
   fn hash({data: str}) -> u64 [pure, no_alloc]
+  # Any key a table can hold: a str by its bytes (as `hash`), an integer, bool
+  # or enum by value, anything else by its text. Same number on every backend.
+  fn hashKey[T]({key: T}) -> u64 [pure]

@@ -5,10 +5,12 @@
 # Tuck has no overloading (ruled 2026-08-24), so two imports that both export
 # `find` collide, and a call must say which. The ruling of 2026-10-27: write
 # it qualified (`iter::find`), or rename it where it comes in. This pass is
-# the rename: in the importing module every use of `iterFind` — a call, a
-# bare nullary call, a `:iterFind` fn reference — becomes `iter::find`, the
-# qualified spelling every later stage already resolves (`ast_ops.callKey`,
-# `ast_query.calleeDecl`). Nothing downstream learns that renames exist.
+# the rename: in the importing module every use of `iterFind` — a call
+# (`{...} iterFind`, `{} iterFind`) or a `:iterFind` fn reference — becomes
+# `iter::find`, the qualified spelling every later stage already resolves
+# (`ast_ops.callKey`, `ast_query.calleeDecl`). Nothing downstream learns that
+# renames exist. A bare `iterFind` with no `{}` is not rewritten: a local may
+# share the name.
 #
 # The spelling is Tuck's one rename form, `{old -> new}`, as composition and
 # `satisfies` write it. Fns only, for now: a type that collides is qualified

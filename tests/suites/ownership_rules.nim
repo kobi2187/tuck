@@ -234,10 +234,12 @@ fn take({xs: Seq[int]}) -> Seq[int]:
   return out
 
 fn main() -> int:
-  let a = [1, 2]
+  var a = [1, 2]
   let b = a
-  let nested = [[1], [2]]
+  var nested = [[1], [2]]
   let inner = nested[0]
+  a = {items: a, value: 5} push
+  nested = {items: nested, value: [9]} push
   let t = {xs: b} take
   return a.len + inner.len + t.len + nested.len
 """

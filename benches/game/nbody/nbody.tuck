@@ -1,0 +1,130 @@
+# n-body (the Benchmarks Game): the Jovian planets, integrated by a simple
+# symplectic step. Written as Tuck is meant to be written — a planet is a
+# value, the system is a Seq of them, a step returns the next system — and
+# NOT tuned: if this is slow, the compiler is what gets better.
+import console
+import convert
+import math
+import cli
+import seq
+import str
+
+const SolarMass = 39.47841760435743     # 4 * pi^2
+const DaysPerYear = 365.24
+
+type Body:
+  x: f64
+  y: f64
+  z: f64
+  vx: f64
+  vy: f64
+  vz: f64
+  mass: f64
+
+fn body({x: f64, y: f64, z: f64, vx: f64, vy: f64, vz: f64, mass: f64}) -> Body:
+  return {x: x, y: y, z: z, vx: vx * DaysPerYear, vy: vy * DaysPerYear,
+          vz: vz * DaysPerYear, mass: mass * SolarMass} Body
+
+fn planets() -> Seq[Body]:
+  let sun = {x: 0.0, y: 0.0, z: 0.0, vx: 0.0, vy: 0.0, vz: 0.0, mass: 1.0} body
+  let jupiter = {x: 4.84143144246472090, y: -1.16032004402742839,
+                 z: -0.103622044471123109, vx: 0.00166007664274403694,
+                 vy: 0.00769901118419740425, vz: -0.0000690460016972063023,
+                 mass: 0.000954791938424326609} body
+  let saturn = {x: 8.34336671824457987, y: 4.12479856412430479,
+                z: -0.403523417114321381, vx: -0.00276742510726862411,
+                vy: 0.00499852801234917238, vz: 0.0000230417297573763929,
+                mass: 0.000285885980666130812} body
+  let uranus = {x: 12.8943695621391310, y: -15.1111514016986312,
+                z: -0.223307578892655734, vx: 0.00296460137564761618,
+                vy: 0.00237847173959480950, vz: -0.0000296589568540237556,
+                mass: 0.0000436624404335156298} body
+  let neptune = {x: 15.3796971148509165, y: -25.9193146099879641,
+                 z: 0.179258772950371181, vx: 0.00268067772490389322,
+                 vy: 0.00162824170038242295, vz: -0.0000951592254519715870,
+                 mass: 0.0000515138902046611451} body
+  return [sun, jupiter, saturn, uranus, neptune]
+
+# The sun moves so the system's total momentum is zero.
+fn offsetMomentum({bodies: Seq[Body]}) -> Seq[Body]:
+  var px = 0.0
+  var py = 0.0
+  var pz = 0.0
+  for b in bodies:
+    px = px + b.vx * b.mass
+    py = py + b.vy * b.mass
+    pz = pz + b.vz * b.mass
+  var out = bodies
+  out[0].vx = 0.0 - px /f SolarMass
+  out[0].vy = 0.0 - py /f SolarMass
+  out[0].vz = 0.0 - pz /f SolarMass
+  return out
+
+fn energy({bodies: Seq[Body]}) -> f64:
+  var e = 0.0
+  for i in 0 ..< bodies.len:
+    let b = bodies[i]
+    e = e + 0.5 * b.mass * (b.vx * b.vx + b.vy * b.vy + b.vz * b.vz)
+    for j in i + 1 ..< bodies.len:
+      let c = bodies[j]
+      let dx = b.x - c.x
+      let dy = b.y - c.y
+      let dz = b.z - c.z
+      e = e - b.mass * c.mass /f ({value: dx * dx + dy * dy + dz * dz} sqrt)
+  return e
+
+# One step: every pair pulls on each other, then every body moves.
+fn advance({bodies: Seq[Body], dt: f64}) -> Seq[Body]:
+  var bs = bodies
+  for i in 0 ..< bs.len:
+    for j in i + 1 ..< bs.len:
+      let dx = bs[i].x - bs[j].x
+      let dy = bs[i].y - bs[j].y
+      let dz = bs[i].z - bs[j].z
+      let d2 = dx * dx + dy * dy + dz * dz
+      let mag = dt /f (d2 * ({value: d2} sqrt))
+      bs[i].vx = bs[i].vx - dx * bs[j].mass * mag
+      bs[i].vy = bs[i].vy - dy * bs[j].mass * mag
+      bs[i].vz = bs[i].vz - dz * bs[j].mass * mag
+      bs[j].vx = bs[j].vx + dx * bs[i].mass * mag
+      bs[j].vy = bs[j].vy + dy * bs[i].mass * mag
+      bs[j].vz = bs[j].vz + dz * bs[i].mass * mag
+  for i in 0 ..< bs.len:
+    bs[i].x = bs[i].x + dt * bs[i].vx
+    bs[i].y = bs[i].y + dt * bs[i].vy
+    bs[i].z = bs[i].z + dt * bs[i].vz
+  return bs
+
+# `%.9f`: the stdlib has no fixed-precision float format yet.
+fn fixed9({x: f64}) -> str:
+  let neg = x < 0.0
+  let a = if neg: 0.0 - x else: x
+  let scaled = (a * 1000000000.0 + 0.5) ~i64
+  let whole = scaled /i 1000000000
+  var frac = (scaled % 1000000000).toStr
+  for frac.len < 9:
+    frac = "0" + frac
+  let sign = if neg: "-" else: ""
+  return sign + whole.toStr + "." + frac
+
+fn steps({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 1000
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} steps
+  var bodies = {} planets
+  bodies = {bodies: bodies} offsetMomentum
+  let before = {bodies: bodies} energy
+  let first = {x: before} fixed9
+  {text: first} printLine
+  for k in 0 ..< n:
+    bodies = {bodies: bodies, dt: 0.01} advance
+  let after = {bodies: bodies} energy
+  let last = {x: after} fixed9
+  {text: last} printLine
+  return 0

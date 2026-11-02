@@ -1,0 +1,52 @@
+# matmul: multiply two n-by-n integer matrices held row-major in one Seq.
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+fn cell({i: int, j: int}) -> int:
+  return (i * j + i + j) % 7
+
+fn matrix({n: int, salt: int}) -> Seq[int]:
+  var m: Seq[int] = []
+  for i in 0 ..< n:
+    for j in 0 ..< n:
+      let c = {i: i + salt, j: j} cell
+      m = {items: m, value: c} push
+  return m
+
+fn multiply({a: Seq[int], b: Seq[int], n: int}) -> Seq[int]:
+  var c: Seq[int] = []
+  for i in 0 ..< n * n:
+    c = {items: c, value: 0} push
+  for i in 0 ..< n:
+    for k in 0 ..< n:
+      let aik = a[i * n + k]
+      for j in 0 ..< n:
+        c[i * n + j] = c[i * n + j] + aik * b[k * n + j]
+  return c
+
+fn total({m: Seq[int]}) -> int:
+  var s = 0
+  for x in m:
+    s = (s + x) % 1000003
+  return s
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 50
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let a = {n: n, salt: 0} matrix
+  let b = {n: n, salt: 3} matrix
+  let c = {a: a, b: b, n: n} multiply
+  let r = {m: c} total
+  {text: r.toStr} printLine
+  return 0

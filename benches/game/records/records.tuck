@@ -1,0 +1,49 @@
+# records: a Seq of small records, transformed in a few passes and folded.
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+type Point:
+  x: int
+  y: int
+  w: int
+
+fn make({n: int}) -> Seq[Point]:
+  var out: Seq[Point] = []
+  for i in 0 ..< n:
+    let p = {x: i, y: i * 2 % 17, w: 1} Point
+    out = {items: out, value: p} push
+  return out
+
+fn shifted({ps: Seq[Point], dx: int}) -> Seq[Point]:
+  var out: Seq[Point] = []
+  for p in ps:
+    let q = {x: p.x + dx, y: p.y * 3 % 101, w: p.w + p.y % 3} Point
+    out = {items: out, value: q} push
+  return out
+
+fn weight({ps: Seq[Point]}) -> int:
+  var s = 0
+  for p in ps:
+    s = (s + p.x * p.w + p.y) % 1000000007
+  return s
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 1000
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  var ps = {n: n} make
+  for round in 0 ..< 8:
+    ps = {ps: ps, dx: round} shifted
+  let r = {ps: ps} weight
+  {text: r.toStr} printLine
+  return 0

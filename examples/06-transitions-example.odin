@@ -1,6 +1,8 @@
 #+feature dynamic-literals
 package main
 
+import rt "./tuckrt"
+
 tuckˑtypeˑConfig :: struct {
 	url: string,
 }
@@ -60,6 +62,18 @@ tuckˑtypeˑPodcastPlayerLifecycle_eq :: proc(a, b: tuckˑtypeˑPodcastPlayerLif
   }
   return false
 }
+
+tuckˑtypeˑPodcastPlayerLifecycle_drop :: proc(x: tuckˑtypeˑPodcastPlayerLifecycle) {
+  #partial switch v in x {
+  case tuckˑtypeˑPodcastPlayerLifecycle_Unloaded:
+    rt.tuckDrop(v.config)
+  case tuckˑtypeˑPodcastPlayerLifecycle_Loading:
+    rt.tuckDrop(v.config)
+  case tuckˑtypeˑPodcastPlayerLifecycle_Ready:
+    rt.tuckDrop(v.config)
+    rt.tuckDrop(v.feed)
+  }
+}
 canTransition_tuckˑtypeˑPodcastPlayerLifecycle :: proc(frm: tuckˑtypeˑPodcastPlayerLifecycleKind, to: tuckˑtypeˑPodcastPlayerLifecycleKind) -> bool {
 	switch frm {
 	case .Unloaded: return to == .Loading
@@ -74,4 +88,6 @@ transitionTo_tuckˑtypeˑPodcastPlayerLifecycle :: proc(self: ^tuckˑtypeˑPodca
 }
 
 main :: proc() {
+	context.allocator = rt.tuckTrackAllocator()
+	rt.tuckTrackCheck()
 }

@@ -66,6 +66,18 @@ tuckˑtypeˑPlayerState_eq :: proc(a, b: tuckˑtypeˑPlayerState) -> bool {
   }
   return false
 }
+
+tuckˑtypeˑPlayerState_drop :: proc(x: tuckˑtypeˑPlayerState) {
+  #partial switch v in x {
+  case tuckˑtypeˑPlayerState_Unloaded:
+    rt.tuckDrop(v.config)
+  case tuckˑtypeˑPlayerState_Loading:
+    rt.tuckDrop(v.config)
+  case tuckˑtypeˑPlayerState_Ready:
+    rt.tuckDrop(v.config)
+    rt.tuckDrop(v.feed)
+  }
+}
 canTransition_tuckˑtypeˑPlayerState :: proc(frm: tuckˑtypeˑPlayerStateKind, to: tuckˑtypeˑPlayerStateKind) -> bool {
 	switch frm {
 	case .Unloaded: return to == .Loading
@@ -141,6 +153,15 @@ tuckˑtypeˑMqttSession_eq :: proc(a, b: tuckˑtypeˑMqttSession) -> bool {
   }
   return false
 }
+
+tuckˑtypeˑMqttSession_drop :: proc(x: tuckˑtypeˑMqttSession) {
+  #partial switch v in x {
+  case tuckˑtypeˑMqttSession_Connecting:
+    rt.tuckDrop(v.host)
+  case tuckˑtypeˑMqttSession_Subscribing:
+    rt.tuckDrop(v.topic)
+  }
+}
 canTransition_tuckˑtypeˑMqttSession :: proc(frm: tuckˑtypeˑMqttSessionKind, to: tuckˑtypeˑMqttSessionKind) -> bool {
 	switch frm {
 	case .Disconnected: return to == .Connecting
@@ -159,12 +180,12 @@ tuckˑfnˑmain :: proc () {
   tuckˑvˑconfig := tuckˑtypeˑConfig{url = rt.tuckStrOwned("https://example.com")}
   tuckˑvˑfeed := tuckˑtypeˑFeed{title = rt.tuckStrOwned("Deep Dive")}
   tuckˑvˑp: tuckˑtypeˑPlayerState = tuckˑtypeˑPlayerState_Ready{config = tuckˑvˑconfig, feed = tuckˑvˑfeed}
-  defer rt.tuckDrop(tuckˑvˑp)
+  defer tuckˑtypeˑPlayerState_drop(tuckˑvˑp)
   tuckˑvˑfresh: tuckˑtypeˑMqttSession = tuckˑtypeˑMqttSession_Disconnected{}
-  defer rt.tuckDrop(tuckˑvˑfresh)
+  defer tuckˑtypeˑMqttSession_drop(tuckˑvˑfresh)
   tuckˑvˑsocket := tuckˑtypeˑSocket{fd = 3}
   tuckˑvˑsession: tuckˑtypeˑMqttSession = tuckˑtypeˑMqttSession_Connected{socket = tuckˑvˑsocket, keepalive = u16(60)}
-  defer rt.tuckDrop(tuckˑvˑsession)
+  defer tuckˑtypeˑMqttSession_drop(tuckˑvˑsession)
   return
 }
 

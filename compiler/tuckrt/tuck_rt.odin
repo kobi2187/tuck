@@ -188,7 +188,8 @@ foreign tuck_malloc_c {
 // bytes it hands out (base:runtime heap_allocator_proc).
 @(private)
 tuckStrRoom :: proc(s: string) -> int {
-	if raw_data(s) == nil || context.allocator.procedure != runtime.heap_allocator_proc do return -1
+	if raw_data(s) == nil || !tuckHeapLike() do return -1
+	if inArena(raw_data(s)) do return arenaCapacity(raw_data(s)) // 0 for an interior slice: no room
 	base := ([^]rawptr)(raw_data(s))[-1]
 	return int(malloc_usable_size(base)) - int(uintptr(raw_data(s)) - uintptr(base))
 }
@@ -210,7 +211,7 @@ tuckStrAppend :: proc(s: ^string, t: string) {
 		s^ = string(buf[:need])
 		return
 	}
-	if context.allocator.procedure == runtime.heap_allocator_proc {
+	if tuckHeapLike() {
 		grown, err := make([]u8, max(2 * need, 32))
 		if err == nil {
 			copy(grown, old)
@@ -326,7 +327,8 @@ tuckTrackAllocator :: proc() -> mem.Allocator {
 		}
 		return mem.tracking_allocator(&gTrack)
 	} else {
-		return context.allocator
+		tuckArenaInit()
+		return mem.Allocator{procedure = tuckArenaProc, data = nil}
 	}
 }
 
@@ -395,12 +397,30 @@ tuckTrackReport :: proc() -> int {
 	}
 }
 
+// A Seq built from its elements: one allocation of exactly their count (a
+// compound literal is a make and an append for each element). The elements
+// come as a fixed array, so each converts to the element type where it is
+// written (a variant to its sum) and none is passed through a variadic.
+tuckSeqFrom :: proc(items: [$N]$T) -> [dynamic]T {
+	items := items
+	bytes, _ := runtime.mem_alloc_non_zeroed(N * size_of(T), align_of(T), context.allocator)
+	runtime.mem_copy_non_overlapping(raw_data(bytes), &items, N * size_of(T))
+	return transmute([dynamic]T)runtime.Raw_Dynamic_Array{
+		data = raw_data(bytes), len = N, cap = N, allocator = context.allocator,
+	}
+}
+
 tuckSeqCopy :: proc(items: [dynamic]$T) -> [dynamic]T {
+	// One allocation of exactly the elements, which are all overwritten at once:
+	// `resize` was a realloc and a zero-fill first (11% of fannkuch on Odin).
+	n := len(items)
 	out: [dynamic]T
-	if len(items) == 0 { return out }
-	resize(&out, len(items))
-	copy(out[:], items[:])
-	return out
+	if n == 0 { return out }
+	bytes, _ := runtime.mem_alloc_non_zeroed(n * size_of(T), align_of(T), context.allocator)
+	runtime.mem_copy_non_overlapping(raw_data(bytes), raw_data(items), n * size_of(T))
+	return transmute([dynamic]T)runtime.Raw_Dynamic_Array{
+		data = raw_data(bytes), len = n, cap = n, allocator = context.allocator,
+	}
 }
 
 // RULE G, the glue: what dropping and copying a value of any type means,
@@ -544,18 +564,52 @@ tuckCopyAt :: proc(p: rawptr, ti: ^runtime.Type_Info) {
 	}
 }
 
+// A value of a numeric, boolean, enum, pointer or rune type owns no buffer, so
+// dropping or copying one is nothing. Decided where the type is known (compile
+// time) rather than by walking its type information at run time: `tuckSetAt`
+// dropped the element it replaced, and for a Seq of ints that walk was 42% of
+// fannkuch's instructions (1M calls). The test is written out in each, because
+// Odin only takes intrinsics directly in a `when` condition.
+
 tuckDrop :: proc(value: $T) {
 	// Drops what `value` owns. By value, so a parameter can be dropped too:
 	// the copy shares every buffer it frees.
-	v := value
-	tuckDropAt(rawptr(&v), type_info_of(T))
+	when !(intrinsics.type_is_numeric(T) || intrinsics.type_is_boolean(T) ||
+		intrinsics.type_is_enum(T) || intrinsics.type_is_pointer(T) ||
+		intrinsics.type_is_rune(T) || T == rawptr) {
+		if !tuckTypeOwns(T) { return }
+		v := value
+		tuckDropAt(rawptr(&v), type_info_of(T))
+	}
 }
 
 tuckCopy :: proc(value: $T) -> T {
 	// A copy of `value` that shares no buffer with it.
-	out := value
-	tuckCopyAt(rawptr(&out), type_info_of(T))
-	return out
+	when intrinsics.type_is_numeric(T) || intrinsics.type_is_boolean(T) ||
+		intrinsics.type_is_enum(T) || intrinsics.type_is_pointer(T) ||
+		intrinsics.type_is_rune(T) || T == rawptr {
+		return value
+	} else {
+		if !tuckTypeOwns(T) { return value }
+		out := value
+		tuckCopyAt(rawptr(&out), type_info_of(T))
+		return out
+	}
+}
+
+// Can a value of `T` own a buffer anywhere inside it? Answered once per type:
+// the `@(static)` cells are per instantiation of this polymorphic procedure, so
+// the first drop of a `T` walks its type information and every later one is two
+// loads. A struct of ints (a table's entries, a VM instruction) owns nothing,
+// and dropping one used to be the whole type-information walk each time.
+tuckTypeOwns :: proc($T: typeid) -> bool {
+	@(static) known: bool
+	@(static) owns: bool
+	if !known {
+		owns = tuckHasHeap(type_info_of(T))
+		known = true
+	}
+	return owns
 }
 
 tuckAt_slice :: proc(items: []$T, index: int) -> T {
@@ -774,6 +828,48 @@ hash :: proc(data: string) -> u64 {
 		h = (h ~ u64(c)) * 1099511628211
 	}
 	return h
+}
+
+// Room for `extra` more elements, so the appends of a counted loop that is
+// about to make them find it (append_fill).
+// A push whose room `tuckReserve` made before the loop: the element is stored and
+// the length grows, with no capacity check and no call into the runtime's append.
+// If the room is somehow not there, it is the ordinary append.
+tuckPushFilled :: #force_inline proc(xs: ^[dynamic]$T, v: T) {
+	a := (^runtime.Raw_Dynamic_Array)(xs)
+	if a.len < a.cap {
+		(^T)(uintptr(a.data) + uintptr(a.len) * size_of(T))^ = v
+		a.len += 1
+	} else {
+		append(xs, v)
+	}
+}
+
+tuckReserve :: proc(xs: ^[dynamic]$T, extra: int) {
+	if extra > 0 { reserve(xs, len(xs^) + extra) }
+}
+
+// splitmix64's finalizer: spreads an integer's bits so the low ones, which a
+// table indexes by, depend on all of them. The same on every backend.
+tuckMix :: proc(x: u64) -> u64 {
+	z := x + 0x9e3779b97f4a7c15
+	z = (z ~ (z >> 30)) * 0xbf58476d1ce4e5b9
+	z = (z ~ (z >> 27)) * 0x94d049bb133111eb
+	return z ~ (z >> 31)
+}
+
+// The hash of any key a table can hold: a string by its bytes (FNV-1a, as
+// `hash`), an integer, bool or enum by value, anything else by its text.
+hashKey :: proc(key: $T) -> u64 {
+	when T == string {
+		return hash(key)
+	} else when intrinsics.type_is_integer(T) || intrinsics.type_is_boolean(T) || intrinsics.type_is_enum(T) {
+		return tuckMix(u64(key))
+	} else {
+		text := fmt.aprint(key)
+		defer delete(text)
+		return hash(text)
+	}
 }
 
 // spec 7.2: a fixed byte buffer handed out by bumping a cursor. No

@@ -1,0 +1,62 @@
+# binary-trees (the Benchmarks Game): build perfect binary trees of many
+# depths and count their nodes, many times over — an allocation workout.
+# Written plainly and not tuned (benches/game/README.md).
+import console
+import convert
+import cli
+import seq
+import str
+
+type Tree:
+  | Leaf
+  | Node({left: Tree, right: Tree})
+
+fn bottomUp({depth: int}) -> Tree:
+  if depth == 0:
+    return Tree.Node {left: Tree.Leaf, right: Tree.Leaf}
+  let l = {depth: depth - 1} bottomUp
+  let r = {depth: depth - 1} bottomUp
+  return Tree.Node {left: l, right: r}
+
+fn check({t: Tree}) -> int:
+  match t:
+    Leaf: return 0
+    Node: return 1 + {t: t.left} check + {t: t.right} check
+
+fn shift({n: int}) -> int:
+  var out = 1
+  for i in 0 ..< n:
+    out = out * 2
+  return out
+
+fn line({count: int, depth: int, total: int}) -> str:
+  return count.toStr + "\t trees of depth " + depth.toStr + "\t check: " + total.toStr
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 10
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let maxDepth = if n < 6: 6 else: n
+  let stretch = {depth: maxDepth + 1} bottomUp
+  let stretchCheck = {t: stretch} check
+  {text: "stretch tree of depth " + (maxDepth + 1).toStr + "\t check: " + stretchCheck.toStr} printLine
+  let longLived = {depth: maxDepth} bottomUp
+  var depth = 4
+  for depth <= maxDepth:
+    let iterations = {n: maxDepth - depth + 4} shift
+    var total = 0
+    for i in 0 ..< iterations:
+      let t = {depth: depth} bottomUp
+      total = total + {t: t} check
+    let text = {count: iterations, depth: depth, total: total} line
+    {text: text} printLine
+    depth = depth + 2
+  let longCheck = {t: longLived} check
+  {text: "long lived tree of depth " + maxDepth.toStr + "\t check: " + longCheck.toStr} printLine
+  return 0

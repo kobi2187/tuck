@@ -582,7 +582,7 @@ proc genDBinary(ctx: var DCodegenCtx, e: Expr): string =
   ## A binary expression, parenthesised. `str + str` is D's `~`; a range
   ## outside a `for` header has no D value and is refused.
   if isStringConcat(e):
-    return "(" & ctx.genDExpr(e.left) & " ~ " & ctx.genDExpr(e.right) & ")"
+    return "rt.tuckCat(" & ctx.genDExpr(e.left) & ", " & ctx.genDExpr(e.right) & ")"
   if e.binOp in {boRangeIncl, boRangeExcl}:
     return dUnsupported("a range outside a for loop")
   if e.binOp in {boAdd, boSub, boMul}:
@@ -846,7 +846,7 @@ proc genDCopy(ctx: var DCodegenCtx, e: Expr): string =
   ## values, else the runtime's deep copy. The emitter only prints it.
   let valStr = ctx.genDExpr(e.copied)
   case e.copyKind
-  of cpSeq: "(" & valStr & ").dup"
+  of cpSeq: "rt.tuckDupSeq(" & valStr & ")"
   of cpDeep: "rt.tuckCopy(" & valStr & ")"
   of cpStatic: "(" & valStr & ").idup"     # a str's own bytes, to drop
 
@@ -1014,7 +1014,9 @@ proc genDAppend(ctx: var DCodegenCtx, e: Expr): string =
   ## `str`'s old bytes when the body owns them (`appendFreesOld`).
   let target = ctx.movedAssignTarget(e.appendTarget)
   let value = ctx.genDExpr(e.appendValue)
-  if e.appendsElement: "rt.tuckPush(" & target & ", " & value & ")"
+  if e.appendsElement and e.appendFilled:   # room reserved before the loop
+    "rt.tuckPushFilled(" & target & ", " & value & ")"
+  elif e.appendsElement: "rt.tuckPush(" & target & ", " & value & ")"
   elif e.appendFreesOld: "rt.tuckStrAppend(" & target & ", " & value & ")"
   else: target & " ~= " & value
 
@@ -1232,7 +1234,15 @@ proc genDFor(ctx: var DCodegenCtx, e: Expr): string =
                              else: hi)
   else:
     iterStr = ctx.genDExpr(e.iterable)
-  ctx.indD & "foreach (" & dForVars(e) & "; " & iterStr & ") {\n" &
+  var reserve = ""
+  if e.fillTargets.len > 0:     # a counted loop that pushes: room first (#210)
+    let r = e.iterable
+    let n = if r.kind == exkVar: "(" & ctx.genDExpr(r) & ").length"
+            else: "(" & ctx.genDExpr(r.right) & " - " & ctx.genDExpr(r.left) &
+                  (if r.binOp == boRangeIncl: " + 1)" else: ")")
+    for t in e.fillTargets:
+      reserve.add ctx.indD & "rt.tuckReserve(" & ctx.movedAssignTarget(t) & ", " & n & ");\n"
+  reserve & ctx.indD & "foreach (" & dForVars(e) & "; " & iterStr & ") {\n" &
     ctx.genDNested(e.body) & ctx.indD & "}"
 
 proc genDFill(ctx: var DCodegenCtx, e: Expr): string =
@@ -1246,7 +1256,10 @@ proc genDList(ctx: var DCodegenCtx, e: Expr): string =
   ## A list literal as a D array literal.
   var parts: seq[string]
   for item in e.items: parts.add(ctx.genDExpr(item))
-  "[" & parts.join(", ") & "]"
+  # Through the runtime, so the block comes from the arena rather than the
+  # collector's allocator (about 340 instructions a literal).
+  if parts.len == 0: return "[" & "]"
+  "rt.tuckSeqOf([" & parts.join(", ") & "])"
 
 proc dPatternStr(ctx: var DCodegenCtx, pat: Pattern): string =
   ## One arm's pattern as a D case label. A bare tag qualifies to its enum;

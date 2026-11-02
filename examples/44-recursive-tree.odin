@@ -54,6 +54,16 @@ tuckˑtypeˑExpr_eq :: proc(a, b: tuckˑtypeˑExpr) -> bool {
   return false
 }
 
+tuckˑtypeˑExpr_drop :: proc(x: tuckˑtypeˑExpr) {
+  #partial switch v in x {
+  case tuckˑtypeˑExpr_Neg:
+    { for &tuckEl in v.operand { tuckˑtypeˑExpr_drop(tuckEl) }; delete(v.operand) }
+  case tuckˑtypeˑExpr_Add:
+    { for &tuckEl in v.left { tuckˑtypeˑExpr_drop(tuckEl) }; delete(v.left) }
+    { for &tuckEl in v.right { tuckˑtypeˑExpr_drop(tuckEl) }; delete(v.right) }
+  }
+}
+
 tuckˑfnˑeval :: proc (e: tuckˑtypeˑExpr) -> int {
   switch v in e
   {
@@ -83,10 +93,10 @@ tuckˑfnˑdepth :: proc (e: tuckˑtypeˑExpr) -> int {
 tuckˑfnˑmain :: proc () -> int {
   tuckˑvˑthree: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Num{value = 3}
   tuckˑvˑfour: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Num{value = 4}
-  tuckˑvˑsum: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Add{left = [dynamic]tuckˑtypeˑExpr{tuckˑvˑthree}, right = [dynamic]tuckˑtypeˑExpr{tuckˑvˑfour}}
-  tuckˑvˑneg: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Neg{operand = [dynamic]tuckˑtypeˑExpr{rt.tuckCopy(tuckˑvˑsum)}}
-  tuckˑvˑwhole: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Add{left = [dynamic]tuckˑtypeˑExpr{tuckˑvˑsum}, right = [dynamic]tuckˑtypeˑExpr{tuckˑvˑneg}}
-  defer rt.tuckDrop(tuckˑvˑwhole)
+  tuckˑvˑsum: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Add{left = rt.tuckSeqFrom([1]tuckˑtypeˑExpr{tuckˑvˑthree}), right = rt.tuckSeqFrom([1]tuckˑtypeˑExpr{tuckˑvˑfour})}
+  tuckˑvˑneg: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Neg{operand = rt.tuckSeqFrom([1]tuckˑtypeˑExpr{rt.tuckCopy(tuckˑvˑsum)})}
+  tuckˑvˑwhole: tuckˑtypeˑExpr = tuckˑtypeˑExpr_Add{left = rt.tuckSeqFrom([1]tuckˑtypeˑExpr{tuckˑvˑsum}), right = rt.tuckSeqFrom([1]tuckˑtypeˑExpr{tuckˑvˑneg})}
+  defer tuckˑtypeˑExpr_drop(tuckˑvˑwhole)
   return ((tuckˑfnˑeval(tuckˑvˑwhole) + tuckˑfnˑdepth(tuckˑvˑwhole)) - 4)
 }
 

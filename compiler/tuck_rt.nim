@@ -95,16 +95,34 @@ proc toStr*[T](value: T): string =
   elif T is float64: tuckFloatText(value, false)
   else: $value
 
-proc tuckSeqBounds(index, length: int, op: string) =
+# `{.inline.}` is a hint, and the C compiler declined it: `tuckAt` stayed a call
+# at hundreds of thousands of sites in fannkuch, a third of its instructions.
+# These are a compare, a branch and a load; every call to one is meant to be
+# the access itself. (24.0M instructions against 42.3M for fannkuch 8.)
+{.pragma: hot, codegenDecl: "static inline __attribute__((always_inline)) $# $#$#".}
+
+proc tuckOutOfBounds(index, length: int, op: string) {.noinline, noreturn.} =
+  ## The cold half of tuckSeqBounds: the message is built only on failure,
+  ## out of line, so the check itself is small enough to inline.
+  raise newException(IndexDefect,
+    op & ": index " & $index & " out of bounds for seq of length " & $length)
+
+proc tuckSeqBounds(index, length: int, op: string) {.inline.} =
   ## Raises IndexDefect unless `0 <= index < length`; `op` names the access.
   ##
   ## Bounds are a PRECONDITION: violating one is a program error,
   ## reported with the caller's file/line, not an error value the caller matches.
-  if index < 0 or index >= length:
-    raise newException(IndexDefect,
-      op & ": index " & $index & " out of bounds for seq of length " & $length)
+  ##
+  ## INLINE, with the failure out of line: every `xs[i]` in a loop is a call
+  ## to tuckAt/tuckSetAt, and with the message built here they were too big
+  ## to inline even under LTO — 40% of fannkuch's time was the calls
+  ## themselves (benches/game).
+  if index < 0 or index >= length: tuckOutOfBounds(index, length, op)
 
-proc tuckAt*[T](items: seq[T], index: int): lent T =
+{.push boundChecks: off.}
+# The bounds are checked once, by tuckSeqBounds; Nim's own check on the index
+# below would be a second, identical one.
+proc tuckAt*[T](items: seq[T], index: int): lent T {.inline, hot.} =
   ## What `xs[i]` lowers to: a bounds-checked read.
   ##
   ## A BORROW (`lent`), not a copy. By value, reading an element that owns
@@ -121,6 +139,7 @@ proc tuckAt*[T](items: seq[T], index: int): lent T =
   ## `at`/`setAt` stay as the explicit spelling and delegate here.
   tuckSeqBounds(index, items.len, "at")
   items[index]
+{.pop.}
 
 proc at*[T](items: seq[T], index: int): T =
   ## std/seq's explicit `at`: the same bounds-checked read as `xs[i]`.
@@ -146,17 +165,19 @@ proc ord*(ch: string): int =
   tuckSeqBounds(0, ch.len, "ord")
   system.ord(ch[0])
 
-proc tuckSetAt*[T](items: var seq[T], index: int, value: T) =
+{.push boundChecks: off.}
+proc tuckSetAt*[T](items: var seq[T], index: int, value: T) {.inline.} =
   ## What `xs[i] = v` lowers to: a bounds-checked write, in place.
   tuckSeqBounds(index, items.len, "setAt")
   tuckReplace(items[index], value)   # the old element is dropped, `value` kept
+{.pop.}
 
 proc setAt*[T](items: var seq[T], index: int, value: T) =
   ## std/seq's explicit `setAt`: the same bounds-checked write as
   ## `xs[i] = v`.
   tuckSetAt(items, index, value)
 
-proc tuckArrayAt*[N: static int, T](items: array[N, T], index: int): lent T =
+proc tuckArrayAt*[N: static int, T](items: array[N, T], index: int): lent T {.inline, hot.} =
   ## A bounds-checked read of a fixed `Array[N, T]`.
   ##
   ## `Array[N, T]` needs its OWN pair, separate from tuckAt/tuckSetAt above.
@@ -172,7 +193,7 @@ proc tuckArrayAt*[N: static int, T](items: array[N, T], index: int): lent T =
   items[index]
 
 proc tuckArraySetAt*[N: static int, T](items: var array[N, T], index: int,
-                                       value: T) =
+                                       value: T) {.inline, hot.} =
   ## A bounds-checked write into a fixed `Array[N, T]`, in place; the length
   ## is the type's `N`.
   tuckSeqBounds(index, N, "setAt")
@@ -2013,6 +2034,23 @@ proc hash*(data: string): uint64 =
   result = 14695981039346656037'u64
   for c in data:
     result = (result xor uint64(ord(c))) * 1099511628211'u64
+
+proc tuckMix(x: uint64): uint64 =
+  ## splitmix64's finalizer: spreads an integer's bits so the low ones, which a
+  ## table indexes by, depend on all of them. The same on every backend.
+  var z = x + 0x9e3779b97f4a7c15'u64
+  z = (z xor (z shr 30)) * 0xbf58476d1ce4e5b9'u64
+  z = (z xor (z shr 27)) * 0x94d049bb133111eb'u64
+  z xor (z shr 31)
+
+proc hashKey*[T](key: T): uint64 =
+  ## The hash of any key a table can hold: a string by its bytes (FNV-1a, as
+  ## `hash`), an integer, bool or enum by value, anything else by its text.
+  when T is string: hash(key)
+  elif T is SomeUnsignedInt: tuckMix(uint64(key))
+  elif T is SomeSignedInt: tuckMix(cast[uint64](int64(key)))
+  elif T is bool or T is enum: tuckMix(uint64(ord(key)))
+  else: hash($key)
 
 # The single runtime facade: tuck_rt re-exports the async runtime so every
 # emitted program imports ONLY tuck_rt and reaches rt AND async names

@@ -1,0 +1,29 @@
+# tak: the Takeuchi function; deep, branching recursion over ints.
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+fn tak({x: int, y: int, z: int}) -> int:
+  if y < x:
+    let a = {x: x - 1, y: y, z: z} tak
+    let b = {x: y - 1, y: z, z: x} tak
+    let c = {x: z - 1, y: x, z: y} tak
+    return {x: a, y: b, z: c} tak
+  return z
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 10
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let r = {x: 3 * n, y: 2 * n, z: n} tak
+  {text: r.toStr} printLine
+  return 0

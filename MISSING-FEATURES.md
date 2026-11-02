@@ -336,6 +336,14 @@ it in.
   spelling, one reader (`ast_query.calleeDecl`), and a stage check
   (`assertCallEdges`) that fails the build when a call is left unresolved.
 
+- **A102 (issue #211) — an imported container-threading fn never took its
+  moved twin (Odin, D).** `table = {t: table, ..} set` with `set` from
+  `alloc/map` called the copying wrapper, so every call copied the table:
+  k-nucleotide took 38s on Odin where Nim took 0.2s. `twin_calls` found the
+  callee with `m.findFn(name)`, current module only; it asks `calleeDecl` now.
+  A call spelled `lib::add` takes the twin too. Found by the Benchmarks Game's
+  k-nucleotide.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

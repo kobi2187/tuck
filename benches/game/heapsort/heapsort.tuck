@@ -1,0 +1,73 @@
+# heapsort: in-place binary-heap sort of n pseudo-random ints.
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+fn randoms({n: int, seed: int, modulus: int}) -> Seq[int]:
+  var out: Seq[int] = []
+  var s = seed
+  for i in 0 ..< n:
+    s = (s * 1103515245 + 12345) % 2147483648
+    out = {items: out, value: s % modulus} push
+  return out
+
+fn sift({a: Seq[int], start: int, last: int}) -> Seq[int]:
+  var out = a
+  var root = start
+  var going = true
+  for going:
+    var child = 2 * root + 1
+    if child > last:
+      going = false
+    else:
+      if child + 1 <= last and out[child] < out[child + 1]:
+        child = child + 1
+      if out[root] < out[child]:
+        let t = out[root]
+        out[root] = out[child]
+        out[child] = t
+        root = child
+      else:
+        going = false
+  return out
+
+fn heapsorted({a: Seq[int]}) -> Seq[int]:
+  var out = a
+  let n = out.len
+  var start = n /i 2 - 1
+  for start >= 0:
+    out = {a: out, start: start, last: n - 1} sift
+    start = start - 1
+  var tail = n - 1
+  for tail > 0:
+    let t = out[0]
+    out[0] = out[tail]
+    out[tail] = t
+    tail = tail - 1
+    out = {a: out, start: 0, last: tail} sift
+  return out
+
+fn checksum({a: Seq[int]}) -> int:
+  var s = 0
+  for i in 0 ..< a.len:
+    s = (s + a[i] * (i % 7 + 1)) % 1000000007
+  return s
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 1000
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let xs = {n: n, seed: 11, modulus: 1000000} randoms
+  let ys = {a: xs} heapsorted
+  let r = {a: ys} checksum
+  {text: r.toStr} printLine
+  return 0

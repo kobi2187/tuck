@@ -20,6 +20,7 @@ import core.atomic : cas, atomicLoad, atomicStore;
 // reaches everything through `rt`, so tuck_rt re-exports it — mirroring
 // tuck_rt.nim, which fronts tuck_async the same way.
 public import tuck_coro;
+public import tuck_arena;
 
 /// MEMORY IS THE PROGRAM'S. The ownership rules decide every copy, move and
 /// drop (compiler/ownership_write.nim) and the emitted program carries them
@@ -29,6 +30,7 @@ public import tuck_coro;
 shared static this() {
     import core.memory : GC;
     GC.disable();
+    tuckArenaInit();
 }
 
 /// `-version=tuckTrack`: the bytes the program allocated and never freed,
@@ -94,21 +96,144 @@ void tuckReplace(T)(ref T place, T value) {
     place = value;
 }
 
-/// `xs += v` on a Seq: grown in place; when growth moved the block, the old
-/// one is freed (it was only `xs`'s).
-void tuckPush(T)(ref T[] xs, T v) {
-    import core.memory : GC;
+/// Move `xs` into an arena block of room for `room` elements (when that is
+/// small enough), freeing the block it left. False: too big, the caller grows
+/// it the collector's way.
+private bool tuckArenaMove(T)(ref T[] xs, size_t room) {
+    import core.stdc.string : memcpy;
+    immutable bytes = room * T.sizeof;
+    auto q = tuckArenaAlloc(bytes);
+    if (q is null) return false;
+    auto n = xs.length;
+    if (n) memcpy(q, xs.ptr, n * T.sizeof);
     auto old = xs.ptr;
+    xs = (cast(T*) q)[0 .. n];
+    if (old !is null) tuckFreeBlock(cast(void*) old);
+    return true;
+}
+
+/// A list literal `[a, b]` as a Seq: the elements are laid out on the stack
+/// (a static array) and copied into one arena block. Big or compile-time
+/// literals stay the collector's.
+T[] tuckSeqOf(T, size_t N)(auto ref T[N] a) {
+    import core.stdc.string : memcpy;
+    if (!__ctfe && N * T.sizeof <= 4096) {
+        auto q = tuckArenaAlloc(N * T.sizeof);
+        if (q !is null) {
+            memcpy(q, a.ptr, N * T.sizeof);
+            return (cast(T*) q)[0 .. N];
+        }
+    }
+    return a[].dup;
+}
+
+/// `.dup` of a Seq of plain values, into the arena when small.
+T[] tuckDupSeq(T)(const(T)[] v) {
+    import core.stdc.string : memcpy;
+    if (v.length && v.length * T.sizeof <= 1048576) {
+        auto q = tuckArenaAlloc(v.length * T.sizeof);
+        if (q !is null) {
+            memcpy(q, v.ptr, v.length * T.sizeof);
+            return (cast(T*) q)[0 .. v.length];
+        }
+    }
+    return v.dup;
+}
+
+/// `xs += v` on a Seq: grown in place; when growth moved the block, the old
+/// one is freed (it was only `xs`'s). Small blocks live in the arena.
+void tuckPush(T)(ref T[] xs, T v) {
+    immutable n = xs.length;
+    if (xs.ptr !is null && tuckArenaCapacity(xs.ptr) >= (n + 1) * T.sizeof) {
+        xs = xs.ptr[0 .. n + 1];
+        xs[n] = v;
+        return;
+    }
+    if ((n + 1) * T.sizeof <= 524288 && tuckArenaMove(xs, n < 2 ? 4 : n * 2)) {
+        xs = xs.ptr[0 .. n + 1];
+        xs[n] = v;
+        return;
+    }
+    auto old = xs.ptr;
+    if (tuckArenaContains(old)) {          // outgrew the arena: to the collector
+        auto g = new T[](n);
+        g[] = xs[];
+        tuckFreeBlock(cast(void*) old);
+        xs = g;
+        old = null;
+    }
+    auto before = xs.ptr;
     xs ~= v;
+    if (before !is null && xs.ptr !is before) tuckFreeBlock(cast(void*) before);
+}
+
+/// Room for `extra` more elements, so the pushes of a counted loop that is
+/// about to make them need not ask (append_fill). A block that had to move
+/// is freed, as `tuckPush` does.
+void tuckReserve(T)(ref T[] xs, long extra) {
+    if (extra <= 0) return;
+    immutable want = xs.length + cast(size_t) extra;
+    if (xs.ptr !is null && tuckArenaCapacity(xs.ptr) >= want * T.sizeof) return;
+    if (want * T.sizeof <= 1048576 && tuckArenaMove(xs, want)) return;
+    if (tuckArenaContains(xs.ptr)) {
+        auto g = new T[](xs.length);
+        g[] = xs[];
+        tuckFreeBlock(cast(void*) xs.ptr);
+        xs = g;
+    }
+    auto old = xs.ptr;
+    xs.reserve(want);
     if (old !is null && xs.ptr !is old) tuckFreeBlock(cast(void*) old);
 }
 
-/// `s += t` on a str the body owns: the same, for its bytes.
+/// A push whose room `tuckReserve` made before the loop: the slice grows by
+/// one and the element is stored, with no call into the runtime's append.
+void tuckPushFilled(T)(ref T[] xs, T v) {
+    xs = xs.ptr[0 .. xs.length + 1];
+    xs[$ - 1] = v;
+}
+
+/// `a ~ b` on strs: the result is a fresh block, from the arena when it fits.
+string tuckCat(string a, string b) {
+    import core.stdc.string : memcpy;
+    immutable n = a.length + b.length;
+    if (n == 0) return "";
+    if (n <= 1048576) {
+        auto q = cast(char*) tuckArenaAlloc(n);
+        if (q !is null) {
+            if (a.length) memcpy(q, a.ptr, a.length);
+            if (b.length) memcpy(q + a.length, b.ptr, b.length);
+            return cast(string) q[0 .. n];
+        }
+    }
+    return a ~ b;
+}
+
+/// `s += t` on a str the body owns: the same, for its bytes. In place while the
+/// arena block has room; otherwise a block twice the size.
 void tuckStrAppend(ref string s, string t) {
-    import core.memory : GC;
-    auto old = s.ptr;
+    import core.stdc.string : memcpy;
+    if (t.length == 0) return;
+    immutable n = s.length, need = n + t.length;
+    if (s.ptr !is null && tuckArenaCapacity(s.ptr) >= need) {
+        memcpy(cast(char*) s.ptr + n, t.ptr, t.length);
+        s = cast(string) s.ptr[0 .. need];
+        return;
+    }
+    if (need <= 524288) {
+        auto q = cast(char*) tuckArenaAlloc(need < 32 ? 32 : need * 2);
+        if (q !is null) {
+            if (n) memcpy(q, s.ptr, n);
+            memcpy(q + n, t.ptr, t.length);
+            auto old = s.ptr;
+            s = cast(string) q[0 .. need];
+            if (old !is null) tuckFreeBlock(cast(void*) old);
+            return;
+        }
+    }
+    auto before = s.ptr;
     s ~= t;
-    if (old !is null && s.ptr !is old) tuckFreeBlock(cast(void*) old);
+    if (before !is null && s.ptr !is before) tuckFreeBlock(cast(void*) before);
 }
 
 /// A deep copy (rule G): a value of `T` that shares no storage with `v`. A
@@ -121,9 +246,18 @@ T tuckCopy(T)(T v) {
         return v.tuckDup();
     } else static if (isDynamicArray!T) {
         alias E = typeof(v[0]);
-        static if (is(E == immutable)) return v.idup;   // a str: its own bytes
+        static if (is(E == immutable)) return tuckCat(v, "");   // a str: its own bytes
         else {
-            auto r = new E[](v.length);
+            E[] r;
+            if (v.length && v.length * E.sizeof <= 4096) {
+                import core.stdc.string : memset;
+                auto q = tuckArenaAlloc(v.length * E.sizeof);
+                if (q !is null) {
+                    memset(q, 0, v.length * E.sizeof);
+                    r = (cast(E*) q)[0 .. v.length];
+                }
+            }
+            if (r.length != v.length) r = new E[](v.length);
             foreach (i, ref x; v) r[i] = tuckCopy(x);
             return r;
         }
@@ -449,27 +583,58 @@ ulong hash(string data)
     return h;
 }
 
+// splitmix64's finalizer: spreads an integer's bits so the low ones, which a
+// table indexes by, depend on all of them. The same on every backend.
+ulong tuckMix(ulong x)
+{
+    ulong z = x + 0x9e3779b97f4a7c15UL;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9UL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebUL;
+    return z ^ (z >> 31);
+}
+
+// The hash of any key a table can hold: a string by its bytes (FNV-1a, as
+// `hash`), an integer, bool or enum by value, anything else by its text.
+ulong hashKey(T)(T key)
+{
+    static if (is(T == string)) return hash(key);
+    else static if (__traits(isIntegral, T) || is(T == bool) || is(T == enum))
+        return tuckMix(cast(ulong) key);
+    else return hash(text(key));
+}
+
 // seq access. Bounds are a PRECONDITION: violating one is a program error
 // that aborts with the site, not an error value (mirrors tuck_rt.nim's
 // IndexDefect; D's own bounds check would say the same thing, but this
 // keeps the message and the op name identical across backends).
-private void tuckSeqBounds(long index, long length, string op)
+// The failure is out of line and the check is forced inline: with the report
+// in the same body, dmd would not inline it, and every `xs[i]` was a call (10%
+// of fannkuch on D, by callgrind).
+private noreturn tuckOutOfBounds(long index, long length, string op)
 {
     import core.stdc.stdlib : abort;
     import std.stdio : stderr;
+    stderr.writeln(op, ": index ", index,
+                   " out of bounds for seq of length ", length);
+    abort();
+}
+
+pragma(inline, true)
+private void tuckSeqBounds(long index, long length, string op)
+{
     if (index < 0 || index >= length)
-    {
-        stderr.writeln(op, ": index ", index,
-                       " out of bounds for seq of length ", length);
-        abort();
-    }
+        tuckOutOfBounds(index, length, op);
 }
 
 /// `xs[i]` bracket sugar lowers to tuckAt/tuckSetAt, NOT to std/seq's
 /// `at` — brackets are grammar, so they must work without `import seq`,
 /// and the reserved `tuck` prefix keeps them clear of a user's own `at`.
 /// std/seq.tuck's `at`/`setAt` stay as the explicit spelling, delegating.
-T tuckAt(T)(T[] items, long index)
+/// A REFERENCE to the element, not a copy — Nim's `lent T`. By value, every
+/// `xs[i].field` read copied the whole element: n-body's 56-byte record was
+/// copied some 20 times per pair of planets (benches/game). A caller that
+/// keeps the element (`T x = xs[i]`) still gets its own copy by assignment.
+ref T tuckAt(T)(T[] items, long index)
 {
     tuckSeqBounds(index, cast(long) items.length, "at");
     return items[index];

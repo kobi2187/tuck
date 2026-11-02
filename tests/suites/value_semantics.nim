@@ -705,9 +705,9 @@ fn main() -> int:
   # the aliasing one below: mutate `b`, and `a` must not see it.
   t.omitsOdin "...nor a result the callee's wrapper already copied",
               r"tuckSeqCopy\(tuckˑfnˑkeep\("
-  t.omitsD "the same elision on D", r"\(tuckˑfnˑfresh\([^)]*\)\)\.dup"
+  t.omitsD "the same elision on D", r"tuckDupSeq\(tuckˑfnˑfresh\("
   t.omitsD "...and the wrapper's copy is not repeated on D",
-           r"\(tuckˑfnˑkeep\([^)]*\)\)\.dup"
+           r"tuckDupSeq\(tuckˑfnˑkeep\("
   # 9 + 9 + 9 + 0. The last term is the one that matters: `d.b[0]` is 0 only
   # if `twin`'s two fields were separated. Sharing one buffer makes it 5.
   t.hostRuns("one buffer returned as two fields is still two buffers", 27)

@@ -1,0 +1,97 @@
+# regex-redux (the Benchmarks Game): strip the FASTA header and newlines from a
+# DNA sequence, count nine variants of one pattern, then rewrite the IUPAC
+# codes with five substitutions and report the lengths. The game reads the
+# sequence from stdin; this one draws it from the generator the other programs
+# use, over the 15 IUPAC codes, so the program takes one number. Built on
+# std.regex, the stdlib's own engine. Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import regex
+import seq
+import str
+
+const Width = 60
+const Im = 139968
+const Ia = 3877
+const Ic = 29573
+const Codes = "acgtBDHKMNRSVWY"
+
+# One letter: mostly a, c, g, t by the game's frequencies, and one in twenty an
+# IUPAC code.
+fn letter({seed: int}) -> u8:
+  var at = 0
+  if seed % 20 == 0:
+    at = 4 + seed /i 20 % 11
+  else:
+    let r = (seed ~f64) /f (Im ~f64)
+    at = if r < 0.3029549426680: 0 else: if r < 0.5009432431601: 1 else: if r < 0.6984905497992: 2 else: 3
+  return {t: Codes, index: at} byteAt
+
+# The input: a header line, then n letters in lines of Width.
+fn input({n: int}) -> str:
+  var out: Seq[u8] = []
+  var seed = 42
+  let head = ">ONE Homo sapiens alu\n"
+  for i in 0 ..< {t: head} byteCount:
+    let b = {t: head, index: i} byteAt
+    out = {items: out, value: b} push
+  for i in 0 ..< n:
+    seed = (seed * Ia + Ic) % Im
+    let c = {seed: seed} letter
+    out = {items: out, value: c} push
+    if (i + 1) % Width == 0 or i + 1 == n:
+      out = {items: out, value: 10} push
+  return {bytes: out} fromBytes
+
+fn variants() -> Seq[str]:
+  return ["agggtaaa|tttaccct", "[cgt]gggtaaa|tttaccc[acg]", "a[act]ggtaaa|tttacc[agt]t",
+          "ag[act]gtaaa|tttac[agt]ct", "agg[act]taaa|ttta[agt]cct", "aggg[acg]aaa|ttt[cgt]ccct",
+          "agggt[cgt]aa|tt[acg]accct", "agggta[cgt]a|t[acg]taccct", "agggtaa[cgt]|[acg]ttaccct"]
+
+fn countOf({pattern: str, dna: str}) -> int:
+  let re = {pattern: pattern} compiled
+  let found = {re: re, subject: dna} findAll
+  return found.len
+
+fn report({pattern: str, dna: str}) -> void [io: console]:
+  let c = {pattern: pattern, dna: dna} countOf
+  let line = pattern + " " + c.toStr
+  {text: line} printLine
+
+# One substitution: every match of the pattern becomes the replacement.
+fn rewrite({dna: str, pattern: str, becomes: str}) -> str:
+  let re = {pattern: pattern} compiled
+  return {re: re, subject: dna, replacement: becomes} replaceAll
+
+fn rewritten({dna: str}) -> str:
+  var s = {dna: dna, pattern: "tHa[Nt]", becomes: "<4>"} rewrite
+  s = {dna: s, pattern: "aND|caN|Ha[DS]|WaS", becomes: "<3>"} rewrite
+  s = {dna: s, pattern: "a[NSt]|BY", becomes: "<2>"} rewrite
+  s = {dna: s, pattern: "<[^>]*>", becomes: "|"} rewrite
+  s = {dna: s, pattern: "\\|[^|][^|]*\\|", becomes: "-"} rewrite
+  return s
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 1000
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let raw = {n: n} input
+  let stripped = {dna: raw, pattern: ">[^\\n]*\\n|\\n", becomes: ""} rewrite
+  for p in {} variants:
+    {pattern: p, dna: stripped} report
+  let final = {dna: stripped} rewritten
+  {text: ""} printLine
+  let a = {t: raw} byteCount
+  let b = {t: stripped} byteCount
+  let c = {t: final} byteCount
+  {text: a.toStr} printLine
+  {text: b.toStr} printLine
+  {text: c.toStr} printLine
+  return 0

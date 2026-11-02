@@ -266,7 +266,7 @@ fn main() -> int:
   return x + a[0] + b[0]
 """
   t.emitsD "M3: Seq assignment restores value semantics with .dup",
-           r"long\[\] tuckˑvˑb = \(tuckˑvˑa\)\.dup;"
+           r"long\[\] tuckˑvˑb = rt\.tuckDupSeq\(tuckˑvˑa\);"
   t.runsD "M3: writing b never writes a (7+7+50)", 64, dmdExe
 
   # --- Milestone 4: sum types and match ----------------------------------
@@ -488,9 +488,9 @@ fn main() -> int:
   return a[0] + b[0]
 """
   t.emitsD "seam: lowering marks the Seq copy, the emitter only prints it",
-           r"long\[\] tuckˑvˑb = \(tuckˑvˑa\)\.dup;"
+           r"long\[\] tuckˑvˑb = rt\.tuckDupSeq\(tuckˑvˑa\);"
   t.omitsD "seam: a fresh list literal owns its storage and needs no copy",
-           r"= \(\[7, 8, 9\]\)\.dup"
+           r"= rt\.tuckDupSeq\(rt\.tuckSeqOf\(\[7, 8, 9\]\)\)"
   t.runsD "seam: writing b still never writes a (7+50)", 57, dmdExe
 
   # A D struct copies field-for-field, so a Seq-typed FIELD's copy is only

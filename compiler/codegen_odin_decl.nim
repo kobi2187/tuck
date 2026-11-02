@@ -11,6 +11,7 @@ import ast_query
 import codegen_common
 import codegen_odin_ctx
 import ./codegen_odin
+from ownership_elab import owning, dropsDeep
 
 const DefaultMailboxSize = "8"
   ## Messages an actor's ring holds unless `[queue: N]` says otherwise.
@@ -574,6 +575,27 @@ proc genSumEqProc(d: Decl, ind: string, sums: HashSet[string]): string =
     result.add(ind & "  }\n")
   result.add(ind & "  return false\n" & ind & "}\n")
 
+proc fieldDropLine(ctx: var OdinCodegenCtx, t: Type, path, ind: string): string =
+  ## The line that releases one owned field of a variant, or "".
+  if not ctx.res.owning(ctx.module, t): return ""
+  ind & ctx.odinDrop(t, path, ctx.res.dropsDeep(ctx.module, t)) & "\n"
+
+proc genSumDropProc(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
+  ## `S_drop`: frees what a value of the payload sum owns, depth first, by the
+  ## type's own shape (rule G). It takes the value, as `rt.tuckDrop` does, so
+  ## a parameter can be dropped; a copy of the header shares every buffer it
+  ## frees. A recursive sum's edge is a Seq of the sum, which calls back here.
+  result = "\n" & ind & d.name & "_drop :: proc(x: " & d.name & ") {\n"
+  result.add(ind & "  #partial switch v in x {\n")
+  for v in d.typeBody.variants:
+    var lines = ""
+    for f in v.fields:
+      lines.add(ctx.fieldDropLine(f.typ, "v." & f.name, ind & "    "))
+    if lines == "": continue
+    result.add(ind & "  case " & d.name & "_" & v.name & ":\n")
+    result.add(lines)
+  result.add(ind & "  }\n" & ind & "}\n")
+
 proc genSumType*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## A sum type is a plain enum unless it carries payloads or declares
   ## transitions.
@@ -590,6 +612,7 @@ proc genSumType*(ctx: var OdinCodegenCtx, d: Decl): string =
            else:
              ind & d.name & " :: enum { " & variantTagList(d) & " }\n"
   if hasPayload: result.add(genSumEqProc(d, ind, sumNamesIn(ctx.module)))
+  if hasPayload and d.generics.len == 0: result.add(ctx.genSumDropProc(d, ind))
   if hasTransitions:
     # transition matrix: pure predicate + checked assignment
     result.add(ctx.genTransitionProcs(d, kindName, hasPayload))
@@ -1322,6 +1345,8 @@ proc genOdinTypeDecl(ctx: var OdinCodegenCtx, d: Decl): string =
 proc genOdinConst(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## A literal is a true compile-time constant (`::`); structured data
   ## becomes a package-level var, still one-time and immutable in intent.
+  ctx.atGlobalScope = true
+  defer: ctx.atGlobalScope = false
   if d.constVal != nil and d.constVal.kind == exkLit:
     ind & d.name & " :: " & ctx.genOdinExpr(d.constVal)
   else:

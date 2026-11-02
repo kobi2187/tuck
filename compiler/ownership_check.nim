@@ -297,6 +297,10 @@ proc walkAssign(c: var Check, n: Expr) =
   ## The value is evaluated (and may move things), then the place is
   ## defined: a new owned place, or an owned place or field losing its old
   ## value, which must have been moved out or is dropped (`dropsOld`).
+  if n.viewBinding:
+    c.walkExpr(n.assignVal, uBorrow)   # a view: looked at, owns nothing
+    if n.target != nil and n.target.kind == exkVar: c.borrowed.incl n.target.name
+    return
   let outerPlace = c.refills
   c.refills = if n.target != nil: pathOf(n.target) else: ""
   c.walkExpr(n.assignVal, uSink)

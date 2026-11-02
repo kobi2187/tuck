@@ -97,8 +97,45 @@ proc stillNeeded(res: Resolution, parts: tuple[read, value: Expr]) =
     if x.kind in {exkVar, exkField} and rootOf(pathOf(x)) == root:
       res.lastUses.excl x.id
 
+proc concatChain(top: Expr): seq[Expr] =
+  ## The left-leaning `+` nodes of a string concatenation, outermost first.
+  var x = top
+  while x != nil and x.kind == exkBinary and isStringConcat(x):
+    result.add x
+    x = x.left
+
+proc regroup(chain: seq[Expr], target: Expr) =
+  ## ((t + a1) + a2) + .. -> t + ((a1 + a2) + ..), the same nodes moved.
+  var rest: seq[Expr]              # the operands after the target, in order
+  for i in countdown(chain.high, 0): rest.add chain[i].right
+  chain[^1].left = rest[0]
+  chain[^1].right = rest[1]
+  for i in countdown(chain.high - 1, 1):
+    chain[i].left = chain[i + 1]
+    chain[i].right = rest[chain.high - i + 1]
+  chain[0].left = target
+  chain[0].right = chain[1]
+
+proc reassociateConcat(res: Resolution, n: Expr) =
+  ## `s = s + a + b` parses as `((s + a) + b)`: the target is not the LEFT
+  ## operand, so it was a full copy of `s` per statement (a loop building a
+  ## string this way is quadratic: 2M appends ran past 13 minutes on Nim).
+  ## String concatenation is associative, so the chain is regrouped as
+  ## `s + (a + b)`, which is the shape `selfConcatParts` appends in place.
+  ## Evaluation order of a, b is unchanged.
+  if not plainVarAssign(n): return
+  let chain = concatChain(n.assignVal)
+  if chain.len < 2: return
+  let target = chain[^1].left
+  if target == nil or target.kind != exkVar or target.name != n.target.name:
+    return
+  for c in chain:
+    if mentionsName(c.right, n.target.name): return
+  regroup(chain, target)
+
 proc materialize(res: Resolution, n: Expr): bool =
   ## Rewrites `n` if it is an append assigned back over its own argument.
+  res.reassociateConcat(n)
   let pushed = selfAppendParts(res, n)
   if pushed.value != nil:
     res.stillNeeded(pushed)
@@ -125,12 +162,13 @@ proc materializeAppends*(res: Resolution, m: Module) =
     if changed and d.id.isSet:
       res.ssaGraphs.del((d.id, ssLowered))
 
-proc dropOf(name, slot: string, span: Span, deep = false): Expr =
+proc dropOf(name, slot: string, span: Span, deep = false, ty: Type = nil): Expr =
   ## `defer drop(name.slot)` — the place as a path ("" slot: the whole value).
   var place = Expr(span: span, kind: exkVar, name: name)
   if slot.len > 0:
     place = Expr(span: span, kind: exkField, receiver: place, fieldName: slot)
-  let drop = Expr(span: span, kind: exkDrop, dropped: place, dropDeep: deep)
+  let drop = Expr(span: span, kind: exkDrop, dropped: place, dropDeep: deep,
+                  dropType: ty)
   result = Expr(span: span, kind: exkDefer, deferReleases: true,
                 deferBody: Expr(span: span, kind: exkBlock, stmts: @[drop]))
   fillIdsIn(result)     # every node after prepare has one (assertTreeIds)
@@ -145,6 +183,8 @@ type DropSource* = object
     ## parameter slots the body owns, dropped at its every exit
   deep*: HashSet[string]
     ## `place & "\t" & slot` of each slot whose drop walks it (rule G)
+  types*: Table[string, Type]
+    ## the type each deep slot holds, by the same key
   deepOverwrites*: HashSet[NodeId]
     ## the overwrites whose old value is walked when it is dropped (rule G)
 
@@ -183,7 +223,8 @@ proc dropsAfter(w: DropWalk, n: Expr, defined: var HashSet[string]): seq[Expr] =
   if fresh and (n.isDecl or not threaded):
     defined.incl name
     for slot in w.src.atScopeExit.getOrDefault(name):
-      result.add dropOf(name, slot, n.span, w.deepAt(name, slot))
+      result.add dropOf(name, slot, n.span, w.deepAt(name, slot),
+                        w.src.types.getOrDefault(name & "\t" & slot))
   elif not fresh:
     n.dropsOld = w.dropsOldOf(n)
     n.dropsOldDeep = n.dropsOld and n.id in w.src.deepOverwrites
@@ -243,7 +284,8 @@ proc materializeParamDrops(d: Decl, src: DropSource) =
     "body to put its drops in"
   var drops: seq[Expr]
   for (p, slot) in src.paramDrops:
-    drops.add dropOf(p, slot, d.fnBody.span, p & "\t" & slot in src.deep)
+    drops.add dropOf(p, slot, d.fnBody.span, p & "\t" & slot in src.deep,
+                     src.types.getOrDefault(p & "\t" & slot))
   d.fnBody.stmts = drops & d.fnBody.stmts
 
 type DropsOf* = proc (d: Decl): DropSource

@@ -1639,7 +1639,11 @@ when isMainModule:
         # to a runnable binary; `--release` opts into the slow, fast-code
         # build.
         let speedFlags =
-          if wantRelease: " -d:release "
+          # LTO: Nim emits one C file per module, so without it nothing in
+          # tuck_rt — `tuckAt`, the bounds check, `sqrt` — can be inlined
+          # into the program's loops. n-body ran 9x C without it, 1.5x with
+          # it (benches/game, SCORES.md).
+          if wantRelease: " -d:release --passC:-flto --passL:-flto "
           else: " --opt:none -d:tuckFast " & pickFastCC()
         # Nim derives its cache dir from the MODULE NAME, so two tuck builds
         # of different programs that happen to share a basename (every
@@ -1722,7 +1726,9 @@ when isMainModule:
           let dBin = outDir / (binBase & "_d")
           # -i compiles imported modules (mod_*.d, tuck_rt.d) automatically;
           # -O -release is the fast-code build, default is the fast build.
-          let dOpt = if wantRelease: " -O -release" else: ""
+          # -inline: dmd inlines nothing across modules without it, and every
+          # `xs[i]` is a call into tuck_rt.d (benches/game, SCORES.md).
+          let dOpt = if wantRelease: " -O -release -inline" else: ""
           # Objects built from vendored C sources ride on the command line:
           # dmd's pragma(lib) is for SYSTEM libraries and would turn a path
           # into a -l<path> the linker cannot resolve.

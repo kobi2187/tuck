@@ -1,0 +1,86 @@
+# spectral-norm (the Benchmarks Game): the largest singular value of the
+# infinite matrix A(i, j) = 1 / ((i + j)(i + j + 1) / 2 + i + 1), by the
+# power method on AᵀA. Written plainly and not tuned (benches/game/README.md).
+import console
+import convert
+import math
+import cli
+import seq
+import str
+
+fn a({i: int, j: int}) -> f64 [pure]:
+  let ij = i + j
+  return 1.0 /f (((ij * (ij + 1)) /i 2 + i + 1) ~f64)
+
+fn zeros({n: int}) -> Seq[f64]:
+  var out: Seq[f64] = []
+  for i in 0 ..< n:
+    out = {items: out, value: 0.0} push
+  return out
+
+# A·v
+fn times({v: Seq[f64]}) -> Seq[f64]:
+  var out = {n: v.len} zeros
+  for i in 0 ..< v.len:
+    var sum = 0.0
+    for j in 0 ..< v.len:
+      sum = sum + ({i: i, j: j} a) * v[j]
+    out[i] = sum
+  return out
+
+# Aᵀ·v
+fn timesTransposed({v: Seq[f64]}) -> Seq[f64]:
+  var out = {n: v.len} zeros
+  for i in 0 ..< v.len:
+    var sum = 0.0
+    for j in 0 ..< v.len:
+      sum = sum + ({i: j, j: i} a) * v[j]
+    out[i] = sum
+  return out
+
+fn timesAtA({v: Seq[f64]}) -> Seq[f64]:
+  let av = {v: v} times
+  return {v: av} timesTransposed
+
+fn ones({n: int}) -> Seq[f64]:
+  var out: Seq[f64] = []
+  for i in 0 ..< n:
+    out = {items: out, value: 1.0} push
+  return out
+
+fn norm({n: int}) -> f64:
+  var u = {n: n} ones
+  var v = {n: n} zeros
+  for k in 0 ..< 10:
+    v = {v: u} timesAtA
+    u = {v: v} timesAtA
+  var vbv = 0.0
+  var vv = 0.0
+  for i in 0 ..< n:
+    vbv = vbv + u[i] * v[i]
+    vv = vv + v[i] * v[i]
+  return {value: vbv /f vv} sqrt
+
+# `%.9f`: the stdlib has no fixed-precision float format yet.
+fn fixed9({x: f64}) -> str:
+  let scaled = (x * 1000000000.0 + 0.5) ~i64
+  let whole = scaled /i 1000000000
+  var frac = (scaled % 1000000000).toStr
+  for frac.len < 9:
+    frac = "0" + frac
+  return whole.toStr + "." + frac
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 100
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let r = {n: n} norm
+  let text = {x: r} fixed9
+  {text: text} printLine
+  return 0

@@ -1,0 +1,30 @@
+# floatloop: a numeric integration of 4/(1+x^2) by the midpoint rule; pure float arithmetic.
+# Written plainly and NOT tuned.
+import console
+import convert
+import cli
+import seq
+import str
+
+fn integrate({steps: int}) -> f64:
+  let h = 1.0 /f (steps ~f64)
+  var sum = 0.0
+  for i in 0 ..< steps:
+    let x = ((i ~f64) + 0.5) * h
+    sum = sum + 4.0 /f (1.0 + x * x)
+  return sum * h
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 1000
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  let r = {steps: n} integrate
+  let scaled = (r * 1000000000.0) ~int
+  {text: scaled.toStr} printLine
+  return 0
