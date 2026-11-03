@@ -1394,3 +1394,13 @@ clang is the default for `--release` Nim when installed (TUCK_CC=gcc keeps gcc);
 | Nim, clang | 0.504 | 0.268 | 1.9x | 7.4x -> 3.9x |
 | Odin | 0.799 | 0.128 | 6.2x | 11.7x -> 1.9x |
 | D, LDC | 0.797 | 0.131 | 6.1x | 11.7x -> 1.9x |
+
+## `-d:danger` instead of `-d:release` (Nim): no gain
+
+Measured on matmul, heapsort, life, permute, qsort, levenshtein, sieve and
+richards (clang, release flags otherwise identical). After repeating the noisy
+ones five times each, every difference was within run-to-run noise. Overflow
+checks are already off in release, and the hot bounds checks are Tuck's own
+`tuckAt`/`tuckSetAt` (removed by the bounds-guard pass), which the flag does not
+touch. Not adopted; it would only disable Nim's range/nil/assert checks in the
+runtime. A Tuck-level `--unchecked` would be the way to drop checks everywhere.
