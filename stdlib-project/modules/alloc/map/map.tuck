@@ -18,6 +18,7 @@
 # Value semantics all the way: every mutating verb RETURNS the new table, the
 # same convention std/seq's `push` follows, because a Seq can reallocate and
 # there is no shared backing store to write through.
+import bits
 import hash
 import seq
 
@@ -37,14 +38,16 @@ type Table[K, V]:
 const FirstSlots = 8
 
 # Where `key` lives in the index, or the empty slot where it would go. The
-# index is never full (it is doubled at half), so the probe always ends.
-# Requires a non-empty index.
+# index is never full (it is doubled at half), so the probe always ends. Its
+# size is always a power of two (8, then doubled), so the home slot and the
+# wrap-around are a mask, not a division. Requires a non-empty index.
 fn slotOf[K, V]({entries: Seq[Entry[K, V]], slots: Seq[int], key: K}) -> int:
   let n = slots.len
   let h = {key: key} hashKey
-  var i = (h % (n ~u64)) ~int
+  let mask = (n - 1) ~u64
+  var i = ({a: h, b: mask} bitAnd) ~int
   for slots[i] >= 0 and entries[slots[i]].key != key:
-    i = (i + 1) % n
+    i = {a: i + 1, b: n - 1} andInt
   return i
 
 # The position of `key` in `entries`, or -1.
@@ -81,22 +84,28 @@ fn get[K, V]({t: Table[K, V], key: K}) -> V?:
     return
   return t.entries[at].value
 
-# Replaces in place when the key is present, appends when it is not — so a
-# table never holds two entries for one key. Each part of `t` is taken once, so
-# a caller's last use of the table moves it through instead of copying it.
+# Replaces the value in place when the key is present (the entry keeps its
+# key: nothing is rebuilt or copied), appends when it is not — so a table never
+# holds two entries for one key. One probe serves both: the slot it ends on is
+# the key's, or the empty one the key will take. Each part of `t` is taken
+# once, so a caller's last use of the table moves it through instead of
+# copying it.
 fn set[K, V]({t: Table[K, V], key: K, value: V}) -> Table[K, V]:
-  let at = {t: t, key: key} indexOf
   var es = t.entries
   var slots = t.slots
-  let fresh = {key: key, value: value} Entry
-  if at >= 0:
-    es[at] = fresh
-    return {entries: es, slots: slots} Table
+  var s = 0 - 1
+  if slots.len > 0:
+    s = {entries: es, slots: slots, key: key} slotOf
+    let at = slots[s]
+    if at >= 0:
+      es[at].value = value
+      return {entries: es, slots: slots} Table
   if (es.len + 1) * 2 > slots.len:
     let n = if slots.len == 0: FirstSlots else: slots.len * 2
     slots = {entries: es, n: n} indexed
-  let s = {entries: es, slots: slots, key: key} slotOf
+    s = {entries: es, slots: slots, key: key} slotOf
   slots[s] = es.len
+  let fresh = {key: key, value: value} Entry
   es = {items: es, value: fresh} push
   return {entries: es, slots: slots} Table
 

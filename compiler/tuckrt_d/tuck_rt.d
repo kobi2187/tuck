@@ -340,9 +340,29 @@ string tuckFloatText(double x, bool single) {
 }
 
 string toStr(T)(T value) {
+    import std.traits : isIntegral, isSigned;
     static if (is(T == double)) return tuckFloatText(value, false);
     else static if (is(T == float)) return tuckFloatText(value, true);
+    else static if (isIntegral!T && !is(T == enum)) {
+        static if (isSigned!T) return tuckIntText(value < 0, value < 0 ? -cast(ulong) value : cast(ulong) value);
+        else return tuckIntText(false, cast(ulong) value);
+    }
     else return text(value);
+}
+
+/// An integer as decimal text without std.conv's formatting machinery, into
+/// an arena block when it fits (most integers' text does).
+string tuckIntText(bool neg, ulong u) {
+    char[24] buf = void;
+    size_t i = buf.length;
+    if (u == 0) buf[--i] = '0';
+    while (u > 0) { buf[--i] = cast(char)('0' + u % 10); u /= 10; }
+    if (neg) buf[--i] = '-';
+    immutable n = buf.length - i;
+    auto q = cast(char*) tuckArenaAlloc(n);
+    char[] out_ = q !is null ? q[0 .. n] : new char[](n);
+    out_[] = buf[i .. $];
+    return cast(string) out_;
 }
 
 // !T is a result, ?T is an option: absence is a first-class state, not a
