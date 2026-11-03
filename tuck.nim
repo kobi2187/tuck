@@ -142,6 +142,8 @@ fn main runs when the binary starts.
 Takes every `tuck compile` flag, plus:
   --nim:FLAGS  extra flags passed through to `nim c`, e.g.
                --nim:"--os:standalone --cpu:arm"
+  --native     tune the binary for this machine's CPU (-march=native /
+               -microarch:native / -mcpu=native); it may not run on another
   --release    promote the size-budget report to a build failure
   --no-invariants  drop the runtime `invariant:` checks (they survive
                --release otherwise), on every backend
@@ -1647,7 +1649,8 @@ when isMainModule:
           # scheduler 6x and richards 3x faster under clang than gcc -O3
           # -flto, which leaves by-value aggregates in memory (SCORES.md).
           if wantRelease: (if findExe("clang") != "" and getEnv("TUCK_CC") != "gcc": " --cc:clang " else: "") &
-                          " -d:release --passC:-flto --passL:-flto --passC:-U_FORTIFY_SOURCE --passC:-D_FORTIFY_SOURCE=0 --overflowChecks:off "
+                          " -d:release --passC:-flto --passL:-flto --passC:-U_FORTIFY_SOURCE --passC:-D_FORTIFY_SOURCE=0 --overflowChecks:off " &
+                          (if "--native" in opts: " --passC:-march=native " else: "")
           else: " --opt:none -d:tuckFast " & pickFastCC()
         # Nim derives its cache dir from the MODULE NAME, so two tuck builds
         # of different programs that happen to share a basename (every
@@ -1722,7 +1725,8 @@ when isMainModule:
           # emitted <base>.odin plus tuckrt/ and mod_*/ are already there.
           let odinBin = outDir / (binBase & "_odin")
           # -o:none is Odin's fastest path; -o:speed is the release build.
-          let odinOpt = if wantRelease: "-o:speed" else: "-o:none"
+          let odinOpt = (if wantRelease: "-o:speed" else: "-o:none") &
+                        (if "--native" in opts: " -microarch:native" else: "")
           # TUCK_ODIN_EXTRA: flags appended verbatim. The test suite sets
           # `-thread-count:1` — Odin's threaded checker crashes itself now
           # and then (tests/harness.nim, OdinThreads).
@@ -1756,7 +1760,8 @@ when isMainModule:
           # -O -release is the fast-code build, default is the fast build.
           # -inline: dmd inlines nothing across modules without it, and every
           # `xs[i]` is a call into tuck_rt.d (benches/game, SCORES.md).
-          let dOpt = if wantRelease: " -O -release -inline" else: ""
+          let dOpt = (if wantRelease: " -O -release -inline" else: "") &
+                     (if "--native" in opts and wantRelease: " -mcpu=native" else: "")
           # Objects built from vendored C sources ride on the command line:
           # dmd's pragma(lib) is for SYSTEM libraries and would turn a path
           # into a -l<path> the linker cannot resolve.
