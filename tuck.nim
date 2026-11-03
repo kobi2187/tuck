@@ -1643,7 +1643,11 @@ when isMainModule:
           # tuck_rt — `tuckAt`, the bounds check, `sqrt` — can be inlined
           # into the program's loops. n-body ran 9x C without it, 1.5x with
           # it (benches/game, SCORES.md).
-          if wantRelease: " -d:release --passC:-flto --passL:-flto --passC:-U_FORTIFY_SOURCE --passC:-D_FORTIFY_SOURCE=0 --overflowChecks:off "
+          # clang when installed (TUCK_CC=gcc keeps gcc): the same emitted C ran
+          # scheduler 6x and richards 3x faster under clang than gcc -O3
+          # -flto, which leaves by-value aggregates in memory (SCORES.md).
+          if wantRelease: (if findExe("clang") != "" and getEnv("TUCK_CC") != "gcc": " --cc:clang " else: "") &
+                          " -d:release --passC:-flto --passL:-flto --passC:-U_FORTIFY_SOURCE --passC:-D_FORTIFY_SOURCE=0 --overflowChecks:off "
           else: " --opt:none -d:tuckFast " & pickFastCC()
         # Nim derives its cache dir from the MODULE NAME, so two tuck builds
         # of different programs that happen to share a basename (every
@@ -1719,9 +1723,14 @@ when isMainModule:
           else:
             echo "built ", odinBin, "  ", reportBuild(odinBin, odMs)
       of bkDlang:
-        let dmdExe = findExe("dmd")
+        # ldmd2 (LDC, an LLVM backend) when installed, else dmd; TUCK_DC names
+        # one. Same flags: ldmd2 is dmd's command line over LLVM's optimiser.
+        let dcWanted = getEnv("TUCK_DC")
+        let dmdExe = if dcWanted != "": findExe(dcWanted)
+                     elif findExe("ldmd2") != "": findExe("ldmd2")
+                     else: findExe("dmd")
         if dmdExe == "":
-          echo "tuck: dmd not found on PATH — skipping D build"
+          echo "tuck: no D compiler (ldmd2 or dmd) on PATH — skipping D build"
         else:
           let dBin = outDir / (binBase & "_d")
           # -i compiles imported modules (mod_*.d, tuck_rt.d) automatically;

@@ -3,7 +3,7 @@ package main
 
 import "core:os"
 import rt "./tuckrt"
-foreign import libc "system:c"
+foreign import dma "dma.o"
 
 tuckˑpoolˑRxBuffers: rt.ObjectPool([512]u8, 4)
 
@@ -30,8 +30,8 @@ tuckˑfnˑadmit :: proc (id: u32) -> int {
 }
 
 @(default_calling_convention="c")
-foreign libc {
-	memset :: proc(p: [^]u8, c: int, n: int) ---
+foreign dma {
+	dmaFill :: proc(p: [^]u8, c: int, n: int) ---
 }
 
 tuckˑfnˑdrainOnce :: proc () -> int {
@@ -41,7 +41,7 @@ tuckˑfnˑdrainOnce :: proc () -> int {
   }
   tuckˑvˑdst := rt.tuckPoolAddr(&tuckˑpoolˑRxBuffers, tuckˑvˑb.value)
   defer rt.tuckDrop(tuckˑvˑdst)
-  memset(tuckˑvˑdst, 1, 512)
+  dmaFill(tuckˑvˑdst, 1, 512)
   tuckˑvˑrx := rt.tuckPoolRead(&tuckˑpoolˑRxBuffers, tuckˑvˑb.value)
   defer rt.tuckDrop(tuckˑvˑrx)
   rt.tuckPoolRelease(&tuckˑpoolˑRxBuffers, tuckˑvˑb.value)

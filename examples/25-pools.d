@@ -26,7 +26,7 @@ long tuckˑfnˑadmit(uint id) {
     return 0L;
 }
 
-extern (C) void memset(ubyte* p, long c, long n);
+extern (C) void dmaFill(ubyte* p, long c, long n);
 
 
 long tuckˑfnˑdrainOnce() {
@@ -36,7 +36,7 @@ long tuckˑfnˑdrainOnce() {
     }
     ubyte* tuckˑvˑdst = rt.tuckPoolAddr(tuckˑpoolˑRxBuffers, tuckˑvˑb.value);
     scope(exit) rt.tuckDrop(tuckˑvˑdst);
-    memset(tuckˑvˑdst, 1L, 512L);
+    dmaFill(tuckˑvˑdst, 1L, 512L);
     rt.TuckResult!(ubyte[512]) tuckˑvˑrx = rt.tuckPoolRead(tuckˑpoolˑRxBuffers, tuckˑvˑb.value);
     scope(exit) rt.tuckDrop(tuckˑvˑrx);
     rt.tuckPoolRelease(tuckˑpoolˑRxBuffers, tuckˑvˑb.value);

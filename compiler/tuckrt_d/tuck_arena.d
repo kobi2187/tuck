@@ -150,3 +150,17 @@ bool tuckArenaFree(void* p) nothrow @nogc
     cache[c] = p;
     return true;
 }
+
+/// Byte copy and zero without a libc declaration. A program may declare its
+/// own `extern (C) memset`/`memcpy` with another signature, and LLVM-based D
+/// compilers refuse two declarations of one symbol in a single module; a
+/// slice assignment compiles to the same intrinsic.
+pragma(inline, true) void tuckBytesCopy(void* dst, const(void)* src, size_t n) nothrow @nogc
+{
+    (cast(ubyte*) dst)[0 .. n] = (cast(const(ubyte)*) src)[0 .. n];
+}
+
+pragma(inline, true) void tuckBytesZero(void* dst, size_t n) nothrow @nogc
+{
+    (cast(ubyte*) dst)[0 .. n] = 0;
+}

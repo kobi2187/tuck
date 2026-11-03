@@ -100,12 +100,11 @@ void tuckReplace(T)(ref T place, T value) {
 /// small enough), freeing the block it left. False: too big, the caller grows
 /// it the collector's way.
 private bool tuckArenaMove(T)(ref T[] xs, size_t room) {
-    import core.stdc.string : memcpy;
     immutable bytes = room * T.sizeof;
     auto q = tuckArenaAlloc(bytes);
     if (q is null) return false;
     auto n = xs.length;
-    if (n) memcpy(q, xs.ptr, n * T.sizeof);
+    if (n) tuckBytesCopy(q, xs.ptr, n * T.sizeof);
     auto old = xs.ptr;
     xs = (cast(T*) q)[0 .. n];
     if (old !is null) tuckFreeBlock(cast(void*) old);
@@ -116,11 +115,10 @@ private bool tuckArenaMove(T)(ref T[] xs, size_t room) {
 /// (a static array) and copied into one arena block. Big or compile-time
 /// literals stay the collector's.
 T[] tuckSeqOf(T, size_t N)(auto ref T[N] a) {
-    import core.stdc.string : memcpy;
     if (!__ctfe && N * T.sizeof <= 4096) {
         auto q = tuckArenaAlloc(N * T.sizeof);
         if (q !is null) {
-            memcpy(q, a.ptr, N * T.sizeof);
+            tuckBytesCopy(q, a.ptr, N * T.sizeof);
             return (cast(T*) q)[0 .. N];
         }
     }
@@ -129,11 +127,10 @@ T[] tuckSeqOf(T, size_t N)(auto ref T[N] a) {
 
 /// `.dup` of a Seq of plain values, into the arena when small.
 T[] tuckDupSeq(T)(const(T)[] v) {
-    import core.stdc.string : memcpy;
     if (v.length && v.length * T.sizeof <= 1048576) {
         auto q = tuckArenaAlloc(v.length * T.sizeof);
         if (q !is null) {
-            memcpy(q, v.ptr, v.length * T.sizeof);
+            tuckBytesCopy(q, v.ptr, v.length * T.sizeof);
             return (cast(T*) q)[0 .. v.length];
         }
     }
@@ -195,14 +192,13 @@ void tuckPushFilled(T)(ref T[] xs, T v) {
 
 /// `a ~ b` on strs: the result is a fresh block, from the arena when it fits.
 string tuckCat(string a, string b) {
-    import core.stdc.string : memcpy;
     immutable n = a.length + b.length;
     if (n == 0) return "";
     if (n <= 1048576) {
         auto q = cast(char*) tuckArenaAlloc(n);
         if (q !is null) {
-            if (a.length) memcpy(q, a.ptr, a.length);
-            if (b.length) memcpy(q + a.length, b.ptr, b.length);
+            if (a.length) tuckBytesCopy(q, a.ptr, a.length);
+            if (b.length) tuckBytesCopy(q + a.length, b.ptr, b.length);
             return cast(string) q[0 .. n];
         }
     }
@@ -212,19 +208,18 @@ string tuckCat(string a, string b) {
 /// `s += t` on a str the body owns: the same, for its bytes. In place while the
 /// arena block has room; otherwise a block twice the size.
 void tuckStrAppend(ref string s, string t) {
-    import core.stdc.string : memcpy;
     if (t.length == 0) return;
     immutable n = s.length, need = n + t.length;
     if (s.ptr !is null && tuckArenaCapacity(s.ptr) >= need) {
-        memcpy(cast(char*) s.ptr + n, t.ptr, t.length);
+        tuckBytesCopy(cast(char*) s.ptr + n, t.ptr, t.length);
         s = cast(string) s.ptr[0 .. need];
         return;
     }
     if (need <= 524288) {
         auto q = cast(char*) tuckArenaAlloc(need < 32 ? 32 : need * 2);
         if (q !is null) {
-            if (n) memcpy(q, s.ptr, n);
-            memcpy(q + n, t.ptr, t.length);
+            if (n) tuckBytesCopy(q, s.ptr, n);
+            tuckBytesCopy(q + n, t.ptr, t.length);
             auto old = s.ptr;
             s = cast(string) q[0 .. need];
             if (old !is null) tuckFreeBlock(cast(void*) old);
@@ -250,10 +245,9 @@ T tuckCopy(T)(T v) {
         else {
             E[] r;
             if (v.length && v.length * E.sizeof <= 4096) {
-                import core.stdc.string : memset;
                 auto q = tuckArenaAlloc(v.length * E.sizeof);
                 if (q !is null) {
-                    memset(q, 0, v.length * E.sizeof);
+                    tuckBytesZero(q, v.length * E.sizeof);
                     r = (cast(E*) q)[0 .. v.length];
                 }
             }
@@ -1700,16 +1694,15 @@ private void fileWorker(void* arg)
 private FileReq runFileOp(FileOp op, string path, string data = "")
 {
     import core.stdc.stdlib : malloc, free;
-    import core.stdc.string : memcpy;
 
     auto pathBuf = cast(char*) malloc(path.length + 1);
-    memcpy(pathBuf, path.ptr, path.length);
+    tuckBytesCopy(pathBuf, path.ptr, path.length);
     pathBuf[path.length] = 0;
     char* dataBuf;
     if (data.length > 0)
     {
         dataBuf = cast(char*) malloc(data.length);
-        memcpy(dataBuf, data.ptr, data.length);
+        tuckBytesCopy(dataBuf, data.ptr, data.length);
     }
 
     FileReq req;

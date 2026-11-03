@@ -312,14 +312,13 @@ private struct FdTable
     void set(int fd, IoWaiter w)
     {
         import core.stdc.stdlib : realloc;
-        import core.stdc.string : memset;
         if (cast(size_t) fd >= cap)
         {
             size_t n = cap == 0 ? 64 : cap;
             while (n <= cast(size_t) fd) n *= 2;
             auto p = cast(IoWaiter*) realloc(data, n * IoWaiter.sizeof);
             if (p is null) tuckCoroFail("out of memory growing the fd table");
-            memset(p + cap, 0, (n - cap) * IoWaiter.sizeof);
+            tuckBytesZero(p + cap, (n - cap) * IoWaiter.sizeof);
             data = p;
             cap = n;
         }
