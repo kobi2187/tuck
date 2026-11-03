@@ -73,7 +73,7 @@ import lowering_combinator
 import twin_calls
 import call_args
 import ownership_nodes
-import append_fill
+import append_fill, bounds_guard
 import ownership_check
 import ownership_write
 import ownership_rules
@@ -185,6 +185,7 @@ proc prepareCommon(prog: seq[LoadedModule], semLayer: Resolution): BackendTree =
     # re-deciding from a predicate.
     materializeAppends(semLayer, lm.m)
     markFills(semLayer, lm.m)                  # a counted loop that pushes (#210)
+    markBoundsGuards(semLayer, lm.m)           # accesses a loop proves in range
     dumpParams(semLayer, lm.m)                 # TUCK_DEBUG_OWN=params (P)
     dumpDrops(semLayer, lm.m)                  # TUCK_DEBUG_OWN=drops (D, M)
     writeRules(semLayer, lm.m)                 # copies, drops, resets (S-M)

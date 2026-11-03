@@ -27,6 +27,8 @@ type
       ## Printing a package-level initialiser: Odin cannot call a procedure
       ## that needs a `context` there, so a Seq literal stays a literal.
     indent*: int
+    fastLoops*: HashSet[NodeId]
+      ## loops whose unchecked copy is being printed (bounds_guard)
     module*: Module
     hoisted*: seq[string]  # named decls hoisted out of field positions
     recShapes*: Table[string, string]  # record shape signature -> struct name

@@ -15,6 +15,7 @@
 # whose signature needs a not-yet-ported type emits a visible TODO comment;
 # the D compiler then fails only if a call site actually references it,
 # naming the symbol.
+import bounds_guard
 import ast, strutils, sets, tables, options
 import resolution
 import ast_query
@@ -577,6 +578,19 @@ proc dBinOp(op: BinOp): string =
   of boOr: "||"
   of boXor: "^"
   of boRangeIncl, boRangeExcl: ""   # only meaningful inside foreach — genDFor
+
+proc genDBracket(ctx: var DCodegenCtx, e: Expr): string =
+  ## Indexing resolved to an at()/setAt() call by the checker; a type
+  ## application never reaches codegen (mirrors both other backends). An
+  ## access its loop proved in range (bounds_guard) prints unchecked while that
+  ## loop's unchecked copy is the one being printed.
+  let loop = vouchingLoop(e)
+  if loop != NodeId(0) and loop in ctx.fastLoops:
+    if e.kind == exkBracket:
+      return "(" & ctx.genDExpr(e.brReceiver) & ").ptr[" & ctx.genDExpr(e.brArgs[0]) & "]"
+    return "(" & ctx.genDExpr(e.brTarget.brReceiver) & ").ptr[" &
+           ctx.genDExpr(e.brTarget.brArgs[0]) & "] = " & ctx.genDExpr(e.brValue)
+  if ctx.res.hasCall(e): ctx.genDExpr(ctx.res.call(e)) else: ""
 
 proc genDBinary(ctx: var DCodegenCtx, e: Expr): string =
   ## A binary expression, parenthesised. `str + str` is D's `~`; a range
@@ -1242,8 +1256,31 @@ proc genDFor(ctx: var DCodegenCtx, e: Expr): string =
                   (if r.binOp == boRangeIncl: " + 1)" else: ")")
     for t in e.fillTargets:
       reserve.add ctx.indD & "rt.tuckReserve(" & ctx.movedAssignTarget(t) & ", " & n & ");\n"
-  reserve & ctx.indD & "foreach (" & dForVars(e) & "; " & iterStr & ") {\n" &
-    ctx.genDNested(e.body) & ctx.indD & "}"
+  let guards = loopGuards(e)
+  if guards.len == 0:
+    return reserve & ctx.indD & "foreach (" & dForVars(e) & "; " & iterStr & ") {\n" &
+      ctx.genDNested(e.body) & ctx.indD & "}"
+  # Its accesses are proved in range before the loop: an unchecked copy under
+  # the guard, the original (checked) otherwise (bounds_guard).
+  let r = e.iterable
+  let lo = ctx.genDExpr(r.left)
+  let hi = "(" & ctx.genDExpr(r.right) & (if r.binOp == boRangeIncl: " + 1)" else: ")")
+  var conds: seq[string]
+  for g in guards:
+    let inv = if g.inv == nil: "0" else: ctx.genDExpr(g.inv)
+    conds.add "(" & lo & " + " & inv & " + " & $g.lo & " >= 0) && (" & hi &
+              " + " & inv & " + " & $g.hi & " <= cast(long)(" &
+              ctx.genDExpr(g.recv) & ").length)"
+  let outer = ctx.indD
+  let head = "foreach (" & dForVars(e) & "; " & iterStr & ") {\n"
+  inc ctx.indent
+  ctx.fastLoops.incl e.id
+  let fast = ctx.indD & head & ctx.genDNested(e.body) & ctx.indD & "}"
+  ctx.fastLoops.excl e.id
+  let slow = ctx.indD & head & ctx.genDNested(e.body) & ctx.indD & "}"
+  dec ctx.indent
+  reserve & outer & "if (" & conds.join(" && ") & ") {\n" & fast & "\n" & outer &
+    "} else {\n" & slow & "\n" & outer & "}"
 
 proc genDFill(ctx: var DCodegenCtx, e: Expr): string =
   ## `[v; N]` (R8): `rt.tuckFill`, whose `T[N] r = v` is D's block
@@ -1487,7 +1524,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkBracket, exkBracketAssign:
     # Indexing resolved to an at()/setAt() call by the checker; a type
     # application never reaches codegen (mirrors both other backends).
-    if ctx.res.hasCall(e): ctx.genDExpr(ctx.res.call(e)) else: ""
+    ctx.genDBracket(e)
   of exkCall: ctx.genDCall(e)
   of exkCombinator: ctx.genDCombinator(e)
   of exkChain:

@@ -178,6 +178,16 @@ proc setAt*[T](items: var seq[T], index: int, value: T) =
   ## `xs[i] = v`.
   tuckSetAt(items, index, value)
 
+{.push boundChecks: off.}
+proc tuckAtU*[T](items: seq[T], index: int): lent T {.inline, hot.} =
+  ## `xs[i]` with its loop's guard already holding (bounds_guard): no check.
+  items[index]
+
+proc tuckSetAtU*[T](items: var seq[T], index: int, value: T) {.inline.} =
+  ## `xs[i] = v` under a guard; the elements own nothing, so a plain store.
+  items[index] = value
+{.pop.}
+
 proc tuckArrayAt*[N: static int, T](items: array[N, T], index: int): lent T {.inline, hot.} =
   ## A bounds-checked read of a fixed `Array[N, T]`.
   ##

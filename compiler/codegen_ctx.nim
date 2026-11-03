@@ -25,6 +25,8 @@ type
       ## comment on checkOrDie.
     definedVars*: HashSet[string]
     indent*: int
+    fastLoops*: HashSet[NodeId]
+      ## loops whose unchecked copy is being printed (bounds_guard)
     module*: Module
     hoisted*: seq[string]  # named decls hoisted out of field positions (inline enums)
     typeSection*: seq[string]  # object type headers — emitted with the types,

@@ -421,6 +421,46 @@ fn main() -> int:
   t.emitsOdin "...and Odin", r"append\(&tuckˑvˑa\.items"
   t.hostRuns("...and the field holds what was pushed", 199)
 
+  # A loop whose accesses are proved in range once (bounds_guard): an unchecked
+  # copy under the guard and the checked original otherwise. `sumTo` is run
+  # with a bound inside the Seq (the unchecked copy) and one past it (the
+  # guard fails, the checked copy runs, and the author's own `if` keeps it in
+  # range); `shifted` has offsets; `writes` stores through the guarded copy.
+  t.src """
+import seq
+
+fn sumTo({xs: Seq[int], n: int}) -> int:
+  var s = 0
+  for i in 0 ..< n:
+    if i < xs.len:
+      s = s + xs[i] * 2
+  return s
+
+fn shifted({xs: Seq[int]}) -> int:
+  var s = 0
+  for i in 1 ..< xs.len - 1:
+    s = s + xs[i - 1] + xs[i] + xs[i + 1]
+  return s
+
+fn writes() -> int:
+  var xs = [0, 0, 0, 0]
+  for i in 0 ..< 4:
+    xs[i] = i * 3
+  return xs[3]
+
+fn main() -> int:
+  let xs = [1, 2, 3, 4, 5]
+  let a = {xs: xs, n: 3} sumTo
+  let b = {xs: xs, n: 9} sumTo
+  let c = {xs: xs} shifted
+  let d = {} writes
+  return a + b + c + d
+"""
+  t.emits "a loop with provable accesses prints an unchecked copy", r"tuckAtU\("
+  t.emitsD "...on D", r"\.ptr\["
+  t.emitsOdin "...and Odin", r"raw_data\("
+  t.hostRuns("...and both the unchecked and the checked copy compute the same", 78)
+
   # The loop reading what it has built would see a length it has not reached.
   t.src """
 import seq

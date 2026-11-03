@@ -11,6 +11,7 @@
 # languages, so ~1150 of its lines are AST logic that ports unchanged and
 # only the emitted syntax differs. Keep the two diffable — a fix in one is
 # usually a fix in the other.
+import bounds_guard
 import ast, lowering, strutils, sets, tables, options
 import resolution
 import ast_query
@@ -1009,6 +1010,15 @@ proc genFieldAccess(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
 proc genCallResolved(ctx: var OdinCodegenCtx, e: Expr): string =
   ## Indexing resolved to an at() call; a type application never reaches
   ## codegen, so an unresolved bracket emits nothing.
+  ## An access its loop proved in range (bounds_guard) prints unchecked while
+  ## that loop's unchecked copy is the one being printed.
+  let loop = vouchingLoop(e)
+  if loop != NodeId(0) and loop in ctx.fastLoops:
+    if e.kind == exkBracket:
+      return "raw_data(" & ctx.genOdinExpr(e.brReceiver) & ")[" &
+             ctx.genOdinExpr(e.brArgs[0]) & "]"
+    return "raw_data(" & ctx.genOdinExpr(e.brTarget.brReceiver) & ")[" &
+           ctx.genOdinExpr(e.brTarget.brArgs[0]) & "] = " & ctx.genOdinExpr(e.brValue)
   if ctx.res.hasCall(e): ctx.genOdinExpr(ctx.res.call(e)) else: ""
 
 proc genFill(ctx: var OdinCodegenCtx, e: Expr): string =
@@ -1043,6 +1053,32 @@ proc genList(ctx: var OdinCodegenCtx, e: Expr): string =
 
 proc movedAssignTarget(ctx: OdinCodegenCtx, t: Expr): string
 
+proc guardConds(ctx: var OdinCodegenCtx, e: Expr, guards: seq[Guard]): string =
+  ## The loop's range is in bounds for every access its guards cover.
+  let it = e.iterable
+  let lo = ctx.genOdinExpr(it.left)
+  let hi = "(" & ctx.genOdinExpr(it.right) & (if it.binOp == boRangeIncl: " + 1)" else: ")")
+  var conds: seq[string]
+  for g in guards:
+    let inv = if g.inv == nil: "0" else: ctx.genOdinExpr(g.inv)
+    conds.add "(" & lo & " + " & inv & " + " & $g.lo & " >= 0) && (" & hi &
+              " + " & inv & " + " & $g.hi & " <= len(" & ctx.genOdinExpr(g.recv) & "))"
+  conds.join(" && ")
+
+proc genGuardedFor(ctx: var OdinCodegenCtx, e: Expr, ind, head: string,
+                   guards: seq[Guard]): string =
+  ## Its accesses are proved in range before the loop: an unchecked copy under
+  ## the guard, the original (checked) otherwise (bounds_guard).
+  let cond = ctx.guardConds(e, guards)
+  let ind2 = ind & "  "
+  inc ctx.indent
+  ctx.fastLoops.incl e.id
+  let fast = ind2 & head & ctx.genIndented(e.body) & "\n" & ind2 & "}"
+  ctx.fastLoops.excl e.id
+  let slow = ind2 & head & ctx.genIndented(e.body) & "\n" & ind2 & "}"
+  dec ctx.indent
+  ind & "if " & cond & " {\n" & fast & "\n" & ind & "} else {\n" & slow & "\n" & ind & "}"
+
 proc genFor(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## Odin's range-for yields the index natively, so `for idx, item in xs:`
   ## needs no counter to maintain.
@@ -1060,7 +1096,6 @@ proc genFor(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
                genPatternStr(e.iter.elems[1]) & ", " &
                  genPatternStr(e.iter.elems[0])
              else: genPatternStr(e.iter)
-  let bodyStr = ctx.genIndented(e.body)
   var reserve = ""
   if e.fillTargets.len > 0:     # a counted loop that pushes: room first (#210)
     let n = if it.kind == exkVar: "len(" & ctx.genOdinExpr(it) & ")"
@@ -1068,7 +1103,11 @@ proc genFor(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
                   (if it.binOp == boRangeIncl: " + 1)" else: ")")
     for t in e.fillTargets:
       reserve.add ind & "rt.tuckReserve(&" & ctx.movedAssignTarget(t) & ", " & n & ")\n"
-  reserve & ind & "for " & vars & " in " & iterStr & " {\n" & bodyStr & "\n" & ind & "}"
+  let guards = loopGuards(e)
+  if guards.len == 0:
+    let bodyStr = ctx.genIndented(e.body)
+    return reserve & ind & "for " & vars & " in " & iterStr & " {\n" & bodyStr & "\n" & ind & "}"
+  reserve & ctx.genGuardedFor(e, ind, "for " & vars & " in " & iterStr & " {\n", guards)
 
 proc genWhile(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## `for <cond>:` (and bare `loop:`) — Odin has ONE loop keyword and `while`

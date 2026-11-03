@@ -50,6 +50,8 @@ type
       ## comment on checkOrDie.
     definedVars*: HashSet[string]
     indent*: int           # statement indent, in 4-space levels
+    fastLoops*: HashSet[NodeId]
+      ## loops whose unchecked copy is being printed (bounds_guard)
     module*: Module
     hoisted*: seq[string]  # named decls hoisted out of field positions (records)
     recShapes*: Table[string, string]  # record shape signature -> struct name
