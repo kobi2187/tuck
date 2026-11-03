@@ -113,6 +113,11 @@ proc stage(base: string, tracked = false) =
     copyFile(f, proj / "tuckrt" / f.lastPathPart)
   if fileExists(rtDir / "minicoro.a"):
     copyFile(rtDir / "minicoro.a", proj / "tuckrt" / "minicoro.a")
+  # A C source beside the example (`lib: "dma.c"`) builds to a sibling .o.
+  for f in walkFiles(exampleDir / "*.c"):
+    discard execShellCmd("cc -c -fPIC " & quoteShell(f) & " -o " &
+                         quoteShell(proj / f.lastPathPart.changeFileExt("o")) &
+                         " 2>/dev/null")
   if dirExists(exampleDir / "cffi"):
     createDir(proj / "cffi")
     for f in walkFiles(exampleDir / "cffi" / "*.c"):

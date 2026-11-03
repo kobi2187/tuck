@@ -1,0 +1,252 @@
+# The same Richards, with the scheduler held in an object whose members change
+# self in place: what an in-place-parameter pass would generate. An EXPERIMENT
+# for how much that pass could win; not a benchmark.
+import bits
+import console
+import convert
+import cli
+import seq
+import str
+
+const IdIdle = 0
+const IdWorker = 1
+const IdHandlerA = 2
+const IdHandlerB = 3
+const IdDeviceA = 4
+const IdDeviceB = 5
+const KindDevice = 0
+const KindWork = 1
+const DataSize = 4
+
+object World:
+  plink: Seq[int]
+  pid: Seq[int]
+  pkind: Seq[int]
+  pa1: Seq[int]
+  pa2: Seq[int]
+  tlink: Seq[int]
+  tpri: Seq[int]
+  tqueue: Seq[int]
+  tstate: Seq[int]
+  tkind: Seq[int]
+  tv1: Seq[int]
+  tv2: Seq[int]
+  head: int
+  current: int
+  curId: int
+  queued: int
+  held: int
+
+  fn packet({self: World, link: int, id: int, kind: int}) -> int:
+    let at = self.plink.len
+    self.plink = {items: self.plink, value: link} push
+    self.pid = {items: self.pid, value: id} push
+    self.pkind = {items: self.pkind, value: kind} push
+    self.pa1 = {items: self.pa1, value: 0} push
+    for i in 0 ..< DataSize:
+      self.pa2 = {items: self.pa2, value: 0} push
+    return at
+
+  fn addTask({self: World, id: int, prio: int, queue: int, kind: int, v1: int, v2: int}) -> int:
+    self.tlink = {items: self.tlink, value: self.head} push
+    self.tpri = {items: self.tpri, value: prio} push
+    self.tqueue = {items: self.tqueue, value: queue} push
+    let state = if queue < 0: 2 else: 3
+    self.tstate = {items: self.tstate, value: state} push
+    self.tkind = {items: self.tkind, value: kind} push
+    self.tv1 = {items: self.tv1, value: v1} push
+    self.tv2 = {items: self.tv2, value: v2} push
+    self.head = id
+    self.current = id
+    return id
+
+  fn markHeld({self: World, id: int}) -> int:
+    if self.tstate[id] < 4:
+      self.tstate[id] = self.tstate[id] + 4
+    return id
+
+  fn markNotHeld({self: World, id: int}) -> int:
+    if self.tstate[id] >= 4:
+      self.tstate[id] = self.tstate[id] - 4
+    return id
+
+  fn markSuspended({self: World, id: int}) -> int:
+    if self.tstate[id] % 4 < 2:
+      self.tstate[id] = self.tstate[id] + 2
+    return id
+
+  fn markRunnable({self: World, id: int}) -> int:
+    if self.tstate[id] % 2 == 0:
+      self.tstate[id] = self.tstate[id] + 1
+    return id
+
+  fn addTo({self: World, p: int, queue: int}) -> int:
+    self.plink[p] = -1
+    if queue < 0:
+      return p
+    var n = queue
+    for self.plink[n] >= 0:
+      n = self.plink[n]
+    self.plink[n] = p
+    return queue
+
+  fn release({self: World, id: int}) -> int:
+    let u = self.markNotHeld {id: id}
+    if self.tpri[id] > self.tpri[self.current]:
+      return id
+    return self.current
+
+  fn holdCurrent({self: World}) -> int:
+    self.held = self.held + 1
+    let u = self.markHeld {id: self.current}
+    return self.tlink[self.current]
+
+  fn suspendCurrent({self: World}) -> int:
+    let u = self.markSuspended {id: self.current}
+    return self.current
+
+  fn queuePacket({self: World, p: int}) -> int:
+    let t = self.pid[p]
+    self.queued = self.queued + 1
+    self.plink[p] = -1
+    self.pid[p] = self.curId
+    if self.tqueue[t] < 0:
+      self.tqueue[t] = p
+      let u = self.markRunnable {id: t}
+      if self.tpri[t] > self.tpri[self.current]:
+        return t
+    else:
+      let head = self.tqueue[t]
+      self.tqueue[t] = self.addTo {p: p, queue: head}
+    return self.current
+
+  fn runIdle({self: World, id: int}) -> int:
+    self.tv2[id] = self.tv2[id] - 1
+    if self.tv2[id] == 0:
+      return self.holdCurrent
+    let r = self.tv1[id]
+    if r % 2 == 0:
+      self.tv1[id] = r /i 2
+      return self.release {id: IdDeviceA}
+    let half = (r /i 2) ~u64
+    let mixed = {a: half, b: 53256 ~u64} bitXor
+    self.tv1[id] = mixed ~int
+    return self.release {id: IdDeviceB}
+
+  fn runWorker({self: World, id: int, p: int}) -> int:
+    if p < 0:
+      return self.suspendCurrent
+    if self.tv1[id] == IdHandlerA:
+      self.tv1[id] = IdHandlerB
+    else:
+      self.tv1[id] = IdHandlerA
+    self.pid[p] = self.tv1[id]
+    self.pa1[p] = 0
+    for i in 0 ..< DataSize:
+      var n = self.tv2[id] + 1
+      if n > 26:
+        n = 1
+      self.tv2[id] = n
+      self.pa2[p * DataSize + i] = n
+    return self.queuePacket {p: p}
+
+  fn runHandler({self: World, id: int, p: int}) -> int:
+    if p >= 0:
+      if self.pkind[p] == KindWork:
+        let q = self.tv1[id]
+        self.tv1[id] = self.addTo {p: p, queue: q}
+      else:
+        let q = self.tv2[id]
+        self.tv2[id] = self.addTo {p: p, queue: q}
+    let work = self.tv1[id]
+    if work >= 0:
+      let count = self.pa1[work]
+      if count < DataSize:
+        let dev = self.tv2[id]
+        if dev >= 0:
+          self.tv2[id] = self.plink[dev]
+          self.pa1[dev] = self.pa2[work * DataSize + count]
+          self.pa1[work] = count + 1
+          return self.queuePacket {p: dev}
+      else:
+        self.tv1[id] = self.plink[work]
+        return self.queuePacket {p: work}
+    return self.suspendCurrent
+
+  fn runDevice({self: World, id: int, p: int}) -> int:
+    if p < 0:
+      let held = self.tv1[id]
+      if held < 0:
+        return self.suspendCurrent
+      self.tv1[id] = -1
+      return self.queuePacket {p: held}
+    self.tv1[id] = p
+    return self.holdCurrent
+
+  fn runTcb({self: World, id: int}) -> int:
+    var p = -1
+    if self.tstate[id] == 3:
+      p = self.tqueue[id]
+      self.tqueue[id] = self.plink[p]
+      if self.tqueue[id] < 0:
+        self.tstate[id] = 0
+      else:
+        self.tstate[id] = 1
+    let kind = self.tkind[id]
+    if kind == 0:
+      return self.runIdle {id: id}
+    if kind == 1:
+      return self.runWorker {id: id, p: p}
+    if kind == 2:
+      return self.runHandler {id: id, p: p}
+    return self.runDevice {id: id, p: p}
+
+  fn schedule({self: World}) -> int:
+    var cur = self.head
+    for cur >= 0:
+      if self.tstate[cur] >= 4 or self.tstate[cur] == 2:
+        cur = self.tlink[cur]
+      else:
+        self.current = cur
+        self.curId = cur
+        cur = self.runTcb {id: cur}
+    return 0
+
+fn benchmark({count: int}) -> int:
+  var w = {plink: [], pid: [], pkind: [], pa1: [], pa2: [], tlink: [], tpri: [],
+           tqueue: [], tstate: [], tkind: [], tv1: [], tv2: [], head: -1,
+           current: -1, curId: -1, queued: 0, held: 0} World
+  let a = w.addTask {id: IdIdle, prio: 0, queue: -1, kind: 0, v1: 1, v2: count}
+  w.tstate[IdIdle] = 0
+  var q = -1
+  q = w.packet {link: q, id: IdWorker, kind: KindWork}
+  q = w.packet {link: q, id: IdWorker, kind: KindWork}
+  let b = w.addTask {id: IdWorker, prio: 1000, queue: q, kind: 1, v1: IdHandlerA, v2: 0}
+  q = -1
+  for i in 0 ..< 3:
+    q = w.packet {link: q, id: IdDeviceA, kind: KindDevice}
+  let c = w.addTask {id: IdHandlerA, prio: 2000, queue: q, kind: 2, v1: -1, v2: -1}
+  q = -1
+  for i in 0 ..< 3:
+    q = w.packet {link: q, id: IdDeviceB, kind: KindDevice}
+  let d = w.addTask {id: IdHandlerB, prio: 3000, queue: q, kind: 2, v1: -1, v2: -1}
+  let e = w.addTask {id: IdDeviceA, prio: 4000, queue: -1, kind: 3, v1: -1, v2: 0}
+  let f = w.addTask {id: IdDeviceB, prio: 5000, queue: -1, kind: 3, v1: -1, v2: 0}
+  let g = w.schedule
+  return w.queued * 100000 + w.held
+
+fn problemSize({argv: Seq[str]}) -> int:
+  if argv.len > 0:
+    let n = {t: argv[0]} parseInt
+    if n.ok:
+      return n.value ^int
+  return 1000
+
+fn main() -> int [io: console, io: sys]:
+  let argv = {} commandLine
+  let n = {argv: argv} problemSize
+  var total = 0
+  for i in 0 ..< n:
+    total = total + {count: 1000} benchmark
+  {text: total.toStr} printLine
+  return 0

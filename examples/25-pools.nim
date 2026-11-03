@@ -1,5 +1,6 @@
 {.experimental: "codeReordering".}
 import "../compiler/tuck_rt"
+{.compile: "dma.c".}
 
 proc tuckˑfnˑadmit*(id: uint32): int
 proc tuckˑfnˑdrainOnce*(): int
@@ -23,7 +24,7 @@ proc tuckˑfnˑadmit*(id: uint32): int =
       return 1
   return 0
 
-proc memset*(p: ptr UncheckedArray[uint8], c: int, n: int): void {.importc: "memset", header: "string.h".}
+proc dmaFill*(p: ptr UncheckedArray[uint8], c: int, n: int): void {.importc: "dmaFill", header: "dma.h".}
 
 proc tuckˑfnˑdrainOnce*(): int =
   var tuckˑvˑb = tuckPoolAcquire(tuckˑpoolˑRxBuffers)
@@ -32,7 +33,7 @@ proc tuckˑfnˑdrainOnce*(): int =
       return 0
   var tuckˑvˑdst = tuckPoolAddr(tuckˑpoolˑRxBuffers, tuckˑvˑb.value)
   defer: tuckDrop(tuckˑvˑdst)
-  memset(tuckˑvˑdst, 1, 512)
+  dmaFill(tuckˑvˑdst, 1, 512)
   var tuckˑvˑrx = tuckPoolRead(tuckˑpoolˑRxBuffers, tuckˑvˑb.value)
   defer: tuckDrop(tuckˑvˑrx)
   tuckPoolRelease(tuckˑpoolˑRxBuffers, tuckˑvˑb.value)

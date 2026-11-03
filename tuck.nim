@@ -142,6 +142,8 @@ fn main runs when the binary starts.
 Takes every `tuck compile` flag, plus:
   --nim:FLAGS  extra flags passed through to `nim c`, e.g.
                --nim:"--os:standalone --cpu:arm"
+  --native     tune the binary for this machine's CPU (-march=native /
+               -microarch:native / -mcpu=native); it may not run on another
   --release    promote the size-budget report to a build failure
   --no-invariants  drop the runtime `invariant:` checks (they survive
                --release otherwise), on every backend
@@ -1643,7 +1645,12 @@ when isMainModule:
           # tuck_rt — `tuckAt`, the bounds check, `sqrt` — can be inlined
           # into the program's loops. n-body ran 9x C without it, 1.5x with
           # it (benches/game, SCORES.md).
-          if wantRelease: " -d:release --passC:-flto --passL:-flto --passC:-U_FORTIFY_SOURCE --passC:-D_FORTIFY_SOURCE=0 --overflowChecks:off "
+          # clang when installed (TUCK_CC=gcc keeps gcc): the same emitted C ran
+          # scheduler 6x and richards 3x faster under clang than gcc -O3
+          # -flto, which leaves by-value aggregates in memory (SCORES.md).
+          if wantRelease: (if findExe("clang") != "" and getEnv("TUCK_CC") != "gcc": " --cc:clang " else: "") &
+                          " -d:release --passC:-flto --passL:-flto --passC:-U_FORTIFY_SOURCE --passC:-D_FORTIFY_SOURCE=0 --overflowChecks:off " &
+                          (if "--native" in opts: " --passC:-march=native " else: "")
           else: " --opt:none -d:tuckFast " & pickFastCC()
         # Nim derives its cache dir from the MODULE NAME, so two tuck builds
         # of different programs that happen to share a basename (every
@@ -1677,6 +1684,25 @@ when isMainModule:
         # corrupted by a coroutine switch inside a `defer`, and a releasing
         # `defer` is then a label (the entry point reports what nobody
         # handles, see below).
+        # A C source an `extern ... lib: "x.c"` names is compiled by Nim from a
+        # path relative to the generated .nim, and its header is found next to
+        # it: bring both beside the output, as the Odin path builds its object
+        # there. (Without this the build worked only when -o was the source's
+        # own directory.)
+        for lm in prog:
+          for d in lm.m.decls:
+            if d == nil or d.kind != dkExtern: continue
+            for mem in d.mixinMembers:
+              if mem.kind != dkFn or not mem.isExtern: continue
+              if not mem.externLib.endsWith(".c"): continue
+              let srcDir = parentDir(lm.path)
+              for rel in [mem.externLib, mem.externHeader]:
+                if rel == "" or isAbsolute(rel): continue
+                let src = srcDir / rel
+                let dst = binNim.parentDir() / rel
+                if fileExists(src) and not fileExists(dst):
+                  createDir(dst.parentDir())
+                  copyFile(src, dst)
         let nimCmd = "nim c --hints:off --warnings:off --mm:none -d:useMalloc --exceptions:goto " & nimFlags & asyncFlags &
                      nimDefinesFor(actorPolicy) & invFlag &
                      speedFlags & " --nimcache:" & quoteShell(nimCache) &
@@ -1699,7 +1725,8 @@ when isMainModule:
           # emitted <base>.odin plus tuckrt/ and mod_*/ are already there.
           let odinBin = outDir / (binBase & "_odin")
           # -o:none is Odin's fastest path; -o:speed is the release build.
-          let odinOpt = if wantRelease: "-o:speed" else: "-o:none"
+          let odinOpt = (if wantRelease: "-o:speed" else: "-o:none") &
+                        (if "--native" in opts: " -microarch:native" else: "")
           # TUCK_ODIN_EXTRA: flags appended verbatim. The test suite sets
           # `-thread-count:1` — Odin's threaded checker crashes itself now
           # and then (tests/harness.nim, OdinThreads).
@@ -1719,16 +1746,22 @@ when isMainModule:
           else:
             echo "built ", odinBin, "  ", reportBuild(odinBin, odMs)
       of bkDlang:
-        let dmdExe = findExe("dmd")
+        # ldmd2 (LDC, an LLVM backend) when installed, else dmd; TUCK_DC names
+        # one. Same flags: ldmd2 is dmd's command line over LLVM's optimiser.
+        let dcWanted = getEnv("TUCK_DC")
+        let dmdExe = if dcWanted != "": findExe(dcWanted)
+                     elif findExe("ldmd2") != "": findExe("ldmd2")
+                     else: findExe("dmd")
         if dmdExe == "":
-          echo "tuck: dmd not found on PATH — skipping D build"
+          echo "tuck: no D compiler (ldmd2 or dmd) on PATH — skipping D build"
         else:
           let dBin = outDir / (binBase & "_d")
           # -i compiles imported modules (mod_*.d, tuck_rt.d) automatically;
           # -O -release is the fast-code build, default is the fast build.
           # -inline: dmd inlines nothing across modules without it, and every
           # `xs[i]` is a call into tuck_rt.d (benches/game, SCORES.md).
-          let dOpt = if wantRelease: " -O -release -inline" else: ""
+          let dOpt = (if wantRelease: " -O -release -inline" else: "") &
+                     (if "--native" in opts and wantRelease: " -mcpu=native" else: "")
           # Objects built from vendored C sources ride on the command line:
           # dmd's pragma(lib) is for SYSTEM libraries and would turn a path
           # into a -l<path> the linker cannot resolve.

@@ -63,17 +63,19 @@ fn admit({id: u32}) -> int:
 # zeroed memory underneath is never mistaken for a value.
 
 # The DMA controller is C. `addr` gives it the cell's bytes — the one pointer
-# Tuck code makes, and only an extern may take it (TK-TY08). Here libc's
-# memset stands in for the hardware filling the buffer.
-extern [c, header: "string.h"]:
-  fn memset({p: Buf, c: int, n: int})
+# Tuck code makes, and only an extern may take it (TK-TY08). Here a small C
+# function (dma.c) stands in for the hardware filling the buffer. (It is not
+# libc's memset: an LLVM-based D compiler checks a redeclared libc symbol
+# against the runtime's own.)
+extern [c, header: "dma.h", lib: "dma.c"]:
+  fn dmaFill({p: Buf, c: int, n: int})
 
 fn drainOnce() -> int:
   let b = RxBuffers.acquire
   if not b.ok:
     return 0                     # all 4 channels busy: try again later
   let dst = RxBuffers.addr {h: b.value}
-  {p: dst, c: 1, n: 512} memset  # the "transfer"
+  {p: dst, c: 1, n: 512} dmaFill  # the "transfer"
   let rx = RxBuffers.read {h: b.value}
   RxBuffers.release {h: b.value}
   if not rx.ok:

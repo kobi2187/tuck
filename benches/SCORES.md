@@ -1371,3 +1371,36 @@ wordcount           0.007    0.090 (12.8x)    0.192 (27.4x)    0.420 (60.0x)
 ```
 
 Richards is still 11-29x. Its `World` is a 12-field record handed through ~6 calls a step; each hop moves ~300 bytes with memcpy, where C passes a pointer. Next lead: a consumed parameter that comes back in the result (`w = f(w)`) could be passed by reference and mutated in place; the existing moved-twin machinery (twin_calls) is the place to start. scheduler (9x Nim, 14.5x D) is the same shape with small sum types. std/bits gained popCount, leadingZeros, trailingZeros, rotate*, byteSwap and int forms in this round.
+
+## Toolchains: clang for Nim release builds, LDC for D (wall s, same emitted code)
+
+| | gcc / dmd | clang / LDC |
+|---|---|---|
+| scheduler, Nim | 1.61 | 0.26 |
+| scheduler, D | 2.73 | 0.17 |
+| richards, Nim | 1.62 | 0.51 |
+| richards, D | 2.62 | 0.98 |
+| nbody, D | 1.20 | 0.33 |
+| binary-trees, D | 1.47 | 0.66 |
+
+clang is the default for `--release` Nim when installed (TUCK_CC=gcc keeps gcc); it is slower than gcc on recursion-heavy code (ackermann 5.6x C vs 1.4x, fib 2.3x vs 1.2x). ldmd2 is preferred over dmd for D (TUCK_DC names one). Odin `-microarch:native`: richards 0.83 -> 0.63 s, permute 0.24 -> 0.18 s; gcc `-march=native` helps richards (1.6 -> 0.78 s) and nothing else; strict-aliasing and IPA flags helped nothing.
+
+## What an in-place scheduler would win (experiment, not a benchmark)
+
+`benches/game/richards/inplace.tuck` is Richards with the scheduler in an `object` whose members change `self`, which is what passing a consumed parameter that comes back in the result by reference would generate. Same answer (232200928 per run), 2000 iterations, best of 3:
+
+| | value-style | in-place | gain | vs C (0.068 s) |
+|---|---|---|---|---|
+| Nim, clang | 0.504 | 0.268 | 1.9x | 7.4x -> 3.9x |
+| Odin | 0.799 | 0.128 | 6.2x | 11.7x -> 1.9x |
+| D, LDC | 0.797 | 0.131 | 6.1x | 11.7x -> 1.9x |
+
+## `-d:danger` instead of `-d:release` (Nim): no gain
+
+Measured on matmul, heapsort, life, permute, qsort, levenshtein, sieve and
+richards (clang, release flags otherwise identical). After repeating the noisy
+ones five times each, every difference was within run-to-run noise. Overflow
+checks are already off in release, and the hot bounds checks are Tuck's own
+`tuckAt`/`tuckSetAt` (removed by the bounds-guard pass), which the flag does not
+touch. Not adopted; it would only disable Nim's range/nil/assert checks in the
+runtime. A Tuck-level `--unchecked` would be the way to drop checks everywhere.

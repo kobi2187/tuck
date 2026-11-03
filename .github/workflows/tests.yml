@@ -9,6 +9,10 @@
 #   Odin  b2354a04   dev-2026-09, built from source against LLVM 18 (as the
 #                    reference container's is)
 #   dmd   2.112.0    2.109 lacks `pipe2` and cannot build the D runtime
+#   ldc   1.43.0     (LLVM) the D compiler `tuck` prefers when it is installed:
+#                    several programs run 2-16x faster than under dmd
+#   clang            the C compiler `tuck build --release` hands the Nim backend
+#                    (TUCK_CC=gcc keeps gcc); ubuntu-24.04 ships clang-18
 #
 # and the Nim packages the compiler imports: jsony 1.1.6 (the AST as JSON),
 # msgpack4nim 0.4.4 (the module cache), npeg 1.3.0 (`validate`).
@@ -82,11 +86,21 @@ jobs:
         with:
           compiler: dmd-2.112.0
 
+      - name: ldc (the D compiler tuck prefers)
+        uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-1.43.0
+
+      - name: clang (the Nim backend's release C compiler)
+        run: sudo apt-get install -y --no-install-recommends clang
+
       - name: Toolchain versions
         run: |
           nim --version | head -1
           odin version
           dmd --version | head -1
+          ldmd2 --version | head -1
+          clang --version | head -1
 
       - name: Build the compiler and the tools the suites call
         run: |

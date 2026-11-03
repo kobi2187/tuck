@@ -39,6 +39,7 @@
 # (lowering_decisions.nim) into a `match` over a packed integer key, or an
 # `if` chain, and printed as one. Only `exkOrdinal` — how this target spells
 # an enum or bool's ordinal — is backend syntax, and it is one arm below.
+import bounds_guard
 import ast, strutils, sets, tables, options
 import resolution
 import ast_query
@@ -642,6 +643,16 @@ proc genList(ctx: var CodegenCtx, e: Expr): string =
 proc genCallResolved(ctx: var CodegenCtx, e: Expr): string =
   ## Indexing resolved to an at() call; a type application never reaches
   ## codegen, so an unresolved bracket emits nothing.
+  ##
+  ## An access its loop has proved in range (bounds_guard) prints unchecked
+  ## while that loop's unchecked copy is the one being printed.
+  let loop = vouchingLoop(e)
+  if loop != NodeId(0) and loop in ctx.fastLoops:
+    if e.kind == exkBracket:
+      return "tuckAtU(" & ctx.genExpr(e.brReceiver) & ", " &
+             ctx.genExpr(e.brArgs[0]) & ")"
+    return "tuckSetAtU(" & ctx.genExpr(e.brTarget.brReceiver) & ", " &
+           ctx.genExpr(e.brTarget.brArgs[0]) & ", " & ctx.genExpr(e.brValue) & ")"
   if ctx.res.hasCall(e): ctx.genExpr(ctx.res.call(e)) else: ""
 
 proc loopVarNames(iter: Pattern): string =
@@ -654,6 +665,19 @@ proc loopVarNames(iter: Pattern): string =
     names.add(if el.kind == pkVar: el.name else: "_")
   names.join(", ")
 
+proc guardCond(ctx: var CodegenCtx, e: Expr, guards: seq[Guard]): string =
+  ## The loop's range is in bounds for every access its guards cover.
+  let r = e.iterable
+  let lo = ctx.genExpr(r.left)
+  let hi = "(" & ctx.genExpr(r.right) & (if r.binOp == boRangeIncl: " + 1)" else: ")")
+  var parts: seq[string]
+  for g in guards:
+    let inv = if g.inv == nil: "0" else: ctx.genExpr(g.inv)
+    parts.add "(" & lo & " + " & inv & " + " & $g.lo & " >= 0) and (" &
+              hi & " + " & inv & " + " & $g.hi & " <= len(" &
+              ctx.genExpr(g.recv) & "))"
+  parts.join(" and ")
+
 proc genFor(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## A `for` loop; the loop pattern's names become Nim's loop variables.
   let iterStr = loopVarNames(e.iter)
@@ -665,7 +689,20 @@ proc genFor(ctx: var CodegenCtx, e: Expr, ind: string): string =
             else: "(" & ctx.genExpr(r.right) & " - " & ctx.genExpr(r.left) &
                   (if r.binOp == boRangeIncl: " + 1)" else: ")")
     for t in e.fillTargets: reserve.add ind & "tuckReserve(" & t.name & ", " & n & ")\n"
-  reserve & ind & "for " & iterStr & " in " & iterable & ":\n" & ctx.genIndented(e.body)
+  let guards = loopGuards(e)
+  if guards.len == 0:
+    return reserve & ind & "for " & iterStr & " in " & iterable & ":\n" & ctx.genIndented(e.body)
+  # Its accesses are proved in range before the loop: an unchecked copy under
+  # the guard, the original (checked) otherwise (bounds_guard).
+  let cond = ctx.guardCond(e, guards)
+  let head = ind & "  for " & iterStr & " in " & iterable & ":\n"
+  inc ctx.indent
+  ctx.fastLoops.incl e.id
+  let fast = head & ctx.genIndented(e.body)
+  ctx.fastLoops.excl e.id
+  let slow = head & ctx.genIndented(e.body)
+  dec ctx.indent
+  reserve & ind & "if " & cond & ":\n" & fast & "\n" & ind & "else:\n" & slow
 
 proc genWhile(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## A `while` loop; a condition-less `loop` is `while true`.

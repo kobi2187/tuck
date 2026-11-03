@@ -165,9 +165,38 @@ toStr :: proc(value: $T) -> string {
 		return tuck_float_text(value, false)
 	} else when T == f32 {
 		return tuck_float_text(f64(value), true)
+	} else when intrinsics.type_is_integer(T) && size_of(T) <= 8 {
+		return tuckIntText(i128(value))
 	} else {
 		return fmt.aprint(value)
 	}
+}
+
+// An integer as decimal text, without fmt's machinery (a format-spec walk and
+// a builder per call: a fifth of a program that builds names from numbers).
+// i128 holds every integer width up to 64 bits, signed or not.
+tuckIntText :: proc(v: i128) -> string {
+	buf: [40]u8
+	i := len(buf)
+	neg := v < 0
+	u := u128(-v if neg else v)
+	if u == 0 {
+		i -= 1
+		buf[i] = '0'
+	}
+	for u > 0 {
+		i -= 1
+		buf[i] = u8('0' + u % 10)
+		u /= 10
+	}
+	if neg {
+		i -= 1
+		buf[i] = '-'
+	}
+	n := len(buf) - i
+	out := make([]u8, n)
+	copy(out, buf[i:])
+	return string(out)
 }
 
 tuckConcat :: proc(a, b: string) -> string {
