@@ -1259,7 +1259,19 @@ proc genDList(ctx: var DCodegenCtx, e: Expr): string =
   # Through the runtime, so the block comes from the arena rather than the
   # collector's allocator (about 340 instructions a literal).
   if parts.len == 0 or ctx.res.typeFor(e).isFixedArray: return "[" & parts.join(", ") & "]"
-  "rt.tuckSeqOf([" & parts.join(", ") & "])"
+  # The element type is named: a list of integer literals bound for a ulong[]
+  # would otherwise be inferred long[] by the template.
+  let elem = seqElem(ctx.res.typeFor(e))
+  var ty = ""
+  if elem != nil:
+    let t = ctx.dType(elem)
+    ty = "!(" & t & ")"
+    # Number literals carry their own D type (`5L` is long); cast each to the
+    # element's, as the implicit conversion of a typed array literal did.
+    if elem.kind == tkNamed and elem.name in ["int", "i8", "i16", "i32", "i64",
+         "u8", "u16", "u32", "u64", "usize", "f32", "f64"]:
+      for i in 0 ..< parts.len: parts[i] = "cast(" & t & ")(" & parts[i] & ")"
+  "rt.tuckSeqOf" & ty & "([" & parts.join(", ") & "])"
 
 proc dPatternStr(ctx: var DCodegenCtx, pat: Pattern): string =
   ## One arm's pattern as a D case label. A bare tag qualifies to its enum;

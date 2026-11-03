@@ -1681,6 +1681,25 @@ when isMainModule:
         # corrupted by a coroutine switch inside a `defer`, and a releasing
         # `defer` is then a label (the entry point reports what nobody
         # handles, see below).
+        # A C source an `extern ... lib: "x.c"` names is compiled by Nim from a
+        # path relative to the generated .nim, and its header is found next to
+        # it: bring both beside the output, as the Odin path builds its object
+        # there. (Without this the build worked only when -o was the source's
+        # own directory.)
+        for lm in prog:
+          for d in lm.m.decls:
+            if d == nil or d.kind != dkExtern: continue
+            for mem in d.mixinMembers:
+              if mem.kind != dkFn or not mem.isExtern: continue
+              if not mem.externLib.endsWith(".c"): continue
+              let srcDir = parentDir(lm.path)
+              for rel in [mem.externLib, mem.externHeader]:
+                if rel == "" or isAbsolute(rel): continue
+                let src = srcDir / rel
+                let dst = binNim.parentDir() / rel
+                if fileExists(src) and not fileExists(dst):
+                  createDir(dst.parentDir())
+                  copyFile(src, dst)
         let nimCmd = "nim c --hints:off --warnings:off --mm:none -d:useMalloc --exceptions:goto " & nimFlags & asyncFlags &
                      nimDefinesFor(actorPolicy) & invFlag &
                      speedFlags & " --nimcache:" & quoteShell(nimCache) &
