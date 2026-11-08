@@ -1,0 +1,185 @@
+# sys.window — the input half of a window, headless.
+#
+# The design is an actor with two public fields: a cheap `state` snapshot
+# (cursor, held keys) and an opt-in `events` stream that loses nothing until
+# acknowledged, dropping the OLDEST event when its bound is hit (a keystroke from
+# many frames ago matters less than a recent one). The decisions in it —
+# sequence numbers, `ackEvents`, the overflow policy, the held-key bitset — are
+# pure, so they are Tuck here and checked on every backend. A display backend is
+# a shim that feeds `press`/`move` and calls `present`; an actor wrapper owns one
+# `Window` value and forwards its handlers to these functions.
+#
+# Keys are small integers 0..63 held in a `u64` bitset; others are events only.
+import seq
+import bits
+
+type EventKind:
+  | KeyEvent
+  | MouseButtonEvent
+
+type InputEvent:
+  seq: i64
+  kind: EventKind
+  keyCode: int
+  pressed: bool
+
+type Window:
+  isOpen: bool
+  width: int
+  height: int
+  mouseX: f64
+  mouseY: f64
+  heldKeys: u64
+  events: Seq[InputEvent]
+  nextSeq: i64
+  limit: int
+  dropped: int
+
+fn make({width: int, height: int, limit: int}) -> Window:
+  let quiet: Seq[InputEvent] = []
+  return {isOpen: false, width: width, height: height, mouseX: 0.0, mouseY: 0.0, heldKeys: 0, events: quiet, nextSeq: 1, limit: limit, dropped: 0} Window
+
+fn open({w: Window}) -> Window:
+  var next = w
+  next.isOpen = true
+  return next
+
+fn close({w: Window}) -> Window:
+  var next = w
+  next.isOpen = false
+  return next
+
+fn move({w: Window, x: f64, y: f64}) -> Window:
+  var next = w
+  next.mouseX = x
+  next.mouseY = y
+  return next
+
+fn isHeld({w: Window, code: int}) -> bool:
+  if code < 0 or code > 63:
+    return false
+  return {a: w.heldKeys, i: code} testBit
+
+fn withBit({held: u64, code: int, down: bool}) -> u64:
+  if code < 0 or code > 63:
+    return held
+  if down:
+    return {a: held, i: code} setBit
+  return {a: held, i: code} clearBit
+
+fn trimmed({events: Seq[InputEvent], limit: int}) -> Seq[InputEvent]:
+  var out: Seq[InputEvent] = []
+  let skip = events.len - limit
+  for i in 0 .. events.len - 1:
+    if i >= skip:
+      out = {items: out, value: events[i]} push
+  return out
+
+# Record a key or button transition: update the bitset, queue the event with the
+# next sequence number, drop the oldest when over the bound. A closed window
+# ignores input.
+fn input({w: Window, kind: EventKind, code: int, down: bool}) -> Window:
+  if not w.isOpen:
+    return w
+  var next = w
+  next.heldKeys = {held: w.heldKeys, code: code, down: down} withBit
+  let ev = {seq: w.nextSeq, kind: kind, keyCode: code, pressed: down} InputEvent
+  next.events = {items: w.events, value: ev} push
+  next.nextSeq = w.nextSeq + 1
+  if next.events.len > w.limit:
+    next.dropped = w.dropped + (next.events.len - w.limit)
+    next.events = {events: next.events, limit: w.limit} trimmed
+  return next
+
+fn press({w: Window, code: int}) -> Window:
+  return {w: w, kind: KeyEvent, code: code, down: true} input
+
+fn release({w: Window, code: int}) -> Window:
+  return {w: w, kind: KeyEvent, code: code, down: false} input
+
+# Drop every buffered event with seq <= upTo.
+fn ackEvents({w: Window, upTo: i64}) -> Window:
+  var kept: Seq[InputEvent] = []
+  for i in 0 .. w.events.len - 1:
+    if w.events[i].seq > upTo:
+      kept = {items: kept, value: w.events[i]} push
+  var next = w
+  next.events = kept
+  return next
+
+# --- self-check --------------------------------------------------------------
+
+fn opened() -> Window:
+  let w = {width: 80, height: 24, limit: 3} make
+  return {w: w} open
+
+fn checkHeld() -> int:
+  var w = opened
+  w = {w: w, code: 5} press
+  w = {w: w, code: 63} press
+  if not {w: w, code: 5} isHeld or not {w: w, code: 63} isHeld:
+    return 1
+  if {w: w, code: 6} isHeld:
+    return 2
+  w = {w: w, code: 5} release
+  if {w: w, code: 5} isHeld:
+    return 3
+  if {w: w, code: 99} isHeld:
+    return 4
+  return 0
+
+fn checkClosed() -> int:
+  var w = {width: 1, height: 1, limit: 2} make
+  w = {w: w, code: 1} press
+  if w.events.len != 0 or {w: w, code: 1} isHeld:
+    return 10
+  w = {w: w} open
+  w = {w: w, x: 4.5, y: 2.0} move
+  w = {w: w, code: 1} press
+  if w.events.len != 1 or w.mouseX != 4.5 or w.mouseY != 2.0:
+    return 11
+  w = {w: w} close
+  w = {w: w, code: 2} press
+  if w.events.len != 1:
+    return 12
+  return 0
+
+fn checkOverflow() -> int:
+  var w = opened
+  for i in 0 .. 4:
+    w = {w: w, code: i} press
+  if w.events.len != 3:
+    return 20
+  if w.events[0].seq != 3 or w.events[2].seq != 5:
+    return 21
+  if w.dropped != 2:
+    return 22
+  return 0
+
+fn checkAck() -> int:
+  var w = opened
+  w = {w: w, code: 1} press
+  w = {w: w, code: 2} press
+  w = {w: w, code: 3} press
+  w = {w: w, upTo: 2} ackEvents
+  if w.events.len != 1 or w.events[0].seq != 3:
+    return 30
+  w = {w: w, upTo: 99} ackEvents
+  if w.events.len != 0:
+    return 31
+  w = {w: w, code: 4} press
+  if w.events[0].seq != 4:
+    return 32
+  return 0
+
+fn main() -> int:
+  var rc = checkHeld
+  if rc != 0:
+    return rc
+  rc = checkClosed
+  if rc != 0:
+    return rc
+  rc = checkOverflow
+  if rc != 0:
+    return rc
+  return checkAck
