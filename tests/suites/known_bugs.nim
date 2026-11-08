@@ -5084,8 +5084,12 @@ fn keep({p: Pair}) -> Seq[int]:
     One: return out
 
 fn main() -> int:
-  let k = {p: {a: 1} Pair.One} keep
-  return {p: {a: 2, b: 3} Pair.Two, f: {n: 4} Flag.On} pick + k.len
+  let one = {a: 1} Pair.One
+  let k = {p: one} keep
+  let two = {a: 2, b: 3} Pair.Two
+  let lit = {n: 4} Flag.On
+  let r = {p: two, f: lit} pick
+  return r + k.len
 """
   t.quietly: t.runsOdin "A103: a match inside a match arm keeps each subject's fields", 207
   t.bugFixed "A103: a match inside a match arm keeps each subject's fields"

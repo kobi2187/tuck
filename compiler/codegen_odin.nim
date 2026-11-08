@@ -551,6 +551,22 @@ proc genOdinReturn(ctx: var OdinCodegenCtx, e: Expr): string =
            ctx.genOdinExpr(e.returnVal) & ")"
   else: return "return " & ctx.genOdinExpr(e.returnVal)
 
+proc armsHaveWild(e: Expr): bool =
+  ## A `_` arm leaves variants unnamed, which a full switch rejects (#134).
+  for arm in e.arms:
+    if arm.pattern != nil and arm.pattern.kind == pkWild: return true
+
+proc armsResetCapture(e: Expr): bool =
+  ## An arm that moves a field out resets it through the capture, which Odin
+  ## only lets a by-address capture do (#138). A moved-out LOCAL (`return xs`
+  ## of a `var`) is reset too, but it is not the capture and needs no address;
+  ## only a field of the subject does.
+  for arm in e.arms:
+    if arm.body == nil: continue
+    for n in arm.body.nodes:
+      if n.kind == exkReset and n.resetPlace != nil and n.resetPlace.kind != exkVar:
+        return true
+
 # exkMatch in statement position: a real switch statement.
 proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
                           sumName: string): string =
@@ -587,20 +603,8 @@ proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
       cases.add(ind & caseLabel & " " & bodyStr & ";")
   ctx.indent = oldIndent
   discard ctx.unionBinds.pop()
-  # A `_` arm leaves variants unnamed, which a full switch rejects (#134).
-  var wild = false
-  for arm in e.arms:
-    if arm.pattern != nil and arm.pattern.kind == pkWild: wild = true
-  # An arm that moves a field out resets it through the capture, which Odin
-  # only lets a by-address capture do (#138).
-  var resets = false
-  for arm in e.arms:
-    if arm.body != nil:
-      for n in arm.body.nodes:
-        # A moved-out LOCAL (`return xs` of a `var`) is reset too, but it is not
-        # the capture and needs no address; only a field of the subject does.
-        if n.kind == exkReset and n.resetPlace != nil and n.resetPlace.kind != exkVar:
-          resets = true
+  let wild = e.armsHaveWild
+  let resets = e.armsResetCapture
   ind & (if wild: "#partial switch" else: "switch") & (if resets: " &" & bindName & " in " else: " " & bindName & " in ") & subjectStr & "\n" &
     ind & "{\n" & cases.join("\n") & "\n" & ind & "}"
 
