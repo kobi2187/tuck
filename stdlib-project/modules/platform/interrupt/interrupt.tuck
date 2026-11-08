@@ -27,13 +27,13 @@ type Controller:
 
 fn make({size: int}) -> Controller:
   var off: Seq[bool] = []
-  var none: Seq[bool] = []
+  var idle: Seq[bool] = []
   var zero: Seq[int] = []
   for i in 0 .. size - 1:
     off = {items: off, value: false} push
-    none = {items: none, value: false} push
+    idle = {items: idle, value: false} push
     zero = {items: zero, value: 0} push
-  return {size: size, enabled: off, held: none, handled: zero, depth: 0} Controller
+  return {size: size, enabled: off, held: idle, handled: zero, depth: 0} Controller
 
 fn valid({c: Controller, vector: int}) -> bool:
   return vector >= 0 and vector < c.size
@@ -41,18 +41,18 @@ fn valid({c: Controller, vector: int}) -> bool:
 fn inCritical({c: Controller}) -> bool:
   return c.depth > 0
 
-fn setEnabled({c: Controller, vector: int, on: bool}) -> Controller:
+fn setEnabled({c: Controller, vector: int, enabled: bool}) -> Controller:
   if not {c: c, vector: vector} valid:
     return c
   var next = c
-  next.enabled[vector] = on
+  next.enabled[vector] = enabled
   return next
 
 fn enableIrq({c: Controller, vector: int}) -> Controller:
-  return {c: c, vector: vector, on: true} setEnabled
+  return {c: c, vector: vector, enabled: true} setEnabled
 
 fn disableIrq({c: Controller, vector: int}) -> Controller:
-  return {c: c, vector: vector, on: false} setEnabled
+  return {c: c, vector: vector, enabled: false} setEnabled
 
 fn deliver({c: Controller, vector: int}) -> Controller:
   var next = c
