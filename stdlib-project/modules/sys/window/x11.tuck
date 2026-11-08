@@ -1,0 +1,86 @@
+# sys.window (module `x11`) — an X11 window feeding the headless `window` state.
+#
+# The `Display*` and the window id stay in the shim (shim/x11_shim.{nim,odin,d});
+# Tuck holds a handle, and input comes back as small records [kind, code, x, y]
+# that `pump` applies to the `Window` value `window` already defines, so held
+# keys, the lossless event queue, the ack and the drop-oldest policy are the
+# SAME code whether the input is scripted or real.
+#
+# Needs an X server ($DISPLAY). With none, `openDisplay` fails cleanly and the
+# module's own check says so and passes; CI runs the suite under Xvfb, where the
+# checks inject a key into the window and read it back.
+import seq
+import console
+import window
+
+type DisplayFault:
+  | NoServer
+
+extern [impl: nim "./shim/x11_shim", odin "./shim", d "./shim/x11_shim"]:
+  fn xOpen({title: str, w: int, h: int}) -> int [io: sys]
+  fn xPoll({h: int, timeoutMs: int}) -> Seq[int] [io: sys]
+  fn xInject({h: int, code: int, down: bool}) -> void [io: sys]
+  fn xPresent({h: int}) -> void [io: sys]
+  fn xClose({h: int}) -> void [io: sys]
+
+type Display:
+  handle: int
+
+fn openDisplay({title: str, width: int, height: int}) -> !Display [io: sys, error: DisplayFault]:
+  let h = {title: title, w: width, h: height} xOpen
+  if h < 0:
+    err NoServer
+  return {handle: h} Display
+
+# Read one input event (waiting up to `timeoutMs`) and apply it to the window.
+fn pump({d: Display, w: Window, timeoutMs: int}) -> Window [io: sys]:
+  let ev = {h: d.handle, timeoutMs: timeoutMs} xPoll
+  if ev.len < 4:
+    return w
+  if ev[0] == 1:
+    return {w: w, kind: KeyEvent, code: ev[1], down: true} input
+  if ev[0] == 2:
+    return {w: w, kind: KeyEvent, code: ev[1], down: false} input
+  if ev[0] == 3:
+    return {w: w, kind: MouseButtonEvent, code: ev[1], down: true} input
+  if ev[0] == 4:
+    return {w: w, kind: MouseButtonEvent, code: ev[1], down: false} input
+  let x = ev[2] ~f64
+  let y = ev[3] ~f64
+  return {w: w, x: x, y: y} move
+
+fn present({d: Display}) -> void [io: sys]:
+  {h: d.handle} xPresent
+
+fn closeDisplay({d: Display}) -> void [io: sys]:
+  {h: d.handle} xClose
+
+# --- self-check --------------------------------------------------------------
+
+fn checkLive({d: Display}) -> int [io: sys]:
+  var w = {width: 64, height: 48, limit: 8} make
+  w = {w: w} open
+  {h: d.handle, code: 38, down: true} xInject
+  w = {d: d, w: w, timeoutMs: 1000} pump
+  if not {w: w, code: 38} isHeld:
+    return 2
+  if w.events.len != 1 or w.events[0].keyCode != 38:
+    return 3
+  {h: d.handle, code: 38, down: false} xInject
+  w = {d: d, w: w, timeoutMs: 1000} pump
+  if {w: w, code: 38} isHeld:
+    return 4
+  if w.events.len != 2 or w.events[1].pressed:
+    return 5
+  {d: d} present
+  return 0
+
+fn main() -> int [io: sys, io: console]:
+  let opened = {title: "tuck", width: 64, height: 48} openDisplay
+  if not opened.ok:
+    # no X server here: nothing to check, and the open failed cleanly
+    {text: "x11: no X server, live checks skipped"} printLine
+    return 0
+  let rc = {d: opened.value} checkLive
+  {d: opened.value} closeDisplay
+  return rc

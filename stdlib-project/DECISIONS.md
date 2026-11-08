@@ -48,16 +48,20 @@ that does nothing the core has not already been checked against.
 
 ## Status after the shim pass (2026-11-08)
 
-| Module | Done | Not done, and why |
-|---|---|---|
-| `std.db` | builder (`db`), sqlite3 driver (`sqlite`, shims on Nim/Odin/D) | none |
-| `std.net-tls` | verdicts (`tls`), OpenSSL driver (`openssl`, shims on Nim/Odin/D; handshake checked against a local `openssl s_server`, strict verify refuses a self-signed certificate) | none |
-| `sys.audio` | arithmetic, ring, 16-bit WAV file sink | a live device backend: no ALSA headers here, and CI has no sound card |
-| `sys.window` | headless window, scripted input `replay` | a display backend: needs an X server or SDL, neither available to CI |
-| `sys.ble` | filter, dedup, recorded-scan replay (`advertsFromRows`) | a live scanner: no BlueZ here, no radio in CI |
-| `core.mem` | — | scrubbing needs a scope-exit hook; a `Scrubbed` value that wipes itself cannot be written yet |
-| `std.serde-derive` | — | owner deferred; needs compile-time type introspection |
+Every module now has a checked core and, where hardware or a library is behind
+it, a driver with shims on Nim, Odin and D.
 
-The three "not done" device backends are one file per backend each, behind the
-same handle-and-bytes contract the sqlite and OpenSSL shims use, and nothing in
-the checked cores changes when they land.
+| Module | Core | Driver (shims on all three backends) | Verified how |
+|---|---|---|---|
+| `std.db` | `db` builder | `sqlite`: sqlite3 | in-memory database round trip |
+| `std.net-tls` | `tls` verdicts | `openssl`: X509 and TLS client | PEM parsing offline; a real handshake against a local `openssl s_server`, strict verify refuses the self-signed certificate |
+| `sys.audio` | arithmetic, ring, WAV sink | `alsa`: playback | ALSA's `null` PCM (accepts and discards), no sound card needed |
+| `sys.window` | headless window, scripted `replay` | `x11`: Xlib | a key injected into a real window under Xvfb is read back through `pump`; with no X server the check says so and passes |
+| `sys.ble` | filter, dedup, CSV replay | `hci`: BlueZ raw HCI socket | the report parser byte for byte against hand-built packets; live only to the "no adapter" path, because this machine has no Bluetooth adapter |
+| `core.mem` | secret buffers behind a handle | `secret`: `mlock`, `explicit_bzero` | create, compare in constant time, wipe, read-after-wipe |
+| `std.serde-derive` | — | — | deferred by the owner; needs compile-time type introspection |
+
+`core.mem`'s `Scrubbed[T]` (a value that wipes itself on scope exit) still cannot
+be written: Tuck has no destructor. What replaces it is the discipline it was
+for: the secret lives in shim-owned locked memory behind a handle, and `wipe`
+ends it explicitly.

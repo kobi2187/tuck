@@ -52,7 +52,9 @@ blocks compile in. Without the flag nothing changes: the blessed `std/` is used.
 | sys | window (headless: held-key bitset, lossless events with ack and drop-oldest, scripted replay), audio (frame maths, PCM16 conversion with clipping, tone, ring buffer, 16-bit WAV file sink), ble (scan filter, dedup window, `fresh` stage, recorded-scan replay) | yes | pass | pass | pass |
 | core | simd (lane-wise ops, reductions and masks over `Array[N, f64]`; the C/D/Odin compiler vectorises the loops) | yes | pass | pass | pass |
 | sys | fs | no module: the flat fd verbs are `std/fs`, the rest is `sys.files` (DECISIONS.md) | | | |
-| core, std | mem (scrubbing needs a scope-exit hook), serde-derive (needs type introspection) | deferred, reasons in DECISIONS.md | | | |
+| core | mem (secret buffers in shim-owned, locked memory behind a handle; constant-time compare; explicit wipe) | yes | pass | pass | pass |
+| sys, std | drivers: audio `alsa`, window `x11`, ble `hci` | yes (ALSA null device, Xvfb, HCI packet parser; no live adapter) | pass | pass | pass |
+| std | serde-derive (needs compile-time type introspection) | deferred by the owner, reason in DECISIONS.md | | | |
 | sys, std, platform | everything else | no | | | |
 | sys (dropped) | sync, thread, ffi, dynload: the language does their job (actors and tasks, `extern`); see INDEX.md | — | | | |
 

@@ -92,7 +92,7 @@ jobs:
           compiler: ldc-1.43.0
 
       - name: clang (the Nim backend's release C compiler)
-        run: sudo apt-get install -y --no-install-recommends clang libsqlite3-dev libssl-dev openssl
+        run: sudo apt-get install -y --no-install-recommends clang libsqlite3-dev libssl-dev openssl libasound2-dev libbluetooth-dev libx11-dev xvfb
 
       - name: Toolchain versions
         run: |
@@ -111,4 +111,4 @@ jobs:
             -o:tools/cyc tools/cyc.nim
 
       - name: Every suite (Odin required)
-        run: ./tests/run
+        run: xvfb-run -a ./tests/run

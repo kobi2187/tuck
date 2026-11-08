@@ -1,0 +1,206 @@
+# sys.ble (module `hci`) — the Linux HCI scanner and the packet reader behind it.
+#
+# The scanner is a shim over BlueZ's raw HCI socket (shim/hci_shim.{nim,odin,d}):
+# it opens an adapter, turns LE scanning on, and hands back whole HCI event
+# packets as bytes. READING those packets is pure, so it is Tuck and is checked
+# against hand-built packets on every backend: an LE Meta event (0x3E) carrying
+# advertising reports (subevent 0x02) becomes the same `Advert`s the filter and
+# the dedup stage in `ble` already work on. The fields inside a report are
+# ordinary advertising data, read by `platform.net-lowpower`'s `advertise`.
+#
+# Verified live: only the "no adapter" path (this machine has none). The report
+# parser is verified byte for byte; the socket calls are BlueZ's own.
+import seq
+import str
+import text
+import advertise
+import ble
+
+extern [impl: nim "./shim/hci_shim", odin "./shim", d "./shim/hci_shim"]:
+  fn hciOpen({adapter: int}) -> int [io: sys]
+  fn hciRead({h: int, timeoutMs: int}) -> Seq[u8] [io: sys]
+  fn hciClose({h: int}) -> void [io: sys]
+
+type ScanFault:
+  | NoAdapter
+  | NotPermitted
+
+# --- reading a report -----------------------------------------------------------
+
+fn hexDigit({n: int}) -> str:
+  let digits = "0123456789ABCDEF"
+  let one = {t: digits, start: n, stop: n + 1} slice
+  if one.ok:
+    return one.value
+  return "?"
+
+fn hexByte({b: u8}) -> str:
+  let v = b ^int
+  let hi = {n: v /i 16} hexDigit
+  let lo = {n: v % 16} hexDigit
+  return hi + lo
+
+# The six address bytes arrive least significant first; text is most first.
+fn addressText({packet: Seq[u8], at: int}) -> str:
+  var parts: Seq[str] = []
+  for k in 0 .. 5:
+    let b = packet[at + 5 - k]
+    let h = {b: b} hexByte
+    parts = {items: parts, value: h} push
+  return {parts: parts, sep: ":"} joinStr
+
+fn slicedBytes({packet: Seq[u8], from0: int, count: int}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  for k in from0 .. from0 + count - 1:
+    out = {items: out, value: packet[k]} push
+  return out
+
+fn signedByte({b: u8}) -> int:
+  let v = b ^int
+  if v >= 128:
+    return v - 256
+  return v
+
+# 16-bit service UUIDs from a Complete (3) or Incomplete (2) list field.
+fn serviceList({fs: Seq[AdField]}) -> Seq[str]:
+  var out: Seq[str] = []
+  for i in 0 .. fs.len - 1:
+    if fs[i].kind == 2 or fs[i].kind == 3:
+      var k = 0
+      for k + 1 < fs[i].data.len:
+        let lo = {b: fs[i].data[k]} hexByte
+        let hi = {b: fs[i].data[k + 1]} hexByte
+        out = {items: out, value: hi + lo} push
+        k = k + 2
+  return out
+
+fn nameOf({fs: Seq[AdField]}) -> str:
+  let full = {fs: fs, kind: 9} fieldOf
+  if full.ok:
+    return {bytes: full.value.data} fromBytes
+  let short = {fs: fs, kind: 8} fieldOf
+  if short.ok:
+    return {bytes: short.value.data} fromBytes
+  return ""
+
+fn manufacturerOf({fs: Seq[AdField]}) -> Seq[u8]:
+  let m = {fs: fs, kind: 255} fieldOf
+  if m.ok:
+    return m.value.data
+  let empty: Seq[u8] = []
+  return empty
+
+fn reportAt({packet: Seq[u8], at: int, atMs: u64}) -> Advert?:
+  # at: the event-type byte of one report
+  if at + 9 > packet.len:
+    return none
+  let dlen = packet[at + 8] ^int
+  if at + 9 + dlen + 1 > packet.len:
+    return none
+  let data = {packet: packet, from0: at + 9, count: dlen} slicedBytes
+  let parsed = {data: data} fields
+  if not parsed.ok:
+    return none
+  let fs = parsed.value
+  let rssi = {b: packet[at + 9 + dlen]} signedByte
+  let device = {packet: packet, at: at + 2} addressText
+  let services = {fs: fs} serviceList
+  let name = {fs: fs} nameOf
+  let payload = {fs: fs} manufacturerOf
+  return {device: device, rssi: rssi, name: name, services: services, payload: payload, seenAtMs: atMs} Advert
+
+# Every advertising report in one HCI event packet (type byte 0x04 first).
+fn adverts({packet: Seq[u8], atMs: u64}) -> Seq[Advert]:
+  var out: Seq[Advert] = []
+  if packet.len < 5:
+    return out
+  if packet[0] != 4 or packet[1] != 62 or packet[3] != 2:
+    return out
+  let n = packet[4] ^int
+  var at = 5
+  for i in 0 .. n - 1:
+    let one = {packet: packet, at: at, atMs: atMs} reportAt
+    if not one.ok:
+      return out
+    out = {items: out, value: one.value} push
+    at = at + 10 + (packet[at + 8] ^int)
+  return out
+
+# --- the live scanner ------------------------------------------------------------
+
+fn openScanner({adapter: int}) -> !int [io: sys, error: ScanFault]:
+  let h = {adapter: adapter} hciOpen
+  if h == 0 - 1:
+    err NoAdapter
+  if h < 0:
+    err NotPermitted
+  return h
+
+# --- self-check --------------------------------------------------------------
+
+# One report: ADV_IND from AA:BB:CC:DD:EE:FF, flags, a 16-bit service list
+# (0x181A), the name "Th", rssi -60 (0xC4).
+fn onePacket() -> Seq[u8]:
+  return [4, 62, 26, 2, 1, 0, 0, 255, 238, 221, 204, 187, 170, 11, 2, 1, 6, 3, 3, 26, 24, 3, 9, 84, 104, 196]
+
+fn checkParse() -> int:
+  let list = {packet: onePacket, atMs: 1234} adverts
+  if list.len != 1:
+    return 1
+  let a = list[0]
+  if a.device != "AA:BB:CC:DD:EE:FF":
+    return 2
+  if a.rssi != 0 - 60:
+    return 3
+  if a.name != "Th":
+    return 4
+  if a.services.len != 1 or a.services[0] != "181A":
+    return 5
+  if a.seenAtMs != 1234:
+    return 6
+  return 0
+
+fn checkRejects() -> int:
+  let empty: Seq[u8] = []
+  let none9 = {packet: empty, atMs: 0} adverts
+  if none9.len != 0:
+    return 10
+  let other: Seq[u8] = [4, 14, 4, 1, 0, 0, 0]
+  let none0 = {packet: other, atMs: 0} adverts
+  if none0.len != 0:
+    return 11
+  # truncated in the middle of the report
+  let cut: Seq[u8] = [4, 62, 10, 2, 1, 0, 0, 255, 238, 221]
+  let none1 = {packet: cut, atMs: 0} adverts
+  if none1.len != 0:
+    return 12
+  return 0
+
+fn checkFeeds() -> int:
+  # the parsed adverts go straight into the filter and dedup of `ble`
+  let list = {packet: onePacket, atMs: 0} adverts
+  var f = {} everything
+  f.namePrefix = "T"
+  let kept = {f: f, adverts: list} filtered
+  if kept.len != 1:
+    return 20
+  return 0
+
+fn checkNoAdapter() -> int [io: sys]:
+  # this check holds on any machine without a Bluetooth adapter and a permit
+  let r = {adapter: 99} openScanner
+  if r.ok:
+    return 30
+  return 0
+
+fn main() -> int [io: sys]:
+  var rc = checkParse
+  if rc != 0:
+    return rc
+  rc = checkRejects
+  if rc != 0:
+    return rc
+  rc = checkFeeds
+  if rc != 0:
+    return rc
+  return checkNoAdapter
