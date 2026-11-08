@@ -13,6 +13,35 @@ extern:
   # exit status (128 + N when signal N ended it). stderr is not captured; it
   # goes where the program's own goes. Blocks until the command ends.
   fn captureCommand({line: str}) -> {code: int, output: str} [io: sys]
+  # The environment and the working directory. Each answers code 0 on success.
+  fn setEnv({name: str, value: str}) -> {code: int} [io: sys]
+  fn unsetEnv({name: str}) -> {code: int} [io: sys]
+  fn currentDir() -> {path: str} [io: sys]
+  fn changeDir({path: str}) -> {code: int} [io: sys]
+  # The running program's own path ("" when the OS will not say).
+  fn exePath() -> {path: str} [io: sys]
+  # Child processes with pipes. `argv` is the program (searched on PATH) and its
+  # arguments separated by NUL bytes. `pid` < 0: it could not be started.
+  # `input` is the write end of the child's stdin, `output` and `errors` the
+  # read ends of its stdout and stderr: plain descriptors, non-blocking and
+  # close-on-exec, that `fdRead` / `fdWrite` suspend ONLY THE CALLING TASK on,
+  # exactly as a socket does.
+  fn spawnProcess({argv: str}) -> {pid: int, input: int, output: int, errors: int} [io: sys]
+  # Up to `max` bytes, suspending until some are there; "" is the end of the
+  # stream (every writer has closed it).
+  fn fdRead({fd: int, max: int}) -> {data: str} [io: sys]
+  # As fdRead, but none when `timeoutMs` passes first ("" is still the end).
+  fn fdReadWithin({fd: int, max: int, timeoutMs: int}) -> {data: str}? [io: sys]
+  # All of `data`, suspending while the pipe is full; fewer than its length is
+  # reported when the reader has gone.
+  fn fdWrite({fd: int, data: str}) -> {sent: int} [io: sys]
+  fn fdClose({fd: int}) -> void [io: sys]
+  # The exit code (128 + N when signal N ended it). BLOCKS the caller: read the
+  # child's output to the end first. `pollProcess` answers none while it runs.
+  fn waitProcess({pid: int}) -> {code: int} [io: sys]
+  fn pollProcess({pid: int}) -> {code: int}? [io: sys]
+  # kill(2): code 0 when the signal was sent.
+  fn killProcess({pid: int, sig: int}) -> {code: int} [io: sys]
   # Signals as values, never as handlers (a handler cannot safely run program
   # code). `watchSignal` blocks signal `number` for the calling thread and
   # routes it to one descriptor; call it before starting actors or tasks, which

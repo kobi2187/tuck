@@ -1,7 +1,9 @@
 # sys.process — running a command and reading how it ended.
 #
-# Spawning with pipes, `wait`, `pollStatus` and `signalTo` run on a shim
-# (shim/process_shim.{nim,odin,d}) over posix_spawnp; Tuck holds a handle.
+# Spawning with pipes is native: std/sys carries `spawnProcess` and the
+# descriptor calls (`fdRead`, `fdWrite`, ...), and everything here is Tuck over
+# them. A child's pipes are descriptors the reactor awaits, so a read suspends
+# only the calling task, as a socket does.
 #
 # `ExitStatus` is the point of this module: a process either exited with a code
 # or was killed by a signal, never both, and a `match` must say what it does
@@ -16,16 +18,6 @@ import sys
 import seq
 import str
 import encoding
-
-extern [impl: nim "./shim/process_shim", odin "./shim", d "./shim/process_shim"]:
-  fn procSpawn({argv: str}) -> int [io: sys]
-  fn procPid({h: int}) -> int [io: sys]
-  fn procWrite({h: int, data: str}) -> int [io: sys]
-  fn procCloseIn({h: int}) -> void [io: sys]
-  fn procRead({h: int, which: int, max: int, timeoutMs: int}) -> Seq[u8] [io: sys]
-  fn procWait({h: int}) -> int [io: sys]
-  fn procPoll({h: int}) -> int [io: sys]
-  fn procKill({h: int, sig: int}) -> int [io: sys]
 
 type ExitStatus:
   | Exited({code: int})
@@ -75,7 +67,10 @@ type SpawnError:
   | CannotStart
 
 type Child:
-  handle: int
+  pid: int
+  input: int
+  output: int
+  errors: int
 
 # What a read answered: bytes, the end of the stream, or nothing yet.
 type Chunk:
@@ -99,40 +94,35 @@ fn spawn({argv: Seq[str]}) -> !Child [io, error: SpawnError]:
   if argv.len == 0:
     err CannotStart
   let joined = {argv: argv} nulJoined
-  let h = {argv: joined} procSpawn
-  if h < 0:
+  let h = {argv: joined} spawnProcess
+  if h.pid < 0:
     err CannotStart
-  return {handle: h} Child
+  return {pid: h.pid, input: h.input, output: h.output, errors: h.errors} Child
 
-fn pidOf({c: Child}) -> int [io]:
-  return {h: c.handle} procPid
-
-# Bytes written to the child's stdin, or -1.
+# Bytes written to the child's stdin (fewer than given means it stopped reading).
 fn writeIn({c: Child, data: str}) -> int [io]:
-  return {h: c.handle, data: data} procWrite
+  let w = {fd: c.input, data: data} fdWrite
+  return w.sent
 
 # End of its input: a child reading to EOF now finishes.
 fn closeIn({c: Child}) -> void [io]:
-  {h: c.handle} procCloseIn
+  {fd: c.input} fdClose
 
-fn chunkOf({raw: Seq[u8]}) -> Chunk:
-  if raw.len == 0 or raw[0] == 1:
-    return Chunk.Eof
-  if raw[0] == 2:
+fn chunkFrom({fd: int, max: int, timeoutMs: int}) -> Chunk [io]:
+  let r = {fd: fd, max: max, timeoutMs: timeoutMs} fdReadWithin
+  if not r.ok:
     return Chunk.Timeout
-  var rest: Seq[u8] = []
-  for i in 1 .. raw.len - 1:
-    rest = {items: rest, value: raw[i]} push
-  let t = {bytes: rest} fromBytes
-  return {text: t} Chunk.Data
+  if r.value.data == "":
+    return Chunk.Eof
+  return {text: r.value.data} Chunk.Data
 
+# Wait up to `timeoutMs` for the child's stdout; the calling task is suspended,
+# not the process.
 fn readOut({c: Child, max: int, timeoutMs: int}) -> Chunk [io]:
-  let raw = {h: c.handle, which: 1, max: max, timeoutMs: timeoutMs} procRead
-  return {raw: raw} chunkOf
+  return {fd: c.output, max: max, timeoutMs: timeoutMs} chunkFrom
 
 fn readErr({c: Child, max: int, timeoutMs: int}) -> Chunk [io]:
-  let raw = {h: c.handle, which: 2, max: max, timeoutMs: timeoutMs} procRead
-  return {raw: raw} chunkOf
+  return {fd: c.errors, max: max, timeoutMs: timeoutMs} chunkFrom
 
 # All of the child's stdout until it closes it (or `timeoutMs` passes with
 # nothing for that long).
@@ -147,21 +137,23 @@ fn readAllOut({c: Child, timeoutMs: int}) -> str [io]:
       Timeout: more = false
   return out
 
-# Wait for it to end and say how.
+# Wait for it to end and say how. Blocks: read its output to the end first.
 fn waitFor({c: Child}) -> ExitStatus [io]:
-  let raw = {h: c.handle} procWait
-  return {raw: raw} statusOf
+  let r = {pid: c.pid} waitProcess
+  {fd: c.output} fdClose
+  {fd: c.errors} fdClose
+  return {raw: r.code} statusOf
 
 # How it ended if it has, absent while it still runs.
 fn pollStatus({c: Child}) -> ExitStatus? [io]:
-  let raw = {h: c.handle} procPoll
-  if raw < 0:
+  let r = {pid: c.pid} pollProcess
+  if not r.ok:
     return none
-  return {raw: raw} statusOf
+  return {raw: r.value.code} statusOf
 
 fn signalTo({c: Child, sig: int}) -> bool [io]:
-  let rc = {h: c.handle, sig: sig} procKill
-  return rc == 0
+  let r = {pid: c.pid, sig: sig} killProcess
+  return r.code == 0
 
 fn isRunning({c: Child}) -> bool [io]:
   let st = {c: c} pollStatus

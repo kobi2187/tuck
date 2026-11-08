@@ -65,3 +65,22 @@ it, a driver with shims on Nim, Odin and D.
 be written: Tuck has no destructor. What replaces it is the discipline it was
 for: the secret lives in shim-owned locked memory behind a handle, and `wipe`
 ends it explicitly.
+
+## Where the line falls: shim, or native Tuck (owner's ruling, 2026-11-08)
+
+* **Algorithm-heavy modules are shims over a vetted C library**: `std.crypto`
+  (libcrypto: hashes, HMAC, PBKDF2, random bytes, ChaCha20-Poly1305),
+  `std.compress` (zlib and libzstd), `std.chrono`'s zones (libc's tz database),
+  and the drivers (sqlite3, OpenSSL, ALSA, Xlib, BlueZ). Where a pure-Tuck
+  implementation already existed (SHA-256, HMAC, DEFLATE) it stays as an
+  independent cross-check: what one writes the other must read.
+* **Basic building blocks are Tuck**: `std.net-http` (client, server, messages),
+  `std.cli`, `std.encoding`, `sys.env`. HTTP talks to sockets by descriptor and
+  needs no library.
+* **Process and environment are native, not shims.** They are the language's own
+  runtime: `std/sys` carries `spawnProcess`, `fdRead`, `fdReadWithin`,
+  `fdWrite`, `fdClose`, `waitProcess`, `pollProcess`, `killProcess`, `setEnv`,
+  `unsetEnv`, `currentDir`, `changeDir` and `exePath`, implemented in all three
+  runtimes (`tuck_rt.nim`, `tuckrt/tuck_rt.odin`, `tuckrt_d/tuck_rt.d`); a
+  child's pipes are descriptors the reactor awaits, so a read suspends only the
+  calling task, as a socket does. `sys.process` and `sys.env` are Tuck on top.
