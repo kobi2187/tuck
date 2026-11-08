@@ -1,5 +1,8 @@
 # sys.process — running a command and reading how it ended.
 #
+# Spawning with pipes, `wait`, `pollStatus` and `signalTo` run on a shim
+# (shim/process_shim.{nim,odin,d}) over posix_spawnp; Tuck holds a handle.
+#
 # `ExitStatus` is the point of this module: a process either exited with a code
 # or was killed by a signal, never both, and a `match` must say what it does
 # for each. The host calls underneath are `runCommand` and `captureCommand`
@@ -12,6 +15,17 @@
 import sys
 import seq
 import str
+import encoding
+
+extern [impl: nim "./shim/process_shim", odin "./shim", d "./shim/process_shim"]:
+  fn procSpawn({argv: str}) -> int [io: sys]
+  fn procPid({h: int}) -> int [io: sys]
+  fn procWrite({h: int, data: str}) -> int [io: sys]
+  fn procCloseIn({h: int}) -> void [io: sys]
+  fn procRead({h: int, which: int, max: int, timeoutMs: int}) -> Seq[u8] [io: sys]
+  fn procWait({h: int}) -> int [io: sys]
+  fn procPoll({h: int}) -> int [io: sys]
+  fn procKill({h: int, sig: int}) -> int [io: sys]
 
 type ExitStatus:
   | Exited({code: int})
@@ -54,6 +68,104 @@ fn capture({line: str}) -> Captured [io]:
   let got = {line: line} captureCommand
   let s = {raw: got.code} statusOf
   return {status: s, output: got.output} Captured
+
+
+# --- spawning with pipes --------------------------------------------------------------
+type SpawnError:
+  | CannotStart
+
+type Child:
+  handle: int
+
+# What a read answered: bytes, the end of the stream, or nothing yet.
+type Chunk:
+  | Data({text: str})
+  | Eof
+  | Timeout
+
+fn nulJoined({argv: Seq[str]}) -> str:
+  var bytes: Seq[u8] = []
+  for i in 0 .. argv.len - 1:
+    if i > 0:
+      bytes = {items: bytes, value: 0} push
+    let part = {t: argv[i]} bytesOf
+    for k in 0 .. part.len - 1:
+      bytes = {items: bytes, value: part[k]} push
+  return {bytes: bytes} fromBytes
+
+# Start `argv[0]` (searched on PATH) with the rest as arguments. Its stdin,
+# stdout and stderr are pipes the parent reads and writes.
+fn spawn({argv: Seq[str]}) -> !Child [io, error: SpawnError]:
+  if argv.len == 0:
+    err CannotStart
+  let joined = {argv: argv} nulJoined
+  let h = {argv: joined} procSpawn
+  if h < 0:
+    err CannotStart
+  return {handle: h} Child
+
+fn pidOf({c: Child}) -> int [io]:
+  return {h: c.handle} procPid
+
+# Bytes written to the child's stdin, or -1.
+fn writeIn({c: Child, data: str}) -> int [io]:
+  return {h: c.handle, data: data} procWrite
+
+# End of its input: a child reading to EOF now finishes.
+fn closeIn({c: Child}) -> void [io]:
+  {h: c.handle} procCloseIn
+
+fn chunkOf({raw: Seq[u8]}) -> Chunk:
+  if raw.len == 0 or raw[0] == 1:
+    return Chunk.Eof
+  if raw[0] == 2:
+    return Chunk.Timeout
+  var rest: Seq[u8] = []
+  for i in 1 .. raw.len - 1:
+    rest = {items: rest, value: raw[i]} push
+  let t = {bytes: rest} fromBytes
+  return {text: t} Chunk.Data
+
+fn readOut({c: Child, max: int, timeoutMs: int}) -> Chunk [io]:
+  let raw = {h: c.handle, which: 1, max: max, timeoutMs: timeoutMs} procRead
+  return {raw: raw} chunkOf
+
+fn readErr({c: Child, max: int, timeoutMs: int}) -> Chunk [io]:
+  let raw = {h: c.handle, which: 2, max: max, timeoutMs: timeoutMs} procRead
+  return {raw: raw} chunkOf
+
+# All of the child's stdout until it closes it (or `timeoutMs` passes with
+# nothing for that long).
+fn readAllOut({c: Child, timeoutMs: int}) -> str [io]:
+  var out = ""
+  var more = true
+  for more:
+    let ch = {c: c, max: 4096, timeoutMs: timeoutMs} readOut
+    match ch:
+      Data: out = out + ch.text
+      Eof: more = false
+      Timeout: more = false
+  return out
+
+# Wait for it to end and say how.
+fn waitFor({c: Child}) -> ExitStatus [io]:
+  let raw = {h: c.handle} procWait
+  return {raw: raw} statusOf
+
+# How it ended if it has, absent while it still runs.
+fn pollStatus({c: Child}) -> ExitStatus? [io]:
+  let raw = {h: c.handle} procPoll
+  if raw < 0:
+    return none
+  return {raw: raw} statusOf
+
+fn signalTo({c: Child, sig: int}) -> bool [io]:
+  let rc = {h: c.handle, sig: sig} procKill
+  return rc == 0
+
+fn isRunning({c: Child}) -> bool [io]:
+  let st = {c: c} pollStatus
+  return not st.ok
 
 fn checkStatus() -> int:
   let ok = {raw: 0} statusOf
@@ -101,6 +213,75 @@ fn checkCapture() -> int [io]:
     return 14
   return 0
 
+
+fn checkSpawn() -> int [io]:
+  let argv: Seq[str] = ["cat"]
+  let r = {argv: argv} spawn
+  if not r.ok:
+    return 20
+  let c = r.value
+  let wrote = {c: c, data: "hello pipes"} writeIn
+  if wrote != 11:
+    return 21
+  {c: c} closeIn
+  let out = {c: c, timeoutMs: 2000} readAllOut
+  if out != "hello pipes":
+    return 22
+  let st = {c: c} waitFor
+  if not {s: st} succeeded:
+    return 23
+  return 0
+
+fn checkExitAndErr() -> int [io]:
+  let argv: Seq[str] = ["sh", "-c", "echo oops 1>&2; exit 3"]
+  let r = {argv: argv} spawn
+  if not r.ok:
+    return 30
+  let c = r.value
+  let e = {c: c, max: 100, timeoutMs: 2000} readErr
+  match e:
+    Data:
+      if e.text != "oops\n":
+        return 31
+    Eof: return 32
+    Timeout: return 33
+  let st = {c: c} waitFor
+  if {s: st} describe != "exited 3":
+    return 34
+  return 0
+
+fn checkSignal() -> int [io]:
+  let argv: Seq[str] = ["sleep", "30"]
+  let r = {argv: argv} spawn
+  if not r.ok:
+    return 40
+  let c = r.value
+  if not {c: c} isRunning:
+    return 41
+  let quiet = {c: c, max: 10, timeoutMs: 50} readOut
+  match quiet:
+    Timeout: discard
+    _: return 42
+  if not {c: c, sig: 15} signalTo:
+    return 43
+  let st = {c: c} waitFor
+  if {s: st} describe != "killed by signal 15":
+    return 44
+  if {c: c} isRunning:
+    return 45
+  return 0
+
+fn checkNotFound() -> int [io]:
+  let argv: Seq[str] = ["definitely-not-a-program-xyz"]
+  let r = {argv: argv} spawn
+  if r.ok:
+    return 50
+  let nothing: Seq[str] = []
+  let r2 = {argv: nothing} spawn
+  if r2.ok:
+    return 51
+  return 0
+
 fn main() -> int [io]:
   let a = checkStatus
   if a != 0:
@@ -108,4 +289,16 @@ fn main() -> int [io]:
   let b = checkRun
   if b != 0:
     return b
-  return checkCapture
+  let d = checkCapture
+  if d != 0:
+    return d
+  let e = checkSpawn
+  if e != 0:
+    return e
+  let f = checkExitAndErr
+  if f != 0:
+    return f
+  let g = checkSignal
+  if g != 0:
+    return g
+  return checkNotFound
