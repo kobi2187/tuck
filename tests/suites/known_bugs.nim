@@ -5056,4 +5056,41 @@ fn add({bag: Seq[int], x: int}) -> Seq[int]:
                          r"tuckˑmodˑlib\.tuckˑfnˑadd_moved\("
   t.bugFixed "A102: a qualified threading call takes the twin too"
 
+  # A103 (found building std.reflect): a `match` inside a `match` arm made the
+  # Odin emitter bind BOTH switches to `v`, so the outer subject's fields were
+  # read from the inner one. A104: returning a local from an arm emitted
+  # `switch &v in param`, which Odin rejects (a parameter is not addressable).
+  t.src """
+type Pair:
+  | Two({a: int, b: int})
+  | One({a: int})
+
+type Flag:
+  | On({n: int})
+  | Off
+
+fn pick({p: Pair, f: Flag}) -> int:
+  match p:
+    Two:
+      match f:
+        On: return p.a * 100 + p.b + f.n
+        Off: return 0
+    One: return p.a
+
+fn keep({p: Pair}) -> Seq[int]:
+  var out: Seq[int] = []
+  match p:
+    Two: return out
+    One: return out
+
+fn main() -> int:
+  let k = {p: {a: 1} Pair.One} keep
+  return {p: {a: 2, b: 3} Pair.Two, f: {n: 4} Flag.On} pick + k.len
+"""
+  t.quietly: t.runsOdin "A103: a match inside a match arm keeps each subject's fields", 207
+  t.bugFixed "A103: a match inside a match arm keeps each subject's fields"
+  t.quietly: t.omitsOdin "A104: returning a local from a match arm needs no by-address capture",
+                         r"switch &v in p"
+  t.bugFixed "A104: returning a local from a match arm needs no by-address capture"
+
   t.finish()

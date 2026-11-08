@@ -567,9 +567,13 @@ proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
   let subjectStr = ctx.genOdinExpr(e.subject)
   var cases: seq[string]
   let oldIndent = ctx.indent
-  let savedBind = ctx.unionBind
+  # One binding name per nesting depth, and each remembers which variable it is
+  # the payload of: a `match` inside an arm no longer shadows the outer `v`, and
+  # a field of some OTHER sum-typed variable is not read through it.
+  let bindName = if ctx.unionBinds.len == 0: "v" else: "v" & $ctx.unionBinds.len
+  let subjectName = if e.subject != nil and e.subject.kind == exkVar: e.subject.name else: ""
+  ctx.unionBinds.add((subject: subjectName, bound: bindName))
   ctx.indent += 1
-  ctx.unionBind = "v"
   for arm in e.arms:
     let patStr = genPatternStr(arm.pattern)
     let armVars = ctx.definedVars     # each arm is its own scope (#143)
@@ -582,7 +586,7 @@ proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
     else:
       cases.add(ind & caseLabel & " " & bodyStr & ";")
   ctx.indent = oldIndent
-  ctx.unionBind = savedBind
+  discard ctx.unionBinds.pop()
   # A `_` arm leaves variants unnamed, which a full switch rejects (#134).
   var wild = false
   for arm in e.arms:
@@ -593,8 +597,11 @@ proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
   for arm in e.arms:
     if arm.body != nil:
       for n in arm.body.nodes:
-        if n.kind == exkReset: resets = true
-  ind & (if wild: "#partial switch" else: "switch") & (if resets: " &v in " else: " v in ") & subjectStr & "\n" &
+        # A moved-out LOCAL (`return xs` of a `var`) is reset too, but it is not
+        # the capture and needs no address; only a field of the subject does.
+        if n.kind == exkReset and n.resetPlace != nil and n.resetPlace.kind != exkVar:
+          resets = true
+  ind & (if wild: "#partial switch" else: "switch") & (if resets: " &" & bindName & " in " else: " " & bindName & " in ") & subjectStr & "\n" &
     ind & "{\n" & cases.join("\n") & "\n" & ind & "}"
 
 proc detectMatchPatterns(e: Expr, ctx: var OdinCodegenCtx): tuple[errMatch, hasWild, overEnum: bool] =
@@ -920,11 +927,15 @@ proc boundVariantField(ctx: OdinCodegenCtx, e: Expr): string =
   ## Inside `switch v in value`, a payload field belongs to the BOUND
   ## variant, not to the subject — Odin's union has no discriminant field to
   ## reach past. "" when this is not that situation.
-  if ctx.unionBind == "" or e.receiver == nil or
+  if ctx.unionBinds.len == 0 or e.receiver == nil or
      e.receiver.kind != exkVar: return ""
   if payloadSumTypeName(ctx.module, ctx.res.typeFor(e.receiver)) == "":
     return ""
-  ctx.unionBind & "." & e.fieldName
+  for i in countdown(ctx.unionBinds.high, 0):
+    let (subject, bound) = ctx.unionBinds[i]
+    if subject == "" or subject == e.receiver.name:
+      return bound & "." & e.fieldName
+  ""
 
 proc importedTypeMember(ctx: OdinCodegenCtx, e: Expr): string =
   ## `Order.Before` where `Order` came from an IMPORTED module: the type lives

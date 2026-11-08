@@ -344,6 +344,21 @@ it in.
   A call spelled `lib::add` takes the twin too. Found by the Benchmarks Game's
   k-nucleotide.
 
+- **A103 — a `match` inside a `match` arm read the wrong subject (Odin).** Both
+  switches bound `v`, so `p.a` in the inner arm read the inner subject's payload.
+  Each nesting depth has its own binding now (`v`, `v1`, ...), and a payload
+  field is read through the binding of the variable it belongs to. Found
+  building `std.reflect`.
+
+- **A104 — returning a local from a `match` arm emitted `switch &v in param`
+  (Odin).** The move of the local was counted as a reset of the captured
+  payload; Odin refuses to address a parameter. Only a reset of a field needs
+  the by-address capture. Found building `std.reflect`.
+
+- **Seq `+` passes the checker and fails the backends.** `a + b` on two
+  `Seq[str]` typechecks; Nim, Odin and D each reject the emitted code. Recorded
+  as a checker gap (no pin yet); `std.reflect` appends in a loop instead.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

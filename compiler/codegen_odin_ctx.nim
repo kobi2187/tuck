@@ -65,7 +65,8 @@ type
                                         # a local forwarder calling <alias>.<fn>
                                         # — call sites stay unqualified, as on
                                         # the Nim side
-    unionBind*: string   # inside `switch v in value`: the name bound to the
+    unionBinds*: seq[tuple[subject, bound: string]]
+                        # inside `switch v in value`: the name bound to the
                         # matched variant. A payload field is read through
                         # IT, not off the subject — Odin's union has no
                         # discriminant field to reach past.
