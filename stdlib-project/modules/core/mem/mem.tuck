@@ -1,0 +1,88 @@
+# core.mem — what is left once the language has absorbed the rest.
+#
+# `Unfilled[T]` is a checker rule here (`<uninit>`); `addressOf` belongs to the
+# extern boundary; value semantics replaces `swap`. The one real gap was secret
+# SCRUBBING: Tuck has no destructor and no scope-exit action, so a value that
+# wipes itself when it goes out of scope cannot be written. What CAN be written
+# is the thing the scrubbing was for: memory that the program never copies into
+# a Seq unless it chooses to, that is locked against swapping, and that is
+# overwritten with a write the optimiser may not remove when told to.
+#
+# A secret therefore lives in the backend shim (shim/secret_shim.{nim,odin,d},
+# the same handle pattern as sys.mmap and the drivers), and Tuck holds a HANDLE.
+# The discipline is explicit and checkable by reading: `wipe` ends the secret.
+# What no library can do is stop a caller copying a byte out with `get` into an
+# ordinary variable; that copy is the caller's to keep short.
+import seq
+
+extern [impl: nim "./shim/secret_shim", odin "./shim", d "./shim/secret_shim"]:
+  fn secretNew({n: int}) -> int [io: sys]
+  fn secretLen({h: int}) -> int [io: sys]
+  fn secretSet({h: int, i: int, v: int}) -> void [io: sys]
+  fn secretGet({h: int, i: int}) -> int [io: sys]
+  fn secretWipe({h: int}) -> void [io: sys]
+
+type Secret:
+  handle: int
+
+# A secret holding a copy of `bytes`. The caller's Seq is still theirs to clear
+# (drop it as soon as this returns).
+fn secretFrom({bytes: Seq[u8]}) -> Secret [io: sys]:
+  let h = {n: bytes.len} secretNew
+  for i in 0 .. bytes.len - 1:
+    let b = bytes[i] ^int
+    {h: h, i: i, v: b} secretSet
+  return {handle: h} Secret
+
+fn size({s: Secret}) -> int [io: sys]:
+  return {h: s.handle} secretLen
+
+fn byteAt({s: Secret, i: int}) -> int [io: sys]:
+  return {h: s.handle, i: i} secretGet
+
+# Compare two secrets in time that depends on the length, not on where they
+# first differ.
+fn sameSecret({a: Secret, b: Secret}) -> bool [io: sys]:
+  let n = {s: a} size
+  if n != {s: b} size:
+    return false
+  var diff = 0
+  for i in 0 .. n - 1:
+    let x = {s: a, i: i} byteAt
+    let y = {s: b, i: i} byteAt
+    diff = diff + (x - y) * (x - y)
+  return diff == 0
+
+# Overwrite, unlock and free. Reads afterwards see an empty secret.
+fn wipe({s: Secret}) -> void [io: sys]:
+  {h: s.handle} secretWipe
+
+# --- self-check --------------------------------------------------------------
+
+fn checkSecret() -> int [io: sys]:
+  let bytes: Seq[u8] = [1, 2, 3, 250]
+  let s = {bytes: bytes} secretFrom
+  if {s: s} size != 4:
+    return 1
+  if {s: s, i: 3} byteAt != 250:
+    return 2
+  if {s: s, i: 9} byteAt != 0:
+    return 3
+  let t = {bytes: bytes} secretFrom
+  if not {a: s, b: t} sameSecret:
+    return 4
+  let other: Seq[u8] = [1, 2, 3, 251]
+  let u = {bytes: other} secretFrom
+  if {a: s, b: u} sameSecret:
+    return 5
+  {s: s} wipe
+  if {s: s} size != 0:
+    return 6
+  if {s: s, i: 0} byteAt != 0:
+    return 7
+  {s: t} wipe
+  {s: u} wipe
+  return 0
+
+fn main() -> int [io: sys]:
+  return checkSecret
