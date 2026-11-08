@@ -1,5 +1,12 @@
-# std.compress — DEFLATE (RFC 1951), zlib (RFC 1950) and gzip (RFC 1952), in
-# pure Tuck.
+# std.compress — DEFLATE (RFC 1951), zlib (RFC 1950), gzip (RFC 1952) and
+# Zstandard, as a SHIM over zlib and libzstd (shim/compress_shim.{nim,odin,d}).
+#
+# Compression is algorithm-heavy and the vetted libraries are faster and
+# smaller than anything written here, so `pack` and `unpack` are theirs. The
+# pure-Tuck DEFLATE codec this module began as stays, as `packTuck` and
+# `unpackTuck`: an independent implementation the checks hold the shim against
+# (what one produces the other must read, both ways), and a fallback with no C
+# library. What follows describes that pure part.
 #
 # Reading (`unpack`) handles all three block kinds: stored, fixed Huffman and
 # dynamic Huffman. Writing (`pack`) emits stored blocks for `Fastest` and fixed
@@ -17,6 +24,12 @@ import bits
 import seq
 import str
 import encoding
+
+extern [impl: nim "./shim/compress_shim", odin "./shim", d "./shim/compress_shim"]:
+  fn zCompress({format: int, level: int, data: Seq[u8]}) -> Seq[u8] [pure]
+  fn zUncompress({format: int, data: Seq[u8], limit: int}) -> Seq[u8] [pure]
+  fn zstdCompress({level: int, data: Seq[u8]}) -> Seq[u8] [pure]
+  fn zstdDecompress({data: Seq[u8], limit: int}) -> Seq[u8] [pure]
 
 type Method:
   | Gzip
@@ -605,7 +618,7 @@ fn packGzip({data: Seq[u8], level: Level}) -> Seq[u8]:
   return {items: out, word: size, bigEndian: false} pushWord
 
 # `none` for Zstd, which this module does not implement.
-fn pack({data: Seq[u8], format: Method, level: Level}) -> Seq[u8]?:
+fn packTuck({data: Seq[u8], format: Method, level: Level}) -> Seq[u8]?:
   if format == Deflate:
     return {data: data, level: level} deflate
   if format == Zlib:
@@ -698,7 +711,7 @@ fn ungzip({data: Seq[u8]}) -> Seq[u8]?:
   return r.value.data
 
 # `none` for a corrupt stream, a bad checksum, and for Zstd.
-fn unpack({data: Seq[u8], format: Method}) -> Seq[u8]?:
+fn unpackTuck({data: Seq[u8], format: Method}) -> Seq[u8]?:
   if format == Deflate:
     let r = {data: data} inflate
     if not r.ok:
@@ -709,6 +722,63 @@ fn unpack({data: Seq[u8], format: Method}) -> Seq[u8]?:
   if format == Gzip:
     return {data: data} ungzip
   return none
+
+
+# --- the shim-backed API --------------------------------------------------------------
+# The most a decompressed result may be: a hostile stream cannot make a program
+# allocate without bound.
+fn limitBytes() -> int:
+  return 1073741824
+
+fn levelCode({level: Level}) -> int:
+  match level:
+    Fastest: return 1
+    Balanced: return 6
+    Smallest: return 9
+
+fn zstdLevel({level: Level}) -> int:
+  match level:
+    Fastest: return 1
+    Balanced: return 3
+    Smallest: return 19
+
+fn formatCode({format: Method}) -> int:
+  match format:
+    Deflate: return 0
+    Zlib: return 1
+    Gzip: return 2
+    Zstd: return 3
+
+fn tailOf({r: Seq[u8]}) -> Seq[u8]?:
+  if r.len == 0 or r[0] != 1:
+    return none
+  return {data: r, start: 1} bytesFrom
+
+# Compress. Absent only if the library refuses (never for ordinary input).
+fn pack({data: Seq[u8], format: Method, level: Level}) -> Seq[u8]?:
+  var r: Seq[u8] = []
+  if format == Zstd:
+    let lv = {level: level} zstdLevel
+    r = {level: lv, data: data} zstdCompress
+  else:
+    let code = {format: format} formatCode
+    let lv = {level: level} levelCode
+    r = {format: code, level: lv, data: data} zCompress
+  if r.len == 0:
+    return none
+  return r
+
+# Decompress. Absent for a corrupt stream, a bad checksum, or a result over
+# `limitBytes`.
+fn unpack({data: Seq[u8], format: Method}) -> Seq[u8]?:
+  let lim = {} limitBytes
+  var r: Seq[u8] = []
+  if format == Zstd:
+    r = {data: data, limit: lim} zstdDecompress
+  else:
+    let code = {format: format} formatCode
+    r = {format: code, data: data, limit: lim} zUncompress
+  return {r: r} tailOf
 
 # --- checks ---------------------------------------------------------------------
 fn unhex({t: str}) -> Seq[u8]:
@@ -804,7 +874,7 @@ fn checkWrappers() -> int:
   let c = {data: bad, format: Zlib} unpack
   if c.ok:
     return 44
-  let none1 = {data: hello, format: Zstd, level: Balanced} pack
+  let none1 = {data: hello, format: Zstd, level: Balanced} packTuck
   if none1.ok:
     return 45
   return checkRoundTrip
@@ -823,7 +893,7 @@ fn checkRoundTrip() -> int:
   let empty: Seq[u8] = []
   let raw = {t: "edd45754ce0118c7f1ac92552223eb8fa492ec2d7bb4a561645622bcf5b6de7642cb1e8986ac28914dd97befbd3392102ac9be72be6eddba729e9be7e639e77bcee7e6a7a553cfb"} unhex
   var n = 0
-  for m in [Deflate, Zlib, Gzip]:
+  for m in [Deflate, Zlib, Gzip, Zstd]:
     for l in [Fastest, Balanced, Smallest]:
       n = n + 1
       if not {data: hello, format: m, level: l} roundTrips:
@@ -839,5 +909,60 @@ fn checkRoundTrip() -> int:
     return 80
   return 0
 
+# What the shim writes the Tuck codec reads, and the other way round.
+fn checkCross() -> int:
+  let raw = {t: "edd45754ce0118c7f1ac92552223eb8fa492ec2d7bb4a561645622bcf5b6de7642cb1e8986ac28914dd97befbd3392102ac9be72be6eddba729e9be7e639e77bcee7e6a7a553cfb"} unhex
+  let text = {t: "the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog"} bytesOf
+  var n = 0
+  for m in [Deflate, Zlib, Gzip]:
+    for data in [raw, text]:
+      n = n + 1
+      let a = {data: data, format: m, level: Balanced} pack
+      if not a.ok:
+        return 100 + n
+      let readByTuck = {data: a.value, format: m} unpackTuck
+      if not readByTuck.ok:
+        return 110 + n
+      if readByTuck.value != data:
+        return 120 + n
+      let b = {data: data, format: m, level: Balanced} packTuck
+      if not b.ok:
+        return 130 + n
+      let readByShim = {data: b.value, format: m} unpack
+      if not readByShim.ok:
+        return 140 + n
+      if readByShim.value != data:
+        return 150 + n
+  return 0
+
+fn checkZstd() -> int:
+  let text = {t: "zstd zstd zstd zstd zstd zstd zstd zstd zstd zstd zstd zstd"} bytesOf
+  let z = {data: text, format: Zstd, level: Smallest} pack
+  if not z.ok:
+    return 160
+  if z.value.len >= text.len:
+    return 161
+  # the frame magic number: 28 b5 2f fd
+  if z.value[0] != 40 or z.value[1] != 181 or z.value[2] != 47 or z.value[3] != 253:
+    return 162
+  let back = {data: z.value, format: Zstd} unpack
+  if not back.ok:
+    return 163
+  if back.value != text:
+    return 164
+  let junk = {data: text, format: Zstd} unpack
+  if junk.ok:
+    return 165
+  let zjunk = {data: text, format: Gzip} unpack
+  if zjunk.ok:
+    return 166
+  return 0
+
 fn main() -> int:
-  return checkChecksums
+  var rc = checkChecksums
+  if rc != 0:
+    return rc
+  rc = checkCross
+  if rc != 0:
+    return rc
+  return checkZstd
