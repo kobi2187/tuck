@@ -114,6 +114,72 @@ fn read({r: Ring, n: int}) -> Drained:
     taken = taken + 1
   return {ring: next, samples: got} Drained
 
+# --- the file sink: 16-bit PCM WAV ---------------------------------------------
+# A device that always works: render to a .wav and any player can open it.
+# Little-endian fields, a 44-byte header, then the samples as int16.
+
+fn appendBytes({into: Seq[u8], more: Seq[u8]}) -> Seq[u8]:
+  var out = into
+  for i in 0 .. more.len - 1:
+    out = {items: out, value: more[i]} push
+  return out
+
+fn byteOf({v: int}) -> u8:
+  return (v % 256) ~u8
+
+fn le16({v: int}) -> Seq[u8]:
+  let w = v % 65536
+  let lo = {v: w % 256} byteOf
+  let hi = {v: w /i 256} byteOf
+  return [lo, hi]
+
+fn le32({v: int}) -> Seq[u8]:
+  let lo = {v: v % 65536} le16
+  let hi = {v: v /i 65536} le16
+  return {into: lo, more: hi} appendBytes
+
+fn tagBytes({a: int, b: int, c: int, d: int}) -> Seq[u8]:
+  let x = {v: a} byteOf
+  let y = {v: b} byteOf
+  let z = {v: c} byteOf
+  let w = {v: d} byteOf
+  return [x, y, z, w]
+
+fn wavBytes({f: Format, samples: Seq[f64]}) -> Seq[u8]:
+  let dataLen = samples.len * 2
+  var out: Seq[u8] = []
+  let part1 = {a: 82, b: 73, c: 70, d: 70} tagBytes
+  out = {into: out, more: part1} appendBytes
+  let part2 = {v: 36 + dataLen} le32
+  out = {into: out, more: part2} appendBytes
+  let part3 = {a: 87, b: 65, c: 86, d: 69} tagBytes
+  out = {into: out, more: part3} appendBytes
+  let part4 = {a: 102, b: 109, c: 116, d: 32} tagBytes
+  out = {into: out, more: part4} appendBytes
+  let part5 = {v: 16} le32
+  out = {into: out, more: part5} appendBytes
+  let part6 = {v: 1} le16
+  out = {into: out, more: part6} appendBytes
+  let part7 = {v: f.channels} le16
+  out = {into: out, more: part7} appendBytes
+  let part8 = {v: f.sampleRate} le32
+  out = {into: out, more: part8} appendBytes
+  let part9 = {v: f.sampleRate * f.channels * 2} le32
+  out = {into: out, more: part9} appendBytes
+  let part10 = {v: f.channels * 2} le16
+  out = {into: out, more: part10} appendBytes
+  let part11 = {v: 16} le16
+  out = {into: out, more: part11} appendBytes
+  let part12 = {a: 100, b: 97, c: 116, d: 97} tagBytes
+  out = {into: out, more: part12} appendBytes
+  let part13 = {v: dataLen} le32
+  out = {into: out, more: part13} appendBytes
+  for i in 0 .. samples.len - 1:
+    let q = {x: samples[i]} toPcm16
+    let enc = {v: q} le16
+    out = {into: out, more: enc} appendBytes
+  return out
+
 # --- self-check --------------------------------------------------------------
 
 fn near({a: f64, b: f64}) -> bool:
@@ -177,6 +243,28 @@ fn checkRing() -> int:
     return 34
   return 0
 
+fn checkWav() -> int:
+  let f = {rate: 8000, channels: 1} pcm16
+  let t = {f: f, hz: 1000.0, frames: 8, amp: 0.5} tone
+  let w = {f: f, samples: t} wavBytes
+  if w.len != 44 + 16:
+    return 40
+  if w[0] != 82 or w[8] != 87 or w[36] != 100:
+    return 41
+  # data length field: 16 bytes
+  if w[40] != 16 or w[41] != 0:
+    return 42
+  # sample rate 8000 = 0x1F40
+  if w[24] != 64 or w[25] != 31:
+    return 43
+  # sample 2 is +0.5 -> 16384 = 0x4000 (little endian: 00 40)
+  if w[44 + 4] != 0 or w[44 + 5] != 64:
+    return 44
+  # sample 6 is -0.5 -> -16384 = 0xC000
+  if w[44 + 12] != 0 or w[44 + 13] != 192:
+    return 45
+  return 0
+
 fn main() -> int:
   var rc = checkFormat
   if rc != 0:
@@ -187,4 +275,7 @@ fn main() -> int:
   rc = checkTone
   if rc != 0:
     return rc
-  return checkRing
+  rc = checkRing
+  if rc != 0:
+    return rc
+  return checkWav

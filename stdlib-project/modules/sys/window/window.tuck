@@ -107,6 +107,18 @@ fn ackEvents({w: Window, upTo: i64}) -> Window:
   next.events = kept
   return next
 
+# A scripted session: a positive n presses key n, a negative n releases key -n
+# (key 0 is not scriptable). The headless stand-in for a display backend, and
+# what a test drives a UI with.
+fn replay({w: Window, script: Seq[int]}) -> Window:
+  var next = w
+  for i in 0 .. script.len - 1:
+    if script[i] > 0:
+      next = {w: next, code: script[i]} press
+    elif script[i] < 0:
+      next = {w: next, code: 0 - script[i]} release
+  return next
+
 # --- self-check --------------------------------------------------------------
 
 fn opened() -> Window:
@@ -172,6 +184,17 @@ fn checkAck() -> int:
     return 32
   return 0
 
+fn checkReplay() -> int:
+  var w = opened
+  let script: Seq[int] = [7, 9, 0 - 7, 0, 9]
+  w = {w: w, script: script} replay
+  if {w: w, code: 7} isHeld or not {w: w, code: 9} isHeld:
+    return 40
+  # limit 3: the first press fell off
+  if w.events.len != 3 or w.events[1].pressed or not w.events[2].pressed or w.dropped != 1:
+    return 41
+  return 0
+
 fn main() -> int:
   var rc = checkHeld
   if rc != 0:
@@ -182,4 +205,7 @@ fn main() -> int:
   rc = checkOverflow
   if rc != 0:
     return rc
-  return checkAck
+  rc = checkAck
+  if rc != 0:
+    return rc
+  return checkReplay

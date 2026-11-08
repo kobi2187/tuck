@@ -13,6 +13,7 @@
 import seq
 import str
 import text
+import convert
 
 type Advert:
   device: str
@@ -105,6 +106,32 @@ fn fresh({adverts: Seq[Advert], windowMs: u64}) -> Seq[Advert]:
       out = {items: out, value: adverts[i]} push
   return out
 
+# A recorded scan, as CSV rows: device, rssi, name, service, atMs. This is the
+# scanner that runs anywhere (a captured log replayed); a live scanner is a shim
+# that yields the same `Advert`s. Rows that do not parse are skipped.
+fn advertFromRow({row: Seq[str]}) -> Advert?:
+  if row.len < 5:
+    return none
+  let rssi = {t: row[1]} parseInt
+  let at = {t: row[4]} parseInt
+  if not rssi.ok:
+    return none
+  if not at.ok:
+    return none
+  let services: Seq[str] = [row[3]]
+  let bytes: Seq[u8] = []
+  let r = rssi.value ^int
+  let t = at.value ~u64
+  return {device: row[0], rssi: r, name: row[2], services: services, payload: bytes, seenAtMs: t} Advert
+
+fn advertsFromRows({rows: Seq[Seq[str]]}) -> Seq[Advert]:
+  var out: Seq[Advert] = []
+  for i in 0 .. rows.len - 1:
+    let a = {row: rows[i]} advertFromRow
+    if a.ok:
+      out = {items: out, value: a.value} push
+  return out
+
 # --- self-check --------------------------------------------------------------
 
 fn advert({device: str, rssi: int, name: str, svc: str, at: u64}) -> Advert:
@@ -169,6 +196,16 @@ fn checkStage() -> int:
     return 20
   return 0
 
+fn checkReplay() -> int:
+  let rows: Seq[Seq[str]] = [["d1", "-60", "Thermo", "181A", "0"], ["bad"], ["d1", "-61", "Thermo", "181A", "50"], ["d2", "x", "n", "s", "1"]]
+  let list = {rows: rows} advertsFromRows
+  if list.len != 2 or list[1].seenAtMs != 50:
+    return 30
+  let shown = {adverts: list, windowMs: 1000} fresh
+  if shown.len != 1:
+    return 31
+  return 0
+
 fn main() -> int:
   var rc = checkFilter
   if rc != 0:
@@ -176,4 +213,7 @@ fn main() -> int:
   rc = checkDedup
   if rc != 0:
     return rc
-  return checkStage
+  rc = checkStage
+  if rc != 0:
+    return rc
+  return checkReplay

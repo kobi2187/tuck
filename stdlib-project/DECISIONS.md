@@ -45,3 +45,19 @@ A shim is only as checkable as the library behind it, and CI has no sound card,
 display or Bluetooth radio. Each hardware-facing module is therefore split: the
 pure core is tested everywhere now, and the shim is a thin layer added after
 that does nothing the core has not already been checked against.
+
+## Status after the shim pass (2026-11-08)
+
+| Module | Done | Not done, and why |
+|---|---|---|
+| `std.db` | builder (`db`), sqlite3 driver (`sqlite`, shims on Nim/Odin/D) | none |
+| `std.net-tls` | verdicts (`tls`), OpenSSL driver (`openssl`, shims on Nim/Odin/D; handshake checked against a local `openssl s_server`, strict verify refuses a self-signed certificate) | none |
+| `sys.audio` | arithmetic, ring, 16-bit WAV file sink | a live device backend: no ALSA headers here, and CI has no sound card |
+| `sys.window` | headless window, scripted input `replay` | a display backend: needs an X server or SDL, neither available to CI |
+| `sys.ble` | filter, dedup, recorded-scan replay (`advertsFromRows`) | a live scanner: no BlueZ here, no radio in CI |
+| `core.mem` | — | scrubbing needs a scope-exit hook; a `Scrubbed` value that wipes itself cannot be written yet |
+| `std.serde-derive` | — | owner deferred; needs compile-time type introspection |
+
+The three "not done" device backends are one file per backend each, behind the
+same handle-and-bytes contract the sqlite and OpenSSL shims use, and nothing in
+the checked cores changes when they land.

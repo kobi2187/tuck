@@ -92,7 +92,7 @@ jobs:
           compiler: ldc-1.43.0
 
       - name: clang (the Nim backend's release C compiler)
-        run: sudo apt-get install -y --no-install-recommends clang
+        run: sudo apt-get install -y --no-install-recommends clang libsqlite3-dev libssl-dev openssl
 
       - name: Toolchain versions
         run: |
