@@ -22,11 +22,20 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (0)
+## A. Open bugs (1)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
+
+- **A105 — two imported satisfiers named alike confuse a group.** A module that
+  imports `stream` (a `group Sink` with `put` for `MemWriter`) and `socket`
+  (`put` for `TcpStream`) and calls a `[K: Sink]` fn on a `TcpStream` is refused:
+  "TcpStream's `put` parameter `self` is MemWriter, group `Sink` requires
+  TcpStream". The conformance check takes the first `put` by name, not the one
+  whose first parameter is the type. Minimal repro is the pin
+  `known_bugs` "A105: …". `std.net-http`'s `client` reads and writes the socket
+  by descriptor to stay clear of it. Found building the HTTP client.
 
 **A48–A51 (issues #129–#132) — found building the property tester and dogfooding the stdlib
 (2026-10-19).** Pins: `known_bugs`, "A48: …" to "A51: …".

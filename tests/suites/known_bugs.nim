@@ -5097,4 +5097,43 @@ fn main() -> int:
                          r"switch &v in p"
   t.bugFixed "A104: returning a local from a match arm needs no by-address capture"
 
+  # A105 (found building std.net-http's client): when a module imports TWO
+  # modules that each define a `put` satisfying the same group, the group's
+  # conformance check resolves the wrong one: `Wire`'s `put` is judged against
+  # `Mem`'s signature. The correct behaviour is the second satisfier is found.
+  t.src """
+import sinks
+import wire
+
+fn main() -> int:
+  let w = {sent: 0} Wire
+  let done = {k: w, n: 2} putTwice
+  return done.sent
+"""
+  t.addFile "sinks.tuck", """
+group Sink:
+  fn put({self: Self, n: int}) -> Self
+
+type Mem:
+  total: int
+
+fn put({self: Mem, n: int}) -> Mem:
+  return {total: self.total + n} Mem
+
+fn putTwice[K: Sink]({k: K, n: int}) -> K:
+  let a = {self: k, n: n} put
+  return {self: a, n: n} put
+"""
+  t.addFile "wire.tuck", """
+import sinks
+
+type Wire:
+  sent: int
+
+fn put({self: Wire, n: int}) -> Wire:
+  return {sent: self.sent + n * 10} Wire
+"""
+  t.quietly: t.runs "A105: two imported satisfiers named alike each keep their group", 40
+  t.bugOpen "A105: two imported satisfiers named alike each keep their group"
+
   t.finish()
