@@ -1,0 +1,208 @@
+# std.db (module `sqlite`) — the sqlite3 driver behind `db`'s statements.
+#
+# A `sqlite3*` is exactly the kind of handle Tuck may not store, and an actor is
+# one instance per program, so the connection is a HANDLE (an index into a table
+# the backend shim owns), the way sys.mmap's mapping is. The shims
+# (shim/sqlite_shim.{nim,odin,d}) link the C library and hold the pointers;
+# everything here is ordinary Tuck over integers, text and `Seq[u8]`.
+#
+# Statements come from `db` (quoting, `?` markers, builders); values travel as
+# `Value` and are BOUND, never pasted into the SQL.
+import seq
+import str
+import text
+import fs
+import db
+
+type DbError:
+  | CannotOpen
+  | PrepareFailed
+  | StepFailed
+
+extern [impl: nim "./shim/sqlite_shim", odin "./shim", d "./shim/sqlite_shim"]:
+  fn dbOpen({path: str}) -> int [io: fs]
+  fn dbClose({h: int}) -> void [io: fs]
+  fn dbExec({h: int, sql: str}) -> int [io: fs]
+  fn dbError({h: int}) -> Seq[u8] [io: fs]
+  fn stmtPrepare({h: int, sql: str}) -> int [io: fs]
+  fn stmtFinalize({s: int}) -> void [io: fs]
+  fn stmtBindInt({s: int, idx: int, v: int}) -> int [io: fs]
+  fn stmtBindReal({s: int, idx: int, v: f64}) -> int [io: fs]
+  fn stmtBindText({s: int, idx: int, v: str}) -> int [io: fs]
+  fn stmtBindNull({s: int, idx: int}) -> int [io: fs]
+  fn stmtStep({s: int}) -> int [io: fs]
+  fn stmtColumns({s: int}) -> int [io: fs]
+  fn stmtColumnType({s: int, col: int}) -> int [io: fs]
+  fn stmtColumnInt({s: int, col: int}) -> int [io: fs]
+  fn stmtColumnReal({s: int, col: int}) -> f64 [io: fs]
+  fn stmtColumnText({s: int, col: int}) -> Seq[u8] [io: fs]
+
+type Conn:
+  handle: int
+
+fn openDb({path: str}) -> !Conn [io: fs, error: DbError]:
+  let h = {path: path} dbOpen
+  if h < 0:
+    err CannotOpen
+  return {handle: h} Conn
+
+fn closeDb({c: Conn}) -> void [io: fs]:
+  {h: c.handle} dbClose
+
+# The driver's own message for the last failure, for a log line.
+fn lastError({c: Conn}) -> str [io: fs]:
+  let bytes = {h: c.handle} dbError
+  return {bytes: bytes} fromBytes
+
+fn bindOne({s: int, idx: int, v: Value}) -> int [io: fs]:
+  match v:
+    VNull: return {s: s, idx: idx} stmtBindNull
+    VInt: return {s: s, idx: idx, v: v.n} stmtBindInt
+    VReal: return {s: s, idx: idx, v: v.x} stmtBindReal
+    VText: return {s: s, idx: idx, v: v.s} stmtBindText
+    VBool:
+      if v.b:
+        return {s: s, idx: idx, v: 1} stmtBindInt
+      return {s: s, idx: idx, v: 0} stmtBindInt
+
+fn bindAll({s: int, params: Seq[Value]}) -> bool [io: fs]:
+  for i in 0 .. params.len - 1:
+    let rc = {s: s, idx: i + 1, v: params[i]} bindOne
+    if rc != 0:
+      return false
+  return true
+
+fn prepared({c: Conn, sql: str, params: Seq[Value]}) -> !int [io: fs, error: DbError]:
+  let s = {h: c.handle, sql: sql} stmtPrepare
+  if s < 0:
+    err PrepareFailed
+  let bound = {s: s, params: params} bindAll
+  if not bound:
+    {s: s} stmtFinalize
+    err PrepareFailed
+  return s
+
+fn cell({s: int, col: int}) -> Value [io: fs]:
+  let kind = {s: s, col: col} stmtColumnType
+  if kind == 1:
+    let n = {s: s, col: col} stmtColumnInt
+    return {n: n} Value.VInt
+  if kind == 2:
+    let x = {s: s, col: col} stmtColumnReal
+    return {x: x} Value.VReal
+  if kind == 3:
+    let bytes = {s: s, col: col} stmtColumnText
+    let t = {bytes: bytes} fromBytes
+    return {s: t} Value.VText
+  return Value.VNull
+
+fn rowOf({s: int}) -> Seq[Value] [io: fs]:
+  var out: Seq[Value] = []
+  let n = {s: s} stmtColumns
+  for i in 0 .. n - 1:
+    let v = {s: s, col: i} cell
+    out = {items: out, value: v} push
+  return out
+
+# Run a statement that returns no rows (CREATE, INSERT, UPDATE, DELETE).
+fn run({c: Conn, sql: str, params: Seq[Value]}) -> !int [io: fs, error: DbError]:
+  let p = {c: c, sql: sql, params: params} prepared
+  if not p.ok:
+    err p.err
+  let s = p.value
+  let rc = {s: s} stmtStep
+  {s: s} stmtFinalize
+  if rc != 101 and rc != 100:
+    err StepFailed
+  return 0
+
+# Run a query and collect its rows.
+fn query({c: Conn, sql: str, params: Seq[Value]}) -> !Seq[Seq[Value]] [io: fs, error: DbError]:
+  let p = {c: c, sql: sql, params: params} prepared
+  if not p.ok:
+    err p.err
+  let s = p.value
+  var rows: Seq[Seq[Value]] = []
+  var rc = {s: s} stmtStep
+  for rc == 100:
+    let r = {s: s} rowOf
+    rows = {items: rows, value: r} push
+    rc = {s: s} stmtStep
+  {s: s} stmtFinalize
+  if rc != 101:
+    err StepFailed
+  return rows
+
+# --- self-check (an in-memory database: no file is touched) ---------------------
+
+fn checkRoundTrip() -> int [io: fs]:
+  let opened = {path: ":memory:"} openDb
+  if not opened.ok:
+    return 1
+  let c = opened.value
+  let none0: Seq[Value] = []
+  let made = {c: c, sql: "CREATE TABLE t (id INTEGER, name TEXT, score REAL)", params: none0} run
+  if not made.ok:
+    return 2
+  let cols: Seq[str] = ["id", "name", "score"]
+  let ins = {table: "t", columns: cols} insertSql
+  let a = {n: 1} Value.VInt
+  let b = {s: "O'Brien"} Value.VText
+  let c0 = {x: 2.5} Value.VReal
+  let row1: Seq[Value] = [a, b, c0]
+  let r1 = {c: c, sql: ins, params: row1} run
+  if not r1.ok:
+    return 3
+  let d = {n: 2} Value.VInt
+  let e = Value.VNull
+  let f = {x: 0.5} Value.VReal
+  let row2: Seq[Value] = [d, e, f]
+  let r2 = {c: c, sql: ins, params: row2} run
+  if not r2.ok:
+    return 4
+  let key: Seq[str] = ["id"]
+  let sel = {table: "t", columns: cols, where: key} selectSql
+  let want: Seq[Value] = [a]
+  let got = {c: c, sql: sel, params: want} query
+  if not got.ok:
+    return 5
+  if got.value.len != 1:
+    return 6
+  let row = got.value[0]
+  if row.len != 3:
+    return 7
+  if {v: row[1]} literal != "'O''Brien'":
+    return 8
+  if {v: row[2]} literal != "2.5":
+    return 9
+  let all = {c: c, sql: "SELECT id, name FROM t ORDER BY id", params: none0} query
+  if not all.ok:
+    return 10
+  if all.value.len != 2:
+    return 12
+  let second = all.value[1]
+  if {v: second[1]} literal != "NULL":
+    return 11
+  {c: c} closeDb
+  return 0
+
+fn checkErrors() -> int [io: fs]:
+  let opened = {path: ":memory:"} openDb
+  if not opened.ok:
+    return 20
+  let c = opened.value
+  let none0: Seq[Value] = []
+  let bad = {c: c, sql: "SELEKT nonsense", params: none0} run
+  if bad.ok:
+    return 21
+  let msg = {c: c} lastError
+  if {t: msg} byteCount == 0:
+    return 22
+  {c: c} closeDb
+  return 0
+
+fn main() -> int [io: fs]:
+  let rc = checkRoundTrip
+  if rc != 0:
+    return rc
+  return checkErrors
