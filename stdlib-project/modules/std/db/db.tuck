@@ -1,0 +1,189 @@
+# std.db — the SQL a program writes, built safely; the driver is separate.
+#
+# The design is an actor owning a connection, and strains on three points: an
+# actor is one instance per program (one connection), a driver handle may not be
+# stored (not in an actor field), and a reply to a query is a stream. None of
+# that touches the part every driver needs: turning intent into SQL text WITHOUT
+# string-pasting user data. That is pure, so it is Tuck, checked on all three
+# backends. A sqlite3 shim (`extern` over the C library; the handle stays inside
+# the extern boundary) takes the `sql` and `Seq[Value]` from here and returns
+# rows; neither the shim nor an actor wrapper changes anything below.
+#
+# Values travel as `Value` and are BOUND to `?` markers, never concatenated.
+# `bind` exists to render a statement for logs and tests: it escapes exactly as
+# the quoting rules say.
+import seq
+import str
+import text
+
+type Value:
+  | VNull
+  | VInt({n: int})
+  | VReal({x: f64})
+  | VText({s: str})
+  | VBool({b: bool})
+
+# Identifiers are double-quoted with embedded quotes doubled.
+fn quoteIdent({name: str}) -> str:
+  let parts = {t: name, at: "\""} split
+  let body = {parts: parts, sep: "\"\""} joinStr
+  return "\"" + body + "\""
+
+# Text literals are single-quoted with embedded quotes doubled.
+fn quoteText({s: str}) -> str:
+  let parts = {t: s, at: "'"} split
+  let body = {parts: parts, sep: "''"} joinStr
+  return "'" + body + "'"
+
+fn literal({v: Value}) -> str:
+  match v:
+    VNull: return "NULL"
+    VInt: return {value: v.n} toStr
+    VReal: return {value: v.x} toStr
+    VText: return {s: v.s} quoteText
+    VBool:
+      if v.b:
+        return "1"
+      return "0"
+
+fn quoted({names: Seq[str]}) -> Seq[str]:
+  var out: Seq[str] = []
+  for i in 0 .. names.len - 1:
+    let q = {name: names[i]} quoteIdent
+    out = {items: out, value: q} push
+  return out
+
+fn marks({n: int}) -> str:
+  var parts: Seq[str] = []
+  for i in 0 .. n - 1:
+    parts = {items: parts, value: "?"} push
+  return {parts: parts, sep: ", "} joinStr
+
+# `"a" = ? AND "b" = ?`, one condition per column.
+fn conditions({columns: Seq[str], sep: str}) -> str:
+  var parts: Seq[str] = []
+  for i in 0 .. columns.len - 1:
+    let q = {name: columns[i]} quoteIdent
+    parts = {items: parts, value: q + " = ?"} push
+  return {parts: parts, sep: sep} joinStr
+
+fn whereClause({keys: Seq[str]}) -> str:
+  if keys.len == 0:
+    return ""
+  let c = {columns: keys, sep: " AND "} conditions
+  return " WHERE " + c
+
+fn selectSql({table: str, columns: Seq[str], keys: Seq[str]}) -> str:
+  var list = "*"
+  if columns.len > 0:
+    let q = {names: columns} quoted
+    list = {parts: q, sep: ", "} joinStr
+  let t = {name: table} quoteIdent
+  let w = {keys: keys} whereClause
+  return "SELECT " + list + " FROM " + t + w
+
+fn insertSql({table: str, columns: Seq[str]}) -> str:
+  let t = {name: table} quoteIdent
+  let q = {names: columns} quoted
+  let list = {parts: q, sep: ", "} joinStr
+  let m = {n: columns.len} marks
+  return "INSERT INTO " + t + " (" + list + ") VALUES (" + m + ")"
+
+# Parameters of the statement are the SET values first, then the WHERE values.
+fn updateSql({table: str, set: Seq[str], keys: Seq[str]}) -> str:
+  let t = {name: table} quoteIdent
+  let s = {columns: set, sep: ", "} conditions
+  let w = {keys: keys} whereClause
+  return "UPDATE " + t + " SET " + s + w
+
+fn deleteSql({table: str, keys: Seq[str]}) -> str:
+  let t = {name: table} quoteIdent
+  let w = {keys: keys} whereClause
+  return "DELETE FROM " + t + w
+
+# --- rendering: bind the markers (for logs and tests) --------------------------
+
+fn markerCount({sql: str}) -> int:
+  let parts = {t: sql, at: "?"} split
+  return parts.len - 1
+
+# Replace each `?` with the next value's literal. Absent when the counts differ.
+# (A `?` inside a quoted literal in `sql` would be counted; statements built
+# above never contain one, since every user value is a parameter.)
+fn bind({sql: str, params: Seq[Value]}) -> str?:
+  let parts = {t: sql, at: "?"} split
+  if parts.len - 1 != params.len:
+    return none
+  var out = parts[0]
+  for i in 0 .. params.len - 1:
+    let lit = {v: params[i]} literal
+    out = out + lit + parts[i + 1]
+  return out
+
+# --- self-check --------------------------------------------------------------
+
+fn checkQuoting() -> int:
+  if {name: "users"} quoteIdent != "\"users\"":
+    return 1
+  if {name: "we\"ird"} quoteIdent != "\"we\"\"ird\"":
+    return 2
+  if {s: "O'Brien"} quoteText != "'O''Brien'":
+    return 3
+  if {s: ""} quoteText != "''":
+    return 4
+  return 0
+
+fn checkBuilders() -> int:
+  let cols: Seq[str] = ["id", "name"]
+  let key: Seq[str] = ["id"]
+  let none0: Seq[str] = []
+  let s = {table: "users", columns: cols, keys: key} selectSql
+  if s != "SELECT \"id\", \"name\" FROM \"users\" WHERE \"id\" = ?":
+    return 10
+  let all = {table: "users", columns: none0, keys: none0} selectSql
+  if all != "SELECT * FROM \"users\"":
+    return 11
+  let i = {table: "users", columns: cols} insertSql
+  if i != "INSERT INTO \"users\" (\"id\", \"name\") VALUES (?, ?)":
+    return 12
+  let u = {table: "users", set: cols, keys: key} updateSql
+  if u != "UPDATE \"users\" SET \"id\" = ?, \"name\" = ? WHERE \"id\" = ?":
+    return 13
+  let d = {table: "users", keys: key} deleteSql
+  if d != "DELETE FROM \"users\" WHERE \"id\" = ?":
+    return 14
+  return 0
+
+fn checkBind() -> int:
+  let key: Seq[str] = ["name", "age"]
+  let none0: Seq[str] = []
+  let sql = {table: "t", columns: none0, keys: key} selectSql
+  if {sql: sql} markerCount != 2:
+    return 20
+  let name = {s: "O'Hara"} Value.VText
+  let age = {n: 41} Value.VInt
+  let ok = {sql: sql, params: [name, age]} bind
+  if not ok.ok:
+    return 21
+  if ok.value != "SELECT * FROM \"t\" WHERE \"name\" = 'O''Hara' AND \"age\" = 41":
+    return 22
+  let short = {sql: sql, params: [name]} bind
+  if short.ok:
+    return 23
+  let flag = {b: true} Value.VBool
+  let nil0 = Value.VNull
+  let mixed = {sql: "? ?", params: [flag, nil0]} bind
+  if not mixed.ok:
+    return 24
+  if mixed.value != "1 NULL":
+    return 25
+  return 0
+
+fn main() -> int:
+  var rc = checkQuoting
+  if rc != 0:
+    return rc
+  rc = checkBuilders
+  if rc != 0:
+    return rc
+  return checkBind

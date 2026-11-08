@@ -47,7 +47,12 @@ blocks compile in. Without the flag nothing changes: the blessed `std/` is used.
 | core | array gains slice, take, drop, windows, splitAt (the verbs core.slice defined, as values) | yes | pass | pass | pass |
 | std | reflect (the runtime half: schemas over `Json`, validation with paths, leaf paths, structural diff; the compile-time half needs introspection Tuck does not have) | yes | pass | pass | pass |
 | core | slice, ptr, atomic, sync-cell; alloc box, rc, allocator, fmt | dissolved: the language does the job, designs recommend dropping (see INDEX.md); `slice`'s verbs moved to core.array | | | |
-| core | mem (scrubbing needs a language answer), simd | no | | | |
+| platform | interrupt (simulated controller: enable/mask/raise, nested critical sections hold and flush), rtos (priorities, ticks, stack watermarks over a simulated kernel) | yes | pass | pass | pass |
+| std | net-tls (`verifyChain`: validity window, wildcard host match, link order, trusted root; handshake is a later OpenSSL shim), db (SQL builder: identifier and text quoting, select/insert/update/delete, `?` binding and rendering; sqlite3 shim later) | yes | pass | pass | pass |
+| sys | window (headless: held-key bitset, lossless events with ack and drop-oldest), audio (frame maths, PCM16 conversion with clipping, tone, ring buffer), ble (scan filter, dedup window, `fresh` stage) | yes | pass | pass | pass |
+| core | simd (lane-wise ops, reductions and masks over `Array[N, f64]`; the C/D/Odin compiler vectorises the loops) | yes | pass | pass | pass |
+| sys | fs | no module: the flat fd verbs are `std/fs`, the rest is `sys.files` (DECISIONS.md) | | | |
+| core, std | mem (scrubbing needs a scope-exit hook), serde-derive (needs type introspection) | deferred, reasons in DECISIONS.md | | | |
 | sys, std, platform | everything else | no | | | |
 | sys (dropped) | sync, thread, ffi, dynload: the language does their job (actors and tasks, `extern`); see INDEX.md | — | | | |
 
