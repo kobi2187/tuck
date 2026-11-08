@@ -5171,4 +5171,34 @@ fn main() -> int:
   t.quietly: t.runsOdin "A106: a tail match of returning matches is control flow on Odin", 7
   t.bugFixed "A106: a tail match of returning matches is control flow on Odin"
 
+  # A107: `not <optional>` passes the checker as if it were a bool, and every
+  # backend then refuses the emitted code ("Operator '!' is only allowed on
+  # boolean expressions"). The checker should say what the diagnostic for the
+  # same mistake on a bare `let` already says: guard it with `.ok` first.
+  t.src """
+fn maybe({n: int}) -> bool?:
+  if n > 0:
+    return true
+  return none
+
+fn main() -> int:
+  if not {n: 1} maybe:
+    return 1
+  return 0
+"""
+  t.quietly: t.badCheck "A107: an optional is not a condition", "\\.ok"
+  t.bugOpen "A107: an optional is not a condition"
+
+  # A108: `Seq + Seq` passes the checker, and every backend refuses the emitted
+  # code. Until Seq concatenation exists the checker should refuse the `+`.
+  t.src """
+fn main() -> int:
+  let a: Seq[int] = [1, 2]
+  let b: Seq[int] = [3]
+  let c = a + b
+  return c.len
+"""
+  t.quietly: t.badCheck "A108: + on two Seqs is refused", "TK-TY"
+  t.bugOpen "A108: + on two Seqs is refused"
+
   t.finish()

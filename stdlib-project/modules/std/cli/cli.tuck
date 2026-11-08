@@ -5,15 +5,24 @@
 # so the parser and `usageOf` are ordinary recursive functions over it, with no
 # macro. Parsing returns `?`: a bad command line is an absent answer.
 #
-# Not here: prompts (`ask`, `askSecret`, `confirm`), progress bars and
-# `isTerminal`. Those read and write the terminal, so they are host-backed and
-# belong to a pass that adds the console externs they need.
+# Prompts (`ask`, `confirm`, `choose`, `askNumber`, `askSecret`) and progress
+# (`progressBar`, `showProgress`, `spinnerFrame`) are here too, on std/console
+# (`readLine`, `print`). Reading an ANSWER is pure and checked directly
+# (`parseYesNo`, `parseChoice`, `parseIntIn`); the interactive functions loop
+# over `readLine` and are checked by running this program as a child process
+# and feeding it input (sys.process), so they run under no terminal at all. At
+# the end of input a prompt answers its fallback rather than looping forever.
+#
+# Not here: `isTerminal` (needs a native tty query).
 import seq
 import str
 import text
 import convert
 import fmt
 import sys
+import console
+import env
+import process
 
 type ArgKind:
   | AFlag
@@ -314,6 +323,163 @@ fn styled({body: str, colour: Colour, bold: bool}) -> str:
   let esc = escapeByte
   return esc + "[" + attrs + "m" + body + esc + "[0m"
 
+
+# --- reading an answer (pure) ----------------------------------------------------------
+# yes/no: y, yes, n, no in any case; an empty answer means `fallback` when the
+# prompt has one. Absent when it is anything else (the prompt asks again).
+fn parseYesNo({t: str, fallback: bool, hasFallback: bool}) -> bool?:
+  let trimmed = {t: t} trim
+  let a = {t: trimmed} toLowerAscii
+  if a == "y" or a == "yes":
+    return true
+  if a == "n" or a == "no":
+    return false
+  if a == "" and hasFallback:
+    return fallback
+  return none
+
+# A 1-based number, or a name (any case, or a unique prefix) from `options`;
+# the 0-based index. Absent when it names none or several.
+fn parseChoice({t: str, options: Seq[str]}) -> int?:
+  let trimmed = {t: t} trim
+  let a = {t: trimmed} toLowerAscii
+  if a == "":
+    return none
+  let n = {t: a} parseInt
+  if n.ok:
+    let k = n.value ^int
+    if k >= 1 and k <= options.len:
+      return k - 1
+    return none
+  var found = 0 - 1
+  var hits = 0
+  for i in 0 .. options.len - 1:
+    let o = {t: options[i]} toLowerAscii
+    if o == a:
+      return i
+    if {t: o, prefix: a} startsWith:
+      found = i
+      hits = hits + 1
+  if hits == 1:
+    return found
+  return none
+
+fn parseIntIn({t: str, lo: int, hi: int}) -> int?:
+  let trimmed = {t: t} trim
+  let n = {t: trimmed} parseInt
+  if not n.ok:
+    return none
+  let k = n.value ^int
+  if k < lo or k > hi:
+    return none
+  return k
+
+# --- progress (pure) ----------------------------------------------------------------------
+# "[=====>    ] 50%": `width` cells between the brackets.
+fn progressBar({done: int, total: int, width: int}) -> str:
+  var share = 0
+  if total > 0:
+    share = done * 100 /i total
+  if share > 100:
+    share = 100
+  if share < 0:
+    share = 0
+  let filled = share * width /i 100
+  var cells = ""
+  for i in 0 .. width - 1:
+    if i < filled:
+      cells = cells + "="
+    elif i == filled and share < 100:
+      cells = cells + ">"
+    else:
+      cells = cells + " "
+  let pct = {value: share} toStr
+  return "[" + cells + "] " + pct + "%"
+
+fn spinnerFrame({tick: int}) -> str:
+  let frames: Seq[str] = ["|", "/", "-", "\\"]
+  return frames[tick % 4]
+
+# --- prompts (console) -------------------------------------------------------------------
+# One line from the terminal, or absent at the end of input.
+fn lineIn() -> str? [io: console]:
+  let r = readLine
+  if not r.ok:
+    return none
+  return r.value.line
+
+fn ask({question: str, fallback: str}) -> str [io: console]:
+  {text: question + " "} print
+  let l = lineIn
+  if not l.ok:
+    return fallback
+  let a = {t: l.value} trim
+  if a == "":
+    return fallback
+  return a
+
+fn confirm({question: str, fallback: bool}) -> bool [io: console]:
+  var hint = "[y/N]"
+  if fallback:
+    hint = "[Y/n]"
+  var again = true
+  for again:
+    {text: question + " " + hint + " "} print
+    let l = lineIn
+    if not l.ok:
+      return fallback
+    let v = {t: l.value, fallback: fallback, hasFallback: true} parseYesNo
+    if v.ok:
+      return v.value
+  return fallback
+
+# Lists the options, reads a number or a name, asks again on nonsense; the
+# 0-based index. At the end of input, option 0.
+fn choose({question: str, options: Seq[str]}) -> int [io: console]:
+  {text: question} printLine
+  for i in 0 .. options.len - 1:
+    let n = {value: i + 1} toStr
+    {text: "  " + n + ") " + options[i]} printLine
+  var again = true
+  for again:
+    {text: "> "} print
+    let l = lineIn
+    if not l.ok:
+      return 0
+    let c = {t: l.value, options: options} parseChoice
+    if c.ok:
+      return c.value
+  return 0
+
+fn askNumber({question: str, lo: int, hi: int}) -> int [io: console]:
+  var again = true
+  for again:
+    {text: question + " "} print
+    let l = lineIn
+    if not l.ok:
+      return lo
+    let v = {t: l.value, lo: lo, hi: hi} parseIntIn
+    if v.ok:
+      return v.value
+  return lo
+
+# Like `ask`, with the terminal's echo off while the answer is typed (`stty`;
+# a no-op when stdin is not a terminal). The answer is not trimmed.
+fn askSecret({question: str}) -> str [io: console, io: sys]:
+  {text: question + " "} print
+  let hidden = {line: "stty -echo 2>/dev/null"} runCommand
+  let l = lineIn
+  let shown = {line: "stty echo 2>/dev/null"} runCommand
+  {text: ""} printLine
+  if not l.ok:
+    return ""
+  return l.value
+
+# Redraw one progress line in place (carriage return, no newline).
+fn showProgress({done: int, total: int, width: int}) -> void [io: console]:
+  let bar = {done: done, total: total, width: width} progressBar
+  {text: "\r" + bar} print
+
 # --- the module's own checks: the exit code names the first that fails -------------
 fn spec({name: str, shortName: str, kind: ArgKind, help: str, required: bool}) -> ArgSpec:
   return {name: name, shortName: shortName, kind: kind, help: help, required: required} ArgSpec
@@ -412,5 +578,144 @@ fn checkOutput() -> int:
     return 17
   return 0
 
-fn main() -> int:
-  return checkParsing
+fn checkAnswers() -> int:
+  let yes = {t: " YES ", fallback: false, hasFallback: false} parseYesNo
+  if not yes.ok:
+    return 30
+  if not yes.value:
+    return 30
+  let n = {t: "n", fallback: true, hasFallback: false} parseYesNo
+  if not n.ok:
+    return 31
+  if n.value:
+    return 31
+  let blank = {t: "", fallback: true, hasFallback: true} parseYesNo
+  if not blank.ok:
+    return 32
+  if not blank.value:
+    return 32
+  let nofb = {t: "", fallback: true, hasFallback: false} parseYesNo
+  if nofb.ok:
+    return 33
+  let junk = {t: "maybe", fallback: true, hasFallback: true} parseYesNo
+  if junk.ok:
+    return 34
+  let opts: Seq[str] = ["red", "green", "grey"]
+  let one = {t: "2", options: opts} parseChoice
+  if not one.ok:
+    return 35
+  if one.value != 1:
+    return 35
+  let named = {t: "Green", options: opts} parseChoice
+  if not named.ok:
+    return 36
+  if named.value != 1:
+    return 36
+  let prefix = {t: "re", options: opts} parseChoice
+  if not prefix.ok:
+    return 37
+  if prefix.value != 0:
+    return 37
+  let ambiguous = {t: "gr", options: opts} parseChoice
+  if ambiguous.ok:
+    return 38
+  let range = {t: "9", options: opts} parseChoice
+  if range.ok:
+    return 39
+  let num = {t: " 42 ", lo: 1, hi: 100} parseIntIn
+  if not num.ok:
+    return 40
+  if num.value != 42:
+    return 40
+  let out = {t: "101", lo: 1, hi: 100} parseIntIn
+  if out.ok:
+    return 41
+  return 0
+
+fn checkProgress() -> int:
+  if {done: 0, total: 10, width: 10} progressBar != "[>         ] 0%":
+    return 50
+  if {done: 5, total: 10, width: 10} progressBar != "[=====>    ] 50%":
+    return 51
+  if {done: 10, total: 10, width: 10} progressBar != "[==========] 100%":
+    return 52
+  if {done: 99, total: 10, width: 10} progressBar != "[==========] 100%":
+    return 53
+  if {done: 1, total: 0, width: 4} progressBar != "[>   ] 0%":
+    return 54
+  if {tick: 5} spinnerFrame != "/":
+    return 55
+  return 0
+
+# The interactive halves run in a CHILD: this program, started with a flag, fed
+# its input over a pipe, with its answer read back. No terminal needed.
+fn childRun({flag: str, feed: str}) -> str [io, io: console, io: sys]:
+  let me = programPath
+  let argv: Seq[str] = [me, flag]
+  let r = {argv: argv} spawn
+  if not r.ok:
+    return "SPAWN FAILED"
+  let c = r.value
+  let wrote = {c: c, data: feed} writeIn
+  {c: c} closeIn
+  let out = {c: c, timeoutMs: 5000} readAllOut
+  let st = {c: c} waitFor
+  return out
+
+fn checkInteractive() -> int [io, io: console, io: sys]:
+  let a = {flag: "--demo-confirm", feed: "maybe\nyes\n"} childRun
+  if a != "Proceed? [y/N] Proceed? [y/N] CONFIRMED\n":
+    return 60
+  let b = {flag: "--demo-confirm", feed: ""} childRun
+  if b != "Proceed? [y/N] DECLINED\n":
+    return 61
+  let c = {flag: "--demo-choose", feed: "nope\nbl\n"} childRun
+  if c != "Pick\n  1) red\n  2) blue\n> > CHOSE 1\n":
+    return 62
+  let d = {flag: "--demo-ask", feed: "  Ada \n"} childRun
+  if d != "Name? HELLO Ada\n":
+    return 63
+  let e = {flag: "--demo-number", feed: "x\n0\n7\n"} childRun
+  if e != "N? N? N? GOT 7\n":
+    return 64
+  return 0
+
+# The child side of those checks.
+fn demoChild({flag: str}) -> int [io: console]:
+  if flag == "--demo-confirm":
+    if {question: "Proceed?", fallback: false} confirm:
+      {text: "CONFIRMED"} printLine
+    else:
+      {text: "DECLINED"} printLine
+    return 0
+  if flag == "--demo-choose":
+    let opts: Seq[str] = ["red", "blue"]
+    let k = {question: "Pick", options: opts} choose
+    let n = {value: k} toStr
+    {text: "CHOSE " + n} printLine
+    return 0
+  if flag == "--demo-ask":
+    let who = {question: "Name?", fallback: "nobody"} ask
+    {text: "HELLO " + who} printLine
+    return 0
+  if flag == "--demo-number":
+    let v = {question: "N?", lo: 1, hi: 9} askNumber
+    let n = {value: v} toStr
+    {text: "GOT " + n} printLine
+    return 0
+  return 2
+
+fn main() -> int [io, io: console, io: sys]:
+  let mine = arguments
+  if mine.len > 0:
+    return {flag: mine[0]} demoChild
+  let p = checkParsing
+  if p != 0:
+    return p
+  let a = checkAnswers
+  if a != 0:
+    return a
+  let g = checkProgress
+  if g != 0:
+    return g
+  return checkInteractive

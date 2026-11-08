@@ -22,11 +22,21 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (1)
+## A. Open bugs (3)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
+
+- **A107 — an optional passes the checker as a condition.** `if not {n: 1}
+  maybe:` where `maybe` answers `bool?` checks clean; Nim, Odin and D each
+  refuse the emitted code. The same mistake on a `let` is already told to guard
+  with `.ok`. Found building `std.cli`'s prompts. Pin: `known_bugs` "A107: …".
+
+- **A108 — `Seq + Seq` passes the checker.** `let c = a + b` on two
+  `Seq[int]` checks clean and no backend can print it. Seq concatenation does
+  not exist; until it does the checker should refuse the `+`. Found building
+  `std.reflect`. Pin: `known_bugs` "A108: …".
 
 - **A105 — two imported satisfiers named alike confuse a group.** A module that
   imports `stream` (a `group Sink` with `put` for `MemWriter`) and `socket`
@@ -363,10 +373,6 @@ it in.
   (Odin).** The move of the local was counted as a reset of the captured
   payload; Odin refuses to address a parameter. Only a reset of a field needs
   the by-address capture. Found building `std.reflect`.
-
-- **Seq `+` passes the checker and fails the backends.** `a + b` on two
-  `Seq[str]` typechecks; Nim, Odin and D each reject the emitted code. Recorded
-  as a checker gap (no pin yet); `std.reflect` appends in a loop instead.
 
 - **A106 — a tail `match` of returning `match`es could not be printed (all
   three backends).** `match a:` whose arms are `match b:` blocks answering
