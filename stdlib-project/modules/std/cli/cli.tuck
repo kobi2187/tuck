@@ -403,7 +403,7 @@ fn spinnerFrame({tick: int}) -> str:
 # --- prompts (console) -------------------------------------------------------------------
 # One line from the terminal, or absent at the end of input.
 fn lineIn() -> str? [io: console]:
-  let r = readLine
+  let r = readConsoleLine
   if not r.ok:
     return none
   return r.value.line

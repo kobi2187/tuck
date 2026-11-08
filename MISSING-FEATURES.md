@@ -399,6 +399,15 @@ it in.
   value where the argument was meant, and the result held `{}`. The binding is
   `tuckˑm<depth>` now, in the namespace user names cannot reach.
 
+- **Same-named functions in two imported modules (noted, not pinned).** The
+  flat import namespace keeps only one `readLine` visible when a program imports
+  both `console` (`readLine()`, an extern) and `stream` (`readLine({s})`, a
+  generic): inside `std.cli` the call meant the stream one ("'readLine' is [io]"),
+  and the qualified spelling `console::readLine` passed the checker but printed
+  as the stream function on Nim. `std/console` now also exports the same call as
+  `readConsoleLine` (`emit: "readLine"`), which is what `std.cli` uses. Found
+  when `apps/diff-patch` (which imports `cli` and `files`) stopped building.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own
