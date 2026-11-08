@@ -368,6 +368,14 @@ it in.
   `Seq[str]` typechecks; Nim, Odin and D each reject the emitted code. Recorded
   as a checker gap (no pin yet); `std.reflect` appends in a loop instead.
 
+- **A106 — a tail `match` of returning `match`es could not be printed (all
+  three backends).** `match a:` whose arms are `match b:` blocks answering
+  `return true` / `return false` was wrapped in `return (…)` as though it were a
+  value: Nim "case expression has to be used", Odin and D a `switch` inside a
+  ternary. `matchArmsReturn` knew a bare `return` and a block ending in one, not
+  a nested match that returns in every arm; it does now (`ast_query.armReturns`).
+  Found building `std.chrono`'s `zone`.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

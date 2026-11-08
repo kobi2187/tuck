@@ -5136,4 +5136,39 @@ fn put({self: Wire, n: int}) -> Wire:
   t.quietly: t.runs "A105: two imported satisfiers named alike each keep their group", 40
   t.bugOpen "A105: two imported satisfiers named alike each keep their group"
 
+  # A106 (found building std.chrono's zones): a tail `match` whose arms are
+  # themselves `match`es that return in every arm was wrapped in `return (...)`
+  # as if it were a value, which no backend can print (Nim: a case expression
+  # that never yields; Odin and D: a switch inside a ternary). An arm that is a
+  # match returning in all its arms is control flow, like a bare `return`.
+  t.src """
+type Fit:
+  | Exact
+  | Skipped
+
+fn same({a: Fit, b: Fit}) -> bool:
+  match a:
+    Exact:
+      match b:
+        Exact: return true
+        _: return false
+    Skipped:
+      match b:
+        Skipped: return true
+        _: return false
+
+fn main() -> int:
+  let x = Fit.Skipped
+  let y = Fit.Skipped
+  let z = Fit.Exact
+  if {a: x, b: y} same:
+    if not {a: x, b: z} same:
+      return 7
+  return 1
+"""
+  t.quietly: t.runs "A106: a tail match of returning matches is control flow", 7
+  t.bugFixed "A106: a tail match of returning matches is control flow"
+  t.quietly: t.runsOdin "A106: a tail match of returning matches is control flow on Odin", 7
+  t.bugFixed "A106: a tail match of returning matches is control flow on Odin"
+
   t.finish()

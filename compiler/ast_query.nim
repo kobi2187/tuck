@@ -524,16 +524,29 @@ proc genPatternStr*(p: Pattern): string =
   of pkOr: genPatternStr(p.left) & ", " & genPatternStr(p.right)
   of pkRecord, pkTuple: "_"   # destructuring binds; as a label it tests nothing
 
+proc armReturns(b: Expr): bool =
+  ## An arm body that leaves the fn on its own: a `return`, a block ending in
+  ## one, or a `match` all of whose arms do (a tail `match` of `match`es, each
+  ## answering with `return`, is control flow all the way down).
+  if b == nil: return false
+  case b.kind
+  of exkReturn: true
+  of exkBlock:
+    b.stmts.len > 0 and b.stmts[^1] != nil and armReturns(b.stmts[^1])
+  of exkMatch:
+    if b.subject == nil or b.arms.len == 0: return false
+    for arm in b.arms:
+      if not armReturns(arm.body): return false
+    true
+  else: false
+
 proc matchArmsReturn*(m: Expr): bool =
   ## True when the arms produce control flow rather than values — a block arm
-  ## ending in `return`, or a bare `return`. Such a match is already the
-  ## function's result and must not be wrapped in another return.
+  ## ending in `return`, a bare `return`, or a nested `match` that returns in
+  ## every arm. Such a match is already the function's result and must not be
+  ## wrapped in another return.
   for arm in m.arms:
-    if arm.body == nil: continue
-    if arm.body.kind == exkReturn: return true
-    if arm.body.kind == exkBlock and arm.body.stmts.len > 0 and
-       arm.body.stmts[^1] != nil and arm.body.stmts[^1].kind == exkReturn:
-      return true
+    if armReturns(arm.body): return true
   false
 
 proc implicitTailValue*(body: Expr): Expr =
