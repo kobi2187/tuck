@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (4)
+## A. Open bugs (5)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -399,14 +399,19 @@ it in.
   value where the argument was meant, and the result held `{}`. The binding is
   `tuckˑm<depth>` now, in the namespace user names cannot reach.
 
-- **Same-named functions in two imported modules (noted, not pinned).** The
-  flat import namespace keeps only one `readLine` visible when a program imports
-  both `console` (`readLine()`, an extern) and `stream` (`readLine({s})`, a
-  generic): inside `std.cli` the call meant the stream one ("'readLine' is [io]"),
-  and the qualified spelling `console::readLine` passed the checker but printed
-  as the stream function on Nim. `std/console` now also exports the same call as
-  `readConsoleLine` (`emit: "readLine"`), which is what `std.cli` uses. Found
-  when `apps/diff-patch` (which imports `cli` and `files`) stopped building.
+- **A112 — a name's effects are looked up program-wide, by bare name.** A
+  module that imports only `m1` (a pure `grab`) is judged against another
+  module's [io] `grab` if the program imports both; the typechecker's recorded
+  call edge too points at whichever same-named fn the flat table holds. Found
+  when `std.cli` (which imports `console`) was judged against `stream`'s
+  `readLine` inside `apps/diff-patch`. **Rule (owner, 2026-11-08): collisions
+  are always explicit errors, never a quiet pick** — the user qualifies at the
+  call site (`m1::grab`) or the definition site says what it means (a group
+  satisfier names its type; fields that clash are qualified). Where the
+  language lacks a way to say it, that is a design gap to fill, not to paper
+  over. `std/console` exports `readConsoleLine` (`emit: "readLine"`) meanwhile.
+  Pin: `known_bugs` "A112: …". A105 (group satisfiers named alike) is the same
+  family. `Qualified` spellings of externs also print the wrong function on Nim.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so

@@ -5286,4 +5286,36 @@ fn main() -> int:
   t.quietly: t.runsOdin "A111: a parameter named v survives a match on another parameter", 5
   t.bugFixed "A111: a parameter named v survives a match on another parameter"
 
+  # A112: the effect of a call is looked up by its BARE NAME in one table for the
+  # whole program, so a module is judged against whichever same-named fn another
+  # module exports. `lib` imports only `m1` (a pure `grab`) and is refused for
+  # `m2`'s [io] `grab`, which it never imported. The rule is that a name means
+  # what the module's own imports say it means; where two imports could both
+  # mean it, that is an explicit error naming both, never a quiet pick.
+  t.src """
+import lib
+import m2
+
+fn main() -> int [io]:
+  let a = useIt
+  let b = {n: 5} grab
+  return a + b
+"""
+  t.addFile "m1.tuck", """
+fn grab() -> int:
+  return 1
+"""
+  t.addFile "m2.tuck", """
+fn grab({n: int}) -> int [io]:
+  return n
+"""
+  t.addFile "lib.tuck", """
+import m1
+
+fn useIt() -> int:
+  return grab
+"""
+  t.quietly: t.okCheck "A112: a module's names mean what its own imports say"
+  t.bugOpen "A112: a module's names mean what its own imports say"
+
   t.finish()
