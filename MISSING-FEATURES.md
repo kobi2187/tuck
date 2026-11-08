@@ -22,11 +22,17 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (3)
+## A. Open bugs (4)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
+
+- **A110 — a field moved out of `match s.value` (an optional PARAMETER) cannot
+  be assigned (Odin).** The move resets the source, `s.value.(Sh_B).items = {}`,
+  and Odin refuses to assign through a by-value parameter. Binding
+  `let node = s.value` first avoids it. Found building `std.encoding`'s TOML.
+  Pin: `known_bugs` "A110: …".
 
 - **A107 — an optional passes the checker as a condition.** `if not {n: 1}
   maybe:` where `maybe` answers `bool?` checks clean; Nim, Odin and D each
@@ -381,6 +387,17 @@ it in.
   ternary. `matchArmsReturn` knew a bare `return` and a block ending in one, not
   a nested match that returns in every arm; it does now (`ast_query.armReturns`).
   Found building `std.chrono`'s `zone`.
+
+- **A109 — a payload variant returned from an optional fn was the wrong type
+  (Odin).** `return {n: k} Sh.A` from `-> Sh?` built `rt.tok(Sh_A{..})`, a
+  result of the variant's struct, not of the union. It converts to the union
+  now (`okValue`). Found building TOML.
+
+- **A111 — the Odin `match` binding shadowed a parameter named `v` (silent).**
+  The payload of `match root:` was bound as `v`, so inside the arm a parameter
+  `v` meant the payload: `putKey(v.keys, v.vals, head, v)` passed the matched
+  value where the argument was meant, and the result held `{}`. The binding is
+  `tuckˑm<depth>` now, in the namespace user names cannot reach.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so

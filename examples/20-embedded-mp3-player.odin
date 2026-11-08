@@ -173,7 +173,7 @@ handleMsg_tuckˑactorˑDecoder :: proc(self: ^tuckˑactorˑDecoder, msg: tuckˑa
 	switch msg.tuckTag {
 	case .msgPlay:
 		rate := msg.rate
-    switch v in self.state
+    switch tuckˑm0 in self.state
     {
     case tuckˑtypeˑPlayerState_Idle:
         self.state = tuckˑtypeˑPlayerState_Decoding{sampleRate = rate}
@@ -186,7 +186,7 @@ handleMsg_tuckˑactorˑDecoder :: proc(self: ^tuckˑactorˑDecoder, msg: tuckˑa
     case tuckˑtypeˑPlayerState_Decoding: ;
     }
 	case .msgPause:
-    switch v in self.state
+    switch tuckˑm0 in self.state
     {
     case tuckˑtypeˑPlayerState_Decoding: self.state = tuckˑtypeˑPlayerState_Paused{};
     case tuckˑtypeˑPlayerState_Idle: ;

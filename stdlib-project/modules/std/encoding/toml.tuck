@@ -1,0 +1,834 @@
+# std.encoding (module `toml`) — TOML 1.0, parsed into and printed from `Json`.
+#
+# A TOML document is a tree of tables, arrays and scalars, and `Json` already is
+# that tree, so one value type serves both formats and everything written
+# against it (jsonGet, the schema validator in std.reflect) reads a config file
+# unchanged. The differences are flattened in the obvious ways: integers and
+# floats are both numbers, and date-times are strings holding their text.
+#
+# Supported: comments; bare, quoted and dotted keys; basic, literal and
+# multi-line strings; integers (underscores, hex, octal, binary), floats,
+# booleans; arrays (multi-line, trailing comma); inline tables; `[table]` and
+# `[[array of tables]]` headers. Refused (answer `none`): a duplicate key, a key
+# assigned into something that is not a table, bad syntax, `inf`/`nan`.
+#
+# Plain Tuck over the text's bytes. Every step takes the position it starts at
+# and hands back the position it stopped at; `none` is "not TOML", never a crash.
+import seq
+import str
+import text
+import convert
+import encoding
+
+type TomlKey:
+  path: Seq[str]
+  endAt: int
+
+fn tomlDepth() -> int:
+  return 100
+
+# --- characters ---------------------------------------------------------------------------
+
+fn byteInt({t: str, at: int}) -> int:
+  if at < 0 or at >= {t: t} byteCount:
+    return 0 - 1
+  let v = {t: t, index: at} byteAt
+  return {value: v} int
+
+fn byteIs({t: str, at: int, b: int}) -> bool:
+  let c = {t: t, at: at} byteInt
+  return c == b
+
+fn skipInline({t: str, at: int}) -> int:
+  let n = {t: t} byteCount
+  var i = at
+  for i < n:
+    let b = {t: t, index: i} byteAt
+    if b != 32 and b != 9:
+      return i
+    i = i + 1
+  return i
+
+# Spaces, newlines and `# comments`: what may sit between items.
+fn skipTrivia({t: str, at: int}) -> int:
+  let n = {t: t} byteCount
+  var i = at
+  for i < n:
+    let b = {t: t, index: i} byteAt
+    if b == 32 or b == 9 or b == 10 or b == 13:
+      i = i + 1
+    elif b == 35:
+      for i < n and {t: t, index: i} byteAt != 10:
+        i = i + 1
+    else:
+      return i
+  return i
+
+fn isBareKeyByte({b: int}) -> bool:
+  if b >= 48 and b <= 57:
+    return true
+  if b >= 65 and b <= 90:
+    return true
+  if b >= 97 and b <= 122:
+    return true
+  return b == 95 or b == 45
+
+# The end of a line: only spaces and an optional comment may follow, then a
+# newline or the end of the text. The position after it; -1 when something else.
+fn endOfLine({t: str, at: int}) -> int:
+  let n = {t: t} byteCount
+  var i = {t: t, at: at} skipInline
+  if i >= n:
+    return n
+  let b = {t: t, index: i} byteAt
+  if b == 35:
+    for i < n and {t: t, index: i} byteAt != 10:
+      i = i + 1
+    if i < n:
+      return i + 1
+    return n
+  if b == 10:
+    return i + 1
+  if b == 13 and {t: t, at: i + 1, b: 10} byteIs:
+    return i + 2
+  return 0 - 1
+
+# --- strings ------------------------------------------------------------------------------
+
+fn parseLiteralString({t: str, at: int}) -> ParsedText?:
+  let n = {t: t} byteCount
+  var i = at + 1
+  var out: Seq[u8] = []
+  for i < n:
+    let b = {t: t, index: i} byteAt
+    if b == 39:
+      let s = {bytes: out} fromBytes
+      return {value: s, endAt: i + 1} ParsedText
+    if b == 10:
+      return none
+    out = {items: out, value: b} push
+    i = i + 1
+  return none
+
+fn threeAt({t: str, at: int, b: int}) -> bool:
+  return {t: t, at: at, b: b} byteIs and {t: t, at: at + 1, b: b} byteIs and {t: t, at: at + 2, b: b} byteIs
+
+# '''...''': no escapes; a newline right after the opening is dropped.
+fn parseMultiLiteral({t: str, at: int}) -> ParsedText?:
+  let n = {t: t} byteCount
+  var i = at + 3
+  if {t: t, at: i, b: 10} byteIs:
+    i = i + 1
+  elif {t: t, at: i, b: 13} byteIs and {t: t, at: i + 1, b: 10} byteIs:
+    i = i + 2
+  var out: Seq[u8] = []
+  for i < n:
+    if {t: t, at: i, b: 39} threeAt:
+      let s = {bytes: out} fromBytes
+      return {value: s, endAt: i + 3} ParsedText
+    let ch = {t: t, index: i} byteAt
+    out = {items: out, value: ch} push
+    i = i + 1
+  return none
+
+fn hex2({n: int}) -> str:
+  let digits = "0123456789abcdef"
+  let hi = {s: digits, index: n /i 16} charAt
+  let lo = {s: digits, index: n % 16} charAt
+  return hi + lo
+
+# """...""": basic-string escapes, real newlines allowed, a backslash at the end
+# of a line swallows the whitespace after it. Rewritten as a one-line basic
+# string and read by the same escape decoder as every other string.
+fn parseMultiBasic({t: str, at: int}) -> ParsedText?:
+  let n = {t: t} byteCount
+  var i = at + 3
+  if {t: t, at: i, b: 10} byteIs:
+    i = i + 1
+  elif {t: t, at: i, b: 13} byteIs and {t: t, at: i + 1, b: 10} byteIs:
+    i = i + 2
+  var pieces: Seq[str] = []
+  var closed = false
+  for i < n and not closed:
+    let b = {t: t, index: i} byteAt
+    if b == 34 and {t: t, at: i, b: 34} threeAt:
+      closed = true
+    elif b == 92:
+      let nx = {t: t, index: i + 1} byteAt
+      if nx == 10 or nx == 13 or nx == 32 or nx == 9:
+        i = i + 1
+        for i < n and ({t: t, index: i} byteAt == 10 or {t: t, index: i} byteAt == 13 or {t: t, index: i} byteAt == 32 or {t: t, index: i} byteAt == 9):
+          i = i + 1
+      else:
+        pieces = {items: pieces, value: "\\"} push
+        var one: Seq[u8] = []
+        one = {items: one, value: nx} push
+        let ch = {bytes: one} fromBytes
+        pieces = {items: pieces, value: ch} push
+        i = i + 2
+    elif b == 34:
+      pieces = {items: pieces, value: "\\\""} push
+      i = i + 1
+    elif b < 32:
+      let bi = {value: b} int
+      let code = {n: bi} hex2
+      pieces = {items: pieces, value: "\\u00" + code} push
+      i = i + 1
+    else:
+      var one: Seq[u8] = []
+      one = {items: one, value: b} push
+      let ch = {bytes: one} fromBytes
+      pieces = {items: pieces, value: ch} push
+      i = i + 1
+  if not closed:
+    return none
+  let body = {parts: pieces, sep: ""} joinStr
+  let r = {t: "\"" + body + "\"", at: 0} parseString
+  if not r.ok:
+    return none
+  return {value: r.value.value, endAt: i + 3} ParsedText
+
+fn parseStringAt({t: str, at: int}) -> ParsedText?:
+  let b = {t: t, index: at} byteAt
+  if b == 34:
+    if {t: t, at: at, b: 34} threeAt:
+      return {t: t, at: at} parseMultiBasic
+    return {t: t, at: at} parseString
+  if b == 39:
+    if {t: t, at: at, b: 39} threeAt:
+      return {t: t, at: at} parseMultiLiteral
+    return {t: t, at: at} parseLiteralString
+  return none
+
+# --- keys ---------------------------------------------------------------------------------
+
+fn parseKeyPart({t: str, at: int}) -> ParsedText?:
+  let b = {t: t, index: at} byteAt
+  if b == 34 or b == 39:
+    return {t: t, at: at} parseStringAt
+  let n = {t: t} byteCount
+  var i = at
+  var scanning = true
+  for i < n and scanning:
+    let cb = {t: t, at: i} byteInt
+    if {b: cb} isBareKeyByte:
+      i = i + 1
+    else:
+      scanning = false
+  if i == at:
+    return none
+  let s = {t: t, start: at, stop: i} slice
+  if not s.ok:
+    return none
+  return {value: s.value, endAt: i} ParsedText
+
+# `a`, `"a b"`, or dotted `a . b . "c"`.
+fn parseKey({t: str, at: int}) -> TomlKey?:
+  var path: Seq[str] = []
+  var i = at
+  var more = true
+  for more:
+    let from0 = {t: t, at: i} skipInline
+    let part = {t: t, at: from0} parseKeyPart
+    if not part.ok:
+      return none
+    path = {items: path, value: part.value.value} push
+    i = {t: t, at: part.value.endAt} skipInline
+    if {t: t, at: i, b: 46} byteIs:
+      i = i + 1
+    else:
+      more = false
+  return {path: path, endAt: i} TomlKey
+
+# --- tables, by value -----------------------------------------------------------------------
+
+fn emptyTable() -> Json:
+  let ks: Seq[str] = []
+  let vs: Seq[Json] = []
+  return {keys: ks, vals: vs} Json.JObj
+
+# `j` (an object) with `key` set to `v`, replacing an existing one in place.
+fn putKey({keys: Seq[str], vals: Seq[Json], key: str, v: Json}) -> Json:
+  var ks: Seq[str] = []
+  var vs: Seq[Json] = []
+  var placed = false
+  for i in 0 .. keys.len - 1:
+    ks = {items: ks, value: keys[i]} push
+    if keys[i] == key:
+      vs = {items: vs, value: v} push
+      placed = true
+    else:
+      vs = {items: vs, value: vals[i]} push
+  if not placed:
+    ks = {items: ks, value: key} push
+    vs = {items: vs, value: v} push
+  return {keys: ks, vals: vs} Json.JObj
+
+fn replaceLast({items: Seq[Json], v: Json}) -> Seq[Json]:
+  var out: Seq[Json] = []
+  for i in 0 .. items.len - 2:
+    out = {items: out, value: items[i]} push
+  return {items: out, value: v} push
+
+fn tailOf({path: Seq[str]}) -> Seq[str]:
+  var out: Seq[str] = []
+  for i in 1 .. path.len - 1:
+    out = {items: out, value: path[i]} push
+  return out
+
+fn isArray({j: Json}) -> bool:
+  match j:
+    JArr: return true
+    _: return false
+
+fn arrayItems({j: Json}) -> Seq[Json]:
+  match j:
+    JArr: return j.items
+    _:
+      let none0: Seq[Json] = []
+      return none0
+
+# mode 0: assign `v` at `path` (a duplicate is refused); 1: make sure a table
+# exists there; 2: append a new table to the array there. An array met on the
+# way is entered at its LAST element, which is what `[[a]]` sections mean.
+fn edit({root: Json, path: Seq[str], mode: int, v: Json}) -> Json?:
+  if path.len == 0:
+    return v
+  match root:
+    JObj:
+      let head = path[0]
+      let child = {j: root, key: head} jsonGet
+      let rest = {path: path} tailOf
+      if rest.len == 0:
+        if mode == 0:
+          if child.ok:
+            return none
+          return {keys: root.keys, vals: root.vals, key: head, v: v} putKey
+        if mode == 1:
+          if child.ok:
+            match child.value:
+              JObj: return root
+              _: return none
+          let fresh = {} emptyTable
+          return {keys: root.keys, vals: root.vals, key: head, v: fresh} putKey
+        var grown: Seq[Json] = []
+        if child.ok:
+          if not {j: child.value} isArray:
+            return none
+          grown = {j: child.value} arrayItems
+        let row = {} emptyTable
+        grown = {items: grown, value: row} push
+        let arr = {items: grown} Json.JArr
+        return {keys: root.keys, vals: root.vals, key: head, v: arr} putKey
+      var base = {} emptyTable
+      if child.ok:
+        base = child.value
+      let updated = {root: base, path: rest, mode: mode, v: v} edit
+      if not updated.ok:
+        return none
+      return {keys: root.keys, vals: root.vals, key: head, v: updated.value} putKey
+    JArr:
+      if root.items.len == 0:
+        return none
+      let last = root.items[root.items.len - 1]
+      let updated = {root: last, path: path, mode: mode, v: v} edit
+      if not updated.ok:
+        return none
+      let items = {items: root.items, v: updated.value} replaceLast
+      return {items: items} Json.JArr
+    _: return none
+
+# --- values -------------------------------------------------------------------------------
+
+fn isTokenEnd({b: int}) -> bool:
+  return b == 32 or b == 9 or b == 10 or b == 13 or b == 44 or b == 93 or b == 125 or b == 35
+
+fn tokenFrom({t: str, at: int}) -> ParsedText?:
+  let n = {t: t} byteCount
+  var i = at
+  var scanning = true
+  for i < n and scanning:
+    let cb = {t: t, at: i} byteInt
+    if {b: cb} isTokenEnd:
+      scanning = false
+    else:
+      i = i + 1
+  if i == at:
+    return none
+  let s = {t: t, start: at, stop: i} slice
+  if not s.ok:
+    return none
+  return {value: s.value, endAt: i} ParsedText
+
+fn withoutUnderscores({t: str}) -> str:
+  let parts = {t: t, at: "_"} split
+  return {parts: parts, sep: ""} joinStr
+
+fn radixValue({digits: str, base: int}) -> int:
+  let bytes = {t: digits} bytesOf
+  var n = 0
+  for i in 0 .. bytes.len - 1:
+    let b = bytes[i] ^int
+    var d = 0 - 1
+    if b >= 48 and b <= 57:
+      d = b - 48
+    elif b >= 97 and b <= 102:
+      d = b - 87
+    elif b >= 65 and b <= 70:
+      d = b - 55
+    if d < 0 or d >= base:
+      return 0 - 1
+    n = n * base + d
+  return n
+
+# Is this token a date, a time or a date-time (kept as text)?
+fn looksLikeDateTime({tok: str}) -> bool:
+  let n = {t: tok} byteCount
+  if n >= 8 and {t: tok, at: 4, b: 45} byteIs and {t: tok, at: 7, b: 45} byteIs:
+    return true
+  return n >= 5 and {t: tok, at: 2, b: 58} byteIs
+
+fn scalarOf({tok: str}) -> Json?:
+  if tok == "true":
+    return {b: true} Json.JBool
+  if tok == "false":
+    return {b: false} Json.JBool
+  if {t: tok} byteCount > 2 and {t: tok, at: 0, b: 48} byteIs:
+    let tokLen = {t: tok} byteCount
+    let rest = {t: tok, start: 2, stop: tokLen} slice
+    var base = 0
+    if {t: tok, at: 1, b: 120} byteIs:
+      base = 16
+    elif {t: tok, at: 1, b: 111} byteIs:
+      base = 8
+    elif {t: tok, at: 1, b: 98} byteIs:
+      base = 2
+    if base > 0:
+      if not rest.ok:
+        return none
+      let digits = {t: rest.value} withoutUnderscores
+      let v = {digits: digits, base: base} radixValue
+      if v < 0:
+        return none
+      return {n: v ~f64} Json.JNum
+  var clean = {t: tok} withoutUnderscores
+  if {t: clean, at: 0, b: 43} byteIs:
+    let cleanLen = {t: clean} byteCount
+    let k = {t: clean, start: 1, stop: cleanLen} slice
+    if not k.ok:
+      return none
+    clean = k.value
+  let num = {t: clean, at: 0} parseNumber
+  if not num.ok:
+    return none
+  if num.value.endAt != {t: clean} byteCount:
+    return none
+  return num.value.node
+
+fn parseTomlValue({t: str, at: int, depth: int}) -> Parsed?:
+  if depth > 100:
+    return none
+  let i = at
+  let b = {t: t, index: i} byteAt
+  if b == 34 or b == 39:
+    let s = {t: t, at: i} parseStringAt
+    if not s.ok:
+      return none
+    let node = {s: s.value.value} Json.JStr
+    return {node: node, endAt: s.value.endAt} Parsed
+  if b == 91:
+    return {t: t, at: i, depth: depth} parseTomlArray
+  if b == 123:
+    return {t: t, at: i, depth: depth} parseInlineTable
+  let tok = {t: t, at: i} tokenFrom
+  if not tok.ok:
+    return none
+  var text = tok.value.value
+  var stop = tok.value.endAt
+  if {tok: text} looksLikeDateTime:
+    # "1979-05-27 07:32:00": a date and a time split by one space
+    if {t: t, at: stop, b: 32} byteIs and {t: t, at: stop + 1} isDigitAt and {t: text} byteCount == 10:
+      let more = {t: t, at: stop + 1} tokenFrom
+      if more.ok:
+        text = text + " " + more.value.value
+        stop = more.value.endAt
+    let node = {s: text} Json.JStr
+    return {node: node, endAt: stop} Parsed
+  let v = {tok: text} scalarOf
+  if not v.ok:
+    return none
+  return {node: v.value, endAt: stop} Parsed
+
+fn parseTomlArray({t: str, at: int, depth: int}) -> Parsed?:
+  var items: Seq[Json] = []
+  var i = at + 1
+  var more = true
+  for more:
+    i = {t: t, at: i} skipTrivia
+    if {t: t, at: i, b: 93} byteIs:
+      let node = {items: items} Json.JArr
+      return {node: node, endAt: i + 1} Parsed
+    let v = {t: t, at: i, depth: depth + 1} parseTomlValue
+    if not v.ok:
+      return none
+    items = {items: items, value: v.value.node} push
+    i = {t: t, at: v.value.endAt} skipTrivia
+    if {t: t, at: i, b: 44} byteIs:
+      i = i + 1
+    elif not {t: t, at: i, b: 93} byteIs:
+      return none
+  return none
+
+fn parseInlineTable({t: str, at: int, depth: int}) -> Parsed?:
+  var table = {} emptyTable
+  var i = {t: t, at: at + 1} skipInline
+  if {t: t, at: i, b: 125} byteIs:
+    return {node: table, endAt: i + 1} Parsed
+  var more = true
+  for more:
+    let key = {t: t, at: i} parseKey
+    if not key.ok:
+      return none
+    i = {t: t, at: key.value.endAt} skipInline
+    if not {t: t, at: i, b: 61} byteIs:
+      return none
+    i = {t: t, at: i + 1} skipInline
+    let v = {t: t, at: i, depth: depth + 1} parseTomlValue
+    if not v.ok:
+      return none
+    let put = {root: table, path: key.value.path, mode: 0, v: v.value.node} edit
+    if not put.ok:
+      return none
+    table = put.value
+    i = {t: t, at: v.value.endAt} skipInline
+    if {t: t, at: i, b: 44} byteIs:
+      i = {t: t, at: i + 1} skipInline
+    elif {t: t, at: i, b: 125} byteIs:
+      return {node: table, endAt: i + 1} Parsed
+    else:
+      return none
+  return none
+
+# --- the document -------------------------------------------------------------------------
+
+fn joinPath({a: Seq[str], b: Seq[str]}) -> Seq[str]:
+  var out = a
+  for i in 0 .. b.len - 1:
+    out = {items: out, value: b[i]} push
+  return out
+
+# The text as a table, or `none` when it is not TOML.
+fn parseToml({t: str}) -> Json?:
+  let n = {t: t} byteCount
+  var root = {} emptyTable
+  var ctx: Seq[str] = []
+  var i = 0
+  for i < n:
+    i = {t: t, at: i} skipTrivia
+    if i >= n:
+      return root
+    if {t: t, at: i, b: 91} byteIs:
+      var array = false
+      var at = i + 1
+      if {t: t, at: at, b: 91} byteIs:
+        array = true
+        at = at + 1
+      let keyFrom = {t: t, at: at} skipInline
+      let key = {t: t, at: keyFrom} parseKey
+      if not key.ok:
+        return none
+      var close = {t: t, at: key.value.endAt} skipInline
+      if not {t: t, at: close, b: 93} byteIs:
+        return none
+      close = close + 1
+      if array:
+        if not {t: t, at: close, b: 93} byteIs:
+          return none
+        close = close + 1
+      var mode = 1
+      if array:
+        mode = 2
+      let edited = {root: root, path: key.value.path, mode: mode, v: root} edit
+      if not edited.ok:
+        return none
+      root = edited.value
+      ctx = key.value.path
+      let eol = {t: t, at: close} endOfLine
+      if eol < 0:
+        return none
+      i = eol
+    else:
+      let key = {t: t, at: i} parseKey
+      if not key.ok:
+        return none
+      var at = {t: t, at: key.value.endAt} skipInline
+      if not {t: t, at: at, b: 61} byteIs:
+        return none
+      at = {t: t, at: at + 1} skipInline
+      let v = {t: t, at: at, depth: 0} parseTomlValue
+      if not v.ok:
+        return none
+      let full = {a: ctx, b: key.value.path} joinPath
+      let edited = {root: root, path: full, mode: 0, v: v.value.node} edit
+      if not edited.ok:
+        return none
+      root = edited.value
+      let eol = {t: t, at: v.value.endAt} endOfLine
+      if eol < 0:
+        return none
+      i = eol
+  return root
+
+# --- printing -----------------------------------------------------------------------------
+
+fn bareKey({k: str}) -> bool:
+  let bytes = {t: k} bytesOf
+  if bytes.len == 0:
+    return false
+  for i in 0 .. bytes.len - 1:
+    if not {b: bytes[i] ^int} isBareKeyByte:
+      return false
+  return true
+
+fn keyText({k: str}) -> str:
+  if {k: k} bareKey:
+    return k
+  return {s: k} quoted
+
+fn dotted({path: Seq[str]}) -> str:
+  var parts: Seq[str] = []
+  for i in 0 .. path.len - 1:
+    let k = {k: path[i]} keyText
+    parts = {items: parts, value: k} push
+  return {parts: parts, sep: "."} joinStr
+
+fn isTable({j: Json}) -> bool:
+  match j:
+    JObj: return true
+    _: return false
+
+# An array whose every element is a table prints as `[[name]]` sections.
+fn isTableArray({j: Json}) -> bool:
+  match j:
+    JArr:
+      if j.items.len == 0:
+        return false
+      for i in 0 .. j.items.len - 1:
+        if not {j: j.items[i]} isTable:
+          return false
+      return true
+    _: return false
+
+fn inlineValue({j: Json}) -> str:
+  match j:
+    JNull: return "\"\""
+    JBool:
+      if j.b:
+        return "true"
+      return "false"
+    JNum: return {value: j.n} toStr
+    JStr: return {s: j.s} quoted
+    JArr:
+      var parts: Seq[str] = []
+      for i in 0 .. j.items.len - 1:
+        let one = {j: j.items[i]} inlineValue
+        parts = {items: parts, value: one} push
+      let inner = {parts: parts, sep: ", "} joinStr
+      return "[" + inner + "]"
+    JObj:
+      var parts: Seq[str] = []
+      for i in 0 .. j.keys.len - 1:
+        let k = {k: j.keys[i]} keyText
+        let v = {j: j.vals[i]} inlineValue
+        parts = {items: parts, value: k + " = " + v} push
+      let inner = {parts: parts, sep: ", "} joinStr
+      return "{" + inner + "}"
+
+fn tableBody({keys: Seq[str], vals: Seq[Json], path: Seq[str]}) -> str:
+  var lines: Seq[str] = []
+  for i in 0 .. keys.len - 1:
+    if not {j: vals[i]} isTable and not {j: vals[i]} isTableArray:
+      let k = {k: keys[i]} keyText
+      let v = {j: vals[i]} inlineValue
+      lines = {items: lines, value: k + " = " + v} push
+  for i in 0 .. keys.len - 1:
+    let sub = {a: path, b: [keys[i]]} joinPath
+    let name = {path: sub} dotted
+    if {j: vals[i]} isTable:
+      lines = {items: lines, value: ""} push
+      lines = {items: lines, value: "[" + name + "]"} push
+      let inner = {j: vals[i], path: sub} tableText
+      if inner != "":
+        lines = {items: lines, value: inner} push
+    elif {j: vals[i]} isTableArray:
+      for k in 0 .. vals[i].items.len - 1:
+        lines = {items: lines, value: ""} push
+        lines = {items: lines, value: "[[" + name + "]]"} push
+        let inner = {j: vals[i].items[k], path: sub} tableText
+        if inner != "":
+          lines = {items: lines, value: inner} push
+  return {parts: lines, sep: "\n"} joinStr
+
+fn tableText({j: Json, path: Seq[str]}) -> str:
+  match j:
+    JObj: return {keys: j.keys, vals: j.vals, path: path} tableBody
+    _: return ""
+
+# A table as TOML text (a leading blank line is dropped).
+fn toTomlText({j: Json}) -> str:
+  let none0: Seq[str] = []
+  let body = {j: j, path: none0} tableText
+  if {t: body, prefix: "\n"} startsWith:
+    let bodyLen = {t: body} byteCount
+    let rest = {t: body, start: 1, stop: bodyLen} slice
+    if rest.ok:
+      return rest.value + "\n"
+  return body + "\n"
+
+# --- self-check --------------------------------------------------------------
+
+fn sample() -> str:
+  return "# a config\ntitle = \"TOML \\u00e9xample\"\nenabled = true\nport = 8_080\nratio = 0.5\nhex = 0xff\nwhen = 1979-05-27T07:32:00Z\n\n[owner]\nname = 'Tom'\ntags = [ \"a\", \"b\",\n  \"c\", # trailing\n]\n\n[database]\nserver.host = \"10.0.0.1\"\npoints = { x = 1, y = 2 }\n\n[[products]]\nname = \"Hammer\"\n\n[[products]]\nname = \"Nail\"\nsku = 7\n"
+
+fn numberOf({j: Json, key: str}) -> f64:
+  let v = {j: j, key: key} jsonGet
+  if not v.ok:
+    return 0.0 - 1.0
+  match v.value:
+    JNum: return v.value.n
+    _: return 0.0 - 1.0
+
+fn textOfKey({j: Json, key: str}) -> str:
+  let v = {j: j, key: key} jsonGet
+  if not v.ok:
+    return "<missing>"
+  let node = v.value
+  match node:
+    JStr: return node.s
+    _: return "<not text>"
+
+fn checkParse() -> int:
+  let src = {} sample
+  let r = {t: src} parseToml
+  if not r.ok:
+    return 1
+  let doc = r.value
+  if {j: doc, key: "title"} textOfKey != "TOML éxample":
+    return 2
+  if {j: doc, key: "port"} numberOf != 8080.0:
+    return 3
+  if {j: doc, key: "ratio"} numberOf != 0.5:
+    return 4
+  if {j: doc, key: "hex"} numberOf != 255.0:
+    return 5
+  if {j: doc, key: "when"} textOfKey != "1979-05-27T07:32:00Z":
+    return 6
+  let en = {j: doc, key: "enabled"} jsonGet
+  if not en.ok:
+    return 7
+  if {j: en.value} toJsonText != "true":
+    return 7
+  let owner = {j: doc, key: "owner"} jsonGet
+  if not owner.ok:
+    return 8
+  if {j: owner.value, key: "name"} textOfKey != "Tom":
+    return 9
+  let tags = {j: owner.value, key: "tags"} jsonGet
+  if not tags.ok:
+    return 10
+  if {j: tags.value} toJsonText != "[\"a\",\"b\",\"c\"]":
+    return 10
+  let db = {j: doc, key: "database"} jsonGet
+  if not db.ok:
+    return 11
+  let server = {j: db.value, key: "server"} jsonGet
+  if not server.ok:
+    return 12
+  if {j: server.value, key: "host"} textOfKey != "10.0.0.1":
+    return 12
+  let pt = {j: db.value, key: "points"} jsonGet
+  if not pt.ok:
+    return 13
+  if {j: pt.value} toJsonText != "{\"x\":1.0,\"y\":2.0}":
+    return 13
+  let products = {j: doc, key: "products"} jsonGet
+  if not products.ok:
+    return 14
+  if {j: products.value} toJsonText != "[{\"name\":\"Hammer\"},{\"name\":\"Nail\",\"sku\":7.0}]":
+    return 14
+  return 0
+
+fn checkStrings() -> int:
+  let doc = "a = \"\"\"\nline one\nline \\\n   two\"\"\"\nb = '''\nraw \\n stays'''\nc = \"tab\\there\"\n\"quoted key\" = 1\nd.e.f = 2\n"
+  let r = {t: doc} parseToml
+  if not r.ok:
+    return 20
+  if {j: r.value, key: "a"} textOfKey != "line one\nline two":
+    return 21
+  if {j: r.value, key: "b"} textOfKey != "raw \\n stays":
+    return 22
+  if {j: r.value, key: "c"} textOfKey != "tab\there":
+    return 23
+  if {j: r.value, key: "quoted key"} numberOf != 1.0:
+    return 24
+  let d = {j: r.value, key: "d"} jsonGet
+  if not d.ok:
+    return 25
+  if {j: d.value} toJsonText != "{\"e\":{\"f\":2.0}}":
+    return 25
+  return 0
+
+fn refused({t: str}) -> bool:
+  let r = {t: t} parseToml
+  return not r.ok
+
+fn checkBad() -> int:
+  if not {t: "a = 1\na = 2\n"} refused:
+    return 30
+  if not {t: "a = \"open\n"} refused:
+    return 31
+  if not {t: "a 1\n"} refused:
+    return 32
+  if not {t: "[t\nx = 1\n"} refused:
+    return 33
+  if not {t: "a = 1 b = 2\n"} refused:
+    return 34
+  if not {t: "a = 1\n[a]\nx = 1\n"} refused:
+    return 35
+  if not {t: "a = [1, 2\n"} refused:
+    return 36
+  if {t: "# only a comment\n\n"} refused:
+    return 37
+  if {t: ""} refused:
+    return 38
+  return 0
+
+fn checkPrint() -> int:
+  let src = {} sample
+  let r = {t: src} parseToml
+  if not r.ok:
+    return 40
+  let text = {j: r.value} toTomlText
+  let back = {t: text} parseToml
+  if not back.ok:
+    return 41
+  if {j: back.value} toJsonText != {j: r.value} toJsonText:
+    return 42
+  let small = {t: "x = 1\n[t]\ny = \"z\"\n"} parseToml
+  if not small.ok:
+    return 43
+  if {j: small.value} toTomlText != "x = 1.0\n\n[t]\ny = \"z\"\n":
+    return 44
+  return 0
+
+fn main() -> int:
+  var rc = checkParse
+  if rc != 0:
+    return rc
+  rc = checkStrings
+  if rc != 0:
+    return rc
+  rc = checkBad
+  if rc != 0:
+    return rc
+  return checkPrint

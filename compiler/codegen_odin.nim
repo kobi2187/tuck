@@ -520,6 +520,16 @@ proc genOdinBareReturn(ctx: OdinCodegenCtx): string =
   elif ctx.retWrapped and ctx.retInnerOdin == "rt.TuckUnit": "return rt.tokVoid()"
   else: "return"
 
+proc okValue(ctx: var OdinCodegenCtx, v: Expr): string =
+  ## The value a fallible or optional fn answers with, as `rt.tok(...)` takes
+  ## it. A payload variant (`{n: 1} Sh.A`) is a struct of its own in Odin, and
+  ## `tok` of it would be a result of THAT struct rather than of the union the
+  ## fn declares, so it is converted to the union first.
+  let inner = ctx.genOdinExpr(v)
+  if ctx.retInnerT != nil and payloadSumTypeName(ctx.module, ctx.retInnerT) != "":
+    return "rt.tok(" & ctx.retInnerOdin & "(" & inner & "))"
+  "rt.tok(" & inner & ")"
+
 proc genOdinReturn(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A `return`: auto-wrapped `tok()`/`terr()` in a fallible fn (a carrier or
   ## an `err X` passes through), a typed struct literal, a validated value of
@@ -542,7 +552,7 @@ proc genOdinReturn(ctx: var OdinCodegenCtx, e: Expr): string =
       # Typed literal: cast numeric fields to the declared payload field type
       return "return rt.tok(" & ctx.recCtorFromLiteral(ctx.retInnerT.fields, v.fields) & ")"
     else:
-      return "return rt.tok(" & ctx.genOdinExpr(v) & ")"
+      return "return " & ctx.okValue(v)
   elif ctx.retInvName != "" and not validatesItself(ctx.module, e.returnVal):
     # production site: return value of an invariant-carrying type.
     # `validatesItself` keeps a construction from being wrapped twice — it
@@ -586,7 +596,9 @@ proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
   # One binding name per nesting depth, and each remembers which variable it is
   # the payload of: a `match` inside an arm no longer shadows the outer `v`, and
   # a field of some OTHER sum-typed variable is not read through it.
-  let bindName = if ctx.unionBinds.len == 0: "v" else: "v" & $ctx.unionBinds.len
+  # In the reserved `tuckˑ` space: a parameter is printed under its own name, so
+  # a binding called `v` would silently shadow a parameter called `v` (A111).
+  let bindName = "tuckˑm" & $ctx.unionBinds.len
   let subjectName = if e.subject != nil and e.subject.kind == exkVar: e.subject.name else: ""
   ctx.unionBinds.add((subject: subjectName, bound: bindName))
   ctx.indent += 1

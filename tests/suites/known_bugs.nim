@@ -5201,4 +5201,89 @@ fn main() -> int:
   t.quietly: t.badCheck "A108: + on two Seqs is refused", "TK-TY"
   t.bugOpen "A108: + on two Seqs is refused"
 
+  # A109 (found building std.encoding's TOML): `return {n: k} Sh.A` from a fn
+  # declared `-> Sh?` wrapped the bare variant struct, so the Odin result was a
+  # `TuckResult(Sh_A)` where `TuckResult(Sh)` was declared.
+  t.src """
+import seq
+
+type Sh:
+  | A({n: int})
+  | B({items: Seq[int]})
+
+fn mkA({k: int}) -> Sh?:
+  if k > 0:
+    return {n: k} Sh.A
+  return none
+
+fn grab({s: Sh?}) -> int:
+  if not s.ok:
+    return 0
+  let inner = s.value
+  match inner:
+    A: return inner.n
+    B: return 0
+
+fn main() -> int:
+  let a = {k: 3} mkA
+  return {s: a} grab
+"""
+  t.quietly: t.runsOdin "A109: a payload variant returned from an optional fn is the union", 3
+  t.bugFixed "A109: a payload variant returned from an optional fn is the union"
+
+  # A110: moving a field out of `match s.value` where `s` is an optional
+  # PARAMETER emits `s.value.(T).items = {}`, which Odin cannot assign to.
+  # (Binding `let node = s.value` first avoids it.)
+  t.src """
+import seq
+
+type Sh:
+  | A({n: int})
+  | B({items: Seq[int]})
+
+fn mkB({k: int}) -> Sh?:
+  var xs: Seq[int] = []
+  xs = {items: xs, value: k} push
+  let b = {items: xs} Sh.B
+  return b
+
+fn itemsOf({s: Sh?}) -> Seq[int]:
+  var out: Seq[int] = []
+  if s.ok:
+    match s.value:
+      B: out = s.value.items
+      A: discard
+  return out
+
+fn main() -> int:
+  let b = {k: 4} mkB
+  let xs = {s: b} itemsOf
+  return xs.len
+"""
+  t.quietly: t.runsOdin "A110: a field moved out of a match on an optional's value", 1
+  t.bugOpen "A110: a field moved out of a match on an optional's value"
+
+  # A111: the Odin `match` bound the payload as `v`, which silently shadowed a
+  # PARAMETER named `v`: `return v` returned the matched value's payload.
+  t.src """
+type J:
+  | N({n: int})
+  | O({tag: int})
+
+fn pick({root: J, v: J}) -> J:
+  match root:
+    O: return v
+    N: return root
+
+fn main() -> int:
+  let a = {tag: 1} J.O
+  let b = {n: 5} J.N
+  let c = {root: a, v: b} pick
+  match c:
+    N: return c.n
+    O: return 99
+"""
+  t.quietly: t.runsOdin "A111: a parameter named v survives a match on another parameter", 5
+  t.bugFixed "A111: a parameter named v survives a match on another parameter"
+
   t.finish()
