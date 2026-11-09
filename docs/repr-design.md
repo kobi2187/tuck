@@ -46,3 +46,43 @@ for it today (#206) and it is the "library introspection" the owner rules out.
 ## Not in scope
 Parsing the text back, pretty-printing with line breaks (a later layer over the
 same generated tree walk), and any runtime type reflection.
+
+## Owner ruling on the mechanism (2026-11-09): bake the info into the type
+Runtime reflection is slow; baking is not. The compiler writes a static
+description onto each type, at the cost of binary size, and user code can only
+**fetch** what was provided, as an ordinary field read:
+
+    x.typeInfo.name        # "Point"
+    x.typeInfo.fields      # a Seq of {name, typeName, ...}, in declaration order
+    x.typeInfo.variants    # for a sum type
+
+* **Same convention as any field, no special marker syntax**: it is a field
+  whose name carries a prefix users know (`typeInfo`), reserved so no user
+  field or fn can take it (fields and fns share the call namespace).
+* **Dead-code elimination is the cost control**: a type's table is emitted only
+  when some reachable code reads `.typeInfo` on it (plus the tables its fields
+  need). A program that never asks pays nothing.
+* **Read-only, static**: user code cannot walk values generically or build
+  types; it only reads the table. This is what keeps it fast and keeps the
+  three backends identical.
+
+### What this changes in the brief above
+* `repr` stays compiler-generated for the VALUE walk (reading field values needs
+  generated accessors, which a static table alone cannot give); `typeInfo`
+  carries the METADATA (names, kinds, field types, variant names, sizes).
+  Libraries such as schema validation and a later `serde-derive` are written in
+  Tuck over `typeInfo` plus generated per-type accessors, not over a runtime
+  walker.
+
+### New open questions
+1. Per-type static table (zero cost per value; the value reaches it through its
+   type) or embedded per value ("expense of object size")? Recommendation:
+   per-type static; a sum type's tag already identifies the variant, so no
+   value grows.
+2. The exact record shape of `typeInfo` and what is promised stable (name,
+   kind, fields, variants, size, align, attributes such as `[view]`).
+3. Do value accessors ship with it (`typeInfo.fields[i].get`-style) or only
+   through the generated `repr`/derive code? Recommendation: only generated
+   code, so user code cannot reintroduce a slow generic walk.
+4. Is `std.reflect` (a Json schema library) rewritten over `typeInfo` when it
+   exists, or retired?
