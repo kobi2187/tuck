@@ -22,36 +22,11 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (5)
+## A. Open bugs (0)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
-
-- **A110 — a field moved out of `match s.value` (an optional PARAMETER) cannot
-  be assigned (Odin).** The move resets the source, `s.value.(Sh_B).items = {}`,
-  and Odin refuses to assign through a by-value parameter. Binding
-  `let node = s.value` first avoids it. Found building `std.encoding`'s TOML.
-  Pin: `known_bugs` "A110: …".
-
-- **A107 — an optional passes the checker as a condition.** `if not {n: 1}
-  maybe:` where `maybe` answers `bool?` checks clean; Nim, Odin and D each
-  refuse the emitted code. The same mistake on a `let` is already told to guard
-  with `.ok`. Found building `std.cli`'s prompts. Pin: `known_bugs` "A107: …".
-
-- **A108 — `Seq + Seq` passes the checker.** `let c = a + b` on two
-  `Seq[int]` checks clean and no backend can print it. Seq concatenation does
-  not exist; until it does the checker should refuse the `+`. Found building
-  `std.reflect`. Pin: `known_bugs` "A108: …".
-
-- **A105 — two imported satisfiers named alike confuse a group.** A module that
-  imports `stream` (a `group Sink` with `put` for `MemWriter`) and `socket`
-  (`put` for `TcpStream`) and calls a `[K: Sink]` fn on a `TcpStream` is refused:
-  "TcpStream's `put` parameter `self` is MemWriter, group `Sink` requires
-  TcpStream". The conformance check takes the first `put` by name, not the one
-  whose first parameter is the type. Minimal repro is the pin
-  `known_bugs` "A105: …". `std.net-http`'s `client` reads and writes the socket
-  by descriptor to stay clear of it. Found building the HTTP client.
 
 **A48–A51 (issues #129–#132) — found building the property tester and dogfooding the stdlib
 (2026-10-19).** Pins: `known_bugs`, "A48: …" to "A51: …".
@@ -399,19 +374,24 @@ it in.
   value where the argument was meant, and the result held `{}`. The binding is
   `tuckˑm<depth>` now, in the namespace user names cannot reach.
 
-- **A112 — a name's effects are looked up program-wide, by bare name.** A
-  module that imports only `m1` (a pure `grab`) is judged against another
-  module's [io] `grab` if the program imports both; the typechecker's recorded
-  call edge too points at whichever same-named fn the flat table holds. Found
-  when `std.cli` (which imports `console`) was judged against `stream`'s
-  `readLine` inside `apps/diff-patch`. **Rule (owner, 2026-11-08): collisions
-  are always explicit errors, never a quiet pick** — the user qualifies at the
-  call site (`m1::grab`) or the definition site says what it means (a group
-  satisfier names its type; fields that clash are qualified). Where the
-  language lacks a way to say it, that is a design gap to fill, not to paper
-  over. `std/console` exports `readConsoleLine` (`emit: "readLine"`) meanwhile.
-  Pin: `known_bugs` "A112: …". A105 (group satisfiers named alike) is the same
-  family. `Qualified` spellings of externs also print the wrong function on Nim.
+- **A112 — FIXED. A name's effects were looked up program-wide, by bare name.**
+  A module that imported only `m1` (a pure `grab`) was judged against another
+  module's [io] `grab`, because the effect pass and the recorded call edge both
+  went through one flat table. The checker now records the edge from the module
+  that owns the name in THIS scope (`bareOwnerOf`), externs are filed under
+  `mod::name` as well, and the effect pass reads the edge for an extern or a
+  name two modules declare. **Rule (owner, 2026-11-08): collisions are always
+  explicit errors, never a quiet pick** — two imports offering the same bare name
+  is TK-TY-ambiguity at the use; the user qualifies at the call site (`m1::grab`)
+  or the definition site says what it means (a group satisfier names its type).
+  `std.cli` reads the console with a plain `readLine` again.
+- **A105 — FIXED. Two imported satisfiers named alike confused a group.** The
+  owner's `put` was taken for every type; a type's satisfier is now the import
+  whose `put` accepts that type.
+- **A107 — FIXED (TK-TY49).** `not <optional>` is refused: test presence with `.ok`.
+- **A108 — FIXED (TK-TY48).** `+ - * %` on a Seq or Array is refused.
+- **A110 — FIXED.** A payload field moved out of `match s.value` goes through the
+  match binding, which Odin can assign.
 
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so

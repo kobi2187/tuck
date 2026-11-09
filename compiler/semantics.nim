@@ -137,9 +137,17 @@ proc callEffects(c: var Checker, e: Expr, res: var Demands) =
         let member = block:
           let own = memberCallDecl(semLayer, c.module, e)
           if own != nil: own else: ifaceMemberDecl(semLayer, c.module, e)
+        # A name two modules both declare cannot be told apart by the
+        # program-wide table below; the call's own recorded edge can (A112).
+        var edge = semLayer.declFor(e)
+        if edge != nil and not edge.isExtern and
+           calleeName notin semLayer.ambiguousFns: edge = nil
         let callee = if member != nil:
                        Demands(effects: member.fnEffects,
                                resources: member.fnResourceKinds)
+                     elif edge != nil and edge.kind == dkFn:
+                       Demands(effects: edge.fnEffects,
+                               resources: edge.fnResourceKinds)
                      elif c.groupReqs.hasKey(calleeName): c.groupReqs[calleeName]
                      else: c.getDeclared(calleeName)
         res = union(res, callee)

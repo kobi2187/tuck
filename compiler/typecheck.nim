@@ -1777,9 +1777,23 @@ proc failIfRecordOperand(tc: TypeChecker, lt, rt: Type, e: Expr) =
       fail(dcTyArithOnRecord, "arithmetic needs numbers, but this operand is " &
            "a record " & typeName(t) & hint, side.span)
 
+proc failIfSeqOperand(tc: TypeChecker, lt, rt: Type, e: Expr) =
+  ## A108: a Seq is not a number and Seq concatenation does not exist, so
+  ## `a + b` on two Seqs has no backend spelling. Refused here rather than
+  ## emitted as code none of the three can print.
+  for (t, side) in operands(lt, rt, e):
+    if isFlexible(t): continue
+    let r = tc.resolve(t)
+    if r != nil and r.kind == tkApp and r.base != nil and
+       r.base.kind == tkNamed and r.base.name in ["Seq", "Array"]:
+      fail(dcTyArithOnSeq, "arithmetic needs numbers, but this operand is a " &
+           typeName(t) & " — sequences are not added; build the result with " &
+           "`push` in a loop", side.span)
+
 proc synthArithmetic(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
   ## `+ - * %`: both operands must agree; the result has their type.
   tc.failIfRecordOperand(lt, rt, e)
+  tc.failIfSeqOperand(lt, rt, e)
   tc.failIfMismatched(lt, rt, "arithmetic", e.span)
   widerOperand(lt, rt)
 
@@ -2709,6 +2723,16 @@ proc providerBindings(tc: TypeChecker, want: Decl, got: FnSig, concreteT: Type,
       tc.inferBindings(got.params[i].typ, substituteGroup(w.typ, concreteT, binds),
                        got.generics, result, fnName, sp)
 
+proc providerAmongImports(tc: TypeChecker, member: string,
+                          concreteT: Type): string =
+  ## Of the imports that all offer `member`, the qualified name of the one
+  ## whose fn takes `concreteT` as its receiver; "" when none does.
+  for imp in tc.ambiguousImports.getOrDefault(member):
+    let qualified = imp & "::" & member
+    if tc.fnSigs.hasKey(qualified) and
+       tc.sigsAcceptReceiver(qualified, concreteT):
+      return qualified
+
 proc requirementKey(tc: TypeChecker, member, fnName: string,
                     concreteT: Type = nil): string =
   ## Which `hashOf` satisfies a bound — the one visible to the module that
@@ -2732,13 +2756,15 @@ proc requirementKey(tc: TypeChecker, member, fnName: string,
        not tc.sigsAcceptReceiver(qualified, concreteT) and
        tc.sigsAcceptReceiver(member, concreteT):
       return member
+    # ...or the one of several imports that provides it for this type: the
+    # owner's own `put` is for the owner's type (A105).
+    if concreteT != nil and not tc.sigsAcceptReceiver(qualified, concreteT):
+      let other = tc.providerAmongImports(member, concreteT)
+      if other != "": return other
     return qualified
   if concreteT != nil and not tc.fnSigs.hasKey(member):
-    for imp in tc.ambiguousImports.getOrDefault(member):
-      let qualified = imp & "::" & member
-      if tc.fnSigs.hasKey(qualified) and
-         tc.sigsAcceptReceiver(qualified, concreteT):
-        return qualified
+    let found = tc.providerAmongImports(member, concreteT)
+    if found != "": return found
   member
 
 proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
@@ -3663,6 +3689,12 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   # know how to read; the stage check `assertCallEdges` holds every call to
   # a fn with a body to having one.
   var calleeDecl = tc.topLevelDeclOfFn(calleeName)
+  if calleeDecl == nil:
+    # An import's fn, written bare: the module that owns the name in THIS
+    # scope, not whichever same-named fn the program-wide table holds (A112).
+    let owner = tc.bareOwnerOf.getOrDefault(calleeName)
+    if owner != "":
+      calleeDecl = semLayer.programFn(owner & "::" & calleeName)
   if calleeDecl == nil: calleeDecl = semLayer.programFn(callKey(e.callee))
   if calleeDecl != nil:
     resolveTo(semLayer, e, calleeDecl)
@@ -4536,6 +4568,12 @@ proc synthUnary(tc: var TypeChecker, e: Expr): Type =
   let t = tc.synthesize(e.operand)
   tc.negatedLit = savedNeg
   tc.composing = savedComposing
+  if e.unaryOp == uoNot and isWrapper(t):
+    # A107: `not <optional>` reads as "is absent" but is a type error on every
+    # backend. Presence is tested with `.ok`, as for a bare `let`.
+    fail(dcTyNotOnOptional, "`not` needs a bool, but this is an unhandled " &
+         typeName(t) & " — test presence with `.ok` (`not x.ok`), or pass " &
+         "it to a handling function", e.operand.span)
   if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
 
 proc failIfCastNotNumeric(e: Expr, target, src: Type) =

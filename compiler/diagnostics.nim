@@ -149,6 +149,8 @@ type
     dcTyAnonToNamed = "TK-TY45"         ## an anonymous record value passed where a named record is expected
     dcTyGuardNotAlone = "TK-TY46"       ## `.ok` of a `?T`/`!T` combined with more in one condition
     dcTyAmbiguousType = "TK-TY47"       ## a bare type name two imports both declare
+    dcTyArithOnSeq = "TK-TY48"          ## `+ - * %` on a Seq or Array: no concatenation exists
+    dcTyNotOnOptional = "TK-TY49"       ## `not` applied to a `T?`/`!T`: presence is tested with `.ok`
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -548,6 +550,16 @@ proc parseExplanation(d: DiagCode): string =
     "type, a construction (`{...} cli::Entry`) or a variant (`cli::Entry.X`). " &
     "A module that declares the name itself means its own by the bare name, " &
     "and one import alone providing it is not ambiguous."
+  of dcTyArithOnSeq:
+    "`+ - * %` work on numbers. A `Seq` or `Array` is not a number, and " &
+    "Tuck has no sequence concatenation, so `a + b` has no spelling on any " &
+    "backend (A108). Fix: build the result with `push` in a loop, or use the " &
+    "`seq` module's verbs."
+  of dcTyNotOnOptional:
+    "`not` takes a bool. A `T?` or `!T` is not one: `not maybe` reads as " &
+    "\"is absent\" but is a type error on every backend (A107). Presence " &
+    "is tested with `.ok`, as for a bare `let`. Fix: `not x.ok`, or bind " &
+    "the result first (`let m = ...`) and guard it."
   of dcTyGuardNotAlone:
     "A condition that tests `.ok` of a `T?` or `!T` is that test alone: " &
     "`if r.ok:` or `if not r.ok:` (an `elif` and a conditional `for` the " &

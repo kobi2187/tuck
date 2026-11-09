@@ -5134,7 +5134,7 @@ fn put({self: Wire, n: int}) -> Wire:
   return {sent: self.sent + n * 10} Wire
 """
   t.quietly: t.runs "A105: two imported satisfiers named alike each keep their group", 40
-  t.bugOpen "A105: two imported satisfiers named alike each keep their group"
+  t.bugFixed "A105: two imported satisfiers named alike each keep their group"
 
   # A106 (found building std.chrono's zones): a tail `match` whose arms are
   # themselves `match`es that return in every arm was wrapped in `return (...)`
@@ -5187,7 +5187,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.badCheck "A107: an optional is not a condition", "\\.ok"
-  t.bugOpen "A107: an optional is not a condition"
+  t.bugFixed "A107: an optional is not a condition"
 
   # A108: `Seq + Seq` passes the checker, and every backend refuses the emitted
   # code. Until Seq concatenation exists the checker should refuse the `+`.
@@ -5199,7 +5199,7 @@ fn main() -> int:
   return c.len
 """
   t.quietly: t.badCheck "A108: + on two Seqs is refused", "TK-TY"
-  t.bugOpen "A108: + on two Seqs is refused"
+  t.bugFixed "A108: + on two Seqs is refused"
 
   # A109 (found building std.encoding's TOML): `return {n: k} Sh.A` from a fn
   # declared `-> Sh?` wrapped the bare variant struct, so the Odin result was a
@@ -5261,7 +5261,7 @@ fn main() -> int:
   return xs.len
 """
   t.quietly: t.runsOdin "A110: a field moved out of a match on an optional's value", 1
-  t.bugOpen "A110: a field moved out of a match on an optional's value"
+  t.bugFixed "A110: a field moved out of a match on an optional's value"
 
   # A111: the Odin `match` bound the payload as `v`, which silently shadowed a
   # PARAMETER named `v`: `return v` returned the matched value's payload.
@@ -5316,6 +5316,6 @@ fn useIt() -> int:
   return grab
 """
   t.quietly: t.okCheck "A112: a module's names mean what its own imports say"
-  t.bugOpen "A112: a module's names mean what its own imports say"
+  t.bugFixed "A112: a module's names mean what its own imports say"
 
   t.finish()

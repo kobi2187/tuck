@@ -599,7 +599,13 @@ proc genPayloadUnionMatch(ctx: var OdinCodegenCtx, e: Expr,
   # In the reserved `tuckˑ` space: a parameter is printed under its own name, so
   # a binding called `v` would silently shadow a parameter called `v` (A111).
   let bindName = "tuckˑm" & $ctx.unionBinds.len
-  let subjectName = if e.subject != nil and e.subject.kind == exkVar: e.subject.name else: ""
+  # A field subject (`match s.value:`) is remembered by its printed text, so a
+  # payload field read or MOVED inside an arm goes through the binding: Odin
+  # cannot assign through `s.value.(T).items` (A110).
+  let subjectName = if e.subject == nil: ""
+                    elif e.subject.kind == exkVar: e.subject.name
+                    elif e.subject.kind == exkField: subjectStr
+                    else: ""
   ctx.unionBinds.add((subject: subjectName, bound: bindName))
   ctx.indent += 1
   for arm in e.arms:
@@ -939,17 +945,19 @@ proc genIfaceCall(ctx: var OdinCodegenCtx, e: Expr): string =
   "(proc(" & params.join(", ") & ")" & sig & " {\n\tswitch v.tag {\n" &
     arms.join("\n") & "\n\t}\n" & tail & "})(" & values.join(", ") & ")"
 
-proc boundVariantField(ctx: OdinCodegenCtx, e: Expr): string =
+proc boundVariantField(ctx: var OdinCodegenCtx, e: Expr): string =
   ## Inside `switch v in value`, a payload field belongs to the BOUND
   ## variant, not to the subject — Odin's union has no discriminant field to
   ## reach past. "" when this is not that situation.
   if ctx.unionBinds.len == 0 or e.receiver == nil or
-     e.receiver.kind != exkVar: return ""
+     e.receiver.kind notin {exkVar, exkField}: return ""
   if payloadSumTypeName(ctx.module, ctx.res.typeFor(e.receiver)) == "":
     return ""
+  let named = if e.receiver.kind == exkVar: e.receiver.name
+              else: ctx.genOdinExpr(e.receiver)
   for i in countdown(ctx.unionBinds.high, 0):
     let (subject, bound) = ctx.unionBinds[i]
-    if subject == "" or subject == e.receiver.name:
+    if subject == named or (subject == "" and e.receiver.kind == exkVar):
       return bound & "." & e.fieldName
   ""
 
