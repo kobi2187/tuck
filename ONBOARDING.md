@@ -159,15 +159,18 @@ fn main() -> int [io]:
 * **Mutation.** `..name` on a `var` either sets a field or calls a mutator fn
   (first parameter is the receiver's type, returns that type, result reassigned):
   `server ..withDefaults ..port {8080}` (`examples/02-builder-mutation.tuck`).
-  For Seqs the verified spelling is `xs = {items: xs, value: 7} push`. A range
-  is spaced: `0 .. n` (inclusive; use `n - 1` for an upper bound).
+  For Seqs the spelling that compiles on the committed compiler is
+  `xs = {items: xs, value: 7} push`. The owner's intended idiom is the method
+  form, `xs ..push {7}` (receiver fills `items`, the bare payload fills
+  `value`); the checker does not accept it on the committed compiler yet, so
+  do not write it until it does. A range is spaced: `0 .. n` (inclusive; use `n - 1` for an upper bound).
 * **Optional / fallible.** `.ok` guards, then `.value`; `.err` for the error.
   There is no `?` propagation: re-raise with `err r.err`. A fallible fn is
   `[io]`. `not <optional>` is an error (TK-TY49): write `not x.ok`.
 * **Seq.** `Seq[T]` grows with the verbs in `import seq` (`push`, `pop`...); `a + b` on
   Seqs is refused (TK-TY48). An empty `[]` needs a typed binding (TK-TY20).
 * **Effects are declared, not inferred**, at every level: `[io]`, `[io: net]`,
-  `[pure]` and other restrictions The compiler tells you the exact marker to add (TK-EF01) or remove
+  `[pure]` and other restrictions. The compiler tells you the exact marker to add (TK-EF01) or remove
   (TK-EF02).
 * **No `try`, no destructors, no stored pointers, no `ref`.** Handles to
   foreign resources are small integers kept in shim-owned tables.
