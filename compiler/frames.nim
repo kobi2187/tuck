@@ -37,6 +37,10 @@ type
     pkSend        ## send into an `on_full: wait` actor
     pkAwait       ## a binding that awaits a task
     pkActorWait   ## Actor.waitUntil / .alive / .pingUs
+    pkOpaque      ## an [io] call resolved only at run time (a group
+                  ## requirement, a fnsig value): it may wait, unseen
+    pkHelperCall  ## a call to a GENERIC fn that may wait: no frame (its
+                  ## frame type would be generic), so it runs on a helper
 
   PauseSite* = object
     kind*: PauseKind
@@ -71,6 +75,9 @@ type
     nativeIo*: seq[string]   ## [io] fns a root reaches that never pause
     nativeRoots*: seq[string] ## handlers and select arms that never pause:
                               ## the actor loop calls them, no frame needed
+    helpers*: seq[string]    ## their labels, for the report
+    helperIds*: HashSet[NodeId] ## generic fns that may wait: never frames;
+                                ## a call to one runs on a helper stack
     frameIds*: HashSet[NodeId] ## the frame decls (tasks and fns), by id:
                                ## what codegen reads under stackless
 
@@ -134,12 +141,14 @@ proc collect(a: var Analysis, prog: seq[LoadedModule]) =
 
 # --- the calls in one body ---------------------------------------------------
 
-proc callOf(res: Resolution, n: Expr): Expr =
+proc callOf*(res: Resolution, n: Expr): Expr =
   ## The call a node stands for: an exkCall, or a bare nullary name the
-  ## checker stamped with one (spec 2.3).
-  if n.kind == exkCall: n
-  elif res.hasCall(n): res.call(n)
-  else: nil
+  ## checker stamped with one (spec 2.3). What the checker stamped may be a
+  ## pool or slab operation rather than a call: that is no call here.
+  let c = if n.kind == exkCall: n
+          elif res.hasCall(n): res.call(n)
+          else: nil
+  if c != nil and c.kind == exkCall: c else: nil
 
 proc scanCalls(a: var Analysis, i: int) =
   var calls: seq[(Expr, Decl)]
@@ -168,14 +177,30 @@ proc taskCallSite(a: Analysis, i: int, c: Expr): seq[PauseSite] =
   ## A task call pauses only when a binding awaits it: a spawn enqueues.
   if c in a.awaited[i]: result.add site(pkAwait, c, callKey(c.callee))
 
+proc isGeneric(d: Decl): bool = d != nil and d.kind == dkFn and d.fnGenerics.len > 0
+
+proc isUnseen*(d: Decl): bool =
+  ## Is what this call runs invisible here? Nothing resolved, or a
+  ## declaration with no body that is no extern: an interface or group
+  ## member, whose implementation is chosen at run time or instantiation.
+  d == nil or (d.kind in {dkFn, dkTask} and d.fnBody == nil and not d.isExtern)
+
 proc callSite(a: Analysis, i: int, c: Expr, callee: Decl): seq[PauseSite] =
   ## The pause one call makes, if any (see the rules at the top).
   let name = callKey(c.callee)
   if callee != nil and callee.kind == dkTask: return a.taskCallSite(i, c)
   if a.bodies[i].role == frTask and a.res.isAsync(c):
     result.add site(pkYieldCall, c, name)
-  elif a.calleeBodyPauses(callee): result.add site(pkFrameCall, c, name)
+  elif a.bodies[i].decl.isGeneric and a.res.isAsync(c) and not callee.isIoExtern:
+    # A generic body's call edges are not to be trusted: a call through a
+    # group requirement (`{self: s} pull` with `s: S`) runs whichever
+    # implementation the instantiation picks, not the one the checker saw.
+    # Any [io] call in one may wait; the fn runs whole on a helper anyway.
+    result.add site(pkOpaque, c, name)
+  elif a.calleeBodyPauses(callee):
+    result.add site((if callee.isGeneric: pkHelperCall else: pkFrameCall), c, name)
   elif callee.isIoExtern: result.add site(pkExtern, c, name)
+  elif callee.isUnseen and a.res.isAsync(c): result.add site(pkOpaque, c, name)
 
 proc sendPauses(a: Analysis, n: Expr): bool =
   n.sendActor in a.actors and actorOnFull(a.actors[n.sendActor]) == ofWait
@@ -236,7 +261,10 @@ proc isNativeIo(a: Analysis, i: int): bool =
 proc place(a: Analysis, plan: var FramePlan, i: int) =
   ## File one reachable body under frames, native handlers or native [io].
   let b = a.bodies[i]
-  if b.role == frTask or a.pauses.getOrDefault(i):
+  if b.decl.isGeneric and a.pauses.getOrDefault(i):
+    plan.helperIds.incl b.decl.id
+    plan.helpers.add b.label
+  elif b.role == frTask or a.pauses.getOrDefault(i):
     if b.decl != nil: plan.frameIds.incl b.decl.id
     plan.frames.add Frame(label: b.label, module: b.module, line: b.line,
                           role: b.role, pauses: a.sitesOf(i))
@@ -265,6 +293,8 @@ proc describe(p: PauseSite): string =
   of pkSend: "send " & p.what & " (waits when full)"
   of pkAwait: "await task " & p.what
   of pkActorWait: p.what
+  of pkOpaque: "call " & p.what & " (resolved at run time, may wait)"
+  of pkHelperCall: "call " & p.what & " (generic, on a helper stack)"
 
 proc renderFrame(f: Frame): string =
   result = "frame " & $f.role & " " & f.label & "  (" & f.module & ":" & $f.line & ")\n"
@@ -275,6 +305,8 @@ proc renderFrame(f: Frame): string =
 proc render*(plan: FramePlan): string =
   ## The `tuck frames` report: one block per frame, then what stays native.
   for f in plan.frames: result.add renderFrame(f)
+  if plan.helpers.len > 0:
+    result.add "generic, may wait (called on a helper stack): " & plan.helpers.join(", ") & "\n"
   if plan.nativeRoots.len > 0:
     result.add "native handlers, never pause: " & plan.nativeRoots.join(", ") & "\n"
   if plan.nativeIo.len > 0:

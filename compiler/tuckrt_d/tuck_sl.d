@@ -34,15 +34,15 @@ struct TuckSlot(T)
     TuckFrameHdr* waiter;
 }
 
-private __gshared TuckFrameHdr* slHead, slTail;
+private TuckFrameHdr* slHead, slTail;   // thread-local (D's default), as tuck_sl.nim says
 
 /// How many drivers are running stages on this thread: a blocking wait made
 /// inside a stage (tuckLendUntil) checks it, see tuckSlCannotPark.
-__gshared int tuckSlDriving;
+int tuckSlDriving;
 
 void tuckSlCannotPark()
 {
-    stderr.writeln("tuck: a stackless task waited on I/O or a timer; parking a frame arrives in #216 phase 4 (build with --concurrency:stackful for now)");
+    stderr.writeln("tuck: a stackless stage waited inside the runtime outside a helper stack (#216); build with --concurrency:stackful and report it");
     stderr.flush();
     exit(70);
 }

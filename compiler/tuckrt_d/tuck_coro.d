@@ -1252,7 +1252,7 @@ private struct TuckSlWorker
     bool done, parked;
 }
 
-private __gshared TuckSlWorker*[] slIdleWorkers;
+private TuckSlWorker*[] slIdleWorkers;   // thread-local, as the frames
 
 TuckHop tuckSlOnStack(TuckFrameHdr* f, TuckStageFn next, void function(void*) body)
 {

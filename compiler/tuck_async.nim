@@ -104,7 +104,7 @@ type
     frame: ptr TuckFrameHdr
     done, parked: bool
 
-var slIdleWorkers: seq[ptr TuckSlWorker]
+var slIdleWorkers {.threadvar.}: seq[ptr TuckSlWorker]   ## per thread, as the frames
 
 proc newSlWorker(): ptr TuckSlWorker =
   let w = create(TuckSlWorker)

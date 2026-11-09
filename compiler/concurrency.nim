@@ -24,6 +24,9 @@ type
     cmStackless = "stackless"
 
 var concurrencyMode* = cmStackful
+var helperDecls*: HashSet[NodeId]
+  ## Under stackless: generic fns that may wait. Never frames (a frame type
+  ## would be generic); a call to one runs on a helper stack.
 var frameDecls*: HashSet[NodeId]
   ## Under stackless: the ids of the decls that are frames (tasks, and fns a
   ## root reaches that can pause).

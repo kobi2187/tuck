@@ -879,7 +879,12 @@ proc genDCopy(ctx: var DCodegenCtx, e: Expr): string =
   case e.copyKind
   of cpSeq: "rt.tuckDupSeq(" & valStr & ")"
   of cpDeep: "rt.tuckCopy(" & valStr & ")"
-  of cpStatic: "(" & valStr & ").idup"     # a str's own bytes, to drop
+  of cpStatic:                             # a str's own bytes, to drop
+    # In a stackless stage (#216) a bare field inside `with (*tuckF)` must
+    # not be parenthesised: D resolves `(x).idup` as a static member access
+    # ("requires an instance"), while `x.idup` finds the field.
+    if ctx.frameVar != "" and e.copied.kind == exkVar: valStr & ".idup"
+    else: "(" & valStr & ").idup"
 
 proc callOwnerModule(ctx: DCodegenCtx, e: Expr): ModuleId =
   ## The imported module a call resolves into, or NoModule for a local one. A

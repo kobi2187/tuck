@@ -47,6 +47,7 @@ import concurrency   # --concurrency:stackless spawn/await sites (#216)
 
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
 proc genStacklessSpawn(ctx: var OdinCodegenCtx, e: Expr): string
+proc genOdinDiscard(ctx: var OdinCodegenCtx, e: Expr): string
 
 
 # Type-directed explosion: a record-typed VAR as the whole payload
@@ -439,6 +440,10 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
     args[0] = "&" & args[0]
   let emitted = ctx.genCallWithArgs(e, calleeStr, args)
   if emitted != "": return emitted
+  # Stackless (#216): a task call reached here is never bound, so it spawns
+  # a frame — with arguments or without (a frame holds them, nothing captures).
+  if concurrencyMode == cmStackless and ctx.index.isTaskName(calleeStr):
+    return ctx.genStacklessSpawn(e)
   if ctx.index.isTaskName(calleeStr) and args.len == 0:
     # Calling a task SCHEDULES it as a coroutine — it runs concurrently and
     # tuckRun drives it (spec §9.2). Mirrors the Nim backend, which has always
@@ -456,7 +461,6 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
     # designed, not guessed. Until then a task with arguments still emits a
     # direct call, which is wrong the moment it awaits; see
     # thoughts/bugs-found-while-building-net.md.
-    if concurrencyMode == cmStackless: return ctx.genStacklessSpawn(e)
     return "rt.tuckSpawn(proc() { " & calleeStr & "() })"
   # A call that may take its first argument destructively, in ANY position —
   # the assignment emitters catch their own two shapes upstream of here, and
@@ -1276,6 +1280,14 @@ proc genStacklessBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
     slotVar & ", nil" & (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr)\n" &
   ind & ctx.genOdinExpr(e.target) & assignOp & "rt.tuckSlAwaitMain(&" & slotVar & ")"
 
+proc genOdinDiscard(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `discard x`: Odin's own value-drop is `_ = x`. A spawned stackless task
+  ## (#216) is no value: the spawn already drops what nobody awaits.
+  let v = e.discardVal
+  if v == nil: return ""
+  let code = ctx.genOdinExpr(v)
+  if code.startsWith("rt.tuckSlReady("): code else: "_ = " & code
+
 proc genStacklessSpawn(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A task call nobody binds, under stackless: a frame with nowhere for its
   ## result, queued.
@@ -1805,8 +1817,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
     # Odin has no `discard` keyword; `_ = expr` is its own native value-drop
     # (same construct Go uses). A bare `discard` has nothing to drop, so it
     # emits nothing — genStmt already skips an empty statement cleanly.
-    if e.discardVal != nil: "_ = " & ctx.genOdinExpr(e.discardVal)
-    else: ""
+    ctx.genOdinDiscard(e)
   of exkTripleDot: ""   # `...` outside a fn body: a no-op statement
   of exkChain:
     raiseAssert "codegen_odin: a `..` chain reached the emitter; " &

@@ -396,6 +396,7 @@ tuckTrackCheck :: proc() {
 	// import, so the generated header carries `core:os` only when the program
 	// itself needed it — and a `fn main() -> void` does not. Emitting
 	// `os.exit(90)` made every such program fail to compile.
+	tuckSlReleaseWorkers() // pooled helper stacks are not leaks (#216)
 	if tuckTrackReport() > 0 { os.exit(90) }
 }
 

@@ -1058,6 +1058,14 @@ when isMainModule:
       optExplicit = true
     optPasses = optPasses + ps
   # `--concurrency:MODE` — how tasks pause (compiler/concurrency.nim).
+  # TUCK_CONCURRENCY sets the default, so a whole test suite can be re-run
+  # under the other mode without touching any build line (#216); a flag on
+  # the command line still wins.
+  if getEnv("TUCK_CONCURRENCY") != "":
+    let (m, ok) = parseConcurrencyMode(getEnv("TUCK_CONCURRENCY"))
+    if not ok: die("tuck: TUCK_CONCURRENCY: no such concurrency mode: '" &
+                   getEnv("TUCK_CONCURRENCY") & "'\n  available: stackful, stackless")
+    concurrencyMode = m
   for o in opts:
     if not o.startsWith("--concurrency:"): continue
     let name = o["--concurrency:".len .. ^1]
@@ -1346,7 +1354,9 @@ when isMainModule:
     # call edges, so it runs BEFORE mangling; codegen reads it by decl id,
     # which every backend's deep copy keeps.
     if concurrencyMode == cmStackless:
-      frameDecls = planFrames(semLayer, prog).frameIds
+      let plan = planFrames(semLayer, prog)
+      frameDecls = plan.frameIds
+      helperDecls = plan.helperIds
     block:
       let t0 = vBegin(psMangle)
       mangleProgram(semLayer, progMods)

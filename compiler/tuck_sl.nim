@@ -39,7 +39,9 @@ type
 const tuckNoStep* = TuckHop()
 
 # --- the ready list: an intrusive FIFO ------------------------------------------
-var slHead, slTail: ptr TuckFrameHdr
+var slHead {.threadvar.}, slTail {.threadvar.}: ptr TuckFrameHdr
+  ## Per THREAD: a thread-mode actor's handler that spawns a task queues its
+  ## frame on the actor's own thread, never on main's.
 
 proc tuckSlReady*(f: ptr TuckFrameHdr) {.inline.} =
   ## Queue `f` to run its `stage` when the frames ahead of it have had theirs.
@@ -52,8 +54,8 @@ var tuckSlDriving* {.threadvar.}: int
   ## made inside a stage (`tuckLendUntil`) checks it: see tuckSlCannotPark.
 
 proc tuckSlCannotPark*() {.noreturn.} =
-  stderr.writeLine "tuck: a stackless task waited on I/O or a timer; parking a " &
-    "frame arrives in #216 phase 4 (build with --concurrency:stackful for now)"
+  stderr.writeLine "tuck: a stackless stage waited inside the runtime outside a " &
+    "helper stack (#216); build with --concurrency:stackful and report it"
   quit 70
 
 proc tuckSlDrive*(h: TuckHop) {.inline.} =

@@ -1078,8 +1078,8 @@ TuckSlWorker :: struct {
 	parked: bool,
 }
 
-@(private) slIdleWorkers: [dynamic]^TuckSlWorker
-@(private) slStartingWorker: ^TuckSlWorker
+@(private, thread_local) slIdleWorkers: [dynamic]^TuckSlWorker
+@(private, thread_local) slStartingWorker: ^TuckSlWorker
 
 @(private)
 slWorkerMain :: proc() {
@@ -1111,4 +1111,15 @@ tuckSlOnStack :: proc(f: ^TuckFrameHdr, next: TuckStageFn, body: proc(env: rawpt
 	if w.done do return TuckHop{next, f}
 	w.parked = true
 	return TuckHop{}
+}
+
+// The idle workers, freed: called before the exit-time leak report, which
+// would otherwise count every pooled helper stack as a leak.
+tuckSlReleaseWorkers :: proc() {
+	for w in slIdleWorkers {
+		destroyCoroutine(w.co)
+		free(w)
+	}
+	delete(slIdleWorkers)
+	slIdleWorkers = nil
 }

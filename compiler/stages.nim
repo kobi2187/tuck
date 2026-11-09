@@ -42,6 +42,7 @@
 # is refused by name.
 import std/[tables, sets, strutils, hashes]
 import ast, ast_ops, ast_query, resolution, concurrency
+import frames   # callOf: the one answer to "which call is this node"
 from typecheck_util import typeName
 
 type
@@ -129,10 +130,7 @@ proc hash*(e: Expr): Hash = hash(cast[pointer](e))
 
 # --- what a node is ------------------------------------------------------------
 
-proc callOf(sp: Splitter, n: Expr): Expr =
-  if n.kind == exkCall: n
-  elif sp.res.hasCall(n): sp.res.call(n)
-  else: nil
+proc callOf(sp: Splitter, n: Expr): Expr = frames.callOf(sp.res, n)
 
 proc frameCallee(sp: Splitter, c: Expr): Decl =
   ## The frame decl a call reaches when the call pauses on it: a frame fn,
@@ -169,7 +167,13 @@ proc parksAt(sp: Splitter, n: Expr): bool =
   of exkField: n.receiver != nil and n.receiver.kind == exkActorRef and n.fieldName in ActorWaits
   else:
     let c = sp.callOf(n)
-    c != nil and calleeDecl(sp.res, sp.m, c).isIoExtern
+    if c == nil: return false
+    let callee = calleeDecl(sp.res, sp.m, c)
+    # an [io] extern; a generic fn that may wait (no frame of its own); or an
+    # [io] call resolved only at run time — a group requirement, a fnsig
+    # value — whose waiting nothing here can see
+    callee.isIoExtern or (callee != nil and callee.id.isSet and callee.id in helperDecls) or
+      (callee.isUnseen and sp.res.isAsync(c))
 
 proc isCut(sp: Splitter, n: Expr): bool =
   ## A pause that must end a stage of this frame: a frame call or an await.

@@ -31,15 +31,15 @@ TuckSlot :: struct($T: typeid) {
 	waiter: ^TuckFrameHdr,
 }
 
-@(private)
-slHead, slTail: ^TuckFrameHdr
+@(private, thread_local)
+slHead, slTail: ^TuckFrameHdr // per thread, as tuck_sl.nim says
 
 // How many drivers are running stages on this thread: a blocking wait made
 // inside a stage (tuckLendUntil) checks it, see tuckSlCannotPark.
-tuckSlDriving: int
+@(thread_local) tuckSlDriving: int
 
 tuckSlCannotPark :: proc() -> ! {
-	fmt.eprintln("tuck: a stackless task waited on I/O or a timer; parking a frame arrives in #216 phase 4 (build with --concurrency:stackful for now)")
+	fmt.eprintln("tuck: a stackless stage waited inside the runtime outside a helper stack (#216); build with --concurrency:stackful and report it")
 	os.exit(70)
 }
 
