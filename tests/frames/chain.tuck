@@ -1,0 +1,29 @@
+# A frame is any fn a root reaches that can pause. `outer` pauses only
+# because `inner` does; `plus` and `quiet` stay native.
+extern:
+  fn sleepMs({ms: int}) [io]
+
+fn inner({ms: int}) [io]:
+  {ms: ms} sleepMs
+
+fn outer({ms: int}) [io]:
+  {ms: ms} inner
+
+fn quiet({n: int}) -> {v: int} [io]:
+  return {v: n}
+
+fn plus({n: int}) -> int:
+  return n + 1
+
+fn notReached() [io]:
+  {ms: 1} sleepMs
+
+task run({ms: int}) -> {r: int} [io]:
+  {ms: ms} outer
+  let q = {n: ms} quiet
+  let p = {n: q.v} plus
+  return {r: p}
+
+fn main() -> int [io]:
+  let r = {ms: 1} run
+  return r.r - 2

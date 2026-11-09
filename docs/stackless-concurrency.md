@@ -1,7 +1,9 @@
 # Stackless concurrency (#216)
 
-Status: **design, with a measured spike** (`research/stackless/`). Nothing in
-the compiler is built yet.
+Status: **design, with a measured spike** (`research/stackless/`). Phase 1,
+the colouring, is built: `tuck frames f.tuck` prints it
+(`compiler/frames.nim`, pinned by `tests/suites/frames.nim`). Nothing is
+rewritten yet.
 
 ## The owner's rulings (2026-11-09)
 
@@ -111,8 +113,8 @@ output is byte-identical.
     if the callee parks, the way today a park deep inside a call suspends
     the coroutine.
 * **A frame fn called from a non-frame fn** (from `main`, or from a native
-  fn) gets a native stub. The stub allocates the root frame (on the stack,
-  see "Memory") and runs the scheduler until the frame finishes: today's
+  fn) gets a native stub. The stub allocates the root frame (from the heap
+  for now; on the stack once #219 lands) and runs the scheduler until the frame finishes: today's
   A94 rule, unchanged.
 * **Later refinement, after measuring:** stagelane's purity. An `[io]` fn
   whose `[io]` calls reach no parking extern (a fn that only prints) stays
@@ -154,25 +156,16 @@ style of stagelane's `lower*`:
 
 ### 4. Memory
 
-The strategy is picked per frame type, at compile time:
-
-| strategy | when | cost |
-|---|---|---|
-| **stack** | the root frame of a native stub (a frame fn called from `main` or a native fn): it cannot outlive the stub | none |
-| **static slab** | every actor's handler chain: an actor is a singleton and handles one message at a time, so at most one chain is live per actor. When the frame-fn call graph below its handlers has no recursion, the chain's size is a compile-time sum | none, and no heap |
-| **heap + per-type freelist** | everything else: tasks (spawn count is unbounded) and recursive chains | ~30 ns spawn, measured |
-
-The embedded story:
-* **Programs with only actors** (no tasks) can run with **no heap** for
-  concurrency.
-* **Tasks** need a bound before they can leave the heap. The likely form is
-  a `[max: N]` on the task, sized like an actor's `[queue: N]`, possibly
-  reusing `pool` from spec §7.2.
-* **A no-heap build** (a `--no-heap` style flag) would refuse to compile
-  any frame type that falls back to the heap, naming that frame type.
-
-Whether the slab and stack paths are worth having on hosted targets is
-measured in Phase 6, not assumed.
+**Heap first** (ruled 2026-11-09): every frame comes from the heap and is
+reused through a per-type freelist (~30 ns per spawn, measured). Other
+strategies wait until the heap version reaches parity, and are tracked in
+**#219**:
+* **Stack:** the root frame of a native stub.
+* **Static slab:** an actor's handler chain, which is non-recursive and so
+  has a size known at compile time.
+* **Bounded task slabs:** tasks with a declared bound.
+* **An embedded flag:** refuses any frame type that would fall back to the
+  heap.
 
 ### 5. Function values
 
@@ -206,12 +199,12 @@ in scope here.
 | phase | work | done when |
 |---|---|---|
 | 0 | spike | **done**: `research/stackless/` |
-| 1 | colouring pass and a dump (`tuck ch --frames`: frame fns, pause sites, frame fields) | a suite pins the colouring of examples 14/28/29/30/42 and of the actor examples |
+| 1 | colouring pass and a dump (`tuck frames`: frame fns and pause sites; frame fields move to phase 2, where liveness is computed for the split) | **done**: `tests/suites/frames.nim` pins examples 14/28/29/30/42/26/27 and one program per rule in `tests/frames/` |
 | 2 | flag, splitting of straight-line code, `if`/`match`, the call protocol; tasks; Nim backend | examples 14 and 28 run identically under both flags |
 | 3 | loops, `break`/`continue`, `defer`; Odin and D emitters, checking the `Hop` two-register return on their ABIs | the same, on all three backends |
 | 4 | runtime parity: reactor, timers, `on select`, offload, waiting sends, `waitUntil` | examples 29, 30, 42 and the net suites pass under both flags |
 | 5 | actors in all three `--actors:` modes, urgent mailboxes, `alive`/`pingUs` | `mailbox_full`, `actor_heartbeat`, Savina and the actor examples pass under both flags |
-| 6 | static slabs for actor chains, stack root frames; measurements | numbers in `benches/SCORES.md`; a no-heap actor-only program builds |
+| 6 | (#219) static slabs for actor chains, stack root frames, embedded flag; measurements | numbers in `benches/SCORES.md`; a no-heap actor-only program builds |
 | 7 | differential run: every concurrency suite under both flags in CI | equal results; the owner decides whether to change the default |
 
 **Tests:** the concurrency suites run in both modes as parameters, in the

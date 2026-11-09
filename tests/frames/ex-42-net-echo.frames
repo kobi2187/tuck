@@ -1,0 +1,14 @@
+frame task serve  (42-net-echo:15)
+  16:21  yield, then call net::accept
+  22:32  yield, then call net::recv
+  23:36  yield, then call net::send
+  24:22  yield, then call net::close
+frame task client  (42-net-echo:27)
+  28:43  yield, then call net::connect
+  30:36  yield, then call net::send
+  31:40  yield, then call net::recv
+  32:22  yield, then call net::close
+  35:16  send Result.put (waits when full)
+  37:12  send Result.put (waits when full)
+  39:10  send Result.put (waits when full)
+native handlers, never pause: Result.put

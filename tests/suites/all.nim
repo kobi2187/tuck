@@ -27,6 +27,7 @@ import end_to_end
 import examples
 import extern_impl
 import fn_size
+import frames
 import frontend
 import fuzz_corpus
 import generics
@@ -100,6 +101,7 @@ let registry: seq[Entry] = @[
   ("examples",            SuiteProc(examples.run),            true),
   ("extern_impl",         SuiteProc(extern_impl.run),         false),
   ("fn_size",             SuiteProc(fn_size.run),             true),
+  ("frames",              SuiteProc(frames.run),              true),
   ("frontend",            SuiteProc(frontend.run),            true),
   ("fuzz_corpus",         SuiteProc(fuzz_corpus.run),         true),
   ("generics",            SuiteProc(generics.run),            false),

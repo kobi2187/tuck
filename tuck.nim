@@ -77,6 +77,7 @@ import compiler/resource_leaks
 import compiler/import_renames  # `tuck effects --manifest` (#63)
 import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
+import compiler/frames   # `tuck frames`: the stackless colouring (#216)
 import compiler/actor_mode
 import compiler/pipeline
 import compiler/proptest
@@ -214,6 +215,15 @@ called with generated arguments (default 200 cases, seeded and
 repeatable); the invariant is the property. Every failing call is
 printed and written to FILE (default property-failures.txt) as a Tuck
 call with its literals. A folder is scanned file by file.""",
+  "frames": """tuck frames file.tuck
+
+The stackless transform's colouring (#216, docs/stackless-concurrency.md),
+over the whole import closure. Each fn that would become a FRAME is
+printed with its pause sites: a task, a handler or select arm that can
+pause, or a fn one of them reaches that can pause. After them come the
+handlers that never pause (the actor loop calls them, so they need no
+frame) and the [io] fns a root reaches that never pause (they stay native).
+Nothing is rewritten; this is what the transform will start from.""",
   "explain": """tuck explain CODE
 
 Print what a diagnostic code means and how to fix it, e.g.:
@@ -1147,6 +1157,11 @@ when isMainModule:
       for d in lm.m.decls:
         if d == nil or d.kind notin {dkFn, dkTask}: continue
         echo ssa_query.render(ssaOf(semLayer, d, ssChecked).fn)
+  of "frames":
+    # Stackless transform, phase 1 (#216): which fns would become frames and
+    # where each can pause, for the whole import closure.
+    let prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
+    stdout.write render(planFrames(semLayer, prog))
   of "validate", "v":
     # The SPEC grammar's opinion of this file, cross-checked against the
     # parser's. Both run; a disagreement is the output, because a
