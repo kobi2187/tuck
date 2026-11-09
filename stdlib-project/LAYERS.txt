@@ -1,0 +1,22 @@
+# The stdlib is built layer by layer. A module may import only modules of a
+# STRICTLY LOWER layer; `tests/suites/stdlib_layers.nim` enforces it and
+# refuses a module that is not listed here. To add a module: list it one layer
+# above the highest module it imports. An import cycle cannot satisfy this.
+#
+# Layers are by file name (imports are flat), so `math` below means the
+# stdlib-project module. The names the blessed `std/` supplies alone
+# (bits, console, fs, net, scheduler, seq, str, sys, time) are layer 0: the
+# runtime, where externs and shims meet the language.
+#
+#   0  runtime (std/ externs)
+#   1  core: text, conversion, containers, iteration, hardware primitives
+#   2  data and formats: encoding, regex, calendar, math, paths, environment
+#   3  services built on data: crypto, compress, logging, streams, process, sqlite
+#   4  composition: files, sockets, cli, boards and radios
+#   5  clients: http client
+0 bits cmp console fs net scheduler seq str sys time
+1 array boot convert deque error hal hash interrupt iter list mem num power rtos set signal simd string testing text types vec watchdog window
+2 ble chrono db devicetree encoding env fmt http i18n map math path perf queue regex tls x11
+3 advertise archive audio clock compress crypto dsp geom log mmap openssl process random reflect sqlite stream toml zone
+4 alsa board cli files hci socket
+5 client

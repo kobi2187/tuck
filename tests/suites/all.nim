@@ -62,6 +62,7 @@ import slabs
 import ssa
 import ssa_golden
 import std_text
+import stdlib_layers
 import stdlib_project
 import syntax_ceilings
 import task_select
@@ -135,6 +136,7 @@ let registry: seq[Entry] = @[
   ("ssa",                 SuiteProc(ssa.run),                 false),
   ("ssa_golden",          SuiteProc(ssa_golden.run),          false),
   ("std_text",            SuiteProc(std_text.run),            false),
+  ("stdlib_layers",       SuiteProc(stdlib_layers.run),       false),
   ("stdlib_project",      SuiteProc(stdlib_project.run),      false),
   ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     true),
   ("task_select",         SuiteProc(task_select.run),         false),
