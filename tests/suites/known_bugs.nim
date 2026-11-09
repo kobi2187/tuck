@@ -5328,8 +5328,8 @@ import seq
 
 fn main() -> int:
   var xs: Seq[int] = []
-  xs ..push {7}
-  xs ..push {9}
+  xs = xs.push {7}
+  xs = xs.push {9}
   xs = xs.push {value: 1}
   return xs.len + xs[1]
 """

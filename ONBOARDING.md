@@ -156,17 +156,16 @@ fn main() -> int [io]:
   `input`, `task`, `context`, `distinct`, `new`. Rename the parameter/field.
 * **No operators for division or bits.** `/i` integer, `/f` float. Bitwise ops
   are functions in `std/bits`. No `\u` escapes in string literals.
-* **Mutation.** `..name` on a `var` either sets a field or calls a mutator fn
-  (first parameter is the receiver's type, returns that type, result reassigned):
-  `server ..withDefaults ..port {8080}` (`examples/02-builder-mutation.tuck`).
-  For Seqs, `xs ..push {7}` is the idiom (the receiver fills `items`, the bare
-  payload fills `value`); `xs = {items: xs, value: 7} push` is the long form.
-  A single dot, `xs .push {7}`, is a non-mutating call whose result must be
-  used. A range is spaced: `0 .. n` (inclusive; use `n - 1` for an upper bound).
+* **`..` is the fluent builder, not a mutator for operations.** On a `var`
+  record it sets payload fields in a chain:
+  `server ..port {8080} ..timeout {60}` (`examples/02-builder-mutation.tuck`).
+  A range is spaced: `0 .. n` (inclusive; use `n - 1` for an upper bound).
+  Everything else, Seq included, is an ordinary call (below).
 * **Optional / fallible.** `.ok` guards, then `.value`; `.err` for the error.
   There is no `?` propagation: re-raise with `err r.err`. A fallible fn is
   `[io]`. `not <optional>` is an error (TK-TY49): write `not x.ok`.
-* **Seq.** `Seq[T]` grows with the verbs in `import seq` (`push`, `pop`...); `a + b` on
+* **Seq.** operations are ordinary calls from `import seq`. `push` returns the
+  grown Seq: `xs = xs.push {7}` (method form) or `xs = {items: xs, value: 7} push`. `a + b` on
   Seqs is refused (TK-TY48). An empty `[]` needs a typed binding (TK-TY20).
 * **Effects are declared, not inferred**, at every level: `[io]`, `[io: net]`,
   `[pure]` and other restrictions. The compiler tells you the exact marker to add (TK-EF01) or remove
