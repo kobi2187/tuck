@@ -336,8 +336,10 @@ options:
                              (the code between pauses); no stacks at all.
                              Tasks, on all three backends. A statement
                              that waits (I/O, a timer, `on select`, a send)
-                             runs on a pooled helper stack. Actors are
-                             still coroutines (#216 phase 5).
+                             runs on a pooled helper stack. Under
+                             --actors:single, an actor whose handlers wait
+                             only on mailboxes runs as a frame.
+                             TUCK_CONCURRENCY sets the default.
                 See docs/stackless-concurrency.md.
   --batch-count:N     (--actors:batch) flush after N staged sends
   --batch-timeout:MS  (--actors:batch) ...or MS after the first, whichever
@@ -1357,6 +1359,7 @@ when isMainModule:
       let plan = planFrames(semLayer, prog)
       frameDecls = plan.frameIds
       helperDecls = plan.helperIds
+      pureActorDecls = plan.pureActorIds
     block:
       let t0 = vBegin(psMangle)
       mangleProgram(semLayer, progMods)

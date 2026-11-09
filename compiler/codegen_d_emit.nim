@@ -79,7 +79,7 @@ proc dBootSequence*(ctx: DCodegenCtx, m: Module, real: ModuleMap, hasTasks: bool
       # The slot is KEPT: `Actor.waitUntil` names the actor at the call site,
       # so the emitted call needs a handle to hand the predicate to.
       daemons.add("    " & actorSlotName(d.name) &
-                  " = rt.tuckStartActor(&drain_" & d.name & ");\n")
+                  " = rt." & actorStarter(d) & "(&drain_" & d.name & ");\n")
   # Another module's actors start themselves (A18): their drains and slots
   # live in that module.
   let bootMods = actorBootModules(m, real)

@@ -265,8 +265,8 @@ proc bootLines(ctx: OdinCodegenCtx, actorNames: seq[string], hasTasks: bool,
   # The slot is KEPT: `Actor.waitUntil` names the actor at the call site, so
   # the emitted call needs a handle to hand the predicate to.
   for a in actorNames:
-    result.add("\t" & actorSlotName(a) & " = rt.tuckStartActor(drain_" &
-               a & ")\n")
+    result.add("\t" & actorSlotName(a) & " = rt." & actorStarter(ctx.module.findDecl(dkActor, a)) &
+               "(drain_" & a & ")\n")
   # Another module's actors start themselves: their drains and slots live in
   # that package.
   for p in bootPkgs:

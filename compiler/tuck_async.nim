@@ -839,6 +839,9 @@ type
     ## One actor's scheduling state: its drain proc, the lock/condition it
     ## sleeps on (thread mode), its coroutine (single mode), and the predicates
     ## clients are waiting on.
+    frame: TuckFrameHdr ## FIRST, so the slot IS the frame: single mode under
+                        ## stackless runs a pure actor as one (#216), driven
+                        ## by actorFrameStage with no coroutine and no stack
     drain: DrainProc
     lock: Lock
     cond: Cond
@@ -1140,6 +1143,46 @@ proc tuckStartActor*(drain: DrainProc): pointer {.discardable.} =
     createThread(slot.thr, actorMain, slot)
   cast[pointer](slot)
 
+var gFrameActor {.threadvar.}: ptr ActorSlot
+  ## The frame actor mid-pass on this thread, if any: a send it makes into its
+  ## OWN full mailbox would wait forever, and tuckAwaitRoom says so.
+
+proc actorFrameStage(env: pointer): TuckHop {.nimcall.} =
+  ## A pure actor's one stage (stackless, --actors:single, #216): what its
+  ## coroutine's loop body was — drain until empty, answer a ping, mark
+  ## itself un-queued — with no stack switch. A send queues the frame again.
+  ## Pure: its handlers wait only on mailboxes, and a send that finds one
+  ## full pumps the scheduler from here, as `main`'s does, until the
+  ## receiver has made room (tuckAwaitRoom). The actor stays queued
+  ## meanwhile, so nothing runs it a second time.
+  let slot = cast[ptr ActorSlot](env)
+  let outer = gFrameActor
+  gFrameActor = slot
+  while slot.drain(): discard
+  gFrameActor = outer
+  answerProbe(slot)
+  slot.queued = false
+  tuckNoStep
+
+proc tuckStartActorFrame*(drain: DrainProc): pointer {.discardable.} =
+  ## Start an actor none of whose handlers can pause (the colouring decides,
+  ## compiler/frames.nim). Under `--actors:single` it is a FRAME on main's
+  ## scheduler; under thread and batch it is started as any actor, since a
+  ## handler there runs on the actor's own thread, not on a stack of its own.
+  when TuckActorsSingle:
+    if not gSlotsReady:
+      initLock(gSlotsLock)
+      gSlotsReady = true
+    let slot = cast[ptr ActorSlot](allocShared0(sizeof(ActorSlot)))
+    slot.drain = drain
+    slot.frame.stage = actorFrameStage
+    slot.queued = true
+    tuckPush(gActorSlots, slot)
+    tuckSlReady(addr slot.frame)
+    cast[pointer](slot)
+  else:
+    tuckStartActor(drain)
+
 proc wakeSlot(s: ptr ActorSlot) {.inline.} =
   ## Marks the actor pending and signals its condition, so a parked actor
   ## wakes and drains.
@@ -1170,7 +1213,8 @@ proc tuckNotifySend*(handle: pointer) =
     # not the mailbox, would be what grew.
     if slot.queued: return
     slot.queued = true
-    schedule(slot.co)
+    if slot.co != nil: schedule(slot.co)
+    else: tuckSlReady(addr slot.frame)     # a pure actor's frame (#216)
   else:
     if atomicLoadN(addr slot.parked, ATOMIC_ACQUIRE) == 0: return
     wakeSlot(slot)
@@ -1202,7 +1246,7 @@ proc tuckAwaitRoom*(handle: pointer, actor: string) =
     tuckMailboxFull(actor, "the actor was never started, so nothing drains it")
   let slot = cast[ptr ActorSlot](handle)
   let selfSend =
-    when TuckActorsSingle: inCoroutine() and running() == slot.co
+    when TuckActorsSingle: (inCoroutine() and running() == slot.co) or gFrameActor == slot
     else: gMySlot == slot
   if selfSend:
     tuckMailboxFull(actor, "it sent to itself, and the actor that would " &

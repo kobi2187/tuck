@@ -20,6 +20,10 @@
 ## `waitUntil`), examples 29 and 30 (`on select` racing a read and a
 ## timeout): each runs on a helper stack and matches the reference.
 ##
+## Phase 5: under --actors:single an actor whose handlers wait only on
+## mailboxes runs as a frame (examples 26 and 27, the two Savina ports,
+## `sends`), the same as the coroutine actor it replaces.
+##
 ## What is not built yet is REFUSED, never run wrong: here, a frame call in
 ## an `if` condition, at compile time with its line.
 import std/[os, strutils]
@@ -40,15 +44,21 @@ proc binary(b: Backend): string =
   of bOdin: "t_odin"
   of bD: "t_d"
 
-proc buildRun(t: var T, mode: string, b = bNim): int =
-  ## Build the current snippet under `--concurrency:<mode>` for backend `b`
-  ## into its own dir and run it; the run's work index.
-  let dir = t.curDir / (mode & $b)
+proc buildDir(t: T, mode: string, b: Backend, extra: seq[string]): string =
+  t.curDir / (mode & $b & extra.join("").replace(":", "_").replace("-", ""))
+
+proc build(t: var T, mode: string, b = bNim, extra: seq[string] = @[]): int =
   var argv = @["./tuck", "b", t.curDir / "t.tuck", "--concurrency:" & mode,
-               "-o:" & dir, "--root:" & t.root]
+               "-o:" & t.buildDir(mode, b, extra), "--root:" & t.root] & extra
   if b != bNim: argv.add $b
-  let build = t.needCmd(argv, vBuild)
-  t.needCmdAfter(@[dir / b.binary], build, proc (d: string) = discard, dir, vRun)
+  t.needCmd(argv, vBuild)
+
+proc buildRun(t: var T, mode: string, b = bNim, extra: seq[string] = @[]): int =
+  ## Build the current snippet under `--concurrency:<mode>` (and `extra`
+  ## flags) for backend `b` into its own dir and run it; the run's index.
+  let dir = t.buildDir(mode, b, extra)
+  t.needCmdAfter(@[dir / b.binary], t.build(mode, b, extra),
+                 proc (d: string) = discard, dir, vRun)
 
 proc toolchains(t: var T): seq[Backend] =
   ## The other backends this machine can build: Odin is required when
@@ -98,6 +108,31 @@ proc flags(t: var T) =
   if rcB != 0 and "available: stackful, stackless" in outB: t.ok "an unknown mode is refused"
   else: t.no "an unknown mode is refused", outB
 
+const ActorPrograms = ["examples/26-actor-run.tuck", "examples/27-actor-select.tuck",
+                       "benches/savina/pingpong.tuck", "benches/savina/threadring.tuck",
+                       "tests/stackless/sends.tuck", "tests/stackless/mixed_actors.tuck"]
+  ## Under --actors:single, an actor whose handlers wait only on mailboxes
+  ## runs as a FRAME under stackless (phase 5): no coroutine, no stack.
+
+proc actorFrames(t: var T) =
+  ## Each actor program the same under --actors:single in both modes, and
+  ## the stackless build really starting a frame actor (not the old path).
+  for p in ActorPrograms:
+    t.src readFile(p)
+    let single = @["--actors:single"]
+    let reference = t.buildRun("stackful", bNim, single)
+    t.same("--actors:single: stackless matches stackful: " & p.extractFilename,
+           reference, t.buildRun("stackless", bNim, single))
+    let dir = t.buildDir("stackless", bNim, single)
+    let framed = t.needCmdAfter(@["grep", "-q", "tuckStartActorFrame", dir / "t.nim"],
+                                t.build("stackless", bNim, single),
+                                proc (d: string) = discard, dir, vBuild)
+    if t.phase == pReport:
+      let name = "--actors:single: a frame actor is started: " & p.extractFilename
+      if t.skippedCmd(framed): t.skip name
+      elif t.resultOf(framed)[0] == 0: t.ok name
+      else: t.no name, "no tuckStartActorFrame in the emitted Nim"
+
 proc run*(t: var T) =
   ## Registers the stackless assertions: each program the same under both
   ## flags, on every backend, and the not-yet-built shapes refused.
@@ -118,5 +153,6 @@ proc run*(t: var T) =
       let label = (if b == bOdin: "Odin" else: "D")
       t.same(label & " stackless matches the Nim reference: " & name,
              reference, t.buildRun("stackless", b))
+  t.actorFrames()
   t.refusedAtCompile()
   t.flags()

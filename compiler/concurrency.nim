@@ -27,6 +27,9 @@ var concurrencyMode* = cmStackful
 var helperDecls*: HashSet[NodeId]
   ## Under stackless: generic fns that may wait. Never frames (a frame type
   ## would be generic); a call to one runs on a helper stack.
+var pureActorDecls*: HashSet[NodeId]
+  ## Under stackless: actors no handler or select arm of which can pause.
+  ## With --actors:single each runs as a frame on main's scheduler.
 var frameDecls*: HashSet[NodeId]
   ## Under stackless: the ids of the decls that are frames (tasks, and fns a
   ## root reaches that can pause).
@@ -46,3 +49,11 @@ proc drainsFrames*(hasTasks: bool): bool =
   ## still run to its end. Kept here so the three entry points add no
   ## branch of their own for it.
   hasTasks and concurrencyMode == cmStackless
+
+proc actorStarter*(d: Decl): string =
+  ## The runtime proc that starts actor `d`: a pure actor under stackless
+  ## starts as a frame (the runtime decides per `--actors:` mode; only
+  ## `single` makes it one), every other as before.
+  if concurrencyMode == cmStackless and d != nil and d.id.isSet and d.id in pureActorDecls:
+    "tuckStartActorFrame"
+  else: "tuckStartActor"

@@ -12,3 +12,4 @@ frame task client  (42-net-echo:27)
   37:12  send Result.put (waits when full)
   39:10  send Result.put (waits when full)
 native handlers, never pause: Result.put
+actors that run as frames under --actors:single (wait only on mailboxes): Result

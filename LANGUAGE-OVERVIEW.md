@@ -776,7 +776,9 @@ on switch semantics.
 > three backends, including pauses inside loops and `match`. A statement
 > that waits inside the runtime (I/O, a timer, `on select`, a send into a
 > full mailbox) runs on a pooled helper stack, so it parks exactly as
-> stackful does. Actors stay coroutines until phase 5. `tuck frames f.tuck` shows which fns become frames. See
+> stackful does. Under `--actors:single`, an actor whose handlers wait only
+> on mailboxes runs as a frame. One with an `[io]` call in a handler keeps
+> its coroutine. `tuck frames f.tuck` shows which fns become frames. See
 > `docs/stackless-concurrency.md`.
 
 ### Actors — global singletons

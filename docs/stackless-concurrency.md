@@ -1,7 +1,12 @@
 # Stackless concurrency (#216)
 
-Status: phases 0–4 are built, apart from liveness for frame fields. Tasks
-run stackless on all three backends, waits included.
+Status: phases 0–5 are built, apart from liveness for frame fields.
+* **Tasks** run stackless on all three backends, waits included.
+* **Actors:** under `--actors:single`, an actor whose handlers wait only on
+  mailboxes runs as a frame.
+* **Whole-suite check:** `TUCK_CONCURRENCY=stackless ./tests/run` re-runs
+  every suite under stackless. Only assertions on stackful-specific emitted
+  text differ.
 * **Phase 0, the spike:** `research/stackless/`.
 * **Phase 1, the colouring:** `tuck frames f.tuck` prints it
   (`compiler/frames.nim`, pinned by `tests/suites/frames.nim`).
@@ -322,6 +327,58 @@ Measured:
 Native hooks for the hottest waits (fd readiness, sleep) remain an option,
 for speed only and only where a measurement shows they would help.
 
+**Phase 5, actors.**
+
+*Which modes change:*
+* **`thread` and `batch`:** these run a handler on the actor's own OS
+  thread, not on a coroutine. A wait there lends that thread, as `main`
+  does. So under stackless they need no new mechanism, only one fix: the
+  frame ready list, worker pool and driver count are now **thread-local**
+  on every backend, because a handler that spawns a task must not race
+  `main` on them.
+* **`single`** (Nim only, the one backend with the modes) is where actors
+  were coroutines, and where phase 5 changes something.
+
+*Frame actors under `--actors:single`:*
+* **Which actors qualify:** the colouring (`frames.nim`, `pureActors`)
+  finds the actors whose handlers and select arms wait **only on
+  mailboxes**: sends, `waitUntil`/`alive`/`pingUs`, directly or through
+  member fns. `tuck frames` lists them.
+* **How one runs:** such an actor starts with `tuckStartActorFrame`. Its
+  slot *is* its frame (the header is the slot's first field), and its one
+  stage is the coroutine's old loop body: drain until empty, answer a ping,
+  mark itself unqueued. A send queues the frame again.
+* **A send into a full mailbox:** it pumps the scheduler from inside the
+  stage, as `main`'s does, until the receiver has made room. The actor
+  stays queued meanwhile, so nothing runs it twice.
+* **A send into its own full mailbox** is still caught: the runtime knows
+  which frame actor is mid-pass.
+* **Actors that keep their coroutine:** any actor with an `[io]` call, a
+  select or a task await in a handler, where the handler needs a stack to
+  park on.
+
+Measured with `--release`, `--actors:single`, wall time for the whole run:
+
+| program | stackful | stackless |
+|---|---|---|
+| `benches/savina/pingpong` | 9 ms | 5 ms |
+| `benches/savina/threadring` | 7–8 ms | 4 ms |
+
+The suite checks each actor program the same in both modes and checks that
+a frame actor really started: examples 26 and 27, both Savina ports,
+`sends`, and `mixed_actors` (a frame actor beside a printing coroutine
+actor).
+
+**What re-running the whole suite under stackless found**, all fixed:
+* `planFrames` crashed on pool and slab operations.
+* The colouring could not see calls through an interface or group member,
+  or inside a generic fn. Such a call may wait, and a generic fn that may
+  wait runs on a helper stack: generic frames would need generic frame
+  types.
+* Odin printed a direct call for an unbound task call with arguments.
+* D mis-resolved `(field).idup` inside `with`.
+* Odin counted pooled helper stacks as leaks.
+
 Not built yet, and **refused rather than run wrong:**
 * **At compile time:** each of these is refused with its line:
   * a pause inside `defer`;
@@ -344,7 +401,7 @@ Not built yet, and **refused rather than run wrong:**
 | 2 | flag, splitting of straight-line code and `if`, the call protocol, `defer`; tasks; Nim backend | **done**: `tests/suites/stackless.nim` runs example 28 and `tests/stackless/{order,values}` under both flags, same exit code and same stdout. A pause inside `match` moved to phase 3; example 14 cannot run in either mode (`http` is pending) |
 | 3 | loops, `break`/`continue`, `match`, liveness for frame fields; Odin and D emitters, checking the `Hop` two-register return on their ABIs | **done**, except liveness: `tests/suites/stackless.nim` runs `order`, `values`, `loops` and example 28 stackless on Nim, Odin and D, each matching the Nim stackful reference. Liveness (fewer frame fields) is a size optimisation, deferred |
 | 4 | runtime parity: reactor, timers, `on select`, offload, waiting sends, `waitUntil` | **done**: statements that wait run on pooled helper stacks. `parks`, `sends` and examples 28/29/30 match the Nim reference on all three backends, and 42 (sockets) was checked by hand |
-| 5 | actors in all three `--actors:` modes, urgent mailboxes, `alive`/`pingUs` | `mailbox_full`, `actor_heartbeat`, Savina and the actor examples pass under both flags |
+| 5 | actors in all three `--actors:` modes, urgent mailboxes, `alive`/`pingUs` | **done**: `thread`/`batch` unchanged (handlers run on actor threads) with thread-local frame state. Under `single`, an actor that waits only on mailboxes runs as a frame. The actor suites pass under `TUCK_CONCURRENCY=stackless` |
 | 6 | (#219) static slabs for actor chains, stack root frames, embedded flag; measurements | numbers in `benches/SCORES.md`; a no-heap actor-only program builds |
 | 7 | differential run: every concurrency suite under both flags in CI | equal results; the owner decides whether to change the default |
 

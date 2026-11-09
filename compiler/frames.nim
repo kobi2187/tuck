@@ -56,6 +56,7 @@ type
   BodyRef = object
     ## One body the analysis walks: a fn or task decl, or a select arm.
     decl: Decl              ## nil for a select arm
+    actor: Decl             ## the actor a handler, arm or member belongs to
     body: Expr
     module: string          ## the declaring module, as `import` names it
     m: Module
@@ -76,6 +77,11 @@ type
     nativeRoots*: seq[string] ## handlers and select arms that never pause:
                               ## the actor loop calls them, no frame needed
     helpers*: seq[string]    ## their labels, for the report
+    frameActors*: seq[string]  ## their names, for the report
+    pureActorIds*: HashSet[NodeId] ## actors whose handlers and select arms
+                                   ## wait only on mailboxes (sends, actor
+                                   ## waits): under stackless and
+                                   ## --actors:single they run as frames
     helperIds*: HashSet[NodeId] ## generic fns that may wait: never frames;
                                 ## a call to one runs on a helper stack
     frameIds*: HashSet[NodeId] ## the frame decls (tasks and fns), by id:
@@ -104,12 +110,12 @@ proc addBody(a: var Analysis, b: BodyRef) =
 
 proc collectArms(a: var Analysis, lm: LoadedModule, actor, sel: Decl) =
   for arm in sel.selectArms:
-    a.addBody BodyRef(body: arm.body, module: lm.name, m: lm.m, role: frArm,
+    a.addBody BodyRef(body: arm.body, actor: actor, module: lm.name, m: lm.m, role: frArm,
                       label: actor.name & ".select | " & arm.source, line: arm.span.line)
 
 proc collectMember(a: var Analysis, lm: LoadedModule, actor, h: Decl) =
   let role = if h.isOnHandler: frHandler else: frFn
-  a.addBody BodyRef(decl: h, body: h.fnBody, module: lm.name, m: lm.m,
+  a.addBody BodyRef(decl: h, actor: actor, body: h.fnBody, module: lm.name, m: lm.m,
                     label: actor.name & "." & h.name, role: role, line: h.span.line)
 
 proc collectActor(a: var Analysis, lm: LoadedModule, d: Decl) =
@@ -271,6 +277,32 @@ proc place(a: Analysis, plan: var FramePlan, i: int) =
   elif b.role in {frHandler, frArm}: plan.nativeRoots.add b.label
   elif a.isNativeIo(i): plan.nativeIo.add b.label
 
+proc mailboxOnly(a: Analysis, i: int, seen: var HashSet[int]): bool =
+  ## Does body i wait only on MAILBOXES — sends, actor waits, or calls to
+  ## bodies that wait only so? A frame actor in --actors:single serves those
+  ## by pumping the scheduler, as `main` does; any other wait (an [io] call,
+  ## a select, a task await) needs a stack to park on.
+  if i in seen: return true
+  seen.incl i
+  for p in a.sitesOf(i):
+    if p.kind notin {pkSend, pkActorWait, pkFrameCall}: return false
+  for (_, callee) in a.calls[i]:
+    if callee != nil and a.byDecl.hasKey(callee):
+      let j = a.byDecl[callee]
+      if a.pauses.getOrDefault(j) and not a.mailboxOnly(j, seen): return false
+  true
+
+proc pureActors(a: Analysis): HashSet[NodeId] =
+  ## The actors whose every root (handler, select arm) waits, if at all,
+  ## only on mailboxes: under stackless and --actors:single, frames.
+  var impure: HashSet[NodeId]
+  for i, b in a.bodies:
+    if b.actor == nil or b.role notin {frHandler, frArm}: continue
+    var seen: HashSet[int]
+    if not a.mailboxOnly(i, seen): impure.incl b.actor.id
+  for _, d in a.actors:
+    if d.id.isSet and d.id notin impure: result.incl d.id
+
 proc planFrames*(res: Resolution, prog: seq[LoadedModule]): FramePlan =
   ## Which fns the stackless transform turns into frames, and their pause
   ## sites. Reads a checked program; changes nothing.
@@ -281,6 +313,10 @@ proc planFrames*(res: Resolution, prog: seq[LoadedModule]): FramePlan =
   let reach = a.reachable()
   for i in 0 ..< a.bodies.len:
     if i in reach: a.place(result, i)
+  result.pureActorIds = a.pureActors()
+  for _, d in a.actors:
+    if d.id in result.pureActorIds: result.frameActors.add d.name
+  result.frameActors.sort()
 
 # --- rendering ---------------------------------------------------------------
 
@@ -311,5 +347,8 @@ proc render*(plan: FramePlan): string =
     result.add "native handlers, never pause: " & plan.nativeRoots.join(", ") & "\n"
   if plan.nativeIo.len > 0:
     result.add "native [io], reached from a root: " & plan.nativeIo.join(", ") & "\n"
+  if plan.frameActors.len > 0:
+    result.add "actors that run as frames under --actors:single (wait only on mailboxes): " &
+               plan.frameActors.join(", ") & "\n"
   if plan.frames.len == 0 and plan.nativeRoots.len == 0:
     result.add "no frames: nothing runs on the scheduler\n"

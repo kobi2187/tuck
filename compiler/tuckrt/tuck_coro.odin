@@ -1123,3 +1123,10 @@ tuckSlReleaseWorkers :: proc() {
 	delete(slIdleWorkers)
 	slIdleWorkers = nil
 }
+
+// A pure actor (no handler can pause, #216): under stackless with
+// --actors:single the Nim runtime runs it as a frame. Odin has thread-per-actor
+// only, where a handler runs on the actor's own thread, so it starts as any.
+tuckStartActorFrame :: proc(drain: DrainProc) -> rawptr {
+	return tuckStartActor(drain)
+}

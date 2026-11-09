@@ -1,7 +1,10 @@
-frame fn Relay.forward  (actors:16)
-  17:10  send Sink.take (waits when full)
-frame handler Relay.pass  (actors:18)
-  19:12  call forward (frame)
-frame select arm Tally.select | flush  (actors:28)
-  28:30  send Sink.take (waits when full)
+frame fn Relay.forward  (actors:18)
+  19:10  send Sink.take (waits when full)
+frame handler Relay.pass  (actors:20)
+  21:12  call forward (frame)
+frame select arm Tally.select | flush  (actors:30)
+  30:30  send Sink.take (waits when full)
+frame handler Logger.note  (actors:34)
+  35:20  call console::printLine (extern, may park)
 native handlers, never pause: Sink.take, Lossy.take, Relay.drop, Tally.select | add
+actors that run as frames under --actors:single (wait only on mailboxes): Lossy, Relay, Sink, Tally

@@ -620,7 +620,7 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
   let slotName = actorSlotName(d.name)
   let registerStr = "var " & slotName & "*: pointer\n" &
                     "proc registerActor" & d.name & "*() =\n" &
-                    "  " & slotName & " = tuckStartActor(" & drainName & ")\n"
+                    "  " & slotName & " = " & actorStarter(d) & "(" & drainName & ")\n"
 
   msgTypes & "\n" & stateStr & "\n" & singletonStr & "\n" & memberStr &
     dispatchStr & "\n" & drainStr & "\n" & registerStr

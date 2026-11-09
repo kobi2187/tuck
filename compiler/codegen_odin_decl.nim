@@ -1440,7 +1440,7 @@ proc genOdinActorsBoot*(ctx: OdinCodegenCtx, m: Module): string =
   for s in ctx.actorInits: result.add "\t" & s & "\n"
   for d in m.decls:
     if runsActor(d):
-      result.add "\t" & actorSlotName(d.name) & " = rt.tuckStartActor(drain_" &
+      result.add "\t" & actorSlotName(d.name) & " = rt." & actorStarter(d) & "(drain_" &
                  d.name & ")\n"
   result.add "}\n"
 
