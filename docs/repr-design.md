@@ -86,3 +86,43 @@ description onto each type, at the cost of binary size, and user code can only
    code, so user code cannot reintroduce a slow generic walk.
 4. Is `std.reflect` (a Json schema library) rewritten over `typeInfo` when it
    exists, or retired?
+
+## Rulings and proposal (2026-11-09, second round)
+**Ruled:** per-type static table (no value grows). Serializers, ORMs and
+serde-like libraries are the consumers; performance must stay fast by design.
+
+**Proposed shape of `typeInfo`** (all static constants, names interned, nothing
+allocated at run time; the first group serves every consumer, the rest are
+additive and each is emitted only when read):
+* identity: `name`, `module`, `kind` (record | sum | optional | result | seq |
+  array | scalar | opaque), `size`, `align`
+* record: `fields` in declaration order, each `{name, typeName, index, offset,
+  attrs}`; `attrs` carries the field attributes the language already has
+  (`[view]`, secret, user-defined tags such as a column name) as a closed list
+  of name/value strings, so an ORM or JSON mapper reads its hints from there
+* sum type: `variants`, each `{name, tag, fields}`
+* element type for seq/array/optional/result: `elem`
+* `count` (fields or variants) as a constant
+
+**Speed by design: iteration is resolved at compile time, not at run time.**
+Because the table is static and the type is known at the use site, a loop over
+`x.typeInfo.fields` is unrolled by the compiler and the field access inside it
+(`x.(f)`, by the table's entry) is resolved to the plain field read. A
+serializer for `Point` therefore compiles to the same code as a hand-written
+one: no table walk, no boxing, no dynamic dispatch. This answers the open
+accessor question: no run-time accessor is needed, so user code cannot fall back
+to a slow generic path. A value whose type is only known dynamically (an
+interface value) dispatches on its tag, as interface calls already do.
+
+**What this needs in the compiler** (the design work still to do): a
+const-evaluated `for` over a static Seq with an unrolled body; a field-access
+form that takes a table entry instead of a written name (the spelling is the
+open syntax question); `typeInfo` synthesised in lowering and printed by each
+backend as a constant; deadcode removal of unread tables. `repr` and
+`serde-derive` are then ordinary Tuck written over the same mechanism, which is
+the reason to build it once.
+
+**Still open:** the spelling of the entry-taking field access; whether the
+unrolled loop is a new construct (`for f in x.typeInfo.fields:` already reads as
+one) or an existing `for` the checker proves constant; and the attribute syntax
+for user tags.
