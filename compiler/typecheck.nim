@@ -551,6 +551,23 @@ proc fieldsCover(fields: seq[FieldDef], params: seq[Param]): bool =
     if not found: return false
   true
 
+proc isImportedType(tc: TypeChecker, t: Type): bool =
+  ## Is `t` a type another module declared (the importer holds a stamped copy)?
+  ## Its fields were checked against ITS module's fns, and the importer cannot
+  ## know them all, so a field of an imported type never clashes with a fn the
+  ## importer or its other imports declare (#197).
+  if t == nil or t.kind != tkNamed: return false
+  let d = tc.typeDeclsByName.getOrDefault(t.name)
+  d != nil and d.origin != NoModule and d.hoistedTo == ""
+
+proc importedTypeHasField(tc: TypeChecker, t: Type, fields: seq[FieldDef],
+                          name: string): bool =
+  ## An imported type that really has this field: `x.name` reads the field even
+  ## when a fn of that name is in scope (#197).
+  if not tc.isImportedType(t): return false
+  for f in fields:
+    if f.name == name: return true
+
 proc failIfFieldShadowsFn(fields: seq[FieldDef], recvT: Type, e: Expr) =
   ## A DECLARED type's field clashing with a fn name is already caught at
   ## declaration. An ANONYMOUS record has no declaration for that check to
@@ -602,6 +619,10 @@ proc asPostfixApplication(tc: var TypeChecker, e: Expr): Type =
   if recvT != nil and recvT.kind == tkNamed and tc.ifaceDecls.hasKey(recvT.name):
     return nil
   let recvFields = tc.fieldsOf(tc.resolve(recvT))
+  # A DECLARED type that really has this field: the receiver's type decides, so
+  # the field is read (#197). Only an IMPORTED type can reach here with a
+  # clash; one declared in this module was refused at its declaration.
+  if tc.importedTypeHasField(recvT, recvFields, e.fieldName): return nil
   failIfFieldShadowsFn(recvFields, recvT, e)
   if fieldsCover(recvFields, sig.params) or sig.params.len != 1: return nil
   tc.failIfArgMismatched(sig, recvT, e)
@@ -649,7 +670,7 @@ proc asPlainField(tc: var TypeChecker, e: Expr, fields: seq[FieldDef],
   ## `x.field` — an ordinary field read off the receiver's type.
   for f in fields:
     if f.name != e.fieldName: continue
-    if tc.fnSigs.hasKey(e.fieldName):
+    if tc.fnSigs.hasKey(e.fieldName) and not tc.recvImported:
       fail("Type Error: '" & e.fieldName & "' is both a field here and a " &
            "declared fn — rename one; fields and fns share the call " &
            "namespace", e.span)
@@ -1752,7 +1773,11 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
          "before accessing fields", e.span)
   let recvT = tc.resolve(rawT)
   let fields = tc.fieldsOf(recvT)
+  # resolve() drops the name, so whether the receiver is an imported type is
+  # decided here, from the type as written (#197).
+  tc.recvImported = tc.isImportedType(rawT)
   result = tc.typedFieldForm(e, recvT, fields)
+  tc.recvImported = false
   if result != nil: return
   tc.failUnresolvedFieldAccess(e, recvT, fields)
   return afterErrorType(e.span)
@@ -2328,7 +2353,7 @@ proc failIfMutatingLet(tc: var TypeChecker, e: Expr) =
 proc checkFieldSet(tc: var TypeChecker, step: ChainStep, f: FieldDef,
                    recvT: Type) =
   ## `..name {value}` — set a field to one bare value.
-  if tc.fnSigs.hasKey(f.name):
+  if tc.fnSigs.hasKey(f.name) and not tc.isImportedType(recvT):
     fail("Type Error: '" & f.name & "' is both a field here and a declared " &
          "fn — rename one; fields and fns share the call namespace", step.span)
   if not isBareValuePayload(step.arg):

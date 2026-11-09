@@ -5338,4 +5338,31 @@ fn main() -> int:
   t.quietly: t.runsOdin "A113: an imported generic fn is callable as a method on Odin", 12
   t.bugFixed "A113: an imported generic fn is callable as a method on Odin"
 
+  # A114 (#197): a field of an IMPORTED type never clashes with a fn the importer
+  # declares. `fn size` and a stdlib `Stats.size` coexist; `s.size` reads the
+  # field, because the receiver's type decides. A clash within one module is
+  # still refused at the declaration.
+  t.src """
+import lib
+
+fn size({n: int}) -> int:
+  return n + 1
+
+fn main() -> int:
+  let s = mk
+  return {n: s.size} size
+"""
+  t.addFile "lib.tuck", """
+type Stats:
+  size: int
+  total: int
+
+fn mk() -> Stats:
+  return {size: 1, total: 2} Stats
+"""
+  t.quietly: t.runs "A114: an imported type's field does not clash with the importer's fn", 2
+  t.bugFixed "A114: an imported type's field does not clash with the importer's fn"
+  t.quietly: t.runsOdin "A114: an imported type's field does not clash with the importer's fn on Odin", 2
+  t.bugFixed "A114: an imported type's field does not clash with the importer's fn on Odin"
+
   t.finish()

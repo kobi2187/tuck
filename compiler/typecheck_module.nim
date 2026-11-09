@@ -127,6 +127,11 @@ proc failIfFieldShadowsDeclaredFn*(tc: TypeChecker, m: Module) =
   ## `.name` resolves by lookup, so a clash would silently change meaning.
   for d in m.decls:
     if d == nil: continue
+    # An IMPORTED type is a stamped copy in this list; its own module has
+    # already checked it, and the importer cannot know every field name its
+    # imports declare (#197: `fn size` vs a stdlib `Stats.size`). A bare
+    # `x.size` still reads the field, because the receiver's type decides.
+    if d.origin != NoModule and d.hoistedTo == "": continue
     for f in d.declaredFields():
       if tc.fnSigs.hasKey(f.name):
         fail("Type Error: field '" & f.name & "' of '" & d.name & "' has the " &
