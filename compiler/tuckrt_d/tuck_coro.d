@@ -742,6 +742,25 @@ void spawnResult(T, F, Args...)(TuckAsyncResult!T slot, F fn, Args args)
 /// scheduler directly — `main` is a plain fn, not a coroutine, and this is
 /// what lets a task's result be bound there at all. Mirrors
 /// tuck_async.nim's awaitResult.
+/// A fn that is not a frame (main) awaiting a stackless task (#216): lend
+/// the thread to the scheduler — frames, coroutines (the helper stacks of
+/// statements that wait) and the reactor — until the slot is done.
+T tuckSlAwaitMain(T)(TuckSlot!T* s)
+{
+    initLoop();
+    while (!s.done)
+    {
+        if (readyCount > 0) { stepOne(); continue; }
+        if (gLoop.waiters.count == 0)
+        {
+            stderr.writeln("tuck: deadlock — an awaited task can never finish (stackless)");
+            abort();
+        }
+        runOnce(1);
+    }
+    return s.value;
+}
+
 T awaitResult(T)(TuckAsyncResult!T slot)
 {
     while (!slot.done)
@@ -1216,3 +1235,55 @@ void runTasksUntil(bool function() pred)
 
 /// `scheduler::stop` — the std name for tuckStop.
 void stop() { tuckStop(); }
+
+// ---------------------------------------------------------------------------
+// stackless: a statement that may park, on a helper stack (#216)
+// ---------------------------------------------------------------------------
+// tuck_async.nim's tuckSlOnStack explains it: a stage hands a statement that
+// may wait inside the runtime (an fd, a timer, `on select`, a send, an actor
+// wait) to a pooled WORKER coroutine, resumed at once. A statement that never
+// waits finishes there and the stage carries on; one that waits parks the
+// worker through the reactor, and the worker queues the frame when done.
+private struct TuckSlWorker
+{
+    Coroutine* co;
+    void function(void*) body;
+    TuckFrameHdr* frame;
+    bool done, parked;
+}
+
+private __gshared TuckSlWorker*[] slIdleWorkers;
+
+TuckHop tuckSlOnStack(TuckFrameHdr* f, TuckStageFn next, void function(void*) body)
+{
+    f.stage = next;
+    TuckSlWorker* w;
+    if (slIdleWorkers.length > 0)
+    {
+        w = slIdleWorkers[$ - 1];
+        slIdleWorkers.length -= 1;
+    }
+    else
+    {
+        w = new TuckSlWorker;
+        auto self = w;
+        w.co = newCoroutine(delegate() {
+            for (;;)
+            {
+                self.body(self.frame);
+                self.done = true;
+                if (self.parked) tuckSlReady(self.frame);   // the frame waited for this
+                slIdleWorkers ~= self;
+                suspend();                                  // idle until the next statement
+            }
+        });
+    }
+    w.body = body;
+    w.frame = f;
+    w.done = false;
+    w.parked = false;
+    resume(w.co);
+    if (w.done) return TuckHop(next, f);
+    w.parked = true;
+    return TuckHop.init;
+}

@@ -1,6 +1,7 @@
 # Stackless concurrency (#216)
 
-Status: phases 0–3 are built, apart from liveness for frame fields.
+Status: phases 0–4 are built, apart from liveness for frame fields. Tasks
+run stackless on all three backends, waits included.
 * **Phase 0, the spike:** `research/stackless/`.
 * **Phase 1, the colouring:** `tuck frames f.tuck` prints it
   (`compiler/frames.nim`, pinned by `tests/suites/frames.nim`).
@@ -277,15 +278,62 @@ splitter, so they do yield. So the suite compares every backend's stackless
 run against the **Nim stackful** reference, and all of them match it. Under
 stackful, `order` and `loops` interleave differently on Odin than on Nim.
 
+**Phase 4, statements that wait.** The runtime's waiting calls park in the
+middle of their own code:
+* an fd read or write, and a `connect` in progress;
+* a sleep;
+* an offloaded file read;
+* `on select`;
+* a send into a full mailbox;
+* `waitUntil`, `alive` and `pingUs` on an actor.
+
+A frame has no stack to park on, so a statement holding one of these runs
+on a **helper stack**:
+* **The cut:** the splitter ends the stage with `tkOnStack`. Each backend
+  prints the statement as a helper proc that takes the frame as its
+  environment.
+* **The worker:** the runtime (`tuckSlOnStack` in `tuck_async.nim`,
+  `tuck_coro.odin` and `tuck_coro.d`) hands the statement to a pooled
+  worker coroutine and resumes it at once.
+* **If it doesn't wait:** the statement finishes there and the stage
+  carries straight on, as stackful does.
+* **If it waits:** the worker parks through the ordinary reactor. The frame
+  parks too, and the worker requeues it when the statement is done.
+* **Conditions:** an `if` or loop condition that waits is computed on the
+  helper into a frame `bool` (`tuckCondN`) first.
+* **`main`:** `tuckSlAwaitMain` lends the thread to frames, coroutines and
+  the reactor, as `awaitResult` does.
+
+Why this design rather than a stackless hook per primitive (stagelane's
+way):
+* **Semantics:** the code that runs is the **same extern code stackful
+  runs**, so they stay the same by construction.
+* **Less work:** nothing is rewritten per extern on three backends.
+* **Stacks are rare:** a stack is in use only while a call actually waits,
+  and workers are reused.
+
+Measured:
+* 1M clock reads from a task loop take 68–70 ms stackless against 85–90 ms
+  stackful. Each read costs a yield plus a helper round trip.
+* Example 42 (real sockets) and examples 29 and 30 (`on select` racing a
+  read and a timeout) run the same as the Nim reference on all three
+  backends.
+
+Native hooks for the hottest waits (fd readiness, sleep) remain an option,
+for speed only and only where a measurement shows they would help.
+
 Not built yet, and **refused rather than run wrong:**
 * **At compile time:** each of these is refused with its line:
-  * a pause inside `on select` or `defer`;
+  * a pause inside `defer`;
+  * a `return`, `err`, `break` or `continue` inside a statement that
+    waits;
   * a frame call nested inside a larger expression, a condition, a match
     subject or a loop range;
   * a destructuring `for`, or a `for` over a computed sequence, whose body
     pauses.
-* **At run time:** a frame waiting on I/O or a timer. It stops with exit 70
-  and a message naming phase 4, instead of hanging.
+* **At run time:** a wait that still reaches the lend path from inside a
+  stage would stop with exit 70 and a message. That is a safety net; no
+  colouring rule leaves such a call outside a helper.
 
 ## Phases and exit criteria
 
@@ -295,7 +343,7 @@ Not built yet, and **refused rather than run wrong:**
 | 1 | colouring pass and a dump (`tuck frames`: frame fns and pause sites; frame fields move to phase 2, where liveness is computed for the split) | **done**: `tests/suites/frames.nim` pins examples 14/28/29/30/42/26/27 and one program per rule in `tests/frames/` |
 | 2 | flag, splitting of straight-line code and `if`, the call protocol, `defer`; tasks; Nim backend | **done**: `tests/suites/stackless.nim` runs example 28 and `tests/stackless/{order,values}` under both flags, same exit code and same stdout. A pause inside `match` moved to phase 3; example 14 cannot run in either mode (`http` is pending) |
 | 3 | loops, `break`/`continue`, `match`, liveness for frame fields; Odin and D emitters, checking the `Hop` two-register return on their ABIs | **done**, except liveness: `tests/suites/stackless.nim` runs `order`, `values`, `loops` and example 28 stackless on Nim, Odin and D, each matching the Nim stackful reference. Liveness (fewer frame fields) is a size optimisation, deferred |
-| 4 | runtime parity: reactor, timers, `on select`, offload, waiting sends, `waitUntil` | examples 29, 30, 42 and the net suites pass under both flags |
+| 4 | runtime parity: reactor, timers, `on select`, offload, waiting sends, `waitUntil` | **done**: statements that wait run on pooled helper stacks. `parks`, `sends` and examples 28/29/30 match the Nim reference on all three backends, and 42 (sockets) was checked by hand |
 | 5 | actors in all three `--actors:` modes, urgent mailboxes, `alive`/`pingUs` | `mailbox_full`, `actor_heartbeat`, Savina and the actor examples pass under both flags |
 | 6 | (#219) static slabs for actor chains, stack root frames, embedded flag; measurements | numbers in `benches/SCORES.md`; a no-heap actor-only program builds |
 | 7 | differential run: every concurrency suite under both flags in CI | equal results; the owner decides whether to change the default |

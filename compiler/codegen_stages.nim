@@ -57,6 +57,8 @@ proc genFrameNew(d: Decl): string =
 
 # --- terminators -----------------------------------------------------------------
 
+proc ioName(d: Decl, site: int): string = "TuckIOˑ" & d.name & "ˑ" & $site
+
 proc jump(d: Decl, k: int): string = "return " & stageName(d.name, k) & "(env)"
 
 proc genFall(d: Decl): string =
@@ -154,6 +156,9 @@ proc genTerm(ctx: var CodegenCtx, d: Decl, plan: StagePlan, t: Term): string =
     "  else: " & jump(d, t.elseS) & "\n"
   of tkCall: ctx.genCall(d, t)
   of tkAwait: ctx.genAwait(d, t)
+  of tkOnStack:
+    "  return tuckSlOnStack(addr tuckF.tuckHdr, " & stageName(d.name, t.next) & ", " &
+      ioName(d, t.site) & ")\n"
   of tkLoopEnter: ctx.genLoopEnter(d, plan.loops[t.loop])
   of tkLoopNext: ctx.genLoopNext(d, plan.loops[t.loop])
 
@@ -218,13 +223,23 @@ proc frameVars(d: Decl, plan: StagePlan): HashSet[string] =
   for f in plan.fields: result.incl f.name
 
 proc genForwards(d: Decl, plan: StagePlan): string =
-  ## Forward declarations: every stage, the frame exit, each scope exit.
+  ## Forward declarations: every stage, the frame exit, each scope exit,
+  ## each helper-stack statement.
   for k in 0 ..< plan.stages.len:
     result.add "proc " & stageName(d.name, k) & "(env: pointer): TuckHop {.nimcall.}\n"
+    if plan.stages[k].term.kind == tkOnStack:
+      result.add "proc " & ioName(d, plan.stages[k].term.site) & "(env: pointer) {.nimcall.}\n"
   result.add "proc tuckSlExit(tuckF: ptr " & frameType(d.name) & ")\n"
   for sc in 0 ..< plan.scopeDefers.len:
     if plan.scopeDefers[sc].len > 0:
       result.add "proc " & scopeExit(d, sc) & "(tuckF: ptr " & frameType(d.name) & ")\n"
+
+proc genIoHelper(ctx: var CodegenCtx, d: Decl, plan: StagePlan, t: Term): string =
+  ## A statement that may park, as a proc a worker runs with the frame as
+  ## its environment (tuck_async's tuckSlOnStack).
+  "proc " & ioName(d, t.site) & "(env: pointer) {.nimcall.} =\n" &
+    "  let tuckF = cast[ptr " & frameType(d.name) & "](env)\n" & ctx.aliases(d, plan) &
+    ctx.genStageStmt(plan, t.stmt) & "  discard\n"
 
 proc genBodies(ctx: var CodegenCtx, d: Decl, plan: StagePlan): string =
   ## The stages, the frame exit and the scope exits, each printed with the
@@ -233,6 +248,11 @@ proc genBodies(ctx: var CodegenCtx, d: Decl, plan: StagePlan): string =
     ctx.definedVars = frameVars(d, plan)
     ctx.indent = 0
     result.add ctx.genStage(d, plan, k) & "\n"
+  for st in plan.stages:
+    if st.term.kind == tkOnStack:
+      ctx.definedVars = frameVars(d, plan)
+      ctx.indent = 0
+      result.add ctx.genIoHelper(d, plan, st.term) & "\n"
   ctx.definedVars = frameVars(d, plan)
   ctx.indent = 0
   result.add ctx.genExit(d, plan) & "\n"

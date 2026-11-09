@@ -15,14 +15,22 @@
 ## it), a `for cond:`, a loop over a Seq whose element feeds a frame call,
 ## and the arms of a `match`. Example 28 is the corpus program.
 ##
-## What is not built yet is REFUSED, never run wrong: a pause inside
-## `on select` (phase 4) at compile time, and a frame waiting on I/O or a
-## timer (phase 4) at run time, with exit 70 and a message.
+## Phase 4 adds the statements that wait INSIDE the runtime — `parks` (a
+## timer), `sends` (sends into a mailbox that fills, and an actor's
+## `waitUntil`), examples 29 and 30 (`on select` racing a read and a
+## timeout): each runs on a helper stack and matches the reference.
+##
+## What is not built yet is REFUSED, never run wrong: here, a frame call in
+## an `if` condition, at compile time with its line.
 import std/[os, strutils]
 import ../harness
 
 const Programs = ["tests/stackless/order.tuck", "tests/stackless/values.tuck",
-                  "tests/stackless/loops.tuck", "examples/28-async-task.tuck"]
+                  "tests/stackless/loops.tuck", "tests/stackless/parks.tuck",
+                  "tests/stackless/sends.tuck", "examples/28-async-task.tuck",
+                  "examples/29-task-timeout.tuck", "examples/30-async-read.tuck"]
+  # examples/42-net-echo (sockets) runs the same too, checked by hand: it
+  # binds a fixed port, so it cannot run beside itself in the pool.
 
 type Backend = enum bNim = "", bOdin = "--odin", bD = "--dlang"
 
@@ -70,30 +78,17 @@ proc same(t: var T, name: string, a, b: int) =
                unifiedDiff(runOutput(outA), runOutput(outB), 5)
 
 proc refusedAtCompile(t: var T) =
-  t.src readFile("tests/stackless/select_refused.tuck")
+  t.src readFile("tests/stackless/cond_refused.tuck")
   let idx = t.needCmd(@["./tuck", "c", t.curDir / "t.tuck", "--concurrency:stackless",
                         "-o:" & t.curDir, "--root:" & t.root], vEmit)
   if t.phase != pReport: return
   if t.skippedCmd(idx):
-    t.skip "a pause inside on select is refused"
+    t.skip "a frame call in an if condition is refused"
     return
   let (rc, outp) = t.resultOf(idx)
-  if rc != 0 and "a pause inside select is not supported" in outp:
-    t.ok "a pause inside on select is refused, by name (phase 4)"
-  else: t.no "a pause inside on select is refused", "exit " & $rc & ": " & outp
-
-proc refusedAtRun(t: var T, b: Backend) =
-  t.src readFile("tests/stackless/parks.tuck")
-  let run = t.buildRun("stackless", b)
-  let name = "a frame waiting on a timer stops with a message, not a hang (phase 4)" &
-             (if b == bNim: "" else: " " & $b)
-  if t.phase != pReport: return
-  if t.skippedCmd(run):
-    t.skip name
-    return
-  let (rc, outp) = t.resultOf(run)
-  if rc == 70 and "parking a frame arrives in #216 phase 4" in outp: t.ok name
-  else: t.no name, "exit " & $rc & ": " & outp
+  if rc != 0 and "a frame call in an `if` condition is not supported" in outp:
+    t.ok "a frame call in an if condition is refused, by name"
+  else: t.no "a frame call in an if condition is refused", "exit " & $rc & ": " & outp
 
 proc flags(t: var T) =
   t.src readFile("examples/28-async-task.tuck")
@@ -124,5 +119,4 @@ proc run*(t: var T) =
       t.same(label & " stackless matches the Nim reference: " & name,
              reference, t.buildRun("stackless", b))
   t.refusedAtCompile()
-  for b in @[bNim] & others: t.refusedAtRun(b)
   t.flags()

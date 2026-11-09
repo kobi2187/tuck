@@ -34,6 +34,8 @@ import std/nativesockets
 import std/locks
 import std/monotimes
 import ./tuck_coro
+import ./tuck_sl   # stackless frames (#216): their parking statements run here
+import std/tables
 import ./tuck_mem
 
 type
@@ -84,6 +86,65 @@ proc tuckYield*() =
     schedule(self)
     coroYield()
 
+# --- stackless: a statement that may park, on a helper stack (#216) ----------
+# A stackless frame has no stack to park on, but the runtime's waiting calls
+# (an fd read, a sleep, an offloaded file read, `on select`, a send into a
+# full mailbox, `waitUntil`) park IN THE MIDDLE of their own code. So a stage
+# hands such a statement to a WORKER: a pooled coroutine that runs it with
+# the frame as its environment. The worker is resumed at once; a statement
+# that never has to wait finishes there and the stage carries straight on,
+# exactly as the stackful task would have. One that waits parks the worker
+# through the ordinary reactor; the frame parks too, and the worker queues
+# it when the statement is done. Same code as stackful runs, so the same
+# semantics; a stack is only in use while a call actually waits.
+type
+  TuckSlWorker = object
+    co: Coroutine
+    body: proc (env: pointer) {.nimcall.}
+    frame: ptr TuckFrameHdr
+    done, parked: bool
+
+var slIdleWorkers: seq[ptr TuckSlWorker]
+
+proc newSlWorker(): ptr TuckSlWorker =
+  let w = create(TuckSlWorker)
+  w.co = newCoroutine(proc () {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    while true:
+      w.body(w.frame)
+      w.done = true
+      if w.parked: tuckSlReady(w.frame)   # the frame waited for this
+      slIdleWorkers.add w
+      coroYield()))                       # idle until the next statement
+  w
+
+proc tuckSlOnStack*(f: ptr TuckFrameHdr, next: TuckStageFn,
+                    body: proc (env: pointer) {.nimcall.}): TuckHop =
+  ## Run `body` (one statement of frame `f`) on a worker, then go on at
+  ## `next`: at once if it finished, or once it is done waiting.
+  f.stage = next
+  let w = if slIdleWorkers.len > 0: slIdleWorkers.pop() else: newSlWorker()
+  w.body = body
+  w.frame = f
+  w.done = false
+  w.parked = false
+  resume(w.co)
+  if w.done: return TuckHop(fn: next, env: f)
+  w.parked = true
+  tuckNoStep
+
+proc tuckSlAwaitMain*[T](s: ptr TuckSlot[T]): T =
+  ## A fn that is not a frame (`main`) awaiting a stackless task: it lends
+  ## its thread to the scheduler — frames, coroutines (the helper stacks of
+  ## statements that wait) and the reactor — until the slot is done, the way
+  ## awaitResult does for a coroutine task.
+  if gLoop == nil: gLoop = newEventLoop()
+  while not s.done:
+    if runNext(): continue
+    if gLoop.waiters.len == 0:
+      quit "tuck: deadlock — an awaited task can never finish (stackless)"
+    discard gLoop.runOnce(1)
+  tuckMove(s.value)
+
 # --- waiting from main --------------------------------------------------------
 # An [io] call may be made from ANY fn that declares the effect, not only from
 # a task (ruled 2026-10-22). Main is not a coroutine, so it cannot park; it
@@ -94,7 +155,6 @@ proc tuckYield*() =
 # it. Before this, the wait raised "called outside coroutine".
 import std/posix as tuckposix
 import std/tables
-import ./tuck_sl   # tuckSlDriving: is a stackless frame on this thread? (#216)
 
 proc tuckLendUntil(fd: int, events: cshort, timeoutMs: int): bool =
   ## Run the scheduler until `fd` has `events` (true) or `timeoutMs` passes

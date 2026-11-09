@@ -334,10 +334,10 @@ options:
                   stackful   a minicoro coroutine per task, own stack (default)
                   stackless  a pausing fn becomes a heap FRAME plus STAGES
                              (the code between pauses); no stacks at all.
-                             Tasks, on all three backends, so far: a pause
-                             inside `on select` is refused at compile time,
-                             and a task waiting on I/O or a timer stops at
-                             run time (both #216 phase 4).
+                             Tasks, on all three backends. A statement
+                             that waits (I/O, a timer, `on select`, a send)
+                             runs on a pooled helper stack. Actors are
+                             still coroutines (#216 phase 5).
                 See docs/stackless-concurrency.md.
   --batch-count:N     (--actors:batch) flush after N staged sends
   --batch-timeout:MS  (--actors:batch) ...or MS after the first, whichever

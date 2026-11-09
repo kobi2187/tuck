@@ -142,14 +142,6 @@ proc tuckSlAwait*[T](f: ptr TuckFrameHdr, s: ptr TuckSlot[T],
   s.waiter = f
   tuckNoStep
 
-proc tuckSlAwaitMain*[T](s: ptr TuckSlot[T]): T =
-  ## `main` (any fn that is not a frame) awaiting a task: it lends its
-  ## thread to the scheduler until the slot is done (A94, unchanged).
-  while not s.done:
-    if not tuckSlRunOne():
-      quit "tuck: deadlock — an awaited task can never finish (stackless)"
-  tuckMove(s.value)
-
 # --- finishing a frame, from a `return` in a stage ---------------------------------
 proc tuckSlRet*[F; T](f: ptr F, v: sink T): TuckHop {.inline.} =
   ## `return v` in a stage: the value goes where the frame's result goes,

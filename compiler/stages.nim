@@ -35,7 +35,11 @@
 # `break`/`continue` inside a split loop, or a match arm's body, each mapped
 # (by node identity) to a target stage and the scopes it leaves.
 #
-# A pause inside `on select` or `defer` is phase 4: refused by name.
+# WAITS (phase 4): an [io] extern, `on select`, a send, an actor wait park
+# INSIDE the runtime's own code, so the statement holding one runs on a
+# helper stack (tkOnStack, tuck_async's tuckSlOnStack); a condition that
+# waits is computed there into a frame field first. A pause inside `defer`
+# is refused by name.
 import std/[tables, sets, strutils, hashes]
 import ast, ast_ops, ast_query, resolution, concurrency
 from typecheck_util import typeName
@@ -50,6 +54,7 @@ type
     tkAwait   ## spawn task `call` into slot field `slot`, park until done
     tkLoopEnter ## start loop `loop`: set its state, then body or exit
     tkLoopNext  ## advance loop `loop`: step its state, then body or exit
+    tkOnStack   ## run statement `stmt` on a helper stack (it may park), then `next`
 
   LoopKind* = enum
     lkRange   ## `for i in a .. b` / `a ..< b`: counter + end in the frame
@@ -79,6 +84,8 @@ type
     slot*: string           ## tkAwait: the frame field holding the slot
     leaves*: seq[int]       ## tkGoto: scope ids it leaves, innermost first
     loop*: int              ## tkLoopEnter / tkLoopNext: index into loops
+    stmt*: Expr             ## tkOnStack: the statement that may park
+    site*: int              ## tkOnStack: its number, naming its helper
 
   Stage* = object
     stmts*: seq[Expr]
@@ -109,6 +116,7 @@ type
     plan: StagePlan
     fieldIdx: Table[string, int]
     open: seq[int]          ## the scope ids open here, outermost first
+    sites: int              ## tkOnStack sites numbered so far
     loopStack: seq[tuple[loop, depth: int]] ## split loops open here, and the
                             ## `open` depth of each one's body scope
     awaited: HashSet[NodeId] ## task calls a binding awaits; an unbound one
@@ -146,11 +154,31 @@ proc yieldsAt(sp: Splitter, n: Expr): bool =
   let c = sp.callOf(n)
   c != nil and sp.res.isAsync(c)
 
-proc isPause(sp: Splitter, n: Expr): bool =
-  ## Any pause at this node: a yield, a frame call or task await, a select.
-  if n.kind == exkSelect or sp.yieldsAt(n): return true
+const ActorWaits = ["waitUntil", "alive", "pingUs"]
+
+proc isIoExtern(d: Decl): bool =
+  d != nil and d.kind == dkFn and d.isExtern and hasIo(d.fnEffects)
+
+proc parksAt(sp: Splitter, n: Expr): bool =
+  ## Does this node wait inside the runtime's own code (phase 4)? An [io]
+  ## extern (an fd, a timer, an offloaded file read), `on select`, a send
+  ## (into a full mailbox it waits), an actor wait. Such a statement runs
+  ## on a helper stack: the frame has none to park on.
+  case n.kind
+  of exkSelect, exkSend: true
+  of exkField: n.receiver != nil and n.receiver.kind == exkActorRef and n.fieldName in ActorWaits
+  else:
+    let c = sp.callOf(n)
+    c != nil and calleeDecl(sp.res, sp.m, c).isIoExtern
+
+proc isCut(sp: Splitter, n: Expr): bool =
+  ## A pause that must end a stage of this frame: a frame call or an await.
   let c = sp.callOf(n)
   c != nil and sp.frameCallee(c) != nil
+
+proc isPause(sp: Splitter, n: Expr): bool =
+  ## Any pause at this node: a yield, a frame call or task await, a park.
+  sp.yieldsAt(n) or sp.isCut(n) or sp.parksAt(n)
 
 proc pausesIn(sp: Splitter, e: Expr): bool =
   if e == nil: return false
@@ -158,10 +186,16 @@ proc pausesIn(sp: Splitter, e: Expr): bool =
     if sp.isPause(n): return true
 
 proc framePausesIn(sp: Splitter, e: Expr): bool =
-  ## A pause other than a yield: a frame call, a task await, a select.
+  ## A frame call or a task await inside `e`: the pauses that cannot be
+  ## hoisted out of a condition and run on a helper.
   if e == nil: return false
   for n in e.nodes:
-    if sp.isPause(n) and not sp.yieldsAt(n): return true
+    if sp.isCut(n): return true
+
+proc parksIn(sp: Splitter, e: Expr): bool =
+  if e == nil: return false
+  for n in e.nodes:
+    if sp.parksAt(n): return true
 
 proc yieldCount(sp: Splitter, e: Expr): int =
   for n in e.nodes:
@@ -224,6 +258,29 @@ proc callTerm(sp: var Splitter, s: Expr, c: Expr, callee: Decl, target: Expr): T
   else:
     Term(kind: tkCall, call: c, callee: callee, target: target)
 
+proc onStack(sp: var Splitter, cur: var int, s: Expr) =
+  ## A statement that may park, run whole on a helper stack. It must not
+  ## leave the frame itself: a `return`, `err` or loop jump inside it would
+  ## return from the helper instead.
+  for n in s.nodes:
+    if n.kind in {exkReturn, exkRaise, exkBreak, exkContinue}:
+      sp.fail(s, "a `return`, `err`, `break` or `continue` in a statement that waits")
+    if n != s and sp.isCut(n): sp.fail(s, "a frame call inside a statement that waits")
+  cur = sp.endWith(cur, Term(kind: tkOnStack, stmt: s, site: sp.sites))
+  inc sp.sites
+
+proc boolType(): Type = Type(kind: tkNamed, name: "bool")
+
+proc hoisted(sp: var Splitter, cur: var int, e: Expr, t: Type): Expr =
+  ## A condition (or subject) that may park, computed on a helper into a
+  ## frame field first; what the branch then tests is that field.
+  if not sp.parksIn(e): return e
+  let name = "tuckCond" & $sp.sites
+  sp.addField(e, name, t)
+  let v = Expr(kind: exkVar, name: name, span: e.span)
+  sp.onStack(cur, Expr(kind: exkAssign, target: v, assignVal: e, span: e.span))
+  Expr(kind: exkVar, name: name, span: e.span)
+
 proc simpleStmt(sp: var Splitter, cur: var int, s: Expr) =
   ## A statement with no nested body: yields before it, then it runs, or it
   ## IS a frame call / task await that ends the stage.
@@ -235,7 +292,8 @@ proc simpleStmt(sp: var Splitter, cur: var int, s: Expr) =
     for n in s.nodes:
       if n.kind != exkCall and sp.callOf(n) != nil and sp.frameCallee(sp.callOf(n)) != nil:
         sp.fail(s, "a frame call inside a larger expression")
-    sp.plan.stages[cur].stmts.add s
+    if sp.parksIn(s): sp.onStack(cur, s)
+    else: sp.plan.stages[cur].stmts.add s
   else:
     sp.noteLocal(s)
     cur = sp.endWith(cur, sp.callTerm(s, c, callee, target))
@@ -286,10 +344,11 @@ proc jumpsIn(sp: var Splitter, e: Expr) =
 
 proc ifStmt(sp: var Splitter, cur: var int, s: Expr) =
   sp.emitYields(cur, sp.yieldCount(s.cond))
+  let cond = sp.hoisted(cur, s.cond, boolType())
   let join = sp.newStage()
   let thenS = sp.chain(s.thenBranch, join)
   let elseS = sp.chain(s.elseBranch, join)
-  sp.plan.stages[cur].term = Term(kind: tkBranch, cond: s.cond, thenS: thenS, elseS: elseS)
+  sp.plan.stages[cur].term = Term(kind: tkBranch, cond: cond, thenS: thenS, elseS: elseS)
   cur = join
 
 proc matchStmt(sp: var Splitter, cur: var int, s: Expr) =
@@ -297,6 +356,7 @@ proc matchStmt(sp: var Splitter, cur: var int, s: Expr) =
   ## jump carrier sending control to that arm's chain.
   if sp.framePausesIn(s.subject): sp.fail(s, "a frame call in a match subject")
   sp.emitYields(cur, sp.yieldCount(s.subject))
+  if sp.parksIn(s.subject): sp.fail(s, "a match subject that waits")
   let join = sp.newStage()
   var arms: seq[MatchArm]
   for arm in s.arms:
@@ -352,11 +412,14 @@ proc whileHead(sp: var Splitter, k: int, s: Expr) =
   if s.whileCond != nil and sp.framePausesIn(s.whileCond):
     sp.fail(s, "a frame call in a loop condition")
   var head = sp.plan.loops[k].head
-  if s.whileCond != nil: sp.emitYields(head, sp.yieldCount(s.whileCond))
+  var cond = s.whileCond
+  if cond != nil:
+    sp.emitYields(head, sp.yieldCount(cond))
+    cond = sp.hoisted(head, cond, boolType())   # waits: computed on a helper
   let lp = sp.plan.loops[k]
   sp.plan.stages[head].term =
-    if s.whileCond == nil: Term(kind: tkGoto, next: lp.body)
-    else: Term(kind: tkBranch, cond: s.whileCond, thenS: lp.body, elseS: lp.exit)
+    if cond == nil: Term(kind: tkGoto, next: lp.body)
+    else: Term(kind: tkBranch, cond: cond, thenS: lp.body, elseS: lp.exit)
 
 proc loopBody(sp: var Splitter, k: int, s: Expr) =
   ## The body: a scope of its own, entered at `body`, ending in the step.
@@ -411,11 +474,16 @@ proc inline(sp: var Splitter, cur: int, s: Expr) =
 proc nestedStmt(sp: var Splitter, cur: var int, s: Expr) =
   case s.kind
   of exkIf:
-    if sp.branchesPause(s): sp.ifStmt(cur, s)
-    elif sp.framePausesIn(s.cond): sp.fail(s, "a frame call in an `if` condition")
+    if sp.framePausesIn(s.cond): sp.fail(s, "a frame call in an `if` condition")
+    elif sp.branchesPause(s) or sp.parksIn(s.cond): sp.ifStmt(cur, s)
     else:
       sp.emitYields(cur, sp.yieldCount(s.cond))   # only the condition yields
       sp.inline(cur, s)
+  of exkSelect:
+    # A task's `on select` waits inside the runtime: the whole statement
+    # runs on a helper, its one-line arms writing the frame's locals.
+    sp.emitYields(cur, sp.yieldCount(s))
+    sp.onStack(cur, s)
   of exkMatch: sp.matchStmt(cur, s)
   of exkFor, exkWhile: sp.loopStmt(cur, s)
   of exkBlock: sp.blockStmt(cur, s)

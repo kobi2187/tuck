@@ -74,6 +74,7 @@ proc genRet(ctx: var OdinCodegenCtx, d: Decl): string =
 # --- terminators -----------------------------------------------------------------
 
 proc jump(d: Decl, k: int): string = "return " & stageName(d.name, k) & "(env)"
+proc ioName(d: Decl, site: int): string = "TuckIOˑ" & d.name & "ˑ" & $site
 
 proc leaveCalls(d: Decl, plan: StagePlan, leaves: seq[int]): seq[string] =
   for sc in leaves:
@@ -154,6 +155,9 @@ proc genTerm(ctx: var OdinCodegenCtx, d: Decl, plan: StagePlan, t: Term): string
              "  " & jump(d, t.elseS) & "\n"
   of tkCall: result = ctx.genCall(d, t)
   of tkAwait: result = ctx.genAwait(d, t)
+  of tkOnStack:
+    result = "  return rt.tuckSlOnStack(&tuckF.tuckHdr, " & stageName(d.name, t.next) & ", " &
+             ioName(d, t.site) & ")\n"
   of tkLoopEnter: result = ctx.genLoopEnter(d, plan.loops[t.loop])
   of tkLoopNext: result = ctx.genLoopNext(d, plan.loops[t.loop])
 
@@ -207,11 +211,21 @@ proc frameVars(d: Decl, plan: StagePlan): HashSet[string] =
   for lp in plan.loops:
     if lp.kind == lkSeq: result.incl lp.varName
 
+proc genIoHelper(ctx: var OdinCodegenCtx, d: Decl, plan: StagePlan, t: Term): string =
+  ## A statement that may park, as a proc a worker runs with the frame as
+  ## its environment (tuckrt's tuckSlOnStack).
+  ioName(d, t.site) & " :: proc(env: rawptr) {\n" & opening(d) &
+    ctx.genStageStmt(plan, t.stmt) & "}\n"
+
 proc genBodies(ctx: var OdinCodegenCtx, d: Decl, plan: StagePlan): string =
   for k in 0 ..< plan.stages.len:
     ctx.definedVars = frameVars(d, plan)
     ctx.indent = 0
     result.add ctx.genStage(d, plan, k) & "\n"
+    if plan.stages[k].term.kind == tkOnStack:
+      ctx.definedVars = frameVars(d, plan)
+      ctx.indent = 0
+      result.add ctx.genIoHelper(d, plan, plan.stages[k].term) & "\n"
   ctx.definedVars = frameVars(d, plan)
   ctx.indent = 0
   result.add ctx.genExits(d, plan)

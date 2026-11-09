@@ -1060,3 +1060,55 @@ awaitResult :: proc(slot: ^TuckAsyncResult($T)) -> T {
 	free(slot)
 	return value
 }
+
+// --- stackless: a statement that may park, on a helper stack (#216) ---------
+// tuck_async.nim's tuckSlOnStack explains it: a stage hands a statement that
+// may wait inside the runtime (an fd, a timer, `on select`, a send, an actor
+// wait) to a pooled WORKER coroutine, resumed at once. A statement that never
+// waits finishes there and the stage carries on; one that waits parks the
+// worker through the reactor, and the worker queues the frame when done.
+// Odin procs cannot capture, so a fresh worker finds its record through
+// slStartingWorker, set just before its first resume.
+@(private)
+TuckSlWorker :: struct {
+	co:     ^Coroutine,
+	body:   proc(env: rawptr),
+	frame:  ^TuckFrameHdr,
+	done:   bool,
+	parked: bool,
+}
+
+@(private) slIdleWorkers: [dynamic]^TuckSlWorker
+@(private) slStartingWorker: ^TuckSlWorker
+
+@(private)
+slWorkerMain :: proc() {
+	w := slStartingWorker
+	for {
+		w.body(w.frame)
+		w.done = true
+		if w.parked do tuckSlReady(w.frame) // the frame waited for this
+		append(&slIdleWorkers, w)
+		parkSuspend() // idle (not requeued) until the next statement
+	}
+}
+
+tuckSlOnStack :: proc(f: ^TuckFrameHdr, next: TuckStageFn, body: proc(env: rawptr)) -> TuckHop {
+	f.stage = next
+	w: ^TuckSlWorker
+	if len(slIdleWorkers) > 0 {
+		w = pop(&slIdleWorkers)
+	} else {
+		w = new(TuckSlWorker)
+		w.co = newCoroutine(slWorkerMain)
+		slStartingWorker = w
+	}
+	w.body = body
+	w.frame = f
+	w.done = false
+	w.parked = false
+	resume(w.co)
+	if w.done do return TuckHop{next, f}
+	w.parked = true
+	return TuckHop{}
+}

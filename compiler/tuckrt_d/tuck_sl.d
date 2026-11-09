@@ -121,17 +121,3 @@ TuckHop tuckSlAwait(T)(TuckFrameHdr* f, TuckSlot!T* s, TuckStageFn next)
     s.waiter = f;
     return TuckHop.init;
 }
-
-/// A fn that is not a frame awaiting a task: lend the thread until done.
-T tuckSlAwaitMain(T)(TuckSlot!T* s)
-{
-    while (!s.done)
-    {
-        if (!tuckSlRunOne())
-        {
-            stderr.writeln("tuck: deadlock — an awaited task can never finish (stackless)");
-            exit(1);
-        }
-    }
-    return s.value;
-}

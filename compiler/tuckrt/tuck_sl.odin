@@ -115,13 +115,18 @@ tuckSlAwait :: proc(f: ^TuckFrameHdr, s: ^TuckSlot($T), next: TuckStageFn) -> Tu
 	return TuckHop{}
 }
 
-// A fn that is not a frame awaiting a task: lend the thread until it is done.
+// A fn that is not a frame (main) awaiting a stackless task: lend the thread
+// to the scheduler — frames, coroutines (the helper stacks of statements that
+// wait) and the reactor — until the slot is done, as awaitResult does.
 tuckSlAwaitMain :: proc(s: ^TuckSlot($T)) -> T {
+	initLoop()
 	for !s.done {
-		if !tuckSlRunOne() {
+		if runNext() do continue
+		if len(gLoop.waiters) == 0 {
 			fmt.eprintln("tuck: deadlock — an awaited task can never finish (stackless)")
 			os.exit(1)
 		}
+		runOnce(1)
 	}
 	return s.value
 }
