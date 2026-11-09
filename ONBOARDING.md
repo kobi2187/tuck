@@ -159,11 +159,10 @@ fn main() -> int [io]:
 * **Mutation.** `..name` on a `var` either sets a field or calls a mutator fn
   (first parameter is the receiver's type, returns that type, result reassigned):
   `server ..withDefaults ..port {8080}` (`examples/02-builder-mutation.tuck`).
-  For Seqs the spelling that compiles on the committed compiler is
-  `xs = {items: xs, value: 7} push`. The owner's intended idiom is the method
-  form, `xs ..push {7}` (receiver fills `items`, the bare payload fills
-  `value`); the checker does not accept it on the committed compiler yet, so
-  do not write it until it does. A range is spaced: `0 .. n` (inclusive; use `n - 1` for an upper bound).
+  For Seqs, `xs ..push {7}` is the idiom (the receiver fills `items`, the bare
+  payload fills `value`); `xs = {items: xs, value: 7} push` is the long form.
+  A single dot, `xs .push {7}`, is a non-mutating call whose result must be
+  used. A range is spaced: `0 .. n` (inclusive; use `n - 1` for an upper bound).
 * **Optional / fallible.** `.ok` guards, then `.value`; `.err` for the error.
   There is no `?` propagation: re-raise with `err r.err`. A fallible fn is
   `[io]`. `not <optional>` is an error (TK-TY49): write `not x.ok`.

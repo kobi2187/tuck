@@ -5318,4 +5318,24 @@ fn useIt() -> int:
   t.quietly: t.okCheck "A112: a module's names mean what its own imports say"
   t.bugFixed "A112: a module's names mean what its own imports say"
 
+  # A113: an imported GENERIC fn called as a method. `xs.push {7}` could not be
+  # checked: the receiver did not fill the fn's first parameter (only fns
+  # declared in the module itself did), and when it did, `Seq[int]` was
+  # compared with `Seq[T]`, the payload's `value: T` never learned T, and the
+  # result stayed `Seq[T]`. The receiver now solves the type parameters.
+  t.src """
+import seq
+
+fn main() -> int:
+  var xs: Seq[int] = []
+  xs ..push {7}
+  xs ..push {9}
+  xs = xs.push {value: 1}
+  return xs.len + xs[1]
+"""
+  t.quietly: t.runs "A113: an imported generic fn is callable as a method", 12
+  t.bugFixed "A113: an imported generic fn is callable as a method"
+  t.quietly: t.runsOdin "A113: an imported generic fn is callable as a method on Odin", 12
+  t.bugFixed "A113: an imported generic fn is callable as a method on Odin"
+
   t.finish()

@@ -260,6 +260,11 @@ proc synthFieldValue(tc: var TypeChecker, f: FieldInit): Type =
 # name), the braced struct fills the remaining parameters by name. Builds and
 # returns the positional exkCall node (receiver, then declared-order args),
 # ty-stamped with the fn's return type — codegen emits it as-is.
+proc inferBindings(tc: TypeChecker, declared, actual: Type,
+                   generics: seq[string], bindings: var Table[string, Type],
+                   fnName: string, sp: Span)
+  ## Forward-declared: a method call solves its generics from the receiver.
+
 proc failIfReceiverSlotMismatched(tc: var TypeChecker, fnName: string,
                                   sig: FnSig, recvT: Type, sp: Span): bool =
   ## Which slot the receiver of `d.crank {step: 1}` fills depends on whether
@@ -292,13 +297,25 @@ proc failIfReceiverSlotMismatched(tc: var TypeChecker, fnName: string,
   ## member with implicit self and skipped the type check spec 5.1
   ## requires ("first parameter expects Server but the receiver is ..."
   ## never fired, when it should have).
-  let isTopLevel = fnName in tc.topLevelFns
+  # A fn an IMPORT brought in is as top-level as one declared here (`xs.push
+  # {7}`, `xs.at {index: 0}`): its first parameter is the receiver's slot.
+  let isTopLevel = fnName in tc.topLevelFns or
+                   (tc.bareOwnerOf.hasKey(fnName) and
+                    fnName notin tc.objectMemberFns)
   if isTopLevel and sig.params.len == 0:
     fail("Type Error: '" & fnName & "' takes no parameters — it cannot be " &
          "called as a method on " & typeName(recvT), sp)
   let selfIsExplicit = sig.params.len > 0 and sig.params[0].name == "self"
   result = isTopLevel or selfIsExplicit
-  if result and not tc.compatible(recvT, sig.params[0].typ):
+  if not result: return
+  # `Seq[T]` takes a `Seq[int]`: solve the fn's type parameters from the
+  # receiver before comparing, or no generic fn could be called as a method.
+  var wanted = sig.params[0].typ
+  if sig.generics.len > 0:
+    var solved = initTable[string, Type]()
+    tc.inferBindings(wanted, recvT, sig.generics, solved, fnName, sp)
+    wanted = substType(wanted, solved)
+  if not tc.compatible(recvT, wanted):
     fail("Type Error: '" & fnName & "' first parameter expects " &
          typeName(sig.params[0].typ) & " but the receiver is " &
          typeName(recvT), sp)
@@ -338,6 +355,15 @@ proc bindPayloadFields(tc: var TypeChecker, fnName: string,
                        params: seq[Param], argStruct: Expr, sp: Span): seq[Expr]
   ## Forward-declared: the claim passes it runs are defined further down.
 
+proc sameGenericShape(declared, actual: Type): bool =
+  ## Is `actual` an application of the same generic as `declared` (`Seq[int]`
+  ## for `Seq[T]`)? Only then may a method call's receiver solve the fn's type
+  ## parameters; an object member's implicit `self` is not in `params` at all.
+  declared != nil and actual != nil and declared.kind == tkApp and
+    actual.kind == tkApp and declared.base != nil and actual.base != nil and
+    declared.base.kind == tkNamed and actual.base.kind == tkNamed and
+    declared.base.name == actual.base.name
+
 proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
                      recvT: Type, argStruct: Expr, sp: Span): Expr =
   ## `d.crank {step: 1}` — the receiver fills a slot, the payload fills the
@@ -352,8 +378,15 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
     fail("Type Error: arguments to '" & fnName &
          "' must be a struct literal: {name: value, ...}", argStruct.span)
   let startAt = if receiverFillsFirstParam: 1 else: 0
-  let args = @[receiver] &
-             tc.bindPayloadFields(fnName, sig.params[startAt .. ^1], argStruct, sp)
+  # The receiver names the generics (`xs.push {7}` on a Seq[int] makes T int),
+  # so the payload is bound against the parameters AS THAT TYPE SEES THEM.
+  var rest = sig.params[startAt .. ^1]
+  var solved = initTable[string, Type]()
+  if sig.generics.len > 0 and sig.params.len > 0 and
+     sameGenericShape(sig.params[0].typ, recvT):
+    tc.inferBindings(sig.params[0].typ, recvT, sig.generics, solved, fnName, sp)
+    for p in rest.mitems: p.typ = substType(p.typ, solved)
+  let args = @[receiver] & tc.bindPayloadFields(fnName, rest, argStruct, sp)
   result = Expr(span: sp, kind: exkCall,
                 callee: Expr(span: sp, kind: exkVar, name: fnName), args: args)
   # No `->` is `-> void` (R5). A nil type here read as "unresolved", and
@@ -361,7 +394,7 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
   # here but is not declared" (found 2026-09-28).
   setType(semLayer, result,
           if sig.ret == nil: Type(span: sp, kind: tkNamed, name: "void")
-          else: sig.ret)
+          else: substType(sig.ret, solved))
 
 # `a.b` is one spelling for seven different things. Each of the procs below
 # recognises exactly one of them and returns nil for "not mine", so
@@ -2460,10 +2493,6 @@ proc check(tc: var TypeChecker, e: Expr, expected: Type, what: string) =
 # --- Generics: simple substitution, Nim/C# style. No variance, no HKTs. ---
 # Type params are inferred at the call site by unifying declared param types
 # against the payload's field types, then substituted into params and return.
-
-proc inferBindings(tc: TypeChecker, declared, actual: Type,
-                   generics: seq[string], bindings: var Table[string, Type],
-                   fnName: string, sp: Span)
 
 proc inferThroughFnSigSlot(tc: TypeChecker, declared, actual: Type,
                            generics: seq[string],
