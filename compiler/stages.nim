@@ -61,6 +61,8 @@ type
     node*: Expr             ## the exkFor / exkWhile
     varName*: string        ## lkRange: the counter field; lkSeq: the element alias
     stateField*: string     ## lkRange: the end field; lkSeq: the index field
+    elemType*: Type         ## lkSeq: the element type (a backend with no
+                            ## view to alias copies the element instead)
     head*, body*, exit*: int ## head: the step (`continue` lands there; for
                              ## lkWhile, the re-test); body; after the loop
 
@@ -340,6 +342,7 @@ proc loopState(sp: var Splitter, s: Expr, kind: LoopKind, k: int): Loop =
   of lkSeq:
     result.varName = s.iter.name
     result.stateField = "tuckIdx" & $k
+    result.elemType = seqElem(sp.res.typeFor(s.iterable))
     sp.addField(s, result.stateField, intType())
   of lkWhile: discard
 

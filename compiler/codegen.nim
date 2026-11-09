@@ -275,7 +275,7 @@ proc genSpawnCall(ctx: var CodegenCtx, calleeStr, callName: string,
   if concurrencyMode == cmStackless:
     # A frame with nowhere for its result: it is dropped when it finishes.
     return "tuckSlReady(addr " & stacklessHelper(calleeStr, "TuckNewˑ") &
-           "(nil, nil" & (if args.len > 0: ", " & args.join(", ") else: "") & ").hdr)"
+           "(nil, nil" & (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr)"
   let spawn = if ctx.taskRetType(calleeStr) == "void": "tuckSpawnJob"
               else: "tuckSpawnJobDrop"
   spawn & "(" & callName & (if args.len > 0: ", " & args.join(", ") else: "") & ")"
@@ -1112,7 +1112,7 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
                 "(var " & slot & ": TuckSlot[" & ret & "]; tuckSlReady(addr " &
                 stacklessHelper(tname, "TuckNewˑ") & "(addr " & slot & ", nil" &
                 (if argParts.len > 0: ", " & argParts.join(", ") else: "") &
-                ").hdr); tuckSlAwaitMain(addr " & slot & "))"
+                ").tuckHdr); tuckSlAwaitMain(addr " & slot & "))"
               else: "(let " & slot & " = newAsyncResult[" & ret & "](); " &
               "tuckSpawnResultJob(" & slot & ", " & tname &
               (if argParts.len > 0: ", " & argParts.join(", ") else: "") &

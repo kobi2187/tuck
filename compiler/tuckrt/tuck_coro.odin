@@ -230,7 +230,8 @@ spawn :: proc(fn: proc()) -> ^Coroutine {
 
 hasPending :: proc() -> bool {
 	initScheduler()
-	return queue.len(globalScheduler.readyQueue) > 0
+	// Stackless frames (#216) are ready work too (tuck_coro.nim's runNext).
+	return queue.len(globalScheduler.readyQueue) > 0 || tuckSlHasReady()
 }
 
 currentCoroutine :: proc() -> ^Coroutine {
@@ -239,6 +240,9 @@ currentCoroutine :: proc() -> ^Coroutine {
 
 runNext :: proc() -> bool {
 	initScheduler()
+	// Stackless frames (#216) are ready work too: every loop that waits by
+	// stepping the scheduler must run them (tuck_coro.nim's runNext).
+	if tuckSlRunOne() do return true
 	if queue.len(globalScheduler.readyQueue) == 0 do return false
 
 	coro := queue.pop_front(&globalScheduler.readyQueue)
@@ -371,6 +375,8 @@ tuckLendUntil :: proc(fd: int, write: bool, timeoutMs: int) -> bool {
 		if n, _ := linux.poll(pfd[:], 0); n > 0 do return true
 		spent := int(time.duration_milliseconds(time.tick_since(start)))
 		if timeoutMs >= 0 && spent >= timeoutMs do return false
+		// A stackless frame cannot lend the thread (tuck_async.nim says why).
+		if tuckSlDriving > 0 do tuckSlCannotPark()
 		if runNext() do continue
 		if len(gLoop.waiters) == 0 {
 			// Nothing else can make progress: just wait on the fd itself.

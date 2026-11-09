@@ -36,3 +36,10 @@ proc parseConcurrencyMode*(name: string): (ConcurrencyMode, bool) =
 proc isFrameDecl*(d: Decl): bool =
   ## Is `d` emitted as a frame and stages in this build?
   concurrencyMode == cmStackless and d != nil and d.id.isSet and d.id in frameDecls
+
+proc drainsFrames*(hasTasks: bool): bool =
+  ## Does the entry point run leftover frames before the coroutine loop? A
+  ## stackless program with tasks does: a spawned task nobody awaited must
+  ## still run to its end. Kept here so the three entry points add no
+  ## branch of their own for it.
+  hasTasks and concurrencyMode == cmStackless

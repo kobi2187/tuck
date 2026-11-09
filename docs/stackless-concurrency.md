@@ -1,13 +1,14 @@
 # Stackless concurrency (#216)
 
-Status: phases 0–2 are built.
+Status: phases 0–3 are built, apart from liveness for frame fields.
 * **Phase 0, the spike:** `research/stackless/`.
 * **Phase 1, the colouring:** `tuck frames f.tuck` prints it
   (`compiler/frames.nim`, pinned by `tests/suites/frames.nim`).
-* **Phase 2:** `--concurrency:stackless` runs tasks as frames and stages on
-  the Nim backend. `tests/suites/stackless.nim` checks that each program
-  exits the same and prints the same lines, in the same order, under both
-  flags. "What phase 2 built" below lists how.
+* **Phases 2–3:** `--concurrency:stackless` runs tasks as frames and stages
+  on all three backends, with pauses inside loops and `match`.
+  `tests/suites/stackless.nim` checks that each program exits the same and
+  prints the same lines, in the same order, as the Nim stackful reference.
+  "What phase 2 built" and "Phase 3 on Odin and D" below list how.
 
 ## The owner's rulings (2026-11-09)
 
@@ -250,6 +251,32 @@ How it was built, where the plan above left room:
   an id. A jump that leaves scopes calls their exit procs (`TuckXˑfˑN`),
   which run and disarm the armed `defer`s, innermost first.
 
+**Phase 3 on Odin and D** (`codegen_odin_stages.nim`,
+`codegen_d_stages.nim`, `tuckrt/tuck_sl.odin`, `tuckrt_d/tuck_sl.d`). They
+print the same `StagePlan` the Nim printer does:
+* **Fields by name:** Odin opens each stage with `using tuckF`. Stackless
+  files declare `#+feature using-stmt`; stackful files are unchanged. D
+  wraps each stage in `with (*tuckF) { }`.
+* **Returns:** a `return` goes through a per-frame `TuckRetˑf` instead of
+  Nim's generic `tuckSlRet`.
+* **Seq loop element:** a split loop over a Seq copies the element into a
+  frame field each iteration. That is a bit copy, so as far as ownership is
+  concerned it is a view: the rules never drop a loop element.
+* **D jumps:** a jump that leaves scopes becomes a small function
+  (`TuckJˑfˑN`). D has no statement-expression that could run the scope
+  exits and return in one place.
+* **D frames are GC-allocated,** because a frame holds slices the GC owns.
+* **Scheduler hooks:** each backend's scheduler steps frames from the same
+  places as Nim's: Odin's `runNext`/`hasPending`, and D's
+  `readyCount`/`stepOne`.
+
+**A difference this exposed.** Odin and D *stackful* do not yield before an
+`[io]` call in a task body: their task bodies run straight through, unlike
+Nim's and unlike spec §9.2. Their *stackless* builds go through the shared
+splitter, so they do yield. So the suite compares every backend's stackless
+run against the **Nim stackful** reference, and all of them match it. Under
+stackful, `order` and `loops` interleave differently on Odin than on Nim.
+
 Not built yet, and **refused rather than run wrong:**
 * **At compile time:** each of these is refused with its line:
   * a pause inside `on select` or `defer`;
@@ -267,7 +294,7 @@ Not built yet, and **refused rather than run wrong:**
 | 0 | spike | **done**: `research/stackless/` |
 | 1 | colouring pass and a dump (`tuck frames`: frame fns and pause sites; frame fields move to phase 2, where liveness is computed for the split) | **done**: `tests/suites/frames.nim` pins examples 14/28/29/30/42/26/27 and one program per rule in `tests/frames/` |
 | 2 | flag, splitting of straight-line code and `if`, the call protocol, `defer`; tasks; Nim backend | **done**: `tests/suites/stackless.nim` runs example 28 and `tests/stackless/{order,values}` under both flags, same exit code and same stdout. A pause inside `match` moved to phase 3; example 14 cannot run in either mode (`http` is pending) |
-| 3 | loops, `break`/`continue`, `match`, liveness for frame fields; Odin and D emitters, checking the `Hop` two-register return on their ABIs | loops, `match`, `break`/`continue` **done on Nim** (`tests/stackless/loops`); Odin, D and liveness still to come |
+| 3 | loops, `break`/`continue`, `match`, liveness for frame fields; Odin and D emitters, checking the `Hop` two-register return on their ABIs | **done**, except liveness: `tests/suites/stackless.nim` runs `order`, `values`, `loops` and example 28 stackless on Nim, Odin and D, each matching the Nim stackful reference. Liveness (fewer frame fields) is a size optimisation, deferred |
 | 4 | runtime parity: reactor, timers, `on select`, offload, waiting sends, `waitUntil` | examples 29, 30, 42 and the net suites pass under both flags |
 | 5 | actors in all three `--actors:` modes, urgent mailboxes, `alive`/`pingUs` | `mailbox_full`, `actor_heartbeat`, Savina and the actor examples pass under both flags |
 | 6 | (#219) static slabs for actor chains, stack root frames, embedded flag; measurements | numbers in `benches/SCORES.md`; a no-heap actor-only program builds |

@@ -772,10 +772,10 @@ on switch semantics.
 
 > **`--concurrency:stackless`** (#216, in progress) runs the same
 > semantics with no stacks at all. A fn that can pause becomes a heap
-> frame plus stages, split by the compiler. So far it covers tasks on the
-> Nim backend. A pause inside a loop is refused at compile time, and a task
-> waiting on I/O or a timer stops at run time, until later phases build
-> them. `tuck frames f.tuck` shows which fns become frames. See
+> frame plus stages, split by the compiler. So far it covers tasks on all
+> three backends, including pauses inside loops and `match`. A pause inside
+> `on select` is refused at compile time, and a task waiting on I/O or a
+> timer stops at run time, until phase 4 builds them. `tuck frames f.tuck` shows which fns become frames. See
 > `docs/stackless-concurrency.md`.
 
 ### Actors — global singletons

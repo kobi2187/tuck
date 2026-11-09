@@ -1,6 +1,6 @@
-## `--concurrency:stackless` (#216, docs/stackless-concurrency.md), phase 2:
-## tasks on the Nim backend run as frames and stages instead of minicoro
-## coroutines, with the SAME semantics. So the assertion here is a
+## `--concurrency:stackless` (#216, docs/stackless-concurrency.md), phases
+## 2-3: tasks on all three backends run as frames and stages instead of
+## minicoro coroutines, with the SAME semantics. So the assertion here is a
 ## differential one: each program is built under both flags and must exit
 ## with the same code and print the same lines in the same order. Order is
 ## the strict part: it is the scheduler's interleaving, and a yield moved
@@ -24,13 +24,31 @@ import ../harness
 const Programs = ["tests/stackless/order.tuck", "tests/stackless/values.tuck",
                   "tests/stackless/loops.tuck", "examples/28-async-task.tuck"]
 
-proc buildRun(t: var T, mode: string): int =
-  ## Build the current snippet under `--concurrency:<mode>` into its own
-  ## dir and run it; the run's work index.
-  let dir = t.curDir / mode
-  let build = t.needCmd(@["./tuck", "b", t.curDir / "t.tuck", "--concurrency:" & mode,
-                          "-o:" & dir, "--root:" & t.root], vBuild)
-  t.needCmdAfter(@[dir / "t"], build, proc (d: string) = discard, dir, vRun)
+type Backend = enum bNim = "", bOdin = "--odin", bD = "--dlang"
+
+proc binary(b: Backend): string =
+  case b
+  of bNim: "t"
+  of bOdin: "t_odin"
+  of bD: "t_d"
+
+proc buildRun(t: var T, mode: string, b = bNim): int =
+  ## Build the current snippet under `--concurrency:<mode>` for backend `b`
+  ## into its own dir and run it; the run's work index.
+  let dir = t.curDir / (mode & $b)
+  var argv = @["./tuck", "b", t.curDir / "t.tuck", "--concurrency:" & mode,
+               "-o:" & dir, "--root:" & t.root]
+  if b != bNim: argv.add $b
+  let build = t.needCmd(argv, vBuild)
+  t.needCmdAfter(@[dir / b.binary], build, proc (d: string) = discard, dir, vRun)
+
+proc toolchains(t: var T): seq[Backend] =
+  ## The other backends this machine can build: Odin is required when
+  ## TUCK_REQUIRE_ODIN=1 (as in CI), and skipped with a notice otherwise.
+  if findOdin() != "": result.add bOdin
+  elif getEnv("TUCK_REQUIRE_ODIN") == "1" and t.phase == pReport:
+    t.no "odin is available", "odin not found and TUCK_REQUIRE_ODIN=1"
+  if findDmd() != "": result.add bD
 
 proc runOutput(output: string): string =
   ## A run's stdout, without the build chatter the harness may interleave.
@@ -39,6 +57,7 @@ proc runOutput(output: string): string =
     result.add line & "\n"
 
 proc same(t: var T, name: string, a, b: int) =
+  ## Run `b` exits and prints exactly what reference run `a` does.
   if t.phase != pReport: return
   if t.skippedCmd(a) or t.skippedCmd(b):
     t.skip name
@@ -47,7 +66,7 @@ proc same(t: var T, name: string, a, b: int) =
   let (rcB, outB) = t.resultOf(b)
   if rcA == rcB and runOutput(outA) == runOutput(outB): t.ok name
   else:
-    t.no name, "stackful exit " & $rcA & ", stackless exit " & $rcB & "\n" &
+    t.no name, "reference exit " & $rcA & ", this exit " & $rcB & "\n" &
                unifiedDiff(runOutput(outA), runOutput(outB), 5)
 
 proc refusedAtCompile(t: var T) =
@@ -63,42 +82,47 @@ proc refusedAtCompile(t: var T) =
     t.ok "a pause inside on select is refused, by name (phase 4)"
   else: t.no "a pause inside on select is refused", "exit " & $rc & ": " & outp
 
-proc refusedAtRun(t: var T) =
+proc refusedAtRun(t: var T, b: Backend) =
   t.src readFile("tests/stackless/parks.tuck")
-  let run = t.buildRun("stackless")
+  let run = t.buildRun("stackless", b)
+  let name = "a frame waiting on a timer stops with a message, not a hang (phase 4)" &
+             (if b == bNim: "" else: " " & $b)
   if t.phase != pReport: return
   if t.skippedCmd(run):
-    t.skip "a frame waiting on a timer stops"
+    t.skip name
     return
   let (rc, outp) = t.resultOf(run)
-  if rc == 70 and "parking a frame arrives in #216 phase 4" in outp:
-    t.ok "a frame waiting on a timer stops with a message, not a hang (phase 4)"
-  else: t.no "a frame waiting on a timer stops", "exit " & $rc & ": " & outp
+  if rc == 70 and "parking a frame arrives in #216 phase 4" in outp: t.ok name
+  else: t.no name, "exit " & $rc & ": " & outp
 
 proc flags(t: var T) =
   t.src readFile("examples/28-async-task.tuck")
   let bogus = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck", "--concurrency:bogus"])
-  let odin = t.needCmd(@["./tuck", "c", t.curDir / "t.tuck", "--odin",
-                         "--concurrency:stackless", "-o:" & t.curDir], vEmit)
   if t.phase != pReport: return
   let (rcB, outB) = t.resultOf(bogus)
   if rcB != 0 and "available: stackful, stackless" in outB: t.ok "an unknown mode is refused"
   else: t.no "an unknown mode is refused", outB
-  if t.skippedCmd(odin):
-    t.skip "stackless is Nim-only so far"
-    return
-  let (rcO, outO) = t.resultOf(odin)
-  if rcO != 0 and "Nim-only" in outO: t.ok "stackless on Odin is refused until phase 3"
-  else: t.no "stackless on Odin is refused", outO
 
 proc run*(t: var T) =
   ## Registers the stackless assertions: each program the same under both
-  ## flags, and the not-yet-built shapes refused.
+  ## flags, on every backend, and the not-yet-built shapes refused.
+  ##
+  ## The REFERENCE is Nim stackful: it yields before every [io] call in a
+  ## task body, as spec §9.2 says. Odin and D stackful do not (their task
+  ## bodies run straight through), so their interleaving differs; their
+  ## stackless builds go through the shared splitter and match the
+  ## reference, which is what is asserted for them.
+  let others = t.toolchains()
   for p in Programs:
     t.src readFile(p)
-    let a = t.buildRun("stackful")
-    let b = t.buildRun("stackless")
-    t.same("same output and exit under both flags: " & p.extractFilename, a, b)
+    let name = p.extractFilename
+    let reference = t.buildRun("stackful")
+    t.same("Nim: same output and exit under both flags: " & name,
+           reference, t.buildRun("stackless"))
+    for b in others:
+      let label = (if b == bOdin: "Odin" else: "D")
+      t.same(label & " stackless matches the Nim reference: " & name,
+             reference, t.buildRun("stackless", b))
   t.refusedAtCompile()
-  t.refusedAtRun()
+  for b in @[bNim] & others: t.refusedAtRun(b)
   t.flags()

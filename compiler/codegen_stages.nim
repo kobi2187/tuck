@@ -36,8 +36,8 @@ proc fieldLine(f: FrameField): string =
 proc genFrameType(d: Decl, plan: StagePlan): string =
   let r = resultType(d)
   result = "type " & frameType(d.name) & "* = object\n" &
-           "    hdr: TuckFrameHdr\n    slot: ptr TuckSlot[" & r & "]\n" &
-           "    dest: ptr " & r & "\n"
+           "    tuckHdr: TuckFrameHdr\n    tuckRes: ptr TuckSlot[" & r & "]\n" &
+           "    tuckDest: ptr " & r & "\n"
   for p in d.fnParams: result.add "    " & p.name & ": " & genType(p.typ) & "\n"
   for f in plan.fields: result.add fieldLine(f)
   for k in 0 ..< plan.defers.len: result.add "    tuckDefer" & $k & ": bool\n"
@@ -46,13 +46,13 @@ proc genFrameNew(d: Decl): string =
   ## The constructor: arguments are stored by their bits — the caller's
   ## rules moved or copied each one for this frame, as for a spawned job.
   let r = resultType(d)
-  var params = @["slot: ptr TuckSlot[" & r & "]", "dest: ptr " & r]
+  var params = @["tuckRes: ptr TuckSlot[" & r & "]", "tuckDest: ptr " & r]
   for p in d.fnParams: params.add p.name & ": " & genType(p.typ)
   result = "proc " & frameNew(d.name) & "*(" & params.join(", ") & "): ptr " &
            frameType(d.name) & " =\n" &
            "  result = tuckSlAlloc(" & frameType(d.name) & ")\n" &
-           "  result.hdr.stage = " & stageName(d.name, 0) & "\n" &
-           "  result.slot = slot\n  result.dest = dest\n"
+           "  result.tuckHdr.stage = " & stageName(d.name, 0) & "\n" &
+           "  result.tuckRes = tuckRes\n  result.tuckDest = tuckDest\n"
   for p in d.fnParams: result.add "  tuckStore(result." & p.name & ", " & p.name & ")\n"
 
 # --- terminators -----------------------------------------------------------------
@@ -74,8 +74,8 @@ proc genCall(ctx: var CodegenCtx, d: Decl, t: Term): string =
   let ctor = stacklessHelper(calleeStr, "TuckNewˑ")
   let entry = stacklessHelper(calleeStr, "TuckSˑ") & "ˑ0"
   "  let tuckC = " & ctor & "(nil, " & dest & (if args.len > 0: ", " & args.join(", ") else: "") & ")\n" &
-  "  tuckC.hdr.caller = addr tuckF.hdr\n" &
-  "  tuckF.hdr.stage = " & stageName(d.name, t.next) & "\n" &
+  "  tuckC.tuckHdr.caller = addr tuckF.tuckHdr\n" &
+  "  tuckF.tuckHdr.stage = " & stageName(d.name, t.next) & "\n" &
   "  return " & entry & "(tuckC)\n"
 
 proc genAwait(ctx: var CodegenCtx, d: Decl, t: Term): string =
@@ -85,8 +85,8 @@ proc genAwait(ctx: var CodegenCtx, d: Decl, t: Term): string =
   let ctor = stacklessHelper(calleeStr, "TuckNewˑ")
   "  tuckF." & t.slot & ".done = false\n" &
   "  tuckSlReady(addr " & ctor & "(addr tuckF." & t.slot & ", nil" &
-    (if args.len > 0: ", " & args.join(", ") else: "") & ").hdr)\n" &
-  "  return tuckSlAwait(addr tuckF.hdr, addr tuckF." & t.slot & ", " &
+    (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr)\n" &
+  "  return tuckSlAwait(addr tuckF.tuckHdr, addr tuckF." & t.slot & ", " &
     stageName(d.name, t.next) & ")\n"
 
 proc scopeExit(d: Decl, scope: int): string = "TuckXˑ" & d.name & "ˑ" & $scope
@@ -148,7 +148,7 @@ proc genTerm(ctx: var CodegenCtx, d: Decl, plan: StagePlan, t: Term): string =
   case t.kind
   of tkFall: genFall(d)
   of tkGoto: genGoto(d, plan, t)
-  of tkYield: "  return tuckSlYield(addr tuckF.hdr, " & stageName(d.name, t.next) & ")\n"
+  of tkYield: "  return tuckSlYield(addr tuckF.tuckHdr, " & stageName(d.name, t.next) & ")\n"
   of tkBranch:
     "  if " & ctx.genExpr(t.cond) & ": " & jump(d, t.thenS) & "\n" &
     "  else: " & jump(d, t.elseS) & "\n"

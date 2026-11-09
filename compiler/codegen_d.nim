@@ -32,6 +32,7 @@ import lowering                # getFieldsForType
 from codegen_odin_util import enumTagOwner, enumTagDecl, tagOwnerHint, hintOf, withTagHint
 from mangle import mangleName
 import ./codegen_d_ctx
+import concurrency   # --concurrency:stackless spawn/await sites (#216)
 
 # Type emission, the ctx type, and dPrims (the D primitive-name table) now
 # live in codegen_d_ctx.nim, imported above.
@@ -148,7 +149,7 @@ proc genDStructLit(ctx: var DCodegenCtx, e: Expr): string =
     inferred.add(FieldDef(name: f.name, typ: ft, span: e.span))
   ctx.recCtorFromLiteralD(inferred, e.fields)
 
-proc genDCallArgs(ctx: var DCodegenCtx, e: Expr): seq[string] =
+proc genDCallArgs*(ctx: var DCodegenCtx, e: Expr): seq[string] =
   ## A call's arguments: a payload's as call_args.payloadArgs orders them,
   ## printed; anything else as written.
   let args = if e.isPayloadCall:
@@ -401,10 +402,19 @@ proc genDActorCall(ctx: var DCodegenCtx, e: Expr): string =
   if actorMember != "":
     return actorMember & "(" & (@["self"] & ctx.genDCallArgs(e)).join(", ") & ")"
 
+proc stacklessCtorD(calleeStr: string): string =
+  ## `mod.task` -> `mod.TuckNewˑtask`: the frame constructor (#216).
+  let dot = calleeStr.rfind('.')
+  if dot < 0: "TuckNewˑ" & calleeStr else: calleeStr[0 .. dot] & "TuckNewˑ" & calleeStr[dot + 1 .. ^1]
+
 proc genDSpawn(ctx: var DCodegenCtx, e: Expr, task: string): string =
   ## Fire-and-forget: the arguments are evaluated here and handed to the job
   ## (a closure over them would read them after their owner dropped them).
+  ## Under stackless, a frame with nowhere for its result, queued.
   let args = ctx.genDCallArgs(e)
+  if concurrencyMode == cmStackless:
+    return "rt.tuckSlReady(&" & stacklessCtorD(task) & "(null, null" &
+           (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr)"
   "rt.tuckSpawnJob(&" & task &
     (if args.len > 0: ", " & args.join(", ") else: "") & ")"
 
@@ -532,6 +542,13 @@ proc genDWrappedReturn(ctx: var DCodegenCtx, v: Expr): string =
     return "return rt.tok(" &
            ctx.recCtorFromLiteralD(ctx.retInnerT.fields, v.fields) & ")"
   "return rt.tok(" & ctx.genDExpr(v) & ")"
+
+proc frameReturnD*(ctx: DCodegenCtx, ret: string): string =
+  ## In a stackless stage (#216) a `return [v]` finishes the FRAME: the
+  ## value goes to its slot or destination and the stage returns the hop.
+  if ctx.frameVar == "" or not ret.startsWith("return"): return ret
+  let v = ret["return".len .. ^1].strip
+  "return " & ctx.frameRet & "(" & ctx.frameVar & (if v.len > 0: ", " & v else: "") & ")"
 
 proc genDReturn(ctx: var DCodegenCtx, e: Expr): string =
   ## A `return`. In a fallible fn the value is wrapped in the result carrier
@@ -958,6 +975,23 @@ proc genDMovedCall(ctx: var DCodegenCtx, e: Expr): string =
   if e.dropsOld: return "rt.tuckReplace(" & ctx.movedAssignTarget(e.target) & ", " & call & ")"
   ctx.movedAssignTarget(e.target) & " = " & call
 
+proc genDStacklessBind(ctx: var DCodegenCtx, e: Expr, ret: string,
+                       args: seq[string], slot: string): string =
+  ## `let r = {args} task` outside a frame, under stackless (#216): the
+  ## frame gets a slot here, and this fn lends its thread until it is done.
+  ## (A frame's own await is a stage cut, never this.)
+  let v = e.assignVal
+  let declT = ctx.dDeclType(ctx.res.typeFor(e.target))
+  let target =
+    if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
+      ctx.definedVars.incl(e.target.name)
+      (if declT != "": declT else: ret) & " " & e.target.name
+    else: ctx.genDExpr(e.target)
+  "rt.TuckSlot!(" & (if ret == "void": "bool" else: ret) & ") " & slot & ";\n" &
+    ctx.indD & "rt.tuckSlReady(&" & stacklessCtorD(v.callee.name) & "(&" & slot &
+    ", null" & (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr);\n" &
+    ctx.indD & target & " = rt.tuckSlAwaitMain(&" & slot & ")"
+
 proc genDBoundTaskCall(ctx: var DCodegenCtx, e: Expr): string =
   ## `let r = {args} someTask` — spawn the task into a result slot and wait
   ## for it. "" when this assignment is not a task call.
@@ -973,6 +1007,7 @@ proc genDBoundTaskCall(ctx: var DCodegenCtx, e: Expr): string =
   let ret = ctx.taskRetTypeD(v.callee.name)
   let args = ctx.genDCallArgs(v)
   let slot = ctx.freshName("tuckSlot")
+  if concurrencyMode == cmStackless: return ctx.genDStacklessBind(e, ret, args, slot)
   # Three statements, laid out here — the caller strips its own indent and
   # terminator for this shape (see genDStmt's boundTaskCall test).
   var res = "auto " & slot & " = rt.newAsyncResult!(" & ret & ")();\n"
@@ -1172,7 +1207,7 @@ proc genDStmt*(ctx: var DCodegenCtx, s: Expr): string =
   if code == "": return ""
   ctx.indD & code & ";\n"
 
-proc genDBlock(ctx: var DCodegenCtx, e: Expr): string =
+proc genDBlock*(ctx: var DCodegenCtx, e: Expr): string =
   ## A block's statements, each on its own line at the current indent.
   for s in e.stmts:
     result.add(ctx.genDStmt(s))
@@ -1539,8 +1574,8 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
     if matchArmsReturn(e): ctx.genDMatchStmt(e) else: ctx.genDMatchExpr(e)
   of exkFor: ctx.genDFor(e)
   of exkWhile: ctx.genDWhile(e)
-  of exkBreak: "break"
-  of exkContinue: "continue"
+  of exkBreak: ctx.frameJumps.getOrDefault(cast[pointer](e), "break")
+  of exkContinue: ctx.frameJumps.getOrDefault(cast[pointer](e), "continue")
   of exkAssign: ctx.genDAssign(e)
   of exkAppend: ctx.genDAppend(e)
   of exkCopy: ctx.genDCopy(e)
@@ -1550,8 +1585,8 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkReset:
     let place = ctx.genDAssignTarget(e.resetPlace)
     place & " = typeof(" & place & ").init"
-  of exkReturn: ctx.genDReturn(e)
-  of exkRaise: ctx.genDRaise(e)
+  of exkReturn: ctx.frameReturnD(ctx.genDReturn(e))
+  of exkRaise: ctx.frameReturnD(ctx.genDRaise(e))
   of exkDiscard:
     # D already allows an expression statement's value to go unused, no
     # keyword needed — the identical construct to Tuck's `discard <expr>`.

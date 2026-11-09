@@ -155,7 +155,7 @@ proc tuckSlRet*[F; T](f: ptr F, v: sink T): TuckHop {.inline.} =
   ## `return v` in a stage: the value goes where the frame's result goes,
   ## the frame is freed, and whoever resumes next is the hop.
   mixin tuckSlExit
-  tuckSlFinish(f.slot, f.dest, v)
+  tuckSlFinish(f.tuckRes, f.tuckDest, v)
   tuckSlExit(f)              # its armed `defer`s (emitted per frame type)
   result = tuckSlReturnHop(cast[ptr TuckFrameHdr](f))
   tuckSlFree(f)
@@ -163,7 +163,7 @@ proc tuckSlRet*[F; T](f: ptr F, v: sink T): TuckHop {.inline.} =
 proc tuckSlRetVoid*[F](f: ptr F): TuckHop {.inline.} =
   ## A void frame's `return` (or its end).
   mixin tuckSlExit
-  tuckSlFinishVoid(f.slot)
+  tuckSlFinishVoid(f.tuckRes)
   tuckSlExit(f)
   result = tuckSlReturnHop(cast[ptr TuckFrameHdr](f))
   tuckSlFree(f)

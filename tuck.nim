@@ -334,9 +334,10 @@ options:
                   stackful   a minicoro coroutine per task, own stack (default)
                   stackless  a pausing fn becomes a heap FRAME plus STAGES
                              (the code between pauses); no stacks at all.
-                             Nim backend, tasks only so far: a pause inside
-                             a loop is refused at compile time, and a task
-                             waiting on I/O or a timer stops at run time.
+                             Tasks, on all three backends, so far: a pause
+                             inside `on select` is refused at compile time,
+                             and a task waiting on I/O or a timer stops at
+                             run time (both #216 phase 4).
                 See docs/stackless-concurrency.md.
   --batch-count:N     (--actors:batch) flush after N staged sends
   --batch-timeout:MS  (--actors:batch) ...or MS after the first, whichever
@@ -1065,9 +1066,6 @@ when isMainModule:
       die("tuck: no such concurrency mode: '" & name & "'\n" &
           "  available: stackful, stackless")
     concurrencyMode = m
-  if concurrencyMode == cmStackless and backend != bkNim:
-    die("tuck: --concurrency:stackless is Nim-only so far (#216 phase 3 " &
-        "brings Odin and D)")
   # `--actors:MODE` — how an actor gets its CPU (compiler/actor_mode.nim).
   # Semantics are identical across modes; cost is not, and the trade depends
   # on the workload, so the programmer picks. Validated in the order a typo

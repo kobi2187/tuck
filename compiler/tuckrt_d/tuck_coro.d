@@ -19,6 +19,7 @@
 module tuck_coro;
 
 import tuck_arena;
+import tuck_sl;   // stackless frames are ready work too (#216)
 import core.stdc.stdlib : abort;
 import std.stdio : stderr;
 import core.sys.posix.unistd : read, write, close, pipe2, pipe;
@@ -222,7 +223,10 @@ private void growQueue()
     readyCap = newCap;
 }
 
-private size_t readyCount() { return readyTail - readyHead; }
+/// Ready coroutines, plus one when stackless frames (#216) are ready: they
+/// are ready work too, so every loop that waits by stepping the scheduler
+/// runs them (tuck_coro.nim's runNext says why).
+private size_t readyCount() { return readyTail - readyHead + (tuckSlHasReady() ? 1 : 0); }
 
 /// Put a coroutine on the run queue.
 void schedule(Coroutine* c)
@@ -441,6 +445,8 @@ private bool tuckLendUntil(int fd, bool write, long timeoutMs)
         if (poll(&pfd, 1, 0) > 0) return true;
         immutable spent = (MonoTime.currTime - start).total!"msecs";
         if (timeoutMs >= 0 && spent >= timeoutMs) return false;
+        // A stackless frame cannot lend the thread (tuck_async.nim says why).
+        if (tuckSlDriving > 0) tuckSlCannotPark();
         if (readyCount > 0) { stepOne(); continue; }
         if (gLoop.waiters.count == 0)
         {
@@ -549,6 +555,7 @@ private bool runOnce(int timeoutMs = 100)
 /// Run one coroutine off the ready queue, reaping it if it finished.
 private void stepOne()
 {
+    if (tuckSlRunOne()) return;
     auto c = takeReady();
     resume(c);
     if (c.state == CoroutineState.Finished) destroyCoroutine(c);

@@ -61,6 +61,11 @@ type
     shapes*: ShapePool    # the program's shared record shapes; nil for one module
     moduleName*: string
     tmpCounter*: int
+    frameVar*: string       # in a stackless stage (#216): "tuckF"; a return
+                            # finishes the frame through `frameRet` instead
+    frameRet*: string       # that frame's TuckRetˑf function
+    frameJumps*: Table[pointer, string]  # break/continue/arm carriers, by
+                            # identity, printed as these jumps instead
     currentParams*: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
     retWrapped*: bool       # current fn returns !T/?T — returns auto-wrap
     retAbsentCapable*: bool   # return type is ?T/!?T — bare return means tnone

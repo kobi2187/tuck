@@ -20,6 +20,7 @@ import core.atomic : cas, atomicLoad, atomicStore;
 // reaches everything through `rt`, so tuck_rt re-exports it — mirroring
 // tuck_rt.nim, which fronts tuck_async the same way.
 public import tuck_coro;
+public import tuck_sl;   // frames and stages: --concurrency:stackless (#216)
 public import tuck_arena;
 
 /// MEMORY IS THE PROGRAM'S. The ownership rules decide every copy, move and
