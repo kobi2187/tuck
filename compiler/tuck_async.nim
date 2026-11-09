@@ -94,6 +94,7 @@ proc tuckYield*() =
 # it. Before this, the wait raised "called outside coroutine".
 import std/posix as tuckposix
 import std/tables
+import ./tuck_sl   # tuckSlDriving: is a stackless frame on this thread? (#216)
 
 proc tuckLendUntil(fd: int, events: cshort, timeoutMs: int): bool =
   ## Run the scheduler until `fd` has `events` (true) or `timeoutMs` passes
@@ -106,6 +107,10 @@ proc tuckLendUntil(fd: int, events: cshort, timeoutMs: int): bool =
     if tuckposix.poll(addr p, 1, 0) > 0: return true
     let spent = int((getMonoTime().ticks - start.ticks) div 1_000_000)
     if timeoutMs >= 0 and spent >= timeoutMs: return false
+    # A stackless frame cannot lend the thread: the frames that would make
+    # this fd ready are queued behind it. Parking a frame on an fd is #216
+    # phase 4; until then, stop and say so rather than hang.
+    if tuckSlDriving > 0: tuckSlCannotPark()
     if runNext(): continue
     if gLoop.waiters.len == 0:
       # Nothing else can make progress: just wait on the fd itself.

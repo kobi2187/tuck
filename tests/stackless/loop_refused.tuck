@@ -1,0 +1,14 @@
+# A pause inside a loop is phase 3 (#216): refused by name, never run wrong.
+fn step({n: int}) -> {v: int} [io]:
+  return {v: n}
+
+task count({m: int}) -> {r: int} [io]:
+  var sum = 0
+  for i in 1 .. m:
+    let s = {n: i} step
+    sum += s.v
+  return {r: sum}
+
+fn main() -> int [io]:
+  let r = {m: 3} count
+  return r.r

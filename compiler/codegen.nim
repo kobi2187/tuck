@@ -49,6 +49,7 @@ import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_type   # genType: Tuck type -> Nim type text
 import ./ast_query
 import ./codegen_ctx
+import concurrency   # --concurrency:stackless spawn/await sites (#216)
 from ownership_elab import owning
 from ownership_rules import isPlaceRead
 export genType        # re-exported: this file's public face is the backend
@@ -236,7 +237,7 @@ proc asSumVariantCall(ctx: var CodegenCtx, e: Expr): string =
                 else: nil
   ctx.sumVariantCtor(e.callee.receiver.name, e.callee.fieldName, payload)
 
-proc genCallArgs(ctx: var CodegenCtx, e: Expr): seq[string] =
+proc genCallArgs*(ctx: var CodegenCtx, e: Expr): seq[string] =
   ## A call's arguments: a payload's as call_args.payloadArgs orders them,
   ## printed; anything else as written.
   let args = if e.isPayloadCall:
@@ -256,6 +257,12 @@ proc genSaturatingCtor(satBase, calleeStr, arg: string): string =
 proc genDiscard(ctx: var CodegenCtx, e: Expr): string
   ## Defined after genExpr, which it calls.
 
+proc stacklessHelper*(calleeStr, prefix: string): string =
+  ## `mod.task` -> `mod.<prefix>task`: a frame's helpers sit beside it,
+  ## exported from the module that declares it (#216).
+  let dot = calleeStr.rfind('.')
+  if dot < 0: prefix & calleeStr else: calleeStr[0 .. dot] & prefix & calleeStr[dot + 1 .. ^1]
+
 proc genSpawnCall(ctx: var CodegenCtx, calleeStr, callName: string,
                   args: seq[string]): string =
   ## Calling a task SCHEDULES it as a coroutine — it runs concurrently, main
@@ -265,6 +272,10 @@ proc genSpawnCall(ctx: var CodegenCtx, calleeStr, callName: string,
   ## The arguments are evaluated HERE and handed to the job (the rules moved
   ## or copied each one for it): a closure over them would read them later,
   ## after their owner had dropped them. A result nobody awaits is dropped.
+  if concurrencyMode == cmStackless:
+    # A frame with nowhere for its result: it is dropped when it finishes.
+    return "tuckSlReady(addr " & stacklessHelper(calleeStr, "TuckNewˑ") &
+           "(nil, nil" & (if args.len > 0: ", " & args.join(", ") else: "") & ").hdr)"
   let spawn = if ctx.taskRetType(calleeStr) == "void": "tuckSpawnJob"
               else: "tuckSpawnJobDrop"
   spawn & "(" & callName & (if args.len > 0: ", " & args.join(", ") else: "") & ")"
@@ -394,7 +405,7 @@ proc genWrappedReturn(ctx: var CodegenCtx, v: Expr): string =
     return ctx.genReturnTypedLit(v)
   "return tok(" & ctx.genExpr(v) & ")"
 
-proc genReturn(ctx: var CodegenCtx, e: Expr): string =
+proc genPlainReturn(ctx: var CodegenCtx, e: Expr): string =
   ## A `return`: auto-wrapped into the result carrier in a fallible fn (a bare
   ## return is `tnone`/`tokVoid`), validated for an invariant-carrying type,
   ## or plain.
@@ -427,6 +438,15 @@ proc genReturn(ctx: var CodegenCtx, e: Expr): string =
     return "return (let " & tmp & " = " & ctx.genExpr(e.returnVal) & "; validate(" &
       tmp & "); " & tmp & ")"
   else: return "return " & ctx.genExpr(e.returnVal)
+
+proc genReturn(ctx: var CodegenCtx, e: Expr): string =
+  ## A `return`. In a stackless stage (#216) the value finishes the FRAME —
+  ## into its task slot or its caller's destination — and the stage returns
+  ## the hop to whoever resumes next.
+  result = ctx.genPlainReturn(e)
+  if ctx.frameVar == "": return
+  if result == "return": return "return tuckSlRetVoid(" & ctx.frameVar & ")"
+  result = "return tuckSlRet(" & ctx.frameVar & ", " & result["return ".len .. ^1] & ")"
 
 proc genIndented(ctx: var CodegenCtx, e: Expr): string =
   ## Emit a nested body one level deeper, restoring the indent afterwards.
@@ -855,7 +875,7 @@ proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =
   if code == "": return ""
   if ownsItsLayout(ctx.res, s): code else: ind & "  " & code
 
-proc genStmts(ctx: var CodegenCtx, e: Expr, ind: string): string =
+proc genStmts*(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## The statements of a block, indented one level, with no scope around them.
   let saved = ctx.indent
   ctx.indent += 1
@@ -928,14 +948,21 @@ proc genIf(ctx: var CodegenCtx, e: Expr, ind: string): string =
                 else: ""
   ind & "if " & condStr & ":\n" & thenStr & elseStr
 
-proc genRaise(ctx: var CodegenCtx, e: Expr): string =
-  ## `err X` — early-return an error result.
+proc genRaiseValue(ctx: var CodegenCtx, e: Expr): string =
+  ## The error result `err X` returns.
   let rv = e.raiseVal
   if isErrEnumRef(ctx.module, rv):
     let name = errNameFor(ctx.module, ctx.moduleName, rv.receiver.writtenName,
                           rv.fieldName)
-    return "return terr[" & ctx.retInnerNim & "](errCode(\"" & name & "\"))"
-  "return terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv) & "))"
+    return "terr[" & ctx.retInnerNim & "](errCode(\"" & name & "\"))"
+  "terr[" & ctx.retInnerNim & "](uint16(" & ctx.genExpr(rv) & "))"
+
+proc genRaise(ctx: var CodegenCtx, e: Expr): string =
+  ## `err X` — early-return an error result; in a stackless stage it
+  ## finishes the frame with it (#216).
+  let v = ctx.genRaiseValue(e)
+  if ctx.frameVar == "": "return " & v
+  else: "return tuckSlRet(" & ctx.frameVar & ", " & v & ")"
 
 proc genCopy(ctx: var CodegenCtx, e: Expr): string =
   ## A value that shares nothing with its source (rule S; rule G chose which
@@ -1079,7 +1106,14 @@ proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
   ctx.tmpCounter.inc
   # The arguments are evaluated at the spawn (see genSpawnCall); the slot is
   # freed by the await that reads it.
-  let spawn = "(let " & slot & " = newAsyncResult[" & ret & "](); " &
+  let spawn = if concurrencyMode == cmStackless:
+                # Not a frame here (a frame's await is a stage cut): lend the
+                # thread to the frames until the slot is done.
+                "(var " & slot & ": TuckSlot[" & ret & "]; tuckSlReady(addr " &
+                stacklessHelper(tname, "TuckNewˑ") & "(addr " & slot & ", nil" &
+                (if argParts.len > 0: ", " & argParts.join(", ") else: "") &
+                ").hdr); tuckSlAwaitMain(addr " & slot & "))"
+              else: "(let " & slot & " = newAsyncResult[" & ret & "](); " &
               "tuckSpawnResultJob(" & slot & ", " & tname &
               (if argParts.len > 0: ", " & argParts.join(", ") else: "") &
               "); awaitResult(" & slot & "))"

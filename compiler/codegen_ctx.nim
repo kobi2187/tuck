@@ -42,6 +42,8 @@ type
       ## to render its inner value through genExpr (a construction call is
       ## not a bare name), and genExpr would see the same mark again — this
       ## breaks that cycle without unmarking anything.
+    frameVar*: string      # in a stackless stage: the frame's name ("tuckF");
+                           # a `return` finishes the frame instead (#216)
     inTask*: bool          # emitting a task body — [io] calls become async yields
     errPolicy*: string     # from the errors declaration; "" = strict
     realModules*: ModuleMap  # imported modules emitted as own Nim files

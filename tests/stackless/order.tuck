@@ -1,0 +1,32 @@
+# Two tasks print as they go; the interleaving is the scheduler's order.
+import console
+
+fn say({text: str}) [io]:
+  {text: text} console::printLine
+
+fn twice({tag: str}) [io]:
+  {text: tag + " one"} say
+  {text: tag + " two"} say
+
+task worker({tag: str, n: int}) -> {r: int} [io]:
+  {text: tag + " start"} console::printLine
+  {tag: tag} twice
+  if n > 1:
+    {text: tag + " big"} console::printLine
+    return {r: n * 10}
+  else:
+    {text: tag + " small"} console::printLine
+  {text: tag + " end"} console::printLine
+  return {r: n}
+
+task parent({k: int}) -> {r: int} [io]:
+  {tag: "bg", n: 0} worker
+  let a = {tag: "a", n: 1} worker
+  let b = {tag: "b", n: 2} worker
+  {text: "parent done"} console::printLine
+  return {r: a.r + b.r + k}
+
+fn main() -> int [io]:
+  let p = {k: 0} parent
+  {text: "main done"} console::printLine
+  return p.r

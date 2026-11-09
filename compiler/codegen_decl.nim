@@ -10,6 +10,7 @@ import resolution
 import ast_query
 import codegen_common, codegen_type
 import codegen_ctx
+import concurrency, codegen_stages   # stackless frames (#216)
 import ./codegen
 
 proc genDecl*(ctx: var CodegenCtx, d: Decl): string
@@ -711,10 +712,21 @@ proc genObjectDecl*(ctx: var CodegenCtx, d: Decl): string =
     ctx.typeSection.add("type " & d.name & "* = object\n" & body)
   members
 
+proc genFrameDecl(ctx: var CodegenCtx, d: Decl): string =
+  ## Under --concurrency:stackless (#216): the frame form of a task or of a
+  ## fn that can pause, with the return shape set as for its ordinary body.
+  ctx.currentParams = paramFields(d)
+  (ctx.retWrapped, ctx.retInnerNim, ctx.retInnerT) = bangInfo(d.fnReturnType)
+  ctx.retAbsentCapable = absentCapable(d.fnReturnType)
+  result = ctx.genFrameForm(d)
+  ctx.retWrapped = false
+  ctx.retAbsentCapable = false
+
 proc genTaskDecl*(ctx: var CodegenCtx, d: Decl): string =
   ## A task is a fn whose body runs on the scheduler: inside it, [io] calls
   ## become async yields (ctx.inTask), which is the only reason it is not
-  ## just genFnDecl.
+  ## just genFnDecl. Under stackless it is a frame and stages instead.
+  if d.isFrameDecl: return ctx.genFrameDecl(d)
   ctx.currentParams = paramFields(d)
   var params: seq[string]
   for p in d.fnParams:
@@ -1051,7 +1063,10 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.origin != NoModule:
     return ""  # defined in its own module; the Nim import brings it in
   case d.kind
-  of dkFn: ctx.genFnDecl(d)
+  of dkFn:
+    # A fn that can pause keeps its ordinary form for native callers and
+    # gains a frame form for frames (stackless, #216).
+    ctx.genFnDecl(d) & (if d.isFrameDecl: "\n" & ctx.genFrameDecl(d) else: "")
   of dkType: (if d.hoistedTo != "": "" else: ctx.genTypeDecl(d))
   of dkObject: ctx.genObjectDecl(d)
   of dkActor: ctx.genActor(d)

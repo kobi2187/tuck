@@ -62,6 +62,7 @@ import roadmap
 import slabs
 import ssa
 import ssa_golden
+import stackless
 import std_text
 import stdlib_project
 import syntax_ceilings
@@ -136,6 +137,7 @@ let registry: seq[Entry] = @[
   ("slabs",               SuiteProc(slabs.run),               false),
   ("ssa",                 SuiteProc(ssa.run),                 false),
   ("ssa_golden",          SuiteProc(ssa_golden.run),          false),
+  ("stackless",           SuiteProc(stackless.run),           false),
   ("std_text",            SuiteProc(std_text.run),            false),
   ("stdlib_project",      SuiteProc(stdlib_project.run),      false),
   ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     true),

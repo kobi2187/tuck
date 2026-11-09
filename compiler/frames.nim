@@ -71,6 +71,8 @@ type
     nativeIo*: seq[string]   ## [io] fns a root reaches that never pause
     nativeRoots*: seq[string] ## handlers and select arms that never pause:
                               ## the actor loop calls them, no frame needed
+    frameIds*: HashSet[NodeId] ## the frame decls (tasks and fns), by id:
+                               ## what codegen reads under stackless
 
   Analysis = object
     res: Resolution
@@ -235,6 +237,7 @@ proc place(a: Analysis, plan: var FramePlan, i: int) =
   ## File one reachable body under frames, native handlers or native [io].
   let b = a.bodies[i]
   if b.role == frTask or a.pauses.getOrDefault(i):
+    if b.decl != nil: plan.frameIds.incl b.decl.id
     plan.frames.add Frame(label: b.label, module: b.module, line: b.line,
                           role: b.role, pauses: a.sitesOf(i))
   elif b.role in {frHandler, frArm}: plan.nativeRoots.add b.label

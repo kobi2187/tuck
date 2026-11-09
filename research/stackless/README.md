@@ -22,6 +22,19 @@ wired into the compiler. The design it feeds is
 | task switch (10k tasks x 100 yields) | 230 ns | 3 ns | ~70x |
 | memory per live task | 256 KB of reserved stack | `sizeof(frame)`: 48 bytes for `compute` | — |
 
+### Compiler-generated code (phase 2)
+
+`b_await.tuck`, built by the compiler itself with `tuck b --release` under
+each `--concurrency:` flag, rather than lowered by hand: 1M spawn + await
+of a task with two `[io]` yields.
+
+| | stackful | stackless |
+|---|---|---|
+| `b_await` | 3.7–5.2 s | 22–24 ms (~22 ns/task) |
+
+That is within ~2x of the hand-lowered spike. `b_chain` has a pause inside
+a loop, which is phase 3, so it cannot be built stackless yet.
+
 ### Read these numbers honestly
 
 * **The spike's runtime is smaller than the real one.** It has no reactor, no

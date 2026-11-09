@@ -1,9 +1,13 @@
 # Stackless concurrency (#216)
 
-Status: **design, with a measured spike** (`research/stackless/`). Phase 1,
-the colouring, is built: `tuck frames f.tuck` prints it
-(`compiler/frames.nim`, pinned by `tests/suites/frames.nim`). Nothing is
-rewritten yet.
+Status: phases 0–2 are built.
+* **Phase 0, the spike:** `research/stackless/`.
+* **Phase 1, the colouring:** `tuck frames f.tuck` prints it
+  (`compiler/frames.nim`, pinned by `tests/suites/frames.nim`).
+* **Phase 2:** `--concurrency:stackless` runs tasks as frames and stages on
+  the Nim backend. `tests/suites/stackless.nim` checks that each program
+  exits the same and prints the same lines, in the same order, under both
+  flags. "What phase 2 built" below lists how.
 
 ## The owner's rulings (2026-11-09)
 
@@ -194,14 +198,58 @@ handlers. The three `--actors:` modes map directly:
 Frames carry no stack, so a later M:N pool mode becomes possible. It is not
 in scope here.
 
+## What phase 2 built, and how it differs from the plan above
+
+The pieces:
+* `compiler/concurrency.nim`: the flag.
+* `compiler/stages.nim`: the backend-neutral splitter.
+* `compiler/codegen_stages.nim`: the Nim printer.
+* `compiler/tuck_sl.nim`: the runtime.
+
+How it was built, where the plan above left room:
+
+* **Printing, not new node kinds.** The splitter runs on each backend's
+  lowered, mangled copy, just before printing. It produces a `StagePlan`:
+  stages that hold the original statements, plus a terminator for each.
+  The backend prints the statements with its ordinary emitter. Each stage
+  opens with a template per frame field (`template x: untyped = tuckF.x`),
+  so no expression is rewritten. Odin (`using f`) and D (`with (*f)`) have
+  the same device for phase 3. The splitting is still decided once, in
+  `stages.nim`, so the backends cannot disagree on where a task pauses.
+* **Frame fields:** every local declared in a list that is split, with no
+  liveness demotion yet. Liveness can come later as a size optimisation.
+* **Yield placement:** a yield goes before the **statement** that holds the
+  `[io]` call. The statement has not started yet, so nothing observable
+  moves across the yield.
+* **`defer`:** a stage's `return` is not a scope exit. Each `defer` in a
+  split list is armed by a flag in the frame and runs at its scope's real
+  exit: the jump out of a branch, or the frame's end (`tuckSlExit`, armed
+  defers last first). The ownership rules' `defer: tuckDrop(tmp)` needs
+  exactly this.
+* **Native callers:** a frame fn keeps its ordinary proc for native callers
+  (`main`, native fns) and gains a frame form for frames.
+* **Spawn and await:** an unbound task call spawns and is not a pause. A
+  bound one, inside a frame, ends the stage and parks on the task's slot.
+  From `main`, `tuckSlAwaitMain` lends the thread.
+* **One scheduler:** the coroutine scheduler's `runNext`/`hasPending` step
+  stackless frames as well. So every loop where `main` waits (awaiting, an
+  actor's `waitUntil`, lending to an fd) runs them.
+
+Not built yet, and **refused rather than run wrong:**
+* **At compile time:** a pause inside a loop, `match`, `on select` or
+  `defer`, and a frame call nested inside a larger expression. Each is
+  refused with its line.
+* **At run time:** a frame waiting on I/O or a timer. It stops with exit 70
+  and a message naming phase 4, instead of hanging.
+
 ## Phases and exit criteria
 
 | phase | work | done when |
 |---|---|---|
 | 0 | spike | **done**: `research/stackless/` |
 | 1 | colouring pass and a dump (`tuck frames`: frame fns and pause sites; frame fields move to phase 2, where liveness is computed for the split) | **done**: `tests/suites/frames.nim` pins examples 14/28/29/30/42/26/27 and one program per rule in `tests/frames/` |
-| 2 | flag, splitting of straight-line code, `if`/`match`, the call protocol; tasks; Nim backend | examples 14 and 28 run identically under both flags |
-| 3 | loops, `break`/`continue`, `defer`; Odin and D emitters, checking the `Hop` two-register return on their ABIs | the same, on all three backends |
+| 2 | flag, splitting of straight-line code and `if`, the call protocol, `defer`; tasks; Nim backend | **done**: `tests/suites/stackless.nim` runs example 28 and `tests/stackless/{order,values}` under both flags, same exit code and same stdout. A pause inside `match` moved to phase 3; example 14 cannot run in either mode (`http` is pending) |
+| 3 | loops, `break`/`continue`, `match`, liveness for frame fields; Odin and D emitters, checking the `Hop` two-register return on their ABIs | the same, on all three backends |
 | 4 | runtime parity: reactor, timers, `on select`, offload, waiting sends, `waitUntil` | examples 29, 30, 42 and the net suites pass under both flags |
 | 5 | actors in all three `--actors:` modes, urgent mailboxes, `alive`/`pingUs` | `mailbox_full`, `actor_heartbeat`, Savina and the actor examples pass under both flags |
 | 6 | (#219) static slabs for actor chains, stack root frames, embedded flag; measurements | numbers in `benches/SCORES.md`; a no-heap actor-only program builds |

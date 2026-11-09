@@ -78,6 +78,7 @@ import compiler/import_renames  # `tuck effects --manifest` (#63)
 import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
 import compiler/frames   # `tuck frames`: the stackless colouring (#216)
+import compiler/concurrency   # --concurrency:stackful|stackless
 import compiler/actor_mode
 import compiler/pipeline
 import compiler/proptest
@@ -130,6 +131,7 @@ run). Writes beside the source file, or into -o:DIR if given.
   --actors:MODE  how actors get their CPU: thread (default), single, batch
   --batch-count:N, --batch-timeout:MS  when a staged batch flushes
                  (--actors:batch only)
+  --concurrency:MODE  how tasks pause: stackful (default), stackless (#216)
 
 See `tuck help build` for the flags shared with build, or run
 `tuck` with no arguments for the full option reference.""",
@@ -327,6 +329,15 @@ options:
                           over in groups. Faster under load; a message
                           arrives when its batch flushes, not when sent.
                 See compiler/actor_mode.nim for the full trade.
+  --concurrency:MODE (compile/build) how a task pauses (#216). The same
+                pauses, the same order, the same results in both modes.
+                  stackful   a minicoro coroutine per task, own stack (default)
+                  stackless  a pausing fn becomes a heap FRAME plus STAGES
+                             (the code between pauses); no stacks at all.
+                             Nim backend, tasks only so far: a pause inside
+                             a loop is refused at compile time, and a task
+                             waiting on I/O or a timer stops at run time.
+                See docs/stackless-concurrency.md.
   --batch-count:N     (--actors:batch) flush after N staged sends
   --batch-timeout:MS  (--actors:batch) ...or MS after the first, whichever
                 comes first. Both 0 is refused: nothing would ever flush.
@@ -1045,6 +1056,18 @@ when isMainModule:
       optPasses = {}                             # drop the defaults first
       optExplicit = true
     optPasses = optPasses + ps
+  # `--concurrency:MODE` — how tasks pause (compiler/concurrency.nim).
+  for o in opts:
+    if not o.startsWith("--concurrency:"): continue
+    let name = o["--concurrency:".len .. ^1]
+    let (m, ok) = parseConcurrencyMode(name)
+    if not ok:
+      die("tuck: no such concurrency mode: '" & name & "'\n" &
+          "  available: stackful, stackless")
+    concurrencyMode = m
+  if concurrencyMode == cmStackless and backend != bkNim:
+    die("tuck: --concurrency:stackless is Nim-only so far (#216 phase 3 " &
+        "brings Odin and D)")
   # `--actors:MODE` — how an actor gets its CPU (compiler/actor_mode.nim).
   # Semantics are identical across modes; cost is not, and the trade depends
   # on the workload, so the programmer picks. Validated in the order a typo
@@ -1321,6 +1344,11 @@ when isMainModule:
     let optHits = optimizeProgram(progMods, optPasses)
     if optReport:
       report("OPTIMIZED", "site(s) rewritten", optHits)
+    # The stackless plan reads the checked tree by its unmangled names and
+    # call edges, so it runs BEFORE mangling; codegen reads it by decl id,
+    # which every backend's deep copy keeps.
+    if concurrencyMode == cmStackless:
+      frameDecls = planFrames(semLayer, prog).frameIds
     block:
       let t0 = vBegin(psMangle)
       mangleProgram(semLayer, progMods)
@@ -1578,6 +1606,9 @@ when isMainModule:
           if viaMid != "": writeFile(mainNim, viaMid & readFile(mainNim))
           for a in actorNames: boot.add("  registerActor" & a & "()\n")
           if hasTasks: asyncDrive = "\n  tuckRun()"
+          # Stackless frames nobody awaited still run to their end (#216).
+          if hasTasks and concurrencyMode == cmStackless:
+            asyncDrive = "\n  tuckSlRunAll()" & asyncDrive
         # a value-returning main IS the process exit code. When the runtime
         # drives tasks after main, keep main's return as the exit code via
         # mainRc. `fn main` is mangled like every other user fn, so the entry

@@ -770,6 +770,14 @@ epoll/kqueue reactor.** No preemption, no OS threads in the scheduler. Both
 backends drive the same vendored C library (minicoro), so they cannot diverge
 on switch semantics.
 
+> **`--concurrency:stackless`** (#216, in progress) runs the same
+> semantics with no stacks at all. A fn that can pause becomes a heap
+> frame plus stages, split by the compiler. So far it covers tasks on the
+> Nim backend. A pause inside a loop is refused at compile time, and a task
+> waiting on I/O or a timer stops at run time, until later phases build
+> them. `tuck frames f.tuck` shows which fns become frames. See
+> `docs/stackless-concurrency.md`.
+
 ### Actors — global singletons
 
 ```tuck

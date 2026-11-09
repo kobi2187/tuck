@@ -1,0 +1,11 @@
+# A stackless task that waits on a timer: parking a frame is phase 4 (#216).
+# Until then the runtime stops and says so, instead of hanging.
+import time
+
+task nap({ms: u32}) -> {r: int} [io]:
+  {ms: ms} time::sleepMs
+  return {r: 1}
+
+fn main() -> int [io]:
+  let r = {ms: 50} nap
+  return r.r
