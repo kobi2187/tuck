@@ -7,6 +7,10 @@ compiler itself is written in Nim. Three backends, one checked AST.
 
 ## Read first
 
+`ONBOARDING.md` — the single entry point for a fresh thread: what the project is,
+the Tuck syntax you need, how to build/test, how to change the compiler safely,
+and the owner's working agreements. Start there, then the items below.
+
 `ROADMAP.md` § "THE WORK QUEUE" (at the top of the file) — what to do next and
 in what order, re-validated against the compiler rather than inherited from the
 sections below it. It carries the user's standing ordering rule (memory first,
