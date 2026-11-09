@@ -10,17 +10,19 @@
 ## yields, frame calls, branches that pause, a `return` from a branch,
 ## ownership `defer`s in both scopes, an unbound spawn and two awaits;
 ## `values` hands results back through frame fns, reassigns a local from
-## one, and returns fallible values both ways. Example 28 is the corpus
-## program.
+## one, and returns fallible values both ways; `loops` pauses inside a
+## counted loop (with `continue`, and a `break` from a native loop nested in
+## it), a `for cond:`, a loop over a Seq whose element feeds a frame call,
+## and the arms of a `match`. Example 28 is the corpus program.
 ##
-## What is not built yet is REFUSED, never run wrong: a pause inside a loop
-## (phase 3) at compile time, and a frame waiting on I/O or a timer (phase 4)
-## at run time, with exit 70 and a message.
+## What is not built yet is REFUSED, never run wrong: a pause inside
+## `on select` (phase 4) at compile time, and a frame waiting on I/O or a
+## timer (phase 4) at run time, with exit 70 and a message.
 import std/[os, strutils]
 import ../harness
 
 const Programs = ["tests/stackless/order.tuck", "tests/stackless/values.tuck",
-                  "examples/28-async-task.tuck"]
+                  "tests/stackless/loops.tuck", "examples/28-async-task.tuck"]
 
 proc buildRun(t: var T, mode: string): int =
   ## Build the current snippet under `--concurrency:<mode>` into its own
@@ -49,17 +51,17 @@ proc same(t: var T, name: string, a, b: int) =
                unifiedDiff(runOutput(outA), runOutput(outB), 5)
 
 proc refusedAtCompile(t: var T) =
-  t.src readFile("tests/stackless/loop_refused.tuck")
+  t.src readFile("tests/stackless/select_refused.tuck")
   let idx = t.needCmd(@["./tuck", "c", t.curDir / "t.tuck", "--concurrency:stackless",
                         "-o:" & t.curDir, "--root:" & t.root], vEmit)
   if t.phase != pReport: return
   if t.skippedCmd(idx):
-    t.skip "a pause inside a loop is refused"
+    t.skip "a pause inside on select is refused"
     return
   let (rc, outp) = t.resultOf(idx)
-  if rc != 0 and "a pause inside for is not supported" in outp:
-    t.ok "a pause inside a loop is refused, by name (phase 3)"
-  else: t.no "a pause inside a loop is refused", "exit " & $rc & ": " & outp
+  if rc != 0 and "a pause inside select is not supported" in outp:
+    t.ok "a pause inside on select is refused, by name (phase 4)"
+  else: t.no "a pause inside on select is refused", "exit " & $rc & ": " & outp
 
 proc refusedAtRun(t: var T) =
   t.src readFile("tests/stackless/parks.tuck")

@@ -235,10 +235,28 @@ How it was built, where the plan above left room:
   stackless frames as well. So every loop where `main` waits (awaiting, an
   actor's `waitUntil`, lending to an fd) runs them.
 
+**Phase 3, on Nim:** loops and `match` are cut too (`tests/stackless/loops`).
+* **A loop whose body pauses** keeps its iteration state in the frame:
+  * a counter and an end for a range;
+  * an index for a named Seq, with the element a template **view**
+    `xs[idx]` (no copy, as Nim's `for` gives);
+  * nothing extra for `for cond:` / `loop:`, which re-test at a head stage
+    that yields first for an `[io]` call in the condition, every iteration.
+* **A `match` whose arms pause** is printed as the backend's own `case`,
+  each arm's body replaced by a jump to that arm's stage chain.
+* **`break` and `continue`** become jumps, both as statements and inside an
+  inline `if`. A loop nested natively inside a stage keeps its own.
+* **Scopes:** every split branch, arm, loop body and block is a scope with
+  an id. A jump that leaves scopes calls their exit procs (`TuckXˑfˑN`),
+  which run and disarm the armed `defer`s, innermost first.
+
 Not built yet, and **refused rather than run wrong:**
-* **At compile time:** a pause inside a loop, `match`, `on select` or
-  `defer`, and a frame call nested inside a larger expression. Each is
-  refused with its line.
+* **At compile time:** each of these is refused with its line:
+  * a pause inside `on select` or `defer`;
+  * a frame call nested inside a larger expression, a condition, a match
+    subject or a loop range;
+  * a destructuring `for`, or a `for` over a computed sequence, whose body
+    pauses.
 * **At run time:** a frame waiting on I/O or a timer. It stops with exit 70
   and a message naming phase 4, instead of hanging.
 
@@ -249,7 +267,7 @@ Not built yet, and **refused rather than run wrong:**
 | 0 | spike | **done**: `research/stackless/` |
 | 1 | colouring pass and a dump (`tuck frames`: frame fns and pause sites; frame fields move to phase 2, where liveness is computed for the split) | **done**: `tests/suites/frames.nim` pins examples 14/28/29/30/42/26/27 and one program per rule in `tests/frames/` |
 | 2 | flag, splitting of straight-line code and `if`, the call protocol, `defer`; tasks; Nim backend | **done**: `tests/suites/stackless.nim` runs example 28 and `tests/stackless/{order,values}` under both flags, same exit code and same stdout. A pause inside `match` moved to phase 3; example 14 cannot run in either mode (`http` is pending) |
-| 3 | loops, `break`/`continue`, `match`, liveness for frame fields; Odin and D emitters, checking the `Hop` two-register return on their ABIs | the same, on all three backends |
+| 3 | loops, `break`/`continue`, `match`, liveness for frame fields; Odin and D emitters, checking the `Hop` two-register return on their ABIs | loops, `match`, `break`/`continue` **done on Nim** (`tests/stackless/loops`); Odin, D and liveness still to come |
 | 4 | runtime parity: reactor, timers, `on select`, offload, waiting sends, `waitUntil` | examples 29, 30, 42 and the net suites pass under both flags |
 | 5 | actors in all three `--actors:` modes, urgent mailboxes, `alive`/`pingUs` | `mailbox_full`, `actor_heartbeat`, Savina and the actor examples pass under both flags |
 | 6 | (#219) static slabs for actor chains, stack root frames, embedded flag; measurements | numbers in `benches/SCORES.md`; a no-heap actor-only program builds |

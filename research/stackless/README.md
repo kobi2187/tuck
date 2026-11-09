@@ -31,9 +31,9 @@ of a task with two `[io]` yields.
 | | stackful | stackless |
 |---|---|---|
 | `b_await` | 3.7–5.2 s | 22–24 ms (~22 ns/task) |
+| `b_chain` (10M iterations, phase 3) | 500–540 ms | 34–53 ms (~4 ns/iter) |
 
-That is within ~2x of the hand-lowered spike. `b_chain` has a pause inside
-a loop, which is phase 3, so it cannot be built stackless yet.
+Both are close to the hand-lowered spike.
 
 ### Read these numbers honestly
 

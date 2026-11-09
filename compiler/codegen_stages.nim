@@ -89,31 +89,86 @@ proc genAwait(ctx: var CodegenCtx, d: Decl, t: Term): string =
   "  return tuckSlAwait(addr tuckF.hdr, addr tuckF." & t.slot & ", " &
     stageName(d.name, t.next) & ")\n"
 
-proc genDeferRun(ctx: var CodegenCtx, plan: StagePlan, k: int): string
+proc scopeExit(d: Decl, scope: int): string = "TuckXˑ" & d.name & "ˑ" & $scope
 
-proc genGoto(ctx: var CodegenCtx, d: Decl, plan: StagePlan, t: Term): string =
-  ## A jump; out of a branch, the branch's armed `defer`s run first.
-  for i in countdown(t.runDefers.high, 0): result.add ctx.genDeferRun(plan, t.runDefers[i])
+proc leaveCalls(d: Decl, plan: StagePlan, leaves: seq[int]): seq[string] =
+  ## The exit procs of the scopes a jump leaves (only scopes with defers).
+  for sc in leaves:
+    if plan.scopeDefers[sc].len > 0: result.add scopeExit(d, sc) & "(tuckF)"
+
+proc genGoto(d: Decl, plan: StagePlan, t: Term): string =
+  ## A jump; the scopes it leaves run their armed `defer`s first.
+  for c in leaveCalls(d, plan, t.leaves): result.add "  " & c & "\n"
   result.add "  " & jump(d, t.next) & "\n"
+
+proc jumpCode*(d: Decl, plan: StagePlan, j: Jump): string =
+  ## The one-line statement a jump carrier prints as.
+  let calls = leaveCalls(d, plan, j.leaves)
+  let to = stageName(d.name, j.target) & "(env)"
+  if calls.len == 0: "return " & to
+  else: "return (" & calls.join("; ") & "; " & to & ")"
+
+proc loopTest(ctx: var CodegenCtx, d: Decl, lp: Loop, excl: bool): string =
+  ## The bound check before entering the body: out to `exit` when done.
+  let op = if excl: " >= " else: " > "
+  case lp.kind
+  of lkRange: "  if " & lp.varName & op & "tuckF." & lp.stateField & ": " & jump(d, lp.exit) & "\n"
+  of lkSeq:
+    "  if tuckF." & lp.stateField & " >= len(" & ctx.genExpr(lp.node.iterable) & "): " &
+      jump(d, lp.exit) & "\n"
+  of lkWhile: ""
+
+proc genLoopEnter(ctx: var CodegenCtx, d: Decl, lp: Loop): string =
+  ## Set the loop's state, then the first iteration or nothing at all.
+  case lp.kind
+  of lkRange:
+    let it = lp.node.iterable
+    result = "  " & lp.varName & " = " & ctx.genExpr(it.left) & "\n" &
+             "  tuckF." & lp.stateField & " = " & ctx.genExpr(it.right) & "\n" &
+             ctx.loopTest(d, lp, it.binOp == boRangeExcl)
+  of lkSeq: result = "  tuckF." & lp.stateField & " = 0\n" & ctx.loopTest(d, lp, true)
+  of lkWhile: discard
+  result.add "  " & jump(d, lp.body) & "\n"
+
+proc genLoopNext(ctx: var CodegenCtx, d: Decl, lp: Loop): string =
+  ## Advance, then the next iteration or out. An inclusive range tests
+  ## BEFORE stepping, so a range ending at the type's top cannot overflow.
+  case lp.kind
+  of lkRange:
+    if lp.node.iterable.binOp == boRangeIncl:
+      result = "  if " & lp.varName & " >= tuckF." & lp.stateField & ": " & jump(d, lp.exit) & "\n" &
+               "  inc " & lp.varName & "\n"
+    else:
+      result = "  inc " & lp.varName & "\n" & ctx.loopTest(d, lp, true)
+  of lkSeq: result = "  inc tuckF." & lp.stateField & "\n" & ctx.loopTest(d, lp, true)
+  of lkWhile: discard
+  result.add "  " & jump(d, lp.body) & "\n"
 
 proc genTerm(ctx: var CodegenCtx, d: Decl, plan: StagePlan, t: Term): string =
   case t.kind
   of tkFall: genFall(d)
-  of tkGoto: ctx.genGoto(d, plan, t)
+  of tkGoto: genGoto(d, plan, t)
   of tkYield: "  return tuckSlYield(addr tuckF.hdr, " & stageName(d.name, t.next) & ")\n"
   of tkBranch:
     "  if " & ctx.genExpr(t.cond) & ": " & jump(d, t.thenS) & "\n" &
     "  else: " & jump(d, t.elseS) & "\n"
   of tkCall: ctx.genCall(d, t)
   of tkAwait: ctx.genAwait(d, t)
+  of tkLoopEnter: ctx.genLoopEnter(d, plan.loops[t.loop])
+  of tkLoopNext: ctx.genLoopNext(d, plan.loops[t.loop])
 
 # --- stages ----------------------------------------------------------------------
 
-proc aliases(d: Decl, plan: StagePlan): string =
-  ## Every param and frame field, readable by its own name in the stage.
+proc aliases(ctx: var CodegenCtx, d: Decl, plan: StagePlan): string =
+  ## Every param and frame field, readable by its own name in the stage, and
+  ## a split loop's element as a VIEW of its Seq (no copy, as Nim's `for`).
   for p in d.fnParams: result.add "  template " & p.name & ": untyped = tuckF." & p.name & "\n"
   for f in plan.fields:
     if not f.isSlot: result.add "  template " & f.name & ": untyped = tuckF." & f.name & "\n"
+  for lp in plan.loops:
+    if lp.kind == lkSeq:
+      result.add "  template " & lp.varName & ": untyped = " &
+                 ctx.genExpr(lp.node.iterable) & "[tuckF." & lp.stateField & "]\n"
 
 proc takes(ctx: var CodegenCtx, plan: StagePlan, k: int): string =
   ## A stage entered after an await starts by taking the task's value.
@@ -133,26 +188,56 @@ proc genDeferRun(ctx: var CodegenCtx, plan: StagePlan, k: int): string =
   let body = ctx.genStmts(plan.defers[k].deferBody, "  ")   # inside the `if`
   "  if tuckF.tuckDefer" & $k & ":\n" & body & "\n    tuckF.tuckDefer" & $k & " = false\n"
 
+proc genScopeExit(ctx: var CodegenCtx, d: Decl, plan: StagePlan, sc: int): string =
+  ## A scope's exit: its armed `defer`s, last armed first, each disarmed.
+  result = "proc " & scopeExit(d, sc) & "(tuckF: ptr " & frameType(d.name) & ") =\n" &
+           ctx.aliases(d, plan)
+  for i in countdown(plan.scopeDefers[sc].high, 0):
+    result.add ctx.genDeferRun(plan, plan.scopeDefers[sc][i])
+
 proc genExit(ctx: var CodegenCtx, d: Decl, plan: StagePlan): string =
   ## `tuckSlExit`: every still-armed `defer`, last armed first. The runtime
   ## calls it when the frame finishes, after its value is stored.
-  result = "proc tuckSlExit(tuckF: ptr " & frameType(d.name) & ") =\n" & aliases(d, plan)
+  result = "proc tuckSlExit(tuckF: ptr " & frameType(d.name) & ") =\n" & ctx.aliases(d, plan)
   for k in countdown(plan.defers.high, 0): result.add ctx.genDeferRun(plan, k)
   result.add "  discard\n"
 
 proc genStage(ctx: var CodegenCtx, d: Decl, plan: StagePlan, k: int): string =
   let st = plan.stages[k]
   result = "proc " & stageName(d.name, k) & "(env: pointer): TuckHop {.nimcall.} =\n" &
-           "  let tuckF = cast[ptr " & frameType(d.name) & "](env)\n" & aliases(d, plan) &
+           "  let tuckF = cast[ptr " & frameType(d.name) & "](env)\n" & ctx.aliases(d, plan) &
            ctx.takes(plan, k)
   for s in st.stmts: result.add ctx.genStageStmt(plan, s)
-  let returned = st.stmts.len > 0 and st.stmts[^1].kind == exkReturn
-  if not returned:                                 # nothing runs after a return
+  let last = if st.stmts.len > 0: st.stmts[^1] else: nil
+  let returned = last != nil and (last.kind in {exkReturn, exkRaise} or last in plan.jumps)
+  if not returned:                       # nothing runs after a return or a jump
     result.add ctx.genTerm(d, plan, st.term)
 
 proc frameVars(d: Decl, plan: StagePlan): HashSet[string] =
   for p in d.fnParams: result.incl p.name
   for f in plan.fields: result.incl f.name
+
+proc genForwards(d: Decl, plan: StagePlan): string =
+  ## Forward declarations: every stage, the frame exit, each scope exit.
+  for k in 0 ..< plan.stages.len:
+    result.add "proc " & stageName(d.name, k) & "(env: pointer): TuckHop {.nimcall.}\n"
+  result.add "proc tuckSlExit(tuckF: ptr " & frameType(d.name) & ")\n"
+  for sc in 0 ..< plan.scopeDefers.len:
+    if plan.scopeDefers[sc].len > 0:
+      result.add "proc " & scopeExit(d, sc) & "(tuckF: ptr " & frameType(d.name) & ")\n"
+
+proc genBodies(ctx: var CodegenCtx, d: Decl, plan: StagePlan): string =
+  ## The stages, the frame exit and the scope exits, each printed with the
+  ## frame's fields as the names already declared.
+  for k in 0 ..< plan.stages.len:
+    ctx.definedVars = frameVars(d, plan)
+    ctx.indent = 0
+    result.add ctx.genStage(d, plan, k) & "\n"
+  ctx.definedVars = frameVars(d, plan)
+  ctx.indent = 0
+  result.add ctx.genExit(d, plan) & "\n"
+  for sc in 0 ..< plan.scopeDefers.len:
+    if plan.scopeDefers[sc].len > 0: result.add ctx.genScopeExit(d, plan, sc) & "\n"
 
 proc genFrameForm*(ctx: var CodegenCtx, d: Decl): string =
   ## The frame form of `d`: its type, constructor and stages. The caller set
@@ -162,19 +247,11 @@ proc genFrameForm*(ctx: var CodegenCtx, d: Decl): string =
     # A shape the splitter does not cut yet: refused by name, never run wrong.
     stderr.writeLine "tuck: " & d.name & ", " & plan.error
     quit 1
-  result = genFrameType(d, plan) & "\n"
-  for k in 0 ..< plan.stages.len:
-    result.add "proc " & stageName(d.name, k) & "(env: pointer): TuckHop {.nimcall.}\n"
-  result.add "proc tuckSlExit(tuckF: ptr " & frameType(d.name) & ")\n"
-  result.add genFrameNew(d) & "\n"
-  let saved = (ctx.inTask, ctx.frameVar, ctx.definedVars, ctx.indent)
+  result = genFrameType(d, plan) & "\n" & genForwards(d, plan) & genFrameNew(d) & "\n"
+  let saved = (ctx.inTask, ctx.frameVar, ctx.definedVars, ctx.indent, ctx.frameJumps)
   ctx.inTask = false        # the yields are cuts now, not tuckYield calls
   ctx.frameVar = "tuckF"
-  for k in 0 ..< plan.stages.len:
-    ctx.definedVars = frameVars(d, plan)
-    ctx.indent = 0
-    result.add ctx.genStage(d, plan, k) & "\n"
-  ctx.definedVars = frameVars(d, plan)
-  ctx.indent = 0
-  result.add ctx.genExit(d, plan) & "\n"
-  (ctx.inTask, ctx.frameVar, ctx.definedVars, ctx.indent) = saved
+  ctx.frameJumps.clear()
+  for node, j in plan.jumps: ctx.frameJumps[cast[pointer](node)] = jumpCode(d, plan, j)
+  result.add ctx.genBodies(d, plan)
+  (ctx.inTask, ctx.frameVar, ctx.definedVars, ctx.indent, ctx.frameJumps) = saved

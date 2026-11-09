@@ -1002,8 +1002,8 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkBracket, exkBracketAssign: ctx.genCallResolved(e)
   of exkFor: ctx.genFor(e, ind)
   of exkWhile: ctx.genWhile(e, ind)
-  of exkBreak: "break"
-  of exkContinue: "continue"
+  of exkBreak: ctx.frameJumps.getOrDefault(cast[pointer](e), "break")
+  of exkContinue: ctx.frameJumps.getOrDefault(cast[pointer](e), "continue")
   of exkBinary: ctx.genBinary(e)
   of exkUnary: ctx.genUnary(e)
   of exkCast: ctx.genCast(e)

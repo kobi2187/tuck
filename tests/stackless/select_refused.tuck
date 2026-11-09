@@ -1,0 +1,13 @@
+# A pause inside `on select` is phase 4 (#216): refused by name, never run wrong.
+import time
+
+task readOrGiveUp({fd: int}) -> {code: int} [io]:
+  var code = 0
+  on select:
+    | read fd          -> {}:  code = 1
+    | timeout {30.ms}  -> {}:  code = 2
+  return {code: code}
+
+fn main() -> int [io]:
+  let r = {fd: 0} readOrGiveUp
+  return r.code

@@ -42,6 +42,9 @@ type
       ## to render its inner value through genExpr (a construction call is
       ## not a bare name), and genExpr would see the same mark again — this
       ## breaks that cycle without unmarking anything.
+    frameJumps*: Table[pointer, string]  # in a stackless stage: a `break` /
+                           # `continue` / match-arm carrier (by identity),
+                           # printed as this jump instead (#216)
     frameVar*: string      # in a stackless stage: the frame's name ("tuckF");
                            # a `return` finishes the frame instead (#216)
     inTask*: bool          # emitting a task body — [io] calls become async yields
