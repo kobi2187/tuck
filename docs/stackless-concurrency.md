@@ -338,8 +338,9 @@ for speed only and only where a measurement shows they would help.
   frame ready list, worker pool and driver count are now **thread-local**
   on every backend, because a handler that spawns a task must not race
   `main` on them.
-* **`single`** (Nim only, the one backend with the modes) is where actors
-  were coroutines, and where phase 5 changes something.
+* **`single`** is where actors were coroutines, and where phase 5 changes
+  something. Nim had it first; Odin and D have it now too (with `batch`),
+  frame actors included.
 
 *Frame actors under `--actors:single`:*
 * **Which actors qualify:** the colouring (`frames.nim`, `pureActors`)
@@ -437,10 +438,19 @@ Not built yet, and **refused rather than run wrong:**
 | 5 | actors in all three `--actors:` modes, urgent mailboxes, `alive`/`pingUs` | **done**: `thread`/`batch` unchanged (handlers run on actor threads) with thread-local frame state. Under `single`, an actor that waits only on mailboxes runs as a frame. The actor suites pass under `TUCK_CONCURRENCY=stackless` |
 | 6 | (#219) static slabs for actor chains, stack root frames, embedded flag; measurements | **done**: callee frames embed in their caller (a union per frame type), awaited tasks in their awaiter, main's roots on its stack, and frame actors in their slot (phase 5). The heap is left only for call cycles and unawaited spawns. `--frames:static` refuses what remains, naming each |
 | 7 | differential run: every concurrency suite under both flags in CI | **done**: **stackless is the default** (ruled 2026-11-10). CI runs every suite twice, the second time under `TUCK_CONCURRENCY=stackful`. `examples/` tracks the default's output and `examples/stackful/` the stackful twin of each file that differs. A golden has a `.stackful` twin where the modes differ, and a text assertion reads `harness.stacklessRun()` |
+| 8 | Odin and D reach Nim's actor modes (asked with phase 7) | **done**: `--actors:single` and `--actors:batch` on Odin (`-define:`) and D (`-version=`, plus `tuck_batch.d` for the knobs), frame actors included. `stackless.nim` runs the actor programs under both modes on all three backends in both concurrency modes against the Nim reference, and `mailbox_full.nim` runs its mode assertions (waiting sends, self-send, `[urgent]`) on each. Odin and D copy a staged run into the mailbox at handover where Nim moves batch pointers; a run reserves its room when it opens, so a handover always fits |
 
-**Tests:** the concurrency suites run in both modes as parameters, in the
-same way `--actors:` modes are covered. Until the default changes, every
-emitted file under `examples/` is the stackful output and does not change.
+**Tests:** CI runs every suite in both modes, and `stackless.nim` compares
+the modes directly, per backend and per `--actors:` mode. `examples/` holds
+the default's (stackless) output, `examples/stackful/` the twins that differ.
+
+**Known, and not the transform's:** `tests/stackless/mixed_actors.tuck`
+waits on a predicate that reads a SECOND actor's state. A predicate is
+re-tested when the actor it is registered with handles a message, so if the
+second actor's last change lands after that, the wait never ends. Thread mode
+passes by timing; batch mode hangs on every backend, Nim included, so the
+batch run leaves it out. The language fix is a predicate re-tested on every
+actor it reads.
 
 ## Risks
 

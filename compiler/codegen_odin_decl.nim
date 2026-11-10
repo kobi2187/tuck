@@ -893,6 +893,9 @@ proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
     ind & "\t" & odinEnqueue(d, d.name & "Msg{" & ctorArgs & "}",
                              if urgentSend(d, h.name): UrgentMailbox
                              else: "mailbox") & "\n" &
+    # An urgent send is handed over at once, batch or not (`flushNow`).
+    (if urgentSend(d, h.name): ind & "\trt.flushNow(&self." & UrgentMailbox & ")\n"
+     else: "") &
     # The send NOTIFIES. It never did: the actor parks on a condvar when its
     # mailbox comes up empty, so a send to a parked Odin actor was a lost
     # wakeup — the message sat in the ring and nothing arrived to drain it

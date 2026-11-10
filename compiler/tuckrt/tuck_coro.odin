@@ -771,6 +771,9 @@ actorMain :: proc(t: ^thread.Thread) {
 			continue
 		}
 		spinBudget = max(spinBudget / 2, ActorSpinMin)
+		// About to stop: hand over what this actor staged for others, so a
+		// parked thread holds nothing and exit can be a local check.
+		when TUCK_ACTORS_BATCH { tuckFlushStaged() }
 		// ARM, THEN LOOK AGAIN (EV-7). Publishing `parked` and then sleeping
 		// is not enough: a sender that enqueued just before that store reads
 		// `parked` as false, returns without signalling, and its message sits
@@ -812,6 +815,61 @@ actorCoMain :: proc() {
 		slot.queued = false
 		parkSuspend()
 	}
+}
+
+// Batch mode's flush hooks: one per (thread, mailbox) this thread staged for,
+// registered by tuck_rt.odin's stagingFor. Per THREAD: each thread flushes
+// only what it staged.
+@(private)
+FlushHook :: struct {
+	flush:    proc(p: rawptr) -> bool,
+	flushDue: proc(p: rawptr) -> bool, // ...only once the run's deadline passed
+	data:     rawptr,
+	key:      rawptr, // the mailbox
+}
+
+@(private, thread_local)
+gFlushHooks: [dynamic]FlushHook
+
+tuckRegisterFlush :: proc(flush, flushDue: proc(p: rawptr) -> bool, data, key: rawptr) {
+	context.allocator = tuckRuntimeAllocator()
+	append(&gFlushHooks, FlushHook{flush, flushDue, data, key})
+}
+
+tuckFindStaging :: proc(key: rawptr) -> rawptr {
+	for h in gFlushHooks do if h.key == key do return h.data
+	return nil
+}
+
+@(private)
+wakeAllParked :: proc() {
+	// A flush has no send behind it to notify, so it wakes whoever sleeps.
+	// Broadcast: a run does not know its actor's slot, and this is per park.
+	sync.lock(&gSlotsLock)
+	for s in gActorSlots {
+		if intrinsics.atomic_load(&s.parked) {
+			sync.lock(&s.lock)
+			s.pending = true
+			sync.cond_signal(&s.cond)
+			sync.unlock(&s.lock)
+		}
+	}
+	sync.unlock(&gSlotsLock)
+}
+
+// Hand over every run this thread holds, then make sure someone drains it.
+tuckFlushStaged :: proc() {
+	handed := false
+	for h in gFlushHooks do if h.flush(h.data) do handed = true
+	if handed do wakeAllParked()
+}
+
+// The same, for the runs whose deadline has passed: swept across the thread,
+// because the run that needs it is the one nobody is sending to any more.
+tuckFlushDueStaged :: proc() {
+	handed := false
+	for h in gFlushHooks do if h.flushDue(h.data) do handed = true
+	if handed do wakeAllParked()
 }
 
 @(private, thread_local)
@@ -881,6 +939,8 @@ tuckWaitOn :: proc(handle: rawptr, pred: proc() -> bool) {
 	// The predicate is evaluated on the actor's thread, so the answer is
 	// neither racy nor stale.
 	if handle == nil do return
+	// EVERYTHING this thread staged: the predicate may read another actor.
+	when TUCK_ACTORS_BATCH { tuckFlushStaged() }
 	when TUCK_ACTORS_SINGLE {
 		// One thread: re-test between scheduler passes, which run the actors.
 		for !pred() {
@@ -971,6 +1031,7 @@ tuckDrainActors :: proc() {
 	// Wait for every actor to empty its mailbox. Emitted at the END of main.
 	// Without it `send` races `quit`: the message is in the ring and the
 	// detached thread may never have been scheduled.
+	when TUCK_ACTORS_BATCH { tuckFlushStaged() } // main's own staged sends
 	when TUCK_ACTORS_SINGLE {
 		// Main lends its thread: run until nothing is ready (the Nim twin
 		// says what this is weaker than in thread mode, and why it is enough).
@@ -1034,6 +1095,7 @@ tuckAwaitRoom :: proc(handle: rawptr, actor: string) {
 	if selfSend {
 		tuckMailboxFull(actor, "it sent to itself, and the actor that would make room is the one waiting. Declare `on_full: drop` or a larger `queue`")
 	}
+	when TUCK_ACTORS_BATCH { tuckFlushStaged() }
 	tuckNotifySend(handle)
 	if inCoroutine() {
 		coroYield()   // re-queues the caller before it suspends

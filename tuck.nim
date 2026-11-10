@@ -1897,6 +1897,8 @@ when isMainModule:
           for dir in implDirs: implIArgs.add(" -I" & quoteShell(dir))
           # TUCK_DMD_EXTRA: flags appended verbatim (`-version=tuckTrack`
           # makes the program report what it never freed, exit code 90).
+          if actorPolicy.mode == amBatch:
+            writeFile(outDir / "tuck_batch.d", dBatchModule(actorPolicy))
           let dInv = (if noInvariants: " -version=tuckNoInvariants" else: "") &
                      dDefinesFor(actorPolicy) &
                      " " & getEnv("TUCK_DMD_EXTRA")

@@ -662,7 +662,10 @@ proc genDSendHelper*(ctx: var DCodegenCtx, d: Decl,
     of ofAssert: "rt.sendAsserting(" & box & ", " & msg & ", " & actor & ")"
   "void send" & h.name.capitalize() & "_" & d.name & "(ref " & d.name &
     " self" & sep & params.join(", ") & ") {\n" & copies &
-    "    " & enqueue & ";\n    rt.tuckNotifySend(" & actorSlotName(d.name) &
+    "    " & enqueue & ";\n" &
+    # An urgent send is handed over at once, batch or not (`flushNow`).
+    (if urgentSend(d, h.name): "    rt.flushNow(" & box & ");\n" else: "") &
+    "    rt.tuckNotifySend(" & actorSlotName(d.name) &
     ");\n}\n\n"
 
 proc genDActorState*(ctx: var DCodegenCtx, d: Decl,

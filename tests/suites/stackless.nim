@@ -126,6 +126,38 @@ const ActorPrograms = ["examples/26-actor-run.tuck", "examples/27-actor-select.t
   ## Under --actors:single, an actor whose handlers wait only on mailboxes
   ## runs as a FRAME under stackless (phase 5): no coroutine, no stack.
 
+const BatchPrograms = ActorPrograms[0 .. ^2]
+  ## mixed_actors waits on a predicate over a SECOND actor's state, which is
+  ## re-tested only when the first one handles a message: under batch the
+  ## second's messages cross after that last test, and the wait never ends
+  ## — on Nim as on the others, so it is the program's race, not a backend's.
+
+proc label(b: Backend): string =
+  case b
+  of bNim: "Nim"
+  of bOdin: "Odin"
+  of bD: "D"
+
+proc actorModes(t: var T, others: seq[Backend]) =
+  ## Odin and D reach parity with Nim's actor modes: each actor program,
+  ## under --actors:single and --actors:batch, in both concurrency modes,
+  ## exits and prints what Nim stackful does under the same mode.
+  for mode in ["single", "batch"]:
+    # batch at 4 against the programs' 2-deep mailboxes: runs both fill and flush
+    let flags = if mode == "batch": @["--actors:batch", "--batch-count:4"]
+                else: @["--actors:single"]
+    for p in (if mode == "batch": @BatchPrograms else: @ActorPrograms):
+      t.src readFile(p)
+      let reference = t.buildRun("stackful", bNim, flags)
+      if mode == "batch":
+        t.same("--actors:batch: Nim stackless matches stackful: " & p.extractFilename,
+               reference, t.buildRun("stackless", bNim, flags))
+      for b in others:
+        for cm in ["stackful", "stackless"]:
+          t.same("--actors:" & mode & ": " & b.label & " " & cm &
+                 " matches Nim: " & p.extractFilename,
+                 reference, t.buildRun(cm, b, flags))
+
 proc actorFrames(t: var T) =
   ## Each actor program the same under --actors:single in both modes, and
   ## the stackless build really starting a frame actor (not the old path).
@@ -197,10 +229,10 @@ proc run*(t: var T) =
     t.same("Nim: same output and exit under both flags: " & name,
            reference, t.buildRun("stackless"))
     for b in others:
-      let label = (if b == bOdin: "Odin" else: "D")
-      t.same(label & " stackless matches the Nim reference: " & name,
+      t.same(b.label & " stackless matches the Nim reference: " & name,
              reference, t.buildRun("stackless", b))
   t.actorFrames()
+  t.actorModes(others)
   t.staticFrames(others)
   t.refusedAtCompile()
   t.flags()

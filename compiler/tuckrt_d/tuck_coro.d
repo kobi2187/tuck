@@ -970,6 +970,9 @@ private void actorMain(ActorSlot* slot)
         }
         spinBudget = spinBudget / 2 < ActorSpinMin ? ActorSpinMin
                                                    : spinBudget / 2;
+        // About to stop: hand over what this actor staged for others, so a
+        // parked thread holds nothing and exit can be a local check.
+        static if (tuckBatchMode) tuckFlushStaged();
         // ARM, THEN LOOK AGAIN (EV-7). Publishing `parked` and then sleeping
         // is not enough: a sender that enqueued just before that store reads
         // `parked` as false, returns without signalling, and its message sits
@@ -1009,6 +1012,68 @@ private void actorMain(ActorSlot* slot)
 ///
 /// Detached by design: actors are daemons with no termination condition, so
 /// there is nothing to join. The process exits and they go with it.
+version (TuckActorsBatch) private enum tuckBatchMode = true;
+else private enum tuckBatchMode = false;
+
+/// Batch mode's flush hooks: one per (thread, mailbox) this thread staged
+/// for, registered by tuck_rt.d's stagingFor. Thread-local, as every D
+/// module variable is: each thread flushes only what it staged.
+private struct FlushHook
+{
+    bool function(void*) flush;
+    bool function(void*) flushDue;   /// ...only once the run's deadline passed
+    void* data;
+    void* key;                       /// the mailbox
+}
+
+private FlushHook[] gFlushHooks;
+
+void tuckRegisterFlush(bool function(void*) flush, bool function(void*) flushDue,
+                       void* data, void* key)
+{
+    gFlushHooks ~= FlushHook(flush, flushDue, data, key);
+}
+
+void* tuckFindStaging(void* key)
+{
+    foreach (ref h; gFlushHooks) if (h.key is key) return h.data;
+    return null;
+}
+
+/// A flush has no send behind it to notify, so it wakes whoever sleeps.
+/// Broadcast: a run does not know its actor's slot, and this is per park.
+private void wakeAllParked()
+{
+    if (gSlotsLock is null) return;
+    gSlotsLock.lock();
+    foreach (s; gActorSlots)
+    {
+        if (!atomicLoad(s.parked)) continue;
+        s.lock.lock();
+        s.pending = true;
+        s.cond.notify();
+        s.lock.unlock();
+    }
+    gSlotsLock.unlock();
+}
+
+/// Hand over every run this thread holds, then make sure someone drains it.
+void tuckFlushStaged()
+{
+    bool handed = false;
+    foreach (ref h; gFlushHooks) if (h.flush(h.data)) handed = true;
+    if (handed) wakeAllParked();
+}
+
+/// The same, for the runs whose deadline has passed: swept across the
+/// thread, because the run that needs it is the one nobody sends to any more.
+void tuckFlushDueStaged()
+{
+    bool handed = false;
+    foreach (ref h; gFlushHooks) if (h.flushDue(h.data)) handed = true;
+    if (handed) wakeAllParked();
+}
+
 private ActorSlot* gFrameActor;   /// per thread: the frame actor mid-pass
 
 /// A frame actor's one stage (single mode): drain until empty, answer a
@@ -1095,6 +1160,8 @@ private void* startThread(DrainProc drain)
 void tuckWaitOn(void* handle, bool function() pred)
 {
     if (handle is null) return;
+    // EVERYTHING this thread staged: the predicate may read another actor.
+    static if (tuckBatchMode) tuckFlushStaged();
     static if (tuckSingle)
     {
         // One thread: re-test between scheduler passes, which run the actors.
@@ -1160,6 +1227,7 @@ private void waitOnThread(void* handle, bool function() pred)
 /// heap, so their twins wait for quiescence and stop there.
 void tuckDrainActors()
 {
+    static if (tuckBatchMode) tuckFlushStaged();   // main's own staged sends
     if (gSlotsLock is null) return;
     static if (tuckSingle)
     {
@@ -1272,6 +1340,7 @@ void tuckAwaitRoom(void* handle, string actor)
         tuckMailboxFull(actor, "it sent to itself, and the actor that would " ~
                         "make room is the one waiting. Declare `on_full: drop` " ~
                         "or a larger `queue`");
+    static if (tuckBatchMode) tuckFlushStaged();
     tuckNotifySend(handle);
     if (inCoroutine()) tuckYield();          // re-queues the caller first
     else if (readyCount > 0) stepOne();
