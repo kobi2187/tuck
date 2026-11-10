@@ -6,15 +6,15 @@ import time as tuckˑmodˑtime
 proc tuckˑfnˑmain*(): int
 
 type TuckFˑtuckˑtaskˑreadOrGiveUp* = object
-    tuckHdr: TuckFrameHdr
-    tuckRes: ptr TuckSlot[tuple[code: int]]
-    tuckDest: ptr tuple[code: int]
+    tuckHdr*: TuckFrameHdr
+    tuckRes*: ptr TuckSlot[tuple[code: int]]
+    tuckDest*: ptr tuple[code: int]
     fd: int
     tuckˑvˑcode: int
 
-proc TuckSˑtuckˑtaskˑreadOrGiveUpˑ0(env: pointer): TuckHop {.nimcall.}
-proc TuckIOˑtuckˑtaskˑreadOrGiveUpˑ0(env: pointer) {.nimcall.}
-proc TuckSˑtuckˑtaskˑreadOrGiveUpˑ1(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑreadOrGiveUpˑ0*(env: pointer): TuckHop {.nimcall.}
+proc TuckIOˑtuckˑtaskˑreadOrGiveUpˑ0*(env: pointer) {.nimcall.}
+proc TuckSˑtuckˑtaskˑreadOrGiveUpˑ1*(env: pointer): TuckHop {.nimcall.}
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑreadOrGiveUp)
 proc TuckNewˑtuckˑtaskˑreadOrGiveUp*(tuckAt: ptr TuckFˑtuckˑtaskˑreadOrGiveUp, tuckRes: ptr TuckSlot[tuple[code: int]], tuckDest: ptr tuple[code: int], fd: int): ptr TuckFˑtuckˑtaskˑreadOrGiveUp =
   if tuckAt == nil: result = tuckSlAlloc(TuckFˑtuckˑtaskˑreadOrGiveUp)
@@ -27,20 +27,20 @@ proc TuckNewˑtuckˑtaskˑreadOrGiveUp*(tuckAt: ptr TuckFˑtuckˑtaskˑreadOrGiv
   result.tuckDest = tuckDest
   tuckStore(result.fd, fd)
 
-proc TuckSˑtuckˑtaskˑreadOrGiveUpˑ0(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑreadOrGiveUpˑ0*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑreadOrGiveUp](env)
   template fd: untyped = tuckF.fd
   template tuckˑvˑcode: untyped = tuckF.tuckˑvˑcode
   tuckˑvˑcode = 0
   return tuckSlOnStack(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑreadOrGiveUpˑ1, TuckIOˑtuckˑtaskˑreadOrGiveUpˑ0)
 
-proc TuckSˑtuckˑtaskˑreadOrGiveUpˑ1(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑreadOrGiveUpˑ1*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑreadOrGiveUp](env)
   template fd: untyped = tuckF.fd
   template tuckˑvˑcode: untyped = tuckF.tuckˑvˑcode
   return tuckSlRet(tuckF, (code: tuckˑvˑcode))
 
-proc TuckIOˑtuckˑtaskˑreadOrGiveUpˑ0(env: pointer) {.nimcall.} =
+proc TuckIOˑtuckˑtaskˑreadOrGiveUpˑ0*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑreadOrGiveUp](env)
   template fd: untyped = tuckF.fd
   template tuckˑvˑcode: untyped = tuckF.tuckˑvˑcode

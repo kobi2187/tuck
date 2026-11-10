@@ -124,13 +124,13 @@ proc tuckˑregisterˑDMA1_CH3_TCIE_set*(value: bool) {.inline.} =
 
 var tuckˑpoolˑBufferPool* = ObjectPool[array[512, uint8], 4]()
 type TuckFˑtuckˑtaskˑstreamReader* = object
-    tuckHdr: TuckFrameHdr
-    tuckRes: ptr TuckSlot[TuckResult[tuple[]]]
-    tuckDest: ptr TuckResult[tuple[]]
+    tuckHdr*: TuckFrameHdr
+    tuckRes*: ptr TuckSlot[TuckResult[tuple[]]]
+    tuckDest*: ptr TuckResult[tuple[]]
     streamId: uint8
     chunks: seq[uint32]
 
-proc TuckSˑtuckˑtaskˑstreamReaderˑ0(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑstreamReaderˑ0*(env: pointer): TuckHop {.nimcall.}
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑstreamReader)
 proc TuckNewˑtuckˑtaskˑstreamReader*(tuckAt: ptr TuckFˑtuckˑtaskˑstreamReader, tuckRes: ptr TuckSlot[TuckResult[tuple[]]], tuckDest: ptr TuckResult[tuple[]], streamId: uint8, chunks: seq[uint32]): ptr TuckFˑtuckˑtaskˑstreamReader =
   if tuckAt == nil: result = tuckSlAlloc(TuckFˑtuckˑtaskˑstreamReader)
@@ -144,7 +144,7 @@ proc TuckNewˑtuckˑtaskˑstreamReader*(tuckAt: ptr TuckFˑtuckˑtaskˑstreamRea
   tuckStore(result.streamId, streamId)
   tuckStore(result.chunks, chunks)
 
-proc TuckSˑtuckˑtaskˑstreamReaderˑ0(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑstreamReaderˑ0*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑstreamReader](env)
   template streamId: untyped = tuckF.streamId
   template chunks: untyped = tuckF.chunks

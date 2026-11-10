@@ -10,17 +10,17 @@ proc tuckˑfnˑparse*[T0](p0: T0): tuple[feed: tuckˑtypeˑFeed] =
 
 
 type TuckFˑtuckˑtaskˑfetchFeed* = object
-    tuckHdr: TuckFrameHdr
-    tuckRes: ptr TuckSlot[TuckResult[tuple[feed: tuckˑtypeˑFeed]]]
-    tuckDest: ptr TuckResult[tuple[feed: tuckˑtypeˑFeed]]
+    tuckHdr*: TuckFrameHdr
+    tuckRes*: ptr TuckSlot[TuckResult[tuple[feed: tuckˑtypeˑFeed]]]
+    tuckDest*: ptr TuckResult[tuple[feed: tuckˑtypeˑFeed]]
     url: string
     tuckˑvˑresp: TuckResult[tuple[body: string]]
     tuckDefer0: bool
 
-proc TuckSˑtuckˑtaskˑfetchFeedˑ0(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑfetchFeedˑ1(env: pointer): TuckHop {.nimcall.}
-proc TuckIOˑtuckˑtaskˑfetchFeedˑ0(env: pointer) {.nimcall.}
-proc TuckSˑtuckˑtaskˑfetchFeedˑ2(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑfetchFeedˑ0*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑfetchFeedˑ1*(env: pointer): TuckHop {.nimcall.}
+proc TuckIOˑtuckˑtaskˑfetchFeedˑ0*(env: pointer) {.nimcall.}
+proc TuckSˑtuckˑtaskˑfetchFeedˑ2*(env: pointer): TuckHop {.nimcall.}
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑfetchFeed)
 proc TuckXˑtuckˑtaskˑfetchFeedˑ0(tuckF: ptr TuckFˑtuckˑtaskˑfetchFeed)
 proc TuckNewˑtuckˑtaskˑfetchFeed*(tuckAt: ptr TuckFˑtuckˑtaskˑfetchFeed, tuckRes: ptr TuckSlot[TuckResult[tuple[feed: tuckˑtypeˑFeed]]], tuckDest: ptr TuckResult[tuple[feed: tuckˑtypeˑFeed]], url: string): ptr TuckFˑtuckˑtaskˑfetchFeed =
@@ -34,19 +34,19 @@ proc TuckNewˑtuckˑtaskˑfetchFeed*(tuckAt: ptr TuckFˑtuckˑtaskˑfetchFeed, t
   result.tuckDest = tuckDest
   tuckStore(result.url, url)
 
-proc TuckSˑtuckˑtaskˑfetchFeedˑ0(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑfetchFeedˑ0*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑfetchFeed](env)
   template url: untyped = tuckF.url
   template tuckˑvˑresp: untyped = tuckF.tuckˑvˑresp
   return tuckSlYield(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑfetchFeedˑ1)
 
-proc TuckSˑtuckˑtaskˑfetchFeedˑ1(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑfetchFeedˑ1*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑfetchFeed](env)
   template url: untyped = tuckF.url
   template tuckˑvˑresp: untyped = tuckF.tuckˑvˑresp
   return tuckSlOnStack(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑfetchFeedˑ2, TuckIOˑtuckˑtaskˑfetchFeedˑ0)
 
-proc TuckSˑtuckˑtaskˑfetchFeedˑ2(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑfetchFeedˑ2*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑfetchFeed](env)
   template url: untyped = tuckF.url
   template tuckˑvˑresp: untyped = tuckF.tuckˑvˑresp
@@ -56,7 +56,7 @@ proc TuckSˑtuckˑtaskˑfetchFeedˑ2(env: pointer): TuckHop {.nimcall.} =
       return tuckSlRet(tuckF, tok(tuckˑfnˑparse(tuckˑvˑresp.value.body)))
   return tuckSlRet(tuckF, terr[tuple[feed: tuckˑtypeˑFeed]](uint16(tuckˑvˑresp.err)))
 
-proc TuckIOˑtuckˑtaskˑfetchFeedˑ0(env: pointer) {.nimcall.} =
+proc TuckIOˑtuckˑtaskˑfetchFeedˑ0*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑfetchFeed](env)
   template url: untyped = tuckF.url
   template tuckˑvˑresp: untyped = tuckF.tuckˑvˑresp

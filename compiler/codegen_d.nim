@@ -267,7 +267,7 @@ proc asCombinatorCallD(ctx: var DCodegenCtx, e: Expr,
   if ctx.isRecordConstructionD(e): return ctx.genDRecordCtor(e)
   return ctx.explodeRecordArgD(e, calleeStr)
 
-proc resolveDCallee(ctx: var DCodegenCtx, e: Expr): string =
+proc resolveDCallee*(ctx: var DCodegenCtx, e: Expr): string =
   ## A bare-name callee (exkVar) resolves like an unqualified exkQualified:
   ## local declarations win, then the imports. (The Nim backend leans on
   ## Nim's own resolution here and needs no such step.)

@@ -8,16 +8,16 @@ proc tuckˑfnˑstepIo*(n: int): tuple[v: int] =
   return (v: n)
 
 type TuckFˑtuckˑtaskˑcompute* = object
-    tuckHdr: TuckFrameHdr
-    tuckRes: ptr TuckSlot[tuple[r: int]]
-    tuckDest: ptr tuple[r: int]
+    tuckHdr*: TuckFrameHdr
+    tuckRes*: ptr TuckSlot[tuple[r: int]]
+    tuckDest*: ptr tuple[r: int]
     base: int
     tuckˑvˑa: tuple[v: int]
     tuckˑvˑb: tuple[v: int]
 
-proc TuckSˑtuckˑtaskˑcomputeˑ0(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑcomputeˑ1(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑcomputeˑ2(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑcomputeˑ0*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑcomputeˑ1*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑcomputeˑ2*(env: pointer): TuckHop {.nimcall.}
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑcompute)
 proc TuckNewˑtuckˑtaskˑcompute*(tuckAt: ptr TuckFˑtuckˑtaskˑcompute, tuckRes: ptr TuckSlot[tuple[r: int]], tuckDest: ptr tuple[r: int], base: int): ptr TuckFˑtuckˑtaskˑcompute =
   if tuckAt == nil: result = tuckSlAlloc(TuckFˑtuckˑtaskˑcompute)
@@ -30,14 +30,14 @@ proc TuckNewˑtuckˑtaskˑcompute*(tuckAt: ptr TuckFˑtuckˑtaskˑcompute, tuckR
   result.tuckDest = tuckDest
   tuckStore(result.base, base)
 
-proc TuckSˑtuckˑtaskˑcomputeˑ0(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑcomputeˑ0*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑcompute](env)
   template base: untyped = tuckF.base
   template tuckˑvˑa: untyped = tuckF.tuckˑvˑa
   template tuckˑvˑb: untyped = tuckF.tuckˑvˑb
   return tuckSlYield(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑcomputeˑ1)
 
-proc TuckSˑtuckˑtaskˑcomputeˑ1(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑcomputeˑ1*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑcompute](env)
   template base: untyped = tuckF.base
   template tuckˑvˑa: untyped = tuckF.tuckˑvˑa
@@ -45,7 +45,7 @@ proc TuckSˑtuckˑtaskˑcomputeˑ1(env: pointer): TuckHop {.nimcall.} =
   tuckˑvˑa = tuckˑfnˑstepIo(base)
   return tuckSlYield(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑcomputeˑ2)
 
-proc TuckSˑtuckˑtaskˑcomputeˑ2(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑcomputeˑ2*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑcompute](env)
   template base: untyped = tuckF.base
   template tuckˑvˑa: untyped = tuckF.tuckˑvˑa
