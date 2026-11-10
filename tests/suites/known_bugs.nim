@@ -5395,4 +5395,23 @@ fn main() -> int:
   t.quietly: t.runsOdin "A115: exponent float literals on Odin", 0
   t.bugFixed "A115: exponent float literals on Odin"
 
+  # A116 (found building core.bigint): an `int` passed where an `i64` parameter is
+  # declared checks clean (and Nim converts it silently), but Odin refuses the
+  # emitted call: "Cannot assign value of type 'int' to 'i64'". Numeric
+  # conversions are named in Tuck (`^i64`), so the checker should refuse the
+  # mismatch and say how to convert, as it does for `+` between different widths.
+  t.src """
+fn wide({n: i64}) -> i64:
+  return n + 1
+
+fn main() -> int:
+  var total = 0
+  for i in 1 .. 3:
+    let w = {n: i} wide
+    total = total + 1
+  return total
+"""
+  t.quietly: t.badCheck "A116: an int is not an i64 argument without a conversion", "\\^i64|i64"
+  t.bugOpen "A116: an int is not an i64 argument without a conversion"
+
   t.finish()

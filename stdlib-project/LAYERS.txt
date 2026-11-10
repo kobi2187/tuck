@@ -16,7 +16,7 @@
 #   5  clients: http client
 0 bits cmp console fs net scheduler seq str sys time
 1 array boot convert deque error hal hash interrupt iter list mem num power rtos set signal simd string testing text types vec watchdog window backoff checksum heap dsu bitset
-2 ble chrono db devicetree encoding env fmt http i18n map math path perf queue regex tls x11 duration
+2 ble chrono db devicetree encoding env fmt http i18n map math path perf queue regex tls x11 duration bigint
 3 advertise archive audio clock compress crypto dsp geom log mmap openssl process random reflect sqlite stream toml zone cron host
 4 alsa board cli files hci socket id
 5 client
