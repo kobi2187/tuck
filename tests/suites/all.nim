@@ -64,7 +64,9 @@ import ssa
 import ssa_golden
 import stackless
 import std_text
+import stdlib_layers
 import stdlib_project
+import stdlib_surface
 import syntax_ceilings
 import task_select
 import typecheck
@@ -139,7 +141,9 @@ let registry: seq[Entry] = @[
   ("ssa_golden",          SuiteProc(ssa_golden.run),          false),
   ("stackless",           SuiteProc(stackless.run),           false),
   ("std_text",            SuiteProc(std_text.run),            false),
+  ("stdlib_layers",       SuiteProc(stdlib_layers.run),       false),
   ("stdlib_project",      SuiteProc(stdlib_project.run),      false),
+  ("stdlib_surface",      SuiteProc(stdlib_surface.run),      false),
   ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     true),
   ("task_select",         SuiteProc(task_select.run),         false),
   ("typecheck",           SuiteProc(typecheck.run),           true),

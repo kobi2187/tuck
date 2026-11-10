@@ -344,6 +344,55 @@ it in.
   A call spelled `lib::add` takes the twin too. Found by the Benchmarks Game's
   k-nucleotide.
 
+- **A103 — a `match` inside a `match` arm read the wrong subject (Odin).** Both
+  switches bound `v`, so `p.a` in the inner arm read the inner subject's payload.
+  Each nesting depth has its own binding now (`v`, `v1`, ...), and a payload
+  field is read through the binding of the variable it belongs to. Found
+  building `std.reflect`.
+
+- **A104 — returning a local from a `match` arm emitted `switch &v in param`
+  (Odin).** The move of the local was counted as a reset of the captured
+  payload; Odin refuses to address a parameter. Only a reset of a field needs
+  the by-address capture. Found building `std.reflect`.
+
+- **A106 — a tail `match` of returning `match`es could not be printed (all
+  three backends).** `match a:` whose arms are `match b:` blocks answering
+  `return true` / `return false` was wrapped in `return (…)` as though it were a
+  value: Nim "case expression has to be used", Odin and D a `switch` inside a
+  ternary. `matchArmsReturn` knew a bare `return` and a block ending in one, not
+  a nested match that returns in every arm; it does now (`ast_query.armReturns`).
+  Found building `std.chrono`'s `zone`.
+
+- **A109 — a payload variant returned from an optional fn was the wrong type
+  (Odin).** `return {n: k} Sh.A` from `-> Sh?` built `rt.tok(Sh_A{..})`, a
+  result of the variant's struct, not of the union. It converts to the union
+  now (`okValue`). Found building TOML.
+
+- **A111 — the Odin `match` binding shadowed a parameter named `v` (silent).**
+  The payload of `match root:` was bound as `v`, so inside the arm a parameter
+  `v` meant the payload: `putKey(v.keys, v.vals, head, v)` passed the matched
+  value where the argument was meant, and the result held `{}`. The binding is
+  `tuckˑm<depth>` now, in the namespace user names cannot reach.
+
+- **A112 — FIXED. A name's effects were looked up program-wide, by bare name.**
+  A module that imported only `m1` (a pure `grab`) was judged against another
+  module's [io] `grab`, because the effect pass and the recorded call edge both
+  went through one flat table. The checker now records the edge from the module
+  that owns the name in THIS scope (`bareOwnerOf`), externs are filed under
+  `mod::name` as well, and the effect pass reads the edge for an extern or a
+  name two modules declare. **Rule (owner, 2026-11-08): collisions are always
+  explicit errors, never a quiet pick** — two imports offering the same bare name
+  is TK-TY-ambiguity at the use; the user qualifies at the call site (`m1::grab`)
+  or the definition site says what it means (a group satisfier names its type).
+  `std.cli` reads the console with a plain `readLine` again.
+- **A105 — FIXED. Two imported satisfiers named alike confused a group.** The
+  owner's `put` was taken for every type; a type's satisfier is now the import
+  whose `put` accepts that type.
+- **A107 — FIXED (TK-TY49).** `not <optional>` is refused: test presence with `.ok`.
+- **A108 — FIXED (TK-TY48).** `+ - * %` on a Seq or Array is refused.
+- **A110 — FIXED.** A payload field moved out of `match s.value` goes through the
+  match binding, which Odin can assign.
+
 Not bugs, recorded so they are not rediscovered: `import core.str.text` is a
 parse error (imports are one flat name; the stdlib designs use dotted names, so
 `--stdlib` matches by file name); an `.odin` file per program must have its own

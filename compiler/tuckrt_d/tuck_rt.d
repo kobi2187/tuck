@@ -2046,6 +2046,219 @@ private string[] tuckArgs;
 
 void tuckSetArgs(string[] args) { tuckArgs = args; }
 
+// --- child processes with pipes (std/sys) ---
+// posix_spawnp and three pipes. The PARENT ends are plain descriptors
+// (non-blocking, close-on-exec) that Tuck holds as ints and reads and writes
+// through fdRead / fdWrite, which suspend only the calling task on the reactor,
+// as a socket does.
+private struct SpawnFileActions { ulong[10] pad; }
+
+private extern (C) nothrow @nogc
+{
+    int posix_spawnp(int* pid, const(char)* file, SpawnFileActions* fa, void* attr,
+                     const(char)** argv, const(char)** envp);
+    int posix_spawn_file_actions_init(SpawnFileActions* fa);
+    int posix_spawn_file_actions_destroy(SpawnFileActions* fa);
+    int posix_spawn_file_actions_adddup2(SpawnFileActions* fa, int fd, int newfd);
+    int posix_spawn_file_actions_addclose(SpawnFileActions* fa, int fd);
+    extern __gshared const(char)** environ;
+}
+
+private __gshared bool gSpawnedOnce = false;
+
+/// Starts the program (searched on PATH) named by the first of the
+/// NUL-separated `argv`. pid < 0: it could not be started.
+R spawnProcess(R)(string argv)
+{
+    import core.sys.posix.unistd : pipe, close;
+    import core.sys.posix.fcntl : fcntl, F_SETFD, F_GETFL, F_SETFL, FD_CLOEXEC, O_NONBLOCK;
+    import core.sys.posix.signal : signal, SIGPIPE, SIG_IGN;
+    import std.string : toStringz, split;
+    R failed;
+    failed.pid = -1; failed.input = -1; failed.output = -1; failed.errors = -1;
+    if (!gSpawnedOnce)
+    {
+        signal(SIGPIPE, SIG_IGN);   // a closed pipe is an error, not a kill
+        gSpawnedOnce = true;
+    }
+    auto parts = argv.split('\0');
+    if (parts.length == 0 || parts[0].length == 0) return failed;
+    auto cargs = new const(char)*[parts.length + 1];
+    foreach (i, p; parts) cargs[i] = toStringz(p);
+    cargs[parts.length] = null;
+    int[2] inP, outP, errP;
+    if (pipe(inP) != 0 || pipe(outP) != 0 || pipe(errP) != 0) return failed;
+    SpawnFileActions fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, inP[0], 0);
+    posix_spawn_file_actions_adddup2(&fa, outP[1], 1);
+    posix_spawn_file_actions_adddup2(&fa, errP[1], 2);
+    foreach (fd; [inP[0], inP[1], outP[0], outP[1], errP[0], errP[1]])
+        posix_spawn_file_actions_addclose(&fa, fd);
+    int pid;
+    auto rc = posix_spawnp(&pid, cargs[0], &fa, null, cargs.ptr, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    close(inP[0]); close(outP[1]); close(errP[1]);
+    if (rc != 0)
+    {
+        close(inP[1]); close(outP[0]); close(errP[0]);
+        return failed;
+    }
+    foreach (fd; [inP[1], outP[0], errP[0]])
+    {
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    }
+    R r;
+    r.pid = pid; r.input = inP[1]; r.output = outP[0]; r.errors = errP[0];
+    return r;
+}
+
+/// Up to `max` bytes from a pipe, suspending the calling task until some are
+/// there. "" is the end of the stream (every writer has closed it).
+R fdRead(R)(long fd, long max)
+{
+    import core.sys.posix.unistd : read;
+    import core.stdc.errno : errno, EAGAIN, EWOULDBLOCK;
+    R r;
+    if (max <= 0) { r.data = ""; return r; }
+    auto buf = new char[cast(size_t) max];
+    for (;;)
+    {
+        tuckAwaitRead(fd);
+        auto n = read(cast(int) fd, buf.ptr, buf.length);
+        if (n > 0) { r.data = buf[0 .. n].idup; return r; }
+        if (n == 0) { r.data = ""; return r; }
+        if (errno != EAGAIN && errno != EWOULDBLOCK) { r.data = ""; return r; }
+    }
+}
+
+/// As fdRead, but none when `timeoutMs` passes first. "" is still end of stream.
+R fdReadWithin(R)(long fd, long max, long timeoutMs)
+{
+    import core.sys.posix.unistd : read;
+    import core.stdc.errno : errno, EAGAIN, EWOULDBLOCK;
+    alias P = typeof(R.value);
+    if (max <= 0) return tok(tuckRec!(P, "data")(""));
+    auto buf = new char[cast(size_t) max];
+    for (;;)
+    {
+        if (!tuckAwaitReadOrTimeout(fd, timeoutMs)) return tnone!P();
+        auto n = read(cast(int) fd, buf.ptr, buf.length);
+        if (n > 0) return tok(tuckRec!(P, "data")(buf[0 .. n].idup));
+        if (n == 0) return tok(tuckRec!(P, "data")(""));
+        if (errno != EAGAIN && errno != EWOULDBLOCK) return tok(tuckRec!(P, "data")(""));
+    }
+}
+
+/// Writes ALL of `data`, suspending on write-readiness while the pipe is full.
+/// Fewer than data.length is reported when the reader has gone.
+R fdWrite(R)(long fd, string data)
+{
+    import core.sys.posix.unistd : write;
+    import core.stdc.errno : errno, EAGAIN, EWOULDBLOCK;
+    R r;
+    size_t sent = 0;
+    while (sent < data.length)
+    {
+        auto n = write(cast(int) fd, data.ptr + sent, data.length - sent);
+        if (n > 0) sent += n;
+        else if (errno == EAGAIN || errno == EWOULDBLOCK) tuckAwaitWrite(fd);
+        else break;
+    }
+    r.sent = cast(long) sent;
+    return r;
+}
+
+void fdClose(long fd)
+{
+    import core.sys.posix.unistd : close;
+    close(cast(int) fd);
+}
+
+private long statusCode(int st)
+{
+    return (st & 0x7f) == 0 ? (st >> 8) & 0xff : 128 + (st & 0x7f);
+}
+
+/// Waits for the child and answers its exit code (128 + N when signal N ended
+/// it). BLOCKS the caller: read the child's output first.
+R waitProcess(R)(long pid)
+{
+    import core.sys.posix.sys.wait : waitpid;
+    import core.stdc.errno : errno, EINTR;
+    R r;
+    for (;;)
+    {
+        int st;
+        auto w = waitpid(cast(int) pid, &st, 0);
+        if (w >= 0) { r.code = statusCode(st); return r; }
+        if (errno != EINTR) { r.code = 127; return r; }
+    }
+}
+
+/// How the child ended, or none while it still runs.
+R pollProcess(R)(long pid)
+{
+    import core.sys.posix.sys.wait : waitpid, WNOHANG;
+    alias P = typeof(R.value);
+    int st;
+    auto w = waitpid(cast(int) pid, &st, WNOHANG);
+    if (w == 0) return tnone!P();
+    if (w < 0) return tok(tuckRec!(P, "code")(127L));
+    return tok(tuckRec!(P, "code")(statusCode(st)));
+}
+
+R killProcess(R)(long pid, long sig)
+{
+    import core.sys.posix.signal : kill;
+    R r;
+    r.code = kill(cast(int) pid, cast(int) sig) == 0 ? 0 : -1;
+    return r;
+}
+
+R setEnv(R)(string name, string value)
+{
+    import core.sys.posix.stdlib : setenv;
+    import std.string : toStringz;
+    R r;
+    r.code = setenv(toStringz(name), toStringz(value), 1);
+    return r;
+}
+
+R unsetEnv(R)(string name)
+{
+    import core.sys.posix.stdlib : unsetenv;
+    import std.string : toStringz;
+    R r;
+    r.code = unsetenv(toStringz(name));
+    return r;
+}
+
+R currentDir(R)()
+{
+    import std.file : getcwd;
+    R r;
+    try r.path = getcwd(); catch (Exception) r.path = "";
+    return r;
+}
+
+R changeDir(R)(string path)
+{
+    import std.file : chdir;
+    R r;
+    try { chdir(path); r.code = 0; } catch (Exception) r.code = -1;
+    return r;
+}
+
+R exePath(R)()
+{
+    import std.file : thisExePath;
+    R r;
+    try r.path = thisExePath(); catch (Exception) r.path = "";
+    return r;
+}
+
 R argCount(R)()
 {
     long n = tuckArgs.length > 0 ? cast(long) tuckArgs.length - 1 : 0;

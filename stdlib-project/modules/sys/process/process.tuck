@@ -1,5 +1,10 @@
 # sys.process — running a command and reading how it ended.
 #
+# Spawning with pipes is native: std/sys carries `spawnProcess` and the
+# descriptor calls (`fdRead`, `fdWrite`, ...), and everything here is Tuck over
+# them. A child's pipes are descriptors the reactor awaits, so a read suspends
+# only the calling task, as a socket does.
+#
 # `ExitStatus` is the point of this module: a process either exited with a code
 # or was killed by a signal, never both, and a `match` must say what it does
 # for each. The host calls underneath are `runCommand` and `captureCommand`
@@ -12,6 +17,7 @@
 import sys
 import seq
 import str
+import encoding
 
 type ExitStatus:
   | Exited({code: int})
@@ -54,6 +60,104 @@ fn capture({line: str}) -> Captured [io]:
   let got = {line: line} captureCommand
   let s = {raw: got.code} statusOf
   return {status: s, output: got.output} Captured
+
+
+# --- spawning with pipes --------------------------------------------------------------
+type SpawnError:
+  | CannotStart
+
+type Child:
+  pid: int
+  input: int
+  output: int
+  errors: int
+
+# What a read answered: bytes, the end of the stream, or nothing yet.
+type Chunk:
+  | Data({text: str})
+  | Eof
+  | Timeout
+
+fn nulJoined({argv: Seq[str]}) -> str:
+  var bytes: Seq[u8] = []
+  for i in 0 .. argv.len - 1:
+    if i > 0:
+      bytes = {items: bytes, value: 0} push
+    let part = {t: argv[i]} bytesOf
+    for k in 0 .. part.len - 1:
+      bytes = {items: bytes, value: part[k]} push
+  return {bytes: bytes} fromBytes
+
+# Start `argv[0]` (searched on PATH) with the rest as arguments. Its stdin,
+# stdout and stderr are pipes the parent reads and writes.
+fn spawn({argv: Seq[str]}) -> !Child [io, error: SpawnError]:
+  if argv.len == 0:
+    err CannotStart
+  let joined = {argv: argv} nulJoined
+  let h = {argv: joined} spawnProcess
+  if h.pid < 0:
+    err CannotStart
+  return {pid: h.pid, input: h.input, output: h.output, errors: h.errors} Child
+
+# Bytes written to the child's stdin (fewer than given means it stopped reading).
+fn writeIn({c: Child, data: str}) -> int [io]:
+  let w = {fd: c.input, data: data} fdWrite
+  return w.sent
+
+# End of its input: a child reading to EOF now finishes.
+fn closeIn({c: Child}) -> void [io]:
+  {fd: c.input} fdClose
+
+fn chunkFrom({fd: int, max: int, timeoutMs: int}) -> Chunk [io]:
+  let r = {fd: fd, max: max, timeoutMs: timeoutMs} fdReadWithin
+  if not r.ok:
+    return Chunk.Timeout
+  if r.value.data == "":
+    return Chunk.Eof
+  return {text: r.value.data} Chunk.Data
+
+# Wait up to `timeoutMs` for the child's stdout; the calling task is suspended,
+# not the process.
+fn readOut({c: Child, max: int, timeoutMs: int}) -> Chunk [io]:
+  return {fd: c.output, max: max, timeoutMs: timeoutMs} chunkFrom
+
+fn readErr({c: Child, max: int, timeoutMs: int}) -> Chunk [io]:
+  return {fd: c.errors, max: max, timeoutMs: timeoutMs} chunkFrom
+
+# All of the child's stdout until it closes it (or `timeoutMs` passes with
+# nothing for that long).
+fn readAllOut({c: Child, timeoutMs: int}) -> str [io]:
+  var out = ""
+  var more = true
+  for more:
+    let ch = {c: c, max: 4096, timeoutMs: timeoutMs} readOut
+    match ch:
+      Data: out = out + ch.text
+      Eof: more = false
+      Timeout: more = false
+  return out
+
+# Wait for it to end and say how. Blocks: read its output to the end first.
+fn waitFor({c: Child}) -> ExitStatus [io]:
+  let r = {pid: c.pid} waitProcess
+  {fd: c.output} fdClose
+  {fd: c.errors} fdClose
+  return {raw: r.code} statusOf
+
+# How it ended if it has, absent while it still runs.
+fn pollStatus({c: Child}) -> ExitStatus? [io]:
+  let r = {pid: c.pid} pollProcess
+  if not r.ok:
+    return none
+  return {raw: r.value.code} statusOf
+
+fn signalTo({c: Child, sig: int}) -> bool [io]:
+  let r = {pid: c.pid, sig: sig} killProcess
+  return r.code == 0
+
+fn isRunning({c: Child}) -> bool [io]:
+  let st = {c: c} pollStatus
+  return not st.ok
 
 fn checkStatus() -> int:
   let ok = {raw: 0} statusOf
@@ -101,6 +205,75 @@ fn checkCapture() -> int [io]:
     return 14
   return 0
 
+
+fn checkSpawn() -> int [io]:
+  let argv: Seq[str] = ["cat"]
+  let r = {argv: argv} spawn
+  if not r.ok:
+    return 20
+  let c = r.value
+  let wrote = {c: c, data: "hello pipes"} writeIn
+  if wrote != 11:
+    return 21
+  {c: c} closeIn
+  let out = {c: c, timeoutMs: 2000} readAllOut
+  if out != "hello pipes":
+    return 22
+  let st = {c: c} waitFor
+  if not {s: st} succeeded:
+    return 23
+  return 0
+
+fn checkExitAndErr() -> int [io]:
+  let argv: Seq[str] = ["sh", "-c", "echo oops 1>&2; exit 3"]
+  let r = {argv: argv} spawn
+  if not r.ok:
+    return 30
+  let c = r.value
+  let e = {c: c, max: 100, timeoutMs: 2000} readErr
+  match e:
+    Data:
+      if e.text != "oops\n":
+        return 31
+    Eof: return 32
+    Timeout: return 33
+  let st = {c: c} waitFor
+  if {s: st} describe != "exited 3":
+    return 34
+  return 0
+
+fn checkSignal() -> int [io]:
+  let argv: Seq[str] = ["sleep", "30"]
+  let r = {argv: argv} spawn
+  if not r.ok:
+    return 40
+  let c = r.value
+  if not {c: c} isRunning:
+    return 41
+  let quiet = {c: c, max: 10, timeoutMs: 50} readOut
+  match quiet:
+    Timeout: discard
+    _: return 42
+  if not {c: c, sig: 15} signalTo:
+    return 43
+  let st = {c: c} waitFor
+  if {s: st} describe != "killed by signal 15":
+    return 44
+  if {c: c} isRunning:
+    return 45
+  return 0
+
+fn checkNotFound() -> int [io]:
+  let argv: Seq[str] = ["definitely-not-a-program-xyz"]
+  let r = {argv: argv} spawn
+  if r.ok:
+    return 50
+  let nothing: Seq[str] = []
+  let r2 = {argv: nothing} spawn
+  if r2.ok:
+    return 51
+  return 0
+
 fn main() -> int [io]:
   let a = checkStatus
   if a != 0:
@@ -108,4 +281,16 @@ fn main() -> int [io]:
   let b = checkRun
   if b != 0:
     return b
-  return checkCapture
+  let d = checkCapture
+  if d != 0:
+    return d
+  let e = checkSpawn
+  if e != 0:
+    return e
+  let f = checkExitAndErr
+  if f != 0:
+    return f
+  let g = checkSignal
+  if g != 0:
+    return g
+  return checkNotFound

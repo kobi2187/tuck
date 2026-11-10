@@ -1,0 +1,281 @@
+# sys.audio — the arithmetic around a sound device, without the device.
+#
+# Two facts from the design shape this module. The real-time fill callback
+# cannot be an actor handler (a cooperative scheduler is exactly the latency an
+# audio callback cannot tolerate), so the hot path is a ring the callback drains
+# from its own thread; and an actor can own only the LIFECYCLE. What is common to
+# every device, and checkable anywhere, is the arithmetic: how many bytes a
+# frame is, how long a buffer lasts, 16-bit PCM versus floats (with clipping),
+# a tone to play, and the ring between the producer and the callback. That is
+# this module. A device shim opens the hardware and drains `Ring`; none of it
+# changes when the shim lands.
+#
+# Samples are f64 in -1.0 .. 1.0 inside Tuck and int16 on the wire.
+import seq
+import math
+
+type Format:
+  sampleRate: int
+  channels: int
+  bytesPerSample: int
+
+fn pcm16({rate: int, channels: int}) -> Format:
+  return {sampleRate: rate, channels: channels, bytesPerSample: 2} Format
+
+fn frameBytes({f: Format}) -> int:
+  return f.channels * f.bytesPerSample
+
+fn framesFor({f: Format, millis: int}) -> int:
+  return f.sampleRate * millis /i 1000
+
+fn millisFor({f: Format, frames: int}) -> int:
+  return frames * 1000 /i f.sampleRate
+
+# --- sample conversion --------------------------------------------------------
+
+fn clip({x: f64}) -> f64:
+  if x > 1.0:
+    return 1.0
+  if x < 0.0 - 1.0:
+    return 0.0 - 1.0
+  return x
+
+# 1.0 -> 32767, -1.0 -> -32767 (symmetric, so negation never overflows).
+fn toPcm16({x: f64}) -> int:
+  let c = {x: x} clip
+  let scaled = c * 32767.0
+  if scaled >= 0.0:
+    return (scaled + 0.5) ~int
+  return (scaled - 0.5) ~int
+
+fn fromPcm16({v: int}) -> f64:
+  return (v ~f64) /f 32768.0
+
+# --- a tone to play ----------------------------------------------------------
+
+fn tone({f: Format, hz: f64, frames: int, amp: f64}) -> Seq[f64]:
+  var out: Seq[f64] = []
+  let step = 6.283185307179586 * hz /f (f.sampleRate ~f64)
+  for i in 0 .. frames - 1:
+    let phase = (i ~f64) * step
+    let wave = {value: phase} sin
+    let s = wave * amp
+    out = {items: out, value: s} push
+  return out
+
+# --- the ring between the producer and the callback ---------------------------
+# Frames in a fixed-size circular buffer. `write` takes what fits and says how
+# many it took (backpressure, never a block); `read` gives what is there.
+
+type Ring:
+  cells: Seq[f64]
+  head: int
+  used: int
+
+fn makeRing({capacity: int}) -> Ring:
+  var cells: Seq[f64] = []
+  for i in 0 .. capacity - 1:
+    cells = {items: cells, value: 0.0} push
+  return {cells: cells, head: 0, used: 0} Ring
+
+fn capacity({r: Ring}) -> int:
+  return r.cells.len
+
+fn free({r: Ring}) -> int:
+  return r.cells.len - r.used
+
+fn writeOne({r: Ring, x: f64}) -> Ring:
+  var next = r
+  let at = (r.head + r.used) % r.cells.len
+  next.cells[at] = x
+  next.used = r.used + 1
+  return next
+
+fn write({r: Ring, samples: Seq[f64]}) -> Ring:
+  var next = r
+  for i in 0 .. samples.len - 1:
+    if next.used < next.cells.len:
+      next = {r: next, x: samples[i]} writeOne
+  return next
+
+# Take up to `n` samples off the front; the new ring and what was read.
+type Drained:
+  ring: Ring
+  samples: Seq[f64]
+
+fn read({r: Ring, n: int}) -> Drained:
+  var next = r
+  var got: Seq[f64] = []
+  var taken = 0
+  for taken < n and next.used > 0:
+    got = {items: got, value: next.cells[next.head]} push
+    next.head = (next.head + 1) % next.cells.len
+    next.used = next.used - 1
+    taken = taken + 1
+  return {ring: next, samples: got} Drained
+
+# --- the file sink: 16-bit PCM WAV ---------------------------------------------
+# A device that always works: render to a .wav and any player can open it.
+# Little-endian fields, a 44-byte header, then the samples as int16.
+
+fn appendBytes({into: Seq[u8], more: Seq[u8]}) -> Seq[u8]:
+  var out = into
+  for i in 0 .. more.len - 1:
+    out = {items: out, value: more[i]} push
+  return out
+
+fn byteOf({v: int}) -> u8:
+  return (v % 256) ~u8
+
+fn le16({v: int}) -> Seq[u8]:
+  let w = v % 65536
+  let lo = {v: w % 256} byteOf
+  let hi = {v: w /i 256} byteOf
+  return [lo, hi]
+
+fn le32({v: int}) -> Seq[u8]:
+  let lo = {v: v % 65536} le16
+  let hi = {v: v /i 65536} le16
+  return {into: lo, more: hi} appendBytes
+
+fn tagBytes({a: int, b: int, c: int, d: int}) -> Seq[u8]:
+  let x = {v: a} byteOf
+  let y = {v: b} byteOf
+  let z = {v: c} byteOf
+  let w = {v: d} byteOf
+  return [x, y, z, w]
+
+fn wavBytes({f: Format, samples: Seq[f64]}) -> Seq[u8]:
+  let dataLen = samples.len * 2
+  var out: Seq[u8] = []
+  let part1 = {a: 82, b: 73, c: 70, d: 70} tagBytes
+  out = {into: out, more: part1} appendBytes
+  let part2 = {v: 36 + dataLen} le32
+  out = {into: out, more: part2} appendBytes
+  let part3 = {a: 87, b: 65, c: 86, d: 69} tagBytes
+  out = {into: out, more: part3} appendBytes
+  let part4 = {a: 102, b: 109, c: 116, d: 32} tagBytes
+  out = {into: out, more: part4} appendBytes
+  let part5 = {v: 16} le32
+  out = {into: out, more: part5} appendBytes
+  let part6 = {v: 1} le16
+  out = {into: out, more: part6} appendBytes
+  let part7 = {v: f.channels} le16
+  out = {into: out, more: part7} appendBytes
+  let part8 = {v: f.sampleRate} le32
+  out = {into: out, more: part8} appendBytes
+  let part9 = {v: f.sampleRate * f.channels * 2} le32
+  out = {into: out, more: part9} appendBytes
+  let part10 = {v: f.channels * 2} le16
+  out = {into: out, more: part10} appendBytes
+  let part11 = {v: 16} le16
+  out = {into: out, more: part11} appendBytes
+  let part12 = {a: 100, b: 97, c: 116, d: 97} tagBytes
+  out = {into: out, more: part12} appendBytes
+  let part13 = {v: dataLen} le32
+  out = {into: out, more: part13} appendBytes
+  for i in 0 .. samples.len - 1:
+    let q = {x: samples[i]} toPcm16
+    let enc = {v: q} le16
+    out = {into: out, more: enc} appendBytes
+  return out
+
+# --- self-check --------------------------------------------------------------
+
+fn near({a: f64, b: f64}) -> bool:
+  let d = a - b
+  return d < 0.0001 and d > 0.0 - 0.0001
+
+fn checkFormat() -> int:
+  let f = {rate: 48000, channels: 2} pcm16
+  if {f: f} frameBytes != 4:
+    return 1
+  if {f: f, millis: 10} framesFor != 480:
+    return 2
+  if {f: f, frames: 4800} millisFor != 100:
+    return 3
+  return 0
+
+fn checkConvert() -> int:
+  let hi = {x: 1.0} toPcm16
+  let lo = {x: 0.0 - 1.0} toPcm16
+  if hi != 32767 or lo != 0 - 32767:
+    return 10
+  if {x: 3.0} toPcm16 != 32767:
+    return 11
+  if {x: 0.0} toPcm16 != 0:
+    return 12
+  let wire = {x: 0.5} toPcm16
+  let back = {v: wire} fromPcm16
+  if not {a: back, b: 0.5} near:
+    return 13
+  return 0
+
+fn checkTone() -> int:
+  let f = {rate: 8000, channels: 1} pcm16
+  let t = {f: f, hz: 1000.0, frames: 8, amp: 0.5} tone
+  if t.len != 8 or not {a: t[0], b: 0.0} near:
+    return 20
+  # a quarter period at 1 kHz / 8 kHz is two samples: sin(pi/2) * 0.5
+  if not {a: t[2], b: 0.5} near:
+    return 21
+  if not {a: t[6], b: 0.0 - 0.5} near:
+    return 22
+  return 0
+
+fn checkRing() -> int:
+  var r = {capacity: 4} makeRing
+  r = {r: r, samples: [1.0, 2.0, 3.0]} write
+  if {r: r} free != 1:
+    return 30
+  let first = {r: r, n: 2} read
+  if first.samples.len != 2 or first.samples[1] != 2.0:
+    return 31
+  r = first.ring
+  # wraps: 3 slots will be free again after this write of 3
+  r = {r: r, samples: [4.0, 5.0, 6.0, 7.0]} write
+  if {r: r} free != 0:
+    return 32
+  let rest = {r: r, n: 10} read
+  if rest.samples.len != 4 or rest.samples[0] != 3.0 or rest.samples[3] != 6.0:
+    return 33
+  if {r: rest.ring} free != 4:
+    return 34
+  return 0
+
+fn checkWav() -> int:
+  let f = {rate: 8000, channels: 1} pcm16
+  let t = {f: f, hz: 1000.0, frames: 8, amp: 0.5} tone
+  let w = {f: f, samples: t} wavBytes
+  if w.len != 44 + 16:
+    return 40
+  if w[0] != 82 or w[8] != 87 or w[36] != 100:
+    return 41
+  # data length field: 16 bytes
+  if w[40] != 16 or w[41] != 0:
+    return 42
+  # sample rate 8000 = 0x1F40
+  if w[24] != 64 or w[25] != 31:
+    return 43
+  # sample 2 is +0.5 -> 16384 = 0x4000 (little endian: 00 40)
+  if w[44 + 4] != 0 or w[44 + 5] != 64:
+    return 44
+  # sample 6 is -0.5 -> -16384 = 0xC000
+  if w[44 + 12] != 0 or w[44 + 13] != 192:
+    return 45
+  return 0
+
+fn main() -> int:
+  var rc = checkFormat
+  if rc != 0:
+    return rc
+  rc = checkConvert
+  if rc != 0:
+    return rc
+  rc = checkTone
+  if rc != 0:
+    return rc
+  rc = checkRing
+  if rc != 0:
+    return rc
+  return checkWav

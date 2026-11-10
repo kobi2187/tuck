@@ -49,7 +49,12 @@ proc collectFnSig*(tc: var TypeChecker, d: Decl, top: bool) =
       tc.groupBoundsOf[d.name] = d.fnGenericBounds
       break
   indexDecl(semLayer, d)
-  if d.isExtern and d.name notin semLayer.externs: semLayer.externs[d.name] = d
+  if d.isExtern:
+    if d.name notin semLayer.externs: semLayer.externs[d.name] = d
+    # Also under its module's own name: two modules may each extern a `readLine`
+    # and the bare table keeps only the first (A112).
+    let home = nameOf(tc.module.id)
+    if home.len > 0: semLayer.externs[home & "::" & d.name] = d
   if top: tc.recordFnBody(d)
   tc.addFnDecl(d.name, d)
   # NOT pending: a top-level pending fn is one written `...` (markUnimplemented),

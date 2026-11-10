@@ -626,6 +626,8 @@ proc programFn*(r: Resolution, key: string): Decl =
   if key notin r.ambiguousFns:
     result = r.fnBodies.getOrDefault(key)
     if result != nil: return
+  result = r.externs.getOrDefault(key)
+  if result != nil: return
   let bare = if "::" in key: key.rsplit("::", 1)[1] else: key
   result = r.externs.getOrDefault(bare)
 

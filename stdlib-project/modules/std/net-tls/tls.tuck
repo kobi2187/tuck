@@ -1,0 +1,164 @@
+# std.net-tls — the part of TLS that is a DECISION, not a socket.
+#
+# A TLS connection is an `fd` like any other (std/net), so reading and writing
+# need nothing here. What a diagnostic tool and every client need is the verdict
+# on a certificate chain: is it inside its validity window, does it name this
+# host, does each link vouch for the one before it, does it end at a root we
+# trust. That is pure logic over `CertInfo`, so it is Tuck and is checked on all
+# three backends. The handshake itself (OpenSSL) is a shim that returns a
+# `Seq[CertInfo]`; it is not here, and nothing below changes when it lands.
+#
+# The chain is leaf first. Times are milliseconds since the epoch, passed IN:
+# a verifier that reads the clock cannot be tested at a date.
+import seq
+import str
+import text
+
+type TlsError:
+  | Expired
+  | NotYetValid
+  | HostnameMismatch
+  | UntrustedRoot
+  | IncompleteChain
+
+type CertInfo:
+  subject: str
+  issuer: str
+  notBeforeMs: u64
+  notAfterMs: u64
+
+# `a.example.com` matches `*.example.com`; `example.com` and `a.b.example.com`
+# do not (one label only), and a bare `*` matches nothing.
+fn nameMatches({pattern: str, host: str}) -> bool:
+  let p = {t: pattern} toLowerAscii
+  let h = {t: host} toLowerAscii
+  if p == h:
+    return true
+  if not {t: p, prefix: "*."} startsWith:
+    return false
+  let dot = {t: h, what: "."} find
+  if not dot.ok:
+    return false
+  let hn = {t: h} byteCount
+  let rest = {t: h, start: dot.value + 1, stop: hn} slice
+  if not rest.ok:
+    return false
+  let pn = {t: p} byteCount
+  let tail = {t: p, start: 2, stop: pn} slice
+  if not tail.ok:
+    return false
+  return rest.value == tail.value
+
+fn validAt({c: CertInfo, nowMs: u64}) -> TlsError?:
+  if nowMs < c.notBeforeMs:
+    return NotYetValid
+  if nowMs > c.notAfterMs:
+    return Expired
+  return none
+
+fn linked({chain: Seq[CertInfo]}) -> bool:
+  for i in 0 .. chain.len - 2:
+    if chain[i].issuer != chain[i + 1].subject:
+      return false
+  return true
+
+fn trusted({root: CertInfo, roots: Seq[str]}) -> bool:
+  for i in 0 .. roots.len - 1:
+    if roots[i] == root.subject:
+      return true
+  return false
+
+fn validity({chain: Seq[CertInfo], nowMs: u64}) -> TlsError?:
+  for i in 0 .. chain.len - 1:
+    let v = {c: chain[i], nowMs: nowMs} validAt
+    if v.ok:
+      return v.value
+  return none
+
+# The verdict, in the order a person would debug it: shape, dates, name, trust.
+fn verifyChain({chain: Seq[CertInfo], host: str, nowMs: u64, roots: Seq[str]}) -> TlsError?:
+  if chain.len == 0:
+    return IncompleteChain
+  if not {chain: chain} linked:
+    return IncompleteChain
+  let dated = {chain: chain, nowMs: nowMs} validity
+  if dated.ok:
+    return dated.value
+  if not {pattern: chain[0].subject, host: host} nameMatches:
+    return HostnameMismatch
+  let top = chain[chain.len - 1]
+  if not {root: top, roots: roots} trusted:
+    return UntrustedRoot
+  return none
+
+# --- self-check --------------------------------------------------------------
+
+fn isErr({r: TlsError?, want: TlsError}) -> bool:
+  if not r.ok:
+    return false
+  return r.value == want
+
+fn cert({subject: str, issuer: str, from0: u64, to0: u64}) -> CertInfo:
+  return {subject: subject, issuer: issuer, notBeforeMs: from0, notAfterMs: to0} CertInfo
+
+fn goodChain() -> Seq[CertInfo]:
+  let leaf = {subject: "*.example.com", issuer: "Mid CA", from0: 100, to0: 900} cert
+  let mid = {subject: "Mid CA", issuer: "Root CA", from0: 0, to0: 1000} cert
+  let root = {subject: "Root CA", issuer: "Root CA", from0: 0, to0: 2000} cert
+  return [leaf, mid, root]
+
+fn checkNames() -> int:
+  if not {pattern: "a.example.com", host: "A.Example.com"} nameMatches:
+    return 1
+  if not {pattern: "*.example.com", host: "www.example.com"} nameMatches:
+    return 2
+  if {pattern: "*.example.com", host: "example.com"} nameMatches:
+    return 3
+  if {pattern: "*.example.com", host: "a.b.example.com"} nameMatches:
+    return 4
+  if {pattern: "*", host: "x"} nameMatches:
+    return 5
+  return 0
+
+fn checkVerdicts() -> int:
+  let roots: Seq[str] = ["Root CA"]
+  let chain = goodChain
+  let ok = {chain: chain, host: "www.example.com", nowMs: 500, roots: roots} verifyChain
+  if ok.ok:
+    return 10
+  let wrongHost = {chain: chain, host: "evil.test", nowMs: 500, roots: roots} verifyChain
+  if not {r: wrongHost, want: HostnameMismatch} isErr:
+    return 11
+  let late = {chain: chain, host: "www.example.com", nowMs: 950, roots: roots} verifyChain
+  if not {r: late, want: Expired} isErr:
+    return 12
+  let early = {chain: chain, host: "www.example.com", nowMs: 50, roots: roots} verifyChain
+  if not {r: early, want: NotYetValid} isErr:
+    return 13
+  let strangers: Seq[str] = ["Other CA"]
+  let unknown = {chain: chain, host: "www.example.com", nowMs: 500, roots: strangers} verifyChain
+  if not {r: unknown, want: UntrustedRoot} isErr:
+    return 14
+  return 0
+
+fn checkShape() -> int:
+  let roots: Seq[str] = ["Root CA"]
+  let empty: Seq[CertInfo] = []
+  let none0 = {chain: empty, host: "x", nowMs: 1, roots: roots} verifyChain
+  if not {r: none0, want: IncompleteChain} isErr:
+    return 20
+  let leaf = {subject: "a.test", issuer: "Missing CA", from0: 0, to0: 10} cert
+  let root = {subject: "Root CA", issuer: "Root CA", from0: 0, to0: 10} cert
+  let broken = {chain: [leaf, root], host: "a.test", nowMs: 5, roots: roots} verifyChain
+  if not {r: broken, want: IncompleteChain} isErr:
+    return 21
+  return 0
+
+fn main() -> int:
+  var rc = checkNames
+  if rc != 0:
+    return rc
+  rc = checkVerdicts
+  if rc != 0:
+    return rc
+  return checkShape

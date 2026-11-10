@@ -1,0 +1,166 @@
+# core.simd — lane-wise arithmetic on a fixed number of numbers.
+#
+# The design asked for a `Pack[N, T]` that becomes AVX on a laptop, NEON on a
+# phone and an unrolled loop on a microcontroller. Tuck needs no intrinsics for
+# that and has none: a `Pack` is an `Array[N, f64]` (fixed size, a value, never
+# allocating), each operation is a plain counted loop over the lanes, and the
+# C / D / Odin compiler behind the backend turns the loop into vector
+# instructions where the target has them. The module's job is the vocabulary and
+# the masks, so a program states what it means and the optimiser picks the
+# instructions. Lane type is f64 here; the integer packs follow the same shape.
+#
+# `LaneMask` is one yes/no per lane: what comparisons produce and `pick` takes.
+import seq
+
+fn filled[N]({lanes: Array[N, f64], value: f64}) -> Array[N, f64]:
+  var out = lanes
+  for i in 0 .. out.len - 1:
+    out[i] = value
+  return out
+
+fn add[N]({a: Array[N, f64], b: Array[N, f64]}) -> Array[N, f64]:
+  var out = a
+  for i in 0 .. out.len - 1:
+    out[i] = a[i] + b[i]
+  return out
+
+fn sub[N]({a: Array[N, f64], b: Array[N, f64]}) -> Array[N, f64]:
+  var out = a
+  for i in 0 .. out.len - 1:
+    out[i] = a[i] - b[i]
+  return out
+
+fn mul[N]({a: Array[N, f64], b: Array[N, f64]}) -> Array[N, f64]:
+  var out = a
+  for i in 0 .. out.len - 1:
+    out[i] = a[i] * b[i]
+  return out
+
+fn scale[N]({a: Array[N, f64], by: f64}) -> Array[N, f64]:
+  var out = a
+  for i in 0 .. out.len - 1:
+    out[i] = a[i] * by
+  return out
+
+# a * b + c, one rounding step per lane the way a fused instruction would.
+fn fma[N]({a: Array[N, f64], b: Array[N, f64], c: Array[N, f64]}) -> Array[N, f64]:
+  var out = a
+  for i in 0 .. out.len - 1:
+    out[i] = a[i] * b[i] + c[i]
+  return out
+
+fn sum[N]({a: Array[N, f64]}) -> f64:
+  var total = 0.0
+  for i in 0 .. a.len - 1:
+    total = total + a[i]
+  return total
+
+fn dot[N]({a: Array[N, f64], b: Array[N, f64]}) -> f64:
+  var total = 0.0
+  for i in 0 .. a.len - 1:
+    total = total + a[i] * b[i]
+  return total
+
+fn maxLane[N]({a: Array[N, f64]}) -> f64:
+  var best = a[0]
+  for i in 1 .. a.len - 1:
+    if a[i] > best:
+      best = a[i]
+  return best
+
+fn minLane[N]({a: Array[N, f64]}) -> f64:
+  var best = a[0]
+  for i in 1 .. a.len - 1:
+    if a[i] < best:
+      best = a[i]
+  return best
+
+# --- masks -------------------------------------------------------------------
+
+fn lessThan[N]({a: Array[N, f64], b: Array[N, f64], mask: Array[N, bool]}) -> Array[N, bool]:
+  var out = mask
+  for i in 0 .. out.len - 1:
+    out[i] = a[i] < b[i]
+  return out
+
+# Lane i of `yes` where the mask holds, else lane i of `no`.
+fn pick[N]({mask: Array[N, bool], yes: Array[N, f64], no: Array[N, f64]}) -> Array[N, f64]:
+  var out = yes
+  for i in 0 .. out.len - 1:
+    if mask[i]:
+      out[i] = yes[i]
+    else:
+      out[i] = no[i]
+  return out
+
+fn anyLane[N]({mask: Array[N, bool]}) -> bool:
+  for i in 0 .. mask.len - 1:
+    if mask[i]:
+      return true
+  return false
+
+fn allLanes[N]({mask: Array[N, bool]}) -> bool:
+  for i in 0 .. mask.len - 1:
+    if not mask[i]:
+      return false
+  return true
+
+# --- self-check --------------------------------------------------------------
+
+fn checkArithmetic() -> int:
+  let a: Array[4, f64] = [1.0, 2.0, 3.0, 4.0]
+  let b: Array[4, f64] = [10.0, 20.0, 30.0, 40.0]
+  let s = {a: a, b: b} add
+  if s[0] != 11.0 or s[3] != 44.0:
+    return 1
+  let d = {a: b, b: a} sub
+  if d[1] != 18.0:
+    return 2
+  let p = {a: a, b: b} mul
+  if p[2] != 90.0:
+    return 3
+  let k = {a: a, by: 0.5} scale
+  if k[3] != 2.0:
+    return 4
+  let f = {a: a, b: a, c: b} fma
+  if f[1] != 24.0:
+    return 5
+  return 0
+
+fn checkReductions() -> int:
+  let a: Array[4, f64] = [1.0, 2.0, 3.0, 4.0]
+  let b: Array[4, f64] = [2.0, 2.0, 2.0, 2.0]
+  if {a: a} sum != 10.0:
+    return 10
+  if {a: a, b: b} dot != 20.0:
+    return 11
+  if {a: a} maxLane != 4.0 or {a: a} minLane != 1.0:
+    return 12
+  let z: Array[3, f64] = [0.0, 0.0, 0.0]
+  let o = {lanes: z, value: 7.0} filled
+  if {a: o} sum != 21.0:
+    return 13
+  return 0
+
+fn checkMasks() -> int:
+  let a: Array[4, f64] = [1.0, 5.0, 3.0, 9.0]
+  let b: Array[4, f64] = [4.0, 4.0, 4.0, 4.0]
+  let blank: Array[4, bool] = [false, false, false, false]
+  let m = {a: a, b: b, mask: blank} lessThan
+  if not m[0] or m[1] or not m[2] or m[3]:
+    return 20
+  if not {mask: m} anyLane or {mask: m} allLanes:
+    return 21
+  let chosen = {mask: m, yes: a, no: b} pick
+  if chosen[0] != 1.0 or chosen[1] != 4.0 or chosen[2] != 3.0 or chosen[3] != 4.0:
+    return 22
+  return 0
+
+fn main() -> int:
+  var rc = checkArithmetic
+  if rc != 0:
+    return rc
+  rc = checkReductions
+  if rc != 0:
+    return rc
+  return checkMasks

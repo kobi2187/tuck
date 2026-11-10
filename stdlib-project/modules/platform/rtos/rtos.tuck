@@ -1,0 +1,128 @@
+# platform.rtos — what is LEFT of an RTOS once Tuck has tasks, actor mailboxes
+# and `on select` timers: priorities, a tick counter and stack watermarks.
+#
+# Tuck's scheduler is cooperative, so a levels here is a RECORD of intent that
+# a target's kernel (or a host test) reads; it does not preempt. This is the
+# simulated table the other platform modules are checked against. A task is a
+# slot number; state is a value and each verb returns the next state.
+import seq
+
+type Kernel:
+  ticks: u64
+  levels: Seq[u8]
+  stackSize: Seq[int]
+  highWater: Seq[int]
+
+fn make({tasks: int, depth: int}) -> Kernel:
+  var lv: Seq[u8] = []
+  var size: Seq[int] = []
+  var mark: Seq[int] = []
+  for i in 0 .. tasks - 1:
+    lv = {items: lv, value: 0} push
+    size = {items: size, value: depth} push
+    mark = {items: mark, value: 0} push
+  return {ticks: 0, levels: lv, stackSize: size, highWater: mark} Kernel
+
+fn known({k: Kernel, id: int}) -> bool:
+  return id >= 0 and id < k.levels.len
+
+fn kernelTicks({k: Kernel}) -> u64:
+  return k.ticks
+
+# One tick of the clock; `n` of them at once.
+fn advance({k: Kernel, n: int}) -> Kernel:
+  var next = k
+  next.ticks = k.ticks + (n ~u64)
+  return next
+
+fn taskPriority({k: Kernel, id: int}) -> u8:
+  if not {k: k, id: id} known:
+    return 0
+  return k.levels[id]
+
+fn setTaskPriority({k: Kernel, id: int, level: u8}) -> Kernel:
+  if not {k: k, id: id} known:
+    return k
+  var next = k
+  next.levels[id] = level
+  return next
+
+# The deepest the stack has been, as a share of its size, in whole percent.
+fn recordStack({k: Kernel, id: int, used: int}) -> Kernel:
+  if not {k: k, id: id} known:
+    return k
+  var next = k
+  if used > k.highWater[id]:
+    next.highWater[id] = used
+  return next
+
+fn stackHighWater({k: Kernel, id: int}) -> int:
+  if not {k: k, id: id} known:
+    return 0
+  return k.highWater[id]
+
+fn stackUsedPercent({k: Kernel, id: int}) -> int:
+  if not {k: k, id: id} known:
+    return 0
+  return k.highWater[id] * 100 /i k.stackSize[id]
+
+# The task that should run next: highest levels, lowest slot on a tie.
+# -1 when there are no tasks.
+fn pickNext({k: Kernel}) -> int:
+  var best = 0 - 1
+  for i in 0 .. k.levels.len - 1:
+    if best < 0 or k.levels[i] > k.levels[best]:
+      best = i
+  return best
+
+# --- self-check --------------------------------------------------------------
+
+fn checkPriority() -> int:
+  var k = {tasks: 3, depth: 1000} make
+  if {k: k} pickNext != 0:
+    return 1
+  k = {k: k, id: 2, level: 9} setTaskPriority
+  k = {k: k, id: 1, level: 9} setTaskPriority
+  if {k: k} pickNext != 1:
+    return 2
+  if {k: k, id: 2} taskPriority != 9:
+    return 3
+  k = {k: k, id: 7, level: 1} setTaskPriority
+  if {k: k, id: 7} taskPriority != 0:
+    return 4
+  let empty = {tasks: 0, depth: 10} make
+  if {k: empty} pickNext != 0 - 1:
+    return 5
+  return 0
+
+fn checkTicks() -> int:
+  var k = {tasks: 1, depth: 10} make
+  k = {k: k, n: 5} advance
+  k = {k: k, n: 7} advance
+  if {k: k} kernelTicks != 12:
+    return 10
+  return 0
+
+fn checkStack() -> int:
+  var k = {tasks: 2, depth: 400} make
+  k = {k: k, id: 0, used: 100} recordStack
+  k = {k: k, id: 0, used: 300} recordStack
+  k = {k: k, id: 0, used: 50} recordStack
+  if {k: k, id: 0} stackHighWater != 300:
+    return 20
+  if {k: k, id: 0} stackUsedPercent != 75:
+    return 21
+  if {k: k, id: 1} stackHighWater != 0:
+    return 22
+  if {k: k, id: 5} stackUsedPercent != 0:
+    return 23
+  return 0
+
+fn main() -> int:
+  var rc = checkPriority
+  if rc != 0:
+    return rc
+  rc = checkTicks
+  if rc != 0:
+    return rc
+  return checkStack

@@ -1828,6 +1828,22 @@ ArgValue :: struct {
 	arg: string,
 }
 
+// std/sys child processes
+ProcHandle :: struct {
+	pid:    int,
+	input:  int,
+	output: int,
+	errors: int,
+}
+
+ProcCode :: struct {
+	code: int,
+}
+
+PathValue :: struct {
+	path: string,
+}
+
 NowMs :: struct {
 	epochMs: u64,
 }
@@ -2326,6 +2342,191 @@ captureCommand :: proc(line: string) -> Captured {
 	status := int(pclose(f))
 	code := status & 0x7f == 0 ? (status >> 8) & 0xff : 128 + (status & 0x7f)
 	return Captured{code = code, output = strings.to_string(b)}
+}
+
+// --- child processes with pipes (std/sys) ---
+// posix_spawnp and three pipes. The PARENT ends are plain descriptors
+// (non-blocking, close-on-exec) that Tuck holds as ints and reads and writes
+// through fdRead / fdWrite, which suspend only the calling task on the reactor,
+// as a socket does.
+foreign import tuck_spawn_c "system:c"
+
+@(private) SpawnFileActions :: struct #align(8) { _: [80]u8 }
+@(private) SpawnPoll :: struct #packed { fd: i32, events: i16, revents: i16 }
+
+@(default_calling_convention = "c", private)
+foreign tuck_spawn_c {
+	posix_spawnp :: proc(pid: ^i32, file: cstring, fa: ^SpawnFileActions, attr: rawptr, argv: [^]cstring, envp: [^]cstring) -> i32 ---
+	posix_spawn_file_actions_init :: proc(fa: ^SpawnFileActions) -> i32 ---
+	posix_spawn_file_actions_destroy :: proc(fa: ^SpawnFileActions) -> i32 ---
+	posix_spawn_file_actions_adddup2 :: proc(fa: ^SpawnFileActions, fd, newfd: i32) -> i32 ---
+	posix_spawn_file_actions_addclose :: proc(fa: ^SpawnFileActions, fd: i32) -> i32 ---
+	pipe :: proc(fds: ^[2]i32) -> i32 ---
+	fcntl :: proc(fd: i32, cmd: i32, #c_vararg args: ..any) -> i32 ---
+	signal :: proc(sig: i32, handler: rawptr) -> rawptr ---
+	setenv :: proc(name: cstring, value: cstring, overwrite: i32) -> i32 ---
+	unsetenv :: proc(name: cstring) -> i32 ---
+	getcwd :: proc(buf: [^]u8, size: uint) -> [^]u8 ---
+	chdir :: proc(path: cstring) -> i32 ---
+	readlink :: proc(path: cstring, buf: [^]u8, size: uint) -> int ---
+	environ: [^]cstring
+}
+
+@(private) gSpawnedOnce := false
+
+// Starts the program (searched on PATH) named by the first of the NUL-separated
+// `argv`. pid < 0: it could not be started.
+spawnProcess :: proc(argv: string) -> ProcHandle {
+	failed := ProcHandle{pid = -1, input = -1, output = -1, errors = -1}
+	if !gSpawnedOnce {
+		signal(13, rawptr(uintptr(1)))   // SIGPIPE ignored: a closed pipe is an error, not a kill
+		gSpawnedOnce = true
+	}
+	parts := strings.split(argv, "\x00", context.temp_allocator)
+	if len(parts) == 0 || len(parts[0]) == 0 do return failed
+	cargs := make([]cstring, len(parts) + 1, context.temp_allocator)
+	for p, i in parts do cargs[i] = strings.clone_to_cstring(p, context.temp_allocator)
+	cargs[len(parts)] = nil
+	inP, outP, errP: [2]i32
+	if pipe(&inP) != 0 || pipe(&outP) != 0 || pipe(&errP) != 0 do return failed
+	fa: SpawnFileActions
+	posix_spawn_file_actions_init(&fa)
+	posix_spawn_file_actions_adddup2(&fa, inP[0], 0)
+	posix_spawn_file_actions_adddup2(&fa, outP[1], 1)
+	posix_spawn_file_actions_adddup2(&fa, errP[1], 2)
+	for fd in ([6]i32{inP[0], inP[1], outP[0], outP[1], errP[0], errP[1]}) {
+		posix_spawn_file_actions_addclose(&fa, fd)
+	}
+	pid: i32
+	rc := posix_spawnp(&pid, cargs[0], &fa, nil, raw_data(cargs), environ)
+	posix_spawn_file_actions_destroy(&fa)
+	linux.close(linux.Fd(inP[0])); linux.close(linux.Fd(outP[1])); linux.close(linux.Fd(errP[1]))
+	if rc != 0 {
+		linux.close(linux.Fd(inP[1])); linux.close(linux.Fd(outP[0])); linux.close(linux.Fd(errP[0]))
+		return failed
+	}
+	for fd in ([3]i32{inP[1], outP[0], errP[0]}) {
+		fcntl(fd, 2, 1)                              // F_SETFD, FD_CLOEXEC
+		fl := fcntl(fd, 3)                           // F_GETFL
+		fcntl(fd, 4, fl | 0o4000)                    // F_SETFL, O_NONBLOCK
+	}
+	return ProcHandle{pid = int(pid), input = int(inP[1]), output = int(outP[0]), errors = int(errP[0])}
+}
+
+// Up to `max` bytes from a pipe, suspending the calling task until some are
+// there. "" is the end of the stream (every writer has closed it).
+fdRead :: proc(fd: int, max_: int) -> NetData {
+	if max_ <= 0 do return NetData{data = ""}
+	buf := make([]u8, max_, context.allocator)
+	defer delete(buf)
+	for {
+		tuckAwaitRead(fd)
+		n, err := linux.read(linux.Fd(fd), buf[:])
+		if err == .NONE {
+			if n == 0 do return NetData{data = ""}
+			return NetData{data = strings.clone(string(buf[:n]))}
+		}
+		if err != .EAGAIN do return NetData{data = ""}
+	}
+}
+
+// As fdRead, but none when `timeoutMs` passes first. "" is still end of stream.
+fdReadWithin :: proc(fd: int, max_: int, timeoutMs: int) -> TuckResult(NetData) {
+	if max_ <= 0 do return tok(NetData{data = ""})
+	buf := make([]u8, max_, context.allocator)
+	defer delete(buf)
+	for {
+		if !tuckAwaitReadOrTimeout(fd, timeoutMs) do return tnone(NetData)
+		n, err := linux.read(linux.Fd(fd), buf[:])
+		if err == .NONE {
+			if n == 0 do return tok(NetData{data = ""})
+			return tok(NetData{data = strings.clone(string(buf[:n]))})
+		}
+		if err != .EAGAIN do return tok(NetData{data = ""})
+	}
+}
+
+// Writes ALL of `data`, suspending on write-readiness while the pipe is full.
+// Fewer than len(data) is reported when the reader has gone.
+fdWrite :: proc(fd: int, data: string) -> NetSent {
+	bytes := transmute([]u8)data
+	sent := 0
+	for sent < len(bytes) {
+		n, err := linux.write(linux.Fd(fd), bytes[sent:])
+		if err == .NONE {
+			sent += n
+		} else if err == .EAGAIN {
+			tuckAwaitWrite(fd)
+		} else {
+			break
+		}
+	}
+	return NetSent{sent = sent}
+}
+
+fdClose :: proc(fd: int) {
+	linux.close(linux.Fd(fd))
+}
+
+@(private)
+statusCode :: proc(st: u32) -> int {
+	if st & 0x7f == 0 do return int((st >> 8) & 0xff)
+	return 128 + int(st & 0x7f)
+}
+
+// Waits for the child and answers its exit code (128 + N when signal N ended
+// it). BLOCKS the caller: read the child's output first.
+waitProcess :: proc(pid: int) -> ProcCode {
+	for {
+		st: u32
+		r, err := linux.waitpid(linux.Pid(pid), &st, {}, nil)
+		if err == .NONE do return ProcCode{code = statusCode(st)}
+		if err != .EINTR do return ProcCode{code = 127}
+		_ = r
+	}
+}
+
+// How the child ended, or none while it still runs.
+pollProcess :: proc(pid: int) -> TuckResult(ProcCode) {
+	st: u32
+	r, err := linux.waitpid(linux.Pid(pid), &st, {.WNOHANG}, nil)
+	if err != .NONE do return tok(ProcCode{code = 127})
+	if r == 0 do return tnone(ProcCode)
+	return tok(ProcCode{code = statusCode(st)})
+}
+
+killProcess :: proc(pid: int, sig: int) -> ProcCode {
+	err := linux.kill(linux.Pid(pid), linux.Signal(sig))
+	return ProcCode{code = err == .NONE ? 0 : -1}
+}
+
+setEnv :: proc(name: string, value: string) -> ProcCode {
+	n := strings.clone_to_cstring(name, context.temp_allocator)
+	v := strings.clone_to_cstring(value, context.temp_allocator)
+	return ProcCode{code = int(setenv(n, v, 1))}
+}
+
+unsetEnv :: proc(name: string) -> ProcCode {
+	n := strings.clone_to_cstring(name, context.temp_allocator)
+	return ProcCode{code = int(unsetenv(n))}
+}
+
+currentDir :: proc() -> PathValue {
+	buf: [4096]u8
+	if getcwd(&buf[0], len(buf)) == nil do return PathValue{path = strings.clone("")}
+	return PathValue{path = strings.clone(string(cstring(&buf[0])))}
+}
+
+changeDir :: proc(path: string) -> ProcCode {
+	p := strings.clone_to_cstring(path, context.temp_allocator)
+	return ProcCode{code = int(chdir(p))}
+}
+
+exePath :: proc() -> PathValue {
+	buf: [4096]u8
+	n := readlink("/proc/self/exe", &buf[0], len(buf))
+	if n <= 0 do return PathValue{path = strings.clone("")}
+	return PathValue{path = strings.clone(string(buf[:n]))}
 }
 
 argCount :: proc() -> ArgCount {

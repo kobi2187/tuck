@@ -69,6 +69,9 @@ fn hashStr({data: str}) -> u64:
   let bytes = {t: data} strBytes
   return {data: bytes} hashBytes
 
+fn hash({data: str}) -> u64:
+  return {data: data} hashStr
+
 fn u64Bytes({x: u64}) -> Seq[u8]:
   var out: Seq[u8] = []
   var i = 0

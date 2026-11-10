@@ -1,0 +1,190 @@
+# std.chrono (module `zone`) — time zones, on the operating system's tz database.
+#
+# Zone rules (offsets, daylight saving, the history of both) are data that
+# changes by decree, so they are not written here: the shim
+# (shim/zone_shim.{nim,odin,d}) asks libc, which reads /usr/share/zoneinfo. It
+# answers three things about a zone at an instant: the offset in force, whether
+# it is daylight time, and the abbreviation. EVERYTHING else is calendar
+# arithmetic on those, in Tuck: converting an instant to wall-clock time in a
+# zone, and the harder direction, a wall-clock reading to an instant, where a
+# daylight-saving change makes a time that happens twice (autumn) or never
+# (spring). That case is reported, not guessed.
+import seq
+import str
+import text
+import chrono
+
+extern [impl: nim "./shim/zone_shim", odin "./shim", d "./shim/zone_shim"]:
+  fn tzOffsetAt({zone: str, epochSec: int}) -> int [io: sys]
+  fn tzIsDst({zone: str, epochSec: int}) -> int [io: sys]
+  fn tzAbbrev({zone: str, epochSec: int}) -> Seq[u8] [io: sys]
+
+# What the answer for an unknown zone is, in the shim.
+fn noZone() -> int:
+  return 999999
+
+type ZonedTime:
+  atMs: int          # the instant, ms since the epoch
+  offsetSec: int     # seconds east of UTC in force then
+  daylight: bool
+  abbrev: str
+  local: DateTime    # the wall-clock reading in the zone
+
+# How a wall-clock reading maps onto the timeline.
+type Fit:
+  | Exact
+  | Ambiguous      # it happens twice; the earlier is taken
+  | Skipped        # it never happens; shifted forward by the gap
+
+type Resolved:
+  moment: ZonedTime
+  fit: Fit
+
+fn knownZone({zone: str}) -> bool [io: sys]:
+  return {zone: zone, epochSec: 0} tzOffsetAt != 999999
+
+# The wall-clock reading in `zone` at the instant `atMs`; absent for an unknown zone.
+fn inZone({atMs: int, zone: str}) -> ZonedTime? [io: sys]:
+  let secs = {a: atMs, b: 1000} floorDiv
+  let off = {zone: zone, epochSec: secs} tzOffsetAt
+  if off == 999999:
+    return none
+  let dst = {zone: zone, epochSec: secs} tzIsDst
+  let ab = {zone: zone, epochSec: secs} tzAbbrev
+  let name = {bytes: ab} fromBytes
+  let local = {atMs: atMs + off * 1000} fromUnixMs
+  return {atMs: atMs, offsetSec: off, daylight: dst == 1, abbrev: name, local: local} ZonedTime
+
+# The instant at which `local` is the wall-clock reading in `zone`. Two offsets
+# bracket any change (the one in force a day before and a day after); the
+# reading is Exact when exactly one of them reproduces it, Ambiguous when both
+# do, Skipped when neither does.
+fn resolve({local: DateTime, zone: str}) -> Resolved? [io: sys]:
+  let asUtc = {moment: local, offsetSec: 0} toUnixMs
+  let guessSec = {a: asUtc, b: 1000} floorDiv
+  let before = {zone: zone, epochSec: guessSec - 86400} tzOffsetAt
+  let after = {zone: zone, epochSec: guessSec + 86400} tzOffsetAt
+  if before == 999999 or after == 999999:
+    return none
+  let c1 = asUtc - before * 1000
+  let c2 = asUtc - after * 1000
+  let s1 = {a: c1, b: 1000} floorDiv
+  let s2 = {a: c2, b: 1000} floorDiv
+  let seen1 = {zone: zone, epochSec: s1} tzOffsetAt
+  let seen2 = {zone: zone, epochSec: s2} tzOffsetAt
+  let ok1 = seen1 == before
+  let ok2 = seen2 == after
+  var pick = c1
+  var fit = Fit.Exact
+  if ok1 and ok2:
+    if before != after:
+      fit = Fit.Ambiguous
+    if c2 < c1:
+      pick = c2
+  elif ok2:
+    pick = c2
+  elif ok1:
+    pick = c1
+  else:
+    fit = Fit.Skipped
+    pick = c1
+  let z = {atMs: pick, zone: zone} inZone
+  if not z.ok:
+    return none
+  return {moment: z.value, fit: fit} Resolved
+
+# --- self-check --------------------------------------------------------------
+
+fn wallClock({y: int, mo: int, d: int, h: int, mi: int}) -> DateTime:
+  let date = {year: y, month: mo, day: d} mkDate
+  let hh = {value: h} u8
+  let mm = {value: mi} u8
+  let zero = {value: 0} u8
+  let nano = {value: 0} u32
+  let t = {hour: hh, minute: mm, second: zero, nano: nano} TimeOfDay
+  return {d: date, t: t} atTime
+
+fn fitCode({f: Fit}) -> int:
+  match f:
+    Exact: return 0
+    Ambiguous: return 1
+    Skipped: return 2
+
+fn same({a: Fit, b: Fit}) -> bool:
+  let x = {f: a} fitCode
+  let y = {f: b} fitCode
+  return x == y
+
+fn checkOffsets() -> int [io: sys]:
+  # 2024-01-15 12:00:00 UTC and 2024-07-15 12:00:00 UTC
+  let winter = 1705320000000
+  let summer = 1721044800000
+  let ny1 = {atMs: winter, zone: "America/New_York"} inZone
+  if not ny1.ok:
+    return 1
+  if ny1.value.offsetSec != 0 - 18000 or ny1.value.daylight or ny1.value.abbrev != "EST":
+    return 2
+  let ny2 = {atMs: summer, zone: "America/New_York"} inZone
+  if not ny2.ok:
+    return 3
+  if ny2.value.offsetSec != 0 - 14400 or not ny2.value.daylight or ny2.value.abbrev != "EDT":
+    return 4
+  # the wall clock: 12:00 UTC is 07:00 in New York in January
+  let h = {value: ny1.value.local.time.hour} int
+  if h != 7:
+    return 5
+  let tokyo = {atMs: winter, zone: "Asia/Tokyo"} inZone
+  if not tokyo.ok:
+    return 6
+  if tokyo.value.offsetSec != 32400 or tokyo.value.daylight:
+    return 7
+  let utc = {atMs: winter, zone: "UTC"} inZone
+  if not utc.ok:
+    return 8
+  if utc.value.offsetSec != 0:
+    return 9
+  let nowhere = {atMs: winter, zone: "Not/AZone"} inZone
+  if nowhere.ok:
+    return 10
+  let escape = {atMs: winter, zone: "../etc/passwd"} inZone
+  if escape.ok:
+    return 11
+  return 0
+
+fn checkResolve() -> int [io: sys]:
+  # an ordinary summer reading in New York: 12:00 EDT = 16:00 UTC
+  let noon = {y: 2024, mo: 7, d: 15, h: 12, mi: 0} wallClock
+  let plain = {local: noon, zone: "America/New_York"} resolve
+  if not plain.ok:
+    return 20
+  if not {a: plain.value.fit, b: Fit.Exact} same:
+    return 21
+  if plain.value.moment.atMs != 1721059200000:
+    return 22
+  # 2024-03-10 02:30 does not exist in New York (clocks jump 02:00 -> 03:00)
+  let skipped = {y: 2024, mo: 3, d: 10, h: 2, mi: 30} wallClock
+  let gap = {local: skipped, zone: "America/New_York"} resolve
+  if not gap.ok:
+    return 23
+  if not {a: gap.value.fit, b: Fit.Skipped} same:
+    return 24
+  # 2024-11-03 01:30 happens twice in New York; the earlier (EDT) is taken
+  let repeated = {y: 2024, mo: 11, d: 3, h: 1, mi: 30} wallClock
+  let twice = {local: repeated, zone: "America/New_York"} resolve
+  if not twice.ok:
+    return 25
+  if not {a: twice.value.fit, b: Fit.Ambiguous} same:
+    return 26
+  if not twice.value.moment.daylight:
+    return 27
+  let newYear = {y: 2024, mo: 1, d: 1, h: 0, mi: 0} wallClock
+  let lost = {local: newYear, zone: "Not/AZone"} resolve
+  if lost.ok:
+    return 28
+  return 0
+
+fn main() -> int [io: sys]:
+  let a = checkOffsets
+  if a != 0:
+    return a
+  return checkResolve

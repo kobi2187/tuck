@@ -1,0 +1,121 @@
+# std.net-tls (module `openssl`) — the OpenSSL driver behind `tls`' verdicts.
+#
+# An `SSL*` and an `X509*` may not be held by Tuck, so the shims
+# (shim/openssl_shim.{nim,odin,d}) keep them in tables and Tuck holds HANDLES.
+# What crosses back is text and numbers: a certificate's CommonName for subject
+# and issuer, and its validity as milliseconds since the epoch, exactly the
+# `CertInfo` that `tls.verifyChain` judges. So a connection's chain goes:
+# handshake (here) -> `Seq[CertInfo]` -> verdict (`tls`), and the verdict logic
+# is the same one that is checked offline.
+#
+# `verify: false` is a deliberate, visible argument: a self-signed staging
+# server is sometimes legitimate and always dangerous.
+import seq
+import str
+import text
+import tls
+
+type TlsFault:
+  | NoTcp
+  | HandshakeRefused
+  | VerifyFailed
+  | BadCertificate
+
+extern [impl: nim "./shim/openssl_shim", odin "./shim", d "./shim/openssl_shim"]:
+  fn certFromPem({pem: str}) -> int [io: net]
+  fn certSubject({h: int}) -> Seq[u8] [io: net]
+  fn certIssuer({h: int}) -> Seq[u8] [io: net]
+  fn certNotBeforeMs({h: int}) -> int [io: net]
+  fn certNotAfterMs({h: int}) -> int [io: net]
+  fn tlsConnect({host: str, port: int, verify: int}) -> int [io: net]
+  fn tlsChainLen({c: int}) -> int [io: net]
+  fn tlsChainCert({c: int, i: int}) -> int [io: net]
+  fn tlsSend({c: int, data: str}) -> int [io: net]
+  fn tlsRecv({c: int, max: int}) -> Seq[u8] [io: net]
+  fn tlsClose({c: int}) -> void [io: net]
+
+# The CertInfo behind a certificate handle.
+fn infoOf({h: int}) -> CertInfo [io: net]:
+  let subject = {h: h} certSubject
+  let issuer = {h: h} certIssuer
+  let from0 = {h: h} certNotBeforeMs
+  let to0 = {h: h} certNotAfterMs
+  let s = {bytes: subject} fromBytes
+  let i = {bytes: issuer} fromBytes
+  return {subject: s, issuer: i, notBeforeMs: (from0 ~u64), notAfterMs: (to0 ~u64)} CertInfo
+
+# Read one certificate from PEM text; absent when it is not one.
+fn parsePem({pem: str}) -> CertInfo? [io: net]:
+  let h = {pem: pem} certFromPem
+  if h < 0:
+    return none
+  return {h: h} infoOf
+
+type Chain:
+  conn: int
+  certs: Seq[CertInfo]
+
+# Connect, handshake, and read the chain the peer sent (leaf first). The
+# connection stays open; `closeTls` ends it.
+fn connectTls({host: str, port: int, verify: bool}) -> !Chain [io: net, error: TlsFault]:
+  var flag = 0
+  if verify:
+    flag = 1
+  let c = {host: host, port: port, verify: flag} tlsConnect
+  if c == 0 - 1:
+    err NoTcp
+  if c == 0 - 3:
+    err VerifyFailed
+  if c < 0:
+    err HandshakeRefused
+  var certs: Seq[CertInfo] = []
+  let n = {c: c} tlsChainLen
+  for i in 0 .. n - 1:
+    let h = {c: c, i: i} tlsChainCert
+    if h >= 0:
+      let one = {h: h} infoOf
+      certs = {items: certs, value: one} push
+  return {conn: c, certs: certs} Chain
+
+fn closeTls({chain: Chain}) -> void [io: net]:
+  {c: chain.conn} tlsClose
+
+# --- self-check (offline: parses a fixed self-signed certificate) -----------------
+
+fn pem() -> str:
+  return "-----BEGIN CERTIFICATE-----\nMIIDFTCCAf2gAwIBAgIUaPfhiIkBPhnqnbZRvoNUa2JKn7MwDQYJKoZIhvcNAQEL\nBQAwGTEXMBUGA1UEAwwObG9jYWxob3N0LnRlc3QwIBcNMjYxMTA4MDk1ODUxWhgP\nMjEyNjEwMTUwOTU4NTFaMBkxFzAVBgNVBAMMDmxvY2FsaG9zdC50ZXN0MIIBIjAN\nBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAieO+nk/C0TYP5WTSDpssb9TzjqJW\n2lFVWE+BLYFPm63LXgfEdiHvF5cGsUcfO7YCijFLAqsjYc6YlursBP37nXKVzWeN\nqkGodOBXBnDQsGggRlpxkddU5T3hhd5kuVZxyQtVi0rlbCI82elocBwXs2yeNiv/\nHbSeyvKhaIFC52xuTWIDAHUG8Ms/tppFIHXmx6dBTn8nuHc5cQH2acPysp823OTq\nduStx7cg3kq1oab2IeExzBZFwF7Aj05wPijrX2gYYX7sOZLyu/GgQ5cNdx4pTZ4T\nylvMzYD6t2ZRzC7QDrZbt/I6xrnbfThtXZy+SAfMZnyF+sLTMKRMLllJBQIDAQAB\no1MwUTAdBgNVHQ4EFgQUk/W+b9EzXzR0jdCLAUBW8RYDQqUwHwYDVR0jBBgwFoAU\nk/W+b9EzXzR0jdCLAUBW8RYDQqUwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0B\nAQsFAAOCAQEAgy1a37PWqpKZu2B4RZQvBJzElWJEaCU2arU0Z1CZeqSBDdpuAi/A\nww6+gRLHSM8SyYUAeKljZ4ZqUrwTkJ2WMZngMwjTxn3KR1qClMgIifzo54wfEME+\ndmsx0atlbnZVKVtOYxK72ycmGuUtM2eb1rZU61jGhXoaI84wkDajtjneDJs23YPo\nNwvvNiD/lZCep3j6/xwmAOSf4+kLB8P6yGuk0bJJXtreHyokTUAbNqBU96AYAxGs\n8pk7KH6KcQId/e9TdO6c7OH+Oo7mHQKn9rD2k7y/I/Bqw7dWwm6/kv+sy3yo0xSh\nuYan/KNtEQP4yEXAOxxSF/RnAaxBWbmo2Q==\n-----END CERTIFICATE-----"
+
+fn checkPem() -> int [io: net]:
+  let one = {pem: pem} parsePem
+  if not one.ok:
+    return 1
+  if one.value.subject != "localhost.test":
+    return 2
+  if one.value.issuer != "localhost.test":
+    return 3
+  if one.value.notAfterMs <= one.value.notBeforeMs:
+    return 4
+  # a self-signed certificate is its own chain: the verdict is the hostname
+  # and the roots we choose to trust
+  let chain: Seq[CertInfo] = [one.value]
+  let roots: Seq[str] = ["localhost.test"]
+  let now = one.value.notBeforeMs + 1000
+  let good = {chain: chain, host: "localhost.test", nowMs: now, roots: roots} verifyChain
+  if good.ok:
+    return 5
+  let other = {chain: chain, host: "elsewhere.test", nowMs: now, roots: roots} verifyChain
+  if not other.ok:
+    return 6
+  return 0
+
+fn checkBad() -> int [io: net]:
+  let nothing = {pem: "not a certificate"} parsePem
+  if nothing.ok:
+    return 10
+  return 0
+
+fn main() -> int [io: net]:
+  let rc = checkPem
+  if rc != 0:
+    return rc
+  return checkBad

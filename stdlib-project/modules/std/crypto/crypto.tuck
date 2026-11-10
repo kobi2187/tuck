@@ -1,4 +1,14 @@
-# std.crypto — SHA-256, HMAC-SHA256 and a constant-time comparison, in pure Tuck.
+# std.crypto — hashing, MACs, a passphrase KDF, random bytes and authenticated
+# encryption, as a SHIM over libcrypto (shim/crypto_shim.{nim,odin,d}).
+#
+# Cryptography is the one place not to write the algorithm yourself: the
+# vetted implementation is faster, constant-time where it must be, and not ours
+# to get subtly wrong. The public functions below are the shim's. The pure-Tuck
+# SHA-256 and HMAC that this module began as stay in the file as `sha256Tuck`
+# and `hmacSha256Tuck`: an independent implementation the checks hold the shim
+# against (and a fallback with no C library).
+#
+# ORIGINAL NOTE on the pure part:
 #
 # A 32-bit word is held in a u64 and masked back to 32 bits after every add or
 # rotate, so no step can overflow (u64 arithmetic traps) and nothing needs a
@@ -14,6 +24,16 @@ import bits
 import seq
 import str
 import encoding
+import text
+
+extern [impl: nim "./shim/crypto_shim", odin "./shim", d "./shim/crypto_shim"]:
+  fn cryptoHash({kind: int, data: Seq[u8]}) -> Seq[u8] [pure]
+  fn cryptoHmac({kind: int, key: Seq[u8], data: Seq[u8]}) -> Seq[u8] [pure]
+  fn cryptoPbkdf2({kind: int, pass: Seq[u8], salt: Seq[u8], iterations: int, outLen: int}) -> Seq[u8] [pure]
+  fn cryptoRandom({n: int}) -> Seq[u8] [io: sys]
+  fn cryptoSame({a: Seq[u8], b: Seq[u8]}) -> bool [pure]
+  fn cryptoSeal({key: Seq[u8], nonce: Seq[u8], aad: Seq[u8], plain: Seq[u8]}) -> Seq[u8] [pure]
+  fn cryptoOpen({key: Seq[u8], nonce: Seq[u8], aad: Seq[u8], boxed: Seq[u8]}) -> Seq[u8] [pure]
 
 const mask32: u64 = 4294967295
 
@@ -174,7 +194,7 @@ fn compress({state: Seq[u64], bytes: Seq[u8], at: int}) -> Seq[u64]:
     next = {items: next, value: word} push
   return next
 
-fn sha256({data: Seq[u8]}) -> Seq[u8]:
+fn sha256Tuck({data: Seq[u8]}) -> Seq[u8]:
   let bytes = {data: data} padded
   var state = initialState
   var at = 0
@@ -193,20 +213,20 @@ fn sha256({data: Seq[u8]}) -> Seq[u8]:
 # HMAC (RFC 2104) over SHA-256: a key longer than the 64-byte block is hashed
 # first, a shorter one zero-padded; the message is wrapped in an inner and an
 # outer hash under the key xor 0x36 and 0x5c.
-fn hmacSha256({key: Seq[u8], data: Seq[u8]}) -> Seq[u8]:
+fn hmacSha256Tuck({key: Seq[u8], data: Seq[u8]}) -> Seq[u8]:
   var k = key
   if k.len > 64:
-    k = {data: k} sha256
+    k = {data: k} sha256Tuck
   for k.len < 64:
     k = {items: k, value: 0} push
   var inner = {key: k, mask: 54} maskKey
   var outer = {key: k, mask: 92} maskKey
   for i in 0 .. data.len - 1:
     inner = {items: inner, value: data[i]} push
-  let innerHash = {data: inner} sha256
+  let innerHash = {data: inner} sha256Tuck
   for i in 0 .. innerHash.len - 1:
     outer = {items: outer, value: innerHash[i]} push
-  return {data: outer} sha256
+  return {data: outer} sha256Tuck
 
 # A 64-byte key with every byte xor `mask`.
 fn maskKey({key: Seq[u8], mask: u64}) -> Seq[u8]:
@@ -221,7 +241,7 @@ fn maskKey({key: Seq[u8], mask: u64}) -> Seq[u8]:
 # True when the two are byte-for-byte equal, taking the same time whatever
 # differs: every byte is compared and the differences are accumulated, instead
 # of stopping at the first.
-fn sameSecret({a: Seq[u8], b: Seq[u8]}) -> bool:
+fn sameSecretTuck({a: Seq[u8], b: Seq[u8]}) -> bool:
   if a.len != b.len:
     return false
   var diff: u64 = 0
@@ -243,28 +263,128 @@ fn toHex({bytes: Seq[u8]}) -> str:
     parts = {items: parts, value: lo} push
   return {parts: parts, sep: ""} joinStr
 
-fn hexOfSha({t: str}) -> str:
+fn hexOf({t: str, kind: HashKind}) -> str:
   let bytes = {t: t} bytesOf
-  let digest = {data: bytes} sha256
+  let digest = {kind: kind, data: bytes} hash
   return {bytes: digest} toHex
 
-fn checkSha() -> int:
-  if {t: ""} hexOfSha != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855":
+# --- the shim-backed API -------------------------------------------------------
+
+type HashKind:
+  | Sha256
+  | Sha512
+  | Sha3_256
+  | Blake2b
+  | Sha1
+
+fn kindCode({kind: HashKind}) -> int:
+  match kind:
+    Sha256: return 1
+    Sha512: return 2
+    Sha3_256: return 3
+    Blake2b: return 4
+    Sha1: return 5
+
+fn hash({kind: HashKind, data: Seq[u8]}) -> Seq[u8]:
+  let code = {kind: kind} kindCode
+  return {kind: code, data: data} cryptoHash
+
+fn hmac({kind: HashKind, key: Seq[u8], data: Seq[u8]}) -> Seq[u8]:
+  let code = {kind: kind} kindCode
+  return {kind: code, key: key, data: data} cryptoHmac
+
+fn sha256({data: Seq[u8]}) -> Seq[u8]:
+  return {kind: Sha256, data: data} hash
+
+fn hmacSha256({key: Seq[u8], data: Seq[u8]}) -> Seq[u8]:
+  return {kind: Sha256, key: key, data: data} hmac
+
+# A key of `length` bytes from a passphrase (PBKDF2-HMAC-SHA256). Use a random
+# salt per secret and 600 000 iterations or more for anything stored.
+fn keyFromPassphrase({pass: Seq[u8], salt: Seq[u8], iterations: int, length: int}) -> Seq[u8]:
+  return {kind: 1, pass: pass, salt: salt, iterations: iterations, outLen: length} cryptoPbkdf2
+
+# Cryptographically secure random bytes (the OS source, via libcrypto).
+fn randomBytes({n: int}) -> Seq[u8] [io: sys]:
+  return {n: n} cryptoRandom
+
+# Equal bytes, compared in constant time.
+fn sameSecret({a: Seq[u8], b: Seq[u8]}) -> bool:
+  return {a: a, b: b} cryptoSame
+
+# Authenticated encryption, ChaCha20-Poly1305: a 32-byte key, a 12-byte nonce
+# that must NEVER repeat under one key (use `randomBytes` or a counter), and
+# associated data that is authenticated but not encrypted. The result is the
+# ciphertext followed by a 16-byte tag; empty when the key or nonce is the wrong
+# size.
+fn seal({key: Seq[u8], nonce: Seq[u8], aad: Seq[u8], plain: Seq[u8]}) -> Seq[u8]:
+  return {key: key, nonce: nonce, aad: aad, plain: plain} cryptoSeal
+
+# The plaintext, or absent when the tag does not verify (wrong key, wrong
+# nonce, wrong associated data, or a changed byte).
+fn unseal({key: Seq[u8], nonce: Seq[u8], aad: Seq[u8], boxed: Seq[u8]}) -> Seq[u8]?:
+  let r = {key: key, nonce: nonce, aad: aad, boxed: boxed} cryptoOpen
+  if r.len == 0 or r[0] != 1:
+    return none
+  var out: Seq[u8] = []
+  for i in 1 .. r.len - 1:
+    out = {items: out, value: r[i]} push
+  return out
+
+# --- self-check --------------------------------------------------------------
+
+fn hexBytes({t: str}) -> Seq[u8]:
+  let r = {t: t} fromHex
+  if r.ok:
+    return r.value
+  let empty: Seq[u8] = []
+  return empty
+
+fn checkHashes() -> int:
+  if {t: "", kind: Sha256} hexOf != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855":
     return 1
-  if {t: "abc"} hexOfSha != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad":
+  if {t: "abc", kind: Sha256} hexOf != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad":
     return 2
-  # 56 bytes: the padding spills into a second block.
-  let two = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
-  if {t: two} hexOfSha != "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1":
+  if {t: "abc", kind: Sha512} hexOf != "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f":
     return 3
+  if {t: "abc", kind: Sha3_256} hexOf != "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532":
+    return 4
+  if {t: "abc", kind: Blake2b} hexOf != "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923":
+    return 5
+  if {t: "abc", kind: Sha1} hexOf != "a9993e364706816aba3e25717850c26c9cd0d89d":
+    return 6
   return 0
 
-fn checkHmac() -> int:
+# The independent pure-Tuck implementation must agree with the shim.
+fn checkAgainstTuck() -> int:
+  let two = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+  let bytes = {t: two} bytesOf
+  let a = {data: bytes} sha256
+  let b = {data: bytes} sha256Tuck
+  if {a: a, b: b} sameSecretTuck == false:
+    return 10
   let key = {t: "key"} bytesOf
   let msg = {t: "The quick brown fox jumps over the lazy dog"} bytesOf
-  let tag = {key: key, data: msg} hmacSha256
-  if {bytes: tag} toHex != "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8":
-    return 4
+  let m1 = {key: key, data: msg} hmacSha256
+  let m2 = {key: key, data: msg} hmacSha256Tuck
+  if {a: m1, b: m2} sameSecretTuck == false:
+    return 11
+  if {bytes: m1} toHex != "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8":
+    return 12
+  let big = {kind: Sha512, key: key, data: msg} hmac
+  if {bytes: big} toHex != "b42af09057bac1e2d41708e48a902e09b5ff7f12ab428a4fe86653c73dd248fb82f948a549f7b791a5b41915ee4d1ec3935357e4e2317250d0372afa2ebeeb3a":
+    return 13
+  return 0
+
+fn checkKdf() -> int:
+  let pass = {t: "password"} bytesOf
+  let salt = {t: "salt"} bytesOf
+  let k = {pass: pass, salt: salt, iterations: 1000, length: 32} keyFromPassphrase
+  if {bytes: k} toHex != "632c2812e46d4604102ba7618e9d6d7d2f8128f6266b4a03264d2a0460b7dcb3":
+    return 20
+  let none0 = {pass: pass, salt: salt, iterations: 0, length: 32} keyFromPassphrase
+  if none0.len != 0:
+    return 21
   return 0
 
 fn checkSame() -> int:
@@ -273,18 +393,93 @@ fn checkSame() -> int:
   let c = {t: "secreT"} bytesOf
   let d = {t: "secre"} bytesOf
   if not {a: a, b: b} sameSecret:
-    return 5
+    return 30
   if {a: a, b: c} sameSecret:
-    return 6
+    return 31
   if {a: a, b: d} sameSecret:
-    return 7
+    return 32
   return 0
 
-fn main() -> int:
-  let s = checkSha
-  if s != 0:
-    return s
-  let h = checkHmac
-  if h != 0:
-    return h
-  return checkSame
+# RFC 8439 section 2.8.2: the published ChaCha20-Poly1305 test vector.
+fn checkSealRfc() -> int:
+  let key = {t: "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f"} hexBytes
+  let nonce = {t: "070000004041424344454647"} hexBytes
+  let aad = {t: "50515253c0c1c2c3c4c5c6c7"} hexBytes
+  let plain = {t: "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it."} bytesOf
+  let boxed = {key: key, nonce: nonce, aad: aad, plain: plain} seal
+  if boxed.len != plain.len + 16:
+    return 40
+  let hex = {bytes: boxed} toHex
+  let head = {t: hex, start: 0, stop: 32} slice
+  if not head.ok:
+    return 41
+  if head.value != "d31a8d34648e60db7b86afbc53ef7ec2":
+    return 41
+  let total = {t: hex} byteCount
+  let tail = {t: hex, start: total - 32, stop: total} slice
+  if not tail.ok:
+    return 42
+  if tail.value != "1ae10b594f09e26a7e902ecbd0600691":
+    return 42
+  return 0
+
+fn checkOpen() -> int [io: sys]:
+  let key = {n: 32} randomBytes
+  let nonce = {n: 12} randomBytes
+  if key.len != 32 or nonce.len != 12:
+    return 50
+  let aad = {t: "header"} bytesOf
+  let plain = {t: "attack at dawn"} bytesOf
+  let boxed = {key: key, nonce: nonce, aad: aad, plain: plain} seal
+  let back = {key: key, nonce: nonce, aad: aad, boxed: boxed} unseal
+  if not back.ok:
+    return 51
+  let recovered = back.value
+  if not {a: recovered, b: plain} sameSecret:
+    return 52
+  # a changed byte, the wrong associated data and the wrong key must all fail
+  var bent = boxed
+  bent[0] = 0
+  let b1 = {key: key, nonce: nonce, aad: aad, boxed: bent} unseal
+  if b1.ok:
+    return 53
+  let other = {t: "other"} bytesOf
+  let b2 = {key: key, nonce: nonce, aad: other, boxed: boxed} unseal
+  if b2.ok:
+    return 54
+  let wrongKey = {n: 32} randomBytes
+  let b3 = {key: wrongKey, nonce: nonce, aad: aad, boxed: boxed} unseal
+  if b3.ok:
+    return 55
+  let empty: Seq[u8] = []
+  let e = {key: key, nonce: nonce, aad: aad, plain: empty} seal
+  let eb = {key: key, nonce: nonce, aad: aad, boxed: e} unseal
+  if e.len != 16:
+    return 56
+  if not eb.ok:
+    return 56
+  let ebv = eb.value
+  if ebv.len != 0:
+    return 56
+  let short = {key: nonce, nonce: nonce, aad: aad, plain: plain} seal
+  if short.len != 0:
+    return 57
+  return 0
+
+fn main() -> int [io: sys]:
+  var rc = checkHashes
+  if rc != 0:
+    return rc
+  rc = checkAgainstTuck
+  if rc != 0:
+    return rc
+  rc = checkKdf
+  if rc != 0:
+    return rc
+  rc = checkSame
+  if rc != 0:
+    return rc
+  rc = checkSealRfc
+  if rc != 0:
+    return rc
+  return checkOpen

@@ -260,6 +260,11 @@ proc synthFieldValue(tc: var TypeChecker, f: FieldInit): Type =
 # name), the braced struct fills the remaining parameters by name. Builds and
 # returns the positional exkCall node (receiver, then declared-order args),
 # ty-stamped with the fn's return type — codegen emits it as-is.
+proc inferBindings(tc: TypeChecker, declared, actual: Type,
+                   generics: seq[string], bindings: var Table[string, Type],
+                   fnName: string, sp: Span)
+  ## Forward-declared: a method call solves its generics from the receiver.
+
 proc failIfReceiverSlotMismatched(tc: var TypeChecker, fnName: string,
                                   sig: FnSig, recvT: Type, sp: Span): bool =
   ## Which slot the receiver of `d.crank {step: 1}` fills depends on whether
@@ -292,13 +297,25 @@ proc failIfReceiverSlotMismatched(tc: var TypeChecker, fnName: string,
   ## member with implicit self and skipped the type check spec 5.1
   ## requires ("first parameter expects Server but the receiver is ..."
   ## never fired, when it should have).
-  let isTopLevel = fnName in tc.topLevelFns
+  # A fn an IMPORT brought in is as top-level as one declared here (`xs.push
+  # {7}`, `xs.at {index: 0}`): its first parameter is the receiver's slot.
+  let isTopLevel = fnName in tc.topLevelFns or
+                   (tc.bareOwnerOf.hasKey(fnName) and
+                    fnName notin tc.objectMemberFns)
   if isTopLevel and sig.params.len == 0:
     fail("Type Error: '" & fnName & "' takes no parameters — it cannot be " &
          "called as a method on " & typeName(recvT), sp)
   let selfIsExplicit = sig.params.len > 0 and sig.params[0].name == "self"
   result = isTopLevel or selfIsExplicit
-  if result and not tc.compatible(recvT, sig.params[0].typ):
+  if not result: return
+  # `Seq[T]` takes a `Seq[int]`: solve the fn's type parameters from the
+  # receiver before comparing, or no generic fn could be called as a method.
+  var wanted = sig.params[0].typ
+  if sig.generics.len > 0:
+    var solved = initTable[string, Type]()
+    tc.inferBindings(wanted, recvT, sig.generics, solved, fnName, sp)
+    wanted = substType(wanted, solved)
+  if not tc.compatible(recvT, wanted):
     fail("Type Error: '" & fnName & "' first parameter expects " &
          typeName(sig.params[0].typ) & " but the receiver is " &
          typeName(recvT), sp)
@@ -338,6 +355,15 @@ proc bindPayloadFields(tc: var TypeChecker, fnName: string,
                        params: seq[Param], argStruct: Expr, sp: Span): seq[Expr]
   ## Forward-declared: the claim passes it runs are defined further down.
 
+proc sameGenericShape(declared, actual: Type): bool =
+  ## Is `actual` an application of the same generic as `declared` (`Seq[int]`
+  ## for `Seq[T]`)? Only then may a method call's receiver solve the fn's type
+  ## parameters; an object member's implicit `self` is not in `params` at all.
+  declared != nil and actual != nil and declared.kind == tkApp and
+    actual.kind == tkApp and declared.base != nil and actual.base != nil and
+    declared.base.kind == tkNamed and actual.base.kind == tkNamed and
+    declared.base.name == actual.base.name
+
 proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
                      recvT: Type, argStruct: Expr, sp: Span): Expr =
   ## `d.crank {step: 1}` — the receiver fills a slot, the payload fills the
@@ -352,8 +378,15 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
     fail("Type Error: arguments to '" & fnName &
          "' must be a struct literal: {name: value, ...}", argStruct.span)
   let startAt = if receiverFillsFirstParam: 1 else: 0
-  let args = @[receiver] &
-             tc.bindPayloadFields(fnName, sig.params[startAt .. ^1], argStruct, sp)
+  # The receiver names the generics (`xs.push {7}` on a Seq[int] makes T int),
+  # so the payload is bound against the parameters AS THAT TYPE SEES THEM.
+  var rest = sig.params[startAt .. ^1]
+  var solved = initTable[string, Type]()
+  if sig.generics.len > 0 and sig.params.len > 0 and
+     sameGenericShape(sig.params[0].typ, recvT):
+    tc.inferBindings(sig.params[0].typ, recvT, sig.generics, solved, fnName, sp)
+    for p in rest.mitems: p.typ = substType(p.typ, solved)
+  let args = @[receiver] & tc.bindPayloadFields(fnName, rest, argStruct, sp)
   result = Expr(span: sp, kind: exkCall,
                 callee: Expr(span: sp, kind: exkVar, name: fnName), args: args)
   # No `->` is `-> void` (R5). A nil type here read as "unresolved", and
@@ -361,7 +394,7 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
   # here but is not declared" (found 2026-09-28).
   setType(semLayer, result,
           if sig.ret == nil: Type(span: sp, kind: tkNamed, name: "void")
-          else: sig.ret)
+          else: substType(sig.ret, solved))
 
 # `a.b` is one spelling for seven different things. Each of the procs below
 # recognises exactly one of them and returns nil for "not mine", so
@@ -518,6 +551,23 @@ proc fieldsCover(fields: seq[FieldDef], params: seq[Param]): bool =
     if not found: return false
   true
 
+proc isImportedType(tc: TypeChecker, t: Type): bool =
+  ## Is `t` a type another module declared (the importer holds a stamped copy)?
+  ## Its fields were checked against ITS module's fns, and the importer cannot
+  ## know them all, so a field of an imported type never clashes with a fn the
+  ## importer or its other imports declare (#197).
+  if t == nil or t.kind != tkNamed: return false
+  let d = tc.typeDeclsByName.getOrDefault(t.name)
+  d != nil and d.origin != NoModule and d.hoistedTo == ""
+
+proc importedTypeHasField(tc: TypeChecker, t: Type, fields: seq[FieldDef],
+                          name: string): bool =
+  ## An imported type that really has this field: `x.name` reads the field even
+  ## when a fn of that name is in scope (#197).
+  if not tc.isImportedType(t): return false
+  for f in fields:
+    if f.name == name: return true
+
 proc failIfFieldShadowsFn(fields: seq[FieldDef], recvT: Type, e: Expr) =
   ## A DECLARED type's field clashing with a fn name is already caught at
   ## declaration. An ANONYMOUS record has no declaration for that check to
@@ -569,6 +619,10 @@ proc asPostfixApplication(tc: var TypeChecker, e: Expr): Type =
   if recvT != nil and recvT.kind == tkNamed and tc.ifaceDecls.hasKey(recvT.name):
     return nil
   let recvFields = tc.fieldsOf(tc.resolve(recvT))
+  # A DECLARED type that really has this field: the receiver's type decides, so
+  # the field is read (#197). Only an IMPORTED type can reach here with a
+  # clash; one declared in this module was refused at its declaration.
+  if tc.importedTypeHasField(recvT, recvFields, e.fieldName): return nil
   failIfFieldShadowsFn(recvFields, recvT, e)
   if fieldsCover(recvFields, sig.params) or sig.params.len != 1: return nil
   tc.failIfArgMismatched(sig, recvT, e)
@@ -616,7 +670,7 @@ proc asPlainField(tc: var TypeChecker, e: Expr, fields: seq[FieldDef],
   ## `x.field` — an ordinary field read off the receiver's type.
   for f in fields:
     if f.name != e.fieldName: continue
-    if tc.fnSigs.hasKey(e.fieldName):
+    if tc.fnSigs.hasKey(e.fieldName) and not tc.recvImported:
       fail("Type Error: '" & e.fieldName & "' is both a field here and a " &
            "declared fn — rename one; fields and fns share the call " &
            "namespace", e.span)
@@ -1719,7 +1773,11 @@ proc synthFieldAccess(tc: var TypeChecker, e: Expr): Type =
          "before accessing fields", e.span)
   let recvT = tc.resolve(rawT)
   let fields = tc.fieldsOf(recvT)
+  # resolve() drops the name, so whether the receiver is an imported type is
+  # decided here, from the type as written (#197).
+  tc.recvImported = tc.isImportedType(rawT)
   result = tc.typedFieldForm(e, recvT, fields)
+  tc.recvImported = false
   if result != nil: return
   tc.failUnresolvedFieldAccess(e, recvT, fields)
   return afterErrorType(e.span)
@@ -1777,9 +1835,23 @@ proc failIfRecordOperand(tc: TypeChecker, lt, rt: Type, e: Expr) =
       fail(dcTyArithOnRecord, "arithmetic needs numbers, but this operand is " &
            "a record " & typeName(t) & hint, side.span)
 
+proc failIfSeqOperand(tc: TypeChecker, lt, rt: Type, e: Expr) =
+  ## A108: a Seq is not a number and Seq concatenation does not exist, so
+  ## `a + b` on two Seqs has no backend spelling. Refused here rather than
+  ## emitted as code none of the three can print.
+  for (t, side) in operands(lt, rt, e):
+    if isFlexible(t): continue
+    let r = tc.resolve(t)
+    if r != nil and r.kind == tkApp and r.base != nil and
+       r.base.kind == tkNamed and r.base.name in ["Seq", "Array"]:
+      fail(dcTyArithOnSeq, "arithmetic needs numbers, but this operand is a " &
+           typeName(t) & " — sequences are not added; build the result with " &
+           "`push` in a loop", side.span)
+
 proc synthArithmetic(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
   ## `+ - * %`: both operands must agree; the result has their type.
   tc.failIfRecordOperand(lt, rt, e)
+  tc.failIfSeqOperand(lt, rt, e)
   tc.failIfMismatched(lt, rt, "arithmetic", e.span)
   widerOperand(lt, rt)
 
@@ -2281,7 +2353,7 @@ proc failIfMutatingLet(tc: var TypeChecker, e: Expr) =
 proc checkFieldSet(tc: var TypeChecker, step: ChainStep, f: FieldDef,
                    recvT: Type) =
   ## `..name {value}` — set a field to one bare value.
-  if tc.fnSigs.hasKey(f.name):
+  if tc.fnSigs.hasKey(f.name) and not tc.isImportedType(recvT):
     fail("Type Error: '" & f.name & "' is both a field here and a declared " &
          "fn — rename one; fields and fns share the call namespace", step.span)
   if not isBareValuePayload(step.arg):
@@ -2446,10 +2518,6 @@ proc check(tc: var TypeChecker, e: Expr, expected: Type, what: string) =
 # --- Generics: simple substitution, Nim/C# style. No variance, no HKTs. ---
 # Type params are inferred at the call site by unifying declared param types
 # against the payload's field types, then substituted into params and return.
-
-proc inferBindings(tc: TypeChecker, declared, actual: Type,
-                   generics: seq[string], bindings: var Table[string, Type],
-                   fnName: string, sp: Span)
 
 proc inferThroughFnSigSlot(tc: TypeChecker, declared, actual: Type,
                            generics: seq[string],
@@ -2709,6 +2777,16 @@ proc providerBindings(tc: TypeChecker, want: Decl, got: FnSig, concreteT: Type,
       tc.inferBindings(got.params[i].typ, substituteGroup(w.typ, concreteT, binds),
                        got.generics, result, fnName, sp)
 
+proc providerAmongImports(tc: TypeChecker, member: string,
+                          concreteT: Type): string =
+  ## Of the imports that all offer `member`, the qualified name of the one
+  ## whose fn takes `concreteT` as its receiver; "" when none does.
+  for imp in tc.ambiguousImports.getOrDefault(member):
+    let qualified = imp & "::" & member
+    if tc.fnSigs.hasKey(qualified) and
+       tc.sigsAcceptReceiver(qualified, concreteT):
+      return qualified
+
 proc requirementKey(tc: TypeChecker, member, fnName: string,
                     concreteT: Type = nil): string =
   ## Which `hashOf` satisfies a bound — the one visible to the module that
@@ -2732,13 +2810,15 @@ proc requirementKey(tc: TypeChecker, member, fnName: string,
        not tc.sigsAcceptReceiver(qualified, concreteT) and
        tc.sigsAcceptReceiver(member, concreteT):
       return member
+    # ...or the one of several imports that provides it for this type: the
+    # owner's own `put` is for the owner's type (A105).
+    if concreteT != nil and not tc.sigsAcceptReceiver(qualified, concreteT):
+      let other = tc.providerAmongImports(member, concreteT)
+      if other != "": return other
     return qualified
   if concreteT != nil and not tc.fnSigs.hasKey(member):
-    for imp in tc.ambiguousImports.getOrDefault(member):
-      let qualified = imp & "::" & member
-      if tc.fnSigs.hasKey(qualified) and
-         tc.sigsAcceptReceiver(qualified, concreteT):
-        return qualified
+    let found = tc.providerAmongImports(member, concreteT)
+    if found != "": return found
   member
 
 proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
@@ -3663,6 +3743,12 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   # know how to read; the stage check `assertCallEdges` holds every call to
   # a fn with a body to having one.
   var calleeDecl = tc.topLevelDeclOfFn(calleeName)
+  if calleeDecl == nil:
+    # An import's fn, written bare: the module that owns the name in THIS
+    # scope, not whichever same-named fn the program-wide table holds (A112).
+    let owner = tc.bareOwnerOf.getOrDefault(calleeName)
+    if owner != "":
+      calleeDecl = semLayer.programFn(owner & "::" & calleeName)
   if calleeDecl == nil: calleeDecl = semLayer.programFn(callKey(e.callee))
   if calleeDecl != nil:
     resolveTo(semLayer, e, calleeDecl)
@@ -4536,6 +4622,12 @@ proc synthUnary(tc: var TypeChecker, e: Expr): Type =
   let t = tc.synthesize(e.operand)
   tc.negatedLit = savedNeg
   tc.composing = savedComposing
+  if e.unaryOp == uoNot and isWrapper(t):
+    # A107: `not <optional>` reads as "is absent" but is a type error on every
+    # backend. Presence is tested with `.ok`, as for a bare `let`.
+    fail(dcTyNotOnOptional, "`not` needs a bool, but this is an unhandled " &
+         typeName(t) & " — test presence with `.ok` (`not x.ok`), or pass " &
+         "it to a handling function", e.operand.span)
   if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
 
 proc failIfCastNotNumeric(e: Expr, target, src: Type) =

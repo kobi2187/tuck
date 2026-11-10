@@ -1952,6 +1952,172 @@ proc captureCommand*(line: string): tuple[code: int, output: string] =
   result.code = if (status and 0x7f) == 0: (status shr 8) and 0xff
                 else: 128 + (status and 0x7f)
 
+# --- child processes with pipes (std/sys) --------------------------------------
+# A child is started with posix_spawnp and three pipes. The PARENT ends are
+# plain descriptors (non-blocking, close-on-exec) that Tuck holds as ints and
+# reads and writes through fdRead / fdWrite, which suspend only the calling task
+# on the reactor, exactly as a socket does. The child's ends are closed in the
+# parent the moment it starts.
+type SpawnFileActions {.importc: "posix_spawn_file_actions_t",
+                        header: "<spawn.h>".} = object
+proc c_spawnp(pid: ptr cint, file: cstring, fa: ptr SpawnFileActions, attr: pointer,
+              argv: cstringArray, envp: cstringArray): cint
+  {.importc: "posix_spawnp", header: "<spawn.h>", cdecl.}
+proc c_fa_init(fa: ptr SpawnFileActions): cint
+  {.importc: "posix_spawn_file_actions_init", header: "<spawn.h>", cdecl.}
+proc c_fa_destroy(fa: ptr SpawnFileActions): cint
+  {.importc: "posix_spawn_file_actions_destroy", header: "<spawn.h>", cdecl.}
+proc c_fa_dup2(fa: ptr SpawnFileActions, fd, newfd: cint): cint
+  {.importc: "posix_spawn_file_actions_adddup2", header: "<spawn.h>", cdecl.}
+proc c_fa_close(fa: ptr SpawnFileActions, fd: cint): cint
+  {.importc: "posix_spawn_file_actions_addclose", header: "<spawn.h>", cdecl.}
+var c_environ {.importc: "environ", header: "<unistd.h>".}: cstringArray
+var gSpawnedOnce = false
+
+proc spawnProcess*(argv: string): tuple[pid: int, input: int, output: int, errors: int] =
+  ## Starts the program (searched on PATH) named by the first of the
+  ## NUL-separated `argv`. pid < 0: it could not be started. `input` is the
+  ## write end of the child's stdin; `output` and `errors` are the read ends of
+  ## its stdout and stderr.
+  let failed = (pid: -1, input: -1, output: -1, errors: -1)
+  if not gSpawnedOnce:
+    posix.signal(posix.SIGPIPE, posix.SIG_IGN)   # a closed pipe is an error, not a kill
+    gSpawnedOnce = true
+  var parts: seq[string]
+  var cur = ""
+  for c in argv:
+    if c == '\0':
+      parts.add cur
+      cur = ""
+    else: cur.add c
+  parts.add cur
+  if parts[0].len == 0: return failed
+  var inP, outP, errP: array[2, cint]
+  if posix.pipe(inP) != 0 or posix.pipe(outP) != 0 or posix.pipe(errP) != 0:
+    return failed
+  var fa: SpawnFileActions
+  discard c_fa_init(addr fa)
+  discard c_fa_dup2(addr fa, inP[0], 0)
+  discard c_fa_dup2(addr fa, outP[1], 1)
+  discard c_fa_dup2(addr fa, errP[1], 2)
+  for fd in [inP[0], inP[1], outP[0], outP[1], errP[0], errP[1]]:
+    discard c_fa_close(addr fa, fd)
+  var args = allocCStringArray(parts)
+  var pid: cint
+  let rc = c_spawnp(addr pid, parts[0].cstring, addr fa, nil, args, c_environ)
+  deallocCStringArray(args)
+  discard c_fa_destroy(addr fa)
+  discard posix.close(inP[0]); discard posix.close(outP[1]); discard posix.close(errP[1])
+  if rc != 0:
+    discard posix.close(inP[1]); discard posix.close(outP[0]); discard posix.close(errP[0])
+    return failed
+  for fd in [inP[1], outP[0], errP[0]]:
+    discard posix.fcntl(fd, posix.F_SETFD, posix.FD_CLOEXEC)
+    let fl = posix.fcntl(fd, posix.F_GETFL)
+    discard posix.fcntl(fd, posix.F_SETFL, fl or posix.O_NONBLOCK)
+  (pid: int(pid), input: int(inP[1]), output: int(outP[0]), errors: int(errP[0]))
+
+proc fdRead*(fd: int, max: int): tuple[data: string] =
+  ## Up to `max` bytes from a pipe or file descriptor, suspending the calling
+  ## task until some are there. "" is the end of the stream (every writer has
+  ## closed it).
+  if max <= 0: return (data: "")
+  var buf = newString(max)
+  while true:
+    tuckAwaitRead(fd)
+    let n = posix.read(cint(fd), addr buf[0], max)
+    if n > 0:
+      tuckStrTruncate(buf, n)
+      return (data: tuckMove(buf))
+    if n == 0: return (data: "")
+    if posix.errno != posix.EAGAIN and posix.errno != posix.EWOULDBLOCK:
+      return (data: "")
+
+proc fdReadWithin*(fd: int, max: int, timeoutMs: int): TuckResult[tuple[data: string]] =
+  ## As fdRead, but nothing (none) when `timeoutMs` passes first. "" is still
+  ## the end of the stream.
+  if max <= 0: return tok((data: ""))
+  var buf = newString(max)
+  while true:
+    if not tuckAwaitReadOrTimeout(fd, timeoutMs):
+      return tnone[tuple[data: string]]()
+    let n = posix.read(cint(fd), addr buf[0], max)
+    if n > 0:
+      tuckStrTruncate(buf, n)
+      return tok((data: tuckMove(buf)))
+    if n == 0: return tok((data: ""))
+    if posix.errno != posix.EAGAIN and posix.errno != posix.EWOULDBLOCK:
+      return tok((data: ""))
+
+proc fdWrite*(fd: int, data: string): tuple[sent: int] =
+  ## Writes ALL of `data`, suspending on write-readiness while the pipe is
+  ## full. Fewer than len(data) is reported when the reader has gone.
+  var sent = 0
+  while sent < data.len:
+    let n = posix.write(cint(fd), unsafeAddr data[sent], data.len - sent)
+    if n > 0:
+      sent += n
+    elif posix.errno == posix.EAGAIN or posix.errno == posix.EWOULDBLOCK:
+      tuckAwaitWrite(fd)
+    else:
+      break
+  (sent: sent)
+
+proc fdClose*(fd: int) =
+  discard posix.close(cint(fd))
+
+proc statusCode(st: cint): int =
+  if (st and 0x7f) == 0: int((st shr 8) and 0xff)
+  else: 128 + int(st and 0x7f)
+
+proc waitProcess*(pid: int): tuple[code: int] =
+  ## Waits for the child and answers its exit code (128 + N when signal N
+  ## ended it). BLOCKS the caller: read the child's output first.
+  var st: cint
+  while true:
+    let r = posix.waitpid(posix.Pid(pid), st, 0)
+    if r >= 0: return (code: statusCode(st))
+    if posix.errno != posix.EINTR: return (code: 127)
+
+proc pollProcess*(pid: int): TuckResult[tuple[code: int]] =
+  ## How the child ended, or none while it still runs.
+  var st: cint
+  let r = posix.waitpid(posix.Pid(pid), st, posix.WNOHANG)
+  if r == 0: return tnone[tuple[code: int]]()
+  if r < 0: return tok((code: 127))
+  tok((code: statusCode(st)))
+
+proc killProcess*(pid: int, sig: int): tuple[code: int] =
+  (code: int(posix.kill(posix.Pid(pid), cint(sig))))
+
+proc setEnv*(name: string, value: string): tuple[code: int] =
+  ## Sets (or replaces) an environment variable of this process.
+  try:
+    os.putEnv(name, value)
+    (code: 0)
+  except OSError:
+    (code: -1)
+
+proc unsetEnv*(name: string): tuple[code: int] =
+  try:
+    os.delEnv(name)
+    (code: 0)
+  except OSError:
+    (code: -1)
+
+proc currentDir*(): tuple[path: string] =
+  (path: os.getCurrentDir())
+
+proc changeDir*(path: string): tuple[code: int] =
+  try:
+    os.setCurrentDir(path)
+    (code: 0)
+  except OSError:
+    (code: -1)
+
+proc exePath*(): tuple[path: string] =
+  (path: (try: os.getAppFilename() except OSError: ""))
+
 proc argCount*(): tuple[total: int] =
   ## How many command-line arguments were passed, not counting the program.
   ## `total`, not `count`: std/seq's fn `count` would make a `count` field

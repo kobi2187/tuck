@@ -1,0 +1,219 @@
+# sys.ble — what a BLE central does with advertisements, without the radio.
+#
+# Scanning needs a Bluetooth stack the host owns (BlueZ, CoreBluetooth, WinRT),
+# so the scanner itself is a shim that yields `Advert`s. What belongs to this
+# module and is checkable anywhere is the policy around them: the filter the OS
+# layer applies (services, name prefix, minimum signal), and the dedup stage that
+# turns a sensor advertising at 10 Hz into one line per meaningful reading. The
+# module never decodes `payload`; that is `std.encoding`'s or the application's.
+# PAYLOAD STRUCTURE (AD fields) is read by `platform.net-lowpower`'s `advertise`.
+#
+# A device id is opaque text (a MAC on Linux, a per-install UUID on macOS): it
+# compares and keys a table, nothing more. Times are milliseconds, passed in.
+import seq
+import str
+import text
+import convert
+
+type Advert:
+  device: str
+  rssi: int
+  name: str
+  services: Seq[str]
+  payload: Seq[u8]
+  seenAtMs: u64
+
+type ScanFilter:
+  services: Seq[str]
+  namePrefix: str
+  minRssi: int
+
+# The bare `start()` of the design: scan everything.
+fn everything() -> ScanFilter:
+  let any: Seq[str] = []
+  return {services: any, namePrefix: "", minRssi: 0 - 128} ScanFilter
+
+fn offersAny({have: Seq[str], want: Seq[str]}) -> bool:
+  if want.len == 0:
+    return true
+  for i in 0 .. want.len - 1:
+    for j in 0 .. have.len - 1:
+      if {t: have[j]} toLowerAscii == {t: want[i]} toLowerAscii:
+        return true
+  return false
+
+# One yes/no per advertisement: a service wanted (any of them, or none asked),
+# a name that starts as asked, a signal at least this strong.
+fn accepts({f: ScanFilter, a: Advert}) -> bool:
+  if a.rssi < f.minRssi:
+    return false
+  if not {t: a.name, prefix: f.namePrefix} startsWith:
+    return false
+  return {have: a.services, want: f.services} offersAny
+
+fn filtered({f: ScanFilter, adverts: Seq[Advert]}) -> Seq[Advert]:
+  var out: Seq[Advert] = []
+  for i in 0 .. adverts.len - 1:
+    if {f: f, a: adverts[i]} accepts:
+      out = {items: out, value: adverts[i]} push
+  return out
+
+# --- dedup: "have I shown this device lately?" ---------------------------------
+
+type Recent:
+  windowMs: u64
+  devices: Seq[str]
+  lastMs: Seq[u64]
+
+fn newRecent({windowMs: u64}) -> Recent:
+  let d: Seq[str] = []
+  let t: Seq[u64] = []
+  return {windowMs: windowMs, devices: d, lastMs: t} Recent
+
+fn slotOf({r: Recent, device: str}) -> int:
+  for i in 0 .. r.devices.len - 1:
+    if r.devices[i] == device:
+      return i
+  return 0 - 1
+
+# The new state and whether this advert counts as new. A device is new the first
+# time, and again once `windowMs` has passed since it was last SHOWN (a repeat
+# inside the window does not extend it, so a chatty sensor is not muted forever).
+type Seen:
+  recent: Recent
+  shown: bool
+
+fn isNew({r: Recent, a: Advert}) -> Seen:
+  let at = {r: r, device: a.device} slotOf
+  var next = r
+  if at < 0:
+    next.devices = {items: r.devices, value: a.device} push
+    next.lastMs = {items: r.lastMs, value: a.seenAtMs} push
+    return {recent: next, shown: true} Seen
+  if a.seenAtMs - r.lastMs[at] >= r.windowMs:
+    next.lastMs[at] = a.seenAtMs
+    return {recent: next, shown: true} Seen
+  return {recent: r, shown: false} Seen
+
+# The stage form: only the adverts that were new when they arrived.
+fn fresh({adverts: Seq[Advert], windowMs: u64}) -> Seq[Advert]:
+  var r = {windowMs: windowMs} newRecent
+  var out: Seq[Advert] = []
+  for i in 0 .. adverts.len - 1:
+    let s = {r: r, a: adverts[i]} isNew
+    r = s.recent
+    if s.shown:
+      out = {items: out, value: adverts[i]} push
+  return out
+
+# A recorded scan, as CSV rows: device, rssi, name, service, atMs. This is the
+# scanner that runs anywhere (a captured log replayed); a live scanner is a shim
+# that yields the same `Advert`s. Rows that do not parse are skipped.
+fn advertFromRow({row: Seq[str]}) -> Advert?:
+  if row.len < 5:
+    return none
+  let rssi = {t: row[1]} parseInt
+  let at = {t: row[4]} parseInt
+  if not rssi.ok:
+    return none
+  if not at.ok:
+    return none
+  let services: Seq[str] = [row[3]]
+  let bytes: Seq[u8] = []
+  let r = rssi.value ^int
+  let t = at.value ~u64
+  return {device: row[0], rssi: r, name: row[2], services: services, payload: bytes, seenAtMs: t} Advert
+
+fn advertsFromRows({rows: Seq[Seq[str]]}) -> Seq[Advert]:
+  var out: Seq[Advert] = []
+  for i in 0 .. rows.len - 1:
+    let a = {row: rows[i]} advertFromRow
+    if a.ok:
+      out = {items: out, value: a.value} push
+  return out
+
+# --- self-check --------------------------------------------------------------
+
+fn advert({device: str, rssi: int, name: str, svc: str, at: u64}) -> Advert:
+  let services: Seq[str] = [svc]
+  let bytes: Seq[u8] = []
+  return {device: device, rssi: rssi, name: name, services: services, payload: bytes, seenAtMs: at} Advert
+
+fn checkFilter() -> int:
+  let a = {device: "d1", rssi: 0 - 60, name: "Thermo-1", svc: "181A", at: 0} advert
+  var f = {} everything
+  if not {f: f, a: a} accepts:
+    return 1
+  f.minRssi = 0 - 50
+  if {f: f, a: a} accepts:
+    return 2
+  f.minRssi = 0 - 70
+  f.namePrefix = "Thermo"
+  if not {f: f, a: a} accepts:
+    return 3
+  f.namePrefix = "Other"
+  if {f: f, a: a} accepts:
+    return 4
+  f.namePrefix = ""
+  f.services = ["181a"]
+  if not {f: f, a: a} accepts:
+    return 5
+  f.services = ["180F"]
+  if {f: f, a: a} accepts:
+    return 6
+  return 0
+
+fn checkDedup() -> int:
+  var r = {windowMs: 1000} newRecent
+  let a0 = {device: "d1", rssi: 0 - 60, name: "x", svc: "1", at: 0} advert
+  let a1 = {device: "d1", rssi: 0 - 60, name: "x", svc: "1", at: 400} advert
+  let a2 = {device: "d2", rssi: 0 - 60, name: "y", svc: "1", at: 500} advert
+  let a3 = {device: "d1", rssi: 0 - 60, name: "x", svc: "1", at: 1000} advert
+  let s0 = {r: r, a: a0} isNew
+  if not s0.shown:
+    return 10
+  r = s0.recent
+  let s1 = {r: r, a: a1} isNew
+  if s1.shown:
+    return 11
+  r = s1.recent
+  let s2 = {r: r, a: a2} isNew
+  if not s2.shown:
+    return 12
+  r = s2.recent
+  let s3 = {r: r, a: a3} isNew
+  if not s3.shown:
+    return 13
+  return 0
+
+fn checkStage() -> int:
+  let first = {device: "d1", rssi: 0 - 60, name: "x", svc: "1", at: 0} advert
+  let second = {device: "d1", rssi: 0 - 60, name: "x", svc: "1", at: 100} advert
+  let third = {device: "d1", rssi: 0 - 60, name: "x", svc: "1", at: 1200} advert
+  let list = [first, second, third]
+  let out = {adverts: list, windowMs: 1000} fresh
+  if out.len != 2 or out[1].seenAtMs != 1200:
+    return 20
+  return 0
+
+fn checkReplay() -> int:
+  let rows: Seq[Seq[str]] = [["d1", "-60", "Thermo", "181A", "0"], ["bad"], ["d1", "-61", "Thermo", "181A", "50"], ["d2", "x", "n", "s", "1"]]
+  let list = {rows: rows} advertsFromRows
+  if list.len != 2 or list[1].seenAtMs != 50:
+    return 30
+  let shown = {adverts: list, windowMs: 1000} fresh
+  if shown.len != 1:
+    return 31
+  return 0
+
+fn main() -> int:
+  var rc = checkFilter
+  if rc != 0:
+    return rc
+  rc = checkDedup
+  if rc != 0:
+    return rc
+  rc = checkStage
+  if rc != 0:
+    return rc
+  return checkReplay

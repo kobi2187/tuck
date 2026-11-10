@@ -1,0 +1,168 @@
+# platform.interrupt — a SIMULATED interrupt controller.
+#
+# On real hardware the vector table, masking and critical sections are the
+# target's (the compiler enforces what an ISR may call; it does not enforce
+# what an ISR may SHARE). This module is the host-side double the other
+# platform modules are tested against: the state of a controller as a value,
+# and the transitions as functions that return the next state, so a test can
+# drive an "interrupt" at an exact point and look at the result.
+#
+# The open question the design names stays open: state shared with an ISR is
+# the one place Tuck asks for discipline rather than giving a guarantee.
+# `inCritical` makes the discipline checkable here: `raise` while a critical
+# section is open is HELD and delivered by the `endCritical` that closes the
+# outermost one, exactly as masked hardware behaves.
+#
+# Vectors are small integers. `handled` counts deliveries per vector; a real
+# handler is a non-capturing function the target installs, so the simulation
+# records that a delivery happened rather than calling anything.
+import seq
+
+type Controller:
+  size: int
+  enabled: Seq[bool]
+  held: Seq[bool]
+  handled: Seq[int]
+  depth: int
+
+fn make({size: int}) -> Controller:
+  var off: Seq[bool] = []
+  var idle: Seq[bool] = []
+  var zero: Seq[int] = []
+  for i in 0 .. size - 1:
+    off = {items: off, value: false} push
+    idle = {items: idle, value: false} push
+    zero = {items: zero, value: 0} push
+  return {size: size, enabled: off, held: idle, handled: zero, depth: 0} Controller
+
+fn valid({c: Controller, vector: int}) -> bool:
+  return vector >= 0 and vector < c.size
+
+fn inCritical({c: Controller}) -> bool:
+  return c.depth > 0
+
+fn setEnabled({c: Controller, vector: int, enabled: bool}) -> Controller:
+  if not {c: c, vector: vector} valid:
+    return c
+  var next = c
+  next.enabled[vector] = enabled
+  return next
+
+fn enableIrq({c: Controller, vector: int}) -> Controller:
+  return {c: c, vector: vector, enabled: true} setEnabled
+
+fn disableIrq({c: Controller, vector: int}) -> Controller:
+  return {c: c, vector: vector, enabled: false} setEnabled
+
+fn deliver({c: Controller, vector: int}) -> Controller:
+  var next = c
+  next.handled[vector] = next.handled[vector] + 1
+  next.held[vector] = false
+  return next
+
+# A line goes high. Delivered at once when the vector is enabled and no
+# critical section is open; held when masked by a critical section (it fires
+# when the section closes); dropped when the vector itself is disabled.
+fn raise({c: Controller, vector: int}) -> Controller:
+  if not {c: c, vector: vector} valid:
+    return c
+  if not c.enabled[vector]:
+    return c
+  if c.depth > 0:
+    var held = c
+    held.held[vector] = true
+    return held
+  return {c: c, vector: vector} deliver
+
+fn beginCritical({c: Controller}) -> Controller:
+  var next = c
+  next.depth = c.depth + 1
+  return next
+
+fn flushHeld({c: Controller}) -> Controller:
+  var next = c
+  for i in 0 .. c.size - 1:
+    if next.held[i] and next.enabled[i]:
+      next = {c: next, vector: i} deliver
+  return next
+
+# Closing the outermost section delivers what was held, lowest vector first.
+fn endCritical({c: Controller}) -> Controller:
+  if c.depth == 0:
+    return c
+  var next = c
+  next.depth = c.depth - 1
+  if next.depth > 0:
+    return next
+  return {c: next} flushHeld
+
+fn countOf({c: Controller, vector: int}) -> int:
+  if not {c: c, vector: vector} valid:
+    return 0
+  return c.handled[vector]
+
+# --- self-check --------------------------------------------------------------
+
+fn checkDelivery() -> int:
+  var c = {size: 4} make
+  c = {c: c, vector: 1} raise
+  if {c: c, vector: 1} countOf != 0:
+    return 1
+  c = {c: c, vector: 1} enableIrq
+  c = {c: c, vector: 1} raise
+  c = {c: c, vector: 1} raise
+  if {c: c, vector: 1} countOf != 2:
+    return 2
+  c = {c: c, vector: 1} disableIrq
+  c = {c: c, vector: 1} raise
+  if {c: c, vector: 1} countOf != 2:
+    return 3
+  c = {c: c, vector: 9} raise
+  if {c: c, vector: 9} countOf != 0:
+    return 4
+  return 0
+
+fn checkCritical() -> int:
+  var c = {size: 4} make
+  c = {c: c, vector: 0} enableIrq
+  c = {c: c, vector: 2} enableIrq
+  c = {c: c} beginCritical
+  c = {c: c} beginCritical
+  c = {c: c, vector: 2} raise
+  c = {c: c, vector: 0} raise
+  if {c: c, vector: 0} countOf != 0 or {c: c, vector: 2} countOf != 0:
+    return 10
+  if not {c: c} inCritical:
+    return 11
+  c = {c: c} endCritical
+  if {c: c, vector: 0} countOf != 0:
+    return 12
+  c = {c: c} endCritical
+  if {c: c, vector: 0} countOf != 1 or {c: c, vector: 2} countOf != 1:
+    return 13
+  if {c: c} inCritical:
+    return 14
+  c = {c: c} endCritical
+  if {c: c} inCritical:
+    return 15
+  return 0
+
+fn checkHeldThenDisabled() -> int:
+  var c = {size: 2} make
+  c = {c: c, vector: 1} enableIrq
+  c = {c: c} beginCritical
+  c = {c: c, vector: 1} raise
+  c = {c: c, vector: 1} disableIrq
+  c = {c: c} endCritical
+  if {c: c, vector: 1} countOf != 0:
+    return 20
+  return 0
+
+fn main() -> int:
+  var rc = checkDelivery
+  if rc != 0:
+    return rc
+  rc = checkCritical
+  if rc != 0:
+    return rc
+  return checkHeldThenDisabled

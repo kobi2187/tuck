@@ -62,6 +62,49 @@ fn chunk[T]({items: Seq[T], size: int}) -> Seq[Seq[T]]:
     i = i + size
   return out
 
+# --- the verbs core.slice defined, as values -------------------------------
+# core.slice's View[T] cannot exist (a stored borrowed window is two names for
+# one buffer), so its verbs live here and each result is a real copy: the
+# price of the safety rule, stated rather than hidden.
+
+# items[from ..< to], clamped to the sequence: never fails, may be empty.
+fn slice[T]({items: Seq[T], lo: int, hi: int}) -> Seq[T]:
+  var out: Seq[T] = []
+  var i = lo
+  if i < 0:
+    i = 0
+  var stop = hi
+  if stop > items.len:
+    stop = items.len
+  for i < stop:
+    out = {items: out, value: items[i]} push
+    i = i + 1
+  return out
+
+fn take[T]({items: Seq[T], n: int}) -> Seq[T]:
+  return {items: items, lo: 0, hi: n} slice
+
+fn drop[T]({items: Seq[T], n: int}) -> Seq[T]:
+  return {items: items, lo: n, hi: items.len} slice
+
+# Every run of `size` neighbours; none when the sequence is shorter.
+fn windows[T]({items: Seq[T], size: int}) -> Seq[Seq[T]]:
+  var out: Seq[Seq[T]] = []
+  if size <= 0:
+    return out
+  var i = 0
+  for i + size <= items.len:
+    let piece = {items: items, lo: i, hi: i + size} slice
+    out = {items: out, value: piece} push
+    i = i + 1
+  return out
+
+# The two halves around `at` (clamped), as a two-element Seq.
+fn splitAt[T]({items: Seq[T], at: int}) -> Seq[Seq[T]]:
+  let front = {items: items, n: at} take
+  let back = {items: items, n: at} drop
+  return [front, back]
+
 # --- self-check --------------------------------------------------------------
 
 type Board:
@@ -109,8 +152,36 @@ fn checkCountAndChunk() -> int:
     return 15
   return 0
 
+fn checkSlices() -> int:
+  let xs: Seq[int] = [1, 2, 3, 4, 5]
+  let mid = {items: xs, lo: 1, hi: 4} slice
+  if mid.len != 3 or mid[0] != 2 or mid[2] != 4:
+    return 20
+  let wide = {items: xs, lo: 0 - 3, hi: 99} slice
+  if wide.len != 5:
+    return 21
+  let nothing = {items: xs, lo: 4, hi: 2} slice
+  if nothing.len != 0:
+    return 22
+  let w = {items: xs, size: 3} windows
+  if w.len != 3 or w[0][0] != 1 or w[2][2] != 5:
+    return 23
+  let tooBig = {items: xs, size: 9} windows
+  if tooBig.len != 0:
+    return 24
+  let halves = {items: xs, at: 2} splitAt
+  if halves[0].len != 2 or halves[1].len != 3 or halves[1][0] != 3:
+    return 25
+  let ends = {items: xs, at: 0} splitAt
+  if ends[0].len != 0 or ends[1].len != 5:
+    return 26
+  return 0
+
 fn main() -> int:
   let a = checkAccess
   if a != 0:
     return a
-  return checkCountAndChunk
+  let c = checkCountAndChunk
+  if c != 0:
+    return c
+  return checkSlices

@@ -37,6 +37,7 @@ examples/mod_*/
 # (Odin's equivalent copy nests under examples/tuckrt/ above), but the same
 # rationale: identical content regardless of which example produced it, so
 # tracking it would be per-example noise, not per-example output.
+examples/tuck_arena.d
 examples/tuck_coro.d
 examples/tuck_rt.d
 examples/tuck_arena.d
@@ -64,3 +65,15 @@ benches/transpile/dispatch.nim
 # ad-hoc bench binaries (run.sh builds benches/.bas, .bat and removes them)
 benches/.*
 property-failures.txt
+
+# build output of `tuck b` run inside an app directory
+stdlib-project/apps/*/*.nim
+stdlib-project/apps/*/*.d
+stdlib-project/apps/*/*.odin
+stdlib-project/apps/*/*.o
+stdlib-project/apps/*/*.a
+stdlib-project/apps/*/mod_*/
+stdlib-project/apps/*/tuckrt/
+stdlib-project/apps/diff-patch/diffpatch
+stdlib-project/apps/diff-patch/diffpatch_d
+stdlib-project/apps/diff-patch/diffpatch_odin

@@ -21,4 +21,8 @@ rt.TuckResult!(tuckˑmodˑshapes_41_tostr_concat.TRec_line!(string)) readLine() 
     return rt.readLine!(rt.TuckResult!(tuckˑmodˑshapes_41_tostr_concat.TRec_line!(string)))();
 }
 
+rt.TuckResult!(tuckˑmodˑshapes_41_tostr_concat.TRec_line!(string)) readConsoleLine() {
+    return rt.readLine!(rt.TuckResult!(tuckˑmodˑshapes_41_tostr_concat.TRec_line!(string)))();
+}
+
 

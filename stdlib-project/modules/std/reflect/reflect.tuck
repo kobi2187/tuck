@@ -1,0 +1,295 @@
+# std.reflect — the RUNTIME half: walk a value against a schema neither side
+# knew at compile time.
+#
+# The design's `DynValue` is structurally std.encoding's `Json`, and two
+# near-identical trees invite conversion functions nobody wants to write, so
+# this module takes the consolidation: a dynamic value IS a `Json`. What this
+# adds is the schema, the validator, the path listing and the structural diff.
+# The compile-time half (enumerating a type's fields) needs introspection Tuck
+# does not have, and is left out on purpose; see API.tuck.md.
+#
+# `SList` and `SOpt` hold their element in a one-item Seq: a variant cannot name
+# its own type directly, and a Seq is how `Json` already recurs.
+import seq
+import str
+import text
+import encoding
+
+type Schema:
+  | SAny
+  | SBool
+  | SNum({lo: f64, hi: f64})
+  | SStr({minLen: int})
+  | SList({elem: Seq[Schema]})
+  | SRecord({keys: Seq[str], schemas: Seq[Schema], required: Seq[bool]})
+
+fn kindName({j: Json}) -> str:
+  match j:
+    JNull: return "null"
+    JBool: return "bool"
+    JNum: return "number"
+    JStr: return "string"
+    JArr: return "array"
+    JObj: return "object"
+
+fn problem({path: str, what: str}) -> str:
+  if path == "":
+    return what
+  return path + ": " + what
+
+# Seq has no `+` (the checker lets it through, the backends do not).
+fn appendAll({into: Seq[str], more: Seq[str]}) -> Seq[str]:
+  var out = into
+  for i in 0 .. more.len - 1:
+    out = {items: out, value: more[i]} push
+  return out
+
+# --- validation: every problem, with where it is -------------------------------
+
+fn checkNum({n: f64, lo: f64, hi: f64, path: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  if n < lo or n > hi:
+    let msg = {path: path, what: "number out of range"} problem
+    out = {items: out, value: msg} push
+  return out
+
+fn checkStr({s: str, minLen: int, path: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  if {t: s} byteCount < minLen:
+    let msg = {path: path, what: "string too short"} problem
+    out = {items: out, value: msg} push
+  return out
+
+fn wrongKind({j: Json, want: str, path: str}) -> Seq[str]:
+  let got = {j: j} kindName
+  let msg = {path: path, what: "expected " + want + ", found " + got} problem
+  return [msg]
+
+fn checkList({items: Seq[Json], elem: Seq[Schema], path: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  if elem.len == 0:
+    return out
+  for i in 0 .. items.len - 1:
+    let at = path + "[" + {value: i} toStr + "]"
+    let found = {doc: items[i], s: elem[0], path: at} check
+    out = {into: out, more: found} appendAll
+  return out
+
+fn checkField({j: Json, key: str, schema: Schema, need: bool, path: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  let at = if path == "": key else: path + "." + key
+  let v = {j: j, key: key} jsonGet
+  if not v.ok:
+    if need:
+      let msg = {path: at, what: "missing"} problem
+      out = {items: out, value: msg} push
+    return out
+  return {doc: v.value, s: schema, path: at} check
+
+fn checkRecord({j: Json, keys: Seq[str], schemas: Seq[Schema], required: Seq[bool], path: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  for i in 0 .. keys.len - 1:
+    let found = {j: j, key: keys[i], schema: schemas[i], need: required[i], path: path} checkField
+    out = {into: out, more: found} appendAll
+  return out
+
+# One helper per schema variant, each matching only the DOCUMENT: a `match`
+# inside a `match` arm made the Odin backend bind both to `v` (see ROADMAP).
+fn checkBool({doc: Json, path: str}) -> Seq[str]:
+  var clean: Seq[str] = []
+  match doc:
+    JBool: return clean
+    _: return {j: doc, want: "bool", path: path} wrongKind
+
+fn checkNumber({doc: Json, lo: f64, hi: f64, path: str}) -> Seq[str]:
+  match doc:
+    JNum: return {n: doc.n, lo: lo, hi: hi, path: path} checkNum
+    _: return {j: doc, want: "number", path: path} wrongKind
+
+fn checkString({doc: Json, minLen: int, path: str}) -> Seq[str]:
+  match doc:
+    JStr: return {s: doc.s, minLen: minLen, path: path} checkStr
+    _: return {j: doc, want: "string", path: path} wrongKind
+
+fn checkArray({doc: Json, elem: Seq[Schema], path: str}) -> Seq[str]:
+  match doc:
+    JArr: return {items: doc.items, elem: elem, path: path} checkList
+    _: return {j: doc, want: "array", path: path} wrongKind
+
+fn checkObject({doc: Json, keys: Seq[str], schemas: Seq[Schema], required: Seq[bool], path: str}) -> Seq[str]:
+  match doc:
+    JObj: return {j: doc, keys: keys, schemas: schemas, required: required, path: path} checkRecord
+    _: return {j: doc, want: "object", path: path} wrongKind
+
+fn check({doc: Json, s: Schema, path: str}) -> Seq[str]:
+  var clean: Seq[str] = []
+  match s:
+    SAny: return clean
+    SBool: return {doc: doc, path: path} checkBool
+    SNum: return {doc: doc, lo: s.lo, hi: s.hi, path: path} checkNumber
+    SStr: return {doc: doc, minLen: s.minLen, path: path} checkString
+    SList: return {doc: doc, elem: s.elem, path: path} checkArray
+    SRecord: return {doc: doc, keys: s.keys, schemas: s.schemas, required: s.required, path: path} checkObject
+
+fn validate({doc: Json, s: Schema}) -> Seq[str]:
+  return {doc: doc, s: s, path: ""} check
+
+fn isValid({doc: Json, s: Schema}) -> bool:
+  let found = {doc: doc, s: s} validate
+  return found.len == 0
+
+# --- walking: the leaf paths of any value --------------------------------------
+
+fn leafPaths({j: Json, path: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  match j:
+    JArr:
+      for i in 0 .. j.items.len - 1:
+        let sub = {j: j.items[i], path: path + "[" + {value: i} toStr + "]"} leafPaths
+        out = {into: out, more: sub} appendAll
+      return out
+    JObj:
+      for i in 0 .. j.keys.len - 1:
+        let at = if path == "": j.keys[i] else: path + "." + j.keys[i]
+        let sub = {j: j.vals[i], path: at} leafPaths
+        out = {into: out, more: sub} appendAll
+      return out
+    _: return [path]
+
+# --- comparing: where two values differ ----------------------------------------
+
+fn sameLeaf({a: Json, b: Json}) -> bool:
+  return {j: a} toJsonText == {j: b} toJsonText
+
+fn diffMembers({a: Json, b: Json, path: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  for i in 0 .. a.keys.len - 1:
+    let at = if path == "": a.keys[i] else: path + "." + a.keys[i]
+    let other = {j: b, key: a.keys[i]} jsonGet
+    if not other.ok:
+      out = {items: out, value: at + ": only on the left"} push
+    else:
+      let sub = {a: a.vals[i], b: other.value, path: at} diff
+      out = {into: out, more: sub} appendAll
+  for i in 0 .. b.keys.len - 1:
+    let there = {j: a, key: b.keys[i]} jsonGet
+    if not there.ok:
+      let at = if path == "": b.keys[i] else: path + "." + b.keys[i]
+      out = {items: out, value: at + ": only on the right"} push
+  return out
+
+fn diffItems({a: Seq[Json], b: Seq[Json], path: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  var n = a.len
+  if b.len > n:
+    n = b.len
+  for i in 0 .. n - 1:
+    let at = path + "[" + {value: i} toStr + "]"
+    if i >= a.len:
+      out = {items: out, value: at + ": only on the right"} push
+    elif i >= b.len:
+      out = {items: out, value: at + ": only on the left"} push
+    else:
+      let sub = {a: a[i], b: b[i], path: at} diff
+      out = {into: out, more: sub} appendAll
+  return out
+
+fn diff({a: Json, b: Json, path: str}) -> Seq[str]:
+  var out: Seq[str] = []
+  match a:
+    JObj:
+      match b:
+        JObj: return {a: a, b: b, path: path} diffMembers
+        _: return [{path: path, what: "kinds differ"} problem]
+    JArr:
+      match b:
+        JArr: return {a: a.items, b: b.items, path: path} diffItems
+        _: return [{path: path, what: "kinds differ"} problem]
+    _:
+      if {a: a, b: b} sameLeaf:
+        return out
+      return [{path: path, what: "values differ"} problem]
+
+# --- self-check ----------------------------------------------------------------
+
+fn parsed({t: str}) -> Json:
+  let p = {t: t} parseJson
+  if p.ok:
+    return p.value
+  return JNull
+
+fn userSchema() -> Schema:
+  let age = {lo: 0.0, hi: 150.0} Schema.SNum
+  let name = {minLen: 1} Schema.SStr
+  let tags = {elem: [name]} Schema.SList
+  return {keys: ["name", "age", "tags"], schemas: [name, age, tags], required: [true, true, false]} Schema.SRecord
+
+fn checkValid() -> int:
+  let s = userSchema
+  let ok = {t: "{\"name\":\"ada\",\"age\":36,\"tags\":[\"a\",\"b\"]}"} parsed
+  let clean = {doc: ok, s: s} validate
+  if clean.len != 0:
+    return 1
+  let noTags = {t: "{\"name\":\"ada\",\"age\":36}"} parsed
+  let valid = {doc: noTags, s: s} isValid
+  if not valid:
+    return 2
+  return 0
+
+fn checkInvalid() -> int:
+  let s = userSchema
+  let bad = {t: "{\"name\":\"\",\"age\":200,\"tags\":[\"a\",3]}"} parsed
+  let found = {doc: bad, s: s} validate
+  if found.len != 3:
+    return 10
+  if found[0] != "name: string too short":
+    return 11
+  if found[1] != "age: number out of range":
+    return 12
+  if found[2] != "tags[1]: expected string, found number":
+    return 13
+  let missing = {t: "{\"age\":1}"} parsed
+  let m = {doc: missing, s: s} validate
+  if m.len != 1 or m[0] != "name: missing":
+    return 14
+  let notObject = {t: "[1]"} parsed
+  let k = {doc: notObject, s: s} validate
+  if k.len != 1 or k[0] != "expected object, found array":
+    return 15
+  return 0
+
+fn checkPaths() -> int:
+  let j = {t: "{\"a\":1,\"b\":{\"c\":[true,null]}}"} parsed
+  let ps = {j: j, path: ""} leafPaths
+  if ps.len != 3:
+    return 20
+  if ps[0] != "a" or ps[1] != "b.c[0]" or ps[2] != "b.c[1]":
+    return 21
+  return 0
+
+fn checkDiff() -> int:
+  let a = {t: "{\"x\":1,\"y\":[1,2],\"z\":\"k\"}"} parsed
+  let same = {a: a, b: a, path: ""} diff
+  if same.len != 0:
+    return 30
+  let b = {t: "{\"x\":2,\"y\":[1,2,3],\"w\":null}"} parsed
+  let d = {a: a, b: b, path: ""} diff
+  if d.len != 4:
+    return 31
+  if d[0] != "x: values differ" or d[1] != "y[2]: only on the right":
+    return 32
+  if d[2] != "z: only on the left" or d[3] != "w: only on the right":
+    return 33
+  return 0
+
+fn main() -> int:
+  var rc = checkValid
+  if rc != 0:
+    return rc
+  rc = checkInvalid
+  if rc != 0:
+    return rc
+  rc = checkPaths
+  if rc != 0:
+    return rc
+  return checkDiff

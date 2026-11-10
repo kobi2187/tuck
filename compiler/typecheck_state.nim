@@ -146,6 +146,7 @@ type
       ## a name, and keeping one evicted the other — the uninit-field analysis
       ## then scanned the WRONG body and rejected correct code ("'peek' reads
       ## field 'b'" when the top-level `peek` reads only `a`).
+    recvImported*: bool   # the field access being typed reads an imported type (#197)
     typeDeclsByName*: Table[string, Decl]  # same, for type declarations: lets a
                                       # tkNamed reference be resolved to the
                                       # decl it names instead of carrying only

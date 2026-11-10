@@ -1,0 +1,81 @@
+# sys.audio (module `alsa`) — playback through ALSA.
+#
+# The real-time fill callback cannot be an actor handler (a cooperative
+# scheduler is the latency an audio callback cannot afford), so the driver is
+# the blocking half: `play` hands a buffer of frames to the device and returns
+# when ALSA has accepted them, which is how a producer thread feeds the ring
+# `audio` already defines. The `snd_pcm_t*` stays in the shim; Tuck holds a
+# handle. Frames cross as interleaved 16-bit little-endian bytes, the layout
+# `audio.wavBytes` already writes.
+#
+# Device names are ALSA's: "default", "hw:0", or "null" (accepts and discards,
+# which is what lets this be checked on a machine with no sound card).
+import seq
+import audio
+
+type AudioFault:
+  | NoDevice
+  | BadFormat
+
+extern [impl: nim "./shim/alsa_shim", odin "./shim", d "./shim/alsa_shim"]:
+  fn pcmOpen({device: str, rate: int, channels: int}) -> int [io: sys]
+  fn pcmWrite({h: int, data: Seq[u8], frameBytes: int}) -> int [io: sys]
+  fn pcmDrain({h: int}) -> void [io: sys]
+  fn pcmClose({h: int}) -> void [io: sys]
+
+type Playback:
+  handle: int
+  format: Format
+
+fn openPlayback({device: str, f: Format}) -> !Playback [io: sys, error: AudioFault]:
+  let h = {device: device, rate: f.sampleRate, channels: f.channels} pcmOpen
+  if h < 0:
+    err NoDevice
+  return {handle: h, format: f} Playback
+
+# Interleaved PCM16 bytes for samples already in channel order.
+fn pcmBytes({samples: Seq[f64]}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  for i in 0 .. samples.len - 1:
+    let q = {x: samples[i]} toPcm16
+    let enc = {v: q} le16
+    out = {into: out, more: enc} appendBytes
+  return out
+
+# Frames the device accepted for these samples.
+fn play({p: Playback, samples: Seq[f64]}) -> int [io: sys]:
+  let bytes = {samples: samples} pcmBytes
+  let fb = {f: p.format} frameBytes
+  return {h: p.handle, data: bytes, frameBytes: fb} pcmWrite
+
+fn finish({p: Playback}) -> void [io: sys]:
+  {h: p.handle} pcmDrain
+  {h: p.handle} pcmClose
+
+# --- self-check (ALSA's "null" device: no hardware needed) -----------------------
+
+fn checkNull() -> int [io: sys]:
+  let f = {rate: 8000, channels: 1} pcm16
+  let opened = {device: "null", f: f} openPlayback
+  if not opened.ok:
+    return 1
+  let p = opened.value
+  let t = {f: f, hz: 440.0, frames: 800, amp: 0.4} tone
+  let n = {p: p, samples: t} play
+  if n != 800:
+    return 2
+  {p: p} finish
+  return 0
+
+fn checkMissing() -> int [io: sys]:
+  let f = {rate: 8000, channels: 1} pcm16
+  let r = {device: "no-such-device-anywhere", f: f} openPlayback
+  if r.ok:
+    return 10
+  return 0
+
+fn main() -> int [io: sys]:
+  let rc = checkNull
+  if rc != 0:
+    return rc
+  return checkMissing

@@ -1,0 +1,396 @@
+# std.net-http (module `client`) — `fetch` and `serve` over sys.net, in Tuck.
+#
+# HTTP is a text protocol over a byte stream, which is exactly what Tuck is for:
+# no algorithm here wants a C library. The messages themselves (URLs, requests,
+# responses, headers, cookies) are `http`'s. This module only moves them: dial,
+# write the request, read to the end, parse; and the mirror image for a server.
+#
+# `fetch` speaks plain http and closes the connection after one exchange
+# (`Connection: close`), so the body is everything up to the peer hanging up, or
+# `Content-Length` bytes of it; chunked bodies are decoded. https is the TLS
+# driver's job (std.net-tls) and a separate module, so that a program that never
+# uses it never links OpenSSL.
+#
+# A server is a `group Handler`: a type that has `handle({self, req}) -> Response`
+# serves. Nothing is declared, and a handler carries its own state as fields.
+import seq
+import str
+import text
+import convert
+import encoding
+import net
+import socket
+import time
+import scheduler
+import http
+
+type HttpError:
+  | BadUrl
+  | Unsupported
+  | Unreachable
+  | BadResponse
+  | TooLarge
+
+fn header({name: str, value: str}) -> Header:
+  return {name: name, value: value} Header
+
+# --- chunked transfer coding ---------------------------------------------------------
+
+fn digitOf({b: int}) -> int:
+  if b >= 48 and b <= 57:
+    return b - 48
+  if b >= 97 and b <= 102:
+    return b - 87
+  if b >= 65 and b <= 70:
+    return b - 55
+  return 0 - 1
+
+# A chunk size in hex; -1 when it is not (or is empty).
+fn hexValueOf({t: str}) -> int:
+  let bytes = {t: t} bytesOf
+  if bytes.len == 0:
+    return 0 - 1
+  var n = 0
+  for i in 0 .. bytes.len - 1:
+    let d = {b: bytes[i] ^int} digitOf
+    if d < 0:
+      return 0 - 1
+    n = n * 16 + d
+  return n
+
+# The body of a `Transfer-Encoding: chunked` message: hex size, CRLF, that many
+# bytes, CRLF, repeated to a zero size. Absent when the framing is broken.
+fn dechunk({raw: str}) -> str?:
+  var out = ""
+  var rest = raw
+  var more = true
+  for more:
+    let cut = {t: rest, what: "\r\n"} find
+    if not cut.ok:
+      return none
+    let sizeText = {t: rest, start: 0, stop: cut.value} slice
+    if not sizeText.ok:
+      return none
+    let size = {t: sizeText.value} hexValueOf
+    if size < 0:
+      return none
+    if size == 0:
+      more = false
+    else:
+      let start = cut.value + 2
+      let rb = {t: rest} byteCount
+      if start + size + 2 > rb:
+        return none
+      let piece = {t: rest, start: start, stop: start + size} slice
+      let after = {t: rest, start: start + size + 2, stop: rb} slice
+      if not piece.ok:
+        return none
+      if not after.ok:
+        return none
+      out = out + piece.value
+      rest = after.value
+  return out
+
+# --- reading and writing a socket by descriptor ---------------------------------------
+# (`stream` and `socket` both define `put`, and a program importing both has the
+# group resolve the wrong one, so this module talks to the descriptor directly.)
+
+fn recvText({fd: int, max: int}) -> str [io, io: net]:
+  let r = {fd: fd, max: max} recv
+  if r.ok:
+    return r.value.data
+  return ""
+
+# Bytes the OS took; 0 when the socket failed.
+fn sendText({fd: int, data: str}) -> int [io, io: net]:
+  let r = {fd: fd, data: data} send
+  if r.ok:
+    return r.value.sent
+  return 0
+
+# Everything the peer sends, up to `limit` bytes.
+fn readAllFd({fd: int, limit: int}) -> str [io, io: net]:
+  var out = ""
+  var more = true
+  for more:
+    let have = {t: out} byteCount
+    if have >= limit:
+      more = false
+    else:
+      let chunk = {fd: fd, max: limit - have} recvText
+      if chunk == "":
+        more = false
+      else:
+        out = out + chunk
+  return out
+
+# One line without its line end; absent when the peer left before any byte.
+fn readLineFd({fd: int}) -> str? [io, io: net]:
+  var out = ""
+  var sawAny = false
+  var more = true
+  for more:
+    let c = {fd: fd, max: 1} recvText
+    if c == "":
+      more = false
+    else:
+      sawAny = true
+      if c == "\n":
+        more = false
+      else:
+        out = out + c
+  if not sawAny:
+    return none
+  let n = {t: out} byteCount
+  if n > 0 and {t: out, suffix: "\r"} endsWith:
+    let trimmed = {t: out, start: 0, stop: n - 1} slice
+    if trimmed.ok:
+      return trimmed.value
+  return out
+
+# Exactly n bytes, or whatever arrived before the peer left.
+fn readExactFd({fd: int, n: int}) -> str [io, io: net]:
+  var out = ""
+  var more = true
+  for more:
+    let have = {t: out} byteCount
+    if have >= n:
+      more = false
+    else:
+      let chunk = {fd: fd, max: n - have} recvText
+      if chunk == "":
+        more = false
+      else:
+        out = out + chunk
+  return out
+
+# --- the client ------------------------------------------------------------------------
+
+# One request, one response. `limit` caps how many bytes are read.
+fn fetch({url: str, verb: Method, headers: Seq[Header], body: str, limit: int}) -> !Response [io, io: net, error: HttpError]:
+  let u = {t: url} parseUrl
+  if not u.ok:
+    err BadUrl
+  if u.value.scheme != "http":
+    err Unsupported
+  let c = {host: u.value.host, port: u.value.port} dial
+  if not c.ok:
+    err Unreachable
+  var hs = headers
+  let close = {name: "Connection", value: "close"} header
+  hs = {items: hs, value: close} push
+  let wire = {verb: verb, url: u.value, headers: hs, body: body} requestText
+  let wrote = {fd: c.value.fd, data: wire} sendText
+  if wrote == 0:
+    {s: c.value} hangUp
+    err Unreachable
+  let raw = {fd: c.value.fd, limit: limit} readAllFd
+  {s: c.value} hangUp
+  let r = {raw: raw} parseResponse
+  if not r.ok:
+    err BadResponse
+  let enc = {r: r.value, name: "transfer-encoding"} headerOf
+  if enc.ok:
+    if {t: enc.value} lowerCase == "chunked":
+      let plain = {raw: r.value.body} dechunk
+      if not plain.ok:
+        err BadResponse
+      return {status: r.value.status, reason: r.value.reason, headers: r.value.headers, body: plain.value} Response
+  return r.value
+
+fn get({url: str}) -> !Response [io, io: net, error: HttpError]:
+  let none0: Seq[Header] = []
+  let r = {url: url, verb: Method.Get, headers: none0, body: "", limit: 1048576} fetch
+  if not r.ok:
+    err r.err
+  return r.value
+
+# --- the server ------------------------------------------------------------------------
+
+group Handler:
+  fn handle({self: Self, req: Request}) -> Response
+
+# The request's lines up to the blank one; absent when the peer left first.
+fn readHead({fd: int}) -> Seq[str]? [io, io: net]:
+  var lines: Seq[str] = []
+  var more = true
+  for more:
+    let l = {fd: fd} readLineFd
+    if not l.ok:
+      return none
+    if l.value == "":
+      more = false
+    else:
+      lines = {items: lines, value: l.value} push
+  if lines.len == 0:
+    return none
+  return lines
+
+fn bodyLength({headers: Seq[Header]}) -> int:
+  let h = {headers: headers, name: "content-length"} headerValue
+  if not h.ok:
+    return 0
+  let n = {t: h.value} parseInt
+  if not n.ok:
+    return 0
+  return n.value ^int
+
+fn badRequest() -> Response:
+  let none0: Seq[Header] = []
+  return {status: 400, reason: "Bad Request", headers: none0, body: "bad request"} Response
+
+# The request lines after the first, joined as the header block.
+fn headTail({parts: Seq[str]}) -> str:
+  var rest: Seq[str] = []
+  for i in 1 .. parts.len - 1:
+    rest = {items: rest, value: parts[i]} push
+  return {parts: rest, sep: "\r\n"} joinStr
+
+# Serve ONE connection: read a request, hand it to the handler, write its
+# response, hang up. Answers the status it sent.
+fn serveOne[H: Handler]({l: Listener, h: H, limit: int}) -> !int [io, io: net, error: NetError]:
+  let a = {l: l} acceptOne
+  if not a.ok:
+    err a.err
+  let fd = a.value.fd
+  let head = {fd: fd} readHead
+  var reply = {} badRequest
+  if head.ok:
+    let lines = head.value
+    let hs = {lines: lines, start: 1} headersFrom
+    let n = {headers: hs} bodyLength
+    var body = ""
+    if n > 0 and n <= limit:
+      body = {fd: fd, n: n} readExactFd
+    let tail = {parts: lines} headTail
+    let raw = lines[0] + "\r\n" + tail + "\r\n\r\n" + body
+    let req = {raw: raw} parseRequest
+    if req.ok:
+      reply = {self: h, req: req.value} handle
+  let wire = {r: reply} responseText
+  let wrote = {fd: fd, data: wire} sendText
+  if wrote == 0:
+    {s: a.value} hangUp
+    err Closed
+  {s: a.value} hangUp
+  return reply.status
+
+# --- self-check (a server task and a client task over loopback) -----------------------
+
+type Echo:
+  greeting: str
+
+fn handle({self: Echo, req: Request}) -> Response:
+  var hs: Seq[Header] = []
+  var body = self.greeting + " " + req.target
+  if req.body != "":
+    body = body + " <- " + req.body
+  let seen = {name: "X-Seen", value: "yes"} header
+  hs = {items: hs, value: seen} push
+  return {status: 200, reason: "OK", headers: hs, body: body} Response
+
+actor HttpOutcome [queue: 8]:
+  failed: int = 0
+  finished: int = 0
+
+  on report({code: int}):
+    if code != 0:
+      failed = code
+    finished = finished + 1
+
+fn httpBothDone() -> bool:
+  return HttpOutcome.finished >= 2
+
+task httpServerSide({lfd: int, port: int}) -> void [io, io: net]:
+  let l = {fd: lfd, port: port} Listener
+  let echo = {greeting: "hello"} Echo
+  let first = {l: l, h: echo, limit: 4096} serveOne
+  if not first.ok:
+    HttpOutcome send report {code: 10}
+    return
+  let second = {l: l, h: echo, limit: 4096} serveOne
+  if not second.ok:
+    HttpOutcome send report {code: 11}
+    return
+  if first.value != 200 or second.value != 200:
+    HttpOutcome send report {code: 12}
+    return
+  HttpOutcome send report {code: 0}
+  return
+
+task httpClientSide({port: int}) -> void [io, io: net]:
+  let u = "http://127.0.0.1:" + {value: port} toStr + "/a/b?x=1"
+  let r1 = {url: u} get
+  if not r1.ok:
+    HttpOutcome send report {code: 20}
+    return
+  if r1.value.status != 200 or r1.value.body != "hello /a/b?x=1":
+    HttpOutcome send report {code: 21}
+    return
+  let seen = {r: r1.value, name: "x-seen"} headerOf
+  if not seen.ok:
+    HttpOutcome send report {code: 22}
+    return
+  let none0: Seq[Header] = []
+  let r2 = {url: u, verb: Method.Post, headers: none0, body: "payload", limit: 65536} fetch
+  if not r2.ok:
+    HttpOutcome send report {code: 23}
+    return
+  if r2.value.body != "hello /a/b?x=1 <- payload":
+    HttpOutcome send report {code: 24}
+    return
+  HttpOutcome send report {code: 0}
+  return
+
+fn checkDechunk() -> int:
+  let good = {raw: "4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n"} dechunk
+  if not good.ok:
+    return 40
+  if good.value != "Wikipedia":
+    return 41
+  let bad = {raw: "ZZ\r\nabc"} dechunk
+  if bad.ok:
+    return 42
+  let cut = {raw: "9\r\nshort\r\n"} dechunk
+  if cut.ok:
+    return 43
+  return 0
+
+fn checkErrors() -> int [io, io: net]:
+  let r1 = {url: "ftp://x/"} get
+  if r1.ok:
+    return 50
+  let r2 = {url: "not a url"} get
+  if r2.ok:
+    return 51
+  let r3 = {url: "http://127.0.0.1:38419/"} get
+  if r3.ok:
+    return 52
+  return 0
+
+fn httpListen() -> !Listener [io, io: net, io: clock]:
+  let now = nowMs
+  let base = {value: now.epochMs} int
+  for attempt in 0 .. 6:
+    let port = 30000 + (base + attempt * 977) % 20000
+    let r = {port: port} serve
+    if r.ok:
+      return r
+  return {port: 30000 + (base + 7 * 977) % 20000} serve
+
+fn main() -> int [io, io: net, io: clock]:
+  let d = checkDechunk
+  if d != 0:
+    return d
+  let e = checkErrors
+  if e != 0:
+    return e
+  let l = httpListen
+  if not l.ok:
+    return 1
+  {lfd: l.value.fd, port: l.value.port} httpServerSide
+  {port: l.value.port} httpClientSide
+  HttpOutcome.waitUntil {pred: :httpBothDone}
+  {l: l.value} stopServing
+  {} scheduler::stop
+  return HttpOutcome.failed

@@ -14,3 +14,6 @@ extern:
   # from the output a pipe carries on.
   fn printError({text: str}) -> void [io: console]
   fn readLine() -> !{line: str} [io: console, error: IoError]
+  # The same call under a name no other module uses: `std/stream` has a
+  # `readLine` too, and a program importing both cannot tell which a call means.
+  fn readConsoleLine() -> !{line: str} [io: console, error: IoError, emit: "readLine"]

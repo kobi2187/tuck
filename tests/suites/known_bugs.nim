@@ -5056,4 +5056,313 @@ fn add({bag: Seq[int], x: int}) -> Seq[int]:
                          r"tuckˑmodˑlib\.tuckˑfnˑadd_moved\("
   t.bugFixed "A102: a qualified threading call takes the twin too"
 
+  # A103 (found building std.reflect): a `match` inside a `match` arm made the
+  # Odin emitter bind BOTH switches to `v`, so the outer subject's fields were
+  # read from the inner one. A104: returning a local from an arm emitted
+  # `switch &v in param`, which Odin rejects (a parameter is not addressable).
+  t.src """
+type Pair:
+  | Two({a: int, b: int})
+  | One({a: int})
+
+type Flag:
+  | On({n: int})
+  | Off
+
+fn pick({p: Pair, f: Flag}) -> int:
+  match p:
+    Two:
+      match f:
+        On: return p.a * 100 + p.b + f.n
+        Off: return 0
+    One: return p.a
+
+fn keep({p: Pair}) -> Seq[int]:
+  var out: Seq[int] = []
+  match p:
+    Two: return out
+    One: return out
+
+fn main() -> int:
+  let one = {a: 1} Pair.One
+  let k = {p: one} keep
+  let two = {a: 2, b: 3} Pair.Two
+  let lit = {n: 4} Flag.On
+  let r = {p: two, f: lit} pick
+  return r + k.len
+"""
+  t.quietly: t.runsOdin "A103: a match inside a match arm keeps each subject's fields", 207
+  t.bugFixed "A103: a match inside a match arm keeps each subject's fields"
+  t.quietly: t.omitsOdin "A104: returning a local from a match arm needs no by-address capture",
+                         r"switch &v in p"
+  t.bugFixed "A104: returning a local from a match arm needs no by-address capture"
+
+  # A105 (found building std.net-http's client): when a module imports TWO
+  # modules that each define a `put` satisfying the same group, the group's
+  # conformance check resolves the wrong one: `Wire`'s `put` is judged against
+  # `Mem`'s signature. The correct behaviour is the second satisfier is found.
+  t.src """
+import sinks
+import wire
+
+fn main() -> int:
+  let w = {sent: 0} Wire
+  let done = {k: w, n: 2} putTwice
+  return done.sent
+"""
+  t.addFile "sinks.tuck", """
+group Sink:
+  fn put({self: Self, n: int}) -> Self
+
+type Mem:
+  total: int
+
+fn put({self: Mem, n: int}) -> Mem:
+  return {total: self.total + n} Mem
+
+fn putTwice[K: Sink]({k: K, n: int}) -> K:
+  let a = {self: k, n: n} put
+  return {self: a, n: n} put
+"""
+  t.addFile "wire.tuck", """
+import sinks
+
+type Wire:
+  sent: int
+
+fn put({self: Wire, n: int}) -> Wire:
+  return {sent: self.sent + n * 10} Wire
+"""
+  t.quietly: t.runs "A105: two imported satisfiers named alike each keep their group", 40
+  t.bugFixed "A105: two imported satisfiers named alike each keep their group"
+
+  # A106 (found building std.chrono's zones): a tail `match` whose arms are
+  # themselves `match`es that return in every arm was wrapped in `return (...)`
+  # as if it were a value, which no backend can print (Nim: a case expression
+  # that never yields; Odin and D: a switch inside a ternary). An arm that is a
+  # match returning in all its arms is control flow, like a bare `return`.
+  t.src """
+type Fit:
+  | Exact
+  | Skipped
+
+fn same({a: Fit, b: Fit}) -> bool:
+  match a:
+    Exact:
+      match b:
+        Exact: return true
+        _: return false
+    Skipped:
+      match b:
+        Skipped: return true
+        _: return false
+
+fn main() -> int:
+  let x = Fit.Skipped
+  let y = Fit.Skipped
+  let z = Fit.Exact
+  if {a: x, b: y} same:
+    if not {a: x, b: z} same:
+      return 7
+  return 1
+"""
+  t.quietly: t.runs "A106: a tail match of returning matches is control flow", 7
+  t.bugFixed "A106: a tail match of returning matches is control flow"
+  t.quietly: t.runsOdin "A106: a tail match of returning matches is control flow on Odin", 7
+  t.bugFixed "A106: a tail match of returning matches is control flow on Odin"
+
+  # A107: `not <optional>` passes the checker as if it were a bool, and every
+  # backend then refuses the emitted code ("Operator '!' is only allowed on
+  # boolean expressions"). The checker should say what the diagnostic for the
+  # same mistake on a bare `let` already says: guard it with `.ok` first.
+  t.src """
+fn maybe({n: int}) -> bool?:
+  if n > 0:
+    return true
+  return none
+
+fn main() -> int:
+  if not {n: 1} maybe:
+    return 1
+  return 0
+"""
+  t.quietly: t.badCheck "A107: an optional is not a condition", "\\.ok"
+  t.bugFixed "A107: an optional is not a condition"
+
+  # A108: `Seq + Seq` passes the checker, and every backend refuses the emitted
+  # code. Until Seq concatenation exists the checker should refuse the `+`.
+  t.src """
+fn main() -> int:
+  let a: Seq[int] = [1, 2]
+  let b: Seq[int] = [3]
+  let c = a + b
+  return c.len
+"""
+  t.quietly: t.badCheck "A108: + on two Seqs is refused", "TK-TY"
+  t.bugFixed "A108: + on two Seqs is refused"
+
+  # A109 (found building std.encoding's TOML): `return {n: k} Sh.A` from a fn
+  # declared `-> Sh?` wrapped the bare variant struct, so the Odin result was a
+  # `TuckResult(Sh_A)` where `TuckResult(Sh)` was declared.
+  t.src """
+import seq
+
+type Sh:
+  | A({n: int})
+  | B({items: Seq[int]})
+
+fn mkA({k: int}) -> Sh?:
+  if k > 0:
+    return {n: k} Sh.A
+  return none
+
+fn grab({s: Sh?}) -> int:
+  if not s.ok:
+    return 0
+  let inner = s.value
+  match inner:
+    A: return inner.n
+    B: return 0
+
+fn main() -> int:
+  let a = {k: 3} mkA
+  return {s: a} grab
+"""
+  t.quietly: t.runsOdin "A109: a payload variant returned from an optional fn is the union", 3
+  t.bugFixed "A109: a payload variant returned from an optional fn is the union"
+
+  # A110: moving a field out of `match s.value` where `s` is an optional
+  # PARAMETER emits `s.value.(T).items = {}`, which Odin cannot assign to.
+  # (Binding `let node = s.value` first avoids it.)
+  t.src """
+import seq
+
+type Sh:
+  | A({n: int})
+  | B({items: Seq[int]})
+
+fn mkB({k: int}) -> Sh?:
+  var xs: Seq[int] = []
+  xs = {items: xs, value: k} push
+  let b = {items: xs} Sh.B
+  return b
+
+fn itemsOf({s: Sh?}) -> Seq[int]:
+  var out: Seq[int] = []
+  if s.ok:
+    match s.value:
+      B: out = s.value.items
+      A: discard
+  return out
+
+fn main() -> int:
+  let b = {k: 4} mkB
+  let xs = {s: b} itemsOf
+  return xs.len
+"""
+  t.quietly: t.runsOdin "A110: a field moved out of a match on an optional's value", 1
+  t.bugFixed "A110: a field moved out of a match on an optional's value"
+
+  # A111: the Odin `match` bound the payload as `v`, which silently shadowed a
+  # PARAMETER named `v`: `return v` returned the matched value's payload.
+  t.src """
+type J:
+  | N({n: int})
+  | O({tag: int})
+
+fn pick({root: J, v: J}) -> J:
+  match root:
+    O: return v
+    N: return root
+
+fn main() -> int:
+  let a = {tag: 1} J.O
+  let b = {n: 5} J.N
+  let c = {root: a, v: b} pick
+  match c:
+    N: return c.n
+    O: return 99
+"""
+  t.quietly: t.runsOdin "A111: a parameter named v survives a match on another parameter", 5
+  t.bugFixed "A111: a parameter named v survives a match on another parameter"
+
+  # A112: the effect of a call is looked up by its BARE NAME in one table for the
+  # whole program, so a module is judged against whichever same-named fn another
+  # module exports. `lib` imports only `m1` (a pure `grab`) and is refused for
+  # `m2`'s [io] `grab`, which it never imported. The rule is that a name means
+  # what the module's own imports say it means; where two imports could both
+  # mean it, that is an explicit error naming both, never a quiet pick.
+  t.src """
+import lib
+import m2
+
+fn main() -> int [io]:
+  let a = useIt
+  let b = {n: 5} grab
+  return a + b
+"""
+  t.addFile "m1.tuck", """
+fn grab() -> int:
+  return 1
+"""
+  t.addFile "m2.tuck", """
+fn grab({n: int}) -> int [io]:
+  return n
+"""
+  t.addFile "lib.tuck", """
+import m1
+
+fn useIt() -> int:
+  return grab
+"""
+  t.quietly: t.okCheck "A112: a module's names mean what its own imports say"
+  t.bugFixed "A112: a module's names mean what its own imports say"
+
+  # A113: an imported GENERIC fn called as a method. `xs.push {7}` could not be
+  # checked: the receiver did not fill the fn's first parameter (only fns
+  # declared in the module itself did), and when it did, `Seq[int]` was
+  # compared with `Seq[T]`, the payload's `value: T` never learned T, and the
+  # result stayed `Seq[T]`. The receiver now solves the type parameters.
+  t.src """
+import seq
+
+fn main() -> int:
+  var xs: Seq[int] = []
+  xs = xs.push {7}
+  xs = xs.push {9}
+  xs = xs.push {value: 1}
+  return xs.len + xs[1]
+"""
+  t.quietly: t.runs "A113: an imported generic fn is callable as a method", 12
+  t.bugFixed "A113: an imported generic fn is callable as a method"
+  t.quietly: t.runsOdin "A113: an imported generic fn is callable as a method on Odin", 12
+  t.bugFixed "A113: an imported generic fn is callable as a method on Odin"
+
+  # A114 (#197): a field of an IMPORTED type never clashes with a fn the importer
+  # declares. `fn size` and a stdlib `Stats.size` coexist; `s.size` reads the
+  # field, because the receiver's type decides. A clash within one module is
+  # still refused at the declaration.
+  t.src """
+import lib
+
+fn size({n: int}) -> int:
+  return n + 1
+
+fn main() -> int:
+  let s = mk
+  return {n: s.size} size
+"""
+  t.addFile "lib.tuck", """
+type Stats:
+  size: int
+  total: int
+
+fn mk() -> Stats:
+  return {size: 1, total: 2} Stats
+"""
+  t.quietly: t.runs "A114: an imported type's field does not clash with the importer's fn", 2
+  t.bugFixed "A114: an imported type's field does not clash with the importer's fn"
+  t.quietly: t.runsOdin "A114: an imported type's field does not clash with the importer's fn on Odin", 2
+  t.bugFixed "A114: an imported type's field does not clash with the importer's fn on Odin"
+
   t.finish()
