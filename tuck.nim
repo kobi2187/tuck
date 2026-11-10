@@ -131,7 +131,7 @@ run). Writes beside the source file, or into -o:DIR if given.
   --actors:MODE  how actors get their CPU: thread (default), single, batch
   --batch-count:N, --batch-timeout:MS  when a staged batch flushes
                  (--actors:batch only)
-  --concurrency:MODE  how tasks pause: stackful (default), stackless (#216)
+  --concurrency:MODE  how tasks pause: stackless (default), stackful (#216)
 
 See `tuck help build` for the flags shared with build, or run
 `tuck` with no arguments for the full option reference.""",
@@ -331,15 +331,17 @@ options:
                 See compiler/actor_mode.nim for the full trade.
   --concurrency:MODE (compile/build) how a task pauses (#216). The same
                 pauses, the same order, the same results in both modes.
-                  stackful   a minicoro coroutine per task, own stack (default)
-                  stackless  a pausing fn becomes a heap FRAME plus STAGES
-                             (the code between pauses); no stacks at all.
-                             Tasks, on all three backends. A statement
-                             that waits (I/O, a timer, `on select`, a send)
-                             runs on a pooled helper stack. Under
-                             --actors:single, an actor whose handlers wait
-                             only on mailboxes runs as a frame.
-                             TUCK_CONCURRENCY sets the default.
+                  stackless  (default) a pausing fn becomes a FRAME plus
+                             STAGES (the code between pauses); no stack per
+                             task. A statement that waits (I/O, a timer,
+                             `on select`, a send) borrows a pooled helper
+                             stack while it waits. Under --actors:single,
+                             an actor whose handlers wait only on mailboxes
+                             runs as a frame.
+                  stackful   a minicoro coroutine per task, own stack. For
+                             debugging: a debugger shows a task's real call
+                             stack, where a stage's ends at the driver.
+                TUCK_CONCURRENCY sets the default for every build.
                 See docs/stackless-concurrency.md.
   --batch-count:N     (--actors:batch) flush after N staged sends
   --batch-timeout:MS  (--actors:batch) ...or MS after the first, whichever
@@ -1303,8 +1305,8 @@ when isMainModule:
                     for lm in bProg: echo emitNim(lm.m, semLayer, "tuck_rt", bReal, lm.name)
                   of bkOdin:
                     for lm in bProg[0 ..< bProg.high]:
-                      echo emitOdinModule(lm.name, lm.m, semLayer, bReal)
-                    echo emitOdin(bProg[^1].m, semLayer, bReal, dumpBase)
+                      echo trimFeatures(emitOdinModule(lm.name, lm.m, semLayer, bReal))
+                    echo trimFeatures(emitOdin(bProg[^1].m, semLayer, bReal, dumpBase))
                   of bkDlang:
                     for lm in bProg[0 ..< bProg.high]:
                       echo emitDModule(lm.name, lm.m, semLayer, bReal)
@@ -1430,12 +1432,12 @@ when isMainModule:
           let modDir = outDir / ("mod_" & moduleSlug(lm.id))
           createDir(modDir)
           let modOdPath = modDir / (moduleSlug(lm.id) & ".odin")
-          writeFile(modOdPath, emitOdinModule(lm.name, lm.m, semLayer, odReal, shapes))
+          writeFile(modOdPath, trimFeatures(emitOdinModule(lm.name, lm.m, semLayer, odReal, shapes)))
           echo "wrote ", modOdPath
           vSub(lm.name, ts)
         let tsEntry = epochTime()
         let odPath = outDir / (base & ".odin")
-        writeFile(odPath, emitOdin(odProg[^1].m, semLayer, odReal, base, shapes))
+        writeFile(odPath, trimFeatures(emitOdin(odProg[^1].m, semLayer, odReal, base, shapes)))
         echo "wrote ", odPath
         let shapesOdin = emitOdinShapes(shapes)
         if shapesOdin != "":

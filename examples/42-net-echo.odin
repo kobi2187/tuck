@@ -1,30 +1,11 @@
-#+feature dynamic-literals
+#+feature dynamic-literals using-stmt
 package main
 
 import "core:os"
 import rt "./tuckrt"
 import tuckˑmodˑnet "./mod_net"
 import tuckˑmodˑscheduler "./mod_scheduler"
-
-SpawnEnv_tuckˑtaskˑserve :: struct {
-	lfd: int,
-}
-
-spawn_tuckˑtaskˑserve :: proc() {
-	e := (^SpawnEnv_tuckˑtaskˑserve)(context.user_ptr)
-	tuckˑtaskˑserve(e.lfd)
-	free(e)
-}
-
-SpawnEnv_tuckˑtaskˑclient :: struct {
-	port: int,
-}
-
-spawn_tuckˑtaskˑclient :: proc() {
-	e := (^SpawnEnv_tuckˑtaskˑclient)(context.user_ptr)
-	tuckˑtaskˑclient(e.port)
-	free(e)
-}
+import tuckˑmodˑshapes_42_net_echo "./mod_shapes_42_net_echo"
 
 tuckˑactorˑResultMsgKind :: enum { msgPut }
 tuckˑactorˑResultMsg :: struct {
@@ -66,36 +47,360 @@ sendPut_tuckˑactorˑResult :: proc(self: ^tuckˑactorˑResult, c: int) {
 	rt.tuckNotifySend(tuckˑactorˑResultSlot)
 }
 
-tuckˑtaskˑserve :: proc(lfd: int) {
-  tuckˑvˑc := tuckˑmodˑnet.accept(lfd)
-  if (tuckˑvˑc.status == .Ok) {
-      tuckOwnTmp1 := tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256)
-      defer rt.tuckDrop(tuckOwnTmp1)
-      _ = tuckOwnTmp1
-      _ = tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "pong")
-      tuckˑmodˑnet.close(tuckˑvˑc.value.fd)
-  }
-  return
+TuckFˑtuckˑtaskˑserve :: struct {
+	tuckHdr: rt.TuckFrameHdr,
+	tuckRes: ^rt.TuckSlot(bool),
+	tuckDest: ^bool,
+	lfd: int,
+	tuckˑvˑc: rt.TuckResult(tuckˑmodˑshapes_42_net_echo.TRec_fd(int)),
+	tuckOwnTmp1: rt.TuckResult(tuckˑmodˑshapes_42_net_echo.TRec_data(string)),
+	tuckDefer0: bool,
 }
 
-tuckˑtaskˑclient :: proc(port: int) {
-  tuckˑvˑc := tuckˑmodˑnet.connect("127.0.0.1", port)
-  if (tuckˑvˑc.status == .Ok) {
-      _ = tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "ping")
-      tuckˑvˑr := tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256)
-      defer rt.tuckDrop(tuckˑvˑr)
-      tuckˑmodˑnet.close(tuckˑvˑc.value.fd)
-      if (tuckˑvˑr.status == .Ok) {
-          if (tuckˑvˑr.value.data == "pong") {
-              sendPut_tuckˑactorˑResult(&tuckˑactorˑResultSingleton, 42)
-              return
-          }
-      }
-      sendPut_tuckˑactorˑResult(&tuckˑactorˑResultSingleton, 3)
-      return
+TuckNewˑtuckˑtaskˑserve :: proc(tuckRes: ^rt.TuckSlot(bool), tuckDest: ^bool, lfd: int) -> ^TuckFˑtuckˑtaskˑserve {
+	f := new(TuckFˑtuckˑtaskˑserve)
+	f.tuckHdr.stage = TuckSˑtuckˑtaskˑserveˑ0
+	f.tuckRes = tuckRes
+	f.tuckDest = tuckDest
+	f.lfd = lfd
+	return f
+}
+
+TuckRetˑtuckˑtaskˑserve :: proc(tuckF: ^TuckFˑtuckˑtaskˑserve) -> rt.TuckHop {
+	if tuckF.tuckRes != nil do rt.tuckSlComplete(tuckF.tuckRes, true)
+	TuckExitˑtuckˑtaskˑserve(tuckF)
+	h := rt.tuckSlReturnHop(&tuckF.tuckHdr)
+	free(tuckF)
+	return h
+}
+
+TuckSˑtuckˑtaskˑserveˑ0 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  return rt.tuckSlYield(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ1)
+}
+
+TuckSˑtuckˑtaskˑserveˑ1 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  return rt.tuckSlOnStack(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ2, TuckIOˑtuckˑtaskˑserveˑ0)
+}
+
+TuckIOˑtuckˑtaskˑserveˑ0 :: proc(env: rawptr) {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  tuckˑvˑc = tuckˑmodˑnet.accept(lfd)
+}
+
+TuckSˑtuckˑtaskˑserveˑ2 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  if (tuckˑvˑc.status == .Ok) do return TuckSˑtuckˑtaskˑserveˑ4(env)
+  return TuckSˑtuckˑtaskˑserveˑ11(env)
+}
+
+TuckSˑtuckˑtaskˑserveˑ3 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  return TuckRetˑtuckˑtaskˑserve(tuckF)
+}
+
+TuckSˑtuckˑtaskˑserveˑ4 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  return rt.tuckSlYield(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ5)
+}
+
+TuckSˑtuckˑtaskˑserveˑ5 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  return rt.tuckSlOnStack(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ6, TuckIOˑtuckˑtaskˑserveˑ1)
+}
+
+TuckIOˑtuckˑtaskˑserveˑ1 :: proc(env: rawptr) {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  tuckOwnTmp1 = tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256)
+}
+
+TuckSˑtuckˑtaskˑserveˑ6 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  tuckDefer0 = true
+  _ = tuckOwnTmp1
+  return rt.tuckSlYield(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ7)
+}
+
+TuckSˑtuckˑtaskˑserveˑ7 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  return rt.tuckSlOnStack(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ8, TuckIOˑtuckˑtaskˑserveˑ2)
+}
+
+TuckIOˑtuckˑtaskˑserveˑ2 :: proc(env: rawptr) {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  _ = tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "pong")
+}
+
+TuckSˑtuckˑtaskˑserveˑ8 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  return rt.tuckSlYield(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ9)
+}
+
+TuckSˑtuckˑtaskˑserveˑ9 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  return rt.tuckSlOnStack(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ10, TuckIOˑtuckˑtaskˑserveˑ3)
+}
+
+TuckIOˑtuckˑtaskˑserveˑ3 :: proc(env: rawptr) {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  tuckˑmodˑnet.close(tuckˑvˑc.value.fd)
+}
+
+TuckSˑtuckˑtaskˑserveˑ10 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  TuckXˑtuckˑtaskˑserveˑ1(tuckF)
+  return TuckSˑtuckˑtaskˑserveˑ3(env)
+}
+
+TuckSˑtuckˑtaskˑserveˑ11 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑserve)(env)
+  using tuckF
+  return TuckSˑtuckˑtaskˑserveˑ3(env)
+}
+
+TuckExitˑtuckˑtaskˑserve :: proc(tuckF: ^TuckFˑtuckˑtaskˑserve) {
+  using tuckF
+  if tuckDefer0 {
+    rt.tuckDrop(tuckOwnTmp1)
+    tuckDefer0 = false
   }
+}
+TuckXˑtuckˑtaskˑserveˑ1 :: proc(tuckF: ^TuckFˑtuckˑtaskˑserve) {
+  using tuckF
+  if tuckDefer0 {
+    rt.tuckDrop(tuckOwnTmp1)
+    tuckDefer0 = false
+  }
+}
+
+TuckFˑtuckˑtaskˑclient :: struct {
+	tuckHdr: rt.TuckFrameHdr,
+	tuckRes: ^rt.TuckSlot(bool),
+	tuckDest: ^bool,
+	port: int,
+	tuckˑvˑc: rt.TuckResult(tuckˑmodˑshapes_42_net_echo.TRec_fd(int)),
+	tuckˑvˑr: rt.TuckResult(tuckˑmodˑshapes_42_net_echo.TRec_data(string)),
+	tuckDefer0: bool,
+}
+
+TuckNewˑtuckˑtaskˑclient :: proc(tuckRes: ^rt.TuckSlot(bool), tuckDest: ^bool, port: int) -> ^TuckFˑtuckˑtaskˑclient {
+	f := new(TuckFˑtuckˑtaskˑclient)
+	f.tuckHdr.stage = TuckSˑtuckˑtaskˑclientˑ0
+	f.tuckRes = tuckRes
+	f.tuckDest = tuckDest
+	f.port = port
+	return f
+}
+
+TuckRetˑtuckˑtaskˑclient :: proc(tuckF: ^TuckFˑtuckˑtaskˑclient) -> rt.TuckHop {
+	if tuckF.tuckRes != nil do rt.tuckSlComplete(tuckF.tuckRes, true)
+	TuckExitˑtuckˑtaskˑclient(tuckF)
+	h := rt.tuckSlReturnHop(&tuckF.tuckHdr)
+	free(tuckF)
+	return h
+}
+
+TuckSˑtuckˑtaskˑclientˑ0 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return rt.tuckSlYield(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ1)
+}
+
+TuckSˑtuckˑtaskˑclientˑ1 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return rt.tuckSlOnStack(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ2, TuckIOˑtuckˑtaskˑclientˑ0)
+}
+
+TuckIOˑtuckˑtaskˑclientˑ0 :: proc(env: rawptr) {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  tuckˑvˑc = tuckˑmodˑnet.connect("127.0.0.1", port)
+}
+
+TuckSˑtuckˑtaskˑclientˑ2 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  if (tuckˑvˑc.status == .Ok) do return TuckSˑtuckˑtaskˑclientˑ4(env)
+  return TuckSˑtuckˑtaskˑclientˑ19(env)
+}
+
+TuckSˑtuckˑtaskˑclientˑ3 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return rt.tuckSlOnStack(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ20, TuckIOˑtuckˑtaskˑclientˑ6)
+}
+
+TuckIOˑtuckˑtaskˑclientˑ6 :: proc(env: rawptr) {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
   sendPut_tuckˑactorˑResult(&tuckˑactorˑResultSingleton, 4)
-  return
+}
+
+TuckSˑtuckˑtaskˑclientˑ4 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return rt.tuckSlYield(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ5)
+}
+
+TuckSˑtuckˑtaskˑclientˑ5 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return rt.tuckSlOnStack(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ6, TuckIOˑtuckˑtaskˑclientˑ1)
+}
+
+TuckIOˑtuckˑtaskˑclientˑ1 :: proc(env: rawptr) {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  _ = tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "ping")
+}
+
+TuckSˑtuckˑtaskˑclientˑ6 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return rt.tuckSlYield(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ7)
+}
+
+TuckSˑtuckˑtaskˑclientˑ7 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return rt.tuckSlOnStack(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ8, TuckIOˑtuckˑtaskˑclientˑ2)
+}
+
+TuckIOˑtuckˑtaskˑclientˑ2 :: proc(env: rawptr) {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  tuckˑvˑr = tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256)
+}
+
+TuckSˑtuckˑtaskˑclientˑ8 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  tuckDefer0 = true
+  return rt.tuckSlYield(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ9)
+}
+
+TuckSˑtuckˑtaskˑclientˑ9 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return rt.tuckSlOnStack(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ10, TuckIOˑtuckˑtaskˑclientˑ3)
+}
+
+TuckIOˑtuckˑtaskˑclientˑ3 :: proc(env: rawptr) {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  tuckˑmodˑnet.close(tuckˑvˑc.value.fd)
+}
+
+TuckSˑtuckˑtaskˑclientˑ10 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  if (tuckˑvˑr.status == .Ok) do return TuckSˑtuckˑtaskˑclientˑ12(env)
+  return TuckSˑtuckˑtaskˑclientˑ17(env)
+}
+
+TuckSˑtuckˑtaskˑclientˑ11 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return rt.tuckSlOnStack(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ18, TuckIOˑtuckˑtaskˑclientˑ5)
+}
+
+TuckIOˑtuckˑtaskˑclientˑ5 :: proc(env: rawptr) {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  sendPut_tuckˑactorˑResult(&tuckˑactorˑResultSingleton, 3)
+}
+
+TuckSˑtuckˑtaskˑclientˑ12 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  if (tuckˑvˑr.value.data == "pong") do return TuckSˑtuckˑtaskˑclientˑ14(env)
+  return TuckSˑtuckˑtaskˑclientˑ16(env)
+}
+
+TuckSˑtuckˑtaskˑclientˑ13 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return TuckSˑtuckˑtaskˑclientˑ11(env)
+}
+
+TuckSˑtuckˑtaskˑclientˑ14 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return rt.tuckSlOnStack(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ15, TuckIOˑtuckˑtaskˑclientˑ4)
+}
+
+TuckIOˑtuckˑtaskˑclientˑ4 :: proc(env: rawptr) {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  sendPut_tuckˑactorˑResult(&tuckˑactorˑResultSingleton, 42)
+}
+
+TuckSˑtuckˑtaskˑclientˑ15 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return TuckRetˑtuckˑtaskˑclient(tuckF)
+}
+
+TuckSˑtuckˑtaskˑclientˑ16 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return TuckSˑtuckˑtaskˑclientˑ13(env)
+}
+
+TuckSˑtuckˑtaskˑclientˑ17 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return TuckSˑtuckˑtaskˑclientˑ11(env)
+}
+
+TuckSˑtuckˑtaskˑclientˑ18 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return TuckRetˑtuckˑtaskˑclient(tuckF)
+}
+
+TuckSˑtuckˑtaskˑclientˑ19 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return TuckSˑtuckˑtaskˑclientˑ3(env)
+}
+
+TuckSˑtuckˑtaskˑclientˑ20 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑclient)(env)
+  using tuckF
+  return TuckRetˑtuckˑtaskˑclient(tuckF)
+}
+
+TuckExitˑtuckˑtaskˑclient :: proc(tuckF: ^TuckFˑtuckˑtaskˑclient) {
+  using tuckF
+  if tuckDefer0 {
+    rt.tuckDrop(tuckˑvˑr)
+    tuckDefer0 = false
+  }
+}
+TuckXˑtuckˑtaskˑclientˑ1 :: proc(tuckF: ^TuckFˑtuckˑtaskˑclient) {
+  using tuckF
+  if tuckDefer0 {
+    rt.tuckDrop(tuckˑvˑr)
+    tuckDefer0 = false
+  }
 }
 
 tuckˑfnˑdone :: proc () -> bool {
@@ -105,18 +410,8 @@ tuckˑfnˑdone :: proc () -> bool {
 tuckˑfnˑmain :: proc () -> int {
   tuckˑvˑl := tuckˑmodˑnet.listen(34593)
   if (tuckˑvˑl.status == .Ok) {
-      env0 := new(SpawnEnv_tuckˑtaskˑserve)
-      env0.lfd = tuckˑvˑl.value.fd
-      savedCtx0 := context.user_ptr
-      context.user_ptr = env0
-      rt.tuckSpawn(spawn_tuckˑtaskˑserve)
-      context.user_ptr = savedCtx0
-      env1 := new(SpawnEnv_tuckˑtaskˑclient)
-      env1.port = 34593
-      savedCtx1 := context.user_ptr
-      context.user_ptr = env1
-      rt.tuckSpawn(spawn_tuckˑtaskˑclient)
-      context.user_ptr = savedCtx1
+      rt.tuckSlReady(&TuckNewˑtuckˑtaskˑserve(nil, nil, tuckˑvˑl.value.fd).tuckHdr)
+      rt.tuckSlReady(&TuckNewˑtuckˑtaskˑclient(nil, nil, 34593).tuckHdr)
       rt.tuckWaitOn(tuckˑactorˑResultSlot, tuckˑfnˑdone)
       tuckˑmodˑnet.close(tuckˑvˑl.value.fd)
       tuckˑmodˑscheduler.stop()
@@ -130,8 +425,9 @@ main :: proc() {
 	tuckˑactorˑResultSingleton.code = 0
 	tuckˑactorˑResultSingleton.ready = false
 	rt.tuckAsyncInit()
-	tuckˑactorˑResultSlot = rt.tuckStartActor(drain_tuckˑactorˑResult)
+	tuckˑactorˑResultSlot = rt.tuckStartActorFrame(drain_tuckˑactorˑResult)
 	mainRc := tuckˑfnˑmain()
+	rt.tuckSlRunAll()
 	rt.tuckRun()
 	rt.tuckDrainActors()
 	rt.tuckTrackCheck()

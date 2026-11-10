@@ -4,13 +4,15 @@
 ## The SEMANTICS are identical: the same pause points, the same order, the
 ## same results. What changes is the machinery:
 ##
+##   stackless  THE DEFAULT (ruled 2026-11-10). A fn that can pause becomes a
+##              FRAME (its locals) and STAGES (the code between pauses); a
+##              pause returns to a driver loop. No stack per task, no stack
+##              switch; a statement that waits inside the runtime borrows a
+##              pooled helper stack while it waits. What examples/ tracks.
 ##   stackful   every task is a minicoro coroutine with its own mmap'd stack;
-##              a pause switches stacks. The default, and what every emitted
-##              file under examples/ is.
-##   stackless  a fn that can pause becomes a FRAME (its locals, on the heap)
-##              and STAGES (the code between pauses); a pause returns to a
-##              driver loop. No stacks, no stack switching. Phase 2: tasks on
-##              the Nim backend.
+##              a pause switches stacks. Kept for debugging: a debugger shows
+##              a task's real call stack, where a stage's ends at the driver.
+##              examples/stackful/ tracks its output where it differs.
 ##
 ## The plan — which decls become frames — is computed once, from the checked
 ## program and before mangling (compiler/frames.nim), and read by codegen
@@ -23,7 +25,7 @@ type
     cmStackful = "stackful"
     cmStackless = "stackless"
 
-var concurrencyMode* = cmStackful
+var concurrencyMode* = cmStackless
 var helperDecls*: HashSet[NodeId]
   ## Under stackless: generic fns that may wait. Never frames (a frame type
   ## would be generic); a call to one runs on a helper stack.

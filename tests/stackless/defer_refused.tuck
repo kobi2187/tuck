@@ -1,0 +1,14 @@
+# A pause inside `defer` is not cut (#216): refused by name, never run wrong.
+import console
+
+fn say({text: str}) [io]:
+  {text: text} console::printLine
+
+task check({n: int}) -> {r: int} [io]:
+  defer:
+    {text: "bye"} say
+  return {r: n}
+
+fn main() -> int [io]:
+  let r = {n: 2} check
+  return r.r

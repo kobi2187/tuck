@@ -1,6 +1,8 @@
 # Stackless concurrency (#216)
 
-Status: phases 0–5 are built, apart from liveness for frame fields.
+Status: phases 0–5 and 7 are built, apart from liveness for frame fields.
+**Stackless is the default** (`--concurrency:stackful` keeps the coroutine
+runtime, the one to debug with).
 * **Tasks** run stackless on all three backends, waits included.
 * **Actors:** under `--actors:single`, an actor whose handlers wait only on
   mailboxes runs as a frame.
@@ -403,7 +405,7 @@ Not built yet, and **refused rather than run wrong:**
 | 4 | runtime parity: reactor, timers, `on select`, offload, waiting sends, `waitUntil` | **done**: statements that wait run on pooled helper stacks. `parks`, `sends` and examples 28/29/30 match the Nim reference on all three backends, and 42 (sockets) was checked by hand |
 | 5 | actors in all three `--actors:` modes, urgent mailboxes, `alive`/`pingUs` | **done**: `thread`/`batch` unchanged (handlers run on actor threads) with thread-local frame state. Under `single`, an actor that waits only on mailboxes runs as a frame. The actor suites pass under `TUCK_CONCURRENCY=stackless` |
 | 6 | (#219) static slabs for actor chains, stack root frames, embedded flag; measurements | numbers in `benches/SCORES.md`; a no-heap actor-only program builds |
-| 7 | differential run: every concurrency suite under both flags in CI | equal results; the owner decides whether to change the default |
+| 7 | differential run: every concurrency suite under both flags in CI | **done**: **stackless is the default** (ruled 2026-11-10). CI runs every suite twice, the second time under `TUCK_CONCURRENCY=stackful`. `examples/` tracks the default's output and `examples/stackful/` the stackful twin of each file that differs. A golden has a `.stackful` twin where the modes differ, and a text assertion reads `harness.stacklessRun()` |
 
 **Tests:** the concurrency suites run in both modes as parameters, in the
 same way `--actors:` modes are covered. Until the default changes, every

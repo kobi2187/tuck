@@ -43,6 +43,7 @@
 import std/[tables, sets, strutils, hashes]
 import ast, ast_ops, ast_query, resolution, concurrency
 import frames   # callOf: the one answer to "which call is this node"
+from twin_calls import markBuilt
 from typecheck_util import typeName
 
 type
@@ -118,6 +119,7 @@ type
     fieldIdx: Table[string, int]
     open: seq[int]          ## the scope ids open here, outermost first
     sites: int              ## tkOnStack sites numbered so far
+    temps: int              ## hoisted frame-call temps numbered so far
     loopStack: seq[tuple[loop, depth: int]] ## split loops open here, and the
                             ## `open` depth of each one's body scope
     awaited: HashSet[NodeId] ## task calls a binding awaits; an unbound one
@@ -214,7 +216,8 @@ proc newStage(sp: var Splitter): int =
 proc fail(sp: var Splitter, n: Expr, what: string) =
   if sp.plan.error == "":
     sp.plan.error = "line " & $n.span.line & ": " & what &
-                    " is not supported by --concurrency:stackless yet (#216)"
+                    " is not cut by the stackless transform yet (#216); build " &
+                    "with --concurrency:stackful"
 
 proc addField(sp: var Splitter, n: Expr, name: string, t: Type, isSlot = false) =
   if name in sp.fieldIdx:
@@ -275,32 +278,82 @@ proc onStack(sp: var Splitter, cur: var int, s: Expr) =
 
 proc boolType(): Type = Type(kind: tkNamed, name: "bool")
 
+proc built(e: Expr): Expr =
+  ## A node the splitter builds, made known to the passes after `prepare`:
+  ## an id, and "decided, no twin" for twin_calls, which otherwise fails
+  ## loudly on a node it never visited.
+  fillIdsIn(e)
+  markBuilt(e)
+  e
+
+proc temp(sp: var Splitter, name: string, t: Type, span: Span): Expr =
+  ## A read of frame temp `name`, its type recorded so a printer that asks
+  ## (a match on it reads `.kind`) gets the answer it would for a local.
+  result = built(Expr(kind: exkVar, name: name, span: span))
+  if t != nil: sp.res.setType(result, t)
+
 proc hoisted(sp: var Splitter, cur: var int, e: Expr, t: Type): Expr =
   ## A condition (or subject) that may park, computed on a helper into a
   ## frame field first; what the branch then tests is that field.
   if not sp.parksIn(e): return e
   let name = "tuckCond" & $sp.sites
   sp.addField(e, name, t)
-  let v = Expr(kind: exkVar, name: name, span: e.span)
-  sp.onStack(cur, Expr(kind: exkAssign, target: v, assignVal: e, span: e.span))
-  Expr(kind: exkVar, name: name, span: e.span)
+  let v = sp.temp(name, t, e.span)
+  sp.onStack(cur, built(Expr(kind: exkAssign, target: v, assignVal: e, span: e.span)))
+  sp.temp(name, t, e.span)
+
+proc hoistCuts(sp: var Splitter, cur: var int, slot: var Expr) =
+  ## Every frame call nested in `slot`, cut out and run FIRST into a frame
+  ## temp (`tuckTmpN`), the slot then reading the temp: `({n: 1} f).v + 1`
+  ## becomes a frame call into tuckTmp0, then `tuckTmp0.v + 1`. Inner calls
+  ## before outer, left to right, as they would evaluate.
+  if slot == nil: return
+  for child in slot.childSlots: sp.hoistCuts(cur, child)
+  let c = sp.callOf(slot)
+  if c == nil: return
+  let callee = sp.frameCallee(c)
+  if callee == nil or callee.kind == dkTask: return   # a nested task call only spawns
+  var t = sp.res.typeFor(slot)
+  if t == nil: t = sp.res.typeFor(c)
+  let name = "tuckTmp" & $sp.temps
+  inc sp.temps
+  sp.addField(slot, name, t)
+  cur = sp.endWith(cur, sp.callTerm(slot, c, callee, sp.temp(name, t, slot.span)))
+  slot = sp.temp(name, t, slot.span)
+
+proc hoistNested(sp: var Splitter, cur: var int, s: Expr) =
+  ## The frame calls nested anywhere in statement `s` below its own value
+  ## call (which ends the stage itself), hoisted out first.
+  if s.kind == exkAssign: sp.hoistCuts(cur, s.target)
+  for child in s.childSlots:
+    if child == nil: continue
+    if s.kind == exkAssign and child == s.target: continue
+    let top = sp.callOf(child)
+    if top != nil and sp.frameCallee(top) != nil and s.kind in {exkAssign, exkDiscard}:
+      for arg in child.childSlots: sp.hoistCuts(cur, arg)   # its arguments
+    else: sp.hoistCuts(cur, child)
 
 proc simpleStmt(sp: var Splitter, cur: var int, s: Expr) =
   ## A statement with no nested body: yields before it, then it runs, or it
-  ## IS a frame call / task await that ends the stage.
+  ## IS a frame call / task await that ends the stage. A frame call nested
+  ## deeper is hoisted out into a temp first; a `return` whose value waits
+  ## computes it on a helper stack first.
   sp.emitYields(cur, sp.yieldCount(s))
+  if s.kind == exkCall:
+    for arg in s.childSlots: sp.hoistCuts(cur, arg)
+  else: sp.hoistNested(cur, s)
   let (v, target) = valueCall(s)
   let c = if v != nil: sp.callOf(v) else: nil
   let callee = if c != nil: sp.frameCallee(c) else: nil
-  if callee == nil:
-    for n in s.nodes:
-      if n.kind != exkCall and sp.callOf(n) != nil and sp.frameCallee(sp.callOf(n)) != nil:
-        sp.fail(s, "a frame call inside a larger expression")
-    if sp.parksIn(s): sp.onStack(cur, s)
-    else: sp.plan.stages[cur].stmts.add s
-  else:
+  if callee != nil:
     sp.noteLocal(s)
     cur = sp.endWith(cur, sp.callTerm(s, c, callee, target))
+  elif s.kind == exkReturn and sp.parksIn(s.returnVal):
+    let t = sp.res.typeFor(s.returnVal)
+    s.returnVal = sp.hoisted(cur, s.returnVal, t)
+    sp.plan.stages[cur].stmts.add s
+  elif sp.parksIn(s): sp.onStack(cur, s)
+  else: sp.plan.stages[cur].stmts.add s
 
 proc splitList(sp: var Splitter, stmts: seq[Expr], cur: var int)
 
@@ -348,6 +401,7 @@ proc jumpsIn(sp: var Splitter, e: Expr) =
 
 proc ifStmt(sp: var Splitter, cur: var int, s: Expr) =
   sp.emitYields(cur, sp.yieldCount(s.cond))
+  sp.hoistCuts(cur, s.cond)
   let cond = sp.hoisted(cur, s.cond, boolType())
   let join = sp.newStage()
   let thenS = sp.chain(s.thenBranch, join)
@@ -358,18 +412,20 @@ proc ifStmt(sp: var Splitter, cur: var int, s: Expr) =
 proc matchStmt(sp: var Splitter, cur: var int, s: Expr) =
   ## The backend prints its own `case` on the subject; each arm's body is a
   ## jump carrier sending control to that arm's chain.
-  if sp.framePausesIn(s.subject): sp.fail(s, "a frame call in a match subject")
   sp.emitYields(cur, sp.yieldCount(s.subject))
-  if sp.parksIn(s.subject): sp.fail(s, "a match subject that waits")
+  sp.hoistCuts(cur, s.subject)
+  if sp.parksIn(s.subject):
+    var t = sp.res.typeFor(s.subject)
+    s.subject = sp.hoisted(cur, s.subject, t)
   let join = sp.newStage()
   var arms: seq[MatchArm]
   for arm in s.arms:
-    let carrier = Expr(kind: exkBreak, span: arm.span)
+    let carrier = built(Expr(kind: exkBreak, span: arm.span))
     sp.plan.jumps[carrier] = Jump(target: sp.chain(arm.body, join))
     arms.add MatchArm(pattern: arm.pattern, span: arm.span,
                       body: Expr(kind: exkBlock, stmts: @[carrier], span: arm.span))
   sp.plan.stages[cur].stmts.add Expr(kind: exkMatch, subject: s.subject, arms: arms,
-                                     span: s.span, id: s.id)
+                                     span: s.span, id: s.id)   # the match's own id
   sp.plan.stages[cur].term = Term(kind: tkGoto, next: join)   # not reached: every arm jumps
   cur = join
 
@@ -413,13 +469,12 @@ proc loopState(sp: var Splitter, s: Expr, kind: LoopKind, k: int): Loop =
 proc whileHead(sp: var Splitter, k: int, s: Expr) =
   ## A `for cond:` re-tests at its head, yielding first for an [io] call in
   ## the condition, every iteration; a `loop:` just goes round.
-  if s.whileCond != nil and sp.framePausesIn(s.whileCond):
-    sp.fail(s, "a frame call in a loop condition")
   var head = sp.plan.loops[k].head
   var cond = s.whileCond
   if cond != nil:
     sp.emitYields(head, sp.yieldCount(cond))
-    cond = sp.hoisted(head, cond, boolType())   # waits: computed on a helper
+    sp.hoistCuts(head, s.whileCond)   # a frame call: run first, every iteration
+    cond = sp.hoisted(head, s.whileCond, boolType())   # waits: on a helper
   let lp = sp.plan.loops[k]
   sp.plan.stages[head].term =
     if cond == nil: Term(kind: tkGoto, next: lp.body)
@@ -442,8 +497,11 @@ proc loopBody(sp: var Splitter, k: int, s: Expr) =
 proc loopStmt(sp: var Splitter, cur: var int, s: Expr) =
   let kind = sp.loopKind(s)
   if kind != lkWhile:
-    if sp.framePausesIn(s.iterable): sp.fail(s, "a frame call in a loop's range")
     sp.emitYields(cur, sp.yieldCount(s.iterable))
+    if s.iterable.kind == exkBinary:
+      sp.hoistCuts(cur, s.iterable.left)       # a range's ends, once
+      sp.hoistCuts(cur, s.iterable.right)
+    if sp.parksIn(s.iterable): sp.fail(s, "a loop range that waits")
   let k = sp.plan.loops.len
   sp.plan.loops.add sp.loopState(s, kind, k)
   sp.plan.loops[k].head = sp.newStage()
@@ -478,8 +536,8 @@ proc inline(sp: var Splitter, cur: int, s: Expr) =
 proc nestedStmt(sp: var Splitter, cur: var int, s: Expr) =
   case s.kind
   of exkIf:
-    if sp.framePausesIn(s.cond): sp.fail(s, "a frame call in an `if` condition")
-    elif sp.branchesPause(s) or sp.parksIn(s.cond): sp.ifStmt(cur, s)
+    if sp.branchesPause(s) or sp.parksIn(s.cond) or sp.framePausesIn(s.cond):
+      sp.ifStmt(cur, s)
     else:
       sp.emitYields(cur, sp.yieldCount(s.cond))   # only the condition yields
       sp.inline(cur, s)

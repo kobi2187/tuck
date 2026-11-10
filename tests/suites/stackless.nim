@@ -24,14 +24,20 @@
 ## mailboxes runs as a frame (examples 26 and 27, the two Savina ports,
 ## `sends`), the same as the coroutine actor it replaces.
 ##
-## What is not built yet is REFUSED, never run wrong: here, a frame call in
-## an `if` condition, at compile time with its line.
+## `hoists`: a frame call nested in a larger expression (an `if` and a loop
+## condition, a match subject, a range end, an arithmetic expression) and a
+## returned value that waits are hoisted into frame temps first.
+##
+## What is not cut yet is REFUSED, never run wrong: here, a pause inside a
+## `defer`, at compile time with its line and the way out
+## (--concurrency:stackful).
 import std/[os, strutils]
 import ../harness
 
 const Programs = ["tests/stackless/order.tuck", "tests/stackless/values.tuck",
                   "tests/stackless/loops.tuck", "tests/stackless/parks.tuck",
-                  "tests/stackless/sends.tuck", "examples/28-async-task.tuck",
+                  "tests/stackless/sends.tuck", "tests/stackless/hoists.tuck",
+                  "examples/28-async-task.tuck",
                   "examples/29-task-timeout.tuck", "examples/30-async-read.tuck"]
   # examples/42-net-echo (sockets) runs the same too, checked by hand: it
   # binds a fixed port, so it cannot run beside itself in the pool.
@@ -88,17 +94,17 @@ proc same(t: var T, name: string, a, b: int) =
                unifiedDiff(runOutput(outA), runOutput(outB), 5)
 
 proc refusedAtCompile(t: var T) =
-  t.src readFile("tests/stackless/cond_refused.tuck")
+  t.src readFile("tests/stackless/defer_refused.tuck")
   let idx = t.needCmd(@["./tuck", "c", t.curDir / "t.tuck", "--concurrency:stackless",
                         "-o:" & t.curDir, "--root:" & t.root], vEmit)
   if t.phase != pReport: return
   if t.skippedCmd(idx):
-    t.skip "a frame call in an if condition is refused"
+    t.skip "a pause inside defer is refused"
     return
   let (rc, outp) = t.resultOf(idx)
-  if rc != 0 and "a frame call in an `if` condition is not supported" in outp:
-    t.ok "a frame call in an if condition is refused, by name"
-  else: t.no "a frame call in an if condition is refused", "exit " & $rc & ": " & outp
+  if rc != 0 and "a pause inside a `defer` is not cut" in outp and "--concurrency:stackful" in outp:
+    t.ok "a pause inside defer is refused, by name, pointing at --concurrency:stackful"
+  else: t.no "a pause inside defer is refused", "exit " & $rc & ": " & outp
 
 proc flags(t: var T) =
   t.src readFile("examples/28-async-task.tuck")

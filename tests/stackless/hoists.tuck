@@ -1,0 +1,48 @@
+# Frame calls nested inside larger expressions, and values that wait, are
+# hoisted into frame temps first (#216): in an `if` and a loop condition, a
+# match subject, a range end, a larger expression, and a returned value.
+import console
+import time
+
+type Shape:
+  | Circle({r: int})
+  | Rect({w: int, h: int})
+
+fn twice({n: int}) -> {v: int} [io]:
+  {text: "twice"} console::printLine
+  return {v: n * 2}
+
+fn pick({k: int}) -> Shape [io]:
+  {text: "pick"} console::printLine
+  if k > 1:
+    return {w: k, h: 2} Shape.Rect
+  return {r: k} Shape.Circle
+
+fn stamp() -> {epochMs: u64} [io]:
+  return nowMs
+
+fn half({n: int}) -> int [io]:
+  {text: "half"} console::printLine
+  return n /i 2
+
+task run({n: int}) -> {r: int} [io]:
+  var total = 0
+  if ({n: n} twice).v > 3:
+    total += 1
+  var i = 0
+  for ({n: i} twice).v < 6:
+    i += 1
+  match {k: n} pick:
+    Circle: total += 10
+    Rect: total += 100
+  for j in 0 .. {n: n} half:
+    total += j
+  let x = ({n: n} twice).v + 1
+  let t = stamp
+  if t.epochMs > 0:
+    total += x
+  return {r: total + i}
+
+fn main() -> int [io]:
+  let r = {n: 2} run
+  return r.r

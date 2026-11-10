@@ -123,15 +123,42 @@ proc tuckˑregisterˑDMA1_CH3_TCIE_set*(value: bool) {.inline.} =
   else: tuck_rt.tuckVolatileStore(tuckˑregisterˑDMA1_CH3, tuck_rt.tuckVolatileLoad(tuckˑregisterˑDMA1_CH3) and not mask)
 
 var tuckˑpoolˑBufferPool* = ObjectPool[array[512, uint8], 4]()
-proc tuckˑtaskˑstreamReader*(streamId: uint8, chunks: seq[uint32]): TuckResult[tuple[]] =
+type TuckFˑtuckˑtaskˑstreamReader* = object
+    tuckHdr: TuckFrameHdr
+    tuckRes: ptr TuckSlot[TuckResult[tuple[]]]
+    tuckDest: ptr TuckResult[tuple[]]
+    streamId: uint8
+    chunks: seq[uint32]
+
+proc TuckSˑtuckˑtaskˑstreamReaderˑ0(env: pointer): TuckHop {.nimcall.}
+proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑstreamReader)
+proc TuckNewˑtuckˑtaskˑstreamReader*(tuckRes: ptr TuckSlot[TuckResult[tuple[]]], tuckDest: ptr TuckResult[tuple[]], streamId: uint8, chunks: seq[uint32]): ptr TuckFˑtuckˑtaskˑstreamReader =
+  result = tuckSlAlloc(TuckFˑtuckˑtaskˑstreamReader)
+  result.tuckHdr.stage = TuckSˑtuckˑtaskˑstreamReaderˑ0
+  result.tuckRes = tuckRes
+  result.tuckDest = tuckDest
+  tuckStore(result.streamId, streamId)
+  tuckStore(result.chunks, chunks)
+
+proc TuckSˑtuckˑtaskˑstreamReaderˑ0(env: pointer): TuckHop {.nimcall.} =
+  let tuckF = cast[ptr TuckFˑtuckˑtaskˑstreamReader](env)
+  template streamId: untyped = tuckF.streamId
+  template chunks: untyped = tuckF.chunks
   for tuckˑvˑi in chunks:
     if true:
       var tuckˑvˑbuf = tuckPoolAcquire(tuckˑpoolˑBufferPool)
       if not tuckˑvˑbuf.ok:
         if true:
-          return tokVoid()
+          return tuckSlRet(tuckF, tokVoid())
       tuckˑregisterˑDMA1_CH3_EN_set(true)
       tuckPoolRelease(tuckˑpoolˑBufferPool, tuckˑvˑbuf.value)
+  quit "tuck: stackless tuckˑtaskˑstreamReader ended without a return"
+
+proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑstreamReader) =
+  template streamId: untyped = tuckF.streamId
+  template chunks: untyped = tuckF.chunks
+  discard
+
 
 type tuckˑactorˑDecoderMsgKind* = enum msgPlay, msgPause, msgStop
 type tuckˑactorˑDecoderMsg* = object
@@ -189,7 +216,7 @@ proc draintuckˑactorˑDecoder(): bool {.gcsafe.} =
 
 var tuckˑactorˑDecoderSlot*: pointer
 proc registerActortuckˑactorˑDecoder*() =
-  tuckˑactorˑDecoderSlot = tuckStartActor(draintuckˑactorˑDecoder)
+  tuckˑactorˑDecoderSlot = tuckStartActorFrame(draintuckˑactorˑDecoder)
 
 static: assert((sizeof(tuckˑtypeˑVolume) == 1))
 proc tuckˑfnˑSystemEvents_PlaybackStarted*(): void =

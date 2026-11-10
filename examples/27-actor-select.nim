@@ -35,7 +35,7 @@ proc draintuckˑactorˑAccumulator(): bool {.gcsafe.} =
 
 var tuckˑactorˑAccumulatorSlot*: pointer
 proc registerActortuckˑactorˑAccumulator*() =
-  tuckˑactorˑAccumulatorSlot = tuckStartActor(draintuckˑactorˑAccumulator)
+  tuckˑactorˑAccumulatorSlot = tuckStartActorFrame(draintuckˑactorˑAccumulator)
 
 proc tuckˑfnˑready*(): bool =
   return tuckˑactorˑAccumulatorSingleton.done

@@ -126,16 +126,55 @@ tuckˑtypeˑVolume __validated_tuckˑtypeˑVolume(tuckˑtypeˑVolume v)
     return v;
 }
 
-rt.TuckResult!(rt.TuckUnit) tuckˑtaskˑstreamReader(ubyte streamId, uint[] chunks) {
-    foreach (tuckˑvˑi; chunks) {
-        rt.TuckResult!(rt.PoolHandle) tuckˑvˑbuf = rt.tuckPoolAcquire(tuckˑpoolˑBufferPool);
-        if (!(tuckˑvˑbuf.status == rt.TuckStatus.Ok)) {
-            return rt.tokVoid();
+struct TuckFˑtuckˑtaskˑstreamReader
+{
+    rt.TuckFrameHdr tuckHdr;
+    rt.TuckSlot!(rt.TuckResult!(rt.TuckUnit))* tuckRes;
+    rt.TuckResult!(rt.TuckUnit)* tuckDest;
+    ubyte streamId;
+    uint[] chunks;
+}
+
+TuckFˑtuckˑtaskˑstreamReader* TuckNewˑtuckˑtaskˑstreamReader(rt.TuckSlot!(rt.TuckResult!(rt.TuckUnit))* tuckRes, rt.TuckResult!(rt.TuckUnit)* tuckDest, ubyte streamId, uint[] chunks)
+{
+    auto f = new TuckFˑtuckˑtaskˑstreamReader;
+    f.tuckHdr.stage = &TuckSˑtuckˑtaskˑstreamReaderˑ0;
+    f.tuckRes = tuckRes;
+    f.tuckDest = tuckDest;
+    f.streamId = streamId;
+    f.chunks = chunks;
+    return f;
+}
+
+rt.TuckHop TuckRetˑtuckˑtaskˑstreamReader(TuckFˑtuckˑtaskˑstreamReader* tuckF, rt.TuckResult!(rt.TuckUnit) v)
+{
+    rt.tuckSlFinish(tuckF.tuckRes, tuckF.tuckDest, v);
+    TuckExitˑtuckˑtaskˑstreamReader(tuckF);
+    return rt.tuckSlReturnHop(&tuckF.tuckHdr);
+}
+
+rt.TuckHop TuckSˑtuckˑtaskˑstreamReaderˑ0(void* env)
+{
+    auto tuckF = cast(TuckFˑtuckˑtaskˑstreamReader*) env;
+    with (*tuckF)
+    {
+        foreach (tuckˑvˑi; chunks) {
+            rt.TuckResult!(rt.PoolHandle) tuckˑvˑbuf = rt.tuckPoolAcquire(tuckˑpoolˑBufferPool);
+            if (!(tuckˑvˑbuf.status == rt.TuckStatus.Ok)) {
+                return TuckRetˑtuckˑtaskˑstreamReader(tuckF, rt.tokVoid());
+            }
+            tuckˑregisterˑDMA1_CH3_EN_set(true);
+            rt.tuckPoolRelease(tuckˑpoolˑBufferPool, tuckˑvˑbuf.value);
         }
-        tuckˑregisterˑDMA1_CH3_EN_set(true);
-        rt.tuckPoolRelease(tuckˑpoolˑBufferPool, tuckˑvˑbuf.value);
+        assert(0, "tuck: stackless tuckˑtaskˑstreamReader ended without a return");
     }
-    return typeof(return).init;
+}
+
+void TuckExitˑtuckˑtaskˑstreamReader(TuckFˑtuckˑtaskˑstreamReader* tuckF)
+{
+    with (*tuckF)
+    {
+    }
 }
 
 enum tuckˑactorˑDecoderMsgKind { msgPlay, msgPause, msgStop }
@@ -246,9 +285,10 @@ void tuckˑfnˑmain() {
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    tuckˑactorˑDecoderSlot = rt.tuckStartActor(&drain_tuckˑactorˑDecoder);
+    tuckˑactorˑDecoderSlot = rt.tuckStartActorFrame(&drain_tuckˑactorˑDecoder);
     rt.tuckLeakMark();
     tuckˑfnˑmain();
+    rt.tuckSlRunAll();
     rt.tuckRun();
     rt.tuckDrainActors();
     return rt.tuckLeakCheck(0);

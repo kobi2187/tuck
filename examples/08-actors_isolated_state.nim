@@ -35,5 +35,5 @@ proc draintuckˑactorˑTrafficLight(): bool {.gcsafe.} =
 
 var tuckˑactorˑTrafficLightSlot*: pointer
 proc registerActortuckˑactorˑTrafficLight*() =
-  tuckˑactorˑTrafficLightSlot = tuckStartActor(draintuckˑactorˑTrafficLight)
+  tuckˑactorˑTrafficLightSlot = tuckStartActorFrame(draintuckˑactorˑTrafficLight)
 

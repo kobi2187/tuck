@@ -14,16 +14,73 @@ TRec_v!(long) tuckˑfnˑstepIo(long n) {
     return TRec_v!(long)(v: n);
 }
 
-TRec_r!(long) tuckˑtaskˑcompute(long base) {
-    TRec_v!(long) tuckˑvˑa = tuckˑfnˑstepIo(base);
-    TRec_v!(long) tuckˑvˑb = tuckˑfnˑstepIo(base);
-    return TRec_r!(long)(r: (tuckˑvˑa.v + tuckˑvˑb.v));
+struct TuckFˑtuckˑtaskˑcompute
+{
+    rt.TuckFrameHdr tuckHdr;
+    rt.TuckSlot!(TRec_r!(long))* tuckRes;
+    TRec_r!(long)* tuckDest;
+    long base;
+    TRec_v!(long) tuckˑvˑa;
+    TRec_v!(long) tuckˑvˑb;
+}
+
+TuckFˑtuckˑtaskˑcompute* TuckNewˑtuckˑtaskˑcompute(rt.TuckSlot!(TRec_r!(long))* tuckRes, TRec_r!(long)* tuckDest, long base)
+{
+    auto f = new TuckFˑtuckˑtaskˑcompute;
+    f.tuckHdr.stage = &TuckSˑtuckˑtaskˑcomputeˑ0;
+    f.tuckRes = tuckRes;
+    f.tuckDest = tuckDest;
+    f.base = base;
+    return f;
+}
+
+rt.TuckHop TuckRetˑtuckˑtaskˑcompute(TuckFˑtuckˑtaskˑcompute* tuckF, TRec_r!(long) v)
+{
+    rt.tuckSlFinish(tuckF.tuckRes, tuckF.tuckDest, v);
+    TuckExitˑtuckˑtaskˑcompute(tuckF);
+    return rt.tuckSlReturnHop(&tuckF.tuckHdr);
+}
+
+rt.TuckHop TuckSˑtuckˑtaskˑcomputeˑ0(void* env)
+{
+    auto tuckF = cast(TuckFˑtuckˑtaskˑcompute*) env;
+    with (*tuckF)
+    {
+        return rt.tuckSlYield(&tuckF.tuckHdr, &TuckSˑtuckˑtaskˑcomputeˑ1);
+    }
+}
+
+rt.TuckHop TuckSˑtuckˑtaskˑcomputeˑ1(void* env)
+{
+    auto tuckF = cast(TuckFˑtuckˑtaskˑcompute*) env;
+    with (*tuckF)
+    {
+        tuckˑvˑa = tuckˑfnˑstepIo(base);
+        return rt.tuckSlYield(&tuckF.tuckHdr, &TuckSˑtuckˑtaskˑcomputeˑ2);
+    }
+}
+
+rt.TuckHop TuckSˑtuckˑtaskˑcomputeˑ2(void* env)
+{
+    auto tuckF = cast(TuckFˑtuckˑtaskˑcompute*) env;
+    with (*tuckF)
+    {
+        tuckˑvˑb = tuckˑfnˑstepIo(base);
+        return TuckRetˑtuckˑtaskˑcompute(tuckF, TRec_r!(long)(r: (tuckˑvˑa.v + tuckˑvˑb.v)));
+    }
+}
+
+void TuckExitˑtuckˑtaskˑcompute(TuckFˑtuckˑtaskˑcompute* tuckF)
+{
+    with (*tuckF)
+    {
+    }
 }
 
 long tuckˑfnˑmain() {
-    auto tuckSlot1 = rt.newAsyncResult!(TRec_r!(long))();
-    rt.spawnResult(tuckSlot1, &tuckˑtaskˑcompute, 21L);
-    TRec_r!(long) tuckˑvˑres = rt.awaitResult(tuckSlot1);
+    rt.TuckSlot!(TRec_r!(long)) tuckSlot1;
+    rt.tuckSlReady(&TuckNewˑtuckˑtaskˑcompute(&tuckSlot1, null, 21L).tuckHdr);
+    TRec_r!(long) tuckˑvˑres = rt.tuckSlAwaitMain(&tuckSlot1);
     return tuckˑvˑres.r;
 }
 
@@ -32,6 +89,7 @@ int main(string[] args) {
     rt.tuckAsyncInit();
     rt.tuckLeakMark();
     auto mainRc = tuckˑfnˑmain();
+    rt.tuckSlRunAll();
     rt.tuckRun();
     return rt.tuckLeakCheck(cast(int) mainRc);
 }

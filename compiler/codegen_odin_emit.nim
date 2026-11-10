@@ -28,6 +28,12 @@ proc odinFeatures(): string =
   if concurrencyMode == cmStackless: "#+feature dynamic-literals using-stmt\n"
   else: "#+feature dynamic-literals\n"
 
+proc trimFeatures*(file: string): string =
+  ## A file with no frame needs no `using-stmt`: dropped, so a program with
+  ## no task reads the same under either mode.
+  if "using tuckF" in file: file
+  else: file.replace("#+feature dynamic-literals using-stmt\n", "#+feature dynamic-literals\n")
+
 import ./codegen_odin_decl
 import ./codegen_odin
 
@@ -83,7 +89,7 @@ proc emitOdinShapes*(pool: ShapePool): string =
   ## The generated module holding the program's record shapes (ShapesModule),
   ## or "" when no module asked for one.
   if pool == nil or pool.defs.len == 0: return ""
-  result = odinFeatures() & "package tuck_" & pool.module & "\n\n"
+  result = "#+feature dynamic-literals\n" & "package tuck_" & pool.module & "\n\n"   # no frames here
   for _, def in pool.defs: result.add(def & "\n\n")
 
 proc emitOdinModule*(name: string, m: Module, res: Resolution,

@@ -437,11 +437,11 @@ when isMainModule:
     echo &"== stage 2: tuck builds {nTuck} examples -> .odin =="
     ts1 = getMonoTime()
     var cmds: seq[seq[string]]
-    # `--concurrency:stackful` pinned: these .odin files are TRACKED (the
-    # stackful output), and TUCK_CONCURRENCY=stackless ./tests/run must not
+    # `--concurrency:stackless` pinned: these .odin files are TRACKED (the
+    # default's output), and TUCK_CONCURRENCY=stackful ./tests/run must not
     # rewrite them in place (#216). A flag beats the environment.
     for f in walkFiles("examples/*.tuck"):
-      cmds.add @["./tuck", "c", f, "--odin", "--concurrency:stackful", "--root:" & root]
+      cmds.add @["./tuck", "c", f, "--odin", "--concurrency:stackless", "--root:" & root]
     var work: seq[WorkItem]
     for c in cmds: work.add WorkItem(dep: -1)
     runPool(work, proc (i: int): seq[string] = cmds[i], jobs)

@@ -266,7 +266,7 @@ main :: proc() {
 	tuckˑactorˑPipelineSingleton.dropped = 0
 	tuckˑactorˑPipelineSingleton.configured = false
 	rt.tuckAsyncInit()
-	tuckˑactorˑPipelineSlot = rt.tuckStartActor(drain_tuckˑactorˑPipeline)
+	tuckˑactorˑPipelineSlot = rt.tuckStartActorFrame(drain_tuckˑactorˑPipeline)
 	mainRc := tuckˑfnˑmain()
 	rt.tuckDrainActors()
 	rt.tuckTrackCheck()

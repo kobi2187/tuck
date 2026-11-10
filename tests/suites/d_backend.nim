@@ -613,10 +613,16 @@ fn main() -> int:
   let res = {base: 21} compute
   return res.r
 """
-  t.emitsD "task: a result-bound call spawns into a slot and awaits it",
-           r"rt\.spawnResult\(tuckSlot\d+, &tuckˑtaskˑcompute, 21L\)"
-  t.emitsD "task: the await reads back through the slot",
-           r"= rt\.awaitResult\(tuckSlot\d+\);"
+  if stacklessRun():   # the task is a frame, its result a slot main awaits
+    t.emitsD "task: a result-bound call spawns into a slot and awaits it",
+             r"rt\.tuckSlReady\(&TuckNewˑtuckˑtaskˑcompute\(&tuckSlot\d+, null, 21L\)"
+    t.emitsD "task: the await reads back through the slot",
+             r"= rt\.tuckSlAwaitMain\(&tuckSlot\d+\);"
+  else:
+    t.emitsD "task: a result-bound call spawns into a slot and awaits it",
+             r"rt\.spawnResult\(tuckSlot\d+, &tuckˑtaskˑcompute, 21L\)"
+    t.emitsD "task: the await reads back through the slot",
+             r"= rt\.awaitResult\(tuckSlot\d+\);"
   t.emitsD "task: a program with tasks boots the scheduler",
            r"rt\.tuckAsyncInit\(\);"
   t.emitsD "task: and drives it after main, so spawned work finishes",
