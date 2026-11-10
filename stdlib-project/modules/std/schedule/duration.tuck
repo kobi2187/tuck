@@ -1,0 +1,162 @@
+# std.schedule duration — "1h30m", "250ms", "2d 4h" as milliseconds, and back.
+#
+# A duration is a plain count of milliseconds (`int`). Text is a run of
+# number-and-unit pairs: ms, s, m, h, d, w (a week is seven days, a day 24
+# hours; no months or years, whose length depends on the calendar: that is
+# std.chrono's Period). Spaces between pairs are allowed. Anything else is
+# absent, never a guess: an empty string, a bare number, an unknown unit, a
+# number with no unit or a unit with no number.
+import seq
+import str
+import text
+
+fn byteInt({t: str, index: int}) -> int:
+  let b = {t: t, index: index} byteAt
+  return {value: b} int
+
+# The digit's value at `index`, or -1 for anything else (and past the end).
+fn digitAt({t: str, index: int}) -> int:
+  if index >= {t: t} byteCount:
+    return 0 - 1
+  let v = {t: t, index: index} byteInt
+  if v >= 48 and v <= 57:
+    return v - 48
+  return 0 - 1
+
+fn letterAt({t: str, index: int}) -> bool:
+  if index >= {t: t} byteCount:
+    return false
+  let v = {t: t, index: index} byteInt
+  return v >= 97 and v <= 122
+
+fn spaceAt({t: str, index: int}) -> bool:
+  let v = {t: t, index: index} byteInt
+  return v == 32 or v == 9
+
+fn unitMs({name: str}) -> int:
+  if name == "ms":
+    return 1
+  if name == "s":
+    return 1000
+  if name == "m":
+    return 60000
+  if name == "h":
+    return 3600000
+  if name == "d":
+    return 86400000
+  if name == "w":
+    return 604800000
+  return 0 - 1
+
+# Milliseconds, or absent. A value past what an int holds is absent too.
+fn parseDuration({t: str}) -> int?:
+  let n = {t: t} byteCount
+  var total = 0
+  var i = 0
+  var pairs = 0
+  for i < n:
+    if {t: t, index: i} spaceAt:
+      i = i + 1
+    else:
+      var count = 0
+      var digits = 0
+      for {t: t, index: i} digitAt >= 0:
+        let d = {t: t, index: i} digitAt
+        if count > 900000000000000:
+          return
+        count = count * 10 + d
+        digits = digits + 1
+        i = i + 1
+      if digits == 0:
+        return
+      let from = i
+      for {t: t, index: i} letterAt:
+        i = i + 1
+      let word = {t: t, start: from, stop: i} slice
+      if not word.ok:
+        return
+      let per = {name: word.value} unitMs
+      if per < 0:
+        return
+      if count > 9000000000000000 /i per:
+        return
+      total = total + count * per
+      pairs = pairs + 1
+  if pairs == 0:
+    return
+  return total
+
+# Compact text that parseDuration reads back: "1h30m", "250ms", "0ms".
+fn durationText({ms: int}) -> str:
+  if ms <= 0:
+    return "0ms"
+  var left = ms
+  var out = ""
+  let units: Seq[int] = [604800000, 86400000, 3600000, 60000, 1000, 1]
+  let names: Seq[str] = ["w", "d", "h", "m", "s", "ms"]
+  for k in 0 .. units.len - 1:
+    let per = units[k]
+    if left >= per:
+      let q = left /i per
+      let qs = {value: q} toStr
+      out = out + qs + names[k]
+      left = left - q * per
+  return out
+
+# --- self-check --------------------------------------------------------------
+
+fn checkParse() -> int:
+  let a = {t: "1h30m"} parseDuration
+  if not a.ok:
+    return 1
+  if a.value != 5400000:
+    return 2
+  let b = {t: "250ms"} parseDuration
+  if not b.ok:
+    return 3
+  if b.value != 250:
+    return 3
+  let c = {t: " 2d 4h "} parseDuration
+  if not c.ok:
+    return 4
+  if c.value != 187200000:
+    return 5
+  let d = {t: "1w"} parseDuration
+  if not d.ok:
+    return 6
+  if d.value != 604800000:
+    return 6
+  return 0
+
+fn checkRefused() -> int:
+  let bad: Seq[str] = ["", "  ", "5", "h", "5x", "1h-2m", "1.5h", "99999999999999999999s"]
+  for i in 0 .. bad.len - 1:
+    let r = {t: bad[i]} parseDuration
+    if r.ok:
+      return 10 + i
+  return 0
+
+fn checkText() -> int:
+  if {ms: 5400000} durationText != "1h30m":
+    return 20
+  if {ms: 250} durationText != "250ms":
+    return 21
+  if {ms: 0} durationText != "0ms":
+    return 22
+  if {ms: 90061001} durationText != "1d1h1m1s1ms":
+    return 23
+  let back = {t: "1d1h1m1s1ms"} parseDuration
+  if not back.ok:
+    return 24
+  if back.value != 90061001:
+    return 24
+  return 0
+
+fn main() -> int:
+  let a = checkParse
+  if a != 0:
+    return a
+  let b = checkRefused
+  if b != 0:
+    return b
+  return checkText

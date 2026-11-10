@@ -62,6 +62,69 @@ object Tag:
   fn inspect({self: Tag}) -> str:
     return "Tag(" + self.name + ")"
 
+# --- fixed-precision floats ---------------------------------------------------
+# `fixed(x, 3)` is C's "%.3f": the same text on every backend. The value is
+# scaled by 10^places in one IEEE multiply, split into whole and fraction
+# exactly, and rounded half to even; so the digits are those of the double
+# nearest `x * 10^places`, which can differ from a correctly rounded decimal
+# expansion in the last place for a few values (a double does not hold 0.145
+# exactly either). Places are clamped to 0 .. 15. A magnitude whose scaled value
+# no longer fits an i64 falls back to `toStr`; nan and infinities are "nan",
+# "inf" and "-inf". Negative values keep their sign even when they round to zero,
+# as printf does.
+fn tenPow({places: int}) -> f64:
+  var scale = 1.0
+  for i in 0 .. places - 1:
+    scale = scale * 10.0
+  return scale
+
+fn zeroPadded({digits: str, width: int}) -> str:
+  var out = digits
+  for {t: out} byteCount < width:
+    out = "0" + out
+  return out
+
+fn fixed({x: f64, places: int}) -> str:
+  if x != x:
+    return "nan"
+  if x > 1.7976931348623157e308:
+    return "inf"
+  if x < 0.0 - 1.7976931348623157e308:
+    return "-inf"
+  var p = places
+  if p < 0:
+    p = 0
+  if p > 15:
+    p = 15
+  let negative = x < 0.0
+  var magnitude = x
+  if negative:
+    magnitude = 0.0 - x
+  let scale = {places: p} tenPow
+  let scaled = magnitude * scale
+  if scaled >= 9.0e18:
+    return {value: x} toStr
+  let whole = scaled ~i64
+  let wholeF = whole ~f64
+  let frac = scaled - wholeF
+  var units = whole
+  let odd = whole % 2 == 1
+  if frac > 0.5 or (frac == 0.5 and odd):
+    units = whole + 1
+  let all = {value: units} toStr
+  let padded = {digits: all, width: p + 1} zeroPadded
+  let n = {t: padded} byteCount
+  var text = padded
+  if p > 0:
+    let head = {t: padded, start: 0, stop: n - p} slice
+    let tail = {t: padded, start: n - p, stop: n} slice
+    if head.ok:
+      if tail.ok:
+        text = head.value + "." + tail.value
+  if negative:
+    return "-" + text
+  return text
+
 fn checkPad() -> int:
   if {body: "ab", width: 5, alignRight: false} pad != "ab   ":
     return 1
@@ -90,6 +153,33 @@ fn checkRender() -> int:
     return 8
   return 0
 
+fn checkFixed() -> int:
+  if {x: 3.14159, places: 2} fixed != "3.14":
+    return 10
+  if {x: 2.5, places: 0} fixed != "2":
+    return 11
+  if {x: 3.5, places: 0} fixed != "4":
+    return 12
+  if {x: 0.5, places: 0} fixed != "0":
+    return 13
+  if {x: 0.0, places: 3} fixed != "0.000":
+    return 14
+  if {x: 1234.5678, places: 1} fixed != "1234.6":
+    return 15
+  if {x: 0.0 - 0.16907516382852447, places: 9} fixed != "-0.169075164":
+    return 16
+  if {x: 0.05, places: 3} fixed != "0.050":
+    return 17
+  if {x: 7.0, places: 0} fixed != "7":
+    return 18
+  if {x: 0.0 - 0.0004, places: 2} fixed != "-0.00":
+    return 19
+  if {x: 12.0, places: 20} fixed != "12.000000000000000":
+    return 20
+  if {x: 100000000000000000000.0, places: 2} fixed == "":
+    return 21
+  return 0
+
 fn main() -> int:
   let p = checkPad
   if p != 0:
@@ -97,4 +187,7 @@ fn main() -> int:
   let s = checkStyled
   if s != 0:
     return s
-  return checkRender
+  let r = checkRender
+  if r != 0:
+    return r
+  return checkFixed

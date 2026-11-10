@@ -22,11 +22,18 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (0)
+## A. Open bugs (1)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
+
+- **A116 — an `int` argument into an `i64` parameter passes the checker.**
+  `{n: i} wide` with `i` an `int` loop variable and `wide({n: i64})` checks clean;
+  Nim converts it silently and Odin refuses the emitted call ("Cannot assign
+  value of type 'int' to 'i64'"). Conversions are named in Tuck (`i ^i64`), so the
+  checker should refuse and say so. Found building `core.bigint`. Pin:
+  `known_bugs` "A116: …".
 
 **A48–A51 (issues #129–#132) — found building the property tester and dogfooding the stdlib
 (2026-10-19).** Pins: `known_bugs`, "A48: …" to "A51: …".

@@ -1469,6 +1469,7 @@ proc hasRoom*[T; Cap: static int](mb: var Mailbox[T, Cap]): bool =
 # Imported HERE rather than at the facade below because the blocking externs
 # route through tuck_async.tuckSubmitBlocking — see readLine.
 import std/[os, times, syncio, sysrand, algorithm, osproc]
+from std/nativesockets import getHostname
 import ./tuck_async
 from std/posix import nil
 
@@ -2115,6 +2116,15 @@ proc changeDir*(path: string): tuple[code: int] =
   except OSError:
     (code: -1)
 
+proc cpuCount*(): tuple[cores: int] =
+  (cores: max(1, osproc.countProcessors()))
+
+proc hostName*(): tuple[name: string] =
+  (name: (try: getHostname() except OSError: ""))
+
+proc osName*(): tuple[name: string] =
+  (name: hostOS)
+
 proc exePath*(): tuple[path: string] =
   (path: (try: os.getAppFilename() except OSError: ""))
 
@@ -2181,6 +2191,10 @@ proc getEnv*(name: string): TuckResult[tuple[value: string]] =
 proc exit*(code: int) =
   ## Ends the process with `code` at once.
   quit(code)
+
+proc monoNs*(): tuple[ns: uint64] =
+  ## Monotonic nanoseconds: never steps back, unlike the wall clock.
+  (ns: uint64(getMonoTime().ticks))
 
 proc nowMs*(): tuple[epochMs: uint64] =
   ## Wall-clock time in milliseconds since the Unix epoch.

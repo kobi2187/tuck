@@ -1,0 +1,554 @@
+# core.bigint — arbitrary-precision integers, in Tuck.
+#
+# A BigInt is a sign and a magnitude in base 10^9 limbs, least significant first,
+# with no zero limb at the top (zero is the empty magnitude and never negative). It
+# is one implementation for all three backends, so every result is identical,
+# and values copy like any record. `divmod` truncates toward zero like C, Nim
+# and Odin: the remainder takes the dividend's sign.
+#
+# Speed: schoolbook multiplication and long division, O(n*m). That is right for
+# the thousands of digits a program computes with (factorials, pidigits,
+# money in minor units, RSA-size arithmetic); a host-backed bignum is the
+# answer to millions of digits, and would replace this module's internals
+# without changing its names.
+#
+# Call these qualified when imported beside other modules (`bigint::add`):
+# the verbs are the natural ones, and so are other modules'.
+import seq
+import str
+import text
+import convert
+
+type BigInt:
+  neg: bool
+  mag: Seq[int]
+
+type DivMod:
+  quot: BigInt
+  rem: BigInt
+
+type NatDiv:
+  q: Seq[int]
+  r: Seq[int]
+
+fn limbBase() -> int:
+  return 1000000000
+
+# --- natural numbers: Seq[int] limbs, least significant first -------------------------
+
+fn natTrim({a: Seq[int]}) -> Seq[int]:
+  var n = a.len
+  for n > 0 and a[n - 1] == 0:
+    n = n - 1
+  if n == a.len:
+    return a
+  var out: Seq[int] = []
+  for i in 0 .. n - 1:
+    out = {items: out, value: a[i]} push
+  return out
+
+fn natCmp({a: Seq[int], b: Seq[int]}) -> int:
+  if a.len != b.len:
+    if a.len < b.len:
+      return 0 - 1
+    return 1
+  var i = a.len - 1
+  for i >= 0:
+    if a[i] != b[i]:
+      if a[i] < b[i]:
+        return 0 - 1
+      return 1
+    i = i - 1
+  return 0
+
+fn natAdd({a: Seq[int], b: Seq[int]}) -> Seq[int]:
+  let base = limbBase
+  var out: Seq[int] = []
+  var carry = 0
+  var i = 0
+  for i < a.len or i < b.len or carry > 0:
+    var s = carry
+    if i < a.len:
+      s = s + a[i]
+    if i < b.len:
+      s = s + b[i]
+    if s >= base:
+      out = {items: out, value: s - base} push
+      carry = 1
+    else:
+      out = {items: out, value: s} push
+      carry = 0
+    i = i + 1
+  return out
+
+# a - b, with a >= b.
+fn natSub({a: Seq[int], b: Seq[int]}) -> Seq[int]:
+  let base = limbBase
+  var out: Seq[int] = []
+  var borrow = 0
+  for i in 0 .. a.len - 1:
+    var d = a[i] - borrow
+    if i < b.len:
+      d = d - b[i]
+    if d < 0:
+      d = d + base
+      borrow = 1
+    else:
+      borrow = 0
+    out = {items: out, value: d} push
+  return {a: out} natTrim
+
+# a * m for 0 <= m < base.
+fn natMulSmall({a: Seq[int], m: int}) -> Seq[int]:
+  if m == 0 or a.len == 0:
+    let empty: Seq[int] = []
+    return empty
+  let base = limbBase
+  var out: Seq[int] = []
+  var carry = 0
+  for i in 0 .. a.len - 1:
+    let cur = a[i] * m + carry
+    out = {items: out, value: cur % base} push
+    carry = cur /i base
+  if carry > 0:
+    out = {items: out, value: carry} push
+  return out
+
+fn natMul({a: Seq[int], b: Seq[int]}) -> Seq[int]:
+  if a.len == 0 or b.len == 0:
+    let empty: Seq[int] = []
+    return empty
+  let base = limbBase
+  var res: Seq[int] = []
+  for i in 0 .. a.len + b.len - 1:
+    res = {items: res, value: 0} push
+  for i in 0 .. a.len - 1:
+    var carry = 0
+    for j in 0 .. b.len - 1:
+      let cur = res[i + j] + a[i] * b[j] + carry
+      {items: res, index: i + j, value: cur % base} setAt
+      carry = cur /i base
+    var k = i + b.len
+    for carry > 0:
+      let cur = res[k] + carry
+      {items: res, index: k, value: cur % base} setAt
+      carry = cur /i base
+      k = k + 1
+  return {a: res} natTrim
+
+# a / d and a % d for 0 < d < base.
+fn natDivSmall({a: Seq[int], d: int}) -> NatDiv:
+  let base = limbBase
+  var q: Seq[int] = []
+  var rem = 0
+  var i = a.len - 1
+  for i >= 0:
+    let cur = rem * base + a[i]
+    q = {items: q, value: cur /i d} push
+    rem = cur % d
+    i = i - 1
+  # q was built most significant first
+  var flipped: Seq[int] = []
+  var k = q.len - 1
+  for k >= 0:
+    flipped = {items: flipped, value: q[k]} push
+    k = k - 1
+  let trimmedQ = {a: flipped} natTrim
+  var r: Seq[int] = []
+  if rem > 0:
+    r = {items: r, value: rem} push
+  return {q: trimmedQ, r: r} NatDiv
+
+# Long division by a multi-limb divisor: each quotient limb is found by binary
+# search against the running remainder.
+fn natDivMod({a: Seq[int], b: Seq[int]}) -> NatDiv:
+  if b.len == 1:
+    return {a: a, d: b[0]} natDivSmall
+  let base = limbBase
+  var q: Seq[int] = []
+  var rem: Seq[int] = []
+  var i = a.len - 1
+  for i >= 0:
+    # rem = rem * base + a[i]
+    var shifted: Seq[int] = []
+    shifted = {items: shifted, value: a[i]} push
+    for k in 0 .. rem.len - 1:
+      shifted = {items: shifted, value: rem[k]} push
+    rem = {a: shifted} natTrim
+    var lo = 0
+    var hi = base - 1
+    for lo < hi:
+      let mid = (lo + hi + 1) /i 2
+      let trial = {a: b, m: mid} natMulSmall
+      if {a: trial, b: rem} natCmp <= 0:
+        lo = mid
+      else:
+        hi = mid - 1
+    q = {items: q, value: lo} push
+    if lo > 0:
+      let prod = {a: b, m: lo} natMulSmall
+      rem = {a: rem, b: prod} natSub
+    i = i - 1
+  var flipped: Seq[int] = []
+  var k = q.len - 1
+  for k >= 0:
+    flipped = {items: flipped, value: q[k]} push
+    k = k - 1
+  let trimmedQ = {a: flipped} natTrim
+  return {q: trimmedQ, r: rem} NatDiv
+
+# --- BigInt -----------------------------------------------------------------------
+
+fn make({neg: bool, mag: Seq[int]}) -> BigInt:
+  let m = {a: mag} natTrim
+  if m.len == 0:
+    return {neg: false, mag: m} BigInt
+  return {neg: neg, mag: m} BigInt
+
+fn zero() -> BigInt:
+  let empty: Seq[int] = []
+  return {neg: false, mag: empty} BigInt
+
+fn isZero({x: BigInt}) -> bool:
+  return x.mag.len == 0
+
+# -1, 0 or 1.
+fn sign({x: BigInt}) -> int:
+  if x.mag.len == 0:
+    return 0
+  if x.neg:
+    return 0 - 1
+  return 1
+
+fn negate({x: BigInt}) -> BigInt:
+  return {neg: not x.neg, mag: x.mag} make
+
+fn magnitude({x: BigInt}) -> BigInt:
+  return {neg: false, mag: x.mag} make
+
+fn fromInt({n: i64}) -> BigInt:
+  let base = limbBase
+  let wide = {value: n} int
+  var mag: Seq[int] = []
+  var rest = wide
+  for rest != 0:
+    var limb = rest % base
+    if limb < 0:
+      limb = 0 - limb
+    mag = {items: mag, value: limb} push
+    rest = rest /i base
+  return {neg: wide < 0, mag: mag} make
+
+fn compare({a: BigInt, b: BigInt}) -> int:
+  if a.neg != b.neg:
+    if a.neg:
+      return 0 - 1
+    return 1
+  let c = {a: a.mag, b: b.mag} natCmp
+  if a.neg:
+    return 0 - c
+  return c
+
+fn add({a: BigInt, b: BigInt}) -> BigInt:
+  if a.neg == b.neg:
+    let sum = {a: a.mag, b: b.mag} natAdd
+    return {neg: a.neg, mag: sum} make
+  let c = {a: a.mag, b: b.mag} natCmp
+  if c == 0:
+    return zero
+  if c > 0:
+    let diff = {a: a.mag, b: b.mag} natSub
+    return {neg: a.neg, mag: diff} make
+  let diff = {a: b.mag, b: a.mag} natSub
+  return {neg: b.neg, mag: diff} make
+
+fn sub({a: BigInt, b: BigInt}) -> BigInt:
+  let flipped = {x: b} negate
+  return {a: a, b: flipped} add
+
+fn mul({a: BigInt, b: BigInt}) -> BigInt:
+  let prod = {a: a.mag, b: b.mag} natMul
+  return {neg: a.neg != b.neg, mag: prod} make
+
+# Truncated division: quotient toward zero, remainder with the dividend's sign.
+# Absent when the divisor is zero.
+fn divmod({a: BigInt, b: BigInt}) -> DivMod?:
+  if b.mag.len == 0:
+    return
+  let parts = {a: a.mag, b: b.mag} natDivMod
+  let q = {neg: a.neg != b.neg, mag: parts.q} make
+  let r = {neg: a.neg, mag: parts.r} make
+  return {quot: q, rem: r} DivMod
+
+# a to the power n (n >= 0; a negative n is 1/..., so absent).
+fn pow({a: BigInt, n: int}) -> BigInt?:
+  if n < 0:
+    return
+  var result = {n: 1} fromInt
+  var square = a
+  var e = n
+  for e > 0:
+    if e % 2 == 1:
+      result = {a: result, b: square} mul
+    e = e /i 2
+    if e > 0:
+      square = {a: square, b: square} mul
+  return result
+
+# i64 when it fits, else absent.
+fn toInt({x: BigInt}) -> i64?:
+  if x.mag.len > 3:
+    return
+  let base = limbBase
+  let limit = 9223372036854775807
+  var acc = 0
+  var i = x.mag.len - 1
+  for i >= 0:
+    let limb = x.mag[i]
+    if acc > (limit - limb) /i base:
+      # only -2^63 is left to allow
+      if x.neg and x.mag.len == 3 and x.mag[2] == 9 and x.mag[1] == 223372036 and x.mag[0] == 854775808:
+        return 0 - 9223372036854775807 - 1
+      return
+    acc = acc * base + limb
+    i = i - 1
+  if x.neg:
+    return {value: 0 - acc} i64
+  return {value: acc} i64
+
+# --- text ---------------------------------------------------------------------------
+
+fn limbText({n: int, width: int}) -> str:
+  var s = {value: n} toStr
+  for {t: s} byteCount < width:
+    s = "0" + s
+  return s
+
+fn text({x: BigInt}) -> str:
+  if x.mag.len == 0:
+    return "0"
+  var out = ""
+  var i = x.mag.len - 1
+  for i >= 0:
+    if i == x.mag.len - 1:
+      out = out + {value: x.mag[i]} toStr
+    else:
+      out = out + {n: x.mag[i], width: 9} limbText
+    i = i - 1
+  if x.neg:
+    return "-" + out
+  return out
+
+fn digitAt({t: str, index: int}) -> int:
+  let b = {t: t, index: index} byteAt
+  let v = {value: b} int
+  if v >= 48 and v <= 57:
+    return v - 48
+  return 0 - 1
+
+# "-123", "+5", "000" — decimal digits with an optional sign; anything else is absent.
+fn parse({t: str}) -> BigInt?:
+  let n = {t: t} byteCount
+  var start = 0
+  var neg = false
+  if n > 0:
+    let first = {t: t, index: 0} byteAt
+    let f = {value: first} int
+    if f == 45 or f == 43:
+      neg = f == 45
+      start = 1
+  if start >= n:
+    return
+  for i in start .. n - 1:
+    if {t: t, index: i} digitAt < 0:
+      return
+  var mag: Seq[int] = []
+  var stop = n
+  for stop > start:
+    var from = stop - 9
+    if from < start:
+      from = start
+    var limb = 0
+    for i in from .. stop - 1:
+      limb = limb * 10 + {t: t, index: i} digitAt
+    mag = {items: mag, value: limb} push
+    stop = from
+  return {neg: neg, mag: mag} make
+
+
+# --- self-check --------------------------------------------------------------
+
+type Case:
+  a: str
+  b: str
+  sum: str
+  diff: str
+  prod: str
+  quot: str
+  rem: str
+
+fn cases() -> Seq[Case]:
+  var cases: Seq[Case] = []
+  let c0 = {a: "0", b: "1", sum: "1", diff: "-1", prod: "0", quot: "0", rem: "0"} Case
+  cases = {items: cases, value: c0} push
+  let c1 = {a: "1", b: "1000000000", sum: "1000000001", diff: "-999999999", prod: "1000000000", quot: "0", rem: "1"} Case
+  cases = {items: cases, value: c1} push
+  let c2 = {a: "-1", b: "-9223372036854775808", sum: "-9223372036854775809", diff: "9223372036854775807", prod: "9223372036854775808", quot: "0", rem: "-1"} Case
+  cases = {items: cases, value: c2} push
+  let c3 = {a: "999999999", b: "4085928517108185987576963212575368459320", sum: "4085928517108185987576963212576368459319", diff: "-4085928517108185987576963212574368459321", prod: "4085928513022257470468777224998405246744631540680", quot: "0", rem: "999999999"} Case
+  cases = {items: cases, value: c3} push
+  let c4 = {a: "1000000000", b: "-1005096479407365439548503042802764581428", sum: "-1005096479407365439548503042801764581428", diff: "1005096479407365439548503042803764581428", prod: "-1005096479407365439548503042802764581428000000000", quot: "0", rem: "1000000000"} Case
+  cases = {items: cases, value: c4} push
+  let c5 = {a: "-1000000000", b: "8564671062986572961186235646807418591948", sum: "8564671062986572961186235646806418591948", diff: "-8564671062986572961186235646808418591948", prod: "-8564671062986572961186235646807418591948000000000", quot: "0", rem: "-1000000000"} Case
+  cases = {items: cases, value: c5} push
+  let c6 = {a: "9223372036854775807", b: "2448073489353322416210720973362034096788", sum: "2448073489353322416219944345398888872595", diff: "-2448073489353322416201497601325179320981", prod: "22579492565866931689827208985553795094450314818611478807916", quot: "0", rem: "9223372036854775807"} Case
+  cases = {items: cases, value: c6} push
+  let c7 = {a: "-9223372036854775808", b: "-1", sum: "-9223372036854775809", diff: "-9223372036854775807", prod: "9223372036854775808", quot: "9223372036854775808", rem: "0"} Case
+  cases = {items: cases, value: c7} push
+  let c8 = {a: "1000000000000000000000000000007", b: "-1000000000", sum: "999999999999999999999000000007", diff: "1000000000000000000001000000007", prod: "-1000000000000000000000000000007000000000", quot: "-1000000000000000000000", rem: "7"} Case
+  cases = {items: cases, value: c8} push
+  let c9 = {a: "-10000000000000000000000003", b: "1000000000000000000000000000007", sum: "999990000000000000000000000004", diff: "-1000010000000000000000000000010", prod: "-10000000000000000000000003000070000000000000000000000021", quot: "0", rem: "-10000000000000000000000003"} Case
+  cases = {items: cases, value: c9} push
+  let c10 = {a: "4085928517108185987576963212575368459320", b: "-7775954600960622640946013240605276340272", sum: "-3690026083852436653369050028029907880952", diff: "11861883118068808628522976453180644799592", prod: "-31771994651803612970575723213204430138469823993707240415438316385829148709735040", quot: "0", rem: "4085928517108185987576963212575368459320"} Case
+  cases = {items: cases, value: c10} push
+  let c11 = {a: "-7775954600960622640946013240605276340272", b: "-624864429289148351213870069549276984433", sum: "-8400819030249770992159883310154553324705", diff: "-7151090171671474289732143171055999355839", prod: "4858917433907586770000873587299529148102103606617018407283396374621246554985776", quot: "12", rem: "-277581449490842426379572406013952527076"} Case
+  cases = {items: cases, value: c11} push
+  let c12 = {a: "1198591993576616524201030693818837355000", b: "1618687935496472591768020349945533415085", sum: "2817279929073089115969051043764370770085", diff: "-420095941919856067566989656126696060085", prod: "1940146399585134739369225103781358577832656936598135516164769179577318500175000", quot: "0", rem: "1198591993576616524201030693818837355000"} Case
+  cases = {items: cases, value: c12} push
+  let c13 = {a: "-1005096479407365439548503042802764581428", b: "0", sum: "-1005096479407365439548503042802764581428", diff: "-1005096479407365439548503042802764581428", prod: "0", quot: "", rem: ""} Case
+  cases = {items: cases, value: c13} push
+  let c14 = {a: "-624864429289148351213870069549276984433", b: "999999999", sum: "-624864429289148351213870069548276984434", diff: "-624864429289148351213870069550276984432", prod: "-624864428664283921924721718335406914883723015567", quot: "-624864429914012781127882850677", rem: "-159835110"} Case
+  cases = {items: cases, value: c14} push
+  let c15 = {a: "-8844169526906465013073503645671619153679", b: "9223372036854775807", sum: "-8844169526906465013064280273634764377872", diff: "-8844169526906465013082727017708473929486", prod: "-81573065903672221133800809783098834169931275439526624243953", quot: "-958886781490208532948", rem: "-2410142194706364643"} Case
+  cases = {items: cases, value: c15} push
+  let c16 = {a: "8564671062986572961186235646807418591948", b: "-10000000000000000000000003", sum: "8564671062986562961186235646807418591945", diff: "8564671062986582961186235646807418591951", prod: "-85646710629865729611862382162087374879198883558706940422255775844", quot: "-856467106298657", rem: "2961186233077406099695977"} Case
+  cases = {items: cases, value: c16} push
+  let c17 = {a: "1618687935496472591768020349945533415085", b: "1198591993576616524201030693818837355000", sum: "2817279929073089115969051043764370770085", diff: "420095941919856067566989656126696060085", prod: "1940146399585134739369225103781358577832656936598135516164769179577318500175000", quot: "1", rem: "420095941919856067566989656126696060085"} Case
+  cases = {items: cases, value: c17} push
+  let c18 = {a: "7885328752052190133861028246285604856256", b: "-8844169526906465013073503645671619153679", sum: "-958840774854274879212475399386014297423", diff: "16729498278958655146934531891957224009935", prod: "-69739184258539364573769429451788252899645374334087045350663568561999267168565824", quot: "0", rem: "7885328752052190133861028246285604856256"} Case
+  cases = {items: cases, value: c18} push
+  let c19 = {a: "2448073489353322416210720973362034096788", b: "7885328752052190133861028246285604856256", sum: "10333402241405512550071749219647638953044", diff: "-5437255262698867717650307272923570759468", prod: "19303864272734484418383493386111165003565700306405111101956754027108907531305728", quot: "0", rem: "2448073489353322416210720973362034096788"} Case
+  cases = {items: cases, value: c19} push
+  return cases
+
+fn checkCase({c: Case}) -> int:
+  let a = {t: c.a} parse
+  let b = {t: c.b} parse
+  if not a.ok:
+    return 1
+  if not b.ok:
+    return 1
+  let s = {a: a.value, b: b.value} add
+  if {x: s} text != c.sum:
+    return 2
+  let d = {a: a.value, b: b.value} sub
+  if {x: d} text != c.diff:
+    return 3
+  let p = {a: a.value, b: b.value} mul
+  if {x: p} text != c.prod:
+    return 4
+  let dm = {a: a.value, b: b.value} divmod
+  if c.quot == "":
+    if dm.ok:
+      return 5
+    return 0
+  if not dm.ok:
+    return 6
+  if {x: dm.value.quot} text != c.quot:
+    return 7
+  if {x: dm.value.rem} text != c.rem:
+    return 8
+  # a == q*b + r
+  let qb = {a: dm.value.quot, b: b.value} mul
+  let back = {a: qb, b: dm.value.rem} add
+  if {x: back} text != c.a:
+    return 9
+  return 0
+
+fn checkVectors() -> int:
+  let all = cases
+  for i in 0 .. all.len - 1:
+    let r = {c: all[i]} checkCase
+    if r != 0:
+      return 100 * (i + 1) + r
+  return 0
+
+fn checkSmall() -> int:
+  let big = {t: "123456789012345678901234567890"} parse
+  if not big.ok:
+    return 1
+  if {x: big.value} text != "123456789012345678901234567890":
+    return 2
+  let bad: Seq[str] = ["", "-", "+", "12a", "1 2", "--1", "1.5"]
+  for i in 0 .. bad.len - 1:
+    let r = {t: bad[i]} parse
+    if r.ok:
+      return 10 + i
+  let z = {t: "-000"} parse
+  if not z.ok:
+    return 20
+  if not ({x: z.value} isZero):
+    return 20
+  if {x: z.value} text != "0":
+    return 21
+  return 0
+
+fn checkInts() -> int:
+  let min = {n: 0 - 9223372036854775807 - 1} fromInt
+  if {x: min} text != "-9223372036854775808":
+    return 30
+  let back = {x: min} toInt
+  if not back.ok:
+    return 31
+  if back.value != 0 - 9223372036854775807 - 1:
+    return 31
+  let max = {n: 9223372036854775807} fromInt
+  let one = {n: 1} fromInt
+  let over = {a: max, b: one} add
+  let tooBig = {x: over} toInt
+  if tooBig.ok:
+    return 32
+  let m5 = {n: 0 - 5} fromInt
+  if {x: m5} sign != 0 - 1:
+    return 33
+  let three = {n: 3} fromInt
+  if {a: m5, b: three} compare != 0 - 1:
+    return 34
+  return 0
+
+fn checkPow() -> int:
+  let two = {n: 2} fromInt
+  let p = {a: two, n: 100} pow
+  if not p.ok:
+    return 40
+  if {x: p.value} text != "1267650600228229401496703205376":
+    return 41
+  let m3 = {n: 0 - 3} fromInt
+  let q = {a: m3, n: 41} pow
+  if not q.ok:
+    return 42
+  if {x: q.value} text != "-36472996377170786403":
+    return 43
+  let neg = {a: two, n: 0 - 1} pow
+  if neg.ok:
+    return 44
+  var f = {n: 1} fromInt
+  for i in 1 .. 30:
+    let wide = i ^i64
+    let step = {n: wide} fromInt
+    f = {a: f, b: step} mul
+  if {x: f} text != "265252859812191058636308480000000":
+    return 45
+  return 0
+
+fn main() -> int:
+  let a = checkVectors
+  if a != 0:
+    return a
+  let b = checkSmall
+  if b != 0:
+    return b
+  let c = checkInts
+  if c != 0:
+    return c
+  return checkPow

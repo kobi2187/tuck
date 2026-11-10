@@ -1,0 +1,117 @@
+# alloc.bitset — a fixed-size set of small integers, one bit each.
+#
+# 64 members to a word, so a million flags are 125 KB: sieves, visited marks,
+# permission masks. A member outside 0 .. size-1 is ignored by `add`/`remove`
+# and absent for `has`. Set algebra needs equal sizes (the result has the
+# smaller one's).
+import bits
+import seq
+
+type Bitset:
+  words: Seq[u64]
+  size: int
+
+fn bitset({n: int}) -> Bitset:
+  var words: Seq[u64] = []
+  let count = (n + 63) /i 64
+  for i in 0 .. count - 1:
+    words = {items: words, value: 0} push
+  return {words: words, size: n} Bitset
+
+fn inRange({b: Bitset, i: int}) -> bool:
+  return i >= 0 and i < b.size
+
+fn testBit({b: Bitset, i: int}) -> bool:
+  if not ({b: b, i: i} inRange):
+    return false
+  let w = b.words[i /i 64]
+  let shifted = {a: w, by: i % 64} shiftRight
+  let bit = {a: shifted, b: 1} bitAnd
+  return bit == 1
+
+fn setBit({b: Bitset, i: int}) -> Bitset:
+  if not ({b: b, i: i} inRange):
+    return b
+  var words = b.words
+  let idx = i /i 64
+  let one = {value: 1} u64
+  let mask = {a: one, by: i % 64} shiftLeft
+  let merged = {a: words[idx], b: mask} bitOr
+  {items: words, index: idx, value: merged} setAt
+  return {words: words, size: b.size} Bitset
+
+fn clearBit({b: Bitset, i: int}) -> Bitset:
+  if not ({b: b, i: i} inRange):
+    return b
+  var words = b.words
+  let idx = i /i 64
+  let one = {value: 1} u64
+  let mask = {a: one, by: i % 64} shiftLeft
+  let inverse = {a: mask} bitNot
+  let cleared = {a: words[idx], b: inverse} bitAnd
+  {items: words, index: idx, value: cleared} setAt
+  return {words: words, size: b.size} Bitset
+
+# How many members are set.
+fn bitCount({b: Bitset}) -> int:
+  var total = 0
+  for i in 0 .. b.words.len - 1:
+    total = total + {a: b.words[i]} popCount
+  return total
+
+fn smaller({a: int, b: int}) -> int:
+  if a < b:
+    return a
+  return b
+
+fn bitUnion({a: Bitset, b: Bitset}) -> Bitset:
+  let n = {a: a.size, b: b.size} smaller
+  let out = {n: n} bitset
+  var words = out.words
+  for i in 0 .. words.len - 1:
+    let merged = {a: a.words[i], b: b.words[i]} bitOr
+    {items: words, index: i, value: merged} setAt
+  return {words: words, size: n} Bitset
+
+fn bitIntersect({a: Bitset, b: Bitset}) -> Bitset:
+  let n = {a: a.size, b: b.size} smaller
+  let out = {n: n} bitset
+  var words = out.words
+  for i in 0 .. words.len - 1:
+    let both = {a: a.words[i], b: b.words[i]} bitAnd
+    {items: words, index: i, value: both} setAt
+  return {words: words, size: n} Bitset
+
+# --- self-check --------------------------------------------------------------
+
+fn main() -> int:
+  var s = {n: 200} bitset
+  s = {b: s, i: 3} setBit
+  s = {b: s, i: 64} setBit
+  s = {b: s, i: 199} setBit
+  s = {b: s, i: 999} setBit
+  if not ({b: s, i: 64} testBit):
+    return 1
+  if {b: s, i: 65} testBit:
+    return 2
+  if {b: s, i: 999} testBit:
+    return 3
+  if {b: s} bitCount != 3:
+    return 4
+  s = {b: s, i: 64} clearBit
+  if {b: s, i: 64} testBit:
+    return 5
+  if {b: s} bitCount != 2:
+    return 6
+  var t = {n: 200} bitset
+  t = {b: t, i: 3} setBit
+  t = {b: t, i: 7} setBit
+  let u = {a: s, b: t} bitUnion
+  if {b: u} bitCount != 3:
+    return 7
+  let x = {a: s, b: t} bitIntersect
+  if {b: x} bitCount != 1:
+    return 8
+  if not ({b: x, i: 3} testBit):
+    return 9
+  return 0

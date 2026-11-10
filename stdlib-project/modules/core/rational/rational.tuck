@@ -1,0 +1,269 @@
+# core.rational — exact fractions over core.bigint.
+#
+# A Rational is always in lowest terms with a positive denominator, so `==` on
+# the fields is equality of the numbers, and nothing overflows: the parts are
+# BigInts. A zero denominator is not a Rational: `make` and `div` answer absent.
+# `decimal` writes the exact decimal expansion to a number of places (rounded half
+# away from zero), the honest way to show 1/3.
+#
+# bigint's verbs (`add`, `mul`, `compare`...) are named like these; this module
+# qualifies its calls (`bigint::add`), and so should a caller that imports both.
+import seq
+import str
+import text
+import bigint
+
+type Rational:
+  num: BigInt
+  den: BigInt
+
+fn gcd({a: BigInt, b: BigInt}) -> BigInt:
+  var x = {x: a} magnitude
+  var y = {x: b} magnitude
+  for not ({x: y} isZero):
+    let qr = {a: x, b: y} divmod
+    if qr.ok:
+      x = y
+      y = qr.value.rem
+    else:
+      y = {n: 0} fromInt
+  return x
+
+# The fraction n/d in lowest terms; absent when d is zero.
+fn make({num: BigInt, den: BigInt}) -> Rational?:
+  if {x: den} isZero:
+    return
+  var n = num
+  var d = den
+  if {x: d} sign < 0:
+    n = {x: n} negate
+    d = {x: d} negate
+  let g = {a: n, b: d} gcd
+  let one = {n: 1} fromInt
+  if {a: g, b: one} bigint::compare > 0:
+    let qn = {a: n, b: g} divmod
+    let qd = {a: d, b: g} divmod
+    if qn.ok:
+      if qd.ok:
+        return {num: qn.value.quot, den: qd.value.quot} Rational
+  return {num: n, den: d} Rational
+
+fn fromInts({n: i64, d: i64}) -> Rational?:
+  let a = {n: n} fromInt
+  let b = {n: d} fromInt
+  return {num: a, den: b} make
+
+fn whole({n: i64}) -> Rational:
+  let top = {n: n} fromInt
+  let bottom = {n: 1} fromInt
+  return {num: top, den: bottom} Rational
+
+fn isInteger({r: Rational}) -> bool:
+  let one = {n: 1} fromInt
+  return {a: r.den, b: one} bigint::compare == 0
+
+fn negated({r: Rational}) -> Rational:
+  let top = {x: r.num} negate
+  return {num: top, den: r.den} Rational
+
+fn plus({a: Rational, b: Rational}) -> Rational:
+  let left = {a: a.num, b: b.den} bigint::mul
+  let right = {a: b.num, b: a.den} bigint::mul
+  let top = {a: left, b: right} bigint::add
+  let bottom = {a: a.den, b: b.den} bigint::mul
+  let made = {num: top, den: bottom} make
+  if made.ok:
+    return made.value
+  return a
+
+fn minus({a: Rational, b: Rational}) -> Rational:
+  let flipped = {r: b} negated
+  return {a: a, b: flipped} plus
+
+fn times({a: Rational, b: Rational}) -> Rational:
+  let top = {a: a.num, b: b.num} bigint::mul
+  let bottom = {a: a.den, b: b.den} bigint::mul
+  let made = {num: top, den: bottom} make
+  if made.ok:
+    return made.value
+  return a
+
+# a / b; absent when b is zero.
+fn over({a: Rational, b: Rational}) -> Rational?:
+  let top = {a: a.num, b: b.den} bigint::mul
+  let bottom = {a: a.den, b: b.num} bigint::mul
+  return {num: top, den: bottom} make
+
+# -1, 0 or 1.
+fn cmp({a: Rational, b: Rational}) -> int:
+  let left = {a: a.num, b: b.den} bigint::mul
+  let right = {a: b.num, b: a.den} bigint::mul
+  return {a: left, b: right} bigint::compare
+
+fn fraction({r: Rational}) -> str:
+  if {r: r} isInteger:
+    return {x: r.num} bigint::text
+  let n = {x: r.num} bigint::text
+  let d = {x: r.den} bigint::text
+  return n + "/" + d
+
+# "3/4", "-7", "10/5" (lowest terms on the way in); absent for anything else or a
+# zero denominator.
+fn parse({t: str}) -> Rational?:
+  let parts = {t: t, at: "/"} split
+  if parts.len == 1:
+    let n = {t: parts[0]} bigint::parse
+    if not n.ok:
+      return
+    let one = {n: 1} fromInt
+    return {num: n.value, den: one} make
+  if parts.len == 2:
+    let n = {t: parts[0]} bigint::parse
+    if not n.ok:
+      return
+    let d = {t: parts[1]} bigint::parse
+    if not d.ok:
+      return
+    return {num: n.value, den: d.value} make
+  return
+
+# The exact decimal expansion to `places` digits, rounded half away from zero:
+# 1/3 to 4 places is "0.3333", 2/3 is "0.6667", -1/8 to 2 places is "-0.13".
+fn decimal({r: Rational, places: int}) -> str:
+  var p = places
+  if p < 0:
+    p = 0
+  let ten = {n: 10} fromInt
+  let scale = {a: ten, n: p} pow
+  if not scale.ok:
+    return ""
+  let absNum = {x: r.num} magnitude
+  let scaled = {a: absNum, b: scale.value} bigint::mul
+  let qr = {a: scaled, b: r.den} divmod
+  if not qr.ok:
+    return ""
+  var units = qr.value.quot
+  let two = {n: 2} fromInt
+  let twice = {a: qr.value.rem, b: two} bigint::mul
+  if {a: twice, b: r.den} bigint::compare >= 0:
+    let one = {n: 1} fromInt
+    units = {a: units, b: one} bigint::add
+  var digits = {x: units} bigint::text
+  for {t: digits} byteCount < p + 1:
+    digits = "0" + digits
+  let n = {t: digits} byteCount
+  var out = digits
+  if p > 0:
+    let head = {t: digits, start: 0, stop: n - p} slice
+    let tail = {t: digits, start: n - p, stop: n} slice
+    if head.ok:
+      if tail.ok:
+        out = head.value + "." + tail.value
+  if {x: r.num} sign < 0:
+    return "-" + out
+  return out
+
+# --- self-check --------------------------------------------------------------
+
+fn frac({n: i64, d: i64}) -> Rational:
+  let made = {n: n, d: d} fromInts
+  if made.ok:
+    return made.value
+  return {n: 0} whole
+
+fn checkNormal() -> int:
+  let half = {n: 2, d: 4} frac
+  if {r: half} fraction != "1/2":
+    return 1
+  let neg = {n: 3, d: 0 - 6} frac
+  if {r: neg} fraction != "-1/2":
+    return 2
+  let seven = {n: 14, d: 2} frac
+  if {r: seven} fraction != "7":
+    return 3
+  if not ({r: seven} isInteger):
+    return 4
+  let zero = {n: 0, d: 5} frac
+  if {r: zero} fraction != "0":
+    return 5
+  let bad = {n: 1, d: 0} fromInts
+  if bad.ok:
+    return 6
+  return 0
+
+fn checkArithmetic() -> int:
+  let a = {n: 1, d: 3} frac
+  let b = {n: 1, d: 6} frac
+  let sum = {a: a, b: b} plus
+  if {r: sum} fraction != "1/2":
+    return 10
+  let diff = {a: a, b: b} minus
+  if {r: diff} fraction != "1/6":
+    return 11
+  let prod = {a: a, b: b} times
+  if {r: prod} fraction != "1/18":
+    return 12
+  let quo = {a: a, b: b} over
+  if not quo.ok:
+    return 13
+  if {r: quo.value} fraction != "2":
+    return 13
+  let zero = {n: 0, d: 1} frac
+  let dz = {a: a, b: zero} over
+  if dz.ok:
+    return 14
+  if {a: a, b: b} cmp != 1:
+    return 15
+  if {a: b, b: a} cmp != 0 - 1:
+    return 16
+  let third = {n: 2, d: 6} frac
+  if {a: a, b: third} cmp != 0:
+    return 17
+  # 1/10 + 2/10 is exactly 3/10, which floats cannot say
+  let tenth = {n: 1, d: 10} frac
+  let fifth = {n: 1, d: 5} frac
+  let s = {a: tenth, b: fifth} plus
+  if {r: s} fraction != "3/10":
+    return 18
+  return 0
+
+fn checkText() -> int:
+  let third = {n: 1, d: 3} frac
+  if {r: third, places: 4} decimal != "0.3333":
+    return 20
+  let two3 = {n: 2, d: 3} frac
+  if {r: two3, places: 4} decimal != "0.6667":
+    return 21
+  let eighth = {n: 0 - 1, d: 8} frac
+  if {r: eighth, places: 2} decimal != "-0.13":
+    return 22
+  let five = {n: 5, d: 1} frac
+  if {r: five, places: 0} decimal != "5":
+    return 23
+  if {r: five, places: 2} decimal != "5.00":
+    return 24
+  let p = {t: "-9/12"} parse
+  if not p.ok:
+    return 25
+  if {r: p.value} fraction != "-3/4":
+    return 25
+  let q = {t: "42"} parse
+  if not q.ok:
+    return 26
+  if {r: q.value} fraction != "42":
+    return 26
+  let bad: Seq[str] = ["", "1/0", "a/b", "1/2/3", "/"]
+  for i in 0 .. bad.len - 1:
+    let x = {t: bad[i]} parse
+    if x.ok:
+      return 30 + i
+  return 0
+
+fn main() -> int:
+  let a = checkNormal
+  if a != 0:
+    return a
+  let b = checkArithmetic
+  if b != 0:
+    return b
+  return checkText

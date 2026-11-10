@@ -414,9 +414,28 @@ proc lexDigits(L: var Lexer, val: var string, digits: set[char],
       val.add(L.peek())
       L.advance()
 
+proc hasExponent(L: Lexer): bool =
+  ## `e`/`E` that starts an exponent: followed by a digit, or by a sign and a
+  ## digit. A lone `e` after a number stays an identifier (`5e` is a call of `e`).
+  if L.peek() notin {'e', 'E'}: return false
+  if L.peek(1) in '0'..'9': return true
+  L.peek(1) in {'+', '-'} and L.peek(2) in '0'..'9'
+
+proc lexExponent(L: var Lexer, val: var string, startLine, startCol: int) =
+  ## `e+00`, `E-5`, `e3`: the mantissa becomes a float whatever it was (`1e9`
+  ## is `1000000000.0`), as in every language that has the form.
+  val.add('e')
+  L.advance()
+  if L.peek() in {'+', '-'}:
+    val.add(L.peek())
+    L.advance()
+  var exp = ""
+  L.lexDigits(exp, {'0'..'9'}, startLine, startCol)
+  val.add(exp)
+
 proc lexNumber*(L: var Lexer) =
-  ## An integer (decimal or `0x` hex) or a float (`digits.digits`; there is no
-  ## exponent form). `_` separators are dropped from the value.
+  ## An integer (decimal or `0x` hex) or a float (`digits.digits`, with an
+  ## optional exponent: `1.5e3`, `2.0e-05`, `6.02E23`, `1e9`). `_` separators are dropped from the value.
   let startLine = L.line
   let startCol = L.column
   var val = ""
@@ -427,7 +446,9 @@ proc lexNumber*(L: var Lexer) =
     L.pendingTokens.add(Token(kind: tkIntLit, value: "0x" & val, line: startLine, column: startCol))
     return
   L.lexDigits(val, {'0'..'9'}, startLine, startCol)
+  var isFloat = false
   if L.peek() == '.' and L.peek(1) in '0'..'9':
+    isFloat = true
     val.add('.')
     L.advance()
     var frac = ""
@@ -435,9 +456,11 @@ proc lexNumber*(L: var Lexer) =
     val.add(frac)
     if L.peek() == '.':
       L.reportError("Broken numeric literal: multiple decimal points.", startLine, startCol)
-    L.pendingTokens.add(Token(kind: tkFloatLit, value: val, line: startLine, column: startCol))
-  else:
-    L.pendingTokens.add(Token(kind: tkIntLit, value: val, line: startLine, column: startCol))
+  if L.hasExponent():
+    isFloat = true
+    L.lexExponent(val, startLine, startCol)
+  L.pendingTokens.add(Token(kind: if isFloat: tkFloatLit else: tkIntLit,
+                            value: val, line: startLine, column: startCol))
 
 proc lexIdent*(L: var Lexer) =
   ## An identifier or keyword: the longest run of letters, digits and `_`,

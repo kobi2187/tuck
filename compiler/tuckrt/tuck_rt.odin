@@ -1844,6 +1844,18 @@ PathValue :: struct {
 	path: string,
 }
 
+CoresValue :: struct {
+	cores: int,
+}
+
+NameValue :: struct {
+	name: string,
+}
+
+NsValue :: struct {
+	ns: u64,
+}
+
 NowMs :: struct {
 	epochMs: u64,
 }
@@ -2322,6 +2334,8 @@ foreign import tuck_posix_c "system:c"
 foreign tuck_posix_c {
 	popen :: proc(command: cstring, mode: cstring) -> ^libc.FILE ---
 	pclose :: proc(stream: ^libc.FILE) -> i32 ---
+	gethostname :: proc(name: [^]u8, len: uint) -> i32 ---
+	sysconf :: proc(name: i32) -> i64 ---
 }
 
 // Runs `line` through the shell (popen) and answers its stdout and exit status:
@@ -2522,6 +2536,27 @@ changeDir :: proc(path: string) -> ProcCode {
 	return ProcCode{code = int(chdir(p))}
 }
 
+cpuCount :: proc() -> CoresValue {
+	// _SC_NPROCESSORS_ONLN: 84 on Linux, 58 on Darwin and the BSDs.
+	when ODIN_OS == .Linux { name :: 84 } else { name :: 58 }
+	return CoresValue{cores = max(int(sysconf(name)), 1)}
+}
+
+hostName :: proc() -> NameValue {
+	buf: [256]u8
+	if gethostname(&buf[0], len(buf)) != 0 do return NameValue{name = strings.clone("")}
+	return NameValue{name = strings.clone(string(cstring(&buf[0])))}
+}
+
+osName :: proc() -> NameValue {
+	// The names Nim's hostOS uses, so a program answers the same everywhere.
+	when ODIN_OS == .Linux { return NameValue{name = strings.clone("linux")} }
+	else when ODIN_OS == .Darwin { return NameValue{name = strings.clone("macosx")} }
+	else when ODIN_OS == .Windows { return NameValue{name = strings.clone("windows")} }
+	else when ODIN_OS == .FreeBSD { return NameValue{name = strings.clone("freebsd")} }
+	else { return NameValue{name = strings.clone("unknown")} }
+}
+
 exePath :: proc() -> PathValue {
 	buf: [4096]u8
 	n := readlink("/proc/self/exe", &buf[0], len(buf))
@@ -2604,6 +2639,10 @@ osSeed :: proc() -> OsSeed {
 	buf: [8]u8
 	crypto.rand_bytes(buf[:])
 	return OsSeed{seed = (^u64)(&buf[0])^}
+}
+
+monoNs :: proc() -> NsValue {
+	return NsValue{ns = u64(time.tick_now()._nsec)}
 }
 
 nowMs :: proc() -> NowMs {

@@ -1,0 +1,106 @@
+# std.checksum — CRC-32 and Adler-32: cheap integrity checks for files and
+# frames, not security (std.crypto has the hashes for that).
+#
+# CRC-32 is the IEEE one (the polynomial gzip, zip, PNG and Ethernet use):
+# `crc32` of "123456789" is 0xCBF43926. Adler-32 is zlib's. Both take bytes;
+# the `...Text` forms take a str's bytes. `crc32Update` continues a running
+# value over a second chunk, so a large input need not be held whole.
+import bits
+import seq
+import str
+
+# Reflected polynomial 0xEDB88320, one table entry at a time.
+fn crcEntry({n: int}) -> u64:
+  var c = {value: n} u64
+  for k in 0 .. 7:
+    let low = {a: c, b: 1} bitAnd
+    let shifted = {a: c, by: 1} shiftRight
+    if low == 1:
+      c = {a: shifted, b: 3988292384} bitXor
+    else:
+      c = shifted
+  return c
+
+fn crcTable() -> Seq[u64]:
+  var out: Seq[u64] = []
+  for n in 0 .. 255:
+    let e = {n: n} crcEntry
+    out = {items: out, value: e} push
+  return out
+
+# Continue a CRC: start from 0 for a new one, or pass the previous result.
+fn crc32Update({crc: u64, bytes: Seq[u8]}) -> u64:
+  let table = crcTable
+  var c = {a: crc, b: 4294967295} bitXor
+  for i in 0 .. bytes.len - 1:
+    let b = bytes[i]
+    let byte = {value: b} u64
+    let mixed = {a: c, b: byte} bitXor
+    let index = {a: mixed, b: 255} bitAnd
+    let slot = {value: index} int
+    let entry = table[slot]
+    let rest = {a: c, by: 8} shiftRight
+    c = {a: entry, b: rest} bitXor
+  return {a: c, b: 4294967295} bitXor
+
+fn crc32({bytes: Seq[u8]}) -> u64:
+  return {crc: 0, bytes: bytes} crc32Update
+
+fn adler32({bytes: Seq[u8]}) -> u64:
+  var a = 1
+  var b = 0
+  for i in 0 .. bytes.len - 1:
+    let v = bytes[i]
+    a = (a + {value: v} int) % 65521
+    b = (b + a) % 65521
+  let high = {value: b} u64
+  let low = {value: a} u64
+  let shifted = {a: high, by: 16} shiftLeft
+  return {a: shifted, b: low} bitOr
+
+fn textBytes({t: str}) -> Seq[u8]:
+  var out: Seq[u8] = []
+  for i in 0 .. {t: t} byteCount - 1:
+    let b = {t: t, index: i} byteAt
+    out = {items: out, value: b} push
+  return out
+
+fn crc32Text({t: str}) -> u64:
+  let bytes = {t: t} textBytes
+  return {bytes: bytes} crc32
+
+fn adler32Text({t: str}) -> u64:
+  let bytes = {t: t} textBytes
+  return {bytes: bytes} adler32
+
+# --- self-check --------------------------------------------------------------
+
+fn checkCrc() -> int:
+  if {t: "123456789"} crc32Text != 3421780262:
+    return 1
+  if {t: ""} crc32Text != 0:
+    return 2
+  if {t: "The quick brown fox jumps over the lazy dog"} crc32Text != 1095738169:
+    return 3
+  let whole = {t: "hello world"} textBytes
+  let a = {t: "hello "} textBytes
+  let b = {t: "world"} textBytes
+  let first = {crc: 0, bytes: a} crc32Update
+  let both = {crc: first, bytes: b} crc32Update
+  let direct = {bytes: whole} crc32
+  if both != direct:
+    return 4
+  return 0
+
+fn checkAdler() -> int:
+  if {t: "Wikipedia"} adler32Text != 300286872:
+    return 10
+  if {t: ""} adler32Text != 1:
+    return 11
+  return 0
+
+fn main() -> int:
+  let a = checkCrc
+  if a != 0:
+    return a
+  return checkAdler
