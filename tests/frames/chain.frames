@@ -6,3 +6,5 @@ frame task run  (chain:21)
   22:12  yield, then call outer
   23:19  yield, then call quiet
 native [io], reached from a root: quiet
+--frames:static would refuse:
+  chain:7: in inner, 'sleepMs' waits inside the runtime, on a helper stack

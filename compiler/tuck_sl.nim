@@ -28,6 +28,8 @@ type
     stage*: TuckStageFn
     caller*: ptr TuckFrameHdr
     next*: ptr TuckFrameHdr
+    embedded*: bool    ## built inside another frame or on main's stack
+                       ## (#219): finishing it frees nothing
 
   TuckSlot*[T] = object
     ## A task's result. The task writes `value` and sets `done`; a frame
@@ -151,13 +153,15 @@ proc tuckSlRet*[F; T](f: ptr F, v: sink T): TuckHop {.inline.} =
   mixin tuckSlExit
   tuckSlFinish(f.tuckRes, f.tuckDest, v)
   tuckSlExit(f)              # its armed `defer`s (emitted per frame type)
-  result = tuckSlReturnHop(cast[ptr TuckFrameHdr](f))
-  tuckSlFree(f)
+  let h = cast[ptr TuckFrameHdr](f)
+  result = tuckSlReturnHop(h)
+  if not h.embedded: tuckSlFree(f)
 
 proc tuckSlRetVoid*[F](f: ptr F): TuckHop {.inline.} =
   ## A void frame's `return` (or its end).
   mixin tuckSlExit
   tuckSlFinishVoid(f.tuckRes)
   tuckSlExit(f)
-  result = tuckSlReturnHop(cast[ptr TuckFrameHdr](f))
-  tuckSlFree(f)
+  let h = cast[ptr TuckFrameHdr](f)
+  result = tuckSlReturnHop(h)
+  if not h.embedded: tuckSlFree(f)

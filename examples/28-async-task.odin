@@ -25,8 +25,9 @@ TuckFˑtuckˑtaskˑcompute :: struct {
 	tuckˑvˑb: TRec_v(int),
 }
 
-TuckNewˑtuckˑtaskˑcompute :: proc(tuckRes: ^rt.TuckSlot(TRec_r(int)), tuckDest: ^TRec_r(int), base: int) -> ^TuckFˑtuckˑtaskˑcompute {
-	f := new(TuckFˑtuckˑtaskˑcompute)
+TuckNewˑtuckˑtaskˑcompute :: proc(tuckAt: ^TuckFˑtuckˑtaskˑcompute, tuckRes: ^rt.TuckSlot(TRec_r(int)), tuckDest: ^TRec_r(int), base: int) -> ^TuckFˑtuckˑtaskˑcompute {
+	f := tuckAt
+	if f == nil { f = new(TuckFˑtuckˑtaskˑcompute) } else { f^ = {}; f.tuckHdr.embedded = true }
 	f.tuckHdr.stage = TuckSˑtuckˑtaskˑcomputeˑ0
 	f.tuckRes = tuckRes
 	f.tuckDest = tuckDest
@@ -38,7 +39,7 @@ TuckRetˑtuckˑtaskˑcompute :: proc(tuckF: ^TuckFˑtuckˑtaskˑcompute, v: TRec
 	rt.tuckSlFinish(tuckF.tuckRes, tuckF.tuckDest, v)
 	TuckExitˑtuckˑtaskˑcompute(tuckF)
 	h := rt.tuckSlReturnHop(&tuckF.tuckHdr)
-	free(tuckF)
+	if !tuckF.tuckHdr.embedded do free(tuckF)
 	return h
 }
 
@@ -68,7 +69,8 @@ TuckExitˑtuckˑtaskˑcompute :: proc(tuckF: ^TuckFˑtuckˑtaskˑcompute) {
 
 tuckˑfnˑmain :: proc () -> int {
   slot0: rt.TuckSlot(TRec_r(int))
-  rt.tuckSlReady(&TuckNewˑtuckˑtaskˑcompute(&slot0, nil, 21).tuckHdr)
+  slot0F: TuckFˑtuckˑtaskˑcompute
+  rt.tuckSlReady(&TuckNewˑtuckˑtaskˑcompute(&slot0F, &slot0, nil, 21).tuckHdr)
   tuckˑvˑres := rt.tuckSlAwaitMain(&slot0)
   return tuckˑvˑres.r
 }

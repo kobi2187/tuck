@@ -25,6 +25,7 @@ struct TuckFrameHdr
     TuckStageFn stage;
     TuckFrameHdr* caller;
     TuckFrameHdr* next;
+    bool embedded;   /// built inside another frame or on main's stack (#219)
 }
 
 struct TuckSlot(T)

@@ -24,9 +24,11 @@ struct TuckFˑtuckˑtaskˑcompute
     TRec_v!(long) tuckˑvˑb;
 }
 
-TuckFˑtuckˑtaskˑcompute* TuckNewˑtuckˑtaskˑcompute(rt.TuckSlot!(TRec_r!(long))* tuckRes, TRec_r!(long)* tuckDest, long base)
+TuckFˑtuckˑtaskˑcompute* TuckNewˑtuckˑtaskˑcompute(TuckFˑtuckˑtaskˑcompute* tuckAt, rt.TuckSlot!(TRec_r!(long))* tuckRes, TRec_r!(long)* tuckDest, long base)
 {
-    auto f = new TuckFˑtuckˑtaskˑcompute;
+    auto f = tuckAt;
+    if (f is null) f = new TuckFˑtuckˑtaskˑcompute;
+    else { *f = TuckFˑtuckˑtaskˑcompute.init; f.tuckHdr.embedded = true; }
     f.tuckHdr.stage = &TuckSˑtuckˑtaskˑcomputeˑ0;
     f.tuckRes = tuckRes;
     f.tuckDest = tuckDest;
@@ -79,7 +81,8 @@ void TuckExitˑtuckˑtaskˑcompute(TuckFˑtuckˑtaskˑcompute* tuckF)
 
 long tuckˑfnˑmain() {
     rt.TuckSlot!(TRec_r!(long)) tuckSlot1;
-    rt.tuckSlReady(&TuckNewˑtuckˑtaskˑcompute(&tuckSlot1, null, 21L).tuckHdr);
+    TuckFˑtuckˑtaskˑcompute tuckSlot1F;
+    rt.tuckSlReady(&TuckNewˑtuckˑtaskˑcompute(&tuckSlot1F, &tuckSlot1, null, 21L).tuckHdr);
     TRec_r!(long) tuckˑvˑres = rt.tuckSlAwaitMain(&tuckSlot1);
     return tuckˑvˑres.r;
 }

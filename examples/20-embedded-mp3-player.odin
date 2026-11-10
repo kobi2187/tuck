@@ -152,8 +152,9 @@ TuckFˑtuckˑtaskˑstreamReader :: struct {
 	chunks: [dynamic]u32,
 }
 
-TuckNewˑtuckˑtaskˑstreamReader :: proc(tuckRes: ^rt.TuckSlot(rt.TuckResult(rt.TuckUnit)), tuckDest: ^rt.TuckResult(rt.TuckUnit), streamId: u8, chunks: [dynamic]u32) -> ^TuckFˑtuckˑtaskˑstreamReader {
-	f := new(TuckFˑtuckˑtaskˑstreamReader)
+TuckNewˑtuckˑtaskˑstreamReader :: proc(tuckAt: ^TuckFˑtuckˑtaskˑstreamReader, tuckRes: ^rt.TuckSlot(rt.TuckResult(rt.TuckUnit)), tuckDest: ^rt.TuckResult(rt.TuckUnit), streamId: u8, chunks: [dynamic]u32) -> ^TuckFˑtuckˑtaskˑstreamReader {
+	f := tuckAt
+	if f == nil { f = new(TuckFˑtuckˑtaskˑstreamReader) } else { f^ = {}; f.tuckHdr.embedded = true }
 	f.tuckHdr.stage = TuckSˑtuckˑtaskˑstreamReaderˑ0
 	f.tuckRes = tuckRes
 	f.tuckDest = tuckDest
@@ -166,7 +167,7 @@ TuckRetˑtuckˑtaskˑstreamReader :: proc(tuckF: ^TuckFˑtuckˑtaskˑstreamReade
 	rt.tuckSlFinish(tuckF.tuckRes, tuckF.tuckDest, v)
 	TuckExitˑtuckˑtaskˑstreamReader(tuckF)
 	h := rt.tuckSlReturnHop(&tuckF.tuckHdr)
-	free(tuckF)
+	if !tuckF.tuckHdr.embedded do free(tuckF)
 	return h
 }
 

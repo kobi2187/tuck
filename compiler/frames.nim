@@ -78,6 +78,11 @@ type
                               ## the actor loop calls them, no frame needed
     helpers*: seq[string]    ## their labels, for the report
     frameActors*: seq[string]  ## their names, for the report
+    sccOf*: Table[NodeId, int] ## each body decl's call-graph component: a
+                               ## frame call inside one keeps the heap (#219)
+    recursiveIds*: HashSet[NodeId] ## the decls on a call cycle
+    heapReasons*: seq[string] ## why a frame (or a stack) would still be
+                              ## allocated: what --frames:static refuses
     pureActorIds*: HashSet[NodeId] ## actors whose handlers and select arms
                                    ## wait only on mailboxes (sends, actor
                                    ## waits): under stackless and
@@ -250,6 +255,94 @@ proc callees(a: Analysis, i: int): seq[int] =
   for (_, callee) in a.calls[i]:
     if callee != nil and a.byDecl.hasKey(callee): result.add a.byDecl[callee]
 
+# --- recursion: strongly connected components of the call graph ---------------
+# Phase 6 (#219) embeds a callee's frame in its caller's (a union of what it
+# calls), which is only a finite type where the call graph has no cycle. A
+# call between two bodies of one component (or a body and itself) keeps the
+# heap; every other call embeds.
+
+type Tarjan = object
+  index, low, comp: Table[int, int]
+  stack: seq[int]
+  onStack: HashSet[int]
+  counter, ncomp: int
+
+proc pop(t: var Tarjan, v: int) =
+  ## v is a component's root: everything above it on the stack is that component.
+  while true:
+    let w = t.stack.pop()
+    t.onStack.excl w
+    t.comp[w] = t.ncomp
+    if w == v: break
+  inc t.ncomp
+
+proc strong(a: Analysis, t: var Tarjan, v: int) =
+  t.index[v] = t.counter
+  t.low[v] = t.counter
+  inc t.counter
+  t.stack.add v
+  t.onStack.incl v
+  for w in a.callees(v):
+    if w notin t.index:
+      a.strong(t, w)
+      t.low[v] = min(t.low[v], t.low[w])
+    elif w in t.onStack:
+      t.low[v] = min(t.low[v], t.index[w])
+  if t.low[v] == t.index[v]: t.pop(v)
+
+proc selfCalls(a: Analysis, i: int): bool = i in a.callees(i)
+
+proc components(a: Analysis, plan: var FramePlan) =
+  ## Each frame decl's component, and the ones that recurse.
+  var t: Tarjan
+  for i in 0 ..< a.bodies.len:
+    if i notin t.index: a.strong(t, i)
+  var size: Table[int, int]
+  for i in 0 ..< a.bodies.len: size.mgetOrPut(t.comp[i], 0) += 1
+  for i, b in a.bodies:
+    if b.decl == nil or not b.decl.id.isSet: continue
+    plan.sccOf[b.decl.id] = t.comp[i]
+    if size[t.comp[i]] > 1 or a.selfCalls(i): plan.recursiveIds.incl b.decl.id
+
+# --- what --frames:static refuses (#219) ---------------------------------------
+
+proc where(b: BodyRef, n: Expr): string =
+  b.module & ":" & $n.span.line & ": in " & b.label & ", "
+
+proc waitsOnStack(a: Analysis, i: int, c: Expr, callee: Decl): bool =
+  ## Does this call, in a task or frame fn, wait inside the runtime (and so
+  ## borrow a helper stack)?
+  callee.isIoExtern or (callee.isUnseen and a.res.isAsync(c)) or
+    (callee.isGeneric and a.calleeBodyPauses(callee))
+
+proc stackSites(a: Analysis, i: int): seq[string] =
+  let b = a.bodies[i]
+  for (c, callee) in a.calls[i]:
+    if a.waitsOnStack(i, c, callee):
+      result.add b.where(c) & "'" & callKey(c.callee) & "' waits inside the runtime, on a helper stack"
+  for n in b.body.nodes:
+    if a.nodeSite(n).len > 0:
+      result.add b.where(n) & "a " & ($n.kind)[3 .. ^1].toLowerAscii &
+                 " may wait inside the runtime, on a helper stack"
+
+proc spawnSites(a: Analysis, i: int): seq[string] =
+  let b = a.bodies[i]
+  for (c, callee) in a.calls[i]:
+    if callee != nil and callee.kind == dkTask and c notin a.awaited[i]:
+      result.add b.where(c) & "task '" & callKey(c.callee) &
+                 "' is spawned, not awaited: its frame comes from the heap"
+
+proc staticReasons(a: Analysis, plan: var FramePlan, reach: HashSet[int]) =
+  ## Every frame that would come from the heap, and every stack a frame
+  ## would borrow: what --frames:static refuses, each with its place.
+  for i, b in a.bodies:
+    plan.heapReasons.add a.spawnSites(i)
+    if i notin reach or b.decl == nil or b.decl.id notin plan.frameIds: continue
+    if b.role in {frTask, frFn}: plan.heapReasons.add a.stackSites(i)
+    if b.decl.id in plan.recursiveIds:
+      plan.heapReasons.add b.module & ":" & $b.line & ": " & b.label &
+        " is on a call cycle: its frame comes from the heap"
+
 proc reachable(a: Analysis): HashSet[int] =
   var work = a.roots()
   while work.len > 0:
@@ -314,6 +407,8 @@ proc planFrames*(res: Resolution, prog: seq[LoadedModule]): FramePlan =
   for i in 0 ..< a.bodies.len:
     if i in reach: a.place(result, i)
   result.pureActorIds = a.pureActors()
+  a.components(result)
+  a.staticReasons(result, reach)
   for _, d in a.actors:
     if d.id in result.pureActorIds: result.frameActors.add d.name
   result.frameActors.sort()
@@ -350,5 +445,11 @@ proc render*(plan: FramePlan): string =
   if plan.frameActors.len > 0:
     result.add "actors that run as frames under --actors:single (wait only on mailboxes): " &
                plan.frameActors.join(", ") & "\n"
+  if plan.frames.len > 0:
+    if plan.heapReasons.len == 0:
+      result.add "--frames:static: every frame is embedded (no heap, no helper stack)\n"
+    else:
+      result.add "--frames:static would refuse:\n"
+      for r in plan.heapReasons: result.add "  " & r & "\n"
   if plan.frames.len == 0 and plan.nativeRoots.len == 0:
     result.add "no frames: nothing runs on the scheduler\n"

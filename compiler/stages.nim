@@ -86,6 +86,9 @@ type
     slot*: string           ## tkAwait: the frame field holding the slot
     leaves*: seq[int]       ## tkGoto: scope ids it leaves, innermost first
     loop*: int              ## tkLoopEnter / tkLoopNext: index into loops
+    embed*: bool            ## tkCall / tkAwait: the callee's frame is built
+                            ## inside this frame's `tuckSub` (#219), not on
+                            ## the heap
     stmt*: Expr             ## tkOnStack: the statement that may park
     site*: int              ## tkOnStack: its number, naming its helper
 
@@ -107,11 +110,14 @@ type
                             ## exit: a branch's jump out, or the frame's end.
     fields*: seq[FrameField] ## the locals that live in the frame (params not included)
     scopeDefers*: seq[seq[int]] ## per scope id: the defers it arms, in order
+    subs*: seq[Decl]        ## the callee frames embedded in this one (one
+                            ## at a time: `tuckSub` is their union)
     loops*: seq[Loop]
     jumps*: Table[Expr, Jump] ## by node identity: what to print instead
     error*: string          ## non-empty: this body uses a shape not built yet
 
   Splitter = object
+    decl: Decl              ## the frame fn or task being split
     res: Resolution
     m: Module
     isTask: bool
@@ -258,12 +264,14 @@ proc emitYields(sp: var Splitter, cur: var int, n: int) =
   for _ in 0 ..< n: cur = sp.endWith(cur, Term(kind: tkYield))
 
 proc callTerm(sp: var Splitter, s: Expr, c: Expr, callee: Decl, target: Expr): Term =
+  let embed = embeds(sp.decl, callee)
+  if embed and callee notin sp.plan.subs: sp.plan.subs.add callee
   if callee.kind == dkTask:
     let slot = "tuckSlot" & $sp.plan.fields.len
     sp.addField(s, slot, callee.fnReturnType, isSlot = true)
-    Term(kind: tkAwait, call: c, callee: callee, target: target, slot: slot)
+    Term(kind: tkAwait, call: c, callee: callee, target: target, slot: slot, embed: embed)
   else:
-    Term(kind: tkCall, call: c, callee: callee, target: target)
+    Term(kind: tkCall, call: c, callee: callee, target: target, embed: embed)
 
 proc onStack(sp: var Splitter, cur: var int, s: Expr) =
   ## A statement that may park, run whole on a helper stack. It must not
@@ -563,7 +571,7 @@ proc splitList(sp: var Splitter, stmts: seq[Expr], cur: var int) =
 
 proc planStages*(res: Resolution, m: Module, d: Decl): StagePlan =
   ## The stages of frame fn or task `d` (its lowered, mangled copy).
-  var sp = Splitter(res: res, m: m, isTask: d.kind == dkTask)
+  var sp = Splitter(decl: d, res: res, m: m, isTask: d.kind == dkTask)
   var cur = sp.newStage()
   let body = d.fnBody
   if body != nil:

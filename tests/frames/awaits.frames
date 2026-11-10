@@ -4,3 +4,5 @@ frame task ping  (awaits:5)
   never pauses (a task still needs its frame)
 frame task parent  (awaits:8)
   10:18  await task leaf
+--frames:static would refuse:
+  awaits:9: in parent, task 'ping' is spawned, not awaited: its frame comes from the heap

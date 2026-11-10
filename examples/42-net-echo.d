@@ -64,9 +64,11 @@ struct TuckFˑtuckˑtaskˑserve
     bool tuckDefer0;
 }
 
-TuckFˑtuckˑtaskˑserve* TuckNewˑtuckˑtaskˑserve(rt.TuckSlot!(bool)* tuckRes, bool* tuckDest, long lfd)
+TuckFˑtuckˑtaskˑserve* TuckNewˑtuckˑtaskˑserve(TuckFˑtuckˑtaskˑserve* tuckAt, rt.TuckSlot!(bool)* tuckRes, bool* tuckDest, long lfd)
 {
-    auto f = new TuckFˑtuckˑtaskˑserve;
+    auto f = tuckAt;
+    if (f is null) f = new TuckFˑtuckˑtaskˑserve;
+    else { *f = TuckFˑtuckˑtaskˑserve.init; f.tuckHdr.embedded = true; }
     f.tuckHdr.stage = &TuckSˑtuckˑtaskˑserveˑ0;
     f.tuckRes = tuckRes;
     f.tuckDest = tuckDest;
@@ -263,9 +265,11 @@ struct TuckFˑtuckˑtaskˑclient
     bool tuckDefer0;
 }
 
-TuckFˑtuckˑtaskˑclient* TuckNewˑtuckˑtaskˑclient(rt.TuckSlot!(bool)* tuckRes, bool* tuckDest, long port)
+TuckFˑtuckˑtaskˑclient* TuckNewˑtuckˑtaskˑclient(TuckFˑtuckˑtaskˑclient* tuckAt, rt.TuckSlot!(bool)* tuckRes, bool* tuckDest, long port)
 {
-    auto f = new TuckFˑtuckˑtaskˑclient;
+    auto f = tuckAt;
+    if (f is null) f = new TuckFˑtuckˑtaskˑclient;
+    else { *f = TuckFˑtuckˑtaskˑclient.init; f.tuckHdr.embedded = true; }
     f.tuckHdr.stage = &TuckSˑtuckˑtaskˑclientˑ0;
     f.tuckRes = tuckRes;
     f.tuckDest = tuckDest;
@@ -566,8 +570,8 @@ bool tuckˑfnˑdone() {
 long tuckˑfnˑmain() {
     rt.TuckResult!(tuckˑmodˑshapes_42_net_echo.TRec_fd!(long)) tuckˑvˑl = tuckˑmodˑnet.listen(34593L);
     if ((tuckˑvˑl.status == rt.TuckStatus.Ok)) {
-        rt.tuckSlReady(&TuckNewˑtuckˑtaskˑserve(null, null, tuckˑvˑl.value.fd).tuckHdr);
-        rt.tuckSlReady(&TuckNewˑtuckˑtaskˑclient(null, null, 34593L).tuckHdr);
+        rt.tuckSlReady(&TuckNewˑtuckˑtaskˑserve(null, null, null, tuckˑvˑl.value.fd).tuckHdr);
+        rt.tuckSlReady(&TuckNewˑtuckˑtaskˑclient(null, null, null, 34593L).tuckHdr);
         rt.tuckWaitOn(tuckˑactorˑResultSlot, &tuckˑfnˑdone);
         tuckˑmodˑnet.close(tuckˑvˑl.value.fd);
         tuckˑmodˑscheduler.stop();

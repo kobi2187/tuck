@@ -25,8 +25,9 @@ TuckFˑtuckˑtaskˑfetchFeed :: struct {
 	tuckDefer0: bool,
 }
 
-TuckNewˑtuckˑtaskˑfetchFeed :: proc(tuckRes: ^rt.TuckSlot(rt.TuckResult(tuckˑmodˑshapes_14_task.TRec_feed(tuckˑtypeˑFeed))), tuckDest: ^rt.TuckResult(tuckˑmodˑshapes_14_task.TRec_feed(tuckˑtypeˑFeed)), url: string) -> ^TuckFˑtuckˑtaskˑfetchFeed {
-	f := new(TuckFˑtuckˑtaskˑfetchFeed)
+TuckNewˑtuckˑtaskˑfetchFeed :: proc(tuckAt: ^TuckFˑtuckˑtaskˑfetchFeed, tuckRes: ^rt.TuckSlot(rt.TuckResult(tuckˑmodˑshapes_14_task.TRec_feed(tuckˑtypeˑFeed))), tuckDest: ^rt.TuckResult(tuckˑmodˑshapes_14_task.TRec_feed(tuckˑtypeˑFeed)), url: string) -> ^TuckFˑtuckˑtaskˑfetchFeed {
+	f := tuckAt
+	if f == nil { f = new(TuckFˑtuckˑtaskˑfetchFeed) } else { f^ = {}; f.tuckHdr.embedded = true }
 	f.tuckHdr.stage = TuckSˑtuckˑtaskˑfetchFeedˑ0
 	f.tuckRes = tuckRes
 	f.tuckDest = tuckDest
@@ -38,7 +39,7 @@ TuckRetˑtuckˑtaskˑfetchFeed :: proc(tuckF: ^TuckFˑtuckˑtaskˑfetchFeed, v: 
 	rt.tuckSlFinish(tuckF.tuckRes, tuckF.tuckDest, v)
 	TuckExitˑtuckˑtaskˑfetchFeed(tuckF)
 	h := rt.tuckSlReturnHop(&tuckF.tuckHdr)
-	free(tuckF)
+	if !tuckF.tuckHdr.embedded do free(tuckF)
 	return h
 }
 

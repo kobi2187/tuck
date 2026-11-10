@@ -35,9 +35,25 @@ proc resultType(ctx: var OdinCodegenCtx, d: Decl): string =
 
 # --- the frame type, constructor, return -----------------------------------------
 
+proc subTypes(ctx: var OdinCodegenCtx, plan: StagePlan): seq[string] =
+  ## The frame types this frame embeds (#219), qualified as its calls name them.
+  for st in plan.stages:
+    let t = st.term
+    if t.kind in {tkCall, tkAwait} and t.embed:
+      let q = stacklessHelperOdin(ctx.genOdinExpr(t.call.callee), "TuckFˑ")
+      if q notin result: result.add q
+
+proc genSubUnion(ctx: var OdinCodegenCtx, d: Decl, plan: StagePlan): string =
+  ## `tuckSub`'s type: a raw union of every frame this one embeds.
+  let subs = ctx.subTypes(plan)
+  if subs.len == 0: return ""
+  result = "TuckUˑ" & d.name & " :: struct #raw_union {\n"
+  for i, q in subs: result.add "\ts" & $i & ": " & q & ",\n"
+  result.add "}\n\n"
+
 proc genFrameType(ctx: var OdinCodegenCtx, d: Decl, plan: StagePlan): string =
   let r = ctx.resultType(d)
-  result = frameType(d.name) & " :: struct {\n\ttuckHdr: rt.TuckFrameHdr,\n" &
+  result = ctx.genSubUnion(d, plan) & frameType(d.name) & " :: struct {\n\ttuckHdr: rt.TuckFrameHdr,\n" &
            "\ttuckRes: ^rt.TuckSlot(" & r & "),\n\ttuckDest: ^" & r & ",\n"
   for p in d.fnParams: result.add "\t" & p.name & ": " & ctx.odinType(p.typ) & ",\n"
   for f in plan.fields:
@@ -47,14 +63,19 @@ proc genFrameType(ctx: var OdinCodegenCtx, d: Decl, plan: StagePlan): string =
   for lp in plan.loops:
     if lp.kind == lkSeq: result.add "\t" & lp.varName & ": " & ctx.odinType(lp.elemType) & ",\n"
   for k in 0 ..< plan.defers.len: result.add "\ttuckDefer" & $k & ": bool,\n"
+  if plan.subs.len > 0: result.add "\ttuckSub: TuckUˑ" & d.name & ",\n"
   result.add "}\n"
 
 proc genFrameNew(ctx: var OdinCodegenCtx, d: Decl): string =
   let r = ctx.resultType(d)
-  var params = @["tuckRes: ^rt.TuckSlot(" & r & ")", "tuckDest: ^" & r]
+  var params = @["tuckAt: ^" & frameType(d.name), "tuckRes: ^rt.TuckSlot(" & r & ")",
+                 "tuckDest: ^" & r]
   for p in d.fnParams: params.add p.name & ": " & ctx.odinType(p.typ)
+  # `tuckAt`: storage the caller provides (its `tuckSub`, or main's stack),
+  # or nil for the heap (#219).
   result = "TuckNewˑ" & d.name & " :: proc(" & params.join(", ") & ") -> ^" &
-           frameType(d.name) & " {\n\tf := new(" & frameType(d.name) & ")\n" &
+           frameType(d.name) & " {\n\tf := tuckAt\n" &
+           "\tif f == nil { f = new(" & frameType(d.name) & ") } else { f^ = {}; f.tuckHdr.embedded = true }\n" &
            "\tf.tuckHdr.stage = " & stageName(d.name, 0) & "\n" &
            "\tf.tuckRes = tuckRes\n\tf.tuckDest = tuckDest\n"
   for p in d.fnParams: result.add "\tf." & p.name & " = " & p.name & "\n"
@@ -69,7 +90,7 @@ proc genRet(ctx: var OdinCodegenCtx, d: Decl): string =
   result.add(if d.isVoid: "\tif tuckF.tuckRes != nil do rt.tuckSlComplete(tuckF.tuckRes, true)\n"
              else: "\trt.tuckSlFinish(tuckF.tuckRes, tuckF.tuckDest, v)\n")
   result.add "\t" & exitProc(d.name) & "(tuckF)\n\th := rt.tuckSlReturnHop(&tuckF.tuckHdr)\n" &
-             "\tfree(tuckF)\n\treturn h\n}\n"
+             "\tif !tuckF.tuckHdr.embedded do free(tuckF)\n\treturn h\n}\n"
 
 # --- terminators -----------------------------------------------------------------
 
@@ -86,11 +107,16 @@ proc jumpCode(d: Decl, plan: StagePlan, j: Jump): string =
   if calls.len == 0: return jump(d, j.target)
   "{ " & calls.join("; ") & "; " & jump(d, j.target) & " }"
 
+proc atOdin(calleeStr: string, t: Term): string =
+  ## Where the callee's frame is built: inside this frame (#219), or nil.
+  if t.embed: "(^" & stacklessHelperOdin(calleeStr, "TuckFˑ") & ")(&tuckF.tuckSub)"
+  else: "nil"
+
 proc genCall(ctx: var OdinCodegenCtx, d: Decl, t: Term): string =
   let calleeStr = ctx.genOdinExpr(t.call.callee)
   let dest = if t.target == nil: "nil" else: "&" & ctx.genOdinExpr(t.target)
   let args = ctx.genCallArgs(t.call)
-  "  tuckC := " & stacklessHelperOdin(calleeStr, "TuckNewˑ") & "(nil, " & dest &
+  "  tuckC := " & stacklessHelperOdin(calleeStr, "TuckNewˑ") & "(" & atOdin(calleeStr, t) & ", nil, " & dest &
     (if args.len > 0: ", " & args.join(", ") else: "") & ")\n" &
   "  tuckC.tuckHdr.caller = &tuckF.tuckHdr\n" &
   "  tuckF.tuckHdr.stage = " & stageName(d.name, t.next) & "\n" &
@@ -100,7 +126,7 @@ proc genAwait(ctx: var OdinCodegenCtx, d: Decl, t: Term): string =
   let calleeStr = ctx.genOdinExpr(t.call.callee)
   let args = ctx.genCallArgs(t.call)
   "  tuckF." & t.slot & ".done = false\n" &
-  "  rt.tuckSlReady(&" & stacklessHelperOdin(calleeStr, "TuckNewˑ") & "(&tuckF." & t.slot &
+  "  rt.tuckSlReady(&" & stacklessHelperOdin(calleeStr, "TuckNewˑ") & "(" & atOdin(calleeStr, t) & ", &tuckF." & t.slot &
     ", nil" & (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr)\n" &
   "  return rt.tuckSlAwait(&tuckF.tuckHdr, &tuckF." & t.slot & ", " &
     stageName(d.name, t.next) & ")\n"

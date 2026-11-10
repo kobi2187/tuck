@@ -25,9 +25,11 @@ struct TuckFˑtuckˑtaskˑfetchFeed
     bool tuckDefer0;
 }
 
-TuckFˑtuckˑtaskˑfetchFeed* TuckNewˑtuckˑtaskˑfetchFeed(rt.TuckSlot!(rt.TuckResult!(tuckˑmodˑshapes_14_task.TRec_feed!(tuckˑtypeˑFeed)))* tuckRes, rt.TuckResult!(tuckˑmodˑshapes_14_task.TRec_feed!(tuckˑtypeˑFeed))* tuckDest, string url)
+TuckFˑtuckˑtaskˑfetchFeed* TuckNewˑtuckˑtaskˑfetchFeed(TuckFˑtuckˑtaskˑfetchFeed* tuckAt, rt.TuckSlot!(rt.TuckResult!(tuckˑmodˑshapes_14_task.TRec_feed!(tuckˑtypeˑFeed)))* tuckRes, rt.TuckResult!(tuckˑmodˑshapes_14_task.TRec_feed!(tuckˑtypeˑFeed))* tuckDest, string url)
 {
-    auto f = new TuckFˑtuckˑtaskˑfetchFeed;
+    auto f = tuckAt;
+    if (f is null) f = new TuckFˑtuckˑtaskˑfetchFeed;
+    else { *f = TuckFˑtuckˑtaskˑfetchFeed.init; f.tuckHdr.embedded = true; }
     f.tuckHdr.stage = &TuckSˑtuckˑtaskˑfetchFeedˑ0;
     f.tuckRes = tuckRes;
     f.tuckDest = tuckDest;

@@ -615,7 +615,7 @@ fn main() -> int:
 """
   if stacklessRun():   # the task is a frame, its result a slot main awaits
     t.emitsD "task: a result-bound call spawns into a slot and awaits it",
-             r"rt\.tuckSlReady\(&TuckNewˑtuckˑtaskˑcompute\(&tuckSlot\d+, null, 21L\)"
+             r"rt\.tuckSlReady\(&TuckNewˑtuckˑtaskˑcompute\(&tuckSlot\d+F, &tuckSlot\d+, null, 21L\)"
     t.emitsD "task: the await reads back through the slot",
              r"= rt\.tuckSlAwaitMain\(&tuckSlot\d+\);"
   else:

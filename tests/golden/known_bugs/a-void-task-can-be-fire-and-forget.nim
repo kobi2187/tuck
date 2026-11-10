@@ -43,8 +43,12 @@ proc TuckSˑtuckˑtaskˑfireˑ0(env: pointer): TuckHop {.nimcall.}
 proc TuckIOˑtuckˑtaskˑfireˑ0(env: pointer) {.nimcall.}
 proc TuckSˑtuckˑtaskˑfireˑ1(env: pointer): TuckHop {.nimcall.}
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑfire)
-proc TuckNewˑtuckˑtaskˑfire*(tuckRes: ptr TuckSlot[bool], tuckDest: ptr bool): ptr TuckFˑtuckˑtaskˑfire =
-  result = tuckSlAlloc(TuckFˑtuckˑtaskˑfire)
+proc TuckNewˑtuckˑtaskˑfire*(tuckAt: ptr TuckFˑtuckˑtaskˑfire, tuckRes: ptr TuckSlot[bool], tuckDest: ptr bool): ptr TuckFˑtuckˑtaskˑfire =
+  if tuckAt == nil: result = tuckSlAlloc(TuckFˑtuckˑtaskˑfire)
+  else:
+    zeroMem(tuckAt, sizeof(TuckFˑtuckˑtaskˑfire))
+    result = tuckAt
+    result.tuckHdr.embedded = true
   result.tuckHdr.stage = TuckSˑtuckˑtaskˑfireˑ0
   result.tuckRes = tuckRes
   result.tuckDest = tuckDest
@@ -71,7 +75,7 @@ proc tuckˑfnˑdone*(): bool =
   return (tuckˑactorˑSinkSingleton.hits == 5)
 
 proc tuckˑfnˑmain*(): int =
-  tuckSlReady(addr TuckNewˑtuckˑtaskˑfire(nil, nil).tuckHdr)
+  tuckSlReady(addr TuckNewˑtuckˑtaskˑfire(nil, nil, nil).tuckHdr)
   tuckWaitOn(tuckˑactorˑSinkSlot, tuckˑfnˑdone)
   tuckˑmodˑscheduler.stop()
   return tuckˑactorˑSinkSingleton.hits

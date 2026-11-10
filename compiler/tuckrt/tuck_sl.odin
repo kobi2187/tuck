@@ -20,9 +20,10 @@ TuckHop :: struct {
 }
 
 TuckFrameHdr :: struct {
-	stage:  TuckStageFn,
-	caller: ^TuckFrameHdr,
-	next:   ^TuckFrameHdr,
+	stage:    TuckStageFn,
+	caller:   ^TuckFrameHdr,
+	next:     ^TuckFrameHdr,
+	embedded: bool, // built inside another frame or on main's stack (#219): never freed
 }
 
 TuckSlot :: struct($T: typeid) {

@@ -65,8 +65,12 @@ proc TuckSˑtuckˑtaskˑserveˑ10(env: pointer): TuckHop {.nimcall.}
 proc TuckSˑtuckˑtaskˑserveˑ11(env: pointer): TuckHop {.nimcall.}
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑserve)
 proc TuckXˑtuckˑtaskˑserveˑ1(tuckF: ptr TuckFˑtuckˑtaskˑserve)
-proc TuckNewˑtuckˑtaskˑserve*(tuckRes: ptr TuckSlot[bool], tuckDest: ptr bool, lfd: int): ptr TuckFˑtuckˑtaskˑserve =
-  result = tuckSlAlloc(TuckFˑtuckˑtaskˑserve)
+proc TuckNewˑtuckˑtaskˑserve*(tuckAt: ptr TuckFˑtuckˑtaskˑserve, tuckRes: ptr TuckSlot[bool], tuckDest: ptr bool, lfd: int): ptr TuckFˑtuckˑtaskˑserve =
+  if tuckAt == nil: result = tuckSlAlloc(TuckFˑtuckˑtaskˑserve)
+  else:
+    zeroMem(tuckAt, sizeof(TuckFˑtuckˑtaskˑserve))
+    result = tuckAt
+    result.tuckHdr.embedded = true
   result.tuckHdr.stage = TuckSˑtuckˑtaskˑserveˑ0
   result.tuckRes = tuckRes
   result.tuckDest = tuckDest
@@ -249,8 +253,12 @@ proc TuckSˑtuckˑtaskˑclientˑ19(env: pointer): TuckHop {.nimcall.}
 proc TuckSˑtuckˑtaskˑclientˑ20(env: pointer): TuckHop {.nimcall.}
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑclient)
 proc TuckXˑtuckˑtaskˑclientˑ1(tuckF: ptr TuckFˑtuckˑtaskˑclient)
-proc TuckNewˑtuckˑtaskˑclient*(tuckRes: ptr TuckSlot[bool], tuckDest: ptr bool, port: int): ptr TuckFˑtuckˑtaskˑclient =
-  result = tuckSlAlloc(TuckFˑtuckˑtaskˑclient)
+proc TuckNewˑtuckˑtaskˑclient*(tuckAt: ptr TuckFˑtuckˑtaskˑclient, tuckRes: ptr TuckSlot[bool], tuckDest: ptr bool, port: int): ptr TuckFˑtuckˑtaskˑclient =
+  if tuckAt == nil: result = tuckSlAlloc(TuckFˑtuckˑtaskˑclient)
+  else:
+    zeroMem(tuckAt, sizeof(TuckFˑtuckˑtaskˑclient))
+    result = tuckAt
+    result.tuckHdr.embedded = true
   result.tuckHdr.stage = TuckSˑtuckˑtaskˑclientˑ0
   result.tuckRes = tuckRes
   result.tuckDest = tuckDest
@@ -491,8 +499,8 @@ proc tuckˑfnˑmain*(): int =
   var tuckˑvˑl = tuckˑmodˑnet.listen(34593)
   if tuckˑvˑl.ok:
     if true:
-      tuckSlReady(addr TuckNewˑtuckˑtaskˑserve(nil, nil, tuckˑvˑl.value.fd).tuckHdr)
-      tuckSlReady(addr TuckNewˑtuckˑtaskˑclient(nil, nil, 34593).tuckHdr)
+      tuckSlReady(addr TuckNewˑtuckˑtaskˑserve(nil, nil, nil, tuckˑvˑl.value.fd).tuckHdr)
+      tuckSlReady(addr TuckNewˑtuckˑtaskˑclient(nil, nil, nil, 34593).tuckHdr)
       tuckWaitOn(tuckˑactorˑResultSlot, tuckˑfnˑdone)
       tuckˑmodˑnet.close(tuckˑvˑl.value.fd)
       tuckˑmodˑscheduler.stop()

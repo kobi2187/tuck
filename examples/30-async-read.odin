@@ -20,8 +20,9 @@ TuckFˑtuckˑtaskˑreadOrGiveUp :: struct {
 	tuckˑvˑcode: int,
 }
 
-TuckNewˑtuckˑtaskˑreadOrGiveUp :: proc(tuckRes: ^rt.TuckSlot(tuckˑmodˑshapes_30_async_read.TRec_code(int)), tuckDest: ^tuckˑmodˑshapes_30_async_read.TRec_code(int), fd: int) -> ^TuckFˑtuckˑtaskˑreadOrGiveUp {
-	f := new(TuckFˑtuckˑtaskˑreadOrGiveUp)
+TuckNewˑtuckˑtaskˑreadOrGiveUp :: proc(tuckAt: ^TuckFˑtuckˑtaskˑreadOrGiveUp, tuckRes: ^rt.TuckSlot(tuckˑmodˑshapes_30_async_read.TRec_code(int)), tuckDest: ^tuckˑmodˑshapes_30_async_read.TRec_code(int), fd: int) -> ^TuckFˑtuckˑtaskˑreadOrGiveUp {
+	f := tuckAt
+	if f == nil { f = new(TuckFˑtuckˑtaskˑreadOrGiveUp) } else { f^ = {}; f.tuckHdr.embedded = true }
 	f.tuckHdr.stage = TuckSˑtuckˑtaskˑreadOrGiveUpˑ0
 	f.tuckRes = tuckRes
 	f.tuckDest = tuckDest
@@ -33,7 +34,7 @@ TuckRetˑtuckˑtaskˑreadOrGiveUp :: proc(tuckF: ^TuckFˑtuckˑtaskˑreadOrGiveU
 	rt.tuckSlFinish(tuckF.tuckRes, tuckF.tuckDest, v)
 	TuckExitˑtuckˑtaskˑreadOrGiveUp(tuckF)
 	h := rt.tuckSlReturnHop(&tuckF.tuckHdr)
-	free(tuckF)
+	if !tuckF.tuckHdr.embedded do free(tuckF)
 	return h
 }
 
@@ -67,7 +68,8 @@ TuckExitˑtuckˑtaskˑreadOrGiveUp :: proc(tuckF: ^TuckFˑtuckˑtaskˑreadOrGive
 tuckˑfnˑmain :: proc () -> int {
   tuckˑvˑsrc := openSource(5)
   slot0: rt.TuckSlot(tuckˑmodˑshapes_30_async_read.TRec_code(int))
-  rt.tuckSlReady(&TuckNewˑtuckˑtaskˑreadOrGiveUp(&slot0, nil, tuckˑvˑsrc.fd).tuckHdr)
+  slot0F: TuckFˑtuckˑtaskˑreadOrGiveUp
+  rt.tuckSlReady(&TuckNewˑtuckˑtaskˑreadOrGiveUp(&slot0F, &slot0, nil, tuckˑvˑsrc.fd).tuckHdr)
   tuckˑvˑr := rt.tuckSlAwaitMain(&slot0)
   return tuckˑvˑr.code
 }

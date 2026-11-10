@@ -132,8 +132,12 @@ type TuckFˑtuckˑtaskˑstreamReader* = object
 
 proc TuckSˑtuckˑtaskˑstreamReaderˑ0(env: pointer): TuckHop {.nimcall.}
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑstreamReader)
-proc TuckNewˑtuckˑtaskˑstreamReader*(tuckRes: ptr TuckSlot[TuckResult[tuple[]]], tuckDest: ptr TuckResult[tuple[]], streamId: uint8, chunks: seq[uint32]): ptr TuckFˑtuckˑtaskˑstreamReader =
-  result = tuckSlAlloc(TuckFˑtuckˑtaskˑstreamReader)
+proc TuckNewˑtuckˑtaskˑstreamReader*(tuckAt: ptr TuckFˑtuckˑtaskˑstreamReader, tuckRes: ptr TuckSlot[TuckResult[tuple[]]], tuckDest: ptr TuckResult[tuple[]], streamId: uint8, chunks: seq[uint32]): ptr TuckFˑtuckˑtaskˑstreamReader =
+  if tuckAt == nil: result = tuckSlAlloc(TuckFˑtuckˑtaskˑstreamReader)
+  else:
+    zeroMem(tuckAt, sizeof(TuckFˑtuckˑtaskˑstreamReader))
+    result = tuckAt
+    result.tuckHdr.embedded = true
   result.tuckHdr.stage = TuckSˑtuckˑtaskˑstreamReaderˑ0
   result.tuckRes = tuckRes
   result.tuckDest = tuckDest

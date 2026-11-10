@@ -36,9 +36,25 @@ proc resultType(ctx: var DCodegenCtx, d: Decl): string =
 
 # --- the frame type, constructor, return -----------------------------------------
 
+proc subTypes(ctx: var DCodegenCtx, plan: StagePlan): seq[string] =
+  ## The frame types this frame embeds (#219), qualified as its calls name them.
+  for st in plan.stages:
+    let t = st.term
+    if t.kind in {tkCall, tkAwait} and t.embed:
+      let q = stacklessHelperD(ctx.genDExpr(t.call.callee), "TuckFˑ")
+      if q notin result: result.add q
+
+proc genSubUnion(ctx: var DCodegenCtx, d: Decl, plan: StagePlan): string =
+  ## `tuckSub`'s type: a union of every frame this one embeds.
+  let subs = ctx.subTypes(plan)
+  if subs.len == 0: return ""
+  result = "union TuckUˑ" & d.name & "\n{\n"
+  for i, q in subs: result.add "    " & q & " s" & $i & ";\n"
+  result.add "}\n\n"
+
 proc genFrameType(ctx: var DCodegenCtx, d: Decl, plan: StagePlan): string =
   let r = ctx.resultType(d)
-  result = "struct " & frameType(d.name) & "\n{\n    rt.TuckFrameHdr tuckHdr;\n" &
+  result = ctx.genSubUnion(d, plan) & "struct " & frameType(d.name) & "\n{\n    rt.TuckFrameHdr tuckHdr;\n" &
            "    rt.TuckSlot!(" & r & ")* tuckRes;\n    " & r & "* tuckDest;\n"
   for p in d.fnParams: result.add "    " & ctx.dType(p.typ) & " " & p.name & ";\n"
   for f in plan.fields:
@@ -48,14 +64,20 @@ proc genFrameType(ctx: var DCodegenCtx, d: Decl, plan: StagePlan): string =
   for lp in plan.loops:
     if lp.kind == lkSeq: result.add "    " & ctx.dType(lp.elemType) & " " & lp.varName & ";\n"
   for k in 0 ..< plan.defers.len: result.add "    bool tuckDefer" & $k & ";\n"
+  if plan.subs.len > 0: result.add "    TuckUˑ" & d.name & " tuckSub;\n"
   result.add "}\n"
 
 proc genFrameNew(ctx: var DCodegenCtx, d: Decl): string =
   let r = ctx.resultType(d)
-  var params = @["rt.TuckSlot!(" & r & ")* tuckRes", r & "* tuckDest"]
+  var params = @[frameType(d.name) & "* tuckAt", "rt.TuckSlot!(" & r & ")* tuckRes",
+                 r & "* tuckDest"]
   for p in d.fnParams: params.add ctx.dType(p.typ) & " " & p.name
+  # `tuckAt`: storage the caller provides (its `tuckSub`, or main's stack),
+  # or null for the (GC) heap (#219).
   result = frameType(d.name) & "* TuckNewˑ" & d.name & "(" & params.join(", ") & ")\n{\n" &
-           "    auto f = new " & frameType(d.name) & ";\n" &
+           "    auto f = tuckAt;\n" &
+           "    if (f is null) f = new " & frameType(d.name) & ";\n" &
+           "    else { *f = " & frameType(d.name) & ".init; f.tuckHdr.embedded = true; }\n" &
            "    f.tuckHdr.stage = &" & stageName(d.name, 0) & ";\n" &
            "    f.tuckRes = tuckRes;\n    f.tuckDest = tuckDest;\n"
   for p in d.fnParams: result.add "    f." & p.name & " = " & p.name & ";\n"
@@ -80,11 +102,16 @@ proc leaveCalls(d: Decl, plan: StagePlan, leaves: seq[int]): seq[string] =
   for sc in leaves:
     if plan.scopeDefers[sc].len > 0: result.add scopeExit(d.name, sc) & "(tuckF);"
 
+proc atD(calleeStr: string, t: Term): string =
+  ## Where the callee's frame is built: inside this frame (#219), or null.
+  if t.embed: "cast(" & stacklessHelperD(calleeStr, "TuckFˑ") & "*) &tuckF.tuckSub"
+  else: "null"
+
 proc genCall(ctx: var DCodegenCtx, d: Decl, t: Term): string =
   let calleeStr = ctx.genDExpr(t.call.callee)
   let dest = if t.target == nil: "null" else: "&" & ctx.genDExpr(t.target)
   let args = ctx.genDCallArgs(t.call)
-  "        auto tuckC = " & stacklessHelperD(calleeStr, "TuckNewˑ") & "(null, " & dest &
+  "        auto tuckC = " & stacklessHelperD(calleeStr, "TuckNewˑ") & "(" & atD(calleeStr, t) & ", null, " & dest &
     (if args.len > 0: ", " & args.join(", ") else: "") & ");\n" &
   "        tuckC.tuckHdr.caller = &tuckF.tuckHdr;\n" &
   "        tuckF.tuckHdr.stage = &" & stageName(d.name, t.next) & ";\n" &
@@ -94,7 +121,7 @@ proc genAwait(ctx: var DCodegenCtx, d: Decl, t: Term): string =
   let calleeStr = ctx.genDExpr(t.call.callee)
   let args = ctx.genDCallArgs(t.call)
   "        tuckF." & t.slot & ".done = false;\n" &
-  "        rt.tuckSlReady(&" & stacklessHelperD(calleeStr, "TuckNewˑ") & "(&tuckF." & t.slot &
+  "        rt.tuckSlReady(&" & stacklessHelperD(calleeStr, "TuckNewˑ") & "(" & atD(calleeStr, t) & ", &tuckF." & t.slot &
     ", null" & (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr);\n" &
   "        return rt.tuckSlAwait(&tuckF.tuckHdr, &tuckF." & t.slot & ", &" &
     stageName(d.name, t.next) & ");\n"

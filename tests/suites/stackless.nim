@@ -28,6 +28,11 @@
 ## condition, a match subject, a range end, an arithmetic expression) and a
 ## returned value that waits are hoisted into frame temps first.
 ##
+## Phase 6 (#219): a callee's frame is built inside its caller's, an
+## awaited task's inside its awaiter's or on main's stack; `recursion` keeps
+## the heap on its call cycle only. `--frames:static` builds example 28 with
+## no frame on the heap, and refuses `order` and `recursion`, naming why.
+##
 ## What is not cut yet is REFUSED, never run wrong: here, a pause inside a
 ## `defer`, at compile time with its line and the way out
 ## (--concurrency:stackful).
@@ -37,6 +42,7 @@ import ../harness
 const Programs = ["tests/stackless/order.tuck", "tests/stackless/values.tuck",
                   "tests/stackless/loops.tuck", "tests/stackless/parks.tuck",
                   "tests/stackless/sends.tuck", "tests/stackless/hoists.tuck",
+                  "tests/stackless/recursion.tuck",
                   "examples/28-async-task.tuck",
                   "examples/29-task-timeout.tuck", "examples/30-async-read.tuck"]
   # examples/42-net-echo (sockets) runs the same too, checked by hand: it
@@ -139,6 +145,41 @@ proc actorFrames(t: var T) =
       elif t.resultOf(framed)[0] == 0: t.ok name
       else: t.no name, "no tuckStartActorFrame in the emitted Nim"
 
+proc checkRun(t: var T, name: string, idx, rc: int, says = "") =
+  ## Command `idx` exited `rc` (and printed `says`, when given).
+  if t.phase != pReport: return
+  if t.skippedCmd(idx): t.skip name; return
+  let (got, outp) = t.resultOf(idx)
+  if got == rc and (says == "" or says in outp): t.ok name
+  else: t.no name, "exit " & $got & " (want " & $rc & "): " & outp
+
+proc staticFrames(t: var T, others: seq[Backend]) =
+  ## --frames:static (#219): a program whose every frame embeds builds and
+  ## runs; one with a spawned task, a cycle or a wait is refused, each
+  ## reason named; the flag's bad uses are refused.
+  t.src readFile("examples/28-async-task.tuck")
+  for b in @[bNim] & others:
+    t.checkRun("--frames:static builds and runs a program whose every frame embeds " & $b,
+               t.buildRun("stackless", b, @["--frames:static"]), 42)
+  t.src readFile("tests/stackless/order.tuck")
+  let refused = t.needCmd(@["./tuck", "c", t.curDir / "t.tuck", "--frames:static",
+                            "--concurrency:stackless",
+                            "-o:" & t.curDir, "--root:" & t.root], vEmit)
+  t.checkRun("--frames:static refuses a wait on a helper stack, by place", refused, 1,
+             "'console::printLine' waits inside the runtime, on a helper stack")
+  t.checkRun("...and a spawned task, by place", refused, 1,
+             "task 'worker' is spawned, not awaited: its frame comes from the heap")
+  t.src readFile("tests/stackless/recursion.tuck")
+  let cyc = t.needCmd(@["./tuck", "c", t.curDir / "t.tuck", "--frames:static",
+                        "--concurrency:stackless",
+                        "-o:" & t.curDir, "--root:" & t.root], vEmit)
+  t.checkRun("...and a call cycle, by name", cyc, 1, "sumDown is on a call cycle")
+  let bogus = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck", "--frames:bogus"])
+  t.checkRun("an unknown frame policy is refused", bogus, 1, "available: heap (default), static")
+  let both = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck", "--frames:static",
+                         "--concurrency:stackful"])
+  t.checkRun("--frames:static under stackful is refused", both, 1, "this build is --concurrency:stackful")
+
 proc run*(t: var T) =
   ## Registers the stackless assertions: each program the same under both
   ## flags, on every backend, and the not-yet-built shapes refused.
@@ -160,5 +201,6 @@ proc run*(t: var T) =
       t.same(label & " stackless matches the Nim reference: " & name,
              reference, t.buildRun("stackless", b))
   t.actorFrames()
+  t.staticFrames(others)
   t.refusedAtCompile()
   t.flags()

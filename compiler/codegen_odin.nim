@@ -1275,8 +1275,12 @@ proc genStacklessBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
                    ctx.definedVars.incl(e.target.name)
                    " := "
                  else: " = "
+  let calleeStr = ctx.genOdinExpr(e.assignVal.callee)
+  let frameT = stacklessCtor(calleeStr).replace("TuckNewˑ", "TuckFˑ")
+  # Its root frame on THIS stack (#219): this fn waits right here.
   ind & slotVar & ": rt.TuckSlot(" & retType & ")\n" &
-  ind & "rt.tuckSlReady(&" & stacklessCtor(ctx.genOdinExpr(e.assignVal.callee)) & "(&" &
+  ind & slotVar & "F: " & frameT & "\n" &
+  ind & "rt.tuckSlReady(&" & stacklessCtor(calleeStr) & "(&" & slotVar & "F, &" &
     slotVar & ", nil" & (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr)\n" &
   ind & ctx.genOdinExpr(e.target) & assignOp & "rt.tuckSlAwaitMain(&" & slotVar & ")"
 
@@ -1292,7 +1296,7 @@ proc genStacklessSpawn(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A task call nobody binds, under stackless: a frame with nowhere for its
   ## result, queued.
   let args = ctx.genCallArgs(e)
-  "rt.tuckSlReady(&" & stacklessCtor(ctx.genOdinExpr(e.callee)) & "(nil, nil" &
+  "rt.tuckSlReady(&" & stacklessCtor(ctx.genOdinExpr(e.callee)) & "(nil, nil, nil" &
     (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr)"
 
 proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =

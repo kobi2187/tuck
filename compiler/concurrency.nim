@@ -17,7 +17,7 @@
 ## The plan — which decls become frames — is computed once, from the checked
 ## program and before mangling (compiler/frames.nim), and read by codegen
 ## by decl id, which every backend's deep copy keeps.
-import std/sets
+import std/[sets, tables]
 import ast, ast_ops
 
 type
@@ -32,6 +32,14 @@ var helperDecls*: HashSet[NodeId]
 var pureActorDecls*: HashSet[NodeId]
   ## Under stackless: actors no handler or select arm of which can pause.
   ## With --actors:single each runs as a frame on main's scheduler.
+var framesStatic* = false
+  ## `--frames:static` (#219): every frame must be embedded — in its caller,
+  ## its awaiter, main's stack or an actor's slot — and no statement may
+  ## borrow a helper stack. The build fails, naming each reason, otherwise.
+var frameScc*: Table[NodeId, int]
+  ## Under stackless: each decl's call-graph component (frames.nim). A frame
+  ## call or task await between two components EMBEDS the callee's frame in
+  ## the caller's; one inside a component (recursion) keeps the heap (#219).
 var frameDecls*: HashSet[NodeId]
   ## Under stackless: the ids of the decls that are frames (tasks, and fns a
   ## root reaches that can pause).
@@ -59,3 +67,11 @@ proc actorStarter*(d: Decl): string =
   if concurrencyMode == cmStackless and d != nil and d.id.isSet and d.id in pureActorDecls:
     "tuckStartActorFrame"
   else: "tuckStartActor"
+
+proc embeds*(caller, callee: Decl): bool =
+  ## Does a call from frame `caller` to frame `callee` build the callee's
+  ## frame inside the caller's (no heap)? Yes unless the two are on one
+  ## call cycle, where the frame types would contain each other.
+  if caller == nil or callee == nil or not caller.id.isSet or not callee.id.isSet: return false
+  if caller.id notin frameScc or callee.id notin frameScc: return false
+  caller.id != callee.id and frameScc[caller.id] != frameScc[callee.id]

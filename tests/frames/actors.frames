@@ -8,3 +8,5 @@ frame handler Logger.note  (actors:34)
   35:20  call console::printLine (extern, may park)
 native handlers, never pause: Sink.take, Lossy.take, Relay.drop, Tally.select | add
 actors that run as frames under --actors:single (wait only on mailboxes): Lossy, Relay, Sink, Tally
+--frames:static would refuse:
+  actors:19: in Relay.forward, a send may wait inside the runtime, on a helper stack

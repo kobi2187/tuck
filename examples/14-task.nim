@@ -23,8 +23,12 @@ proc TuckIOˑtuckˑtaskˑfetchFeedˑ0(env: pointer) {.nimcall.}
 proc TuckSˑtuckˑtaskˑfetchFeedˑ2(env: pointer): TuckHop {.nimcall.}
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑfetchFeed)
 proc TuckXˑtuckˑtaskˑfetchFeedˑ0(tuckF: ptr TuckFˑtuckˑtaskˑfetchFeed)
-proc TuckNewˑtuckˑtaskˑfetchFeed*(tuckRes: ptr TuckSlot[TuckResult[tuple[feed: tuckˑtypeˑFeed]]], tuckDest: ptr TuckResult[tuple[feed: tuckˑtypeˑFeed]], url: string): ptr TuckFˑtuckˑtaskˑfetchFeed =
-  result = tuckSlAlloc(TuckFˑtuckˑtaskˑfetchFeed)
+proc TuckNewˑtuckˑtaskˑfetchFeed*(tuckAt: ptr TuckFˑtuckˑtaskˑfetchFeed, tuckRes: ptr TuckSlot[TuckResult[tuple[feed: tuckˑtypeˑFeed]]], tuckDest: ptr TuckResult[tuple[feed: tuckˑtypeˑFeed]], url: string): ptr TuckFˑtuckˑtaskˑfetchFeed =
+  if tuckAt == nil: result = tuckSlAlloc(TuckFˑtuckˑtaskˑfetchFeed)
+  else:
+    zeroMem(tuckAt, sizeof(TuckFˑtuckˑtaskˑfetchFeed))
+    result = tuckAt
+    result.tuckHdr.embedded = true
   result.tuckHdr.stage = TuckSˑtuckˑtaskˑfetchFeedˑ0
   result.tuckRes = tuckRes
   result.tuckDest = tuckDest

@@ -342,6 +342,13 @@ options:
                              debugging: a debugger shows a task's real call
                              stack, where a stage's ends at the driver.
                 TUCK_CONCURRENCY sets the default for every build.
+  --frames:POLICY (compile/build, stackless) where frames live (#219).
+                  heap    (default) a frame embeds in its caller, its
+                          awaiter or main's stack where it can; a spawned
+                          task, a call cycle, and a wait's helper stack
+                          use the heap.
+                  static  ALL of them embedded, or the build fails naming
+                          each that is not. For targets with no heap.
                 See docs/stackless-concurrency.md.
   --batch-count:N     (--actors:batch) flush after N staged sends
   --batch-timeout:MS  (--actors:batch) ...or MS after the first, whichever
@@ -1078,6 +1085,16 @@ when isMainModule:
       die("tuck: no such concurrency mode: '" & name & "'\n" &
           "  available: stackful, stackless")
     concurrencyMode = m
+  # `--frames:static|heap` — where frames may live (#219).
+  for o in opts:
+    if not o.startsWith("--frames:"): continue
+    case o["--frames:".len .. ^1]
+    of "static": framesStatic = true
+    of "heap": framesStatic = false
+    else: die("tuck: no such frame policy: '" & o["--frames:".len .. ^1] &
+              "'\n  available: heap (default), static")
+  if framesStatic and concurrencyMode != cmStackless:
+    die("tuck: --frames:static is about stackless frames; this build is --concurrency:stackful")
   # `--actors:MODE` — how an actor gets its CPU (compiler/actor_mode.nim).
   # Semantics are identical across modes; cost is not, and the trade depends
   # on the workload, so the programmer picks. Validated in the order a typo
@@ -1362,6 +1379,10 @@ when isMainModule:
       frameDecls = plan.frameIds
       helperDecls = plan.helperIds
       pureActorDecls = plan.pureActorIds
+      frameScc = plan.sccOf
+      if framesStatic and plan.heapReasons.len > 0:
+        die("tuck: --frames:static: these frames would need the heap or a helper stack (#219):\n  " &
+            plan.heapReasons.join("\n  "))
     block:
       let t0 = vBegin(psMangle)
       mangleProgram(semLayer, progMods)

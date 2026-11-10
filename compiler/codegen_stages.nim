@@ -33,24 +33,48 @@ proc fieldLine(f: FrameField): string =
           else: genType(f.typ)
   "    " & f.name & ": " & t & "\n"
 
-proc genFrameType(d: Decl, plan: StagePlan): string =
+proc subTypes(ctx: var CodegenCtx, plan: StagePlan): seq[string] =
+  ## The frame types this frame embeds (#219), qualified as its calls name
+  ## them: one per callee, in first-call order.
+  for st in plan.stages:
+    let t = st.term
+    if t.kind in {tkCall, tkAwait} and t.embed:
+      let q = stacklessHelper(ctx.genExpr(t.call.callee), "TuckFˑ")
+      if q notin result: result.add q
+
+proc genSubUnion(ctx: var CodegenCtx, d: Decl, plan: StagePlan): string =
+  ## `tuckSub`'s type: a union of every frame this one embeds. One callee
+  ## runs at a time, so one storage serves them all.
+  let subs = ctx.subTypes(plan)
+  if subs.len == 0: return ""
+  result = "type TuckUˑ" & d.name & "* {.union.} = object\n"
+  for i, q in subs: result.add "    s" & $i & ": " & q & "\n"
+  result.add "\n"
+
+proc genFrameType(ctx: var CodegenCtx, d: Decl, plan: StagePlan): string =
   let r = resultType(d)
-  result = "type " & frameType(d.name) & "* = object\n" &
+  result = ctx.genSubUnion(d, plan) & "type " & frameType(d.name) & "* = object\n" &
            "    tuckHdr: TuckFrameHdr\n    tuckRes: ptr TuckSlot[" & r & "]\n" &
            "    tuckDest: ptr " & r & "\n"
   for p in d.fnParams: result.add "    " & p.name & ": " & genType(p.typ) & "\n"
   for f in plan.fields: result.add fieldLine(f)
   for k in 0 ..< plan.defers.len: result.add "    tuckDefer" & $k & ": bool\n"
+  if plan.subs.len > 0: result.add "    tuckSub: TuckUˑ" & d.name & "\n"
 
 proc genFrameNew(d: Decl): string =
   ## The constructor: arguments are stored by their bits — the caller's
   ## rules moved or copied each one for this frame, as for a spawned job.
   let r = resultType(d)
-  var params = @["tuckRes: ptr TuckSlot[" & r & "]", "tuckDest: ptr " & r]
+  var params = @["tuckAt: ptr " & frameType(d.name), "tuckRes: ptr TuckSlot[" & r & "]",
+                 "tuckDest: ptr " & r]
   for p in d.fnParams: params.add p.name & ": " & genType(p.typ)
+  # `tuckAt`: storage the caller provides — its own frame's `tuckSub`, or
+  # main's stack — or nil for the heap (#219).
   result = "proc " & frameNew(d.name) & "*(" & params.join(", ") & "): ptr " &
            frameType(d.name) & " =\n" &
-           "  result = tuckSlAlloc(" & frameType(d.name) & ")\n" &
+           "  if tuckAt == nil: result = tuckSlAlloc(" & frameType(d.name) & ")\n" &
+           "  else:\n    zeroMem(tuckAt, sizeof(" & frameType(d.name) & "))\n" &
+           "    result = tuckAt\n    result.tuckHdr.embedded = true\n" &
            "  result.tuckHdr.stage = " & stageName(d.name, 0) & "\n" &
            "  result.tuckRes = tuckRes\n  result.tuckDest = tuckDest\n"
   for p in d.fnParams: result.add "  tuckStore(result." & p.name & ", " & p.name & ")\n"
@@ -67,6 +91,12 @@ proc genFall(d: Decl): string =
   else:
     "  quit \"tuck: stackless " & d.name & " ended without a return\"\n"
 
+proc at(calleeStr: string, t: Term): string =
+  ## Where the callee's frame is built: inside this frame (#219), or nil
+  ## for the heap (a call on a recursion cycle).
+  if t.embed: "cast[ptr " & stacklessHelper(calleeStr, "TuckFˑ") & "](addr tuckF.tuckSub)"
+  else: "nil"
+
 proc genCall(ctx: var CodegenCtx, d: Decl, t: Term): string =
   ## A frame call: build the callee's frame pointing back at this one, and
   ## enter its first stage directly.
@@ -75,7 +105,8 @@ proc genCall(ctx: var CodegenCtx, d: Decl, t: Term): string =
   let args = ctx.genCallArgs(t.call)
   let ctor = stacklessHelper(calleeStr, "TuckNewˑ")
   let entry = stacklessHelper(calleeStr, "TuckSˑ") & "ˑ0"
-  "  let tuckC = " & ctor & "(nil, " & dest & (if args.len > 0: ", " & args.join(", ") else: "") & ")\n" &
+  "  let tuckC = " & ctor & "(" & at(calleeStr, t) & ", nil, " & dest &
+    (if args.len > 0: ", " & args.join(", ") else: "") & ")\n" &
   "  tuckC.tuckHdr.caller = addr tuckF.tuckHdr\n" &
   "  tuckF.tuckHdr.stage = " & stageName(d.name, t.next) & "\n" &
   "  return " & entry & "(tuckC)\n"
@@ -86,7 +117,7 @@ proc genAwait(ctx: var CodegenCtx, d: Decl, t: Term): string =
   let args = ctx.genCallArgs(t.call)
   let ctor = stacklessHelper(calleeStr, "TuckNewˑ")
   "  tuckF." & t.slot & ".done = false\n" &
-  "  tuckSlReady(addr " & ctor & "(addr tuckF." & t.slot & ", nil" &
+  "  tuckSlReady(addr " & ctor & "(" & at(calleeStr, t) & ", addr tuckF." & t.slot & ", nil" &
     (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr)\n" &
   "  return tuckSlAwait(addr tuckF.tuckHdr, addr tuckF." & t.slot & ", " &
     stageName(d.name, t.next) & ")\n"
@@ -267,7 +298,7 @@ proc genFrameForm*(ctx: var CodegenCtx, d: Decl): string =
     # A shape the splitter does not cut yet: refused by name, never run wrong.
     stderr.writeLine "tuck: " & d.name & ", " & plan.error
     quit 1
-  result = genFrameType(d, plan) & "\n" & genForwards(d, plan) & genFrameNew(d) & "\n"
+  result = ctx.genFrameType(d, plan) & "\n" & genForwards(d, plan) & genFrameNew(d) & "\n"
   let saved = (ctx.inTask, ctx.frameVar, ctx.definedVars, ctx.indent, ctx.frameJumps)
   ctx.inTask = false        # the yields are cuts now, not tuckYield calls
   ctx.frameVar = "tuckF"

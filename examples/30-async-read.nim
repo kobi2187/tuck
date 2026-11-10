@@ -16,8 +16,12 @@ proc TuckSˑtuckˑtaskˑreadOrGiveUpˑ0(env: pointer): TuckHop {.nimcall.}
 proc TuckIOˑtuckˑtaskˑreadOrGiveUpˑ0(env: pointer) {.nimcall.}
 proc TuckSˑtuckˑtaskˑreadOrGiveUpˑ1(env: pointer): TuckHop {.nimcall.}
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑreadOrGiveUp)
-proc TuckNewˑtuckˑtaskˑreadOrGiveUp*(tuckRes: ptr TuckSlot[tuple[code: int]], tuckDest: ptr tuple[code: int], fd: int): ptr TuckFˑtuckˑtaskˑreadOrGiveUp =
-  result = tuckSlAlloc(TuckFˑtuckˑtaskˑreadOrGiveUp)
+proc TuckNewˑtuckˑtaskˑreadOrGiveUp*(tuckAt: ptr TuckFˑtuckˑtaskˑreadOrGiveUp, tuckRes: ptr TuckSlot[tuple[code: int]], tuckDest: ptr tuple[code: int], fd: int): ptr TuckFˑtuckˑtaskˑreadOrGiveUp =
+  if tuckAt == nil: result = tuckSlAlloc(TuckFˑtuckˑtaskˑreadOrGiveUp)
+  else:
+    zeroMem(tuckAt, sizeof(TuckFˑtuckˑtaskˑreadOrGiveUp))
+    result = tuckAt
+    result.tuckHdr.embedded = true
   result.tuckHdr.stage = TuckSˑtuckˑtaskˑreadOrGiveUpˑ0
   result.tuckRes = tuckRes
   result.tuckDest = tuckDest
@@ -54,6 +58,6 @@ proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑreadOrGiveUp) =
 
 proc tuckˑfnˑmain*(): int =
   var tuckˑvˑsrc = openSource(5)
-  var tuckˑvˑr = (var tuckSlot0: TuckSlot[tuple[code: int]]; tuckSlReady(addr TuckNewˑtuckˑtaskˑreadOrGiveUp(addr tuckSlot0, nil, tuckˑvˑsrc.fd).tuckHdr); tuckSlAwaitMain(addr tuckSlot0))
+  var tuckˑvˑr = (var tuckSlot0: TuckSlot[tuple[code: int]]; var tuckSlot0F: TuckFˑtuckˑtaskˑreadOrGiveUp; tuckSlReady(addr TuckNewˑtuckˑtaskˑreadOrGiveUp(addr tuckSlot0F, addr tuckSlot0, nil, tuckˑvˑsrc.fd).tuckHdr); tuckSlAwaitMain(addr tuckSlot0))
   return tuckˑvˑr.code
 

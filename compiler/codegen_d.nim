@@ -413,7 +413,7 @@ proc genDSpawn(ctx: var DCodegenCtx, e: Expr, task: string): string =
   ## Under stackless, a frame with nowhere for its result, queued.
   let args = ctx.genDCallArgs(e)
   if concurrencyMode == cmStackless:
-    return "rt.tuckSlReady(&" & stacklessCtorD(task) & "(null, null" &
+    return "rt.tuckSlReady(&" & stacklessCtorD(task) & "(null, null, null" &
            (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr)"
   "rt.tuckSpawnJob(&" & task &
     (if args.len > 0: ", " & args.join(", ") else: "") & ")"
@@ -992,8 +992,10 @@ proc genDStacklessBind(ctx: var DCodegenCtx, e: Expr, ret: string,
       ctx.definedVars.incl(e.target.name)
       (if declT != "": declT else: ret) & " " & e.target.name
     else: ctx.genDExpr(e.target)
+  # Its root frame on THIS stack (#219): this fn waits right here.
   "rt.TuckSlot!(" & (if ret == "void": "bool" else: ret) & ") " & slot & ";\n" &
-    ctx.indD & "rt.tuckSlReady(&" & stacklessCtorD(v.callee.name) & "(&" & slot &
+    ctx.indD & stacklessCtorD(v.callee.name).replace("TuckNewˑ", "TuckFˑ") & " " & slot & "F;\n" &
+    ctx.indD & "rt.tuckSlReady(&" & stacklessCtorD(v.callee.name) & "(&" & slot & "F, &" & slot &
     ", null" & (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr);\n" &
     ctx.indD & target & " = rt.tuckSlAwaitMain(&" & slot & ")"
 

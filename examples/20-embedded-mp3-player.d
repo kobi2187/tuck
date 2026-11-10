@@ -135,9 +135,11 @@ struct TuckFˑtuckˑtaskˑstreamReader
     uint[] chunks;
 }
 
-TuckFˑtuckˑtaskˑstreamReader* TuckNewˑtuckˑtaskˑstreamReader(rt.TuckSlot!(rt.TuckResult!(rt.TuckUnit))* tuckRes, rt.TuckResult!(rt.TuckUnit)* tuckDest, ubyte streamId, uint[] chunks)
+TuckFˑtuckˑtaskˑstreamReader* TuckNewˑtuckˑtaskˑstreamReader(TuckFˑtuckˑtaskˑstreamReader* tuckAt, rt.TuckSlot!(rt.TuckResult!(rt.TuckUnit))* tuckRes, rt.TuckResult!(rt.TuckUnit)* tuckDest, ubyte streamId, uint[] chunks)
 {
-    auto f = new TuckFˑtuckˑtaskˑstreamReader;
+    auto f = tuckAt;
+    if (f is null) f = new TuckFˑtuckˑtaskˑstreamReader;
+    else { *f = TuckFˑtuckˑtaskˑstreamReader.init; f.tuckHdr.embedded = true; }
     f.tuckHdr.stage = &TuckSˑtuckˑtaskˑstreamReaderˑ0;
     f.tuckRes = tuckRes;
     f.tuckDest = tuckDest;

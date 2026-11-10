@@ -18,9 +18,11 @@ struct TuckFˑtuckˑtaskˑreadOrGiveUp
     long tuckˑvˑcode;
 }
 
-TuckFˑtuckˑtaskˑreadOrGiveUp* TuckNewˑtuckˑtaskˑreadOrGiveUp(rt.TuckSlot!(tuckˑmodˑshapes_29_task_timeout.TRec_code!(long))* tuckRes, tuckˑmodˑshapes_29_task_timeout.TRec_code!(long)* tuckDest, long fd)
+TuckFˑtuckˑtaskˑreadOrGiveUp* TuckNewˑtuckˑtaskˑreadOrGiveUp(TuckFˑtuckˑtaskˑreadOrGiveUp* tuckAt, rt.TuckSlot!(tuckˑmodˑshapes_29_task_timeout.TRec_code!(long))* tuckRes, tuckˑmodˑshapes_29_task_timeout.TRec_code!(long)* tuckDest, long fd)
 {
-    auto f = new TuckFˑtuckˑtaskˑreadOrGiveUp;
+    auto f = tuckAt;
+    if (f is null) f = new TuckFˑtuckˑtaskˑreadOrGiveUp;
+    else { *f = TuckFˑtuckˑtaskˑreadOrGiveUp.init; f.tuckHdr.embedded = true; }
     f.tuckHdr.stage = &TuckSˑtuckˑtaskˑreadOrGiveUpˑ0;
     f.tuckRes = tuckRes;
     f.tuckDest = tuckDest;
@@ -77,7 +79,8 @@ void TuckExitˑtuckˑtaskˑreadOrGiveUp(TuckFˑtuckˑtaskˑreadOrGiveUp* tuckF)
 long tuckˑfnˑmain() {
     tuckˑmodˑshapes_29_task_timeout.TRec_fd!(long) tuckˑvˑsrc = openSource(500L);
     rt.TuckSlot!(tuckˑmodˑshapes_29_task_timeout.TRec_code!(long)) tuckSlot1;
-    rt.tuckSlReady(&TuckNewˑtuckˑtaskˑreadOrGiveUp(&tuckSlot1, null, tuckˑvˑsrc.fd).tuckHdr);
+    TuckFˑtuckˑtaskˑreadOrGiveUp tuckSlot1F;
+    rt.tuckSlReady(&TuckNewˑtuckˑtaskˑreadOrGiveUp(&tuckSlot1F, &tuckSlot1, null, tuckˑvˑsrc.fd).tuckHdr);
     tuckˑmodˑshapes_29_task_timeout.TRec_code!(long) tuckˑvˑr = rt.tuckSlAwaitMain(&tuckSlot1);
     return tuckˑvˑr.code;
 }

@@ -1,6 +1,6 @@
 # Stackless concurrency (#216)
 
-Status: phases 0–5 and 7 are built, apart from liveness for frame fields.
+Status: phases 0–7 are built, apart from liveness for frame fields.
 **Stackless is the default** (`--concurrency:stackful` keeps the coroutine
 runtime, the one to debug with).
 * **Tasks** run stackless on all three backends, waits included.
@@ -381,6 +381,37 @@ actor).
 * D mis-resolved `(field).idup` inside `with`.
 * Odin counted pooled helper stacks as leaks.
 
+**Phase 6, frames without the heap (#219).**
+
+*Where a frame lives:*
+* **A callee's frame lives inside its caller's.** A frame runs one callee
+  or awaited task at a time, so each frame type carries `tuckSub`: a union
+  (Nim `{.union.}`, Odin `#raw_union`, D `union`) of every frame type it
+  calls or awaits. The constructor takes the storage as `tuckAt`, and a
+  frame built there is marked `embedded` in its header, so finishing it
+  frees nothing.
+* **A task awaited from `main`** has its root frame on `main`'s stack,
+  because `main` waits right there.
+* **The heap is left only for frames that cannot be embedded:**
+  * a call between two frames on one **call cycle**, found from the strongly
+    connected components of the call graph (`frames.nim`). Embedding there
+    would make the frame types contain each other.
+  * a task **spawned without being awaited**, of which any number may be
+    outstanding.
+
+*`--frames:static`:*
+* **What it refuses:** any frame that would still come from the heap, and
+  any statement that would borrow a helper stack. Each reason is named with
+  its place.
+* **The same list in the report:** `tuck frames` prints it, or says that
+  every frame is embedded.
+* **Examples:** example 28 builds and runs under the flag on all three
+  backends. Example 42 lists its socket calls, its sends and its two
+  spawns.
+
+Measured: `b_await` goes from 22–24 ms to 19–23 ms with `main`'s roots on
+its stack. The point is memory, not speed: the freelist was already fast.
+
 Not built yet, and **refused rather than run wrong:**
 * **At compile time:** each of these is refused with its line:
   * a pause inside `defer`;
@@ -404,7 +435,7 @@ Not built yet, and **refused rather than run wrong:**
 | 3 | loops, `break`/`continue`, `match`, liveness for frame fields; Odin and D emitters, checking the `Hop` two-register return on their ABIs | **done**, except liveness: `tests/suites/stackless.nim` runs `order`, `values`, `loops` and example 28 stackless on Nim, Odin and D, each matching the Nim stackful reference. Liveness (fewer frame fields) is a size optimisation, deferred |
 | 4 | runtime parity: reactor, timers, `on select`, offload, waiting sends, `waitUntil` | **done**: statements that wait run on pooled helper stacks. `parks`, `sends` and examples 28/29/30 match the Nim reference on all three backends, and 42 (sockets) was checked by hand |
 | 5 | actors in all three `--actors:` modes, urgent mailboxes, `alive`/`pingUs` | **done**: `thread`/`batch` unchanged (handlers run on actor threads) with thread-local frame state. Under `single`, an actor that waits only on mailboxes runs as a frame. The actor suites pass under `TUCK_CONCURRENCY=stackless` |
-| 6 | (#219) static slabs for actor chains, stack root frames, embedded flag; measurements | numbers in `benches/SCORES.md`; a no-heap actor-only program builds |
+| 6 | (#219) static slabs for actor chains, stack root frames, embedded flag; measurements | **done**: callee frames embed in their caller (a union per frame type), awaited tasks in their awaiter, main's roots on its stack, and frame actors in their slot (phase 5). The heap is left only for call cycles and unawaited spawns. `--frames:static` refuses what remains, naming each |
 | 7 | differential run: every concurrency suite under both flags in CI | **done**: **stackless is the default** (ruled 2026-11-10). CI runs every suite twice, the second time under `TUCK_CONCURRENCY=stackful`. `examples/` tracks the default's output and `examples/stackful/` the stackful twin of each file that differs. A golden has a `.stackful` twin where the modes differ, and a text assertion reads `harness.stacklessRun()` |
 
 **Tests:** the concurrency suites run in both modes as parameters, in the

@@ -19,8 +19,12 @@ proc TuckSˑtuckˑtaskˑcomputeˑ0(env: pointer): TuckHop {.nimcall.}
 proc TuckSˑtuckˑtaskˑcomputeˑ1(env: pointer): TuckHop {.nimcall.}
 proc TuckSˑtuckˑtaskˑcomputeˑ2(env: pointer): TuckHop {.nimcall.}
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑcompute)
-proc TuckNewˑtuckˑtaskˑcompute*(tuckRes: ptr TuckSlot[tuple[r: int]], tuckDest: ptr tuple[r: int], base: int): ptr TuckFˑtuckˑtaskˑcompute =
-  result = tuckSlAlloc(TuckFˑtuckˑtaskˑcompute)
+proc TuckNewˑtuckˑtaskˑcompute*(tuckAt: ptr TuckFˑtuckˑtaskˑcompute, tuckRes: ptr TuckSlot[tuple[r: int]], tuckDest: ptr tuple[r: int], base: int): ptr TuckFˑtuckˑtaskˑcompute =
+  if tuckAt == nil: result = tuckSlAlloc(TuckFˑtuckˑtaskˑcompute)
+  else:
+    zeroMem(tuckAt, sizeof(TuckFˑtuckˑtaskˑcompute))
+    result = tuckAt
+    result.tuckHdr.embedded = true
   result.tuckHdr.stage = TuckSˑtuckˑtaskˑcomputeˑ0
   result.tuckRes = tuckRes
   result.tuckDest = tuckDest
@@ -57,6 +61,6 @@ proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑcompute) =
 
 
 proc tuckˑfnˑmain*(): int =
-  var tuckˑvˑres = (var tuckSlot0: TuckSlot[tuple[r: int]]; tuckSlReady(addr TuckNewˑtuckˑtaskˑcompute(addr tuckSlot0, nil, 21).tuckHdr); tuckSlAwaitMain(addr tuckSlot0))
+  var tuckˑvˑres = (var tuckSlot0: TuckSlot[tuple[r: int]]; var tuckSlot0F: TuckFˑtuckˑtaskˑcompute; tuckSlReady(addr TuckNewˑtuckˑtaskˑcompute(addr tuckSlot0F, addr tuckSlot0, nil, 21).tuckHdr); tuckSlAwaitMain(addr tuckSlot0))
   return tuckˑvˑres.r
 

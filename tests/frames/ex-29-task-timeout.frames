@@ -1,2 +1,4 @@
 frame task readOrGiveUp  (29-task-timeout:11)
   13:3  on select
+--frames:static would refuse:
+  29-task-timeout:13: in readOrGiveUp, a select may wait inside the runtime, on a helper stack
