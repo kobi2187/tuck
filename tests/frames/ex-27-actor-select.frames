@@ -1,0 +1,2 @@
+native handlers, never pause: Accumulator.select | add, Accumulator.select | finish
+actors that run as frames under --actors:single (wait only on mailboxes): Accumulator

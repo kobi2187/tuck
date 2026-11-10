@@ -396,6 +396,7 @@ tuckTrackCheck :: proc() {
 	// import, so the generated header carries `core:os` only when the program
 	// itself needed it — and a `fn main() -> void` does not. Emitting
 	// `os.exit(90)` made every such program fail to compile.
+	tuckSlReleaseWorkers() // pooled helper stacks are not leaks (#216)
 	if tuckTrackReport() > 0 { os.exit(90) }
 }
 
@@ -1596,9 +1597,120 @@ Mailbox :: struct($T: typeid, $Cap: int) {
 	fill: [2]int,
 	cur:  int,
 	lock: MailboxLock,
+	reserved: int, // batch mode: room held by staged runs, so a handover always fits
+}
+
+// `--actors:batch` (-define:TUCK_ACTORS_BATCH; tuck_rt.nim's TuckActorsBatch
+// explains the trade). A send writes into a run STAGED by the sending thread
+// for that one mailbox; the run crosses at once — one lock acquire and one
+// wake for the lot — when it reaches TUCK_BATCH_COUNT, when it has been open
+// TUCK_BATCH_TIMEOUT_MS (checked every TUCK_BATCH_CHECK_EVERY sends, across
+// every mailbox this thread stages for), and at every flush point: before an
+// actor parks, a waitUntil, a send that found no room, and exit.
+//
+// Nim's twin moves batch POINTERS through the mailbox, so a message is never
+// copied; this copies a run into the double buffer at handover, which keeps
+// the drain the emitted code already has. Order is per sender per actor,
+// which is the only order Tuck promises.
+TUCK_ACTORS_BATCH :: #config(TUCK_ACTORS_BATCH, false)
+TUCK_BATCH_COUNT :: #config(TUCK_BATCH_COUNT, 64)
+TUCK_BATCH_TIMEOUT_MS :: #config(TUCK_BATCH_TIMEOUT_MS, 1)
+TUCK_BATCH_CHECK_EVERY :: 200
+
+// One thread's outbound run for ONE mailbox. Found through this thread's
+// flush hooks (tuck_coro.odin), keyed by the mailbox: nothing here is shared,
+// so it needs no lock of its own.
+Staging :: struct($T: typeid, $Cap: int) {
+	msgs:   [TUCK_BATCH_COUNT]T,
+	n:      int,
+	room:   int,       // mailbox room this run reserved when it opened
+	sends:  int,       // counts up to the next deadline sweep
+	opened: time.Tick, // when the run took its first message
+	mb:     ^Mailbox(T, Cap),
+}
+
+// Open a run: reserve up to a batch of the mailbox's room, under one lock
+// acquire. Room is `fill[cur] + reserved <= Cap`, and the actor's swap only
+// empties `cur`, so a reserved run always fits when it crosses — the
+// property Nim gets from lending batches out of a pool. False: full.
+@(private)
+openRun :: proc(st: ^Staging($T, $Cap)) -> bool {
+	mb := st.mb
+	mbLock(&mb.lock)
+	st.room = min(TUCK_BATCH_COUNT, Cap - mb.fill[mb.cur] - mb.reserved)
+	if st.room > 0 do mb.reserved += st.room
+	mbUnlock(&mb.lock)
+	if st.room <= 0 {
+		st.room = 0
+		return false
+	}
+	st.opened = time.tick_now()
+	return true
+}
+
+// Hand the staged run over whole, and give back the room it did not use.
+// True when anything crossed — whoever flushed then owes a wake.
+@(private)
+handOver :: proc(st: ^Staging($T, $Cap)) -> bool {
+	if st.n == 0 do return false
+	mb := st.mb
+	mbLock(&mb.lock)
+	c := mb.cur
+	for i in 0 ..< st.n do mb.buf[c][mb.fill[c] + i] = st.msgs[i]
+	mb.fill[c] += st.n
+	mb.reserved -= st.room
+	mbUnlock(&mb.lock)
+	st.n = 0
+	st.room = 0
+	return true
+}
+
+// This thread's run for `mb`, made (and registered for flushing) on first use.
+// One per (thread, mailbox), for the thread's life: the runtime's, untracked.
+@(private)
+stagingFor :: proc(mb: ^Mailbox($T, $Cap)) -> ^Staging(T, Cap) {
+	if p := tuckFindStaging(mb); p != nil do return (^Staging(T, Cap))(p)
+	flush :: proc(p: rawptr) -> bool { return handOver((^Staging(T, Cap))(p)) }
+	flushDue :: proc(p: rawptr) -> bool {
+		when TUCK_BATCH_TIMEOUT_MS <= 0 {
+			return false
+		} else {
+			st := (^Staging(T, Cap))(p)
+			if st.n == 0 do return false
+			if time.duration_milliseconds(time.tick_since(st.opened)) < f64(TUCK_BATCH_TIMEOUT_MS) do return false
+			return handOver(st)
+		}
+	}
+	st := new(Staging(T, Cap), tuckRuntimeAllocator())
+	st.mb = mb
+	tuckRegisterFlush(flush, flushDue, st, mb)
+	return st
+}
+
+// Hand over what this thread staged for `mb` now: an `[urgent]` send does not
+// wait for its run to fill. A no-op outside batch mode.
+flushNow :: proc(mb: ^Mailbox($T, $Cap)) {
+	when TUCK_ACTORS_BATCH { handOver(stagingFor(mb)) }
+}
+
+@(private)
+enqueueStaged :: proc(mb: ^Mailbox($T, $Cap), msg: T) -> bool {
+	st := stagingFor(mb)
+	if st.n == 0 && !openRun(st) do return false // full: the actor's on_full decides
+	st.msgs[st.n] = msg
+	st.n += 1
+	st.sends += 1
+	if st.n == st.room {
+		handOver(st)
+	} else if st.sends >= TUCK_BATCH_CHECK_EVERY {
+		st.sends = 0
+		tuckFlushDueStaged()
+	}
+	return true
 }
 
 enqueue :: proc(mb: ^Mailbox($T, $Cap), msg: T) -> bool {
+	when TUCK_ACTORS_BATCH { return enqueueStaged(mb, msg) }
 	mbLock(&mb.lock)
 	c := mb.cur
 	if mb.fill[c] >= Cap {
@@ -1656,8 +1768,12 @@ takeBatch :: proc(mb: ^Mailbox($T, $Cap)) -> (batch: []T, n: int) {
 // Is there room for one more message? A full mailbox is handled by the
 // actor's `on_full` (R6: sendWaiting, sendAsserting, or a dropped enqueue).
 hasRoom :: proc(mb: ^Mailbox($T, $Cap)) -> bool {
+	when TUCK_ACTORS_BATCH {
+		// Room means this thread's run has space, or the mailbox does.
+		if st := stagingFor(mb); st.n > 0 && st.n < st.room do return true
+	}
 	mbLock(&mb.lock)
-	r := mb.fill[mb.cur] < Cap
+	r := mb.fill[mb.cur] + mb.reserved < Cap
 	mbUnlock(&mb.lock)
 	return r
 }

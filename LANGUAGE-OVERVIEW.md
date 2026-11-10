@@ -765,10 +765,26 @@ checker (`tests/suites/decision_tables.nim`).
 
 ## 10. Concurrency: actors and tasks
 
-The model is **stackful coroutines on one cooperative scheduler, plus an
-epoll/kqueue reactor.** No preemption, no OS threads in the scheduler. Both
-backends drive the same vendored C library (minicoro), so they cannot diverge
-on switch semantics.
+The model is **cooperative tasks on one scheduler per thread, plus an
+epoll/kqueue reactor.** There is no preemption and no OS thread in the
+scheduler. Two implementations carry the same semantics, and a flag picks
+one:
+
+* **Stackless, the default** (`--concurrency:stackless`, #216). A fn that
+  can pause becomes a frame plus stages, split once by the compiler for all
+  three backends.
+  * A pause returns to a driver loop: there is no stack per task.
+  * A statement that waits inside the runtime (I/O, a timer, `on select`,
+    a send into a full mailbox) borrows a pooled helper stack while it
+    waits, so it parks exactly as stackful does.
+  * Under `--actors:single`, an actor whose handlers wait only on mailboxes
+    runs as a frame.
+  * `tuck frames f.tuck` shows which fns become frames.
+* **Stackful** (`--concurrency:stackful`). A minicoro coroutine per task,
+  with its own `mmap`'d stack. It is the one to debug with, since a
+  debugger shows a task's real call stack.
+
+`TUCK_CONCURRENCY` sets the default. See `docs/stackless-concurrency.md`.
 
 ### Actors — global singletons
 

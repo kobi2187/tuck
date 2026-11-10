@@ -519,15 +519,30 @@ proc unifiedDiff*(want, got: string, ctx: int): string =
     outp.add "+" & b[j]
   outp.join("\n")
 
+proc stacklessRun*(): bool =
+  ## Is this run's `tuck` building stackless — the default since #216 —
+  ## rather than under TUCK_CONCURRENCY=stackful (CI runs both)? An
+  ## assertion on emitted TEXT that differs per mode reads it.
+  getEnv("TUCK_CONCURRENCY") != "stackful"
+
 proc compareGolden(t: var T, name, ext, got: string) =
   ## Shared bless/compare core for `frozen`/`frozenD`: `got` is already the
   ## fully backend-filtered emitted text, so only the golden's file extension
   ## differs per backend.
+  ##
+  ## `slug.ext` is the DEFAULT mode's golden (stackless). A stackful run
+  ## compares against `slug.stackful.ext` where the two modes emit
+  ## differently, and against `slug.ext` where they do not; blessing under
+  ## stackful writes the twin only when it differs.
   let dir = "tests/golden" / t.name
-  let want = dir / (slugify(name) & "." & ext)
+  let common = dir / (slugify(name) & "." & ext)
+  let twin = dir / (slugify(name) & ".stackful." & ext)
+  let want = if not stacklessRun() and fileExists(twin): twin else: common
   if t.bless:
     createDir(dir)
-    writeFile(want, got)
+    if stacklessRun(): writeFile(common, got)
+    elif fileExists(common) and readFile(common) == got: removeFile(twin)
+    else: writeFile(twin, got)
     t.ok name & " (blessed)"
     return
   if not fileExists(want):

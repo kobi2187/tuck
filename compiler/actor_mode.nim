@@ -46,6 +46,13 @@
 ##      64 batches, a program with `[queue: 1048576]` silently dropped after
 ##      4096 messages and its `waitUntil` never came true.
 ##
+## All three backends have all three modes: Nim reads `-d:` defines, Odin
+## `-define:` (#config), D `-version=` plus `tuck_batch.d` for the batch knobs.
+## Odin and D stage a run per (thread, mailbox) that RESERVES its room in the
+## mailbox when it opens, so a handover always fits — edge 3's property,
+## reached without a pool — and copy the run into the mailbox's double buffer
+## when it crosses, so their drains stay the ones the emitted code has.
+##
 ## `--actors:thread` is the default because it is the only mode that is
 ## correct for every program: `single` cannot use a second core, and `batch`
 ## changes when a message arrives.
@@ -91,6 +98,32 @@ proc nimDefinesFor*(p: ActorPolicy): string =
   of amBatch:
     " -d:tuckActorsBatch -d:TuckBatchCount:" & $p.batchCount &
     " -d:TuckBatchTimeoutMs:" & $p.batchTimeoutMs & " "
+
+proc odinDefinesFor*(p: ActorPolicy): string =
+  ## The same choice for `odin build`: `#config` constants the Odin runtime
+  ## (tuckrt/tuck_coro.odin) reads.
+  case p.mode
+  of amThread: ""
+  of amSingle: " -define:TUCK_ACTORS_SINGLE=true"
+  of amBatch:
+    " -define:TUCK_ACTORS_BATCH=true -define:TUCK_BATCH_COUNT=" & $p.batchCount &
+    " -define:TUCK_BATCH_TIMEOUT_MS=" & $p.batchTimeoutMs
+
+proc dBatchModule*(p: ActorPolicy): string =
+  ## `tuck_batch.d`, written beside a D program built under --actors:batch:
+  ## dmd's `-version=` takes identifiers, not values, so the knobs travel as
+  ## a module tuck_rt.d imports.
+  "module tuck_batch;\n" &
+    "enum size_t tuckBatchCount = " & $max(1, p.batchCount) & ";\n" &
+    "enum long tuckBatchTimeoutMs = " & $p.batchTimeoutMs & ";\n"
+
+proc dDefinesFor*(p: ActorPolicy): string =
+  ## The same choice for `dmd`: `version` identifiers and the batch knobs as
+  ## `-version` too (tuckrt_d/tuck_coro.d reads them).
+  case p.mode
+  of amThread: ""
+  of amSingle: " -version=TuckActorsSingle"
+  of amBatch: " -version=TuckActorsBatch"
 
 var actorPolicy* = ActorPolicy(mode: amThread,
                                batchCount: DefaultBatchCount,

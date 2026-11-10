@@ -20,6 +20,7 @@ import core.atomic : cas, atomicLoad, atomicStore;
 // reaches everything through `rt`, so tuck_rt re-exports it — mirroring
 // tuck_rt.nim, which fronts tuck_async the same way.
 public import tuck_coro;
+public import tuck_sl;   // frames and stages: --concurrency:stackless (#216)
 public import tuck_arena;
 
 /// MEMORY IS THE PROGRAM'S. The ownership rules decide every copy, move and
@@ -876,6 +877,7 @@ struct Mailbox(T, size_t Cap)
     size_t[2] fill;
     size_t cur;
     MailboxLock lock;
+    size_t reserved;   /// batch mode: room held by staged runs, so a handover always fits
 
     /// Take everything waiting and hand it over IN PLACE. The swap happens
     /// once, up front, under the lock; every iteration after that touches a
@@ -913,17 +915,144 @@ struct Mailbox(T, size_t Cap)
 /// needing a dropped message spun forever.
 bool enqueue(T, size_t Cap)(ref Mailbox!(T, Cap) mb, T msg)
 {
+    static if (tuckBatch) return enqueueStaged(mb, msg);
+    else
+    {
+        mb.lock.lock();
+        immutable c = mb.cur;
+        if (mb.fill[c] >= Cap)
+        {
+            mb.lock.unlock();
+            return false;
+        }
+        mb.bufStore[mb.fill[c]][c] = msg;
+        mb.fill[c]++;
+        mb.lock.unlock();
+        return true;
+    }
+}
+
+// `--actors:batch` (`-version=TuckActorsBatch`; tuck_rt.nim's TuckActorsBatch
+// explains the trade). A send writes into a run STAGED by the sending thread
+// for that one mailbox; the run crosses at once — one lock acquire and one
+// wake for the lot — when it reaches the batch count, when it has been open
+// the batch timeout (checked every tuckBatchCheckEvery sends, across every
+// mailbox this thread stages for), and at every flush point: before an actor
+// parks, a waitUntil, a send that found no room, and exit. The two knobs come
+// from tuck_batch.d, which the driver writes beside the program: dmd's
+// -version takes identifiers, not values.
+//
+// Nim's twin moves batch POINTERS through the mailbox, so a message is never
+// copied; this copies a run into the double buffer at handover, which keeps
+// the drain the emitted code already has. Order is per sender per actor,
+// which is the only order Tuck promises.
+version (TuckActorsBatch)
+{
+    import tuck_batch : tuckBatchCount, tuckBatchTimeoutMs;
+    enum tuckBatch = true;
+}
+else
+{
+    enum tuckBatch = false;
+    enum tuckBatchCount = 1;        // unused outside batch mode
+    enum tuckBatchTimeoutMs = 0;
+}
+enum tuckBatchCheckEvery = 200;
+
+/// One thread's outbound run for ONE mailbox, found through this thread's
+/// flush hooks (tuck_coro.d), keyed by the mailbox. Nothing here is shared,
+/// so it needs no lock of its own. On the GC heap, reached from the hooks in
+/// TLS, so a message staged here keeps what it points at alive.
+struct Staging(T, size_t Cap)
+{
+    import core.time : MonoTime;
+    T[tuckBatchCount] msgs;
+    size_t n;
+    size_t room;        /// mailbox room this run reserved when it opened
+    size_t sends;       /// counts up to the next deadline sweep
+    MonoTime opened;    /// when the run took its first message
+    Mailbox!(T, Cap)* mb;
+}
+
+/// Open a run: reserve up to a batch of the mailbox's room, under one lock
+/// acquire. Room is `fill[cur] + reserved <= Cap`, and the actor's swap only
+/// empties `cur`, so a reserved run always fits when it crosses — the
+/// property Nim gets from lending batches out of a pool. False: full.
+private bool openRun(T, size_t Cap)(Staging!(T, Cap)* st)
+{
+    import core.time : MonoTime;
+    auto mb = st.mb;
+    mb.lock.lock();
+    immutable free = Cap - mb.fill[mb.cur] - mb.reserved;
+    st.room = free < tuckBatchCount ? free : tuckBatchCount;
+    mb.reserved += st.room;
+    mb.lock.unlock();
+    if (st.room == 0) return false;
+    st.opened = MonoTime.currTime;
+    return true;
+}
+
+/// Hand the staged run over whole, and give back the room it did not use.
+/// True when anything crossed — whoever flushed then owes a wake.
+private bool handOver(T, size_t Cap)(Staging!(T, Cap)* st)
+{
+    if (st.n == 0) return false;
+    auto mb = st.mb;
     mb.lock.lock();
     immutable c = mb.cur;
-    if (mb.fill[c] >= Cap)
-    {
-        mb.lock.unlock();
-        return false;
-    }
-    mb.bufStore[mb.fill[c]][c] = msg;
-    mb.fill[c]++;
+    foreach (i; 0 .. st.n) mb.bufStore[mb.fill[c] + i][c] = st.msgs[i];
+    mb.fill[c] += st.n;
+    mb.reserved -= st.room;
     mb.lock.unlock();
+    st.n = 0;
+    st.room = 0;
     return true;
+}
+
+/// This thread's run for `mb`, made (and registered for flushing) on first use.
+private Staging!(T, Cap)* stagingFor(T, size_t Cap)(ref Mailbox!(T, Cap) mb)
+{
+    auto key = cast(void*) &mb;
+    if (auto p = tuckFindStaging(key)) return cast(Staging!(T, Cap)*) p;
+    static bool flush(void* p) { return handOver(cast(Staging!(T, Cap)*) p); }
+    static bool flushDue(void* p)
+    {
+        import core.time : MonoTime;
+        static if (tuckBatchTimeoutMs <= 0) return false;
+        else
+        {
+            auto st = cast(Staging!(T, Cap)*) p;
+            if (st.n == 0) return false;
+            if ((MonoTime.currTime - st.opened).total!"msecs" < tuckBatchTimeoutMs)
+                return false;
+            return handOver(st);
+        }
+    }
+    auto st = new Staging!(T, Cap);
+    st.mb = &mb;
+    tuckRegisterFlush(&flush, &flushDue, cast(void*) st, key);
+    return st;
+}
+
+private bool enqueueStaged(T, size_t Cap)(ref Mailbox!(T, Cap) mb, T msg)
+{
+    auto st = stagingFor(mb);
+    if (st.n == 0 && !openRun(st)) return false;   // full: the actor's on_full decides
+    st.msgs[st.n++] = msg;
+    if (st.n == st.room) handOver(st);
+    else if (++st.sends >= tuckBatchCheckEvery)
+    {
+        st.sends = 0;
+        tuckFlushDueStaged();
+    }
+    return true;
+}
+
+/// Hand over what this thread staged for `mb` now: an `[urgent]` send does
+/// not wait for its run to fill. A no-op outside batch mode.
+void flushNow(T, size_t Cap)(ref Mailbox!(T, Cap) mb)
+{
+    static if (tuckBatch) handOver(stagingFor(mb));
 }
 
 /// A send to an actor declaring `on_full: wait`, the default (R6): when the
@@ -945,8 +1074,14 @@ void sendAsserting(T, size_t Cap)(ref Mailbox!(T, Cap) mb, T msg, string actor)
 
 bool hasRoom(T, size_t Cap)(ref Mailbox!(T, Cap) mb)
 {
+    // Batch mode: room means this thread's run has space, or the mailbox does.
+    static if (tuckBatch)
+    {
+        auto st = stagingFor(mb);
+        if (st.n > 0 && st.n < st.room) return true;
+    }
     mb.lock.lock();
-    immutable r = mb.fill[mb.cur] < Cap;
+    immutable r = mb.fill[mb.cur] + mb.reserved < Cap;
     mb.lock.unlock();
     return r;
 }

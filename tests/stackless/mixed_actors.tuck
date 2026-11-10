@@ -1,0 +1,29 @@
+# Under --actors:single and stackless, an actor that waits only on mailboxes
+# (Tally) runs as a frame, while one whose handler makes an [io] call (Log)
+# keeps its coroutine (#216 phase 5). Both, fed by a task, run as before.
+import console
+
+actor Log [queue: 2]:
+  lines: int = 0
+  on line({n: int}) [io: console]:
+    {text: "line"} console::printLine
+    lines += n
+
+actor Tally [queue: 2]:
+  total: int = 0
+  on add({n: int}):
+    total += n
+    Log send line {n: 1}
+
+fn settled() -> bool:
+  return Log.lines == 6 and Tally.total == 21
+
+task feed({m: int}) -> {r: int} [io]:
+  for i in 1 .. m:
+    Tally send add {n: i}
+  return {r: m}
+
+fn main() -> int [io]:
+  let f = {m: 6} feed
+  Tally.waitUntil {pred: :settled}
+  return Tally.total + f.r

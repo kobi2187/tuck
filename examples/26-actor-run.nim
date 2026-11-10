@@ -33,7 +33,7 @@ proc draintuckˑactorˑCounter(): bool {.gcsafe.} =
 
 var tuckˑactorˑCounterSlot*: pointer
 proc registerActortuckˑactorˑCounter*() =
-  tuckˑactorˑCounterSlot = tuckStartActor(draintuckˑactorˑCounter)
+  tuckˑactorˑCounterSlot = tuckStartActorFrame(draintuckˑactorˑCounter)
 
 proc tuckˑfnˑsumReady*(): bool =
   return (tuckˑactorˑCounterSingleton.total == 55)

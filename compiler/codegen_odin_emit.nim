@@ -13,6 +13,7 @@ import codegen_common
 import name_prefix
 import codegen_odin_ctx
 import codegen_odin_util
+import concurrency   # --concurrency:stackless (#216)
 
 # Odin refuses a compound literal for a `[dynamic]T` unless the file opts in:
 # "Compound literals of dynamic types are disabled by default". Tuck's `Seq[T]`
@@ -20,7 +21,18 @@ import codegen_odin_util
 # field — did not compile on this backend at all. The corpus never caught it
 # because no example builds a Seq inside a record. The directive must lead the
 # file, before `package`.
-const odinFeatures = "#+feature dynamic-literals\n"
+# `using-stmt`: a stackless stage (#216) opens with `using tuckF`, so the
+# frame's fields read by their own names (codegen_odin_stages.nim). Only a
+# stackless build says so, which keeps every stackful file byte-identical.
+proc odinFeatures(): string =
+  if concurrencyMode == cmStackless: "#+feature dynamic-literals using-stmt\n"
+  else: "#+feature dynamic-literals\n"
+
+proc trimFeatures*(file: string): string =
+  ## A file with no frame needs no `using-stmt`: dropped, so a program with
+  ## no task reads the same under either mode.
+  if "using tuckF" in file: file
+  else: file.replace("#+feature dynamic-literals using-stmt\n", "#+feature dynamic-literals\n")
 
 import ./codegen_odin_decl
 import ./codegen_odin
@@ -77,7 +89,7 @@ proc emitOdinShapes*(pool: ShapePool): string =
   ## The generated module holding the program's record shapes (ShapesModule),
   ## or "" when no module asked for one.
   if pool == nil or pool.defs.len == 0: return ""
-  result = odinFeatures & "package tuck_" & pool.module & "\n\n"
+  result = "#+feature dynamic-literals\n" & "package tuck_" & pool.module & "\n\n"   # no frames here
   for _, def in pool.defs: result.add(def & "\n\n")
 
 proc emitOdinModule*(name: string, m: Module, res: Resolution,
@@ -95,7 +107,7 @@ proc emitOdinModule*(name: string, m: Module, res: Resolution,
   # module called `io` or `os` would collide with core:io / core:os. The
   # emitted package carries a tuck_ prefix; the import alias at the use site
   # keeps the Tuck name, so qualified calls still read as `io.printLine`.
-  var res = odinFeatures & "package tuck_" & pkg & "\n\n"
+  var res = odinFeatures() & "package tuck_" & pkg & "\n\n"
   if name == VariantsModule: res.add(variantsHeader(m, "//"))
   # This file lives in mod_<pkg>/, so siblings are one level up.
   var imports: seq[string]
@@ -259,12 +271,16 @@ proc bootLines(ctx: OdinCodegenCtx, actorNames: seq[string], hasTasks: bool,
   # The slot is KEPT: `Actor.waitUntil` names the actor at the call site, so
   # the emitted call needs a handle to hand the predicate to.
   for a in actorNames:
-    result.add("\t" & actorSlotName(a) & " = rt.tuckStartActor(drain_" &
-               a & ")\n")
+    result.add("\t" & actorSlotName(a) & " = rt." & actorStarter(ctx.module.findDecl(dkActor, a)) &
+               "(drain_" & a & ")\n")
   # Another module's actors start themselves: their drains and slots live in
   # that package.
   for p in bootPkgs:
     result.add("\t" & ctx.pkgQualifier(p) & ActorsBootProc & "()\n")
+
+proc stacklessDrainOdin(hasTasks: bool): string =
+  ## Stackless frames nobody awaited still run to their end (#216).
+  if drainsFrames(hasTasks): "\trt.tuckSlRunAll()\n" else: ""
 
 proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string =
   ## Tuck's `fn main` is a plain proc; Odin's entry point calls it. Static
@@ -315,6 +331,7 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string
   # Drive the loop only when TASKS exist. Actors are daemons whose drain loops
   # never finish, so running the scheduler for them would spin forever —
   # tuck.nim gates on hasTasks for exactly this reason.
+  result.add(stacklessDrainOdin(hasTasks))
   if hasTasks: result.add("\trt.tuckRun()\n")
   # Wait for every actor to empty its mailbox before exiting: an actor thread
   # is detached, so without this a `send` races the process teardown.
@@ -326,7 +343,7 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string
 
 # Odin errors on unused imports, so the header is assembled from what the
 # body actually referenced rather than emitted wholesale.
-const odinPackage = odinFeatures & "package main\n\n"
+proc odinPackage(): string = odinFeatures() & "package main\n\n"
 
 proc emitOdin*(m: Module, res: Resolution,
                realModules = initTable[ModuleId, Module](),
@@ -340,7 +357,7 @@ proc emitOdin*(m: Module, res: Resolution,
   # everything the emitter needs was decided in backend_prepare.
   var ctx = newOdinCtx(m, realModules, moduleName, res, shapes = shapes)
   let (body, mains) = ctx.emitBody(m)
-  result = odinPackage
+  result = odinPackage()
   # The entry point reaches through modules too (boot, register, slab release),
   # so it is written before the header that imports them.
   let entry = ctx.genEntryPoint(m, body, mains)

@@ -77,6 +77,8 @@ import compiler/resource_leaks
 import compiler/import_renames  # `tuck effects --manifest` (#63)
 import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
+import compiler/frames   # `tuck frames`: the stackless colouring (#216)
+import compiler/concurrency   # --concurrency:stackful|stackless
 import compiler/actor_mode
 import compiler/pipeline
 import compiler/proptest
@@ -129,6 +131,7 @@ run). Writes beside the source file, or into -o:DIR if given.
   --actors:MODE  how actors get their CPU: thread (default), single, batch
   --batch-count:N, --batch-timeout:MS  when a staged batch flushes
                  (--actors:batch only)
+  --concurrency:MODE  how tasks pause: stackless (default), stackful (#216)
 
 See `tuck help build` for the flags shared with build, or run
 `tuck` with no arguments for the full option reference.""",
@@ -214,6 +217,15 @@ called with generated arguments (default 200 cases, seeded and
 repeatable); the invariant is the property. Every failing call is
 printed and written to FILE (default property-failures.txt) as a Tuck
 call with its literals. A folder is scanned file by file.""",
+  "frames": """tuck frames file.tuck
+
+The stackless transform's colouring (#216, docs/stackless-concurrency.md),
+over the whole import closure. Each fn that would become a FRAME is
+printed with its pause sites: a task, a handler or select arm that can
+pause, or a fn one of them reaches that can pause. After them come the
+handlers that never pause (the actor loop calls them, so they need no
+frame) and the [io] fns a root reaches that never pause (they stay native).
+Nothing is rewritten; this is what the transform will start from.""",
   "explain": """tuck explain CODE
 
 Print what a diagnostic code means and how to fix it, e.g.:
@@ -317,6 +329,27 @@ options:
                           over in groups. Faster under load; a message
                           arrives when its batch flushes, not when sent.
                 See compiler/actor_mode.nim for the full trade.
+  --concurrency:MODE (compile/build) how a task pauses (#216). The same
+                pauses, the same order, the same results in both modes.
+                  stackless  (default) a pausing fn becomes a FRAME plus
+                             STAGES (the code between pauses); no stack per
+                             task. A statement that waits (I/O, a timer,
+                             `on select`, a send) borrows a pooled helper
+                             stack while it waits. Under --actors:single,
+                             an actor whose handlers wait only on mailboxes
+                             runs as a frame.
+                  stackful   a minicoro coroutine per task, own stack. For
+                             debugging: a debugger shows a task's real call
+                             stack, where a stage's ends at the driver.
+                TUCK_CONCURRENCY sets the default for every build.
+  --frames:POLICY (compile/build, stackless) where frames live (#219).
+                  heap    (default) a frame embeds in its caller, its
+                          awaiter or main's stack where it can; a spawned
+                          task, a call cycle, and a wait's helper stack
+                          use the heap.
+                  static  ALL of them embedded, or the build fails naming
+                          each that is not. For targets with no heap.
+                See docs/stackless-concurrency.md.
   --batch-count:N     (--actors:batch) flush after N staged sends
   --batch-timeout:MS  (--actors:batch) ...or MS after the first, whichever
                 comes first. Both 0 is refused: nothing would ever flush.
@@ -1035,6 +1068,33 @@ when isMainModule:
       optPasses = {}                             # drop the defaults first
       optExplicit = true
     optPasses = optPasses + ps
+  # `--concurrency:MODE` — how tasks pause (compiler/concurrency.nim).
+  # TUCK_CONCURRENCY sets the default, so a whole test suite can be re-run
+  # under the other mode without touching any build line (#216); a flag on
+  # the command line still wins.
+  if getEnv("TUCK_CONCURRENCY") != "":
+    let (m, ok) = parseConcurrencyMode(getEnv("TUCK_CONCURRENCY"))
+    if not ok: die("tuck: TUCK_CONCURRENCY: no such concurrency mode: '" &
+                   getEnv("TUCK_CONCURRENCY") & "'\n  available: stackful, stackless")
+    concurrencyMode = m
+  for o in opts:
+    if not o.startsWith("--concurrency:"): continue
+    let name = o["--concurrency:".len .. ^1]
+    let (m, ok) = parseConcurrencyMode(name)
+    if not ok:
+      die("tuck: no such concurrency mode: '" & name & "'\n" &
+          "  available: stackful, stackless")
+    concurrencyMode = m
+  # `--frames:static|heap` — where frames may live (#219).
+  for o in opts:
+    if not o.startsWith("--frames:"): continue
+    case o["--frames:".len .. ^1]
+    of "static": framesStatic = true
+    of "heap": framesStatic = false
+    else: die("tuck: no such frame policy: '" & o["--frames:".len .. ^1] &
+              "'\n  available: heap (default), static")
+  if framesStatic and concurrencyMode != cmStackless:
+    die("tuck: --frames:static is about stackless frames; this build is --concurrency:stackful")
   # `--actors:MODE` — how an actor gets its CPU (compiler/actor_mode.nim).
   # Semantics are identical across modes; cost is not, and the trade depends
   # on the workload, so the programmer picks. Validated in the order a typo
@@ -1147,6 +1207,11 @@ when isMainModule:
       for d in lm.m.decls:
         if d == nil or d.kind notin {dkFn, dkTask}: continue
         echo ssa_query.render(ssaOf(semLayer, d, ssChecked).fn)
+  of "frames":
+    # Stackless transform, phase 1 (#216): which fns would become frames and
+    # where each can pause, for the whole import closure.
+    let prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
+    stdout.write render(planFrames(semLayer, prog))
   of "validate", "v":
     # The SPEC grammar's opinion of this file, cross-checked against the
     # parser's. Both run; a disagreement is the output, because a
@@ -1257,8 +1322,8 @@ when isMainModule:
                     for lm in bProg: echo emitNim(lm.m, semLayer, "tuck_rt", bReal, lm.name)
                   of bkOdin:
                     for lm in bProg[0 ..< bProg.high]:
-                      echo emitOdinModule(lm.name, lm.m, semLayer, bReal)
-                    echo emitOdin(bProg[^1].m, semLayer, bReal, dumpBase)
+                      echo trimFeatures(emitOdinModule(lm.name, lm.m, semLayer, bReal))
+                    echo trimFeatures(emitOdin(bProg[^1].m, semLayer, bReal, dumpBase))
                   of bkDlang:
                     for lm in bProg[0 ..< bProg.high]:
                       echo emitDModule(lm.name, lm.m, semLayer, bReal)
@@ -1306,6 +1371,18 @@ when isMainModule:
     let optHits = optimizeProgram(progMods, optPasses)
     if optReport:
       report("OPTIMIZED", "site(s) rewritten", optHits)
+    # The stackless plan reads the checked tree by its unmangled names and
+    # call edges, so it runs BEFORE mangling; codegen reads it by decl id,
+    # which every backend's deep copy keeps.
+    if concurrencyMode == cmStackless:
+      let plan = planFrames(semLayer, prog)
+      frameDecls = plan.frameIds
+      helperDecls = plan.helperIds
+      pureActorDecls = plan.pureActorIds
+      frameScc = plan.sccOf
+      if framesStatic and plan.heapReasons.len > 0:
+        die("tuck: --frames:static: these frames would need the heap or a helper stack (#219):\n  " &
+            plan.heapReasons.join("\n  "))
     block:
       let t0 = vBegin(psMangle)
       mangleProgram(semLayer, progMods)
@@ -1376,12 +1453,12 @@ when isMainModule:
           let modDir = outDir / ("mod_" & moduleSlug(lm.id))
           createDir(modDir)
           let modOdPath = modDir / (moduleSlug(lm.id) & ".odin")
-          writeFile(modOdPath, emitOdinModule(lm.name, lm.m, semLayer, odReal, shapes))
+          writeFile(modOdPath, trimFeatures(emitOdinModule(lm.name, lm.m, semLayer, odReal, shapes)))
           echo "wrote ", modOdPath
           vSub(lm.name, ts)
         let tsEntry = epochTime()
         let odPath = outDir / (base & ".odin")
-        writeFile(odPath, emitOdin(odProg[^1].m, semLayer, odReal, base, shapes))
+        writeFile(odPath, trimFeatures(emitOdin(odProg[^1].m, semLayer, odReal, base, shapes)))
         echo "wrote ", odPath
         let shapesOdin = emitOdinShapes(shapes)
         if shapesOdin != "":
@@ -1563,6 +1640,9 @@ when isMainModule:
           if viaMid != "": writeFile(mainNim, viaMid & readFile(mainNim))
           for a in actorNames: boot.add("  registerActor" & a & "()\n")
           if hasTasks: asyncDrive = "\n  tuckRun()"
+          # Stackless frames nobody awaited still run to their end (#216).
+          if hasTasks and concurrencyMode == cmStackless:
+            asyncDrive = "\n  tuckSlRunAll()" & asyncDrive
         # a value-returning main IS the process exit code. When the runtime
         # drives tasks after main, keep main's return as the exit code via
         # mainRc. `fn main` is mangled like every other user fn, so the entry
@@ -1733,6 +1813,7 @@ when isMainModule:
           let odinCmd = quoteShell(odinExe) & " build " & quoteShell(outDir) &
                         " " & odinOpt & " -out:" & quoteShell(odinBin) &
                         (if noInvariants: " -define:tuckNoInvariants=true" else: "") &
+                        odinDefinesFor(actorPolicy) &
                         " " & getEnv("TUCK_ODIN_EXTRA")
           let odT0 = epochTime()
           let odRc = execShellCmd(odinCmd)
@@ -1816,7 +1897,10 @@ when isMainModule:
           for dir in implDirs: implIArgs.add(" -I" & quoteShell(dir))
           # TUCK_DMD_EXTRA: flags appended verbatim (`-version=tuckTrack`
           # makes the program report what it never freed, exit code 90).
+          if actorPolicy.mode == amBatch:
+            writeFile(outDir / "tuck_batch.d", dBatchModule(actorPolicy))
           let dInv = (if noInvariants: " -version=tuckNoInvariants" else: "") &
+                     dDefinesFor(actorPolicy) &
                      " " & getEnv("TUCK_DMD_EXTRA")
           let dCmd = quoteShell(dmdExe) & " -i" & dOpt & dInv &
                      " -I" & quoteShell(outDir) & implIArgs &

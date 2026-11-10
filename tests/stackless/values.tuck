@@ -1,0 +1,39 @@
+# Frame fns hand values back through their caller's destination.
+import console
+
+type MathError:
+  | Negative
+
+fn say({text: str}) [io]:
+  {text: text} console::printLine
+
+fn double({n: int}) -> {v: int} [io]:
+  {text: "doubling"} say
+  return {v: n * 2}
+
+fn quad({n: int}) -> {v: int} [io]:
+  let a = {n: n} double
+  let b = {n: a.v} double
+  return {v: b.v}
+
+fn half({n: int}) -> !{v: int} [io, error: MathError]:
+  {text: "halving"} say
+  if n < 0:
+    err MathError.Negative
+  return {v: n /i 2}
+
+task run({n: int}) -> {r: int} [io]:
+  let q = {n: n} quad
+  var total = q.v
+  let h = {n: total} half
+  if not h.ok:
+    return {r: 99}
+  total = total + h.value.v
+  let bad = {n: -1} half
+  if bad.ok:
+    return {r: 98}
+  return {r: total}
+
+fn main() -> int [io]:
+  let r = {n: 3} run
+  return r.r

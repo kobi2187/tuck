@@ -479,7 +479,8 @@ fn main() -> int:
 """
   t.okCheck "an early return inside a fallible task checks"
   t.emitsD "D wraps it in the carrier rather than returning nothing",
-           r"return rt\.tokVoid\(\)"
+           (if stacklessRun(): r"return TuckRetˑtuckˑtaskˑstreamReader\(tuckF, rt\.tokVoid\(\)\)"
+            else: r"return rt\.tokVoid\(\)")
   t.hostBuilds "...and every backend's host compiler accepts it"
   t.runs "...and it runs", 0
 

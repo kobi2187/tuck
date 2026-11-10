@@ -230,7 +230,8 @@ spawn :: proc(fn: proc()) -> ^Coroutine {
 
 hasPending :: proc() -> bool {
 	initScheduler()
-	return queue.len(globalScheduler.readyQueue) > 0
+	// Stackless frames (#216) are ready work too (tuck_coro.nim's runNext).
+	return queue.len(globalScheduler.readyQueue) > 0 || tuckSlHasReady()
 }
 
 currentCoroutine :: proc() -> ^Coroutine {
@@ -239,6 +240,9 @@ currentCoroutine :: proc() -> ^Coroutine {
 
 runNext :: proc() -> bool {
 	initScheduler()
+	// Stackless frames (#216) are ready work too: every loop that waits by
+	// stepping the scheduler must run them (tuck_coro.nim's runNext).
+	if tuckSlRunOne() do return true
 	if queue.len(globalScheduler.readyQueue) == 0 do return false
 
 	coro := queue.pop_front(&globalScheduler.readyQueue)
@@ -371,6 +375,8 @@ tuckLendUntil :: proc(fd: int, write: bool, timeoutMs: int) -> bool {
 		if n, _ := linux.poll(pfd[:], 0); n > 0 do return true
 		spent := int(time.duration_milliseconds(time.tick_since(start)))
 		if timeoutMs >= 0 && spent >= timeoutMs do return false
+		// A stackless frame cannot lend the thread (tuck_async.nim says why).
+		if tuckSlDriving > 0 do tuckSlCannotPark()
 		if runNext() do continue
 		if len(gLoop.waiters) == 0 {
 			// Nothing else can make progress: just wait on the fd itself.
@@ -622,7 +628,16 @@ Waiter :: struct {
 }
 
 @(private)
+// `--actors:single` (tuck_async.nim's TuckActorsSingle explains the trade):
+// every actor runs on main's thread — a coroutine, or a FRAME when its
+// handlers wait only on mailboxes (#216) — so a send is a push and a wake is
+// a queue append, with no thread, condvar or futex anywhere.
+TUCK_ACTORS_SINGLE :: #config(TUCK_ACTORS_SINGLE, false)
+
 ActorSlot :: struct {
+	frame:   TuckFrameHdr, // FIRST, so a frame actor's slot IS its frame
+	co:      ^Coroutine,   // single mode: the actor's coroutine (nil: a frame)
+	queued:  bool,         // single mode: already queued, so a send does not queue it twice
 	drain:   DrainProc,
 	lock:    sync.Mutex,
 	cond:    sync.Cond,
@@ -756,6 +771,9 @@ actorMain :: proc(t: ^thread.Thread) {
 			continue
 		}
 		spinBudget = max(spinBudget / 2, ActorSpinMin)
+		// About to stop: hand over what this actor staged for others, so a
+		// parked thread holds nothing and exit can be a local check.
+		when TUCK_ACTORS_BATCH { tuckFlushStaged() }
 		// ARM, THEN LOOK AGAIN (EV-7). Publishing `parked` and then sleeping
 		// is not enough: a sender that enqueued just before that store reads
 		// `parked` as false, returns without signalling, and its message sits
@@ -786,7 +804,119 @@ actorMain :: proc(t: ^thread.Thread) {
 	}
 }
 
+@(private)
+actorCoMain :: proc() {
+	// A single-mode actor's coroutine: drain until empty, answer a ping,
+	// mark itself un-queued, sleep until a send queues it again.
+	slot := (^ActorSlot)(context.user_ptr)
+	for {
+		for slot.drain() {}
+		answerProbe(slot)
+		slot.queued = false
+		parkSuspend()
+	}
+}
+
+// Batch mode's flush hooks: one per (thread, mailbox) this thread staged for,
+// registered by tuck_rt.odin's stagingFor. Per THREAD: each thread flushes
+// only what it staged.
+@(private)
+FlushHook :: struct {
+	flush:    proc(p: rawptr) -> bool,
+	flushDue: proc(p: rawptr) -> bool, // ...only once the run's deadline passed
+	data:     rawptr,
+	key:      rawptr, // the mailbox
+}
+
+@(private, thread_local)
+gFlushHooks: [dynamic]FlushHook
+
+tuckRegisterFlush :: proc(flush, flushDue: proc(p: rawptr) -> bool, data, key: rawptr) {
+	context.allocator = tuckRuntimeAllocator()
+	append(&gFlushHooks, FlushHook{flush, flushDue, data, key})
+}
+
+tuckFindStaging :: proc(key: rawptr) -> rawptr {
+	for h in gFlushHooks do if h.key == key do return h.data
+	return nil
+}
+
+@(private)
+wakeAllParked :: proc() {
+	// A flush has no send behind it to notify, so it wakes whoever sleeps.
+	// Broadcast: a run does not know its actor's slot, and this is per park.
+	sync.lock(&gSlotsLock)
+	for s in gActorSlots {
+		if intrinsics.atomic_load(&s.parked) {
+			sync.lock(&s.lock)
+			s.pending = true
+			sync.cond_signal(&s.cond)
+			sync.unlock(&s.lock)
+		}
+	}
+	sync.unlock(&gSlotsLock)
+}
+
+// Hand over every run this thread holds, then make sure someone drains it.
+tuckFlushStaged :: proc() {
+	handed := false
+	for h in gFlushHooks do if h.flush(h.data) do handed = true
+	if handed do wakeAllParked()
+}
+
+// The same, for the runs whose deadline has passed: swept across the thread,
+// because the run that needs it is the one nobody is sending to any more.
+tuckFlushDueStaged :: proc() {
+	handed := false
+	for h in gFlushHooks do if h.flushDue(h.data) do handed = true
+	if handed do wakeAllParked()
+}
+
+@(private, thread_local)
+gFrameActor: ^ActorSlot // the frame actor mid-pass: a send into its OWN full mailbox
+
+@(private)
+actorFrameStage :: proc(env: rawptr) -> TuckHop {
+	// A frame actor's one stage (single mode): what actorCoMain's loop body
+	// is, with no stack switch. A send into a full mailbox pumps from here.
+	slot := (^ActorSlot)(env)
+	outer := gFrameActor
+	gFrameActor = slot
+	for slot.drain() {}
+	gFrameActor = outer
+	answerProbe(slot)
+	slot.queued = false
+	return TuckHop{}
+}
+
+@(private)
+pumpOnce :: proc() {
+	if hasPending() { runNext() } else { runOnce(1) }
+}
+
+@(private)
+startSingle :: proc(drain: DrainProc, asFrame: bool) -> rawptr {
+	context.allocator = tuckRuntimeAllocator()
+	slot := new(ActorSlot)
+	slot.drain = drain
+	slot.queued = true
+	append(&gActorSlots, slot)
+	if asFrame {
+		slot.frame.stage = actorFrameStage
+		tuckSlReady(&slot.frame)
+	} else {
+		// The coroutine copies this context: its slot, and the tracking
+		// allocator its handlers allocate through, as actorMain's thread does.
+		context.user_ptr = slot
+		context.allocator = tuckTrackAllocator()
+		slot.co = newCoroutine(actorCoMain)
+		ready(slot.co)
+	}
+	return rawptr(slot)
+}
+
 tuckStartActor :: proc(drain: DrainProc) -> rawptr {
+	when TUCK_ACTORS_SINGLE { return startSingle(drain, false) }
 	// Detached by design: actors are daemons with no termination condition, so
 	// there is nothing to join. The process exits and they go with it — and
 	// so do their slot and thread, which is why they are the runtime's.
@@ -809,6 +939,15 @@ tuckWaitOn :: proc(handle: rawptr, pred: proc() -> bool) {
 	// The predicate is evaluated on the actor's thread, so the answer is
 	// neither racy nor stale.
 	if handle == nil do return
+	// EVERYTHING this thread staged: the predicate may read another actor.
+	when TUCK_ACTORS_BATCH { tuckFlushStaged() }
+	when TUCK_ACTORS_SINGLE {
+		// One thread: re-test between scheduler passes, which run the actors.
+		for !pred() {
+			if inCoroutine() { coroYield() } else { pumpOnce() }
+		}
+		return
+	}
 	slot := (^ActorSlot)(handle)
 	w := new(Waiter)
 	w.pred = pred
@@ -858,10 +997,14 @@ tuckPingUs :: proc(handle: rawptr, withinMs: int) -> TuckResult(int) {
 	deadline := t0 + i64(withinMs) * 1_000_000
 	id := intrinsics.atomic_add(&slot.probe, 1) + 1
 	// Wake it the way a send does: the probe may be all there is to do.
-	sync.lock(&slot.lock)
-	slot.pending = true
-	sync.cond_signal(&slot.cond)
-	sync.unlock(&slot.lock)
+	when TUCK_ACTORS_SINGLE {
+		tuckNotifySend(handle)
+	} else {
+		sync.lock(&slot.lock)
+		slot.pending = true
+		sync.cond_signal(&slot.cond)
+		sync.unlock(&slot.lock)
+	}
 	for intrinsics.atomic_load_explicit(&slot.ackId, .Acquire) < id {
 		if nowNs() >= deadline do return tnone(int)
 		if inCoroutine() {
@@ -888,6 +1031,13 @@ tuckDrainActors :: proc() {
 	// Wait for every actor to empty its mailbox. Emitted at the END of main.
 	// Without it `send` races `quit`: the message is in the ring and the
 	// detached thread may never have been scheduled.
+	when TUCK_ACTORS_BATCH { tuckFlushStaged() } // main's own staged sends
+	when TUCK_ACTORS_SINGLE {
+		// Main lends its thread: run until nothing is ready (the Nim twin
+		// says what this is weaker than in thread mode, and why it is enough).
+		for hasPending() { runNext() }
+		return
+	}
 	for {
 		allIdle := true
 		sync.lock(&gSlotsLock)
@@ -914,6 +1064,13 @@ tuckDrainActors :: proc() {
 tuckNotifySend :: proc(handle: rawptr) {
 	if handle == nil do return   // not registered yet: nothing is parked
 	slot := (^ActorSlot)(handle)
+	when TUCK_ACTORS_SINGLE {
+		// Queue the actor, once: a flood of sends must not queue it a million times.
+		if slot.queued do return
+		slot.queued = true
+		if slot.co != nil { ready(slot.co) } else { tuckSlReady(&slot.frame) }
+		return
+	}
 	if !intrinsics.atomic_load(&slot.parked) do return
 	sync.lock(&slot.lock)
 	slot.pending = true
@@ -931,16 +1088,21 @@ tuckAwaitRoom :: proc(handle: rawptr, actor: string) {
 		tuckMailboxFull(actor, "the actor was never started, so nothing drains it")
 	}
 	slot := (^ActorSlot)(handle)
-	if gMySlot == slot {
+	selfSend := gMySlot == slot
+	when TUCK_ACTORS_SINGLE {
+		selfSend = (inCoroutine() && activeCoroutine == slot.co) || gFrameActor == slot
+	}
+	if selfSend {
 		tuckMailboxFull(actor, "it sent to itself, and the actor that would make room is the one waiting. Declare `on_full: drop` or a larger `queue`")
 	}
+	when TUCK_ACTORS_BATCH { tuckFlushStaged() }
 	tuckNotifySend(handle)
 	if inCoroutine() {
 		coroYield()   // re-queues the caller before it suspends
 	} else if hasPending() {
 		runNext()
 	} else {
-		intrinsics.cpu_relax()
+		when TUCK_ACTORS_SINGLE { runOnce(1) } else { intrinsics.cpu_relax() }
 	}
 }
 
@@ -1053,4 +1215,75 @@ awaitResult :: proc(slot: ^TuckAsyncResult($T)) -> T {
 	value := slot.value
 	free(slot)
 	return value
+}
+
+// --- stackless: a statement that may park, on a helper stack (#216) ---------
+// tuck_async.nim's tuckSlOnStack explains it: a stage hands a statement that
+// may wait inside the runtime (an fd, a timer, `on select`, a send, an actor
+// wait) to a pooled WORKER coroutine, resumed at once. A statement that never
+// waits finishes there and the stage carries on; one that waits parks the
+// worker through the reactor, and the worker queues the frame when done.
+// Odin procs cannot capture, so a fresh worker finds its record through
+// slStartingWorker, set just before its first resume.
+@(private)
+TuckSlWorker :: struct {
+	co:     ^Coroutine,
+	body:   proc(env: rawptr),
+	frame:  ^TuckFrameHdr,
+	done:   bool,
+	parked: bool,
+}
+
+@(private, thread_local) slIdleWorkers: [dynamic]^TuckSlWorker
+@(private, thread_local) slStartingWorker: ^TuckSlWorker
+
+@(private)
+slWorkerMain :: proc() {
+	w := slStartingWorker
+	for {
+		w.body(w.frame)
+		w.done = true
+		if w.parked do tuckSlReady(w.frame) // the frame waited for this
+		append(&slIdleWorkers, w)
+		parkSuspend() // idle (not requeued) until the next statement
+	}
+}
+
+tuckSlOnStack :: proc(f: ^TuckFrameHdr, next: TuckStageFn, body: proc(env: rawptr)) -> TuckHop {
+	f.stage = next
+	w: ^TuckSlWorker
+	if len(slIdleWorkers) > 0 {
+		w = pop(&slIdleWorkers)
+	} else {
+		w = new(TuckSlWorker)
+		w.co = newCoroutine(slWorkerMain)
+		slStartingWorker = w
+	}
+	w.body = body
+	w.frame = f
+	w.done = false
+	w.parked = false
+	resume(w.co)
+	if w.done do return TuckHop{next, f}
+	w.parked = true
+	return TuckHop{}
+}
+
+// The idle workers, freed: called before the exit-time leak report, which
+// would otherwise count every pooled helper stack as a leak.
+tuckSlReleaseWorkers :: proc() {
+	for w in slIdleWorkers {
+		destroyCoroutine(w.co)
+		free(w)
+	}
+	delete(slIdleWorkers)
+	slIdleWorkers = nil
+}
+
+// A pure actor (no handler can pause, #216): under --actors:single it runs as
+// a frame — the slot IS the frame. Thread mode starts it as any actor: a
+// handler runs on the actor's own thread there.
+tuckStartActorFrame :: proc(drain: DrainProc) -> rawptr {
+	when TUCK_ACTORS_SINGLE { return startSingle(drain, true) }
+	return tuckStartActor(drain)
 }

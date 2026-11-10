@@ -6,6 +6,7 @@
 # (`emitD`/`emitDModule`) sit above genDDecl/genDExpr in the import order,
 # same shape as codegen_emit.nim / codegen_odin_emit.nim.
 import shape_pool
+import concurrency   # --concurrency:stackless (#216)
 import ast, strutils, tables, sets
 import resolution
 import ast_query
@@ -78,7 +79,7 @@ proc dBootSequence*(ctx: DCodegenCtx, m: Module, real: ModuleMap, hasTasks: bool
       # The slot is KEPT: `Actor.waitUntil` names the actor at the call site,
       # so the emitted call needs a handle to hand the predicate to.
       daemons.add("    " & actorSlotName(d.name) &
-                  " = rt.tuckStartActor(&drain_" & d.name & ");\n")
+                  " = rt." & actorStarter(d) & "(&drain_" & d.name & ");\n")
   # Another module's actors start themselves (A18): their drains and slots
   # live in that module.
   let bootMods = actorBootModules(m, real)
@@ -144,6 +145,10 @@ proc actorFieldReleases(ctx: DCodegenCtx, m: Module): string =
                    f.name & ");\n"
   if result.len > 0: result = "    version (tuckTrack) {\n" & result & "    }\n"
 
+proc stacklessDrainD(hasTasks: bool): string =
+  ## Stackless frames nobody awaited still run to their end (#216).
+  if drainsFrames(hasTasks): "    rt.tuckSlRunAll();\n" else: ""
+
 proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
   ## Tuck's `fn main` is a plain fn; D's entry point calls it. A
   ## value-returning `fn main` IS the process exit code — D's `int main`
@@ -173,7 +178,8 @@ proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
   # Drive the loop only when TASKS exist. Actors are daemons whose drain
   # loops never finish, so running the scheduler for them after main would
   # spin forever — main owns the lifecycle and ends the program itself.
-  let drive = (if hasTasks: "    rt.tuckRun();\n" else: "") &
+  let drive = stacklessDrainD(hasTasks) &
+    (if hasTasks: "    rt.tuckRun();\n" else: "") &
     # Wait for every actor to empty its mailbox before exiting: an actor thread
     # is detached, so without this a `send` races the process teardown and a
     # fire-and-forget message can be lost.

@@ -1,0 +1,22 @@
+# A task that calls an [io] fn M times; that fn itself makes an [io] call.
+# Measures the call/return of a fn sitting between a task and a pause point —
+# under the stackless transform it is a FRAME fn, not a native one.
+fn stepIo({n: int}) -> {v: int} [io]:
+  return {v: n}
+
+fn mid({n: int}) -> {v: int} [io]:
+  let s = {n: n} stepIo
+  return {v: s.v + 1}
+
+task chain({m: int}) -> {r: int} [io]:
+  var sum = 0
+  for i in 1 .. m:
+    let x = {n: i} mid
+    sum += x.v
+  return {r: sum}
+
+fn main() -> int [io]:
+  let res = {m: 10000000} chain
+  if res.r == 50000015000000:
+    return 0
+  return 1

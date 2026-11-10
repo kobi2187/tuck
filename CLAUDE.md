@@ -38,6 +38,8 @@ nim c --hints:off -o:tuck tuck.nim   # build the compiler
 ./tests/run --bless                  # rewrite goldens
 ./tests/run --jobs:N                 # pool bound; SERIAL by default (#31)
 TUCK_REQUIRE_ODIN=1 ./tests/run      # fail rather than SKIP if Odin is absent
+TUCK_CONCURRENCY=stackless ./tests/run  # every suite under stackless (#216);
+                                     # only stackful-text assertions differ
 ```
 
 `run-all-tests.sh` is a thin wrapper over `tests/run`; both are the pre-commit
@@ -66,6 +68,7 @@ reason the modes exist.
 ./tuck c  file.tuck        # compile — emit one target: Nim, --odin, or --dlang
 ./tuck b  file.tuck        # build   — emit and link a binary
 ./tuck explain TK-TY15     # what a diagnostic means, and how to fix it
+./tuck frames file.tuck    # stackless colouring (#216): frame fns, pause sites
 ./tuck b f.tuck --stdlib:stdlib-project   # build against stdlib-project's modules instead of std/
 ```
 

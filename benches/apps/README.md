@@ -52,8 +52,9 @@ enormously for handoff-dominated workloads and almost not at all for
 compute-dominated ones, and which kind a program is can be read off its
 handlers before measuring anything.
 
-`--actors:` is currently **Nim-only** — `actor_mode.nim` emits `-d:` defines
-and nothing else, so `--odin` and `--dlang` always build thread mode.
+`--actors:` was **Nim-only** when these were measured: `--odin` and `--dlang`
+built thread mode whatever the flag said. Since #218 all three backends have
+all three modes (`compiler/actor_mode.nim`); the tables here are Nim's.
 
 ### The backends do not agree, and the gap is 55x
 

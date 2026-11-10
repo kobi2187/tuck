@@ -1,0 +1,22 @@
+# A frame fn that recurses (#219): its frames, on the call cycle, come from
+# the heap; the task's call into the cycle and main's await still embed.
+import console
+
+fn step({n: int}) -> {v: int} [io]:
+  return {v: n}
+
+fn sumDown({n: int}) -> {s: int} [io]:
+  if n == 0:
+    return {s: 0}
+  let a = {n: n} step
+  {text: "down"} console::printLine
+  let rest = {n: n - 1} sumDown
+  return {s: a.v + rest.s}
+
+task total({n: int}) -> {r: int} [io]:
+  let x = {n: n} sumDown
+  return {r: x.s}
+
+fn main() -> int [io]:
+  let r = {n: 10} total
+  return r.r

@@ -26,6 +26,7 @@ import record_shape  # what a combinator PRODUCES, decided once for all backends
 import codegen_odin_util  # ctx-free helpers: lib specs, err codes, pure AST predicates
 export odinLibSpec
 import ./codegen_odin_ctx
+import concurrency   # --concurrency:stackless spawn/await sites (#216)
 
 # Type emission, the ctx type, and the decl-shape fast lookups now live in
 # codegen_odin_ctx.nim, imported above.
@@ -45,6 +46,8 @@ import ./codegen_odin_ctx
 
 
 proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string
+proc genStacklessSpawn(ctx: var OdinCodegenCtx, e: Expr): string
+proc genOdinDiscard(ctx: var OdinCodegenCtx, e: Expr): string
 
 
 # Type-directed explosion: a record-typed VAR as the whole payload
@@ -219,7 +222,7 @@ proc genRecordCtor(ctx: var OdinCodegenCtx, e: Expr): string =
     return ctx.validatorName(e.callee.name) & "(" & ctor & ")"
   ctor
 
-proc genCallArgs(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
+proc genCallArgs*(ctx: var OdinCodegenCtx, e: Expr): seq[string] =
   ## ponytail: pass records BY VALUE. A mutating callee would need `^T` and
   ## `&x` at the call site, but Odin proc params aren't addressable, so
   ## `&param` is a hard error — and Tuck's mutators already return the updated
@@ -437,6 +440,10 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
     args[0] = "&" & args[0]
   let emitted = ctx.genCallWithArgs(e, calleeStr, args)
   if emitted != "": return emitted
+  # Stackless (#216): a task call reached here is never bound, so it spawns
+  # a frame — with arguments or without (a frame holds them, nothing captures).
+  if concurrencyMode == cmStackless and ctx.index.isTaskName(calleeStr):
+    return ctx.genStacklessSpawn(e)
   if ctx.index.isTaskName(calleeStr) and args.len == 0:
     # Calling a task SCHEDULES it as a coroutine — it runs concurrently and
     # tuckRun drives it (spec §9.2). Mirrors the Nim backend, which has always
@@ -1249,6 +1256,49 @@ proc isTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr): bool =
     e.assignVal.callee.kind == exkVar and
     ctx.index.isTaskName(e.assignVal.callee.name) and e.assignVal.args.len > 0
 
+proc stacklessCtor(calleeStr: string): string =
+  ## `pkg.task` -> `pkg.TuckNewˑtask`: the frame constructor (#216).
+  let dot = calleeStr.rfind('.')
+  if dot < 0: "TuckNewˑ" & calleeStr else: calleeStr[0 .. dot] & "TuckNewˑ" & calleeStr[dot + 1 .. ^1]
+
+proc genStacklessBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
+  ## `let r = {args} task` outside a frame, under stackless: the frame gets a
+  ## slot here, and this fn lends its thread until the slot is done.
+  let tname = e.assignVal.callee.name
+  let task = ctx.module.findFn(tname)
+  let retType = if task.fnReturnType != nil: ctx.odinType(task.fnReturnType) else: "bool"
+  let args = ctx.genCallArgs(e.assignVal)
+  let slotVar = "slot" & $ctx.tmpCounter
+  ctx.tmpCounter.inc
+  let assignOp = if e.target.kind == exkVar and e.target.name notin ctx.definedVars and
+                    not ctx.res.isOwnerField(e.target):
+                   ctx.definedVars.incl(e.target.name)
+                   " := "
+                 else: " = "
+  let calleeStr = ctx.genOdinExpr(e.assignVal.callee)
+  let frameT = stacklessCtor(calleeStr).replace("TuckNewˑ", "TuckFˑ")
+  # Its root frame on THIS stack (#219): this fn waits right here.
+  ind & slotVar & ": rt.TuckSlot(" & retType & ")\n" &
+  ind & slotVar & "F: " & frameT & "\n" &
+  ind & "rt.tuckSlReady(&" & stacklessCtor(calleeStr) & "(&" & slotVar & "F, &" &
+    slotVar & ", nil" & (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr)\n" &
+  ind & ctx.genOdinExpr(e.target) & assignOp & "rt.tuckSlAwaitMain(&" & slotVar & ")"
+
+proc genOdinDiscard(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## `discard x`: Odin's own value-drop is `_ = x`. A spawned stackless task
+  ## (#216) is no value: the spawn already drops what nobody awaits.
+  let v = e.discardVal
+  if v == nil: return ""
+  let code = ctx.genOdinExpr(v)
+  if code.startsWith("rt.tuckSlReady("): code else: "_ = " & code
+
+proc genStacklessSpawn(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A task call nobody binds, under stackless: a frame with nowhere for its
+  ## result, queued.
+  let args = ctx.genCallArgs(e)
+  "rt.tuckSlReady(&" & stacklessCtor(ctx.genOdinExpr(e.callee)) & "(nil, nil, nil" &
+    (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr)"
+
 proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## Spawn a task that takes real arguments, and await its result.
   ##
@@ -1266,6 +1316,7 @@ proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string 
   ## The env built here carries the task's arguments AND the result slot
   ## together, so exactly one wrapper does the whole job: read args, call
   ## the real task, write the slot.
+  if concurrencyMode == cmStackless: return ctx.genStacklessBind(e, ind)
   let tname = e.assignVal.callee.name
   let task = ctx.module.findFn(tname)
   let params = task.paramNames()
@@ -1330,6 +1381,7 @@ proc genOdinTaskArgsSpawn(ctx: var OdinCodegenCtx, e: Expr, ind: string): string
   ## per-signature wrapper - without a result slot: the wrapper calls the task
   ## and frees the env. Without this the task body ran on the MAIN context, so
   ## the first socket read inside it hit "cannot await outside a coroutine".
+  if concurrencyMode == cmStackless: return ind & ctx.genStacklessSpawn(e)
   let tname = e.callee.name
   let task = ctx.module.findFn(tname)
   let params = task.paramNames()
@@ -1373,7 +1425,7 @@ proc ownsItsLayout(ctx: var OdinCodegenCtx, s: Expr): bool =
   if ctx.isTaskArgsBind(s) or ctx.isTaskArgsSpawn(s): return true
   s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkDefer}
 
-proc genStmt(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
+proc genStmt*(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
   if ctx.isTaskArgsSpawn(s): return ctx.genOdinTaskArgsSpawn(s, ind & "  ")
   var ownsLayout = s.kind == exkMatch and s.subject != nil
@@ -1385,7 +1437,7 @@ proc genStmt(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
   # Odin has no statement terminator
   if ctx.ownsItsLayout(s) or ownsLayout: code else: ind & "  " & code
 
-proc genBlock(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
+proc genBlock*(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## No braces here: Odin's block-owning constructs (proc, if, for) emit their
   ## own `{`, and a bare nested block is rare enough not to need one.
   let saved = ctx.indent
@@ -1644,12 +1696,19 @@ proc genAssign(ctx: var OdinCodegenCtx, e: Expr): string =
     return ctx.genOdinVarDecl(e, valStr)
   ctx.genReassign(e, valStr)
 
+proc frameReturn*(ctx: OdinCodegenCtx, ret: string): string =
+  ## In a stackless stage (#216) a `return [v]` finishes the FRAME: the
+  ## value goes to its slot or destination and the stage returns the hop.
+  if ctx.frameVar == "" or not ret.startsWith("return"): return ret
+  let v = ret["return".len .. ^1].strip
+  "return " & ctx.frameRet & "(" & ctx.frameVar & (if v.len > 0: ", " & v else: "") & ")"
+
 proc genReturnStmt(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `return err X` is the raise, not a wrapped return value.
   if e.returnVal != nil and e.returnVal.kind == exkRaise:
     ctx.genOdinExpr(e.returnVal)
   else:
-    ctx.genOdinReturn(e)
+    ctx.frameReturn(ctx.genOdinReturn(e))
 
 proc genSend(ctx: var OdinCodegenCtx, e: Expr): string =
   ## `Actor send handler {payload}` — enqueue an envelope on the singleton's
@@ -1742,8 +1801,8 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkBracket, exkBracketAssign: ctx.genCallResolved(e)
   of exkFor: ctx.genFor(e, ind)
   of exkWhile: ctx.genWhile(e, ind)
-  of exkBreak: "break"
-  of exkContinue: "continue"
+  of exkBreak: ctx.frameJumps.getOrDefault(cast[pointer](e), "break")
+  of exkContinue: ctx.frameJumps.getOrDefault(cast[pointer](e), "continue")
   of exkBinary: ctx.genBinary(e)
   of exkUnary: ctx.genUnary(e)
   of exkCast: ctx.genOdinCast(e)
@@ -1757,13 +1816,12 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkReset: ctx.genOdinAssignTarget(e.resetPlace) & " = {}"
   of exkMatch: (if e.subject != nil: ctx.genMatchExpr(e) else: "")
   of exkReturn: ctx.genReturnStmt(e)
-  of exkRaise: ctx.genRaise(e)
+  of exkRaise: ctx.frameReturn(ctx.genRaise(e))
   of exkDiscard:
     # Odin has no `discard` keyword; `_ = expr` is its own native value-drop
     # (same construct Go uses). A bare `discard` has nothing to drop, so it
     # emits nothing — genStmt already skips an empty statement cleanly.
-    if e.discardVal != nil: "_ = " & ctx.genOdinExpr(e.discardVal)
-    else: ""
+    ctx.genOdinDiscard(e)
   of exkTripleDot: ""   # `...` outside a fn body: a no-op statement
   of exkChain:
     raiseAssert "codegen_odin: a `..` chain reached the emitter; " &

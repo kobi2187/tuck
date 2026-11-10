@@ -1,4 +1,4 @@
-#+feature dynamic-literals
+#+feature dynamic-literals using-stmt
 package main
 
 import "core:os"
@@ -12,38 +12,66 @@ TRec_r :: struct ($T_r: typeid) {
 	r: T_r,
 }
 
-Env_tuckˑtaskˑcompute :: struct {
-	base: int,
-	slot: ^rt.TuckAsyncResult(TRec_r(int)),
-}
-
-wrap_tuckˑtaskˑcompute :: proc() {
-	e := (^Env_tuckˑtaskˑcompute)(context.user_ptr)
-	e.slot.value = tuckˑtaskˑcompute(e.base)
-	e.slot.done = true
-	free(e)
-}
-
 tuckˑfnˑstepIo :: proc (n: int) -> TRec_v(int) {
   return TRec_v(int){v = n}
 }
 
-tuckˑtaskˑcompute :: proc(base: int) -> TRec_r(int) {
-  tuckˑvˑa := tuckˑfnˑstepIo(base)
-  tuckˑvˑb := tuckˑfnˑstepIo(base)
-  return TRec_r(int){r = (tuckˑvˑa.v + tuckˑvˑb.v)}
+TuckFˑtuckˑtaskˑcompute :: struct {
+	tuckHdr: rt.TuckFrameHdr,
+	tuckRes: ^rt.TuckSlot(TRec_r(int)),
+	tuckDest: ^TRec_r(int),
+	base: int,
+	tuckˑvˑa: TRec_v(int),
+	tuckˑvˑb: TRec_v(int),
+}
+
+TuckNewˑtuckˑtaskˑcompute :: proc(tuckAt: ^TuckFˑtuckˑtaskˑcompute, tuckRes: ^rt.TuckSlot(TRec_r(int)), tuckDest: ^TRec_r(int), base: int) -> ^TuckFˑtuckˑtaskˑcompute {
+	f := tuckAt
+	if f == nil { f = new(TuckFˑtuckˑtaskˑcompute) } else { f^ = {}; f.tuckHdr.embedded = true }
+	f.tuckHdr.stage = TuckSˑtuckˑtaskˑcomputeˑ0
+	f.tuckRes = tuckRes
+	f.tuckDest = tuckDest
+	f.base = base
+	return f
+}
+
+TuckRetˑtuckˑtaskˑcompute :: proc(tuckF: ^TuckFˑtuckˑtaskˑcompute, v: TRec_r(int)) -> rt.TuckHop {
+	rt.tuckSlFinish(tuckF.tuckRes, tuckF.tuckDest, v)
+	TuckExitˑtuckˑtaskˑcompute(tuckF)
+	h := rt.tuckSlReturnHop(&tuckF.tuckHdr)
+	if !tuckF.tuckHdr.embedded do free(tuckF)
+	return h
+}
+
+TuckSˑtuckˑtaskˑcomputeˑ0 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑcompute)(env)
+  using tuckF
+  return rt.tuckSlYield(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑcomputeˑ1)
+}
+
+TuckSˑtuckˑtaskˑcomputeˑ1 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑcompute)(env)
+  using tuckF
+  tuckˑvˑa = tuckˑfnˑstepIo(base)
+  return rt.tuckSlYield(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑcomputeˑ2)
+}
+
+TuckSˑtuckˑtaskˑcomputeˑ2 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑcompute)(env)
+  using tuckF
+  tuckˑvˑb = tuckˑfnˑstepIo(base)
+  return TuckRetˑtuckˑtaskˑcompute(tuckF, TRec_r(int){r = (tuckˑvˑa.v + tuckˑvˑb.v)})
+}
+
+TuckExitˑtuckˑtaskˑcompute :: proc(tuckF: ^TuckFˑtuckˑtaskˑcompute) {
+  using tuckF
 }
 
 tuckˑfnˑmain :: proc () -> int {
-  env0 := new(Env_tuckˑtaskˑcompute)
-  env0.base = 21
-  slot0 := rt.newAsyncResult(TRec_r(int))
-  env0.slot = slot0
-  savedCtx0 := context.user_ptr
-  context.user_ptr = env0
-  rt.tuckSpawn(wrap_tuckˑtaskˑcompute)
-  context.user_ptr = savedCtx0
-  tuckˑvˑres := rt.awaitResult(slot0)
+  slot0: rt.TuckSlot(TRec_r(int))
+  slot0F: TuckFˑtuckˑtaskˑcompute
+  rt.tuckSlReady(&TuckNewˑtuckˑtaskˑcompute(&slot0F, &slot0, nil, 21).tuckHdr)
+  tuckˑvˑres := rt.tuckSlAwaitMain(&slot0)
   return tuckˑvˑres.r
 }
 
@@ -51,6 +79,7 @@ main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
 	rt.tuckAsyncInit()
 	mainRc := tuckˑfnˑmain()
+	rt.tuckSlRunAll()
 	rt.tuckRun()
 	rt.tuckTrackCheck()
 	os.exit(mainRc)

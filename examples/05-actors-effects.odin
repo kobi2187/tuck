@@ -85,7 +85,7 @@ main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
 	tuckˑactorˑCounterSingleton.count = 0
 	rt.tuckAsyncInit()
-	tuckˑactorˑCounterSlot = rt.tuckStartActor(drain_tuckˑactorˑCounter)
+	tuckˑactorˑCounterSlot = rt.tuckStartActorFrame(drain_tuckˑactorˑCounter)
 	rt.tuckDrainActors()
 	rt.tuckTrackCheck()
 }

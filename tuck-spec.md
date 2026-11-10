@@ -2180,28 +2180,45 @@ no `elif`/`else` form.
 
 ## Part 9: Concurrency
 
-**Runtime note, read before either subsection below.** An earlier draft of
-this spec targeted *stackless* coroutines — a compiler transform turning each
-`[io]` yield point into a state-machine variant, with no per-task stack at
-all. That approach was deliberately abandoned: hand-rolled stackless state
-machines (and the nim-cps alternative) were tried and dropped in favor of
-**stackful coroutines over a single, vendored C library (minicoro)**, shared
-identically by both backends, so the two cannot diverge on switch semantics
-the way two independent hand-written transforms eventually would. Each task
-or actor gets a real coroutine with its own stack; `[io]` calls yield by an
-actual stack switch (`mco_yield`/`mco_resume`), not a compiler-synthesized
-state enum. Stacks are `mmap`-reserved virtual memory (a large nominal size,
-e.g. 1MB) rather than `calloc`'d — physical RAM is only committed for the
-pages a coroutine actually touches, so many idle coroutines are cheap even
-though each nominally "has" a big stack.
+**Runtime note, re-ruled 2026-11-10 (#216).** Stackless is the default
+implementation of this part, and stackful is kept behind a flag. The history
+of the decision:
+* **First draft:** stackless coroutines — a compiler transform turning each
+  `[io]` yield point into a state-machine variant.
+* **2026-08-05:** that draft was dropped in favour of stackful coroutines
+  over one vendored C library (minicoro), shared by every backend. The worry
+  was that two independent hand-written transforms would drift apart on
+  switch semantics.
+* **2026-11-10:** the transform exists now, and it is done **once**, on the
+  checked AST, with every backend only printing its result
+  (`docs/stackless-concurrency.md`). So the reason for the earlier ruling is
+  gone.
 
-**This makes the concurrency runtime a hosted-OS capability today (§7.1)**: `mmap` and the epoll/kqueue-based reactor that drives I/O
-readiness both assume a hosted OS. A bare-metal Cortex-M0 target has neither.
-Actors and tasks as specified below are real, both-backends-verified, and
-run-gated by the test suite — but they currently target Linux/macOS/Windows,
-not the bare-metal case Part 1 frames as a primary use case. A stackless,
-concurrency path for bare metal is not designed; if the embedded story
-needs one, it is separate future work, not a mode of what is built today.
+What the default does:
+* **Frames:** a fn that can pause becomes a frame (its locals) and stages
+  (the code between pauses). A pause returns to a driver loop.
+* **Waits:** a statement that waits inside the runtime borrows a pooled
+  minicoro stack while it waits.
+* **Speed:** spawn plus await of a task went from ~4.8 µs to ~22 ns.
+* **Unchanged:** the semantics below.
+
+`--concurrency:stackful` keeps the coroutine-per-task runtime, which is the
+one to debug with.
+
+**The reactor is a hosted-OS capability (§7.1)**: the epoll/kqueue reactor
+that drives I/O readiness, and the `mmap`'d stacks that stackful tasks and
+helper stacks use, all assume a hosted OS. A bare-metal Cortex-M0 has
+neither.
+
+**The frames are not a hosted-OS capability.** `--frames:static` (#219)
+builds a program in which every frame is embedded: in its caller, its
+awaiter, `main`'s stack or an actor's slot. The build fails, naming each
+reason, if a frame would come from the heap or a statement would borrow a
+helper stack. That is the bare-metal path: tasks that compute and yield,
+frame calls, and actors that wait only on mailboxes.
+
+Waiting on hardware without a reactor is not designed yet. Today any I/O
+wait needs one.
 
 ### 9.1 Actors
 
