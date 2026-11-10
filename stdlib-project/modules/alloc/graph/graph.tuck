@@ -1,0 +1,264 @@
+# alloc.graph — a graph on the nodes 0 .. n-1, with the searches programs reach for.
+#
+# Edges are stored per node (adjacency lists) with a weight, default 1. A
+# graph is a value like any container: `g = {g: g, src: 0, dst: 1, weight: 5} addEdge`.
+# `addEdge` is directed; `addLink` adds both ways. Results that name nodes are
+# Seqs of node numbers; a distance of -1 means "not reachable".
+#
+# dijkstra needs weights >= 0 and packs (distance, node) into one int
+# (distance * n + node) for the heap, so distances stay below 9e18 / n.
+import seq
+import heap
+
+type Edge:
+  to: int
+  weight: int
+
+type Graph:
+  size: int
+  adj: Seq[Seq[Edge]]
+
+fn graph({n: int}) -> Graph:
+  var out: Seq[Seq[Edge]] = []
+  for i in 0 .. n - 1:
+    let row: Seq[Edge] = []
+    out = {items: out, value: row} push
+  return {size: n, adj: out} Graph
+
+fn valid({g: Graph, node: int}) -> bool:
+  return node >= 0 and node < g.size
+
+# A directed edge src -> dst. An edge touching a node outside the graph is ignored.
+fn addEdge({g: Graph, src: int, dst: int, weight: int}) -> Graph:
+  if not ({g: g, node: src} valid):
+    return g
+  if not ({g: g, node: dst} valid):
+    return g
+  var out = g.adj
+  var row = out[src]
+  let e = {to: dst, weight: weight} Edge
+  row = {items: row, value: e} push
+  {items: out, index: src, value: row} setAt
+  return {size: g.size, adj: out} Graph
+
+# Both directions.
+fn addLink({g: Graph, a: int, b: int, weight: int}) -> Graph:
+  let forward = {g: g, src: a, dst: b, weight: weight} addEdge
+  return {g: forward, src: b, dst: a, weight: weight} addEdge
+
+fn neighbors({g: Graph, node: int}) -> Seq[Edge]:
+  if not ({g: g, node: node} valid):
+    let nothing: Seq[Edge] = []
+    return nothing
+  return g.adj[node]
+
+# Breadth-first order from `start`: nodes by number of edges away, ties in the
+# order their edges were added.
+fn bfs({g: Graph, start: int}) -> Seq[int]:
+  var order: Seq[int] = []
+  if not ({g: g, node: start} valid):
+    return order
+  var seen: Seq[bool] = []
+  for i in 0 .. g.size - 1:
+    seen = {items: seen, value: false} push
+  var queue: Seq[int] = []
+  queue = {items: queue, value: start} push
+  {items: seen, index: start, value: true} setAt
+  var head = 0
+  for head < queue.len:
+    let node = queue[head]
+    head = head + 1
+    order = {items: order, value: node} push
+    let row = g.adj[node]
+    for k in 0 .. row.len - 1:
+      let next = row[k].to
+      if not seen[next]:
+        {items: seen, index: next, value: true} setAt
+        queue = {items: queue, value: next} push
+  return order
+
+# Depth-first (pre-order) from `start`, taking edges in the order they were added.
+fn dfs({g: Graph, start: int}) -> Seq[int]:
+  var order: Seq[int] = []
+  if not ({g: g, node: start} valid):
+    return order
+  var seen: Seq[bool] = []
+  for i in 0 .. g.size - 1:
+    seen = {items: seen, value: false} push
+  var todo: Seq[int] = []
+  todo = {items: todo, value: start} push
+  var top = 1
+  for top > 0:
+    top = top - 1
+    let node = todo[top]
+    if not seen[node]:
+      {items: seen, index: node, value: true} setAt
+      order = {items: order, value: node} push
+      let row = g.adj[node]
+      var k = row.len - 1
+      for k >= 0:
+        let next = row[k].to
+        if not seen[next]:
+          if top < todo.len:
+            {items: todo, index: top, value: next} setAt
+          else:
+            todo = {items: todo, value: next} push
+          top = top + 1
+        k = k - 1
+  return order
+
+# Shortest distance from `start` to every node (-1 when unreachable).
+fn dijkstra({g: Graph, start: int}) -> Seq[int]:
+  var dist: Seq[int] = []
+  for i in 0 .. g.size - 1:
+    dist = {items: dist, value: 0 - 1} push
+  if not ({g: g, node: start} valid):
+    return dist
+  var queue: Heap[int] = {items: [], used: 0} Heap
+  {items: dist, index: start, value: 0} setAt
+  queue = {h: queue, value: start} insert
+  var going = true
+  for going:
+    let next = {h: queue} extractMin
+    if not next.ok:
+      going = false
+    else:
+      queue = next.value.h
+      let key = next.value.value
+      let node = key % g.size
+      let d = key /i g.size
+      if d == dist[node]:
+        let row = g.adj[node]
+        for k in 0 .. row.len - 1:
+          let to = row[k].to
+          let nd = d + row[k].weight
+          if dist[to] < 0 or nd < dist[to]:
+            {items: dist, index: to, value: nd} setAt
+            queue = {h: queue, value: nd * g.size + to} insert
+  return dist
+
+# A topological order of a directed graph (every edge goes forward), by Kahn's
+# algorithm; absent when the graph has a cycle.
+fn topoSort({g: Graph}) -> Seq[int]?:
+  var indegree: Seq[int] = []
+  for i in 0 .. g.size - 1:
+    indegree = {items: indegree, value: 0} push
+  for i in 0 .. g.size - 1:
+    let row = g.adj[i]
+    for k in 0 .. row.len - 1:
+      let to = row[k].to
+      {items: indegree, index: to, value: indegree[to] + 1} setAt
+  var order: Seq[int] = []
+  for i in 0 .. g.size - 1:
+    if indegree[i] == 0:
+      order = {items: order, value: i} push
+  var head = 0
+  for head < order.len:
+    let node = order[head]
+    head = head + 1
+    let row = g.adj[node]
+    for k in 0 .. row.len - 1:
+      let to = row[k].to
+      let left = indegree[to] - 1
+      {items: indegree, index: to, value: left} setAt
+      if left == 0:
+        order = {items: order, value: to} push
+  if order.len != g.size:
+    return
+  return order
+
+# How many connected pieces, ignoring edge direction.
+fn components({g: Graph}) -> int:
+  var seen: Seq[bool] = []
+  for i in 0 .. g.size - 1:
+    seen = {items: seen, value: false} push
+  # an undirected view: every edge both ways
+  var und = {n: g.size} graph
+  for i in 0 .. g.size - 1:
+    let row = g.adj[i]
+    for k in 0 .. row.len - 1:
+      und = {g: und, a: i, b: row[k].to, weight: 1} addLink
+  var count = 0
+  for i in 0 .. g.size - 1:
+    if not seen[i]:
+      count = count + 1
+      let reach = {g: und, start: i} bfs
+      for k in 0 .. reach.len - 1:
+        {items: seen, index: reach[k], value: true} setAt
+  return count
+
+# --- self-check --------------------------------------------------------------
+
+fn sample() -> Graph:
+  # 0 -1-> 1 -2-> 3,  0 -4-> 2 -1-> 3,  3 -3-> 4 ; node 5 alone
+  var g = {n: 6} graph
+  g = {g: g, src: 0, dst: 1, weight: 1} addEdge
+  g = {g: g, src: 1, dst: 3, weight: 2} addEdge
+  g = {g: g, src: 0, dst: 2, weight: 4} addEdge
+  g = {g: g, src: 2, dst: 3, weight: 1} addEdge
+  g = {g: g, src: 3, dst: 4, weight: 3} addEdge
+  return g
+
+fn checkSearch() -> int:
+  let g = sample
+  let b = {g: g, start: 0} bfs
+  if b.len != 5 or b[0] != 0 or b[1] != 1 or b[2] != 2 or b[3] != 3 or b[4] != 4:
+    return 1
+  let d = {g: g, start: 0} dfs
+  if d.len != 5 or d[0] != 0 or d[1] != 1 or d[2] != 3 or d[3] != 4 or d[4] != 2:
+    return 2
+  let missing = {g: g, start: 99} bfs
+  if missing.len != 0:
+    return 3
+  return 0
+
+fn checkPaths() -> int:
+  let g = sample
+  let dist = {g: g, start: 0} dijkstra
+  if dist[0] != 0 or dist[1] != 1 or dist[2] != 4 or dist[3] != 3 or dist[4] != 6:
+    return 10
+  if dist[5] != 0 - 1:
+    return 11
+  return 0
+
+fn checkOrder() -> int:
+  let g = sample
+  let order = {g: g} topoSort
+  if not order.ok:
+    return 20
+  if order.value.len != 6:
+    return 21
+  # every edge goes forward in the order
+  var pos: Seq[int] = []
+  for i in 0 .. 5:
+    pos = {items: pos, value: 0} push
+  for i in 0 .. 5:
+    {items: pos, index: order.value[i], value: i} setAt
+  if pos[0] > pos[1] or pos[1] > pos[3] or pos[2] > pos[3] or pos[3] > pos[4]:
+    return 22
+  let cyc = {g: g, src: 4, dst: 0, weight: 1} addEdge
+  let cyclic = {g: cyc} topoSort
+  if cyclic.ok:
+    return 23
+  return 0
+
+fn checkComponents() -> int:
+  let g = sample
+  if {g: g} components != 2:
+    return 30
+  let joined = {g: g, a: 4, b: 5, weight: 1} addLink
+  if {g: joined} components != 1:
+    return 31
+  return 0
+
+fn main() -> int:
+  let a = checkSearch
+  if a != 0:
+    return a
+  let b = checkPaths
+  if b != 0:
+    return b
+  let c = checkOrder
+  if c != 0:
+    return c
+  return checkComponents
