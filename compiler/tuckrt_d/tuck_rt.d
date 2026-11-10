@@ -2251,6 +2251,34 @@ R changeDir(R)(string path)
     return r;
 }
 
+R cpuCount(R)()
+{
+    import std.parallelism : totalCPUs;
+    return tuckRec!(R, "cores")(cast(long) (totalCPUs > 0 ? totalCPUs : 1));
+}
+
+R hostName(R)()
+{
+    import core.sys.posix.unistd : gethostname;
+    char[256] buf;
+    R r;
+    if (gethostname(buf.ptr, buf.length) != 0) { r.name = ""; return r; }
+    import core.stdc.string : strlen;
+    r.name = buf[0 .. strlen(buf.ptr)].idup;
+    return r;
+}
+
+R osName(R)()
+{
+    R r;
+    version (linux) r.name = "linux";
+    else version (OSX) r.name = "macosx";
+    else version (Windows) r.name = "windows";
+    else version (FreeBSD) r.name = "freebsd";
+    else r.name = "unknown";
+    return r;
+}
+
 R exePath(R)()
 {
     import std.file : thisExePath;
@@ -2530,6 +2558,12 @@ R send(R)(long fd, string data)
 void close(long fd)
 {
     posixClose(cast(int) fd);
+}
+
+R monoNs(R)()
+{
+    import core.time : MonoTime;
+    return tuckRec!(R, "ns")(cast(ulong) MonoTime.currTime.ticks * 1_000_000_000UL / MonoTime.ticksPerSecond);
 }
 
 R nowMs(R)()

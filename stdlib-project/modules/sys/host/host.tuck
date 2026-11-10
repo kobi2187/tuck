@@ -1,0 +1,192 @@
+# sys.host — where the program runs, and what it can find there.
+#
+# The machine's facts come from std/sys (`cpuCount`, `hostName`, `osName`, three
+# runtime externs, the same answer on every backend); this module adds what
+# Tuck can say on top of them: the user's home and name, the temporary folder, a
+# name that is unique enough to create there, `which` for a program on PATH, and a
+# stopwatch on the MONOTONIC clock (`monoNs`), the one to time an interval with
+# because it never steps back.
+#
+# Nothing here is race-free against another process: a temporary name is
+# checked absent when chosen, and the create that follows can still lose.
+import sys
+import time
+import seq
+import str
+import text
+import convert
+import env
+import path
+import fs
+
+# $HOME, or the Windows spelling, or "" when neither is set.
+fn homeDir() -> str [io]:
+  let h = {name: "HOME", fallback: ""} envOr
+  if h != "":
+    return h
+  return {name: "USERPROFILE", fallback: ""} envOr
+
+fn userName() -> str [io]:
+  let u = {name: "USER", fallback: ""} envOr
+  if u != "":
+    return u
+  let l = {name: "LOGNAME", fallback: ""} envOr
+  if l != "":
+    return l
+  return {name: "USERNAME", fallback: ""} envOr
+
+fn tempDir() -> str [io]:
+  let a = {name: "TMPDIR", fallback: ""} envOr
+  if a != "":
+    return a
+  let b = {name: "TMP", fallback: ""} envOr
+  if b != "":
+    return b
+  let c = {name: "TEMP", fallback: ""} envOr
+  if c != "":
+    return c
+  return "/tmp"
+
+fn isExisting({p: str}) -> bool [io: fs]:
+  let info = {path: p} pathInfo
+  return info.ok
+
+# A path in the temporary folder that does not exist yet:
+# `<tmp>/<prefix>-<time-derived digits>`. The digits come from the monotonic
+# clock, so two calls in one process differ.
+fn tempPath({prefix: str}) -> str [io, io: clock, io: fs]:
+  let base = tempDir
+  var attempt = 0
+  var chosen = ""
+  for attempt < 50 and chosen == "":
+    let ticks = monoNs
+    let digits = {value: ticks.ns} toStr
+    let name = prefix + "-" + digits
+    let candidate = {base: base, rel: name} join
+    let taken = {p: candidate} isExisting
+    if not taken:
+      chosen = candidate
+    attempt = attempt + 1
+  return chosen
+
+# A new empty folder under the temporary one; its path.
+fn makeTempDir({prefix: str}) -> !{path: str} [io, io: clock, io: fs, error: FsError]:
+  let candidate = {prefix: prefix} tempPath
+  let made = {path: candidate} makeDir
+  if not made.ok:
+    err made.err
+  return {path: candidate}
+
+# The first PATH entry holding a file called `name`; a name with a `/` is
+# checked as written. Absent when none does. Existence only: whether the file
+# is executable is the operating system's to say when it is run.
+fn which({name: str}) -> str? [io, io: fs]:
+  if {t: name, what: "/"} has:
+    if {p: name} isExisting:
+      return name
+    return
+  let dirs = {name: "PATH"} pathList
+  for i in 0 .. dirs.len - 1:
+    let candidate = {base: dirs[i], rel: name} join
+    let info = {path: candidate} pathInfo
+    if info.ok:
+      if not info.value.isFolder:
+        return candidate
+  return
+
+# --- a stopwatch on the monotonic clock ----------------------------------------------
+
+type Mark:
+  startNs: u64
+
+fn startMark() -> Mark [io: clock]:
+  let t = monoNs
+  return {startNs: t.ns} Mark
+
+fn elapsedNs({m: Mark}) -> u64 [io: clock]:
+  let t = monoNs
+  if t.ns < m.startNs:
+    return 0
+  return t.ns - m.startNs
+
+fn elapsedMs({m: Mark}) -> u64 [io: clock]:
+  let n = {m: m} elapsedNs
+  return n /i 1000000
+
+# --- self-check --------------------------------------------------------------
+
+fn checkFacts() -> int [io: sys]:
+  let c = cpuCount
+  if c.cores < 1:
+    return 1
+  let o = osName
+  if o.name == "":
+    return 2
+  let known = o.name == "linux" or o.name == "macosx" or o.name == "windows" or o.name == "freebsd"
+  if not known:
+    return 3
+  return 0
+
+fn checkEnvironment() -> int [io]:
+  let tmp = tempDir
+  if tmp == "":
+    return 10
+  let set = {name: "TUCK_HOST_USER_PROBE", value: "x"} setVar
+  if not set:
+    return 12
+  let seen = {name: "TUCK_HOST_USER_PROBE", fallback: ""} envOr
+  if seen != "x":
+    return 11
+  return 0
+
+fn checkTemp() -> int [io, io: clock, io: fs, error: FsError]:
+  let a = {prefix: "tuck-host"} tempPath
+  let b = {prefix: "tuck-host"} tempPath
+  if a == "" or b == "":
+    return 20
+  if a == b:
+    return 21
+  let made = {prefix: "tuck-host"} makeTempDir
+  if not made.ok:
+    return 22
+  let there = {p: made.value.path} isExisting
+  if not there:
+    return 23
+  let gone = {path: made.value.path} removeFolder
+  if not gone.ok:
+    return 24
+  return 0
+
+fn checkWhich() -> int [io, io: fs]:
+  let sh = {name: "sh"} which
+  if not sh.ok:
+    return 30
+  let nothing = {name: "no-such-program-tuck"} which
+  if nothing.ok:
+    return 31
+  return 0
+
+fn checkMark() -> int [io: clock]:
+  let m = startMark
+  {ms: 20} sleepMs
+  let ms = {m: m} elapsedMs
+  if ms < 15:
+    return 40
+  if ms > 5000:
+    return 41
+  return 0
+
+fn main() -> int [io, io: clock, io: fs, io: sys, error: FsError]:
+  let a = checkFacts
+  if a != 0:
+    return a
+  let b = checkEnvironment
+  if b != 0:
+    return b
+  let c = checkTemp
+  if c != 0:
+    return c
+  let d = checkWhich
+  if d != 0:
+    return d
+  return checkMark

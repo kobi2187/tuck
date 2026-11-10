@@ -20,6 +20,12 @@ extern:
   fn changeDir({path: str}) -> {code: int} [io: sys]
   # The running program's own path ("" when the OS will not say).
   fn exePath() -> {path: str} [io: sys]
+  # What the program is running on: logical processors (at least 1), the host's
+  # name ("" when unknown), and the operating system in lower case ("linux",
+  # "macosx", "windows", ...).
+  fn cpuCount() -> {cores: int} [io: sys]
+  fn hostName() -> {name: str} [io: sys]
+  fn osName() -> {name: str} [io: sys]
   # Child processes with pipes. `argv` is the program (searched on PATH) and its
   # arguments separated by NUL bytes. `pid` < 0: it could not be started.
   # `input` is the write end of the child's stdin, `output` and `errors` the
