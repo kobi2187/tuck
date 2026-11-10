@@ -39,30 +39,30 @@ proc registerActortuckˑactorˑResult*() =
   tuckˑactorˑResultSlot = tuckStartActorFrame(draintuckˑactorˑResult)
 
 type TuckFˑtuckˑtaskˑserve* = object
-    tuckHdr: TuckFrameHdr
-    tuckRes: ptr TuckSlot[bool]
-    tuckDest: ptr bool
+    tuckHdr*: TuckFrameHdr
+    tuckRes*: ptr TuckSlot[bool]
+    tuckDest*: ptr bool
     lfd: int
     tuckˑvˑc: TuckResult[tuple[fd: int]]
     tuckOwnTmp1: TuckResult[tuple[data: string]]
     tuckDefer0: bool
 
-proc TuckSˑtuckˑtaskˑserveˑ0(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑserveˑ1(env: pointer): TuckHop {.nimcall.}
-proc TuckIOˑtuckˑtaskˑserveˑ0(env: pointer) {.nimcall.}
-proc TuckSˑtuckˑtaskˑserveˑ2(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑserveˑ3(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑserveˑ4(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑserveˑ5(env: pointer): TuckHop {.nimcall.}
-proc TuckIOˑtuckˑtaskˑserveˑ1(env: pointer) {.nimcall.}
-proc TuckSˑtuckˑtaskˑserveˑ6(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑserveˑ7(env: pointer): TuckHop {.nimcall.}
-proc TuckIOˑtuckˑtaskˑserveˑ2(env: pointer) {.nimcall.}
-proc TuckSˑtuckˑtaskˑserveˑ8(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑserveˑ9(env: pointer): TuckHop {.nimcall.}
-proc TuckIOˑtuckˑtaskˑserveˑ3(env: pointer) {.nimcall.}
-proc TuckSˑtuckˑtaskˑserveˑ10(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑserveˑ11(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑserveˑ0*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑserveˑ1*(env: pointer): TuckHop {.nimcall.}
+proc TuckIOˑtuckˑtaskˑserveˑ0*(env: pointer) {.nimcall.}
+proc TuckSˑtuckˑtaskˑserveˑ2*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑserveˑ3*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑserveˑ4*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑserveˑ5*(env: pointer): TuckHop {.nimcall.}
+proc TuckIOˑtuckˑtaskˑserveˑ1*(env: pointer) {.nimcall.}
+proc TuckSˑtuckˑtaskˑserveˑ6*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑserveˑ7*(env: pointer): TuckHop {.nimcall.}
+proc TuckIOˑtuckˑtaskˑserveˑ2*(env: pointer) {.nimcall.}
+proc TuckSˑtuckˑtaskˑserveˑ8*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑserveˑ9*(env: pointer): TuckHop {.nimcall.}
+proc TuckIOˑtuckˑtaskˑserveˑ3*(env: pointer) {.nimcall.}
+proc TuckSˑtuckˑtaskˑserveˑ10*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑserveˑ11*(env: pointer): TuckHop {.nimcall.}
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑserve)
 proc TuckXˑtuckˑtaskˑserveˑ1(tuckF: ptr TuckFˑtuckˑtaskˑserve)
 proc TuckNewˑtuckˑtaskˑserve*(tuckAt: ptr TuckFˑtuckˑtaskˑserve, tuckRes: ptr TuckSlot[bool], tuckDest: ptr bool, lfd: int): ptr TuckFˑtuckˑtaskˑserve =
@@ -76,21 +76,21 @@ proc TuckNewˑtuckˑtaskˑserve*(tuckAt: ptr TuckFˑtuckˑtaskˑserve, tuckRes: 
   result.tuckDest = tuckDest
   tuckStore(result.lfd, lfd)
 
-proc TuckSˑtuckˑtaskˑserveˑ0(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑserveˑ0*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckOwnTmp1: untyped = tuckF.tuckOwnTmp1
   return tuckSlYield(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ1)
 
-proc TuckSˑtuckˑtaskˑserveˑ1(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑserveˑ1*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckOwnTmp1: untyped = tuckF.tuckOwnTmp1
   return tuckSlOnStack(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ2, TuckIOˑtuckˑtaskˑserveˑ0)
 
-proc TuckSˑtuckˑtaskˑserveˑ2(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑserveˑ2*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -98,28 +98,28 @@ proc TuckSˑtuckˑtaskˑserveˑ2(env: pointer): TuckHop {.nimcall.} =
   if tuckˑvˑc.ok: return TuckSˑtuckˑtaskˑserveˑ4(env)
   else: return TuckSˑtuckˑtaskˑserveˑ11(env)
 
-proc TuckSˑtuckˑtaskˑserveˑ3(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑserveˑ3*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckOwnTmp1: untyped = tuckF.tuckOwnTmp1
   return tuckSlRetVoid(tuckF)
 
-proc TuckSˑtuckˑtaskˑserveˑ4(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑserveˑ4*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckOwnTmp1: untyped = tuckF.tuckOwnTmp1
   return tuckSlYield(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ5)
 
-proc TuckSˑtuckˑtaskˑserveˑ5(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑserveˑ5*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckOwnTmp1: untyped = tuckF.tuckOwnTmp1
   return tuckSlOnStack(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ6, TuckIOˑtuckˑtaskˑserveˑ1)
 
-proc TuckSˑtuckˑtaskˑserveˑ6(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑserveˑ6*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -128,28 +128,28 @@ proc TuckSˑtuckˑtaskˑserveˑ6(env: pointer): TuckHop {.nimcall.} =
   discard tuckOwnTmp1
   return tuckSlYield(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ7)
 
-proc TuckSˑtuckˑtaskˑserveˑ7(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑserveˑ7*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckOwnTmp1: untyped = tuckF.tuckOwnTmp1
   return tuckSlOnStack(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ8, TuckIOˑtuckˑtaskˑserveˑ2)
 
-proc TuckSˑtuckˑtaskˑserveˑ8(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑserveˑ8*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckOwnTmp1: untyped = tuckF.tuckOwnTmp1
   return tuckSlYield(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ9)
 
-proc TuckSˑtuckˑtaskˑserveˑ9(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑserveˑ9*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckOwnTmp1: untyped = tuckF.tuckOwnTmp1
   return tuckSlOnStack(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑserveˑ10, TuckIOˑtuckˑtaskˑserveˑ3)
 
-proc TuckSˑtuckˑtaskˑserveˑ10(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑserveˑ10*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -157,14 +157,14 @@ proc TuckSˑtuckˑtaskˑserveˑ10(env: pointer): TuckHop {.nimcall.} =
   TuckXˑtuckˑtaskˑserveˑ1(tuckF)
   return TuckSˑtuckˑtaskˑserveˑ3(env)
 
-proc TuckSˑtuckˑtaskˑserveˑ11(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑserveˑ11*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckOwnTmp1: untyped = tuckF.tuckOwnTmp1
   return TuckSˑtuckˑtaskˑserveˑ3(env)
 
-proc TuckIOˑtuckˑtaskˑserveˑ0(env: pointer) {.nimcall.} =
+proc TuckIOˑtuckˑtaskˑserveˑ0*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -172,7 +172,7 @@ proc TuckIOˑtuckˑtaskˑserveˑ0(env: pointer) {.nimcall.} =
   tuckˑvˑc = tuckˑmodˑnet.accept(lfd)
   discard
 
-proc TuckIOˑtuckˑtaskˑserveˑ1(env: pointer) {.nimcall.} =
+proc TuckIOˑtuckˑtaskˑserveˑ1*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -180,7 +180,7 @@ proc TuckIOˑtuckˑtaskˑserveˑ1(env: pointer) {.nimcall.} =
   tuckStore(tuckOwnTmp1, tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256))
   discard
 
-proc TuckIOˑtuckˑtaskˑserveˑ2(env: pointer) {.nimcall.} =
+proc TuckIOˑtuckˑtaskˑserveˑ2*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -188,7 +188,7 @@ proc TuckIOˑtuckˑtaskˑserveˑ2(env: pointer) {.nimcall.} =
   discard tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "pong")
   discard
 
-proc TuckIOˑtuckˑtaskˑserveˑ3(env: pointer) {.nimcall.} =
+proc TuckIOˑtuckˑtaskˑserveˑ3*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -215,42 +215,42 @@ proc TuckXˑtuckˑtaskˑserveˑ1(tuckF: ptr TuckFˑtuckˑtaskˑserve) =
 
 
 type TuckFˑtuckˑtaskˑclient* = object
-    tuckHdr: TuckFrameHdr
-    tuckRes: ptr TuckSlot[bool]
-    tuckDest: ptr bool
+    tuckHdr*: TuckFrameHdr
+    tuckRes*: ptr TuckSlot[bool]
+    tuckDest*: ptr bool
     port: int
     tuckˑvˑc: TuckResult[tuple[fd: int]]
     tuckˑvˑr: TuckResult[tuple[data: string]]
     tuckDefer0: bool
 
-proc TuckSˑtuckˑtaskˑclientˑ0(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ1(env: pointer): TuckHop {.nimcall.}
-proc TuckIOˑtuckˑtaskˑclientˑ0(env: pointer) {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ2(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ3(env: pointer): TuckHop {.nimcall.}
-proc TuckIOˑtuckˑtaskˑclientˑ6(env: pointer) {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ4(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ5(env: pointer): TuckHop {.nimcall.}
-proc TuckIOˑtuckˑtaskˑclientˑ1(env: pointer) {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ6(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ7(env: pointer): TuckHop {.nimcall.}
-proc TuckIOˑtuckˑtaskˑclientˑ2(env: pointer) {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ8(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ9(env: pointer): TuckHop {.nimcall.}
-proc TuckIOˑtuckˑtaskˑclientˑ3(env: pointer) {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ10(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ11(env: pointer): TuckHop {.nimcall.}
-proc TuckIOˑtuckˑtaskˑclientˑ5(env: pointer) {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ12(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ13(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ14(env: pointer): TuckHop {.nimcall.}
-proc TuckIOˑtuckˑtaskˑclientˑ4(env: pointer) {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ15(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ16(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ17(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ18(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ19(env: pointer): TuckHop {.nimcall.}
-proc TuckSˑtuckˑtaskˑclientˑ20(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ0*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ1*(env: pointer): TuckHop {.nimcall.}
+proc TuckIOˑtuckˑtaskˑclientˑ0*(env: pointer) {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ2*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ3*(env: pointer): TuckHop {.nimcall.}
+proc TuckIOˑtuckˑtaskˑclientˑ6*(env: pointer) {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ4*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ5*(env: pointer): TuckHop {.nimcall.}
+proc TuckIOˑtuckˑtaskˑclientˑ1*(env: pointer) {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ6*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ7*(env: pointer): TuckHop {.nimcall.}
+proc TuckIOˑtuckˑtaskˑclientˑ2*(env: pointer) {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ8*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ9*(env: pointer): TuckHop {.nimcall.}
+proc TuckIOˑtuckˑtaskˑclientˑ3*(env: pointer) {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ10*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ11*(env: pointer): TuckHop {.nimcall.}
+proc TuckIOˑtuckˑtaskˑclientˑ5*(env: pointer) {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ12*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ13*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ14*(env: pointer): TuckHop {.nimcall.}
+proc TuckIOˑtuckˑtaskˑclientˑ4*(env: pointer) {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ15*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ16*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ17*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ18*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ19*(env: pointer): TuckHop {.nimcall.}
+proc TuckSˑtuckˑtaskˑclientˑ20*(env: pointer): TuckHop {.nimcall.}
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑclient)
 proc TuckXˑtuckˑtaskˑclientˑ1(tuckF: ptr TuckFˑtuckˑtaskˑclient)
 proc TuckNewˑtuckˑtaskˑclient*(tuckAt: ptr TuckFˑtuckˑtaskˑclient, tuckRes: ptr TuckSlot[bool], tuckDest: ptr bool, port: int): ptr TuckFˑtuckˑtaskˑclient =
@@ -264,21 +264,21 @@ proc TuckNewˑtuckˑtaskˑclient*(tuckAt: ptr TuckFˑtuckˑtaskˑclient, tuckRes
   result.tuckDest = tuckDest
   tuckStore(result.port, port)
 
-proc TuckSˑtuckˑtaskˑclientˑ0(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ0*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return tuckSlYield(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ1)
 
-proc TuckSˑtuckˑtaskˑclientˑ1(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ1*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return tuckSlOnStack(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ2, TuckIOˑtuckˑtaskˑclientˑ0)
 
-proc TuckSˑtuckˑtaskˑclientˑ2(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ2*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -286,42 +286,42 @@ proc TuckSˑtuckˑtaskˑclientˑ2(env: pointer): TuckHop {.nimcall.} =
   if tuckˑvˑc.ok: return TuckSˑtuckˑtaskˑclientˑ4(env)
   else: return TuckSˑtuckˑtaskˑclientˑ19(env)
 
-proc TuckSˑtuckˑtaskˑclientˑ3(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ3*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return tuckSlOnStack(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ20, TuckIOˑtuckˑtaskˑclientˑ6)
 
-proc TuckSˑtuckˑtaskˑclientˑ4(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ4*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return tuckSlYield(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ5)
 
-proc TuckSˑtuckˑtaskˑclientˑ5(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ5*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return tuckSlOnStack(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ6, TuckIOˑtuckˑtaskˑclientˑ1)
 
-proc TuckSˑtuckˑtaskˑclientˑ6(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ6*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return tuckSlYield(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ7)
 
-proc TuckSˑtuckˑtaskˑclientˑ7(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ7*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return tuckSlOnStack(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ8, TuckIOˑtuckˑtaskˑclientˑ2)
 
-proc TuckSˑtuckˑtaskˑclientˑ8(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ8*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -329,14 +329,14 @@ proc TuckSˑtuckˑtaskˑclientˑ8(env: pointer): TuckHop {.nimcall.} =
   tuckF.tuckDefer0 = true
   return tuckSlYield(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ9)
 
-proc TuckSˑtuckˑtaskˑclientˑ9(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ9*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return tuckSlOnStack(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ10, TuckIOˑtuckˑtaskˑclientˑ3)
 
-proc TuckSˑtuckˑtaskˑclientˑ10(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ10*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -344,14 +344,14 @@ proc TuckSˑtuckˑtaskˑclientˑ10(env: pointer): TuckHop {.nimcall.} =
   if tuckˑvˑr.ok: return TuckSˑtuckˑtaskˑclientˑ12(env)
   else: return TuckSˑtuckˑtaskˑclientˑ17(env)
 
-proc TuckSˑtuckˑtaskˑclientˑ11(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ11*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return tuckSlOnStack(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ18, TuckIOˑtuckˑtaskˑclientˑ5)
 
-proc TuckSˑtuckˑtaskˑclientˑ12(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ12*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -359,63 +359,63 @@ proc TuckSˑtuckˑtaskˑclientˑ12(env: pointer): TuckHop {.nimcall.} =
   if (tuckˑvˑr.value.data == "pong"): return TuckSˑtuckˑtaskˑclientˑ14(env)
   else: return TuckSˑtuckˑtaskˑclientˑ16(env)
 
-proc TuckSˑtuckˑtaskˑclientˑ13(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ13*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return TuckSˑtuckˑtaskˑclientˑ11(env)
 
-proc TuckSˑtuckˑtaskˑclientˑ14(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ14*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return tuckSlOnStack(addr tuckF.tuckHdr, TuckSˑtuckˑtaskˑclientˑ15, TuckIOˑtuckˑtaskˑclientˑ4)
 
-proc TuckSˑtuckˑtaskˑclientˑ15(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ15*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return tuckSlRetVoid(tuckF)
 
-proc TuckSˑtuckˑtaskˑclientˑ16(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ16*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return TuckSˑtuckˑtaskˑclientˑ13(env)
 
-proc TuckSˑtuckˑtaskˑclientˑ17(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ17*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return TuckSˑtuckˑtaskˑclientˑ11(env)
 
-proc TuckSˑtuckˑtaskˑclientˑ18(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ18*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return tuckSlRetVoid(tuckF)
 
-proc TuckSˑtuckˑtaskˑclientˑ19(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ19*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return TuckSˑtuckˑtaskˑclientˑ3(env)
 
-proc TuckSˑtuckˑtaskˑclientˑ20(env: pointer): TuckHop {.nimcall.} =
+proc TuckSˑtuckˑtaskˑclientˑ20*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
   return tuckSlRetVoid(tuckF)
 
-proc TuckIOˑtuckˑtaskˑclientˑ0(env: pointer) {.nimcall.} =
+proc TuckIOˑtuckˑtaskˑclientˑ0*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -423,7 +423,7 @@ proc TuckIOˑtuckˑtaskˑclientˑ0(env: pointer) {.nimcall.} =
   tuckˑvˑc = tuckˑmodˑnet.connect("127.0.0.1", port)
   discard
 
-proc TuckIOˑtuckˑtaskˑclientˑ6(env: pointer) {.nimcall.} =
+proc TuckIOˑtuckˑtaskˑclientˑ6*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -432,7 +432,7 @@ proc TuckIOˑtuckˑtaskˑclientˑ6(env: pointer) {.nimcall.} =
   tuckNotifySend(tuckˑactorˑResultSlot)
   discard
 
-proc TuckIOˑtuckˑtaskˑclientˑ1(env: pointer) {.nimcall.} =
+proc TuckIOˑtuckˑtaskˑclientˑ1*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -440,7 +440,7 @@ proc TuckIOˑtuckˑtaskˑclientˑ1(env: pointer) {.nimcall.} =
   discard tuckˑmodˑnet.send(tuckˑvˑc.value.fd, "ping")
   discard
 
-proc TuckIOˑtuckˑtaskˑclientˑ2(env: pointer) {.nimcall.} =
+proc TuckIOˑtuckˑtaskˑclientˑ2*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -448,7 +448,7 @@ proc TuckIOˑtuckˑtaskˑclientˑ2(env: pointer) {.nimcall.} =
   tuckStore(tuckˑvˑr, tuckˑmodˑnet.recv(tuckˑvˑc.value.fd, 256))
   discard
 
-proc TuckIOˑtuckˑtaskˑclientˑ3(env: pointer) {.nimcall.} =
+proc TuckIOˑtuckˑtaskˑclientˑ3*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -456,7 +456,7 @@ proc TuckIOˑtuckˑtaskˑclientˑ3(env: pointer) {.nimcall.} =
   tuckˑmodˑnet.close(tuckˑvˑc.value.fd)
   discard
 
-proc TuckIOˑtuckˑtaskˑclientˑ5(env: pointer) {.nimcall.} =
+proc TuckIOˑtuckˑtaskˑclientˑ5*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
@@ -465,7 +465,7 @@ proc TuckIOˑtuckˑtaskˑclientˑ5(env: pointer) {.nimcall.} =
   tuckNotifySend(tuckˑactorˑResultSlot)
   discard
 
-proc TuckIOˑtuckˑtaskˑclientˑ4(env: pointer) {.nimcall.} =
+proc TuckIOˑtuckˑtaskˑclientˑ4*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc

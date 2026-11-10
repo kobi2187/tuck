@@ -54,8 +54,8 @@ proc genSubUnion(ctx: var CodegenCtx, d: Decl, plan: StagePlan): string =
 proc genFrameType(ctx: var CodegenCtx, d: Decl, plan: StagePlan): string =
   let r = resultType(d)
   result = ctx.genSubUnion(d, plan) & "type " & frameType(d.name) & "* = object\n" &
-           "    tuckHdr: TuckFrameHdr\n    tuckRes: ptr TuckSlot[" & r & "]\n" &
-           "    tuckDest: ptr " & r & "\n"
+           "    tuckHdr*: TuckFrameHdr\n    tuckRes*: ptr TuckSlot[" & r & "]\n" &
+           "    tuckDest*: ptr " & r & "\n"
   for p in d.fnParams: result.add "    " & p.name & ": " & genType(p.typ) & "\n"
   for f in plan.fields: result.add fieldLine(f)
   for k in 0 ..< plan.defers.len: result.add "    tuckDefer" & $k & ": bool\n"
@@ -240,7 +240,7 @@ proc genExit(ctx: var CodegenCtx, d: Decl, plan: StagePlan): string =
 
 proc genStage(ctx: var CodegenCtx, d: Decl, plan: StagePlan, k: int): string =
   let st = plan.stages[k]
-  result = "proc " & stageName(d.name, k) & "(env: pointer): TuckHop {.nimcall.} =\n" &
+  result = "proc " & stageName(d.name, k) & "*(env: pointer): TuckHop {.nimcall.} =\n" &
            "  let tuckF = cast[ptr " & frameType(d.name) & "](env)\n" & ctx.aliases(d, plan) &
            ctx.takes(plan, k)
   for s in st.stmts: result.add ctx.genStageStmt(plan, s)
@@ -257,9 +257,9 @@ proc genForwards(d: Decl, plan: StagePlan): string =
   ## Forward declarations: every stage, the frame exit, each scope exit,
   ## each helper-stack statement.
   for k in 0 ..< plan.stages.len:
-    result.add "proc " & stageName(d.name, k) & "(env: pointer): TuckHop {.nimcall.}\n"
+    result.add "proc " & stageName(d.name, k) & "*(env: pointer): TuckHop {.nimcall.}\n"
     if plan.stages[k].term.kind == tkOnStack:
-      result.add "proc " & ioName(d, plan.stages[k].term.site) & "(env: pointer) {.nimcall.}\n"
+      result.add "proc " & ioName(d, plan.stages[k].term.site) & "*(env: pointer) {.nimcall.}\n"
   result.add "proc tuckSlExit(tuckF: ptr " & frameType(d.name) & ")\n"
   for sc in 0 ..< plan.scopeDefers.len:
     if plan.scopeDefers[sc].len > 0:
@@ -268,7 +268,7 @@ proc genForwards(d: Decl, plan: StagePlan): string =
 proc genIoHelper(ctx: var CodegenCtx, d: Decl, plan: StagePlan, t: Term): string =
   ## A statement that may park, as a proc a worker runs with the frame as
   ## its environment (tuck_async's tuckSlOnStack).
-  "proc " & ioName(d, t.site) & "(env: pointer) {.nimcall.} =\n" &
+  "proc " & ioName(d, t.site) & "*(env: pointer) {.nimcall.} =\n" &
     "  let tuckF = cast[ptr " & frameType(d.name) & "](env)\n" & ctx.aliases(d, plan) &
     ctx.genStageStmt(plan, t.stmt) & "  discard\n"
 

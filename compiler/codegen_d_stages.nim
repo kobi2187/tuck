@@ -41,7 +41,7 @@ proc subTypes(ctx: var DCodegenCtx, plan: StagePlan): seq[string] =
   for st in plan.stages:
     let t = st.term
     if t.kind in {tkCall, tkAwait} and t.embed:
-      let q = stacklessHelperD(ctx.genDExpr(t.call.callee), "TuckFˑ")
+      let q = stacklessHelperD(ctx.resolveDCallee(t.call), "TuckFˑ")
       if q notin result: result.add q
 
 proc genSubUnion(ctx: var DCodegenCtx, d: Decl, plan: StagePlan): string =
@@ -108,7 +108,7 @@ proc atD(calleeStr: string, t: Term): string =
   else: "null"
 
 proc genCall(ctx: var DCodegenCtx, d: Decl, t: Term): string =
-  let calleeStr = ctx.genDExpr(t.call.callee)
+  let calleeStr = ctx.resolveDCallee(t.call)
   let dest = if t.target == nil: "null" else: "&" & ctx.genDExpr(t.target)
   let args = ctx.genDCallArgs(t.call)
   "        auto tuckC = " & stacklessHelperD(calleeStr, "TuckNewˑ") & "(" & atD(calleeStr, t) & ", null, " & dest &
@@ -118,7 +118,7 @@ proc genCall(ctx: var DCodegenCtx, d: Decl, t: Term): string =
   "        return " & stacklessHelperD(calleeStr, "TuckSˑ") & "ˑ0(tuckC);\n"
 
 proc genAwait(ctx: var DCodegenCtx, d: Decl, t: Term): string =
-  let calleeStr = ctx.genDExpr(t.call.callee)
+  let calleeStr = ctx.resolveDCallee(t.call)
   let args = ctx.genDCallArgs(t.call)
   "        tuckF." & t.slot & ".done = false;\n" &
   "        rt.tuckSlReady(&" & stacklessHelperD(calleeStr, "TuckNewˑ") & "(" & atD(calleeStr, t) & ", &tuckF." & t.slot &
