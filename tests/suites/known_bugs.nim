@@ -5365,4 +5365,34 @@ fn mk() -> Stats:
   t.quietly: t.runsOdin "A114: an imported type's field does not clash with the importer's fn on Odin", 2
   t.bugFixed "A114: an imported type's field does not clash with the importer's fn on Odin"
 
+  # A115 (#194): exponent float literals. `4.84e+00` lexed as `4.84` and a call of
+  # `e`. `1.5e3`, `2.0e-05`, `6.02E23` and `1e9` are floats now; a lone `e`
+  # after a number with no digit after it stays an identifier.
+  t.src """
+fn main() -> int:
+  let a = 4.84143144246472090e+00
+  let b = -6.90460016972063023e-05
+  let c = 1.5e3
+  let d = 2e2
+  let e = 6.02E23
+  let big: f64 = 1e9
+  if a < 4.8 or a > 4.9:
+    return 1
+  if b > 0.0 or b < -0.0001:
+    return 2
+  if c != 1500.0:
+    return 3
+  if d != 200.0:
+    return 4
+  if e < 6.0e23 or e > 6.1e23:
+    return 5
+  if big != 1000000000.0:
+    return 6
+  return 0
+"""
+  t.quietly: t.runs "A115: exponent float literals", 0
+  t.bugFixed "A115: exponent float literals"
+  t.quietly: t.runsOdin "A115: exponent float literals on Odin", 0
+  t.bugFixed "A115: exponent float literals on Odin"
+
   t.finish()
