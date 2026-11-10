@@ -1,0 +1,337 @@
+# std.id — unique identifiers: UUID v4 and v7, ULID, nanoid.
+#
+# The pure functions take a generator (std.random's `Dice`) and, for the
+# time-ordered kinds, the clock as `ms` since the epoch, and return the
+# advanced generator beside the text, so a test replays an id exactly. The
+# `new...` functions are the `[io]` ones: they seed from the operating system and read
+# the clock. These are identifiers, not secrets: for tokens that must resist a
+# guesser, draw from std.crypto's OS-backed random bytes instead.
+import bits
+import seq
+import str
+import text
+import encoding
+import random
+import time
+
+type Made:
+  d: Dice
+  text: str
+
+# --- UUID --------------------------------------------------------------------------
+
+fn byteAtIdx({items: Seq[u8], index: int}) -> u64:
+  let b = items[index]
+  return {value: b} u64
+
+# Version in the high nibble of byte 6 and the RFC 4122 variant in byte 8.
+fn stamped({bytes: Seq[u8], ver: int}) -> Seq[u8]:
+  var out = bytes
+  let b6 = {items: bytes, index: 6} byteAtIdx
+  let low6 = {a: b6, b: 15} bitAnd
+  let v = {value: ver} u64
+  let hi6 = {a: v, by: 4} shiftLeft
+  let n6 = {a: low6, b: hi6} bitOr
+  let w6 = {value: n6} u8
+  {items: out, index: 6, value: w6} setAt
+  let b8 = {items: bytes, index: 8} byteAtIdx
+  let low8 = {a: b8, b: 63} bitAnd
+  let n8 = {a: low8, b: 128} bitOr
+  let w8 = {value: n8} u8
+  {items: out, index: 8, value: w8} setAt
+  return out
+
+fn part({t: str, start: int, stop: int}) -> str:
+  let r = {t: t, start: start, stop: stop} slice
+  if r.ok:
+    return r.value
+  return ""
+
+# 8-4-4-4-12 lower-case hex.
+fn uuidText({bytes: Seq[u8]}) -> str:
+  let hex = {bytes: bytes} toHex
+  let a = {t: hex, start: 0, stop: 8} part
+  let b = {t: hex, start: 8, stop: 12} part
+  let c = {t: hex, start: 12, stop: 16} part
+  let d = {t: hex, start: 16, stop: 20} part
+  let e = {t: hex, start: 20, stop: 32} part
+  return a + "-" + b + "-" + c + "-" + d + "-" + e
+
+# A random UUID (version 4).
+fn uuid4({d: Dice}) -> Made:
+  let r = {d: d, n: 16} fillBytes
+  let bytes = {bytes: r.items, ver: 4} stamped
+  let text = {bytes: bytes} uuidText
+  return {d: r.d, text: text} Made
+
+# A time-ordered UUID (version 7): 48 bits of milliseconds since the epoch, then
+# random bits, so ids sort by creation time.
+fn uuid7({d: Dice, ms: int}) -> Made:
+  let r = {d: d, n: 16} fillBytes
+  var bytes = r.items
+  let t = {value: ms} u64
+  for i in 0 .. 5:
+    let shift = (5 - i) * 8
+    let part = {a: t, by: shift} shiftRight
+    let byte = {a: part, b: 255} bitAnd
+    let w = {value: byte} u8
+    {items: bytes, index: i, value: w} setAt
+  let stampedBytes = {bytes: bytes, ver: 7} stamped
+  let text = {bytes: stampedBytes} uuidText
+  return {d: r.d, text: text} Made
+
+fn isHexDigitAt({t: str, index: int}) -> bool:
+  let b = {t: t, index: index} byteAt
+  let v = {value: b} int
+  return (v >= 48 and v <= 57) or (v >= 97 and v <= 102) or (v >= 65 and v <= 70)
+
+fn isDashAt({t: str, index: int}) -> bool:
+  let b = {t: t, index: index} byteAt
+  let v = {value: b} int
+  return v == 45
+
+# Is this the 36-character 8-4-4-4-12 form (either case)?
+fn isUuid({t: str}) -> bool:
+  if {t: t} byteCount != 36:
+    return false
+  for i in 0 .. 35:
+    if i == 8 or i == 13 or i == 18 or i == 23:
+      if not ({t: t, index: i} isDashAt):
+        return false
+    else:
+      if not ({t: t, index: i} isHexDigitAt):
+        return false
+  return true
+
+# The version digit (4, 7, ...), or absent when `t` is not a UUID.
+fn uuidVersion({t: str}) -> int?:
+  if not ({t: t} isUuid):
+    return
+  let b = {t: t, index: 14} byteAt
+  let v = {value: b} int
+  if v >= 97:
+    return v - 87
+  if v >= 65:
+    return v - 55
+  return v - 48
+
+# --- ULID --------------------------------------------------------------------------
+# 26 characters of Crockford base32: 48 bits of milliseconds, then 80 random bits.
+fn crockford({v: int}) -> str:
+  let alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+  let c = {t: alphabet, start: v, stop: v + 1} slice
+  if c.ok:
+    return c.value
+  return "0"
+
+fn ulid({d: Dice, ms: int}) -> Made:
+  let r = {d: d, n: 10} fillBytes
+  var bytes: Seq[u8] = []
+  let t = {value: ms} u64
+  for i in 0 .. 5:
+    let shift = (5 - i) * 8
+    let part = {a: t, by: shift} shiftRight
+    let byte = {a: part, b: 255} bitAnd
+    let w = {value: byte} u8
+    bytes = {items: bytes, value: w} push
+  for i in 0 .. 9:
+    bytes = {items: bytes, value: r.items[i]} push
+  # 128 bits, read five at a time with two zero bits in front: 26 groups.
+  var out = ""
+  var acc = 0
+  var have = 2
+  for i in 0 .. 15:
+    let b = {items: bytes, index: i} byteAtIdx
+    let bi = {value: b} int
+    acc = acc * 256 + bi
+    have = have + 8
+    for have >= 5:
+      let shift = have - 5
+      let one = {value: 1} u64
+      let pow = {a: one, by: shift} shiftLeft
+      let span = {value: pow} int
+      let idx = (acc /i span) % 32
+      let ch = {v: idx} crockford
+      out = out + ch
+      acc = acc % span
+      have = have - 5
+  return {d: r.d, text: out} Made
+
+# --- nanoid ------------------------------------------------------------------------
+fn defaultAlphabet() -> str:
+  return "_-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+# `size` characters drawn evenly from `alphabet` (a bad alphabet or size gives "").
+fn nanoid({d: Dice, size: int, alphabet: str}) -> Made:
+  let n = {t: alphabet} byteCount
+  if n < 2 or size < 1:
+    return {d: d, text: ""} Made
+  var gen = d
+  var out = ""
+  for i in 0 .. size - 1:
+    let r = {d: gen, low: 0, high: n - 1} rollRange
+    if r.ok:
+      gen = r.value.d
+      let c = {t: alphabet, start: r.value.value, stop: r.value.value + 1} slice
+      if c.ok:
+        out = out + c.value
+  return {d: gen, text: out} Made
+
+# --- the [io] ones -------------------------------------------------------------------
+
+fn newUuid4() -> str [io: sys]:
+  let d = newDiceFromOs
+  let m = {d: d} uuid4
+  return m.text
+
+fn newUuid7() -> str [io: sys, io: clock]:
+  let d = newDiceFromOs
+  let now = nowMs
+  let ms = {value: now.epochMs} int
+  let m = {d: d, ms: ms} uuid7
+  return m.text
+
+fn newUlid() -> str [io: sys, io: clock]:
+  let d = newDiceFromOs
+  let now = nowMs
+  let ms = {value: now.epochMs} int
+  let m = {d: d, ms: ms} ulid
+  return m.text
+
+fn newNanoid() -> str [io: sys]:
+  let d = newDiceFromOs
+  let a = defaultAlphabet
+  let m = {d: d, size: 21, alphabet: a} nanoid
+  return m.text
+
+# --- self-check --------------------------------------------------------------
+
+fn checkUuid() -> int:
+  let d = {seed: 42} newDice
+  let a = {d: d} uuid4
+  if not ({t: a.text} isUuid):
+    return 1
+  let v = {t: a.text} uuidVersion
+  if not v.ok:
+    return 2
+  if v.value != 4:
+    return 2
+  let again = {d: d} uuid4
+  if again.text != a.text:
+    return 3
+  let other = {d: a.d} uuid4
+  if other.text == a.text:
+    return 4
+  # the variant digit is 8, 9, a or b
+  let variant = {t: a.text, start: 19, stop: 20} slice
+  if not variant.ok:
+    return 5
+  let okVariant = variant.value == "8" or variant.value == "9" or variant.value == "a" or variant.value == "b"
+  if not okVariant:
+    return 5
+  return 0
+
+fn checkUuid7() -> int:
+  let d = {seed: 7} newDice
+  let early = {d: d, ms: 1700000000000} uuid7
+  let late = {d: d, ms: 1700000001000} uuid7
+  if not ({t: early.text} isUuid):
+    return 10
+  let v = {t: early.text} uuidVersion
+  if not v.ok:
+    return 11
+  if v.value != 7:
+    return 11
+  # time-ordered: the later id sorts after the earlier one
+  if not (early.text < late.text):
+    return 12
+  # 1700000000000 = 0x18BCFE56800
+  let head = {t: early.text, start: 0, stop: 13} slice
+  if not head.ok:
+    return 13
+  if head.value != "018bcfe5-6800":
+    return 13
+  return 0
+
+fn checkUlid() -> int:
+  let d = {seed: 5} newDice
+  let a = {d: d, ms: 1700000000000} ulid
+  if {t: a.text} byteCount != 26:
+    return 20
+  let b = {d: a.d, ms: 1700000000001} ulid
+  if not (a.text < b.text):
+    return 21
+  let first = {t: a.text, start: 0, stop: 1} slice
+  if not first.ok:
+    return 22
+  # the top two bits are zero, so the first character is 0..7
+  let low = first.value == "0" or first.value == "1" or first.value == "2" or first.value == "3"
+  let high = first.value == "4" or first.value == "5" or first.value == "6" or first.value == "7"
+  if not (low or high):
+    return 22
+  return 0
+
+fn checkNanoid() -> int:
+  let d = {seed: 3} newDice
+  let a = defaultAlphabet
+  let m = {d: d, size: 21, alphabet: a} nanoid
+  if {t: m.text} byteCount != 21:
+    return 30
+  let bad = {d: d, size: 5, alphabet: "x"} nanoid
+  if bad.text != "":
+    return 31
+  let digits = {d: d, size: 40, alphabet: "01"} nanoid
+  for i in 0 .. 39:
+    let c = {t: digits.text, start: i, stop: i + 1} slice
+    if not c.ok:
+      return 32
+    if c.value != "0" and c.value != "1":
+      return 32
+  return 0
+
+fn checkIo() -> int [io: sys, io: clock]:
+  let a = newUuid4
+  let b = newUuid4
+  if a == b:
+    return 40
+  if not ({t: a} isUuid):
+    return 41
+  let c = newUuid7
+  if not ({t: c} isUuid):
+    return 42
+  let u = newUlid
+  if {t: u} byteCount != 26:
+    return 43
+  let n = newNanoid
+  if {t: n} byteCount != 21:
+    return 44
+  return 0
+
+fn checkValidation() -> int:
+  if {t: "not a uuid"} isUuid:
+    return 50
+  if not ({t: "123e4567-e89b-12d3-a456-426614174000"} isUuid):
+    return 51
+  if {t: "123e4567-e89b-12d3-a456-42661417400"} isUuid:
+    return 52
+  if {t: "123e4567-e89b-12d3-a456-42661417400g"} isUuid:
+    return 53
+  return 0
+
+fn main() -> int [io: sys, io: clock]:
+  let a = checkUuid
+  if a != 0:
+    return a
+  let b = checkUuid7
+  if b != 0:
+    return b
+  let c = checkUlid
+  if c != 0:
+    return c
+  let d = checkNanoid
+  if d != 0:
+    return d
+  let e = checkValidation
+  if e != 0:
+    return e
+  return checkIo
