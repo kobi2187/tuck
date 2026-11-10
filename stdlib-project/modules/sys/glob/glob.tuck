@@ -1,0 +1,123 @@
+# sys.glob — files by pattern: `src/**/*.tuck`, `*.md`, `logs/app-?.log`.
+#
+# The pattern is std.regex's glob (`*` any run without a slash, `**` any run,
+# `?` one non-slash character, everything else literal) matched against each
+# path RELATIVE to the root, with `/` separators, so a pattern means the same
+# wherever the root is. `**` is any run, slashes included, so `src/**/*.tuck`
+# needs a folder under src and `src/**.tuck` does not. Results come in the walk's order: depth first, a folder
+# before its contents, names sorted. A root that does not exist is the walk's
+# FsError; a pattern that is not valid is absent from the list (nothing matches),
+# never a guess.
+import seq
+import str
+import text
+import path
+import files
+import regex
+import fs
+
+# `p` relative to `base`, "" when it is not under it.
+fn relativeOf({p: str, base: str}) -> str:
+  let r = {p: p, base: base} relativeTo
+  if r.ok:
+    return r.value
+  return ""
+
+# Everything under `root` (files and folders) whose relative path matches.
+fn glob({root: str, pattern: str}) -> !Seq[str] [io: fs, error: FsError]:
+  var out: Seq[str] = []
+  let re = {glob: pattern} fromGlob
+  if not re.ok:
+    return out
+  let found = {root: root} walk
+  if not found.ok:
+    err found.err
+  for i in 0 .. found.value.len - 1:
+    let f = found.value[i]
+    let rel = {p: f.path, base: root} relativeOf
+    if {re: re.value, subject: rel} matches:
+      out = {items: out, value: f.path} push
+  return out
+
+# The same, files only.
+fn globFiles({root: str, pattern: str}) -> !Seq[str] [io: fs, error: FsError]:
+  var out: Seq[str] = []
+  let re = {glob: pattern} fromGlob
+  if not re.ok:
+    return out
+  let found = {root: root} walk
+  if not found.ok:
+    err found.err
+  for i in 0 .. found.value.len - 1:
+    let f = found.value[i]
+    if not f.isFolder:
+      let rel = {p: f.path, base: root} relativeOf
+      if {re: re.value, subject: rel} matches:
+        out = {items: out, value: f.path} push
+  return out
+
+# --- self-check --------------------------------------------------------------
+
+fn setup({dir: str}) -> !void [io: fs, error: FsError]:
+  let a = {path: dir + "/src/a"} makeDir
+  if not a.ok:
+    err a.err
+  let w1 = {path: dir + "/src/a/one.tuck", content: "1"} writeFile
+  if not w1.ok:
+    err w1.err
+  let w2 = {path: dir + "/src/two.tuck", content: "2"} writeFile
+  if not w2.ok:
+    err w2.err
+  let w3 = {path: dir + "/src/notes.md", content: "3"} writeFile
+  if not w3.ok:
+    err w3.err
+  let w4 = {path: dir + "/top.md", content: "4"} writeFile
+  if not w4.ok:
+    err w4.err
+
+fn checkPatterns({dir: str}) -> int [io: fs, error: FsError]:
+  let deep = {root: dir, pattern: "src/**.tuck"} globFiles
+  if not deep.ok:
+    return 1
+  if deep.value.len != 2:
+    return 2
+  let nested = {root: dir, pattern: "src/**/*.tuck"} globFiles
+  if not nested.ok:
+    return 11
+  if nested.value.len != 1:
+    return 12
+  let top = {root: dir, pattern: "*.md"} globFiles
+  if not top.ok:
+    return 3
+  if top.value.len != 1:
+    return 4
+  let any = {root: dir, pattern: "**"} glob
+  if not any.ok:
+    return 5
+  if any.value.len != 6:
+    return 6
+  let single = {root: dir, pattern: "src/?wo.tuck"} globFiles
+  if not single.ok:
+    return 7
+  if single.value.len != 1:
+    return 8
+  let bad = {root: dir, pattern: "("} globFiles
+  if not bad.ok:
+    return 9
+  if bad.value.len != 0:
+    return 10
+  return 0
+
+fn main() -> int [io: fs, error: FsError]:
+  let dir = "/tmp/tuck-glob-check"
+  let made = {path: dir} makeDir
+  if not made.ok:
+    return 90
+  let s = {dir: dir} setup
+  if not s.ok:
+    return 91
+  let r = {dir: dir} checkPatterns
+  let gone = {path: dir} removeTree
+  if not gone.ok:
+    return 92
+  return r

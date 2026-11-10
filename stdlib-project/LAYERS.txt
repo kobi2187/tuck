@@ -20,3 +20,4 @@
 3 advertise archive audio clock compress crypto dsp geom log mmap openssl process random reflect sqlite stream toml zone cron host
 4 alsa board cli files hci socket
 5 client
+6 glob
