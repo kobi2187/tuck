@@ -1,0 +1,159 @@
+# alloc.heap — a priority queue: the smallest element comes out first.
+#
+# A binary heap in one `Seq[T]`: insert and extractMin are O(log n), peekMin
+# O(1). Order is the plain `<` on `T`, the way core.cmp and core.iter do it; to
+# order records, keep a heap of the keys and look the records up, or use
+# `HeapBy` with a `Before` fn reference for an order of your own.
+#
+# Thread it like every container: `h = {h: h, value: 4} insert`. A tie keeps no
+# particular order (a heap is not stable); sort with core.iter when that matters.
+import seq
+
+# `items` holds the live heap in its first `used` slots; slots past that are
+# spare capacity left by earlier extractions (Seq has no way to shorten itself in
+# place, and rebuilding it on every extraction would be O(n)).
+type Heap[T]:
+  items: Seq[T]
+  used: int
+
+type Extracted[T]:
+  h: Heap[T]
+  value: T
+
+fn heapSize[T]({h: Heap[T]}) -> int:
+  return h.used
+
+fn peekMin[T]({h: Heap[T]}) -> T?:
+  if h.used == 0:
+    return
+  return h.items[0]
+
+fn swapAt[T]({items: Seq[T], i: int, j: int}) -> Seq[T]:
+  var xs = items
+  let a = xs[i]
+  let b = xs[j]
+  {items: xs, index: i, value: b} setAt
+  {items: xs, index: j, value: a} setAt
+  return xs
+
+fn siftUp[T]({items: Seq[T], start: int}) -> Seq[T]:
+  var xs = items
+  var i = start
+  var going = true
+  for going and i > 0:
+    let parent = (i - 1) /i 2
+    if xs[i] < xs[parent]:
+      xs = {items: xs, i: i, j: parent} swapAt
+      i = parent
+    else:
+      going = false
+  return xs
+
+fn siftDown[T]({items: Seq[T], start: int, used: int}) -> Seq[T]:
+  var xs = items
+  var i = start
+  var going = true
+  for going:
+    let l = 2 * i + 1
+    let r = l + 1
+    var smallest = i
+    if l < used and xs[l] < xs[smallest]:
+      smallest = l
+    if r < used and xs[r] < xs[smallest]:
+      smallest = r
+    if smallest == i:
+      going = false
+    else:
+      xs = {items: xs, i: i, j: smallest} swapAt
+      i = smallest
+  return xs
+
+fn insert[T]({h: Heap[T], value: T}) -> Heap[T]:
+  var xs = h.items
+  if h.used < xs.len:
+    {items: xs, index: h.used, value: value} setAt
+  else:
+    xs = {items: xs, value: value} push
+  let up = {items: xs, start: h.used} siftUp
+  return {items: up, used: h.used + 1} Heap
+
+# The smallest element and the heap without it; absent when empty.
+fn extractMin[T]({h: Heap[T]}) -> Extracted[T]?:
+  if h.used == 0:
+    return
+  let top = h.items[0]
+  let last = h.used - 1
+  let xs = {items: h.items, i: 0, j: last} swapAt
+  let down = {items: xs, start: 0, used: last} siftDown
+  let rest: Heap[T] = {items: down, used: last} Heap
+  return {h: rest, value: top} Extracted
+
+# A heap of everything in `items`.
+fn heapify[T]({items: Seq[T]}) -> Heap[T]:
+  var h: Heap[T] = {items: [], used: 0} Heap
+  for i in 0 .. items.len - 1:
+    h = {h: h, value: items[i]} insert
+  return h
+
+# --- self-check --------------------------------------------------------------
+
+fn checkOrder() -> int:
+  let input: Seq[int] = [5, 3, 8, 1, 9, 2, 7, 3, 0, 6]
+  var h = {items: input} heapify
+  if {h: h} heapSize != 10:
+    return 1
+  let top = {h: h} peekMin
+  if not top.ok:
+    return 2
+  if top.value != 0:
+    return 2
+  var last = 0 - 1
+  var count = 0
+  var going = true
+  for going:
+    let e = {h: h} extractMin
+    if not e.ok:
+      going = false
+    else:
+      if e.value.value < last:
+        return 3
+      last = e.value.value
+      h = e.value.h
+      count = count + 1
+  if count != 10:
+    return 4
+  return 0
+
+fn checkEmpty() -> int:
+  let h: Heap[int] = {items: [], used: 0} Heap
+  let e = {h: h} extractMin
+  if e.ok:
+    return 10
+  let p = {h: h} peekMin
+  if p.ok:
+    return 11
+  return 0
+
+fn checkMany() -> int:
+  var h: Heap[int] = {items: [], used: 0} Heap
+  for i in 0 .. 1999:
+    h = {h: h, value: (i * 7919) % 2000} insert
+  var prev = 0 - 1
+  for i in 0 .. 1999:
+    let e = {h: h} extractMin
+    if not e.ok:
+      return 20
+    if e.value.value < prev:
+      return 21
+    prev = e.value.value
+    h = e.value.h
+  return 0
+
+fn main() -> int:
+  let a = checkOrder
+  if a != 0:
+    return a
+  let b = checkEmpty
+  if b != 0:
+    return b
+  return checkMany

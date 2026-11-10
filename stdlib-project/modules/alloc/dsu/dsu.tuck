@@ -1,0 +1,93 @@
+# alloc.dsu — disjoint sets (union-find) over the integers 0 .. n-1.
+#
+# "Are these two connected?" in near-constant time: Kruskal's spanning tree,
+# flood-fill labelling, merging accounts that share an email. Union by rank, and
+# `find` returns the set (path compression changes it) beside the answer, as every
+# value-semantics container does: `r = {d: d, x: 3} find`, `d = r.d`.
+import seq
+
+type Dsu:
+  parent: Seq[int]
+  rank: Seq[int]
+  sets: int
+
+type Found:
+  d: Dsu
+  root: int
+
+fn dsu({n: int}) -> Dsu:
+  var parent: Seq[int] = []
+  var rank: Seq[int] = []
+  for i in 0 .. n - 1:
+    parent = {items: parent, value: i} push
+    rank = {items: rank, value: 0} push
+  return {parent: parent, rank: rank, sets: n} Dsu
+
+# The set's representative. Compresses the path it walked.
+fn find({d: Dsu, x: int}) -> Found:
+  var root = x
+  for d.parent[root] != root:
+    root = d.parent[root]
+  var parent = d.parent
+  var cur = x
+  for parent[cur] != root and cur != root:
+    let next = parent[cur]
+    {items: parent, index: cur, value: root} setAt
+    cur = next
+  let next: Dsu = {parent: parent, rank: d.rank, sets: d.sets} Dsu
+  return {d: next, root: root} Found
+
+fn link({d: Dsu, a: int, b: int}) -> Dsu:
+  let fa = {d: d, x: a} find
+  let fb = {d: fa.d, x: b} find
+  let ra = fa.root
+  let rb = fb.root
+  if ra == rb:
+    return fb.d
+  var parent = fb.d.parent
+  var rank = fb.d.rank
+  if rank[ra] < rank[rb]:
+    {items: parent, index: ra, value: rb} setAt
+  else:
+    {items: parent, index: rb, value: ra} setAt
+    if rank[ra] == rank[rb]:
+      {items: rank, index: ra, value: rank[ra] + 1} setAt
+  return {parent: parent, rank: rank, sets: fb.d.sets - 1} Dsu
+
+fn connected({d: Dsu, a: int, b: int}) -> bool:
+  let fa = {d: d, x: a} find
+  let fb = {d: fa.d, x: b} find
+  return fa.root == fb.root
+
+fn setCount({d: Dsu}) -> int:
+  return d.sets
+
+# --- self-check --------------------------------------------------------------
+
+fn main() -> int:
+  var d = {n: 10} dsu
+  if {d: d} setCount != 10:
+    return 1
+  d = {d: d, a: 1, b: 2} link
+  d = {d: d, a: 2, b: 3} link
+  d = {d: d, a: 7, b: 8} link
+  if not ({d: d, a: 1, b: 3} connected):
+    return 2
+  if {d: d, a: 1, b: 7} connected:
+    return 3
+  if {d: d} setCount != 7:
+    return 4
+  d = {d: d, a: 3, b: 7} link
+  if not ({d: d, a: 1, b: 8} connected):
+    return 5
+  d = {d: d, a: 1, b: 8} link
+  if {d: d} setCount != 6:
+    return 6
+  var big = {n: 1000} dsu
+  for i in 0 .. 998:
+    big = {d: big, a: i, b: i + 1} link
+  if {d: big} setCount != 1:
+    return 7
+  if not ({d: big, a: 0, b: 999} connected):
+    return 8
+  return 0
