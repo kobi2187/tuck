@@ -158,7 +158,7 @@ proc draintuckˑactorˑSignals(): bool {.gcsafe.} =
 
 var tuckˑactorˑSignalsSlot*: pointer
 proc registerActortuckˑactorˑSignals*() =
-  tuckˑactorˑSignalsSlot = tuckStartActor(draintuckˑactorˑSignals)
+  tuckˑactorˑSignalsSlot = tuckStartActorFrame(draintuckˑactorˑSignals)
 
 proc tuckˑfnˑIntersection_PhaseChanged*(to: uint8): void =
   tuckˑregisterˑSIGNAL_OUT_WALK_set(false)

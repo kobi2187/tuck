@@ -27,6 +27,7 @@ import end_to_end
 import examples
 import extern_impl
 import fn_size
+import frames
 import frontend
 import fuzz_corpus
 import generics
@@ -61,6 +62,7 @@ import roadmap
 import slabs
 import ssa
 import ssa_golden
+import stackless
 import std_text
 import stdlib_layers
 import stdlib_project
@@ -102,6 +104,7 @@ let registry: seq[Entry] = @[
   ("examples",            SuiteProc(examples.run),            true),
   ("extern_impl",         SuiteProc(extern_impl.run),         false),
   ("fn_size",             SuiteProc(fn_size.run),             true),
+  ("frames",              SuiteProc(frames.run),              true),
   ("frontend",            SuiteProc(frontend.run),            true),
   ("fuzz_corpus",         SuiteProc(fuzz_corpus.run),         true),
   ("generics",            SuiteProc(generics.run),            false),
@@ -136,6 +139,7 @@ let registry: seq[Entry] = @[
   ("slabs",               SuiteProc(slabs.run),               false),
   ("ssa",                 SuiteProc(ssa.run),                 false),
   ("ssa_golden",          SuiteProc(ssa_golden.run),          false),
+  ("stackless",           SuiteProc(stackless.run),           false),
   ("std_text",            SuiteProc(std_text.run),            false),
   ("stdlib_layers",       SuiteProc(stdlib_layers.run),       false),
   ("stdlib_project",      SuiteProc(stdlib_project.run),      false),

@@ -39,7 +39,7 @@ proc draintuckˑactorˑCounter(): bool {.gcsafe.} =
 
 var tuckˑactorˑCounterSlot*: pointer
 proc registerActortuckˑactorˑCounter*() =
-  tuckˑactorˑCounterSlot = tuckStartActor(draintuckˑactorˑCounter)
+  tuckˑactorˑCounterSlot = tuckStartActorFrame(draintuckˑactorˑCounter)
 
 proc tuckˑfnˑreadSensor*[T0](p0: T0): TuckResult[tuple[value: uint16]] =
   stderr.writeLine("TUCK PENDING: readSensor invoked (not implemented)")

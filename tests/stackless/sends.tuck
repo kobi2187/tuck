@@ -1,0 +1,31 @@
+# Tasks sending into a small mailbox (it fills, so a send WAITS for room) and
+# waiting on an actor: statements that wait inside the runtime, run on a
+# helper stack under --concurrency:stackless (#216 phase 4).
+actor Sink [queue: 2]:
+  total: int = 0
+  count: int = 0
+  on take({n: int}):
+    total += n
+    count += 1
+
+fn atLeast() -> bool:
+  return Sink.count >= 20
+
+task feed({base: int, m: int}) -> {sent: int} [io]:
+  var sent = 0
+  for i in 1 .. m:
+    Sink send take {n: base + i}
+    sent += 1
+  return {sent: sent}
+
+task watcher({k: int}) -> {seen: int} [io]:
+  Sink.waitUntil {pred: :atLeast}
+  return {seen: Sink.count + k}
+
+fn main() -> int [io]:
+  {base: 100, m: 10} feed
+  let a = {base: 0, m: 10} feed
+  let w = {k: 0} watcher
+  if Sink.total != 1110:
+    return 1
+  return a.sent + w.seen

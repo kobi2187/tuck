@@ -1,0 +1,29 @@
+frame task serve  (42-net-echo:15)
+  16:21  yield, then call net::accept
+  22:32  yield, then call net::recv
+  23:36  yield, then call net::send
+  24:22  yield, then call net::close
+frame task client  (42-net-echo:27)
+  28:43  yield, then call net::connect
+  30:36  yield, then call net::send
+  31:40  yield, then call net::recv
+  32:22  yield, then call net::close
+  35:16  send Result.put (waits when full)
+  37:12  send Result.put (waits when full)
+  39:10  send Result.put (waits when full)
+native handlers, never pause: Result.put
+actors that run as frames under --actors:single (wait only on mailboxes): Result
+--frames:static would refuse:
+  42-net-echo:16: in serve, 'net::accept' waits inside the runtime, on a helper stack
+  42-net-echo:22: in serve, 'net::recv' waits inside the runtime, on a helper stack
+  42-net-echo:23: in serve, 'net::send' waits inside the runtime, on a helper stack
+  42-net-echo:24: in serve, 'net::close' waits inside the runtime, on a helper stack
+  42-net-echo:28: in client, 'net::connect' waits inside the runtime, on a helper stack
+  42-net-echo:30: in client, 'net::send' waits inside the runtime, on a helper stack
+  42-net-echo:31: in client, 'net::recv' waits inside the runtime, on a helper stack
+  42-net-echo:32: in client, 'net::close' waits inside the runtime, on a helper stack
+  42-net-echo:35: in client, a send may wait inside the runtime, on a helper stack
+  42-net-echo:37: in client, a send may wait inside the runtime, on a helper stack
+  42-net-echo:39: in client, a send may wait inside the runtime, on a helper stack
+  42-net-echo:48: in main, task 'serve' is spawned, not awaited: its frame comes from the heap
+  42-net-echo:49: in main, task 'client' is spawned, not awaited: its frame comes from the heap

@@ -11,6 +11,7 @@ import ast_query
 import codegen_common
 import codegen_odin_ctx
 import ./codegen_odin
+import concurrency, codegen_odin_stages   # stackless frames (#216)
 from ownership_elab import owning, dropsDeep
 
 const DefaultMailboxSize = "8"
@@ -892,6 +893,9 @@ proc genSendHelper*(ctx: var OdinCodegenCtx, d: Decl, h: ActorMsgHandler,
     ind & "\t" & odinEnqueue(d, d.name & "Msg{" & ctorArgs & "}",
                              if urgentSend(d, h.name): UrgentMailbox
                              else: "mailbox") & "\n" &
+    # An urgent send is handed over at once, batch or not (`flushNow`).
+    (if urgentSend(d, h.name): ind & "\trt.flushNow(&self." & UrgentMailbox & ")\n"
+     else: "") &
     # The send NOTIFIES. It never did: the actor parks on a condvar when its
     # mailbox comes up empty, so a send to a parked Odin actor was a lost
     # wakeup — the message sat in the ring and nothing arrived to drain it
@@ -1136,12 +1140,25 @@ proc genObjectDecl*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   if d.hoistedTo != "": return members
   ind & d.name & " :: struct {\n" & body & ind & "}\n\n" & members
 
+proc genOdinFrameDecl(ctx: var OdinCodegenCtx, d: Decl): string =
+  ## Under --concurrency:stackless (#216): the frame form of a task or of a
+  ## fn that can pause, with the return shape set as for its ordinary body.
+  ctx.currentParams = paramFields(d)
+  (ctx.retWrapped, ctx.retInnerOdin, ctx.retInnerT) = ctx.odinBangInfo(d.fnReturnType)
+  ctx.retAbsentCapable = absentCapable(d.fnReturnType)
+  result = ctx.genOdinFrameForm(d)
+  ctx.retWrapped = false
+  ctx.retAbsentCapable = false
+  ctx.retInnerOdin = ""
+  ctx.retInnerT = nil
+
 proc genTaskDecl*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## ponytail: a task emits as a plain proc and runs INLINE, so suspension
   ## points do not suspend. The coroutine runtime itself is real and wired
   ## (tuckrt/tuck_coro.odin over minicoro — 28-async-task exits 42 and
   ## 26-actor-run drains its mailbox to 55); what is missing is spawning the
   ## task body ONTO it. Anything relying on a yield behaves synchronously.
+  if d.isFrameDecl: return ctx.genOdinFrameDecl(d)
   ctx.currentParams = paramFields(d)
   var params: seq[string]
   for p in d.fnParams:
@@ -1426,7 +1443,7 @@ proc genOdinActorsBoot*(ctx: OdinCodegenCtx, m: Module): string =
   for s in ctx.actorInits: result.add "\t" & s & "\n"
   for d in m.decls:
     if runsActor(d):
-      result.add "\t" & actorSlotName(d.name) & " = rt.tuckStartActor(drain_" &
+      result.add "\t" & actorSlotName(d.name) & " = rt." & actorStarter(d) & "(drain_" &
                  d.name & ")\n"
   result.add "}\n"
 
@@ -1519,7 +1536,9 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
     return ""  # defined in its own module; that module's Odin file has it
   let ind = "  ".repeat(ctx.indent)
   case d.kind
-  of dkFn: ctx.genOdinFnDecl(d)
+  of dkFn:
+    # A fn that can pause keeps its ordinary form and gains a frame form.
+    ctx.genOdinFnDecl(d) & (if d.isFrameDecl: "\n" & ctx.genOdinFrameDecl(d) else: "")
   of dkType: (if d.hoistedTo != "": "" else: ctx.genOdinTypeDecl(d))
   of dkObject: ctx.genObjectDecl(d, ind)
   of dkActor: ctx.genActor(d)

@@ -169,7 +169,7 @@ proc draintuckˑactorˑPipeline(): bool {.gcsafe.} =
 
 var tuckˑactorˑPipelineSlot*: pointer
 proc registerActortuckˑactorˑPipeline*() =
-  tuckˑactorˑPipelineSlot = tuckStartActor(draintuckˑactorˑPipeline)
+  tuckˑactorˑPipelineSlot = tuckStartActorFrame(draintuckˑactorˑPipeline)
 
 proc tuckˑfnˑcapture*(want: int): int =
   var tuckˑvˑslot = tuckPoolAcquire(tuckˑpoolˑFrameBuffers)

@@ -45,7 +45,7 @@ main :: proc() {
 	context.allocator = rt.tuckTrackAllocator()
 	tuckˑactorˑTrafficLightSingleton.state = .Red
 	rt.tuckAsyncInit()
-	tuckˑactorˑTrafficLightSlot = rt.tuckStartActor(drain_tuckˑactorˑTrafficLight)
+	tuckˑactorˑTrafficLightSlot = rt.tuckStartActorFrame(drain_tuckˑactorˑTrafficLight)
 	rt.tuckDrainActors()
 	rt.tuckTrackCheck()
 }

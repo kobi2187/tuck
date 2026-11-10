@@ -1,0 +1,5 @@
+frame task compute  (28-async-task:9)
+  10:21  yield, then call stepIo
+  11:21  yield, then call stepIo
+native [io], reached from a root: stepIo
+--frames:static: every frame is embedded (no heap, no helper stack)

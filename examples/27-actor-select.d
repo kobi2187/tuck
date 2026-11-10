@@ -73,7 +73,7 @@ long tuckˑfnˑmain() {
 int main(string[] args) {
     rt.tuckSetArgs(args);
     rt.tuckAsyncInit();
-    tuckˑactorˑAccumulatorSlot = rt.tuckStartActor(&drain_tuckˑactorˑAccumulator);
+    tuckˑactorˑAccumulatorSlot = rt.tuckStartActorFrame(&drain_tuckˑactorˑAccumulator);
     rt.tuckLeakMark();
     auto mainRc = tuckˑfnˑmain();
     rt.tuckDrainActors();

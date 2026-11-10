@@ -40,6 +40,8 @@ examples/mod_*/
 examples/tuck_arena.d
 examples/tuck_coro.d
 examples/tuck_rt.d
+examples/tuck_arena.d
+examples/tuck_sl.d
 examples/minicoro.a
 tests/.smoke_*
 tools/__pycache__/

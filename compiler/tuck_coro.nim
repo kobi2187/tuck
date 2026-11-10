@@ -22,6 +22,7 @@ import std/selectors
 import std/sets
 import std/tables
 import ./tuck_mem
+import ./tuck_sl   # stackless frames are ready work too (#216)
 
 # ===========================================================================
 # from arsenal/minicoro.nim
@@ -614,6 +615,12 @@ proc takeReady(): Coroutine =
 proc runNext*(): bool =
   ## Run the next coroutine in the ready queue.
   ## Returns false if no coroutines are ready.
+  ##
+  ## Stackless frames (#216) are ready work too: every loop that waits by
+  ## stepping the scheduler — `main` awaiting, lending its thread to an fd,
+  ## waiting for an actor — must run them, or a frame nobody awaits by slot
+  ## never runs at all. A build without frames has an empty list here.
+  if tuckSlRunOne(): return true
   let coro = takeReady()
   if coro == nil:
     return false
@@ -650,8 +657,8 @@ proc runUntilEmpty*() =
   runAll()
 
 proc hasPending*(): bool =
-  ## Check if there are pending coroutines.
-  globalScheduler.readyCount > 0
+  ## Check if there are pending coroutines, or stackless frames (#216).
+  globalScheduler.readyCount > 0 or tuckSlHasReady()
 
 proc currentCoroutine*(): Coroutine =
   ## Get the currently running coroutine (scheduler context).

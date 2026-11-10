@@ -1,0 +1,44 @@
+import console
+
+# Handlers and select arms are roots. One that never pauses is a plain call
+# from the actor loop; one that sends to a waiting actor, or calls a member
+# that does, is a frame.
+actor Sink [queue: 4]:
+  seen: int = 0
+  on take({n: int}):
+    seen += n
+
+actor Lossy [queue: 4, on_full: drop]:
+  got: int = 0
+  on take({n: int}):
+    got += n
+
+actor Relay [queue: 4]:
+  count: int = 0
+  fn forward({n: int}):
+    Sink send take {n: n}
+  on pass({n: int}):
+    {n: n} forward
+    count += 1
+  on drop({n: int}):
+    Lossy send take {n: n}
+
+actor Tally [queue: 4]:
+  total: int = 0
+  on select:
+    | add -> {n: int}:  total += n
+    | flush -> {}:      Sink send take {n: total}
+
+actor Logger [queue: 4]:
+  lines: int = 0
+  on note({n: int}) [io: console]:
+    {text: "note"} console::printLine
+    lines += n
+
+fn done() -> bool:
+  return Sink.seen == 5
+
+fn main() -> int [io]:
+  Relay send pass {n: 5}
+  Sink.waitUntil {pred: :done}
+  return 0

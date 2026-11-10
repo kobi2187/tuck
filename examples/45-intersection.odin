@@ -257,7 +257,7 @@ main :: proc() {
 	tuckˑactorˑSignalsSingleton.phase = tuckˑtypeˑPhase.NorthSouth
 	tuckˑactorˑSignalsSingleton.cycles = 0
 	rt.tuckAsyncInit()
-	tuckˑactorˑSignalsSlot = rt.tuckStartActor(drain_tuckˑactorˑSignals)
+	tuckˑactorˑSignalsSlot = rt.tuckStartActorFrame(drain_tuckˑactorˑSignals)
 	mainRc := tuckˑfnˑmain()
 	rt.tuckDrainActors()
 	rt.tuckTrackCheck()

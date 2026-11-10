@@ -34,6 +34,8 @@ import std/nativesockets
 import std/locks
 import std/monotimes
 import ./tuck_coro
+import ./tuck_sl   # stackless frames (#216): their parking statements run here
+import std/tables
 import ./tuck_mem
 
 type
@@ -84,6 +86,65 @@ proc tuckYield*() =
     schedule(self)
     coroYield()
 
+# --- stackless: a statement that may park, on a helper stack (#216) ----------
+# A stackless frame has no stack to park on, but the runtime's waiting calls
+# (an fd read, a sleep, an offloaded file read, `on select`, a send into a
+# full mailbox, `waitUntil`) park IN THE MIDDLE of their own code. So a stage
+# hands such a statement to a WORKER: a pooled coroutine that runs it with
+# the frame as its environment. The worker is resumed at once; a statement
+# that never has to wait finishes there and the stage carries straight on,
+# exactly as the stackful task would have. One that waits parks the worker
+# through the ordinary reactor; the frame parks too, and the worker queues
+# it when the statement is done. Same code as stackful runs, so the same
+# semantics; a stack is only in use while a call actually waits.
+type
+  TuckSlWorker = object
+    co: Coroutine
+    body: proc (env: pointer) {.nimcall.}
+    frame: ptr TuckFrameHdr
+    done, parked: bool
+
+var slIdleWorkers {.threadvar.}: seq[ptr TuckSlWorker]   ## per thread, as the frames
+
+proc newSlWorker(): ptr TuckSlWorker =
+  let w = create(TuckSlWorker)
+  w.co = newCoroutine(proc () {.closure, gcsafe.} = ({.cast(gcsafe).}:
+    while true:
+      w.body(w.frame)
+      w.done = true
+      if w.parked: tuckSlReady(w.frame)   # the frame waited for this
+      slIdleWorkers.add w
+      coroYield()))                       # idle until the next statement
+  w
+
+proc tuckSlOnStack*(f: ptr TuckFrameHdr, next: TuckStageFn,
+                    body: proc (env: pointer) {.nimcall.}): TuckHop =
+  ## Run `body` (one statement of frame `f`) on a worker, then go on at
+  ## `next`: at once if it finished, or once it is done waiting.
+  f.stage = next
+  let w = if slIdleWorkers.len > 0: slIdleWorkers.pop() else: newSlWorker()
+  w.body = body
+  w.frame = f
+  w.done = false
+  w.parked = false
+  resume(w.co)
+  if w.done: return TuckHop(fn: next, env: f)
+  w.parked = true
+  tuckNoStep
+
+proc tuckSlAwaitMain*[T](s: ptr TuckSlot[T]): T =
+  ## A fn that is not a frame (`main`) awaiting a stackless task: it lends
+  ## its thread to the scheduler — frames, coroutines (the helper stacks of
+  ## statements that wait) and the reactor — until the slot is done, the way
+  ## awaitResult does for a coroutine task.
+  if gLoop == nil: gLoop = newEventLoop()
+  while not s.done:
+    if runNext(): continue
+    if gLoop.waiters.len == 0:
+      quit "tuck: deadlock — an awaited task can never finish (stackless)"
+    discard gLoop.runOnce(1)
+  tuckMove(s.value)
+
 # --- waiting from main --------------------------------------------------------
 # An [io] call may be made from ANY fn that declares the effect, not only from
 # a task (ruled 2026-10-22). Main is not a coroutine, so it cannot park; it
@@ -106,6 +167,10 @@ proc tuckLendUntil(fd: int, events: cshort, timeoutMs: int): bool =
     if tuckposix.poll(addr p, 1, 0) > 0: return true
     let spent = int((getMonoTime().ticks - start.ticks) div 1_000_000)
     if timeoutMs >= 0 and spent >= timeoutMs: return false
+    # A stackless frame cannot lend the thread: the frames that would make
+    # this fd ready are queued behind it. Parking a frame on an fd is #216
+    # phase 4; until then, stop and say so rather than hang.
+    if tuckSlDriving > 0: tuckSlCannotPark()
     if runNext(): continue
     if gLoop.waiters.len == 0:
       # Nothing else can make progress: just wait on the fd itself.
@@ -774,6 +839,9 @@ type
     ## One actor's scheduling state: its drain proc, the lock/condition it
     ## sleeps on (thread mode), its coroutine (single mode), and the predicates
     ## clients are waiting on.
+    frame: TuckFrameHdr ## FIRST, so the slot IS the frame: single mode under
+                        ## stackless runs a pure actor as one (#216), driven
+                        ## by actorFrameStage with no coroutine and no stack
     drain: DrainProc
     lock: Lock
     cond: Cond
@@ -1075,6 +1143,46 @@ proc tuckStartActor*(drain: DrainProc): pointer {.discardable.} =
     createThread(slot.thr, actorMain, slot)
   cast[pointer](slot)
 
+var gFrameActor {.threadvar.}: ptr ActorSlot
+  ## The frame actor mid-pass on this thread, if any: a send it makes into its
+  ## OWN full mailbox would wait forever, and tuckAwaitRoom says so.
+
+proc actorFrameStage(env: pointer): TuckHop {.nimcall.} =
+  ## A pure actor's one stage (stackless, --actors:single, #216): what its
+  ## coroutine's loop body was — drain until empty, answer a ping, mark
+  ## itself un-queued — with no stack switch. A send queues the frame again.
+  ## Pure: its handlers wait only on mailboxes, and a send that finds one
+  ## full pumps the scheduler from here, as `main`'s does, until the
+  ## receiver has made room (tuckAwaitRoom). The actor stays queued
+  ## meanwhile, so nothing runs it a second time.
+  let slot = cast[ptr ActorSlot](env)
+  let outer = gFrameActor
+  gFrameActor = slot
+  while slot.drain(): discard
+  gFrameActor = outer
+  answerProbe(slot)
+  slot.queued = false
+  tuckNoStep
+
+proc tuckStartActorFrame*(drain: DrainProc): pointer {.discardable.} =
+  ## Start an actor none of whose handlers can pause (the colouring decides,
+  ## compiler/frames.nim). Under `--actors:single` it is a FRAME on main's
+  ## scheduler; under thread and batch it is started as any actor, since a
+  ## handler there runs on the actor's own thread, not on a stack of its own.
+  when TuckActorsSingle:
+    if not gSlotsReady:
+      initLock(gSlotsLock)
+      gSlotsReady = true
+    let slot = cast[ptr ActorSlot](allocShared0(sizeof(ActorSlot)))
+    slot.drain = drain
+    slot.frame.stage = actorFrameStage
+    slot.queued = true
+    tuckPush(gActorSlots, slot)
+    tuckSlReady(addr slot.frame)
+    cast[pointer](slot)
+  else:
+    tuckStartActor(drain)
+
 proc wakeSlot(s: ptr ActorSlot) {.inline.} =
   ## Marks the actor pending and signals its condition, so a parked actor
   ## wakes and drains.
@@ -1105,7 +1213,8 @@ proc tuckNotifySend*(handle: pointer) =
     # not the mailbox, would be what grew.
     if slot.queued: return
     slot.queued = true
-    schedule(slot.co)
+    if slot.co != nil: schedule(slot.co)
+    else: tuckSlReady(addr slot.frame)     # a pure actor's frame (#216)
   else:
     if atomicLoadN(addr slot.parked, ATOMIC_ACQUIRE) == 0: return
     wakeSlot(slot)
@@ -1137,7 +1246,7 @@ proc tuckAwaitRoom*(handle: pointer, actor: string) =
     tuckMailboxFull(actor, "the actor was never started, so nothing drains it")
   let slot = cast[ptr ActorSlot](handle)
   let selfSend =
-    when TuckActorsSingle: inCoroutine() and running() == slot.co
+    when TuckActorsSingle: (inCoroutine() and running() == slot.co) or gFrameActor == slot
     else: gMySlot == slot
   if selfSend:
     tuckMailboxFull(actor, "it sent to itself, and the actor that would " &

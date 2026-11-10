@@ -1,4 +1,4 @@
-#+feature dynamic-literals
+#+feature dynamic-literals using-stmt
 package main
 
 import "base:intrinsics"
@@ -144,16 +144,49 @@ __validated_tuckˑtypeˑVolume :: proc(v: tuckˑtypeˑVolume) -> tuckˑtypeˑVol
 	return v
 }
 
-tuckˑtaskˑstreamReader :: proc(streamId: u8, chunks: [dynamic]u32) -> rt.TuckResult(rt.TuckUnit) {
+TuckFˑtuckˑtaskˑstreamReader :: struct {
+	tuckHdr: rt.TuckFrameHdr,
+	tuckRes: ^rt.TuckSlot(rt.TuckResult(rt.TuckUnit)),
+	tuckDest: ^rt.TuckResult(rt.TuckUnit),
+	streamId: u8,
+	chunks: [dynamic]u32,
+}
+
+TuckNewˑtuckˑtaskˑstreamReader :: proc(tuckAt: ^TuckFˑtuckˑtaskˑstreamReader, tuckRes: ^rt.TuckSlot(rt.TuckResult(rt.TuckUnit)), tuckDest: ^rt.TuckResult(rt.TuckUnit), streamId: u8, chunks: [dynamic]u32) -> ^TuckFˑtuckˑtaskˑstreamReader {
+	f := tuckAt
+	if f == nil { f = new(TuckFˑtuckˑtaskˑstreamReader) } else { f^ = {}; f.tuckHdr.embedded = true }
+	f.tuckHdr.stage = TuckSˑtuckˑtaskˑstreamReaderˑ0
+	f.tuckRes = tuckRes
+	f.tuckDest = tuckDest
+	f.streamId = streamId
+	f.chunks = chunks
+	return f
+}
+
+TuckRetˑtuckˑtaskˑstreamReader :: proc(tuckF: ^TuckFˑtuckˑtaskˑstreamReader, v: rt.TuckResult(rt.TuckUnit)) -> rt.TuckHop {
+	rt.tuckSlFinish(tuckF.tuckRes, tuckF.tuckDest, v)
+	TuckExitˑtuckˑtaskˑstreamReader(tuckF)
+	h := rt.tuckSlReturnHop(&tuckF.tuckHdr)
+	if !tuckF.tuckHdr.embedded do free(tuckF)
+	return h
+}
+
+TuckSˑtuckˑtaskˑstreamReaderˑ0 :: proc(env: rawptr) -> rt.TuckHop {
+  tuckF := (^TuckFˑtuckˑtaskˑstreamReader)(env)
+  using tuckF
   for tuckˑvˑi in chunks {
       tuckˑvˑbuf := rt.tuckPoolAcquire(&tuckˑpoolˑBufferPool)
       if !(tuckˑvˑbuf.status == .Ok) {
-          return rt.tokVoid()
+          return TuckRetˑtuckˑtaskˑstreamReader(tuckF, rt.tokVoid())
       }
       tuckˑregisterˑDMA1_CH3_EN_set(true)
       rt.tuckPoolRelease(&tuckˑpoolˑBufferPool, tuckˑvˑbuf.value)
   }
-  return {}
+  panic("tuck: stackless tuckˑtaskˑstreamReader ended without a return")
+}
+
+TuckExitˑtuckˑtaskˑstreamReader :: proc(tuckF: ^TuckFˑtuckˑtaskˑstreamReader) {
+  using tuckF
 }
 
 tuckˑactorˑDecoderMsgKind :: enum { msgPlay, msgPause, msgStop }
@@ -251,8 +284,9 @@ main :: proc() {
 	tuckˑactorˑDecoderSingleton.state = tuckˑtypeˑPlayerState_Idle{}
 	tuckˑactorˑDecoderSingleton.vol = __validated_tuckˑtypeˑVolume(tuckˑtypeˑVolume{level = u8(80)})
 	rt.tuckAsyncInit()
-	tuckˑactorˑDecoderSlot = rt.tuckStartActor(drain_tuckˑactorˑDecoder)
+	tuckˑactorˑDecoderSlot = rt.tuckStartActorFrame(drain_tuckˑactorˑDecoder)
 	tuckˑfnˑmain()
+	rt.tuckSlRunAll()
 	rt.tuckRun()
 	rt.tuckDrainActors()
 	rt.tuckTrackCheck()

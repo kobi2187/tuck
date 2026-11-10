@@ -1,0 +1,15 @@
+# Awaiting is a pause; spawning (an unbound task call) is not.
+task leaf({n: int}) -> {v: int} [io]:
+  return {v: n}
+
+task ping():
+  return
+
+task parent({n: int}) -> {v: int} [io]:
+  ping
+  let a = {n: n} leaf
+  return {v: a.v}
+
+fn main() -> int [io]:
+  let r = {n: 3} parent
+  return r.v - 3

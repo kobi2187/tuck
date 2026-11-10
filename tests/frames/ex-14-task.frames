@@ -1,0 +1,4 @@
+frame task fetchFeed  (14-task:8)
+  9:20  yield, then call http::get
+--frames:static would refuse:
+  14-task:9: in fetchFeed, 'http::get' waits inside the runtime, on a helper stack

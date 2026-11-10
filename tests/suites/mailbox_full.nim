@@ -53,14 +53,35 @@ proc assertModeRun(t: var T, name: string, buildIdx, runIdx: int,
   else:
     t.ok name
 
-proc buildAndRunUnder(t: var T, mode: string): tuple[b, r: int] =
-  ## Register `tuck b` of the current snippet under `--actors:<mode>`, and a
-  ## run of what it built.
-  let dir = t.curDir / (mode & "_out")
-  let b = t.needCmd(@["./tuck", "b", t.curDir / "t.tuck", "--actors:" & mode,
-                      "-o:" & dir, "--root:" & t.root], vBuild)
-  let r = t.needCmdAfter(@[dir / "t"], b, proc (d: string) = discard, dir, vRun)
+proc buildAndRunUnder(t: var T, mode: string, backend = ""): tuple[b, r: int] =
+  ## Register `tuck b` of the current snippet under `--actors:<mode>` for
+  ## `backend` ("", "--odin" or "--dlang"), and a run of what it built.
+  let dir = t.curDir / (mode & backend.replace("-", "_") & "_out")
+  var argv = @["./tuck", "b", t.curDir / "t.tuck", "--actors:" & mode,
+               "-o:" & dir, "--root:" & t.root]
+  if backend != "": argv.add backend
+  let b = t.needCmd(argv, vBuild)
+  let bin = case backend
+            of "--odin": "t_odin"
+            of "--dlang": "t_d"
+            else: "t"
+  let r = t.needCmdAfter(@[dir / bin], b, proc (d: string) = discard, dir, vRun)
   (b, r)
+
+proc otherBackends(): seq[(string, string)] =
+  ## The backends besides Nim this machine builds, as (flag, label): each
+  ## actor mode is asserted on them too, for parity with Nim.
+  if findOdin() != "": result.add ("--odin", "Odin")
+  if findDmd() != "": result.add ("--dlang", "D")
+
+proc assertModeEverywhere(t: var T, name, mode: string, wantExit: int,
+                          wanted: string) =
+  ## `assertModeRun` on Nim, then on every other backend present.
+  let (b, r) = t.buildAndRunUnder(mode)
+  t.assertModeRun(name, b, r, wantExit, wanted)
+  for (flag, label) in otherBackends():
+    let (ob, orun) = t.buildAndRunUnder(mode, flag)
+    t.assertModeRun(name & " (" & label & ")", ob, orun, wantExit, wanted)
 
 proc run*(t: var T) =
   ## Registers the `on_full` assertions: the default waits on every backend
@@ -79,10 +100,8 @@ proc run*(t: var T) =
   # The same program in the other two actor modes, which reach room by other
   # routes: single mode has main run the actor's coroutine; batch mode flushes
   # what it staged first.
-  let (sb, sr) = t.buildAndRunUnder("single")
-  let (bb, br) = t.buildAndRunUnder("batch")
-  t.assertModeRun("...under --actors:single", sb, sr, 0, "all 1000 arrived")
-  t.assertModeRun("...and under --actors:batch", bb, br, 0, "all 1000 arrived")
+  t.assertModeEverywhere("...under --actors:single", "single", 0, "all 1000 arrived")
+  t.assertModeEverywhere("...and under --actors:batch", "batch", 0, "all 1000 arrived")
 
   # --- written `wait` is the same thing ---------------------------------------
   t.src everyMessage.replace("[queue: 2]", "[queue: 2, on_full: wait]")
@@ -144,9 +163,8 @@ fn main() -> int:
 """
   t.hostRuns "a self-send into a full mailbox stops rather than waiting " &
              "forever, on every backend", 1, "sent to itself"
-  let (eb, er) = t.buildAndRunUnder("single")
-  t.assertModeRun("...and under --actors:single, where the actor is a " &
-                  "coroutine", eb, er, 1, "sent to itself")
+  t.assertModeEverywhere("...and under --actors:single, where the actor is a " &
+                         "coroutine", "single", 1, "sent to itself")
 
   # --- any other word is refused ----------------------------------------------
   t.src everyMessage.replace("[queue: 2]", "[queue: 2, on_full: block]")
@@ -207,8 +225,7 @@ fn main() -> int:
   t.okCheck "[urgent] on an actor's `on` handler checks"
   t.hostRuns "an urgent message jumps the queue, on every backend", 40
   for mode in ["single", "batch"]:
-    let (ub, ur) = t.buildAndRunUnder(mode)
-    t.assertModeRun("...and under --actors:" & mode, ub, ur, 40, "")
+    t.assertModeEverywhere("...and under --actors:" & mode, mode, 40, "")
   t.src urgentActor.replace(" [urgent]", "") & urgentMain
   t.hostRuns "...where an ordinary one waits its turn", 45
   t.src "import box\n" & urgentMain

@@ -5,6 +5,7 @@
 # mixin/err-handler. Calls INTO codegen_d.nim's genDExpr for
 # fn bodies (one-way: genDExpr never calls back into anything here).
 import ast, strutils, sets, tables
+import concurrency, codegen_d_stages   # stackless frames (#216)
 import resolution
 import ast_query
 import codegen_common
@@ -512,10 +513,29 @@ proc genDFnSig*(ctx: var DCodegenCtx, d: Decl): string =
   "alias " & d.name & " = " & conv & retStr & " function(" &
     params.join(", ") & ");\n"
 
+proc genDFrameDecl(ctx: var DCodegenCtx, d: Decl): string =
+  ## Under --concurrency:stackless (#216): the frame form of a task or of a
+  ## fn that can pause, with the return shape set as for its ordinary body.
+  let payload = bangInner(d.fnReturnType)
+  ctx.retWrapped = payload != nil
+  ctx.retAbsentCapable = absentCapable(d.fnReturnType)
+  ctx.retInnerT = payload
+  ctx.retInnerD =
+    if payload == nil: ""
+    else:
+      let inner = ctx.dType(payload)
+      if inner == "void": "rt.TuckUnit" else: inner
+  ctx.currentParams = paramFields(d)
+  result = ctx.genDFrameForm(d)
+  ctx.currentParams = @[]
+  ctx.retWrapped = false
+  ctx.retAbsentCapable = false
+
 proc genDTaskDecl*(ctx: var DCodegenCtx, d: Decl): string =
   ## `task name(...)` — an ordinary D function. What makes it a task is the
   ## CALL SITE: calling it schedules a coroutine, and binding its result
   ## awaits completion (spec §9.2). The body needs no marking of its own.
+  if d.isFrameDecl: return ctx.genDFrameDecl(d)
   let retStr = ctx.dType(d.fnReturnType)
   # A task's return type is fallible exactly as a fn's can be, and a bare
   # `return` inside one has to produce the carrier — `return;` in a function
@@ -642,7 +662,10 @@ proc genDSendHelper*(ctx: var DCodegenCtx, d: Decl,
     of ofAssert: "rt.sendAsserting(" & box & ", " & msg & ", " & actor & ")"
   "void send" & h.name.capitalize() & "_" & d.name & "(ref " & d.name &
     " self" & sep & params.join(", ") & ") {\n" & copies &
-    "    " & enqueue & ";\n    rt.tuckNotifySend(" & actorSlotName(d.name) &
+    "    " & enqueue & ";\n" &
+    # An urgent send is handed over at once, batch or not (`flushNow`).
+    (if urgentSend(d, h.name): "    rt.flushNow(" & box & ");\n" else: "") &
+    "    rt.tuckNotifySend(" & actorSlotName(d.name) &
     ");\n}\n\n"
 
 proc genDActorState*(ctx: var DCodegenCtx, d: Decl,
@@ -782,7 +805,7 @@ proc genDActorsBoot*(ctx: DCodegenCtx, m: Module): string =
   result = "void " & ActorsBootProc & "() {\n"
   for d in m.decls:
     if runsActor(d):
-      result.add("    " & actorSlotName(d.name) & " = rt.tuckStartActor(&drain_" &
+      result.add("    " & actorSlotName(d.name) & " = rt." & actorStarter(d) & "(&drain_" &
                  d.name & ");\n")
   result.add("}\n")
 
@@ -1176,7 +1199,8 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   of dkFn:
     if d.isExtern: ""                  # bare extern fn: emitted via the block
     elif d.isPending: ctx.genDPendingStub(d)
-    else: ctx.genDFnDecl(d)
+    # A fn that can pause keeps its ordinary form and gains a frame form.
+    else: ctx.genDFnDecl(d) & (if d.isFrameDecl: "\n" & ctx.genDFrameDecl(d) else: "")
   of dkMixin: ctx.genDMixinBlock(d)
   of dkExtern: ctx.genDExternBlock(d)
   of dkPending: ctx.genDPendingBlock(d)

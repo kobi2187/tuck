@@ -5,6 +5,8 @@ import std/macros
 import std/typetraits
 import ./tuck_mem
 export tuck_mem   # tuckDrop, tuckMove, tuckCopy, …: what emitted code calls
+import ./tuck_sl
+export tuck_sl    # frames and stages: `--concurrency:stackless` (#216)
 import std/strutils
 import std/tables as stdtables
 import std/math as stdmath

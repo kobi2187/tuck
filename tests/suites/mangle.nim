@@ -165,7 +165,8 @@ fn main() -> int [io]:
   t.emits "a type as a type",                 r"type tuckˑtypeˑName\*"
   t.emits "an object as an object",           r"type tuckˑobjectˑDog\*"
   t.emits "an actor as an actor",             r"type tuckˑactorˑTally\*"
-  t.emits "a task as a task",                 r"proc tuckˑtaskˑwork\*"
+  t.emits "a task as a task",                 (if stacklessRun(): r"type TuckFˑtuckˑtaskˑwork\*"
+                                               else: r"proc tuckˑtaskˑwork\*")
   t.emits "a const as a const",               r"const tuckˑconstˑLIMIT"
   t.emits "a pool as a pool",                 r"var tuckˑpoolˑCells\*"
   t.emits "a local as a local",               r"var tuckˑvˑtypeName = "

@@ -53,6 +53,11 @@ type
     actorInits*: seq[string]     # `singleton.field = v`, run by the entry
                                  # point before any actor starts (#87)
     moduleName*: string    # error codes hash over "module/Enum.Variant"
+    frameVar*: string      # in a stackless stage (#216): "tuckF"; a return
+                           # finishes the frame through `frameRet` instead
+    frameRet*: string      # that frame's TuckRetˑf proc
+    frameJumps*: Table[pointer, string]  # break/continue/arm carriers, by
+                           # identity, printed as these jumps instead
     currentParams*: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
     ptrSelf*: bool         # inside a member fn: `self` is ^T and needs a deref
     fnAsParam*: bool       # emitting a param list: a bare `fn` is `$T` there

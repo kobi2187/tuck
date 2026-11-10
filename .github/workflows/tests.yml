@@ -112,3 +112,12 @@ jobs:
 
       - name: Every suite (Odin required)
         run: xvfb-run -a ./tests/run
+#         run: ./tests/run
+
+      # Stackless is the default (#216); the stackful runtime stays a flag, and
+      # every suite runs under it too, so neither mode can rot unseen. An
+      # assertion on emitted text reads the mode (harness.stacklessRun), a
+      # golden has its `.stackful` twin where the modes differ, and stage 2
+      # keeps emitting the tracked (stackless) examples whatever this says.
+      - name: Every suite again, stackful
+        run: TUCK_CONCURRENCY=stackful ./tests/run

@@ -1,0 +1,58 @@
+# Pauses inside loops and match arms (#216 phase 3).
+import console
+import seq
+import str
+
+type Shape:
+  | Circle({r: int})
+  | Rect({w: int, h: int})
+
+fn say({text: str}) [io]:
+  {text: text} console::printLine
+
+fn area({s: Shape}) -> int [io]:
+  match s:
+    Circle:
+      {text: "circle"} say
+      return 3 * s.r * s.r
+    Rect:
+      {text: "rect"} say
+      return s.w * s.h
+
+task counter({tag: str, m: int}) -> {r: int} [io]:
+  var sum = 0
+  for i in 1 .. m:
+    if i == 2:
+      continue
+    {text: tag + " at " + i.toStr} say
+    var j = 0
+    for j < 10:
+      j += 1
+      if j == 3:
+        break
+    sum += i * j
+    if i == 4:
+      break
+  return {r: sum}
+
+task shapes({k: int}) -> {r: int} [io]:
+  var xs: Seq[Shape] = []
+  let c = {r: 2} Shape.Circle
+  let q = {w: 2, h: 5} Shape.Rect
+  xs = {items: xs, value: c} push
+  xs = {items: xs, value: q} push
+  var total = k
+  for s in xs:
+    let a = {s: s} area
+    total += a
+  var n = 0
+  for n < 2:
+    {text: "tick " + n.toStr} console::printLine
+    n += 1
+  return {r: total}
+
+fn main() -> int [io]:
+  {tag: "bg", m: 3} counter
+  let a = {tag: "a", m: 6} counter
+  let b = {k: 1} shapes
+  return a.r + b.r

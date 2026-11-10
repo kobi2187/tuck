@@ -68,7 +68,7 @@ main :: proc() {
 	tuckˑactorˑAccumulatorSingleton.total = 0
 	tuckˑactorˑAccumulatorSingleton.done = false
 	rt.tuckAsyncInit()
-	tuckˑactorˑAccumulatorSlot = rt.tuckStartActor(drain_tuckˑactorˑAccumulator)
+	tuckˑactorˑAccumulatorSlot = rt.tuckStartActorFrame(drain_tuckˑactorˑAccumulator)
 	mainRc := tuckˑfnˑmain()
 	rt.tuckDrainActors()
 	rt.tuckTrackCheck()

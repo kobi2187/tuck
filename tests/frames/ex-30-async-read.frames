@@ -1,0 +1,4 @@
+frame task readOrGiveUp  (30-async-read:11)
+  13:3  on select
+--frames:static would refuse:
+  30-async-read:13: in readOrGiveUp, a select may wait inside the runtime, on a helper stack
