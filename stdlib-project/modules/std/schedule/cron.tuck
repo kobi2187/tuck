@@ -1,0 +1,265 @@
+# std.schedule cron — "*/15 9-17 * * 1-5" as a value that answers two questions:
+# does this minute match, and when is the next one that does.
+#
+# The five fields are minute, hour, day of month, month, day of week, each a
+# comma list of: `*`, a number, a range `a-b`, any of those with a step `/n`.
+# Weekday 0 and 7 are both Sunday. As in the classic cron, when BOTH day fields
+# are restricted a day matches if EITHER does; when one is `*`, the other rules.
+# Times are UTC milliseconds since the epoch, to the minute; a zone is
+# std.chrono's zone module's business, applied before and after.
+#
+# Anything malformed is absent (a field out of range, a step of 0, a range
+# backwards, the wrong number of fields), never a partial schedule.
+import seq
+import str
+import text
+import convert
+import chrono
+
+type Cron:
+  minutes: Seq[bool]
+  hours: Seq[bool]
+  days: Seq[bool]
+  months: Seq[bool]
+  weekdays: Seq[bool]
+  anyDay: bool
+  anyWeekday: bool
+
+fn blanks({n: int}) -> Seq[bool]:
+  var out: Seq[bool] = []
+  for i in 0 .. n - 1:
+    out = {items: out, value: false} push
+  return out
+
+fn numberIn({t: str, lo: int, hi: int}) -> int:
+  let r = {t: t} parseInt
+  if not r.ok:
+    return 0 - 1
+  let v = {value: r.value} int
+  if v < lo or v > hi:
+    return 0 - 1
+  return v
+
+# One comma part into `set`: false when it is malformed.
+fn addPart({set: Seq[bool], t: str, lo: int, hi: int}) -> Seq[bool]?:
+  var out = set
+  var step = 1
+  var body = t
+  let slashed = {t: t, at: "/"} split
+  if slashed.len > 2:
+    return
+  if slashed.len == 2:
+    step = {t: slashed[1], lo: 1, hi: hi} numberIn
+    if step < 1:
+      return
+    body = slashed[0]
+  var from = lo
+  var to = hi
+  if body != "*":
+    let ends = {t: body, at: "-"} split
+    if ends.len > 2:
+      return
+    from = {t: ends[0], lo: lo, hi: hi} numberIn
+    if from < 0:
+      return
+    to = from
+    if ends.len == 2:
+      to = {t: ends[1], lo: lo, hi: hi} numberIn
+      if to < from:
+        return
+    else:
+      if slashed.len == 2:
+        to = hi
+  var v = from
+  for v <= to:
+    {items: out, index: v, value: true} setAt
+    v = v + step
+  return out
+
+fn parseField({t: str, lo: int, hi: int}) -> Seq[bool]?:
+  var set = {n: hi + 1} blanks
+  let parts = {t: t, at: ","} split
+  for i in 0 .. parts.len - 1:
+    let next = {set: set, t: parts[i], lo: lo, hi: hi} addPart
+    if not next.ok:
+      return
+    set = next.value
+  return set
+
+fn parseCron({t: str}) -> Cron?:
+  let trimmed = {t: t} trim
+  let words = {t: trimmed, at: " "} split
+  var fields: Seq[str] = []
+  for i in 0 .. words.len - 1:
+    if {t: words[i]} byteCount > 0:
+      fields = {items: fields, value: words[i]} push
+  if fields.len != 5:
+    return
+  let m = {t: fields[0], lo: 0, hi: 59} parseField
+  if not m.ok:
+    return
+  let h = {t: fields[1], lo: 0, hi: 23} parseField
+  if not h.ok:
+    return
+  let d = {t: fields[2], lo: 1, hi: 31} parseField
+  if not d.ok:
+    return
+  let mo = {t: fields[3], lo: 1, hi: 12} parseField
+  if not mo.ok:
+    return
+  let w = {t: fields[4], lo: 0, hi: 7} parseField
+  if not w.ok:
+    return
+  var weekdays = w.value
+  if weekdays[7]:
+    {items: weekdays, index: 0, value: true} setAt
+  let anyDay = fields[2] == "*"
+  let anyWeekday = fields[4] == "*"
+  return {minutes: m.value, hours: h.value, days: d.value, months: mo.value, weekdays: weekdays, anyDay: anyDay, anyWeekday: anyWeekday} Cron
+
+# 0 = Sunday .. 6 = Saturday, the numbering cron uses.
+fn cronWeekday({d: Date}) -> int:
+  let w = {d: d} weekdayOf
+  match w:
+    Mon: return 1
+    Tue: return 2
+    Wed: return 3
+    Thu: return 4
+    Fri: return 5
+    Sat: return 6
+    Sun: return 0
+
+fn dayMatches({c: Cron, d: Date}) -> bool:
+  let mo = {value: d.month} int
+  if not c.months[mo]:
+    return false
+  let dom = {value: d.day} int
+  let wd = {d: d} cronWeekday
+  let byDay = c.days[dom]
+  let byWeekday = c.weekdays[wd]
+  if c.anyDay and c.anyWeekday:
+    return true
+  if c.anyDay:
+    return byWeekday
+  if c.anyWeekday:
+    return byDay
+  return byDay or byWeekday
+
+fn matches({c: Cron, atMs: int}) -> bool:
+  let dt = {atMs: atMs} fromUnixMs
+  if not {c: c, d: dt.date} dayMatches:
+    return false
+  let h = {value: dt.time.hour} int
+  let mi = {value: dt.time.minute} int
+  return c.hours[h] and c.minutes[mi]
+
+# The first matching minute strictly after `afterMs`, or absent when none comes
+# within about eight years (a schedule such as "0 0 30 2 *").
+fn nextAfter({c: Cron, afterMs: int}) -> int?:
+  var t = (afterMs /i 60000 + 1) * 60000
+  var steps = 0
+  for steps < 1500000:
+    let dt = {atMs: t} fromUnixMs
+    let h = {value: dt.time.hour} int
+    let mi = {value: dt.time.minute} int
+    if not {c: c, d: dt.date} dayMatches:
+      t = (t /i 86400000 + 1) * 86400000
+    else:
+      if not c.hours[h]:
+        t = (t /i 3600000 + 1) * 3600000
+      else:
+        if not c.minutes[mi]:
+          t = t + 60000
+        else:
+          return t
+    steps = steps + 1
+  return
+
+# --- self-check --------------------------------------------------------------
+
+# 2024-03-15 (a Friday) 10:30 UTC
+fn stamp({h: int, m: int}) -> int:
+  let d = {year: 2024, month: 3, day: 15} mkDate
+  let hh = {value: h} u8
+  let mm = {value: m} u8
+  let tod = {hour: hh, minute: mm, second: 0, nano: 0} TimeOfDay
+  let dt = {date: d, time: tod} DateTime
+  return {moment: dt, offsetSec: 0} toUnixMs
+
+fn checkParse() -> int:
+  let bad: Seq[str] = ["", "* * * *", "60 * * * *", "* 24 * * *", "* * 0 * *", "*/0 * * * *", "5-2 * * * *", "a * * * *", "* * * 13 *", "* * * * 8", "1 2 3 4 5 6"]
+  for i in 0 .. bad.len - 1:
+    let r = {t: bad[i]} parseCron
+    if r.ok:
+      return 1 + i
+  let good = {t: "*/15 9-17 * * 1-5"} parseCron
+  if not good.ok:
+    return 20
+  return 0
+
+fn checkMatches() -> int:
+  let c = {t: "*/15 9-17 * * 1-5"} parseCron
+  if not c.ok:
+    return 30
+  let at = {h: 10, m: 30} stamp
+  if not {c: c.value, atMs: at} matches:
+    return 31
+  let off = {h: 10, m: 31} stamp
+  if {c: c.value, atMs: off} matches:
+    return 32
+  let night = {h: 20, m: 30} stamp
+  if {c: c.value, atMs: night} matches:
+    return 33
+  let sun = {t: "0 12 * * 7"} parseCron
+  if not sun.ok:
+    return 34
+  # Sunday and 7 are the same day: March 17, 2024 is a Sunday
+  let d = {year: 2024, month: 3, day: 17} mkDate
+  let tod = {hour: 12, minute: 0, second: 0, nano: 0} TimeOfDay
+  let dt = {date: d, time: tod} DateTime
+  let sunday = {moment: dt, offsetSec: 0} toUnixMs
+  if not {c: sun.value, atMs: sunday} matches:
+    return 35
+  # either day field when both are restricted: the 1st, or any Friday
+  let either = {t: "0 0 1 * 5"} parseCron
+  if not either.ok:
+    return 36
+  let friday = {h: 0, m: 0} stamp
+  if not {c: either.value, atMs: friday} matches:
+    return 37
+  return 0
+
+fn checkNext() -> int:
+  let c = {t: "*/15 9-17 * * 1-5"} parseCron
+  if not c.ok:
+    return 40
+  let from = {h: 10, m: 30} stamp
+  let n = {c: c.value, afterMs: from} nextAfter
+  if not n.ok:
+    return 41
+  if n.value != from + 15 * 60000:
+    return 42
+  let after = {h: 17, m: 45} stamp
+  let tomorrow = {c: c.value, afterMs: after} nextAfter
+  if not tomorrow.ok:
+    return 43
+  # Friday evening: next is Monday 09:00, three days later at 09:00
+  let monday = {h: 9, m: 0} stamp + 3 * 86400000
+  if tomorrow.value != monday:
+    return 44
+  let never = {t: "0 0 30 2 *"} parseCron
+  if not never.ok:
+    return 45
+  let gone = {c: never.value, afterMs: from} nextAfter
+  if gone.ok:
+    return 46
+  return 0
+
+fn main() -> int:
+  let a = checkParse
+  if a != 0:
+    return a
+  let b = checkMatches
+  if b != 0:
+    return b
+  return checkNext

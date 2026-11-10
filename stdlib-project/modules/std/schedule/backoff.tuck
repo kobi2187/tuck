@@ -1,0 +1,149 @@
+# std.schedule backoff — when to retry, and how often to allow.
+#
+# Everything here is a pure value in, value out: the clock is an argument
+# (`nowMs`), never read, so a limiter replays exactly in a test and a program
+# decides where its time comes from (`std/time` `nowMs`, or a recorded trace).
+#
+# backoffMs   exponential delay: base * 2^attempt, capped.
+# jittered    the same, scaled by a share of the delay the caller drew from
+#             a generator (permille 0..1000): "full jitter" without this
+#             module owning a random source.
+# Bucket      a token bucket. `take` answers whether one more action fits now
+#             and the bucket after it; a bucket is a value, so a denied take
+#             leaves the caller's bucket as it was.
+import seq
+
+# attempt 0 waits base, 1 waits 2*base, ... never more than cap. A base or cap
+# below 1 is 0 (no waiting at all).
+fn backoffMs({attempt: int, baseMs: int, capMs: int}) -> int:
+  if baseMs < 1 or capMs < 1 or attempt < 0:
+    return 0
+  var delay = baseMs
+  var k = 0
+  for k < attempt:
+    if delay >= capMs:
+      return capMs
+    delay = delay * 2
+    k = k + 1
+  if delay > capMs:
+    return capMs
+  return delay
+
+# A `permille` share (0..1000) of the backoff: 0 retries at once, 1000 waits
+# the whole delay. Out-of-range shares are clamped.
+fn jittered({attempt: int, baseMs: int, capMs: int, permille: int}) -> int:
+  let full = {attempt: attempt, baseMs: baseMs, capMs: capMs} backoffMs
+  var share = permille
+  if share < 0:
+    share = 0
+  if share > 1000:
+    share = 1000
+  return full * share /i 1000
+
+# Every delay of a retry plan: the wait before attempt 1, 2, ... `attempts`.
+fn schedule({attempts: int, baseMs: int, capMs: int}) -> Seq[int]:
+  var out: Seq[int] = []
+  for i in 0 .. attempts - 1:
+    let d = {attempt: i, baseMs: baseMs, capMs: capMs} backoffMs
+    out = {items: out, value: d} push
+  return out
+
+# --- token bucket ----------------------------------------------------------------
+# Tokens are counted in thousandths so a refill rate of "2 per second" accrues
+# smoothly between calls without a float.
+type Bucket:
+  capacity: int
+  milli: int
+  perSecond: int
+  stampMs: int
+
+fn bucket({capacity: int, perSecond: int, nowMs: int}) -> Bucket:
+  return {capacity: capacity, milli: capacity * 1000, perSecond: perSecond, stampMs: nowMs} Bucket
+
+fn refilled({b: Bucket, nowMs: int}) -> Bucket:
+  if nowMs <= b.stampMs:
+    return b
+  let elapsed = nowMs - b.stampMs
+  var milli = b.milli + elapsed * b.perSecond
+  let ceiling = b.capacity * 1000
+  if milli > ceiling:
+    milli = ceiling
+  return {capacity: b.capacity, milli: milli, perSecond: b.perSecond, stampMs: nowMs} Bucket
+
+type Taken:
+  b: Bucket
+  allowed: bool
+
+# Spend `cost` tokens now if the bucket has them.
+fn take({b: Bucket, nowMs: int, cost: int}) -> Taken:
+  let fresh = {b: b, nowMs: nowMs} refilled
+  let need = cost * 1000
+  if fresh.milli < need:
+    return {b: fresh, allowed: false} Taken
+  let spent = {capacity: fresh.capacity, milli: fresh.milli - need, perSecond: fresh.perSecond, stampMs: fresh.stampMs} Bucket
+  return {b: spent, allowed: true} Taken
+
+# Milliseconds until `cost` tokens will be there (0 when they already are,
+# -1 when the rate is 0 and they never will be, or the cost exceeds capacity).
+fn waitMs({b: Bucket, nowMs: int, cost: int}) -> int:
+  let fresh = {b: b, nowMs: nowMs} refilled
+  let need = cost * 1000
+  if need > fresh.capacity * 1000:
+    return 0 - 1
+  if fresh.milli >= need:
+    return 0
+  if fresh.perSecond < 1:
+    return 0 - 1
+  let missing = need - fresh.milli
+  return (missing + fresh.perSecond - 1) /i fresh.perSecond
+
+# --- self-check --------------------------------------------------------------
+
+fn checkBackoff() -> int:
+  if {attempt: 0, baseMs: 100, capMs: 1000} backoffMs != 100:
+    return 1
+  if {attempt: 3, baseMs: 100, capMs: 1000} backoffMs != 800:
+    return 2
+  if {attempt: 4, baseMs: 100, capMs: 1000} backoffMs != 1000:
+    return 3
+  if {attempt: 500, baseMs: 100, capMs: 1000} backoffMs != 1000:
+    return 4
+  if {attempt: 2, baseMs: 0, capMs: 1000} backoffMs != 0:
+    return 5
+  if {attempt: 3, baseMs: 100, capMs: 1000, permille: 500} jittered != 400:
+    return 6
+  if {attempt: 3, baseMs: 100, capMs: 1000, permille: 5000} jittered != 800:
+    return 7
+  let plan = {attempts: 5, baseMs: 100, capMs: 500} schedule
+  if plan.len != 5 or plan[0] != 100 or plan[3] != 500 or plan[4] != 500:
+    return 8
+  return 0
+
+fn checkBucket() -> int:
+  var b = {capacity: 2, perSecond: 1, nowMs: 0} bucket
+  let one = {b: b, nowMs: 0, cost: 1} take
+  if not one.allowed:
+    return 20
+  let two = {b: one.b, nowMs: 0, cost: 1} take
+  if not two.allowed:
+    return 21
+  let three = {b: two.b, nowMs: 0, cost: 1} take
+  if three.allowed:
+    return 22
+  if {b: three.b, nowMs: 0, cost: 1} waitMs != 1000:
+    return 23
+  let later = {b: three.b, nowMs: 1000, cost: 1} take
+  if not later.allowed:
+    return 24
+  let capped = {b: later.b, nowMs: 100000, cost: 3} take
+  if capped.allowed:
+    return 25
+  if {b: capped.b, nowMs: 100000, cost: 3} waitMs != 0 - 1:
+    return 26
+  return 0
+
+fn main() -> int:
+  let a = checkBackoff
+  if a != 0:
+    return a
+  return checkBucket
