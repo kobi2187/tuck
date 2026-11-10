@@ -1813,6 +1813,7 @@ when isMainModule:
           let odinCmd = quoteShell(odinExe) & " build " & quoteShell(outDir) &
                         " " & odinOpt & " -out:" & quoteShell(odinBin) &
                         (if noInvariants: " -define:tuckNoInvariants=true" else: "") &
+                        odinDefinesFor(actorPolicy) &
                         " " & getEnv("TUCK_ODIN_EXTRA")
           let odT0 = epochTime()
           let odRc = execShellCmd(odinCmd)
@@ -1897,6 +1898,7 @@ when isMainModule:
           # TUCK_DMD_EXTRA: flags appended verbatim (`-version=tuckTrack`
           # makes the program report what it never freed, exit code 90).
           let dInv = (if noInvariants: " -version=tuckNoInvariants" else: "") &
+                     dDefinesFor(actorPolicy) &
                      " " & getEnv("TUCK_DMD_EXTRA")
           let dCmd = quoteShell(dmdExe) & " -i" & dOpt & dInv &
                      " -I" & quoteShell(outDir) & implIArgs &

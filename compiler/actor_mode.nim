@@ -92,6 +92,24 @@ proc nimDefinesFor*(p: ActorPolicy): string =
     " -d:tuckActorsBatch -d:TuckBatchCount:" & $p.batchCount &
     " -d:TuckBatchTimeoutMs:" & $p.batchTimeoutMs & " "
 
+proc odinDefinesFor*(p: ActorPolicy): string =
+  ## The same choice for `odin build`: `#config` constants the Odin runtime
+  ## (tuckrt/tuck_coro.odin) reads.
+  case p.mode
+  of amThread: ""
+  of amSingle: " -define:TUCK_ACTORS_SINGLE=true"
+  of amBatch:
+    " -define:TUCK_ACTORS_BATCH=true -define:TUCK_BATCH_COUNT=" & $p.batchCount &
+    " -define:TUCK_BATCH_TIMEOUT_MS=" & $p.batchTimeoutMs
+
+proc dDefinesFor*(p: ActorPolicy): string =
+  ## The same choice for `dmd`: `version` identifiers and the batch knobs as
+  ## `-version` too (tuckrt_d/tuck_coro.d reads them).
+  case p.mode
+  of amThread: ""
+  of amSingle: " -version=TuckActorsSingle"
+  of amBatch: " -version=TuckActorsBatch"
+
 var actorPolicy* = ActorPolicy(mode: amThread,
                                batchCount: DefaultBatchCount,
                                batchTimeoutMs: DefaultBatchTimeoutMs)

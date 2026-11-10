@@ -226,7 +226,9 @@ private void growQueue()
 /// Ready coroutines, plus one when stackless frames (#216) are ready: they
 /// are ready work too, so every loop that waits by stepping the scheduler
 /// runs them (tuck_coro.nim's runNext says why).
-private size_t readyCount() { return readyTail - readyHead + (tuckSlHasReady() ? 1 : 0); }
+private size_t readyCount() { return coroCount + (tuckSlHasReady() ? 1 : 0); }
+/// Ready COROUTINES alone: what the ring buffer holds.
+private size_t coroCount() { return readyTail - readyHead; }
 
 /// Put a coroutine on the run queue.
 void schedule(Coroutine* c)
@@ -240,7 +242,7 @@ void schedule(Coroutine* c)
         {
             import core.stdc.string : memmove;
             memmove(readyQueue, readyQueue + readyHead,
-                    readyCount * (Coroutine*).sizeof);
+                    coroCount * (Coroutine*).sizeof);
             readyTail -= readyHead;
             readyHead = 0;
         }
@@ -251,7 +253,7 @@ void schedule(Coroutine* c)
 
 private Coroutine* takeReady()
 {
-    if (readyCount == 0) return null;
+    if (coroCount == 0) return null;
     return readyQueue[readyHead++];
 }
 
@@ -807,8 +809,19 @@ private struct Waiter
     bool satisfied;
 }
 
+/// `--actors:single` (`-version=TuckActorsSingle`; tuck_async.nim's
+/// TuckActorsSingle explains the trade): every actor runs on main's thread —
+/// a coroutine, or a FRAME when its handlers wait only on mailboxes (#216) —
+/// so a send is a push and a wake is a queue append, with no thread, condvar
+/// or futex anywhere.
+version (TuckActorsSingle) private enum tuckSingle = true;
+else private enum tuckSingle = false;
+
 private struct ActorSlot
 {
+    TuckFrameHdr frame;   /// FIRST, so a frame actor's slot IS its frame
+    Coroutine* co;        /// single mode: the actor's coroutine (null: a frame)
+    bool queued;          /// single mode: queued already, so a send does not queue it twice
     DrainProc drain;
     Mutex lock;
     Condition cond;
@@ -996,7 +1009,65 @@ private void actorMain(ActorSlot* slot)
 ///
 /// Detached by design: actors are daemons with no termination condition, so
 /// there is nothing to join. The process exits and they go with it.
+private ActorSlot* gFrameActor;   /// per thread: the frame actor mid-pass
+
+/// A frame actor's one stage (single mode): drain until empty, answer a
+/// ping, mark itself un-queued — the coroutine's loop body, with no stack
+/// switch. A send into a full mailbox pumps from here (tuckAwaitRoom).
+private TuckHop actorFrameStage(void* env)
+{
+    auto slot = cast(ActorSlot*) env;
+    auto outer = gFrameActor;
+    gFrameActor = slot;
+    while (slot.drain()) {}
+    gFrameActor = outer;
+    answerProbe(slot);
+    slot.queued = false;
+    return TuckHop.init;
+}
+
+/// One scheduler step for a single-mode wait outside any coroutine.
+private void pumpOnce()
+{
+    if (readyCount > 0) stepOne();
+    else runOnce(1);
+}
+
+private void* startSingle(DrainProc drain, bool asFrame)
+{
+    if (gSlotsLock is null) gSlotsLock = new Mutex();
+    auto slot = new ActorSlot();
+    slot.drain = drain;
+    slot.queued = true;
+    gActorSlots ~= slot;
+    if (asFrame)
+    {
+        slot.frame.stage = &actorFrameStage;
+        tuckSlReady(&slot.frame);
+    }
+    else
+    {
+        slot.co = newCoroutine(delegate() {
+            for (;;)
+            {
+                while (slot.drain()) {}
+                answerProbe(slot);
+                slot.queued = false;
+                suspend();       // until a send queues it again
+            }
+        });
+        schedule(slot.co);
+    }
+    return cast(void*) slot;
+}
+
 void* tuckStartActor(DrainProc drain)
+{
+    static if (tuckSingle) return startSingle(drain, false);
+    else return startThread(drain);
+}
+
+private void* startThread(DrainProc drain)
 {
     if (gSlotsLock is null) gSlotsLock = new Mutex();
     auto slot = new ActorSlot();
@@ -1024,6 +1095,20 @@ void* tuckStartActor(DrainProc drain)
 void tuckWaitOn(void* handle, bool function() pred)
 {
     if (handle is null) return;
+    static if (tuckSingle)
+    {
+        // One thread: re-test between scheduler passes, which run the actors.
+        while (!pred())
+        {
+            if (inCoroutine()) tuckYield();
+            else pumpOnce();
+        }
+    }
+    else waitOnThread(handle, pred);
+}
+
+private void waitOnThread(void* handle, bool function() pred)
+{
     auto slot = cast(ActorSlot*) handle;
     auto w = new Waiter();
     w.pred = pred;
@@ -1076,6 +1161,13 @@ void tuckWaitOn(void* handle, bool function() pred)
 void tuckDrainActors()
 {
     if (gSlotsLock is null) return;
+    static if (tuckSingle)
+    {
+        // Main lends its thread: run until nothing is ready. No thread to
+        // retire — the actors are coroutines and frames on this one.
+        while (readyCount > 0) stepOne();
+        return;
+    }
     while (!allActorsIdle()) {}
     retireActors();
 }
@@ -1136,6 +1228,15 @@ void tuckNotifySend(void* handle)
 {
     if (handle is null) return;      // not registered yet: nothing is parked
     auto slot = cast(ActorSlot*) handle;
+    static if (tuckSingle)
+    {
+        // Queue the actor, once: a flood of sends must not queue it a million times.
+        if (slot.queued) return;
+        slot.queued = true;
+        if (slot.co !is null) schedule(slot.co);
+        else tuckSlReady(&slot.frame);
+        return;
+    }
     if (!atomicLoad(slot.parked)) return;
     slot.lock.lock();
     slot.pending = true;
@@ -1163,13 +1264,18 @@ void tuckAwaitRoom(void* handle, string actor)
     if (handle is null)
         tuckMailboxFull(actor, "the actor was never started, so nothing drains it");
     auto slot = cast(ActorSlot*) handle;
-    if (gMySlot is slot)
+    static if (tuckSingle)
+        immutable selfSend = (inCoroutine() && running() is slot.co) || gFrameActor is slot;
+    else
+        immutable selfSend = gMySlot is slot;
+    if (selfSend)
         tuckMailboxFull(actor, "it sent to itself, and the actor that would " ~
                         "make room is the one waiting. Declare `on_full: drop` " ~
                         "or a larger `queue`");
     tuckNotifySend(handle);
     if (inCoroutine()) tuckYield();          // re-queues the caller first
     else if (readyCount > 0) stepOne();
+    else static if (tuckSingle) runOnce(1);
     else Thread.yield();
 }
 
@@ -1189,15 +1295,20 @@ long tuckPingNs(void* handle, long withinMs)
     immutable deadline = t0 + withinMs * 1_000_000L;
     immutable id = atomicOp!"+="(slot.probe, 1);
     // Wake it the way a send does: the probe may be all there is to do.
-    slot.lock.lock();
-    slot.pending = true;
-    slot.cond.notify();
-    slot.lock.unlock();
+    static if (tuckSingle) tuckNotifySend(handle);
+    else
+    {
+        slot.lock.lock();
+        slot.pending = true;
+        slot.cond.notify();
+        slot.lock.unlock();
+    }
     while (atomicLoad!(MemoryOrder.acq)(slot.ackId) < id)
     {
         if (nowNs() >= deadline) return -1;
         if (inCoroutine()) tuckYield();
         else if (readyCount > 0) stepOne();
+        else static if (tuckSingle) runOnce(1);
         else Thread.yield();
     }
     // Judged by the actor's stamp: a reply stamped after the deadline is no
@@ -1288,7 +1399,11 @@ TuckHop tuckSlOnStack(TuckFrameHdr* f, TuckStageFn next, void function(void*) bo
     return TuckHop.init;
 }
 
-/// A pure actor (no handler can pause, #216): under stackless with
-/// --actors:single the Nim runtime runs it as a frame. D has thread-per-actor
-/// only, where a handler runs on the actor's own thread, so it starts as any.
-void* tuckStartActorFrame(DrainProc drain) { return tuckStartActor(drain); }
+/// A pure actor (no handler can pause, #216): under --actors:single it runs
+/// as a frame — the slot IS the frame. Thread mode starts it as any actor: a
+/// handler runs on the actor's own thread there.
+void* tuckStartActorFrame(DrainProc drain)
+{
+    static if (tuckSingle) return startSingle(drain, true);
+    else return tuckStartActor(drain);
+}
