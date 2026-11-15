@@ -1,0 +1,193 @@
+# Compiler audit, phases 1 and 2: findings ledger
+
+Six parallel reviewers, one per guarantee domain, each did its own inventory (phase 1)
+and then adversarial bypass probes (phase 2) with the built compiler. This ledger merges
+their reports. Repro programs are in `repros.tar.gz` (extract in a scratch directory;
+paths below are relative to its root, e.g. `effects/fnsig/plain/t.tuck`).
+
+**Evidence marks.** `V` = reproduced by me with `tuck ch` after the report (the checker
+accepts the program). `R` = reported by a reviewer with a built-and-run repro, not yet
+re-run by me. A finding is never listed unless its reviewer ran it.
+
+**Severity.** S1 safety or identity bypass (checker accepts something its rules forbid, or
+silent wrong or unsafe behaviour). S2 checker accepts, a backend rejects, or backends
+disagree. S3 valid program rejected or compiler crash. S4 diagnostics.
+
+Raw reports contain roughly 100 findings; many share a root cause. Below they are grouped
+by the root cause, which is also the order I propose to fix them in.
+
+---
+
+## Class A. Calls the checker cannot see (S1, the largest and most dangerous class)
+
+The effect, ownership and slab rules are enforced per recorded call edge. Several call-like
+forms never get an edge, so the rules do not apply to them.
+
+| ID | What bypasses | Mark | Repro |
+|---|---|---|---|
+| E1 | A call through a `fnsig` slot (field, param or local) launders `[io]`; `[pure]`/`[no_alloc]` silently dropped; also loses suspend marking (two tasks interleave wrongly) | V | effects/fnsig/plain/t.tuck, effects/yield1 |
+| E3a | Interface conformance subset rule inverted for restrictions: impl may allocate under a `[pure, no_alloc]` contract | V | effects/iface/t2.tuck |
+| E3c | Interface member calls are `ckUnknown` in the restriction check | R | effects/iface/t7.tuck |
+| E5 | Registry `raise` has no edge to its handlers; `[io]` handler effects launder | V | effects/registry/t.tuck, t2.tuck |
+| E13 | `..` mutator chain steps are never resolved as calls (an `[io]` member runs in an unmarked fn) | V | effects/spell/s1d/t.tuck |
+| E6 | `[pure]`/`[irq_safe]` ignore actor reads, `alive`, `waitUntil`, pool ops (TK-EF07 matches `exkSend` only) | R | effects/pure_state/t.tuck |
+| E9 | `pending:` object members with `[io]` do not propagate | R | effects/pending1/t_c.tuck |
+| E10 | A type invariant calling `[io]` is unchecked | R | effects/invariant/t.tuck |
+| E11 | `[no_alloc]` is blind to implicit copies (`let ys = xs`) | R | effects/noalloc/c1.tuck |
+| E12, E14 | Tasks ignore restrictions; imported tasks are not in `taskNames` (and do not link: M21) | R | effects/restr2/t2.tuck, effects/imptask |
+| E15, E16 | Actor field initialisers and `on select` arms are not budget-checked (E16 is documented as pending ruling F2, not pinned) | R | effects/const2, effects/select1 |
+| E4 | An unmarked fn awaits an `[io]` task (hidden yield point; `[pure]` is refused) | R | effects/task1/t.tuck |
+| O1b | An explicit `setAt` call (void body-less extern) is never checked for write-through-parameter or write to a `let`; stale views follow | V | ownership/s10/a.tuck |
+| O1c | A member whose only self-write is `self.recs.setAt {..}` is not classed as a self-writer | R | ownership/vw3 |
+| O5 | A self-writing member in value position (`let r = h.bump`, `return h.bump`) is accepted on a parameter or a `let` | R | ownership/m6r |
+| C3 | Slab ownership (TK-AC08/09) bypassed through fnsig callbacks, interface dispatch and `waitUntil` predicates | V | concurrency/c_slabown/a5.tuck, a6.tuck, c_slabpred/q.tuck |
+| C18 | Spec says a `waitUntil` predicate is effect-free and reads one actor's fields, "checked rather than trusted"; nothing enforces it | R | concurrency/c_pred |
+
+**Root cause.** `calleeDecl`/`assertCallEdges` cover ordinary calls. A call through a
+fnsig slot, an interface, a registry raise, a chain step, an extern that writes, or a
+predicate registered for another thread is resolved to nothing, and "nothing" passes.
+**Fix by class:** every call-like node kind must either carry an edge or an explicit
+conservative marker (a fnsig carries its effects as part of its type; an unresolvable call
+requires the most restrictive reading); extend `assertCallEdges` to fail the build when a
+call-like node kind has neither.
+
+## Class B. Names where identity should be (S1/S2)
+
+| ID | What | Mark | Repro |
+|---|---|---|---|
+| E2 / M4 | Effects and restrictions looked up by bare name program-wide, last writer wins; body fn vs extern clash is never "ambiguous"; the accepted state is written into `.tuck-cache` | R | effects/fncoll, effects/extbody, modules/eff1c |
+| E7 | Any fn or member named `main`, in any module, gets main's full effect budget | V (`effects/mainpriv2/c.tuck`: `tuck ch` is OK) | effects/mainpriv2, mainpriv |
+| M1 | Two modules with one file stem are one module (silent miscompile, exit differs) | R | modules/dupname |
+| M3 | A private or non-imported const is reachable by bare name (Odin/D build and return it) | R | modules/m2.tuck family |
+| M8 | `group` names collide across modules (last import wins) | R | modules/grp2 |
+| M14 | Interface-bounded generic clones resolve bare names in the CALLER's scope | R | modules/ifg1, ifg2, ifg3 |
+| M19 | `import ka {put -> putEntry}` hijacks `putEntry` exported by another import | R | modules/ren1 |
+| M2 | Objects/interfaces/cross-kind types of one name in two modules get no TK-TY47; first copy wins | R | modules/typeobj |
+| M9 | Two modules each declaring `fnsig Op` crash the compiler (KeyError) | R | modules/fnsig1 |
+| M5, M7, M16/C12/E17 | const vs fn same name; local provider hides ambiguous imported providers; imported actor handler/member names poison same-named local fns (valid code rejected) | R | modules/coll1, grp1, eff2; concurrency/c_member/a.tuck |
+| M13, M10, M21 | Qualified call drops `[emit:]`; imported alias/`[wrapping]`/`distinct` type fails on Odin/D; imported `task` does not link | R | modules/emit1, attr1, tsk2 |
+| M6 | An object member named like an imported generic fn (`push`, `at`) shadows it for method calls | R | modules/mem1 |
+| M17/M12, M18, M20, M23, M24 | Nim-style identifier folding collisions pass the checker; `states:` type names; singleton-name tables (mixins/pools); synthesised `XHandle` names shadow user types; qualified construction of non-colliding types | R | modules/style1, slug1, res1, mix1, gen2, qv |
+| M10b | `check` fails after a warm cache where `build` passes (renames against the signature index) | R | modules/cache1 |
+
+**Root cause.** About 24 checker-state tables and 11 resolution tables are keyed by a bare
+string; a name is treated as an identity. **Fix by class:** key by declaration id (or
+module id plus name), scope every lookup to the module's visible set, make `main`
+privilege a property of the entry module's top-level fn, and make module ids path-based.
+
+## Class C. Flow-insensitive narrowing and state (S1)
+
+| ID | What | Mark | Repro |
+|---|---|---|---|
+| T1 | Narrowing of `r` survives a loop back edge (`s = s + r.value; r = none-able` in the body) | V | totality/t1/main.tuck |
+| T2 | A slab reference alias defeats a field-path guard (`b = a; b.next = none; a.next.value`) | V | totality/t2 |
+| T3 | Actor-field narrowing survives `self ..slot {none}` and helper writes | R | totality/t3, t4 (two variants) |
+| T9 | Transition checking has no loop back edge (`Done -> Busy` on iteration 2) | R | totality/tr/c1 |
+| T10 | TK-TY16 uninitialised-field holes launder through a second call, a return, a conditional fill, interpolation, slab `new` | R | totality/un, sl2 |
+| O7 | Sum-type payload read after the scrutinee is reassigned inside the arm (Option narrowing is invalidated correctly; sum narrowing is not) | R | ownership/mt3 |
+| O4 | A move (`var m = q`) judged final although `q.xs.len` is read later in a nested block (SSA carry across the edge) | R | ownership/mv2, mv3 |
+| T8(b,c) | Sealed non-initial variants built inside a call argument on a tracked right-hand side; `transitionCtx` is one global flag | R | totality/s1, cx |
+
+**Root cause.** Loop bodies are checked once against the entry state ("no fixed point, by
+design"), and narrowing is keyed by a name path, not by the cell it denotes. **Fix by
+class:** two-pass loop bodies (entry state joined with the back-edge state); alias-aware
+invalidation for shared cells (slab/arena refs, actor fields); one narrowing implementation
+for all three state kinds (optional, sum variant, uninit).
+
+## Class D. Totality and exhaustiveness holes (S1, backends then disagree)
+
+| ID | What | Mark | Repro |
+|---|---|---|---|
+| T4 | `err r.err` / `return r` propagates an error list that is not declared; nothing compares error lists (Nim fails, Odin returns, D throws) | V | totality/e1 |
+| T5 | `match r.err` loses its enum for imported fns, copies, fields, fnsig results and `!T` params; unknown arms silently become catch-all binders | R | totality/imp_4, et4 |
+| T6 | Match exhaustiveness skipped for inline sum types and for int/str subjects without `_` (Odin returns the wrong arm, Nim fails, D throws) | V | totality/x4, x6 |
+| T7 | `match` on a `!T`/`T?` subject is accepted (silently discards the error); `discard r` is refused, so the two are inconsistent | V | totality/m1, mo |
+| T8a | A bare payloadless variant of a sealed type is constructible (`return Locked`); the qualified form is refused | V | totality/bv2 |
+| T11 | Decision-table row results and literal patterns are not type-checked | R | totality/dt5, dt6 |
+| T16 | Qualified pattern `Door.Open:` not counted; a misspelled variant arm becomes a catch-all binder; duplicate arms and arms after `_` silent | R | totality/mt |
+
+## Class E. Value-semantics and memory-safety holes (S1, silent reads of freed memory)
+
+| ID | What | Mark | Repro |
+|---|---|---|---|
+| O1a | `x[i].f = v` and `x[i] ..f {v}` on a parameter or a `let`: `assignRoot` stops at the bracket; Odin and D mutate the caller's value | V | ownership/br5r/a.tuck |
+| O2 | A view `let` is not invalidated by a member call that writes its source (double free on Nim, freed read on Odin/D) | R | ownership/vw4, av1 |
+| O3 | The `for` binding is a view and the body may mutate the walked Seq (Nim assertion, Odin hang, D wrong result) | R | ownership/fr1 |
+| O6 | A fire-and-forget task borrows the caller's buffer while the caller keeps mutating it (Nim segfault); contradicts "a task owns its parameters" | R | ownership/tk1, tk2 |
+| C1 | Odin: reading an actor `str`/`Seq` field into a local aliases it then drops it (segfault) | R | concurrency/c_seqrace/s4.tuck |
+| C2 | The documented "safe" cross-thread public-field snapshot is torn or use-after-free | R | concurrency/c_torn/p.tuck, c_seqrace/r.tuck |
+| C4, C5 | A top-level pool and the resource registry table have no cross-thread ownership rule and are unlocked | R | concurrency/c_poolrace, r_res/race.tuck |
+
+## Class F. Type-system escape hatches (S1/S2)
+
+| ID | What | Mark | Repro |
+|---|---|---|---|
+| Y11 | A value of generic type `T` fits any slot inside a generic body; each instantiation is rechecked only by the backend | V | types/gp1/t.tuck, types/chk/h2.tuck |
+| Y12 / T12 | A bare record literal under a stated named record type is accepted, built by no backend (TK-TY45 only covers call arguments) | V | types/rec1/t.tuck, totality/an1 |
+| Y9, Y10 | Unary `-` and binary operators are not checked for operand kind (`not 5`, `5.5 % 2.0`, `true < false`, `Seq < Seq`) | R | types/neg2.., ar_a.. |
+| Y13 | A plain value into an optional list element or `if` branch is not wrapped | R | types/opt2, opt3 |
+| Y14 | Extra payload fields to an extern are forwarded as extra arguments | R | types/ex3 |
+| T13, T14 | Generic parameter instantiated with a wrapper type bypasses the operand check; `with` on a sum type accepted | R | totality/lenopt, w1 |
+| Y18 | A116 is wider than arguments: `int`/`i64` interchangeable in arithmetic, comparison, lets | R | types/mix1 |
+
+## Class G. Backends disagree at run time (S2)
+
+| ID | What | Mark |
+|---|---|---|
+| Y1 | `int`/`i64` overflow traps on Nim, wraps on Odin and D (docs say unchecked) | R |
+| Y2 | Division by zero / MIN `/i` -1 exit code differs per backend (Nim 1, Odin 132, D 136); policy says exit 1 | R |
+| Y3 | Out-of-bounds exit differs (Nim 1, Odin 132, D 134); D loses buffered stdout | R |
+| Y4, Y5, Y6 | Literal edges (`i8 = -128` on D, `i64` min on Nim), constant overflow, float-to-int casts: accepted by the checker, different or failing per backend | R |
+| Y7 | `f32` arithmetic with a float literal computed in `f64` on Nim | R |
+| Y8 | `[saturating]` arithmetic does not saturate (only the `N Sat` constructor clamps); D does not build | R |
+| Y15, Y16 | `usize` does not exist in D; `for i in 0 .. top` with `top: u8` fails on Nim | R |
+| C6, C7 | Stackless hoists a frame call out of short-circuit, `if` and `match` arms (dead-branch side effects) and evaluates earlier operands after the pause | R |
+| C13 | `--actors:batch`: Nim ignores `on_full: drop` and `assert` | R |
+| C8, C9, C10, C15, C16, C17 | Nim stackless `return err X`; frame local with interface annotation; pool handle names unmangled; `tuckSlExit` undeclared; `waitUntil` hang under `--actors:single`; actor with fields and no handlers | R |
+| C14 | Stackful hangs when a task awaits a child task that sleeps (stackless works) | R |
+
+## Class H. Compiler crashes (S3)
+
+| ID | What | Mark |
+|---|---|---|
+| Y17 = T15 | `var xs: Seq[Point] = [{x: 1}]` asserts at `lowering.nim:60` "no edge" | R |
+| T15 | Assigning the matched subject in its own arm: "SSA mirror is malformed"; Odin `match` expression over payload sums: `Undeclared name tuckˑtypeˑSessKind` | R |
+| M9 | Two `fnsig Op` (KeyError, above) | R |
+
+## Class I. Diagnostics (S4)
+
+E18/M11 (errors inside an imported module reported against the entry file); M22; Y19
+(TK-TY41 drops the sign; diverging branch in value position refused with "int vs unit");
+TK-EF02 only fires for a bare unused `[io]`.
+
+---
+
+## Proposed order of work (fix by class, one invariant per class)
+
+1. **Class A.** Call-edge completeness for every call-like node, fnsig effects as part of
+   the type, extern write-through checks (`setAt`), conservative reading of the unresolvable.
+   Invariant: extend `assertCallEdges`.
+2. **Quick, low-risk S1 fixes** in the same pass: E7 (`main` privilege only for the entry
+   module's top-level `main`), T6/T7 (closed domains, match subject handled), T8a, E3a (invert
+   the restriction subset test), Y9/Y10 operand kinds, M3 const visibility, M9/Y17 crashes.
+3. **Class B.** Declaration-id keyed tables and scoped lookups; path-based module ids.
+   Invariant: a debug check that no bare-name lookup crosses a module boundary unscoped.
+4. **Class E and C.** Views and borrows (`assignRoot` through indexes, member-call writes,
+   `for` bindings, task parameter ownership); two-pass loops and alias-aware narrowing.
+5. **Class F (Y11).** Generic bodies checked with rigid, opaque type parameters instead of
+   "flexible" ones (or rechecked per instantiation like interface-bounded generics).
+6. **Class G.** Decide the numeric and trap policy once (overflow, division, bounds, exit
+   codes) and add a differential harness: whatever the checker accepts must build and agree
+   on all three backends; add it to CI.
+7. **Class D, H, concurrency rules (C1-C5, C18).** Per-finding, with the C-rules needing a
+   language decision (cross-thread reads of multi-word fields, pool/registry ownership).
+
+## Method notes and coverage gaps
+
+- Reviewers covered effects, ownership/value semantics, totality, modules and names,
+  type system and numerics, concurrency and regions. Not yet audited: the parser and
+  rewrite stages, lowering passes as a group, the optional `-O` passes, the three runtimes
+  against a written contract (#106), and the signature cache beyond the cases in M4/M10b.
+- Slabs and arenas, task spawn in a loop, and `with` on registers were flagged unprobed.
+- Findings marked `R` should be re-run by whoever fixes them; the repro commands are in
+  the reviewers' helper scripts inside the archive (`run3.sh`, `q.sh`, `run6.sh`).
