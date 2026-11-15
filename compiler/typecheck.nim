@@ -230,9 +230,16 @@ proc markIfPlainIntoOptional(tc: TypeChecker, v: Expr, got, place: Type) =
   ## A plain `T` accepted into a `?T` place is WRAPPED there — noted for
   ## lowering_optional, which prints the wrap. Only a place that names its own
   ## type counts (a field or parameter), never a context merely passed down.
-  if place == nil or got == nil or isFlexible(got) or isWrappedType(got): return
+  if place == nil or got == nil or isWrappedType(got): return
   if not absenceIsDeclared(place): return
-  if tc.compatible(got, place.args[0]): semLayer.markOptWrap(v, place)
+  # Inside a generic fn a value of type `V` going into a `V?` field is plain too
+  # (A117): a named type parameter reads as "flexible", so it is matched by name.
+  let sameParam = got.kind == tkNamed and got.name.startsWith(NamedTypeParamPrefix) and
+                  place.args[0] != nil and place.args[0].kind == tkNamed and
+                  (place.args[0].name == got.name or
+                   NamedTypeParamPrefix & place.args[0].name & ">" == got.name)
+  if isFlexible(got) and not sameParam: return
+  if sameParam or tc.compatible(got, place.args[0]): semLayer.markOptWrap(v, place)
 
 proc synthFieldValue(tc: var TypeChecker, f: FieldInit): Type =
   ## One field of a payload or record literal, synthesized under the DECLARED
