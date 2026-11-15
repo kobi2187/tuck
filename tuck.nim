@@ -622,10 +622,12 @@ proc typecheckOnly(path: string, loaded: var seq[LoadedModule],
 
 proc verifyEffectsAssertions(loaded: seq[LoadedModule]) =
   ## `--verify-stages` after the effect pass: every async-marked call site must
-  ## agree with its resolved callee's `[io]` marker.
+  ## agree with its resolved callee's `[io]` marker, and the entry point's full
+  ## budget went to the entry module's `main` alone.
   var loadedMods: seq[Module]
   for lm in loaded: loadedMods.add(lm.m)
   assertAsyncEffectsConsistent(loadedMods)
+  assertMainBudgetOnce(mainBudgetGrants, nameOf(loaded[^1].m.id))
 
 proc checkOrDie(path: string, loaded: var seq[LoadedModule],
                 sigOnly: Table[string, IndexEntry],
@@ -672,11 +674,12 @@ proc checkOrDie(path: string, loaded: var seq[LoadedModule],
     for name, reqs in groupRequirements(lm.m.decls): groups[name] = reqs
   let t0 = vBegin(psVerifyEffects)
   defer: vEnd(psVerifyEffects, t0)
+  mainBudgetGrants.setLen(0)
   try:
     for lm in loaded:
       let ts = epochTime()
       verifyModuleEffects(lm.m, imported, importedRes, programKinds, pendingNames,
-                          groups)
+                          groups, entry = lm.path == loaded[^1].path)
       vSub(lm.name, ts)
     # Who may touch a slab (TK-AC08/09): whole-program, after typecheck
     # because it reads the checker's stamps (slab ops, slab derefs, callee

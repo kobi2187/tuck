@@ -68,6 +68,7 @@ type
     declared: Table[string, Demands]
     taskNames: HashSet[string]  # dkTask decl names, built once — see isTask
     everyKind: seq[string]      # every kind the PROGRAM declares — main's budget
+    entry: bool                 # this module is the program's entry (the only one whose `main` is privileged)
     visiting: HashSet[string]
     pendingNames: HashSet[string]  # imported `pending:` stubs — never a restriction violation
     groupReqs: Table[string, Demands]  # the fn being visited: requirement name -> what its group declares
@@ -491,7 +492,14 @@ proc boundGroupReqs(c: Checker, d: Decl): Table[string, Demands] =
       if gname != "" and c.groups.hasKey(gname):
         for req, cost in c.groups[gname]: result[req] = cost
 
-proc verifyFn(c: var Checker, d: Decl) =
+var mainBudgetGrants*: seq[string]
+  ## Every fn that was given the entry point's full budget in this program, as
+  ## `module.name`. The invariant (`assertMainBudgetOnce`, tuck.nim): at most
+  ## ONE, and only ever a top-level `main` of the entry module. The budget used
+  ## to follow the NAME `main`, so a library's `main`, or an object member
+  ## called `main`, was unrestricted too (audit E7).
+
+proc verifyFn(c: var Checker, d: Decl, top = false) =
   ## One fn body against its own bracket — `main`'s budget aside, below.
   # A contradictory bracket is a fault of the DECLARATION, so a body-less
   # signature gets it too.
@@ -516,7 +524,11 @@ proc verifyFn(c: var Checker, d: Decl) =
   # no-op, and it was one: before the kind set went program-wide, a kind an
   # IMPORT declared was in neither half, so the one thing an author could do
   # about it changed nothing.
-  let budget = if d.name == "main":
+  # The entry point is the entry module's TOP-LEVEL `main`, not any fn that
+  # happens to be spelled that way.
+  let isEntryMain = top and c.entry and d.name == "main"
+  if isEntryMain: mainBudgetGrants.add nameOf(c.module.id) & "." & d.name
+  let budget = if isEntryMain:
                  Demands(effects: @[emIo, emNoAlloc, emIrqSafe, emUnsafe,
                                     emMayBlock, emNoRecursion, emPriority] &
                                    toSeq(IoKinds),
@@ -531,7 +543,7 @@ proc verifyFn(c: var Checker, d: Decl) =
   let actual = c.checkExpr(d.fnBody, budget, d.name)
   c.groupReqs = outerReqs
   # The other direction (issue #14): a declared [io] the body never needs.
-  if d.name != "main" and emIo in d.fnEffects and not hasIo(actual.effects) and
+  if not isEntryMain and emIo in d.fnEffects and not hasIo(actual.effects) and
      not c.mayDoIoUnseen(d.fnBody):
     warn(dcEfUnused, "'" & d.name & "' declares [io], but nothing in its " &
          "body performs I/O, suspends or spawns. Fix: remove [io] from its " &
@@ -554,7 +566,7 @@ proc verifyDecl*(c: var Checker, d: Decl) =
   ## `[io]` call inside a member with no `[io]` checked clean.
   if d == nil: return
   case d.kind
-  of dkFn: c.verifyFn(d)
+  of dkFn: c.verifyFn(d, top = true)
   of dkTask:
     if d.name in c.visiting: return
     c.visiting.incl(d.name)
@@ -809,7 +821,11 @@ proc verifyModuleEffects*(m: Module,
                           importedPending: HashSet[string] =
                             initHashSet[string](),
                           groups: Table[string, Table[string, Demands]] =
-                            initTable[string, Table[string, Demands]]()) =
+                            initTable[string, Table[string, Demands]](),
+                          entry = true) =
+  ## `entry`: `m` is the program's entry module, the only place a `main` is
+  ## the privileged entry point.
+  ##
   ## Check every declaration in `m` performs only the effects it declares.
   ##
   ## `imported` carries the effects of fns this module IMPORTS, keyed the same
@@ -823,7 +839,7 @@ proc verifyModuleEffects*(m: Module,
   ## declared the way error enums are), so a module that acquires into a kind
   ## its import declared cannot answer "is this kind known" from its own decls
   ## — and `main`, whose budget is every kind, would get an empty one.
-  var c = Checker(module: m, declared: initTable[string, Demands](),
+  var c = Checker(module: m, entry: entry, declared: initTable[string, Demands](),
                   visiting: initHashSet[string](), everyKind: programKinds,
                   pendingNames: importedPending, groups: groups)
   # this module's own groups, whatever the driver passed

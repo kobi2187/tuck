@@ -2182,24 +2182,45 @@ proc synthArms(tc: var TypeChecker, e: Expr, subjT: Type, trackedVar,
     tc.unifyArmType(result, t, arm.span)
   if not firstArm: tc.varVariants = mergedExit
 
+proc errDomain(tc: TypeChecker, errEnums: seq[string]): seq[string] =
+  for en in errEnums:
+    if tc.typeDecls.hasKey(en) and tc.typeDecls[en].kind == tkSum:
+      for v in tc.typeDecls[en].variants: result.add(en & "." & v.name)
+
 proc matchDomain(tc: TypeChecker, subjT: Type, trackedType: string,
                  errEnums: seq[string]): seq[string] =
   ## Every case a closed subject can take. Open domains (int/str/unknown)
   ## cannot be enumerated, so they return empty and go unchecked — same as Nim.
-  if errEnums.len > 0:
-    for en in errEnums:
-      if tc.typeDecls.hasKey(en) and tc.typeDecls[en].kind == tkSum:
-        for v in tc.typeDecls[en].variants: result.add(en & "." & v.name)
-    return
+  if errEnums.len > 0: return tc.errDomain(errEnums)
   let sumName = if trackedType != "": trackedType
                 elif subjT != nil and subjT.kind == tkNamed and
                      tc.typeDecls.hasKey(subjT.name) and
                      tc.typeDecls[subjT.name].kind == tkSum: subjT.name
                 else: ""
   if sumName != "": tc.allVariants(sumName)
+  elif subjT != nil and subjT.kind == tkSum:
+    # An INLINE sum (`st: {Red, Green, Blue}`): closed like a named one. It was
+    # skipped, so a missing arm built on no backend or picked the wrong arm
+    # (audit T6).
+    for v in subjT.variants: result.add(v.name)
+    result
   elif subjT != nil and subjT.kind == tkNamed and subjT.name == "bool":
     @["true", "false"]
   else: @[]
+
+proc isOpenDomain(subjT: Type): bool =
+  ## A subject whose cases cannot be listed: numbers and text. A match over one
+  ## ends in a catch-all, or a value outside the arms has no arm (Nim refuses
+  ## the build, Odin returns the last arm, D throws: audit T6).
+  subjT != nil and subjT.kind == tkNamed and
+    (isNumeric(subjT) or subjT.name in ["str", "string", "char"])
+
+proc failIfOpenMatchHasNoCatchAll(e: Expr, subjT: Type) =
+  if not isOpenDomain(subjT): return
+  for arm in e.arms:
+    if arm.pattern == nil or arm.pattern.kind in {pkWild, pkBind}: return
+  fail("Type Error: match over " & typeName(subjT) & " is not exhaustive — it " &
+       "cannot list every value; end it with a catch-all `_`", e.span)
 
 proc checkExhaustive(tc: TypeChecker, e: Expr, domain: seq[string]) =
   ## spec #10b: a match over a closed domain must cover every case OR end
@@ -2283,9 +2304,19 @@ proc checkIfaceArms(tc: TypeChecker, e: Expr, iname: string) =
       rec.covered.add(n)
   ifaceMatches.add(rec)
 
+proc failIfWrapperSubject(e: Expr, subjT: Type) =
+  ## A result or optional is read through `.ok`/`.value`, or its error through
+  ## `match r.err`. Matching the carrier itself discarded the error silently
+  ## while `discard r` is refused (audit T7).
+  if not isWrapper(subjT): return
+  fail("Type Error: unhandled " & typeName(subjT) & " — a match cannot take a " &
+       "result or optional as its subject: test `.ok` and match `.value`, or " &
+       "match the error with `match r.err:`", e.subject.span)
+
 proc synthMatch(tc: var TypeChecker, e: Expr): Type =
   ## A match types every arm to one type, then checks it covers its subject.
   let subjT = tc.synthesize(e.subject)
+  failIfWrapperSubject(e, subjT)
   if subjT != nil and subjT.kind == tkNamed and
      tc.ifaceDecls.hasKey(subjT.name):
     tc.checkIfaceArms(e, subjT.name)
@@ -2307,6 +2338,8 @@ proc synthMatch(tc: var TypeChecker, e: Expr): Type =
     for arm in e.arms.mitems: tc.qualifyErrArm(arm, errEnums)
   result = tc.synthArms(e, subjT, trackedVar, trackedType)
   tc.checkExhaustive(e, tc.matchDomain(subjT, trackedType, errEnums))
+  # `match r.err` is closed by the error enum its arms name, not by the u16 tag.
+  if errEnums.len == 0: failIfOpenMatchHasNoCatchAll(e, subjT)
 
 # === CHAINS AND MUTATION ===================================================
 # `x ..field {v}` / `x ..fn`. Who may be written (mutability), what a step
@@ -4341,6 +4374,17 @@ proc stampVariantValue(tc: TypeChecker, e: Expr, owner: Type) =
   setCall(semLayer, e, Expr(span: e.span, kind: exkField, fieldName: e.name,
           receiver: Expr(span: e.span, kind: exkVar, name: owner.name)))
 
+proc failIfSealedBareVariant(tc: TypeChecker, owner: string, e: Expr) =
+  ## The qualified form `Door.Locked` is refused for a sealed type's non-entry
+  ## variant; the BARE spelling reached the same value unchecked (audit T8a).
+  let body = tc.typeDecls.getOrDefault(owner)
+  if body == nil or not isSealed(body) or body.variants.len == 0 or
+     tc.transitionCtx or e.name == body.variants[0].name: return
+  fail("Sealed Error: " & e.name & " cannot be constructed directly — sealed " &
+       "types start at '" & body.variants[0].name & "'; reach '" &
+       e.name & "' via transitions, or mark [unsafe] for deserialization",
+       e.span)
+
 proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   ## A bare sum-type variant is a value of its sum type. `Light.Red` is the
   ## qualified form of the same thing, handled by the field-access path.
@@ -4351,6 +4395,7 @@ proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
     return
   let owner = if owners.len == 1: owners[0] else: ""
   if owner != "":
+    tc.failIfSealedBareVariant(owner, e)
     result = tc.namedType(owner, e.span)
     tc.stampVariantValue(e, result)
     return

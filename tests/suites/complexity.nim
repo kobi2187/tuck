@@ -156,7 +156,7 @@ const
   # 11 -> 10 (2026-10-25): the const evaluator's growth (#62) went in as
   # small steps (constLit/constName/constCall, runConstBlock/runConstAssign),
   # and #60's `spells` took a comparison out of each lookup it replaced.
-  HEAVY = 10
+  HEAVY = 9
   CC = "tools/cyc"
 
 proc run*(t: var T) =

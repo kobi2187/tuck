@@ -5414,4 +5414,81 @@ fn main() -> int:
   t.quietly: t.badCheck "A116: an int is not an i64 argument without a conversion", "\\^i64|i64"
   t.bugOpen "A116: an int is not an i64 argument without a conversion"
 
+  # A119 (audit E7): a fn named `main` in ANY module got the entry's all-effects
+  # budget, so `lib::main` could print through a caller that declared nothing.
+  # Only the entry module's top-level `main` has that budget, and the pipeline
+  # asserts it was granted exactly once (assertMainBudgetOnce).
+  t.src """
+import lib
+
+fn viaLib() -> int:
+  return {} lib::main
+
+fn main() -> int:
+  return {} viaLib
+"""
+  t.addFile("lib.tuck", """import console
+fn main() -> int:
+  {text: "lib main io"} printLine
+  return 1
+""")
+  t.quietly: t.badCheck "A119: only the entry module's main has the full effect budget", "TK-EF01"
+  t.bugFixed "A119: only the entry module's main has the full effect budget"
+
+  # A120 (audit T6): a match over an int or str with no catch-all was accepted;
+  # a value outside the arms had no arm (Nim refused the build, Odin took the
+  # last arm, D threw). Open domains end in `_`.
+  t.src """
+fn pick({n: int}) -> int:
+  match n:
+    | 0 -> return 1
+    | 1 -> return 2
+  return 0
+
+fn main() -> int:
+  return {n: 1} pick
+"""
+  t.quietly: t.badCheck "A120: a match over an int needs a catch-all", "catch-all"
+  t.bugFixed "A120: a match over an int needs a catch-all"
+
+  # A121 (audit T7): a match on a result/optional discarded the error silently
+  # while `discard r` was refused. Test `.ok` or `match r.err`.
+  t.src """
+fn mi({n: int}) -> int?:
+  if n < 0:
+    return none
+  return n
+
+fn main() -> int:
+  let r = {n: 3} mi
+  match r:
+    | _ -> return 1
+  return 0
+"""
+  t.quietly: t.badCheck "A121: a match cannot take a result or optional as its subject", "cannot take a result or optional"
+  t.bugFixed "A121: a match cannot take a result or optional as its subject"
+
+  # A122 (audit T8a): `Door.Locked` was refused for a sealed type, but the bare
+  # spelling `Locked` reached the same value unchecked.
+  t.src """
+type Door [sealed]:
+  | Closed
+  | Open
+  | Locked
+
+  transitions:
+    Closed -> Open
+    Open -> Closed
+    Closed -> Locked
+
+fn mk() -> Door:
+  return Locked
+
+fn main() -> int:
+  let d = mk
+  return 0
+"""
+  t.quietly: t.badCheck "A122: a bare variant of a sealed type is not constructible directly", "Sealed Error"
+  t.bugFixed "A122: a bare variant of a sealed type is not constructible directly"
+
   t.finish()

@@ -325,3 +325,16 @@ proc assertCallEdges*(res: Resolution, mods: seq[Module]) =
 proc assertTypeEdges*(res: Resolution, mods: seq[Module]) =
   ## After psTypecheck: every declared named type is linked (#21).
   report("typecheck edges", typeEdgeErrors(res, mods))
+
+proc assertMainBudgetOnce*(grants: seq[string], entry: string) =
+  ## After the effect pass: the entry point's full budget (every effect, every
+  ## resource kind) was given to AT MOST ONE fn, and that fn is the entry
+  ## module's top-level `main`. It used to follow the name, so any fn or member
+  ## spelled `main` in any module was unrestricted (audit E7).
+  var bad: seq[string]
+  if grants.len > 1:
+    bad.add "the entry budget was granted " & $grants.len & " times: " & grants.join(", ")
+  for g in grants:
+    if not g.startsWith(entry & "."):
+      bad.add "'" & g & "' got the entry budget but is not in the entry module '" & entry & "'"
+  report("main budget", bad)
