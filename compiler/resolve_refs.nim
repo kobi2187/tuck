@@ -62,6 +62,7 @@ proc collectNames(prog: seq[LoadedModule]) =
   # ast_query.constIntOf scans the local module before consulting the table.
   for lm in prog:
     for d in lm.m.decls(dkConst):
+      semLayer.constsByModule.mgetOrPut(lm.m.id, initTable[string, Decl]())[d.name] = d
       if semLayer.constNames.hasKey(d.name) and
          semLayer.constNames[d.name] != d:
         semLayer.ambiguousConsts.incl(d.name)

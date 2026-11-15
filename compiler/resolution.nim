@@ -80,6 +80,11 @@ type
     # module's own const shadows any other module's.
     constNames*: Table[string, Decl]
     ambiguousConsts*: HashSet[string]
+    # Each module's OWN consts. A name is only meaningful to a module that
+    # declares it or imports its declarer directly; constNames alone answered
+    # for every module in the program, so a const two imports away was
+    # reachable by bare name (audit M3).
+    constsByModule*: Table[ModuleId, Table[string, Decl]]
     # How a call's payload maps onto its callee's parameters, decided once by
     # checkCallArgs. `argFields[i]` names the payload FIELD that satisfies
     # param i — matched by name, or by type when the names differ — and
@@ -474,6 +479,7 @@ proc resetResolution*() =
   let mixinNames = semLayer.mixinNames
   let constNames = semLayer.constNames
   let ambiguousConsts = semLayer.ambiguousConsts
+  let constsByModule = semLayer.constsByModule
   let handlerSites = semLayer.handlerSites
   semLayer = newResolution()
   semLayer.handlerSites = handlerSites
@@ -486,6 +492,7 @@ proc resetResolution*() =
   semLayer.mixinNames = mixinNames
   semLayer.constNames = constNames
   semLayer.ambiguousConsts = ambiguousConsts
+  semLayer.constsByModule = constsByModule
 
 proc placeArenaSlabs*(m: var Module) =
   ## Each slab the checker made for an arena (one per element type its

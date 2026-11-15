@@ -915,9 +915,17 @@ proc constDeclFor*(m: Module, raw: string): Decl =
   # resolving to whichever loaded first.
   for d in m.decls:
     if d != nil and d.kind == dkConst and spells(d.name, raw, nkConst): return d
-  if raw in semLayer.ambiguousConsts: return
-  result = semLayer.constNames.getOrDefault(raw, nil)
-  if result == nil: result = semLayer.constNames.getOrDefault(prefixed(raw, nkConst), nil)
+  # Then only what a DIRECT import declares: a name two imports away is not in
+  # this module's scope (audit M3). Two imports exporting different consts of
+  # the name stay unresolved rather than picking the first.
+  for imp in m.decls:
+    if imp == nil or imp.kind != dkImport: continue
+    let theirs = semLayer.constsByModule.getOrDefault(imp.importTarget)
+    for key in [raw, prefixed(raw, nkConst)]:
+      let found = theirs.getOrDefault(key, nil)
+      if found == nil: continue
+      if result != nil and result != found: return nil
+      result = found
 
 proc constIntOf*(m: Module, text: string, depth = 0): Option[int] =
   ## A size written as TEXT — an attribute's value, or an `Array[N, T]` size,

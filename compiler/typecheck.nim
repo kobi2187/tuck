@@ -1430,6 +1430,15 @@ proc checkThroughFnSig(tc: var TypeChecker, slotT: Type, call: Expr): Type =
   var sig: FnSig
   if slotT != nil and slotT.kind == tkNamed and slotT.name in tc.fnSigNames:
     name = slotT.name
+    # Two imports can each export a `fnsig` of this name: the bare name is then
+    # given up (addBare), so the slot's type names no single signature and the
+    # table lookup raised KeyError (audit M9). A type carries its NAME, not its
+    # module, so which `Op` this slot holds cannot be told; say so, once.
+    if not tc.fnSigs.hasKey(name):
+      fail("Type Error: a call through a slot of type '" & name & "' cannot " &
+           "pick a signature — two imports each declare `fnsig " & name & "`. " &
+           "A type is known here by its name alone, so the slot cannot say which. " &
+           "Fix: call it from a module that imports only one of them", call.span)
     sig = tc.sigOf(name)
   elif slotT != nil and slotT.kind == tkApp and slotT.base != nil and
        slotT.base.kind == tkNamed and slotT.base.name in tc.fnSigNames and
@@ -1848,10 +1857,46 @@ proc failIfSeqOperand(tc: TypeChecker, lt, rt: Type, e: Expr) =
            typeName(t) & " — sequences are not added; build the result with " &
            "`push` in a loop", side.span)
 
+proc isScalarOf(tc: TypeChecker, t: Type, text, chars: bool): bool =
+  ## Is `t` (through aliases) a number, or, when asked, text or a char?
+  let r = tc.resolve(t)
+  for x in [t, r]:
+    if x == nil: continue
+    if isNumeric(x): return true
+    if x.kind == tkNamed and ((text and x.name in ["str", "string"]) or
+                              (chars and x.name == "char")): return true
+
+proc failIfOperandKind(tc: TypeChecker, lt, rt: Type, e: Expr, what: string,
+                       text, chars: bool) =
+  ## Every operator names the kinds it takes (audit Y9/Y10). `compatible` only
+  ## asks that the two sides AGREE, so `true < false`, `s - t` on text and
+  ## `5.5 % 2.0` were accepted and each backend printed its own answer.
+  for (t, side) in operands(lt, rt, e):
+    if isFlexible(t): continue
+    if not tc.isScalarOf(t, text, chars):
+      fail("Type Error: " & what & " takes " &
+           (if text: "numbers or text" else: "numbers") & ", got " &
+           typeName(t), side.span)
+
+proc failIfFloatModulo(lt, rt: Type, e: Expr) =
+  ## `%` is the integer remainder: Nim, Odin and D disagree on a float's.
+  for (t, side) in operands(lt, rt, e):
+    if not isFlexible(t) and typeName(t) in FloatTypeNames:
+      fail("Type Error: `%` takes integers, got " & typeName(t) &
+           " — a float has no remainder operator here", side.span)
+
 proc synthArithmetic(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
   ## `+ - * %`: both operands must agree; the result has their type.
   tc.failIfRecordOperand(lt, rt, e)
   tc.failIfSeqOperand(lt, rt, e)
+  # `+` is also text concatenation; `- * %` are numbers only.
+  tc.failIfOperandKind(lt, rt, e, (case e.binOp
+                         of boAdd: "`+`"
+                         of boSub: "`-`"
+                         of boMul: "`*`"
+                         else: "`%`"),
+                       text = e.binOp == boAdd, chars = false)
+  if e.binOp == boMod: failIfFloatModulo(lt, rt, e)
   tc.failIfMismatched(lt, rt, "arithmetic", e.span)
   widerOperand(lt, rt)
 
@@ -1874,12 +1919,17 @@ proc synthDivision(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
   ## `/i` and `/f`: the operator must match the operand kind (integer or
   ## float), the operands must agree, and the result has their type.
   tc.failIfRecordOperand(lt, rt, e)
+  tc.failIfOperandKind(lt, rt, e, "division", text = false, chars = false)
   failIfWrongDivKind(lt, rt, e)
   tc.failIfMismatched(lt, rt, "division", e.span)
   widerOperand(lt, rt)
 
 proc synthComparison(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
-  ## `== != < > <= >=`: both operands must agree; the result is `bool`.
+  ## `== != < > <= >=`: both operands must agree; the result is `bool`. An
+  ## ORDER needs numbers, text or chars: a bool, record or Seq has none.
+  if e.binOp in {boLt, boGt, boLe, boGe}:
+    tc.failIfOperandKind(lt, rt, e, "an ordering comparison", text = true,
+                         chars = true)
   tc.failIfMismatched(lt, rt, "comparison", e.span)
   Type(span: e.span, kind: tkNamed, name: "bool")
 
@@ -4655,6 +4705,19 @@ proc synthFill(tc: var TypeChecker, e: Expr): Type =
   Type(span: e.span, kind: tkApp, base: tc.namedType("Array", e.span),
        args: @[sizeT, elemT])
 
+proc failIfUnaryOperandKind(tc: TypeChecker, e: Expr, t: Type) =
+  ## `not` takes a bool and `-` a number (audit Y9): `not 5` and `-"x"` had no
+  ## meaning, and each backend gave one anyway.
+  if isFlexible(t): return
+  case e.unaryOp
+  of uoNot:
+    if not (t.kind == tkNamed and t.name == "bool"):
+      fail("Type Error: `not` takes a bool, got " & typeName(t), e.operand.span)
+  of uoNeg:
+    if not tc.isScalarOf(t, false, false):
+      fail("Type Error: `-` takes a number, got " & typeName(t), e.operand.span)
+  of uoComposition: discard
+
 proc synthUnary(tc: var TypeChecker, e: Expr): Type =
   ## `not` yields bool; every other unary keeps its operand's type.
   # `+ Type` in a type body names the type to compose: a bare type name is
@@ -4673,6 +4736,7 @@ proc synthUnary(tc: var TypeChecker, e: Expr): Type =
     fail(dcTyNotOnOptional, "`not` needs a bool, but this is an unhandled " &
          typeName(t) & " — test presence with `.ok` (`not x.ok`), or pass " &
          "it to a handling function", e.operand.span)
+  tc.failIfUnaryOperandKind(e, t)
   if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
 
 proc failIfCastNotNumeric(e: Expr, target, src: Type) =

@@ -384,6 +384,11 @@ proc resolveDeclTypeRefs*(tc: TypeChecker, d: Decl) =
   for t in d.ownTypes:
     resolveTypeRefs(tc, t)
     tc.failIfBadArraySize(t, gs)
+  # Types spelled INSIDE bodies (`let xs: Seq[P] = ...`, casts, sends) are
+  # not in ownTypes; unresolved they reached the checker without an edge.
+  for ex in d.ownExprs:
+    for n in ex.nodes:
+      for t in n.writtenTypes: resolveTypeRefs(tc, t)
   for m in d.childDecls: resolveDeclTypeRefs(tc, m)
 
 proc resolveTypeNames*(tc: TypeChecker, m: Module) =

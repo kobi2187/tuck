@@ -424,6 +424,21 @@ iterator childDecls*(d: Decl): Decl =
        dkPool, dkSlab, dkArena, dkRegister, dkImport, dkFnSig, dkSatisfies, dkResources:
       discard
 
+iterator writtenTypes*(e: Expr): Type =
+  ## The types an expression node SPELLS: a `let x: T` annotation, a `~T`/`^T`
+  ## cast target, the instantiation of an actor `send`. `ownTypes` covers a
+  ## declaration's signature; these live in bodies, and a body type nobody
+  ## resolved reaches the checker without its declaration edge (audit Y17:
+  ## `let xs: Seq[P] = [{x: 1}]` crashed lowering).
+  if e != nil:
+    case e.kind
+    of exkCast: yield e.castType
+    of exkAssign:
+      if e.isDecl: yield e.declType
+    of exkSend:
+      for t in e.sendActorArgs: yield t
+    else: discard
+
 iterator ownTypes*(d: Decl): Type =
   ## Every type this declaration mentions DIRECTLY — its fields' types, its
   ## params and return, a pool's element type. Not its members' (walk

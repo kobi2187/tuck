@@ -5491,4 +5491,100 @@ fn main() -> int:
   t.quietly: t.badCheck "A122: a bare variant of a sealed type is not constructible directly", "Sealed Error"
   t.bugFixed "A122: a bare variant of a sealed type is not constructible directly"
 
+  # A123 (audit E3a): an interface member could allocate under a
+  # `[pure, no_alloc]` contract. A capability (`io`) is a permission an
+  # implementation may use LESS of; a restriction (`pure`, `no_alloc`) is a
+  # promise it must MAKE. One subset rule had been applied to both.
+  t.src """
+interface Animal:
+  fn noise({self: Self}) -> int [pure, no_alloc]
+
+object Dog:
+  satisfies Animal
+  name: str
+  fn noise({self: Dog}) -> int:
+    return 1
+
+fn main() -> int:
+  let d = {name: "rex"} Dog
+  let a: Animal = d
+  return a.noise
+"""
+  t.quietly: t.badCheck "A123: an implementation must carry the contract's restrictions", "promises \\[pure\\]|does not satisfy"
+  t.bugFixed "A123: an implementation must carry the contract's restrictions"
+
+  # A124 (audit Y9/Y10): operators were checked for AGREEMENT between their
+  # sides, not for operand KIND: `not 5`, `-"x"`, `true < false`, `s - t` on
+  # text and `5.5 % 2.0` all checked clean and each backend answered its own way.
+  for (name, body) in [("not on an int", "let b = not 5\n  if b:\n    return 1"),
+                       ("negating text", "let b = -\"x\"\n  if b == \"\":\n    return 1"),
+                       ("ordering bools", "if true < false:\n    return 1"),
+                       ("subtracting text", "let b = \"a\" - \"b\"\n  if b == \"\":\n    return 1"),
+                       ("modulo of floats", "let b = 5.5 % 2.0\n  if b > 1.0:\n    return 1")]:
+    t.src "fn main() -> int:\n  " & body & "\n  return 0\n"
+    t.quietly: t.badCheck "A124: " & name & " is refused", "takes"
+    t.bugFixed "A124: " & name & " is refused"
+
+  # A125 (audit M9): two imports each declaring `fnsig Op`, then a call through
+  # a slot of that type, died with a KeyError in the checker. A type is known
+  # by its name alone, so the slot cannot say which `Op` it holds; the checker
+  # now says so instead of crashing.
+  t.src """
+import f1
+import f2
+
+fn main() -> int:
+  let c1 = {} mk1
+  let x = {a: 1, b: 2} c1.op
+  return x
+"""
+  t.addFile("f1.tuck", """fnsig Op = {a: int, b: int} -> int
+type Calc = {op: Op}
+fn plus({a: int, b: int}) -> int:
+  return a + b
+fn mk1() -> Calc:
+  return {op: :plus} Calc
+""")
+  t.addFile("f2.tuck", """fnsig Op = {s: str} -> int
+type Calc2 = {op: Op}
+fn slen({s: str}) -> int:
+  return s.len
+fn mk2() -> Calc2:
+  return {op: :slen} Calc2
+""")
+  t.quietly: t.badCheck "A125: a slot of an fnsig two imports declare is refused, not a crash", "cannot pick a signature"
+  t.bugFixed "A125: a slot of an fnsig two imports declare is refused, not a crash"
+
+  # A126 (audit Y17): a type spelled inside a body (`let xs: Seq[P] = ...`)
+  # never got its declaration edge before the checker used it, and lowering
+  # asserted "has a declaration but no edge". Body-spelled types are resolved
+  # with the declaration's, and the edge invariant now covers them.
+  t.src """
+type P = {x: int}
+
+fn main() -> int:
+  let xs: Seq[P] = [{x: 1}]
+  return 0
+"""
+  t.quietly: t.okCheck "A126: a Seq of a named record annotated in a body checks"
+  t.bugFixed "A126: a Seq of a named record annotated in a body checks"
+
+  # A127 (audit M3): a const is in scope where it is declared or where its
+  # declarer is imported DIRECTLY. `main` imports lib, lib imports deep, and
+  # `Deep` was still reachable from main by bare name.
+  t.src """
+import lib
+
+fn main() -> int:
+  return Deep
+"""
+  t.addFile("lib.tuck", """import deep
+fn l() -> int:
+  return Deep
+""")
+  t.addFile("deep.tuck", """const Deep: int = 9
+""")
+  t.quietly: t.badCheck "A127: a const two imports away is not in scope", "not declared"
+  t.bugFixed "A127: a const two imports away is not in scope"
+
   t.finish()
