@@ -280,16 +280,48 @@ proc dispatchedCall(res: Resolution, m: Module, d: Decl, n: Expr, key: string,
     if p.name == key: return true
   memberCallee(res, m, n) != "" or d.fnGenerics.len > 0 and key in required
 
+proc fnSigNames(mods: seq[Module]): HashSet[string] =
+  ## Every `fnsig` the program declares. By NAME: a fnsig is not in the type
+  ## table, so a slot's type carries no declaration edge to it.
+  for m in mods:
+    for d in m.allDecls:
+      if d != nil and d.kind == dkFnSig: result.incl d.name
+
+proc isFnValueType(t: Type, sigs: HashSet[string]): bool =
+  ## A fn-valued slot's type: a fn type, or a `fnsig` (bare or instantiated).
+  if t == nil: return false
+  if t.kind == tkFunc: return true
+  let named = if t.kind == tkApp: t.base else: t
+  named != nil and named.kind == tkNamed and named.name in sigs
+
+proc missingSlotRecord(res: Resolution, m: Module, n: Expr,
+                       sigs: HashSet[string]): string =
+  ## "" unless `n` calls through a fn-valued slot and the checker recorded no
+  ## effect contract for it. Such a call has no callee edge by design, so
+  ## without the record nothing charges what it does (audit E1).
+  if n.kind != exkCall or n.callee == nil or res.isSlotCall(n): return ""
+  if raisedEvent(n) != "":
+    return "raise of '" & raisedEvent(n) & "' at " & nameOf(m.id) & ":" &
+           $n.span.line & ":" & $n.span.col & " has no handler effect record"
+  if res.declFor(n) != nil: return ""
+  if not isFnValueType(res.typeFor(n.callee), sigs): return ""
+  let shown = if callKey(n.callee) != "": "'" & callKey(n.callee) & "'"
+              else: "field"
+  "call through the fn-valued " & shown & " at " & nameOf(m.id) &
+    ":" & $n.span.line & ":" & $n.span.col & " has no slot effect record"
+
 proc missingEdge(res: Resolution, m: Module, d: Decl, n: Expr,
-                 required: HashSet[string]): string =
+                 required, sigs: HashSet[string]): string =
   ## "" unless `n` is a call to a fn with a body that the checker left
-  ## without an edge.
+  ## without an edge, or a call through a slot left without its contract.
+  let slot = missingSlotRecord(res, m, n, sigs)
+  if slot.len > 0: return slot
   if n.kind != exkCall or res.declFor(n) != nil: return ""
   let key = callKey(n.callee)
   if key.len == 0 or dispatchedCall(res, m, d, n, key, required): return ""
   var target = res.programFn(key)
   if target == nil and n.callee.kind == exkVar: target = m.findFn(key)
-  if target != nil and target.kind == dkFn and target.fnBody != nil:
+  if target != nil and target.kind in {dkFn, dkTask} and target.fnBody != nil:
     result = "call of '" & key & "' at " & nameOf(m.id) & ":" &
              $n.span.line & ":" & $n.span.col & " has no callee edge"
 
@@ -310,12 +342,21 @@ proc callEdgeErrors(res: Resolution, mods: seq[Module]): seq[string] =
   ## generic fn, a call of a requirement its bound declares (`{self: k} put`
   ## with `K: Sink`), which reaches each satisfier's member in turn.
   let required = requirementNames(mods)
+  let sigs = fnSigNames(mods)
   for m in mods:
     for d in m.allDecls:
       if d == nil or d.kind notin {dkFn, dkTask} or d.fnBody == nil: continue
       for n in d.fnBody.nodes:
-        let why = missingEdge(res, m, d, n, required)
+        let why = missingEdge(res, m, d, n, required, sigs)
         if why.len > 0: result.add why
+        # A `..` step's mutator call is not in the tree; it needs its edge
+        # all the same (audit E13).
+        if n.kind == exkChain:
+          for s in n.steps:
+            let sc = res.stepCall(s)
+            if sc == nil: continue
+            let stepWhy = missingEdge(res, m, d, sc, required, sigs)
+            if stepWhy.len > 0: result.add stepWhy
 
 proc assertCallEdges*(res: Resolution, mods: seq[Module]) =
   ## After psTypecheck: every call to a fn with a body was resolved by the

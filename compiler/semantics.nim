@@ -106,11 +106,39 @@ proc union(a, b: Demands): Demands =
 # perform?" and checkExpr asks "are those allowed here?". Reading them side by
 # side is the quickest way to see that effects really are a type system, just
 # for side effects rather than values.
+proc isTaskCall(c: Checker, call: Expr): bool =
+  ## Does `call` spawn a task? By its edge first — a task an import declares is
+  ## not in this module's `taskNames` (audit E14) — then by a local name.
+  if call == nil or call.kind != exkCall: return false
+  let edge = semLayer.declFor(call)
+  if edge != nil: return edge.kind == dkTask
+  call.callee != nil and call.callee.kind == exkVar and
+    call.callee.name in c.taskNames
+
+proc chargeSlotCall(e: Expr, res: var Demands): bool =
+  ## A call THROUGH a slot has no callee to look up: it does what the slot's
+  ## type promises, which the checker recorded (audit E1). True when `e` is one.
+  if not semLayer.isSlotCall(e): return false
+  let promised = Demands(effects: semLayer.slotEffects(e))
+  res = union(res, promised)
+  if hasIo(promised.effects): semLayer.markAsync(e)
+  true
+
+proc reachedMember(m: Module, e: Expr): Decl =
+  ## The member a call reaches by its receiver: the object's own, else the
+  ## interface contract's requirement, else a `pending:` member (audit E9).
+  result = memberCallDecl(semLayer, m, e)
+  if result == nil: result = ifaceMemberDecl(semLayer, m, e)
+  if result == nil: result = pendingMemberDecl(semLayer, m, e)
+
 proc callEffects(c: var Checker, e: Expr, res: var Demands) =
   ## What a CALL adds beyond its subexpressions: the callee's own declared
   ## effects and resource kinds, and the async mark that goes with [io].
   ## A pool operation (the other thing the checker stamps) declares none.
   if e.kind != exkCall: return
+  # It used to fall to the name lookup below, find nothing, and launder an
+  # [io] fn as pure.
+  if chargeSlotCall(e, res): return
   # `callKey`: `name` or `mod::name`, the two keys the imported-effects table
   # is filed under. Reading `callee.name` off an exkVar alone let a qualified
   # call to an [io] fn through as pure, and unmarked as a suspend point (A101).
@@ -130,14 +158,12 @@ proc callEffects(c: var Checker, e: Expr, res: var Demands) =
       # registry is what closes it (§7.4 — escape into the registry is always
       # sound), which is exactly the safety net that makes the caller's local
       # analysis sufficient.
-      if calleeName notin c.taskNames:
+      if not c.isTaskCall(e):
         # A MEMBER call reaches the member its receiver's type names, which a
         # bare-name lookup cannot find (members are not top-level names) —
         # so an [io] member looked pure to its callers, and a call to it was
         # never marked as a suspend point.
-        let member = block:
-          let own = memberCallDecl(semLayer, c.module, e)
-          if own != nil: own else: ifaceMemberDecl(semLayer, c.module, e)
+        let member = reachedMember(c.module, e)
         # A name two modules both declare cannot be told apart by the
         # program-wide table below; the call's own recorded edge can (A112).
         var edge = semLayer.declFor(e)
@@ -171,6 +197,12 @@ proc synthesizeExpr(c: var Checker, e: Expr): Demands =
   for child in e.children:
     res = union(res, c.synthesizeExpr(child))
   if e.kind == exkCall: c.callEffects(e, res)
+  # A `..` step that calls a mutator is a call too, though not a child: what
+  # the mutator does is done here (audit E13).
+  elif e.kind == exkChain:
+    for s in e.steps:
+      let sc = semLayer.stepCall(s)
+      if sc != nil: c.callEffects(sc, res)
   # A BARE NULLARY CALL is an exkVar the checker stamped with its call — spec
   # 2.3, "a bare name IS a call". It never reached callEffects, so `let x =
   # noisy` in a fn declaring no effects passed clean, and so did every other
@@ -253,8 +285,7 @@ proc mayDoIoUnseen(c: Checker, body: Expr): bool =
        exkTripleDot:   # `...` is a stub: its bracket is the contract to come
       return true
     of exkCall:
-      if n.callee != nil and n.callee.kind == exkVar and
-         n.callee.name in c.taskNames: return true
+      if c.isTaskCall(n): return true
     else: discard
 
 type
@@ -269,23 +300,27 @@ type
     name: string
     markers: seq[EffectMarker]
 
-proc callOf(n: Expr): Expr =
-  ## The call a node stands for: an `exkCall`, or a bare nullary name the
-  ## checker stamped with one (spec 2.3, "a bare name IS a call").
-  if n.kind == exkCall: n
-  elif semLayer.hasCall(n): semLayer.call(n)
-  else: nil
-
 proc resolveCallee(c: Checker, call: Expr): Callee =
   ## Who a call reaches and what that callee DECLARES. The restriction rule asks
   ## this of every call in a restricted fn; unlike the capability rule it must
   ## know whether the callee is known at all, so an unplaceable name is
   ## `ckUnknown` rather than "declares nothing".
   if call.kind != exkCall: return Callee(kind: ckUnknown)
+  if semLayer.isSlotCall(call):
+    let shown = if raisedEvent(call) != "": "the handlers of " & raisedEvent(call)
+                elif callKey(call.callee) != "": callKey(call.callee)
+                else: "a fn-valued slot"
+    return Callee(kind: ckFn, name: shown, markers: semLayer.slotEffects(call))
   let name = callKey(call.callee)
   if name == "": return Callee(kind: ckUnknown)
-  if name in c.taskNames: return Callee(kind: ckTask, name: name)
-  let member = memberCallDecl(semLayer, c.module, call)
+  if c.isTaskCall(call): return Callee(kind: ckTask, name: name)
+  # A call through an INTERFACE value reaches whichever satisfier holds it, so
+  # what it may do is the contract's requirement: every satisfier keeps it.
+  # It fell to ckUnknown here (audit E3c), and an unknown callee is never a
+  # restriction violation, so a `[pure, no_alloc]` fn could dispatch to an
+  # allocating member.
+  var member = memberCallDecl(semLayer, c.module, call)
+  if member == nil: member = ifaceMemberDecl(semLayer, c.module, call)
   if member != nil:
     return Callee(kind: ckFn, name: member.name, markers: member.fnEffects)
   if c.declared.hasKey(name) and name notin c.pendingNames:
@@ -303,10 +338,13 @@ proc failRestriction(fnName: string, r: EffectMarker, callee: Callee, sp: Span) 
       "'" & fnName & "' is [" & rn & "] but spawns task '" & callee.name &
       "', and a spawn is not [" & rn & "]. Fix: do not spawn from a [" & rn &
       "] fn"), sp)
+  # A raise reaches several handlers, named as a group rather than quoted.
+  let who = if callee.name.startsWith("the handlers of "): callee.name
+            else: "'" & callee.name & "'"
   reportError(withCode(dcEfRestriction,
-    "'" & fnName & "' is [" & rn & "] but calls '" & callee.name &
-    "', which is not. Fix: declare [" & rn & "] on '" & callee.name &
-    "' if that is true (an extern with no marker is not known to be), or do " &
+    "'" & fnName & "' is [" & rn & "] but calls " & who &
+    ", which is not. Fix: declare [" & rn & "] on " & who &
+    " if that is true (an extern with no marker is not known to be), or do " &
     "not call it from a [" & rn & "] fn"), sp)
 
 proc checkIsrSends(d: Decl) =
@@ -319,6 +357,45 @@ proc checkIsrSends(d: Decl) =
         "takes a lock an interrupted thread may hold. Fix: set a flag or ring " &
         "buffer that a task drains, or drop [irq_safe]"), n.span)
 
+proc sharedStateTouched(n: Expr): string =
+  ## What shared state `n` reaches, or "": an actor (its fields, `alive`,
+  ## `waitUntil`, a send), a pool, a slab, a register, the registry. A `[pure]`
+  ## fn reaches none of it (TK-EF10, audit E6); the restriction call rule sees
+  ## calls only, and these are not calls.
+  if n.kind == exkSend: return "a send to actor '" & n.sendActor & "'"
+  if n.kind == exkActorRef: return "actor '" & n.refName & "', whose state its own thread changes"
+  if n.kind == exkPoolRef: return "pool '" & n.refName & "'"
+  if n.kind == exkRegisterRef: return "register '" & n.refName & "'"
+  if n.kind == exkRegistryRef: return "registry '" & n.refName & "'"
+  if semLayer.hasCall(n) and semLayer.call(n).kind in {exkSlabOp, exkPoolOp}:
+    return "a slab's or pool's cells"
+  ""
+
+proc isWaitUntil(n: Expr): bool =
+  ## `Actor.waitUntil {pred}`: blocks the caller until the predicate holds.
+  n.kind == exkField and n.fieldName == "waitUntil" and n.receiver != nil and
+    n.receiver.kind == exkActorRef
+
+proc checkSharedState(d: Decl) =
+  ## TK-EF10: a `[pure]` fn touches no shared state, and an `[irq_safe]` one
+  ## does not wait (audit E6). TK-EF07 already holds the send for `irq_safe`.
+  if d.fnBody == nil: return
+  let pure = emPure in d.fnEffects
+  let isr = emIrqSafe in d.fnEffects
+  if not pure and not isr: return
+  for n in d.fnBody.nodes:
+    if isr and isWaitUntil(n):
+      reportError(withCode(dcEfSharedState,
+        "'" & d.name & "' is [irq_safe] but waits on an actor, and an " &
+        "interrupt cannot block. Fix: set a flag that a task waits on, or " &
+        "drop [irq_safe]"), n.span)
+    if not pure: continue
+    let what = sharedStateTouched(n)
+    if what != "":
+      reportError(withCode(dcEfSharedState,
+        "'" & d.name & "' is [pure] but touches " & what & ". Fix: pass the " &
+        "value in as an argument, or drop [pure]"), n.span)
+
 proc checkRestrictions(c: Checker, d: Decl) =
   ## The restriction call rule (TK-EF03): in a fn declaring `no_alloc`,
   ## `irq_safe` or `pure`, every call must reach a callee that declares it.
@@ -326,16 +403,14 @@ proc checkRestrictions(c: Checker, d: Decl) =
   ## restricted side only.
   let restr = restrictionsOf(d.fnEffects)
   if restr.len == 0 or d.fnBody == nil: return
-  for n in d.fnBody.nodes:
-    let call = callOf(n)
-    if call == nil: continue
+  for call in callSites(semLayer, d.fnBody):
     let callee = c.resolveCallee(call)
     case callee.kind
     of ckUnknown: discard
-    of ckTask: failRestriction(d.name, restr[0], callee, n.span)
+    of ckTask: failRestriction(d.name, restr[0], callee, call.span)
     of ckFn:
       for r in restr:
-        if r notin callee.markers: failRestriction(d.name, r, callee, n.span)
+        if r notin callee.markers: failRestriction(d.name, r, callee, call.span)
 
 proc allocatingConstruct(n: Expr): string =
   ## What `n` allocates, or "" if it does not. THE list of allocating syntax
@@ -362,9 +437,7 @@ proc checkNoAlloc(d: Decl) =
 proc calleeNames(c: Checker, d: Decl): seq[string] =
   ## The distinct fn names `d`'s body calls (members resolved like any call).
   if d.fnBody == nil: return
-  for n in d.fnBody.nodes:
-    let call = callOf(n)
-    if call == nil: continue
+  for call in callSites(semLayer, d.fnBody):
     let callee = c.resolveCallee(call)
     if callee.kind == ckFn and callee.name notin result:
       result.add callee.name
@@ -537,6 +610,7 @@ proc verifyFn(c: var Checker, d: Decl, top = false) =
                              resources: d.fnResourceKinds)
   c.checkRestrictions(d)
   checkIsrSends(d)
+  checkSharedState(d)
   c.checkStackBound(d)
   let outerReqs = c.groupReqs
   c.groupReqs = c.boundGroupReqs(d)
@@ -557,6 +631,30 @@ proc verifyMembers(c: var Checker, members: seq[Decl]) =
   for m in members:
     if m != nil and m.kind == dkFn: c.verifyFn(m)
 
+proc checkEffectFree(c: var Checker, e: Expr, what, why: string) =
+  ## A body with no bracket and no caller to declare one for it: a type's
+  ## invariant (run at every construction and write, spec 4.7) and an actor
+  ## field's initialiser (run before `main`). Such a body may use no
+  ## capability. Neither was visited at all, so an `[io]` call there was never
+  ## seen (audit E10, E15).
+  if e == nil: return
+  let actual = c.synthesizeExpr(e)
+  for eff in actual.effects:
+    if familyOf(eff) != mfCapability: continue
+    let (callee, span) = c.culpritCall(e, eff)
+    reportError(withCode(dcEfBudget,
+      what & " may not do [" & effectName(eff) & "]" &
+      (if callee != "": " — '" & callee & "' is [" & effectName(eff) & "]"
+       else: "") & ": " & why & ", where no bracket can grant it. Fix: " &
+      "compute it from fns that do no I/O"), span)
+
+proc verifyInvariants(c: var Checker, d: Decl, members: seq[Decl]) =
+  ## A type's `invariant:` predicates (dkExpr members) are effect-free.
+  for mem in members:
+    if mem != nil and mem.kind == dkExpr:
+      c.checkEffectFree(mem.expr, "an invariant of '" & d.name & "'",
+                        "it runs at every construction and write of the type")
+
 proc verifyDecl*(c: var Checker, d: Decl) =
   ## Checks one declaration's body against its declared budget. `main` gets
   ## every effect and every program-declared resource kind.
@@ -570,14 +668,25 @@ proc verifyDecl*(c: var Checker, d: Decl) =
   of dkTask:
     if d.name in c.visiting: return
     c.visiting.incl(d.name)
+    # A task's restrictions are promises like a fn's; they were never held
+    # (audit E12), so a `[no_alloc]` task could call an allocating fn.
+    c.checkRestrictions(d)
+    checkSharedState(d)
     discard c.checkExpr(d.fnBody, Demands(effects: d.fnEffects,
                                            resources: d.fnResourceKinds), d.name)
     c.visiting.excl(d.name)
   of dkActor:
+    for f in d.actorFields:
+      c.checkEffectFree(f.default, "the initialiser of '" & d.name & "." &
+                        f.name & "'", "it runs when the actor starts, before `main`")
     for h in d.handlers:
       verifyDecl(c, h)
-  of dkObject: c.verifyMembers(d.objMembers)
-  of dkType: c.verifyMembers(d.typeMembers)
+  of dkObject:
+    c.verifyInvariants(d, d.objMembers)
+    c.verifyMembers(d.objMembers)
+  of dkType:
+    c.verifyInvariants(d, d.typeMembers)
+    c.verifyMembers(d.typeMembers)
   of dkMixin: c.verifyMembers(d.mixinMembers)
   of dkStaticAssert:
     discard c.checkExpr(d.assertExpr, Demands(), "static_assert")
@@ -697,9 +806,7 @@ proc holds(c: Checker, facts: Table[string, Facts], callee: Callee,
 
 proc callsOf(c: Checker, d: Decl): seq[Callee] =
   ## Every call in `d`'s body, resolved.
-  for n in d.fnBody.nodes:
-    let call = callOf(n)
-    if call != nil: result.add c.resolveCallee(call)
+  for call in callSites(semLayer, d.fnBody): result.add c.resolveCallee(call)
 
 proc allocates(d: Decl): bool =
   for n in d.fnBody.nodes:

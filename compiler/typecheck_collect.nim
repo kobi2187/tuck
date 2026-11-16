@@ -78,7 +78,7 @@ proc collectFnSigType*(tc: var TypeChecker, d: Decl) =
   ## A signature TYPE declares no effects of its own — what gets baked into
   ## the slot carries them.
   tc.setFnSig(d.name, (d.sigParams, d.sigReturn,
-                       newSeq[string](), newSeq[EffectMarker](), newSeq[string](),
+                       newSeq[string](), d.sigEffects, newSeq[string](),
                        newSeq[string]()))
   tc.fnSigNames.incl(d.name)
   if d.sigGenerics.len > 0: tc.fnSigGenerics[d.name] = d.sigGenerics
@@ -270,6 +270,10 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
       tc.setFnSig(d.name, (d.fnParams, d.fnReturnType,
                            newSeq[string](), d.fnEffects,
                            d.fnResourceKinds, d.fnErrorTypes))
+      # A spawn is a call: it gets an edge like one. Without it a task an
+      # IMPORT declares was a name the effect pass could not place, so a
+      # `[pure]` fn spawned it unseen (audit E14).
+      if top: tc.recordFnBody(d)
     of dkFnSig: tc.collectFnSigType(d)
     of dkPool: tc.collectPoolSigs(d)
     of dkSlab: tc.collectSlabSigs(d)

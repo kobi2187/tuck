@@ -779,6 +779,28 @@ proc memberCallDecl*(res: Resolution, m: Module, e: Expr): Decl =
     return nil
   memberDeclOf(m, memberOwner(m, memberRecvType(res, e)), e.callee.name)
 
+iterator pendingMembers(m: Module, owner: string): Decl =
+  ## The members object `owner` declares inside its `pending:` blocks.
+  for d in m.decls(dkObject):
+    if d.name != owner: continue
+    for blk in d.objMembers:
+      if blk == nil or blk.kind != dkPending: continue
+      for mem in blk.mixinMembers:
+        if mem != nil and mem.kind == dkFn: yield mem
+
+proc pendingMemberDecl*(res: Resolution, m: Module, e: Expr): Decl =
+  ## The `pending:` member of the receiver's object a call reaches, or nil. A
+  ## pending member has no body yet, but its bracket is the contract to come:
+  ## an `[io]` one is `[io]` to its callers now (audit E9). Not a member for
+  ## codegen (`memberDeclOf`), which emits no body for it.
+  if e == nil or e.kind != exkCall or e.callee == nil or
+     e.callee.kind != exkVar or e.args.len < 1 or e.args[0] == nil:
+    return nil
+  let owner = memberOwner(m, memberRecvType(res, e))
+  if owner == "": return nil
+  for mem in pendingMembers(m, owner):
+    if spells(e.callee.name, mem.name, nkFn): return mem
+
 proc calleeDecl*(res: Resolution, m: Module, call: Expr): Decl =
   ## THE answer to "which declaration does this call reach", for every pass
   ## that needs one: the ownership rules, slab ownership, the mock surface.
@@ -898,6 +920,35 @@ const ConstDepthLimit = 64
   ## and a recursion that never bottoms out.
 
 proc evalConstExpr*(m: Module, e: Expr, depth = 0): Option[int]
+
+iterator callSites*(res: Resolution, body: Expr): Expr =
+  ## Every CALL a body makes, whatever its spelling: a literal `exkCall`, a
+  ## node the checker stamped as one (a bare nullary name, `x.f`, `xs[i]`),
+  ## and the mutator call each `..` step resolved to. The step calls are not
+  ## in the tree (`nodes` never reaches them), so a pass walking nodes alone
+  ## let an `[io]` mutator run from a `[pure]` fn (audit E13). Passes that ask
+  ## "what does this body call" walk this, not `nodes`.
+  for n in body.nodes:
+    if n.kind == exkCall: yield n
+    elif res.hasCall(n): yield res.call(n)
+    if n.kind == exkChain:
+      for s in n.steps:
+        let sc = res.stepCall(s)
+        if sc != nil: yield sc
+
+proc raisedEvent*(e: Expr): string =
+  ## `Registry.Event` when `e` is the raise itself — `Ev.raise Ping`, the call
+  ## whose callee names the event and whose one argument is `Ev.raise` — and
+  ## "" otherwise. With a payload the raise is the CALLEE of the payload call;
+  ## without one it stands alone, so this answers on the inner node in both.
+  if e == nil or e.kind != exkCall or e.callee == nil or
+     e.callee.kind != exkVar or e.args.len != 1 or e.args[0] == nil:
+    return ""
+  let f = e.args[0]
+  if f.kind != exkField or f.fieldName != "raise" or f.receiver == nil or
+     f.receiver.kind != exkRegistryRef:
+    return ""
+  f.receiver.refName & "." & e.callee.name
 
 proc constDeclFor*(m: Module, raw: string): Decl =
   ## The const declaration named `raw`, wherever it is declared.
@@ -1316,7 +1367,7 @@ proc fnSigInstance*(m: Module, t: Type): Type =
       ps.add(substType(prm.typ, binds))
       names.add(prm.name)
     return Type(span: t.span, kind: tkFunc, params: ps, paramNames: names,
-                result: substType(d.sigReturn, binds))
+                result: substType(d.sigReturn, binds), funcEffects: d.sigEffects)
   nil
 
 # --- interfaces: who satisfies what (moved from codegen_common so the

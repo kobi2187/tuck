@@ -16,6 +16,37 @@ disagree. S3 valid program rejected or compiler crash. S4 diagnostics.
 Raw reports contain roughly 100 findings; many share a root cause. Below they are grouped
 by the root cause, which is also the order I propose to fix them in.
 
+## Status (updated as fixes land)
+
+Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
+(`bugFixed`, the repro as the assertion), and guarded by an invariant where one fits.
+
+| Fixed | Pin | Invariant |
+|---|---|---|
+| E7 `main` privilege | A119 | `assertMainBudgetOnce` |
+| T6 open-domain match, T7 match on a wrapper, T8a sealed bare variant | A120-A122 | |
+| E3a restriction subset in conformance | A123 | one rule, `ast_ops.effectFitProblem` |
+| Y9/Y10 operand kinds | A124 | |
+| M9 two `fnsig Op` (refused; full fix needs class B) | A125 | |
+| Y17 body-spelled type edges | A126 | `typeEdgeErrors` covers body types |
+| M3 const scope | A127 | per-module const table |
+| E1 fnsig slots carry effects | A128 | `assertCallEdges`: a slot call has a contract |
+| E3c interface calls in the restriction check | A129 | |
+| E5 registry raise charges its handlers | A130 | `assertCallEdges`: a raise has a contract |
+| E13 `..` step calls | A131 | `callSites`; edges checked for step calls |
+| E10 invariants, E15 actor field initialisers effect-free | A132, A133 | |
+| E12, E14 task restrictions; task calls get edges | A134 | `assertCallEdges` covers tasks |
+| E6 `[pure]` touches no shared state; `[irq_safe]` does not wait (TK-EF10) | A135 | |
+| E9 pending `[io]` members | A136 | |
+| O1b `[writes: p]` on externs (`setAt`) | A137 | |
+| O1c self-writes through an extern; views across them | A138 | |
+| O5 member calls registered on every path | A139 | `unregisteredMemberCalls` |
+| C3 slab ownership through slots, dispatch, predicates | A140 | |
+
+**Waiting on a ruling.** E4 (does binding a task's result, an await, need `[io]` in the
+caller?), E16 (`on select` arm budgets, F2), C18's second half (a predicate reading only its
+own actor's fields), and the concurrency items C2/C4/C5.
+
 ---
 
 ## Class A. Calls the checker cannot see (S1, the largest and most dangerous class)

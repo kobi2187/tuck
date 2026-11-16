@@ -5587,4 +5587,412 @@ fn l() -> int:
   t.quietly: t.badCheck "A127: a const two imports away is not in scope", "not declared"
   t.bugFixed "A127: a const two imports away is not in scope"
 
+  # A128 (audit E1): a call through a `fnsig` slot had no callee, so the effect
+  # check found nothing to charge and an `[io]` fn stored in the slot ran from a
+  # fn that declared none (and was not a suspend point in a task). The effect
+  # bracket is now part of the fnsig: a stored fn must fit it, and a call
+  # through the slot is charged with it. `assertCallEdges` fails the build when
+  # a call through a slot carries no recorded contract.
+  t.src """
+import console
+
+fnsig Act = {n: int} -> int
+type Holder = {act: Act}
+
+fn noisy({n: int}) -> int [io]:
+  {text: "side effect"} printLine
+  return n + 1
+
+fn viaPlain({h: Holder}) -> int:
+  return {n: 1} h.act
+
+fn main() -> int:
+  let h = {act: :noisy} Holder
+  return {h} viaPlain
+"""
+  t.quietly: t.badCheck "A128: an [io] fn does not fit a fnsig slot without [io]", "expects Act but got .*\\[io\\]"
+  t.bugFixed "A128: an [io] fn does not fit a fnsig slot without [io]"
+  t.src """
+import console
+
+fnsig Act = {n: int} -> int [io]
+type Holder = {act: Act}
+
+fn noisy({n: int}) -> int [io]:
+  {text: "side effect"} printLine
+  return n + 1
+
+fn viaPlain({h: Holder}) -> int:
+  return {n: 1} h.act
+
+fn main() -> int:
+  let h = {act: :noisy} Holder
+  return {h} viaPlain
+"""
+  t.quietly: t.badCheck "A128: a call through an [io] slot needs [io] in the caller", "TK-EF01"
+  t.bugFixed "A128: a call through an [io] slot needs [io] in the caller"
+  t.src """
+fnsig Rule = {x: int} -> bool
+fn small({x: int}) -> bool:
+  return x < 10
+fn test({r: Rule, x: int}) -> bool [pure]:
+  return {x} r
+
+fn main() -> int:
+  if {r: :small, x: 3} test:
+    return 1
+  return 0
+"""
+  t.quietly: t.badCheck "A128: a [pure] fn may not call through a slot that does not promise [pure]", "TK-EF03"
+  t.bugFixed "A128: a [pure] fn may not call through a slot that does not promise [pure]"
+
+  # A129 (audit E3c): a call through an INTERFACE value resolved to no callee in
+  # the restriction check, and an unknown callee is never a violation, so a
+  # `[pure]` fn could dispatch to any member. It reaches the contract's
+  # requirement now, which every satisfier keeps.
+  t.src """
+interface Animal:
+  fn noise({self: Self}) -> int
+
+object Dog:
+  satisfies Animal
+  name: str
+  fn noise({self: Dog}) -> int:
+    return 3
+
+fn hear({a: Animal}) -> int [pure]:
+  return a.noise
+
+fn main() -> int:
+  let d = {name: "rex"} Dog
+  let a: Animal = d
+  return {a} hear
+"""
+  t.quietly: t.badCheck "A129: a [pure] fn may not dispatch to an interface member that is not [pure]", "TK-EF03"
+  t.bugFixed "A129: a [pure] fn may not dispatch to an interface member that is not [pure]"
+
+  # A130 (audit E5): `Ev.raise Ping` runs every `on Ev.Ping` handler right
+  # there (spec Part 10), but had no edge to them, so an `[io]` handler ran
+  # from a fn that declared nothing. A raise carries its handlers' joint
+  # contract: every capability any of them uses, the restrictions all make.
+  t.src """
+import console
+
+registry Ev:
+  | Ping({n: int})
+
+on Ev.Ping({n: int}) [io]:
+  {text: "handler did io"} printLine
+
+fn raiser() -> void:
+  Ev.raise Ping {n: 1}
+
+fn main() -> int:
+  {} raiser
+  return 0
+"""
+  t.quietly: t.badCheck "A130: raising an event charges its handlers' effects", "TK-EF01"
+  t.bugFixed "A130: raising an event charges its handlers' effects"
+
+  # A131 (audit E13): a `..` step that calls a mutator resolves to a call that
+  # is not in the tree, and the effect and restriction passes walked the tree,
+  # so an `[io]` member ran from a `[pure]` fn. Passes ask `callSites` now,
+  # and the edge invariant covers step calls.
+  t.src """
+import console
+
+object Server:
+  port: int
+  fn bump({self: Server}) -> Server [io]:
+    {text: "io in bump"} printLine
+    return self
+
+fn f() -> int [pure]:
+  var s = {port: 1} Server
+  s ..bump
+  return s.port
+
+fn main() -> int:
+  return {} f
+"""
+  t.quietly: t.badCheck "A131: a `..` mutator step is a call the effect rules see", "TK-EF03"
+  t.bugFixed "A131: a `..` mutator step is a call the effect rules see"
+
+  # A132 (audit E10): a type's `invariant:` runs at every construction and
+  # write, but the effect pass never visited it, so an `[io]` predicate made
+  # every construction do I/O unseen. Invariants are effect-free.
+  t.src """
+import console
+
+fn noisy({v: int}) -> bool [io]:
+  {text: "io in invariant"} printLine
+  return v > 0
+
+type Pos:
+  v: int
+  invariant:
+    {v: v} noisy
+
+fn main() -> int:
+  let p = {v: 3} Pos
+  return p.v
+"""
+  t.quietly: t.badCheck "A132: an invariant may not do I/O", "invariant of 'Pos' may not do \\[io\\]"
+  t.bugFixed "A132: an invariant may not do I/O"
+
+  # A133 (audit E15): an actor field's initialiser runs when the actor starts,
+  # before `main`, and was never budget-checked. It is effect-free.
+  t.src """
+import console
+
+actor A [queue: 4]:
+  v: int = {} noisyInt
+  on poke():
+    v += 1
+
+fn noisyInt() -> int [io]:
+  {text: "io at actor field init"} printLine
+  return 1
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A133: an actor field initialiser may not do I/O", "initialiser of 'A.v' may not do \\[io\\]"
+  t.bugFixed "A133: an actor field initialiser may not do I/O"
+
+  # A134 (audit E12, E14): a task's restriction markers were never held, and a
+  # task an IMPORT declares had no call edge, so the effect pass could not tell
+  # its spawn from an unknown name. Task calls get edges like fn calls, and a
+  # task's restrictions are checked like a fn's.
+  t.src """
+fn alloc() -> int:
+  let xs = [1, 2]
+  return xs.len
+
+task tk() -> void [no_alloc]:
+  let r = {} alloc
+  return
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A134: a [no_alloc] task may not call an allocating fn", "'tk' is \\[no_alloc\\]"
+  t.bugFixed "A134: a [no_alloc] task may not call an allocating fn"
+  t.src """
+import lib
+
+fn sneaky() -> int [pure]:
+  let r = {} slow
+  return r.v
+
+fn main() -> int:
+  return {} sneaky
+"""
+  t.addFile("lib.tuck", """import console
+task slow() -> {v: int} [io]:
+  {text: "lib task start"} printLine
+  return {v: 7}
+""")
+  t.quietly: t.badCheck "A134: a [pure] fn may not spawn an imported task", "spawns task 'slow'"
+  t.bugFixed "A134: a [pure] fn may not spawn an imported task"
+
+  # A135 (audit E6): `[pure]` held calls only, so a pure fn could send to an
+  # actor, read another thread's actor fields, or take from a pool; and an
+  # `[irq_safe]` fn could block in `waitUntil`. TK-EF10 holds the constructs.
+  for (name, body) in [("sending", "Worker send job {n: 1}\n  return 0"),
+                       ("reading an actor's field", "return Worker.processed"),
+                       ("taking from a pool", "let h = Readings.acquire\n  if not h.ok:\n    return 0\n  Readings.release {h: h.value}\n  return 1")]:
+    t.src """
+actor Worker [queue: 4]:
+  processed: int = 0
+  on job({n: int}):
+    processed += n
+
+type Reading:
+  value: u16
+
+pool Readings = Reading [count: 4]
+
+fn p() -> int [pure]:
+  """ & body & """
+
+fn main() -> int:
+  return {} p
+"""
+    t.quietly: t.badCheck "A135: a [pure] fn may not touch shared state: " & name, "TK-EF10"
+    t.bugFixed "A135: a [pure] fn may not touch shared state: " & name
+  t.src """
+actor Worker [queue: 4]:
+  processed: int = 0
+  on job({n: int}):
+    processed += n
+
+fn done() -> bool:
+  return true
+
+fn isr() -> void [irq_safe, no_alloc]:
+  Worker.waitUntil {pred: :done}
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A135: an [irq_safe] fn may not wait on an actor", "TK-EF10"
+  t.bugFixed "A135: an [irq_safe] fn may not wait on an actor"
+
+  # A136 (audit E9): a `pending:` member of an object is a contract to come;
+  # an `[io]` one did not charge its callers, since a pending member is not
+  # among the members a call resolves to for codegen.
+  t.src """
+object App:
+  id: int
+  pending:
+    fn fetchFeed({self: App}) -> int [io]
+
+fn c({x: App}) -> int:
+  return x.fetchFeed
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A136: a pending [io] member charges its callers", "TK-EF01"
+  t.bugFixed "A136: a pending [io] member charges its callers"
+
+  # A137 (audit O1b): `setAt` changes its `items` in place, but an extern could
+  # not say so, and `zs.setAt {..}` on a `let` checked clean. `[writes: p]`
+  # declares it; the argument must then be a place rooted at a `var`.
+  t.src """
+import seq
+
+fn main() -> int:
+  let ys: Seq[int] = [1, 2, 3]
+  {items: ys, index: 0, value: 99} setAt
+  return ys[0]
+"""
+  t.quietly: t.badCheck "A137: an extern that writes its argument needs a var", "cannot let 'setAt' change 'ys'"
+  t.bugFixed "A137: an extern that writes its argument needs a var"
+  t.src """
+import seq
+
+fn bump({xs: Seq[int]}) -> int:
+  xs.setAt {index: 0, value: 99}
+  return xs[0]
+
+fn main() -> int:
+  return {xs: [1, 2]} bump
+"""
+  t.quietly: t.badCheck "A137: ...nor a parameter", "TK-TY15"
+  t.bugFixed "A137: ...nor a parameter"
+
+  # A138 (audit O1c): a member whose only change to its object is
+  # `self.recs.setAt {..}` was not classed as changing `self`, so it took
+  # `self` by value (Nim refused the build), and a view of `s.recs[0]` taken
+  # before the call outlived it on Odin and D, which read freed memory.
+  t.src """
+import seq
+
+type Rec:
+  tag: int
+  items: Seq[int]
+
+fn mk({n: int}) -> Rec:
+  var s: Seq[int] = []
+  s = s.push {value: n}
+  s = s.push {value: n + 1}
+  return {tag: n, items: s} Rec
+
+object Store:
+  recs: Seq[Rec]
+  fn replace({self: Store}) -> void:
+    let r2 = mk {n: 50}
+    self.recs.setAt {index: 0, value: r2}
+
+fn main() -> int:
+  let r1 = mk {n: 1}
+  var s: Store = {recs: [r1]} Store
+  let v = s.recs[0]
+  s.replace
+  let a = v.items.at {index: 0}
+  return a
+"""
+  t.quietly: t.runs "A138: a member writing self through an extern changes its object", 1
+  t.bugFixed "A138: a member writing self through an extern changes its object"
+  t.quietly: t.runsOdin "A138: ...and a view taken before it is not stale on Odin", 1
+  t.bugFixed "A138: ...and a view taken before it is not stale on Odin"
+
+  # A139 (audit O5): `let r = c.bump` built the member call through the
+  # postfix path, which never registered it, so a member changing its object
+  # ran on a `let`. Every member call is registered, and the checker asserts
+  # it (unregisteredMemberCalls).
+  t.src """
+object Cnt:
+  n: int
+  fn bump({self: Cnt}) -> int:
+    self ..n {self.n + 1}
+    return self.n
+
+fn main() -> int:
+  let c = {n: 1} Cnt
+  let r = c.bump
+  return r * 10 + c.n
+"""
+  t.quietly: t.badCheck "A139: a self-changing member in value position needs a var", "cannot call 'bump' on 'c'"
+  t.bugFixed "A139: a self-changing member in value position needs a var"
+
+  # A140 (audit C3): slab ownership (TK-AC08) follows call edges, and three
+  # calls had none: through a fn slot, through an interface value, and a
+  # `waitUntil` predicate, which runs on the ACTOR's thread. A slab of main's
+  # thread was reached from an actor through each.
+  t.src """
+type Node:
+  data: int
+
+slab Nodes = Node
+
+fnsig Cb = {} -> int
+type H = {cb: Cb}
+
+fn touch() -> int:
+  let r = Nodes.new {data: 1}
+  let d = r.data
+  Nodes.free {r: r}
+  return d
+
+actor W [queue: 8]:
+  n: int = 0
+  on go({h: H}):
+    n += {} h.cb
+
+fn main() -> int:
+  let h = {cb: :touch} H
+  W send go {h: h}
+  return {} touch
+"""
+  t.quietly: t.badCheck "A140: a slab reached through a fn slot from an actor", "TK-AC08"
+  t.bugFixed "A140: a slab reached through a fn slot from an actor"
+  t.src """
+type Node:
+  data: int
+
+slab Nodes = Node
+
+actor Probe [queue: 8]:
+  halted: bool = false
+  on halt():
+    halted = true
+
+fn pred() -> bool:
+  let a = Nodes.new {data: 1}
+  Nodes.free {r: a}
+  return Probe.halted
+
+fn main() -> int:
+  let n = Nodes.new {data: 2}
+  Nodes.free {r: n}
+  Probe send halt {}
+  Probe.waitUntil {pred: :pred}
+  return 0
+"""
+  t.quietly: t.badCheck "A140: a waitUntil predicate runs on the actor's thread", "actor 'Probe' reaches slab 'Nodes'"
+  t.bugFixed "A140: a waitUntil predicate runs on the actor's thread"
+
   t.finish()

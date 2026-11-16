@@ -152,6 +152,8 @@
 import ast, semantics, lowering, tables, strutils, sets, options, algorithm
 import resolution
 import ast_query
+import call_args  # writtenArg: which argument an extern writes
+import tree_invariants  # report: a stage invariant that does not hold
 import rewrite   # isLiteralPayload — recognize the wrap the pass introduced
 import typecheck_util
 export typecheck_util
@@ -364,6 +366,19 @@ proc sameGenericShape(declared, actual: Type): bool =
     declared.base.kind == tkNamed and actual.base.kind == tkNamed and
     declared.base.name == actual.base.name
 
+proc namedFnDecl(tc: TypeChecker, name: string, callee: Expr): Decl
+proc failIfWritesImmutable(tc: var TypeChecker, call: Expr, callee: Decl)
+
+proc linkMethodCall(tc: TypeChecker, call: Expr, fnName: string, recvT: Type) =
+  ## The edge for a call built in the METHOD form (`x.f {..}`, `x ..f {..}`).
+  ## A member of the receiver's object is reached by the receiver
+  ## (`memberCallDecl`) and needs none; anything else is a free fn taking the
+  ## receiver first, and had no edge at all, so a `..` step through one was
+  ## invisible to the passes that follow edges (audit E13).
+  if memberDeclOf(tc.module, memberOwner(tc.module, recvT), fnName) != nil: return
+  let d = tc.namedFnDecl(fnName, call.callee)
+  if d != nil: resolveTo(semLayer, call, d)
+
 proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
                      recvT: Type, argStruct: Expr, sp: Span): Expr =
   ## `d.crank {step: 1}` — the receiver fills a slot, the payload fills the
@@ -389,6 +404,8 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
   let args = @[receiver] & tc.bindPayloadFields(fnName, rest, argStruct, sp)
   result = Expr(span: sp, kind: exkCall,
                 callee: Expr(span: sp, kind: exkVar, name: fnName), args: args)
+  tc.linkMethodCall(result, fnName, recvT)
+  tc.failIfWritesImmutable(result, semLayer.declFor(result))
   # No `->` is `-> void` (R5). A nil type here read as "unresolved", and
   # `d.turn {step: 2}` on a member with no `->` was "called with arguments
   # here but is not declared" (found 2026-09-28).
@@ -589,6 +606,8 @@ proc failIfArgMismatched(tc: var TypeChecker, sig: FnSig, recvT: Type, e: Expr) 
     fail("Type Error: argument to '" & e.fieldName & "' expects " &
          typeName(pt) & " but got " & typeName(recvT), e.span)
 
+proc recordMemberCall(tc: TypeChecker, e: Expr, recvT: Type)
+
 proc asPostfixApplication(tc: var TypeChecker, e: Expr): Type =
   ## Postfix application in a fn BODY: `5.ms`, `n.toStr`. `x doSth` and
   ## `{value: x} doSth` are the same call — a bare receiver wraps into the
@@ -640,6 +659,10 @@ proc asPostfixApplication(tc: var TypeChecker, e: Expr): Type =
          typeName(recvT) & ", so the MEMBER is used here. Write " &
          "`{...} " & e.fieldName & "` to reach the top-level one.",
          e.span.line, e.span.col)
+  # Registered as every member call is: a member that changes its object may
+  # not run on a `let` or a parameter, and `let r = c.bump` reached it only
+  # through here, unregistered (audit O5).
+  tc.recordMemberCall(e, recvT)
   setCall(semLayer, e, Expr(span: e.span, kind: exkCall, args: @[e.receiver],
                             callee: callee))
   sig.ret
@@ -1449,6 +1472,7 @@ proc checkThroughFnSig(tc: var TypeChecker, slotT: Type, call: Expr): Type =
     return nil
   var bindings = initTable[string, Type]()
   tc.checkCallArgs(name, sig, call, bindings)
+  semLayer.markSlotCall(call, sig.effects)
   sig.ret
 
 proc invokeArgs(tc: var TypeChecker, e: Expr): seq[Expr] =
@@ -3565,10 +3589,11 @@ proc checkFnValueCall(tc: var TypeChecker, fnT: Type, e: Expr): Type =
   for i, typ in fnT.params:
     let name = if i < fnT.paramNames.len: fnT.paramNames[i] else: "arg" & $i
     params.add(Param(name: name, typ: typ, span: e.span))
-  let sig: FnSig = (params: params, ret: fnT.result, generics: @[], effects: @[],
-                 resources: @[], errTypes: @[])
+  let sig: FnSig = (params: params, ret: fnT.result, generics: @[],
+                 effects: fnT.funcEffects, resources: @[], errTypes: @[])
   var bindings = initTable[string, Type]()
   tc.checkCallArgs("<function>", sig, e, bindings)
+  semLayer.markSlotCall(e, fnT.funcEffects)
   sig.ret
 
 # What `{payload} name` MEANS: a construction, a restructuring builtin
@@ -3812,6 +3837,17 @@ proc asGenericConstruction(tc: var TypeChecker, e: Expr,
   Type(span: e.span, kind: tkApp, args: gargs,
        base: tc.namedType(calleeName, e.span))
 
+proc namedFnDecl(tc: TypeChecker, name: string, callee: Expr): Decl =
+  ## The fn a call NAMING `name` reaches in this module's scope: its own
+  ## top-level fn, else the import that owns the bare name here (not
+  ## whichever same-named fn the program-wide table holds, A112), else the
+  ## program's fn by the callee's key (`mod::fn`).
+  result = tc.topLevelDeclOfFn(name)
+  if result == nil:
+    let owner = tc.bareOwnerOf.getOrDefault(name)
+    if owner != "": result = semLayer.programFn(owner & "::" & name)
+  if result == nil and callee != nil: result = semLayer.programFn(callKey(callee))
+
 proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   ## A call to a fn with a known signature. NAMES the callee, so a top-level
   ## fn wins over an object member of the same name.
@@ -3825,14 +3861,7 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   # calleeDecl) instead of each re-deriving it from the name it happens to
   # know how to read; the stage check `assertCallEdges` holds every call to
   # a fn with a body to having one.
-  var calleeDecl = tc.topLevelDeclOfFn(calleeName)
-  if calleeDecl == nil:
-    # An import's fn, written bare: the module that owns the name in THIS
-    # scope, not whichever same-named fn the program-wide table holds (A112).
-    let owner = tc.bareOwnerOf.getOrDefault(calleeName)
-    if owner != "":
-      calleeDecl = semLayer.programFn(owner & "::" & calleeName)
-  if calleeDecl == nil: calleeDecl = semLayer.programFn(callKey(e.callee))
+  let calleeDecl = tc.namedFnDecl(calleeName, e.callee)
   if calleeDecl != nil:
     resolveTo(semLayer, e, calleeDecl)
   # The other half of TK-TY27: this call NAMED the fn, so it reaches the
@@ -3849,6 +3878,7 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
          e.span.line, e.span.col)
   var bindings = initTable[string, Type]()
   tc.checkCallArgs(calleeName, sig, e, bindings)
+  tc.failIfWritesImmutable(e, calleeDecl)
   # A fn with no `->` returns `void` — exactly as if it said `-> void` (ruled
   # 2026-09-27, #5). Without this the resolved call answers nil and falls
   # into synthCall's undeclared-callee error — the callee IS declared, only
@@ -4244,6 +4274,14 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
   ## then a callee that is not a bare name at all. Nothing claims it is an
   ## error. The record combinators are NOT here — they are exkCombinator
   ## nodes the parser already decided on.
+  # `Ev.raise Ping` runs every `on Ev.Ping` handler, here and now: it has no
+  # single callee, so it carries their joint contract like a call through a
+  # slot (audit E5). It had none, and an [io] handler laundered its I/O.
+  let raised = raisedEvent(e)
+  if raised != "":
+    var each: seq[seq[EffectMarker]]
+    for h in semLayer.handlerDecls.getOrDefault(raised): each.add h.fnEffects
+    semLayer.markSlotCall(e, jointContract(each))
   let calleeName = tc.calleeNameOf(e)
   tc.checkActorCall(e, calleeName)
   # Group dispatch BEFORE the ambiguity check: a requirement on a bounded type
@@ -4516,7 +4554,8 @@ proc synthVar(tc: var TypeChecker, e: Expr): Type =
     for p in sig.params:
       ps.add(p.typ)
       names.add(p.name)
-    Type(span: e.span, kind: tkFunc, params: ps, paramNames: names, result: sig.ret)
+    Type(span: e.span, kind: tkFunc, params: ps, paramNames: names, result: sig.ret,
+         funcEffects: sig.effects)
   else:
     tc.synthBareVariant(e)
 
@@ -5088,6 +5127,9 @@ proc writesIntoSlabCell(target: Expr): bool =
     t = t.receiver
   false
 
+proc failIfPlaceImmutable(tc: var TypeChecker, place: Expr, verb: string,
+                          sp: Span)
+
 proc failIfTargetImmutable(tc: var TypeChecker, e: Expr) =
   ## An assignment may not write through a parameter or a `let`, whether it
   ## names the binding itself (`c = ...`), one of its fields (`c.n = ...`), or
@@ -5100,26 +5142,46 @@ proc failIfTargetImmutable(tc: var TypeChecker, e: Expr) =
   ## where NIM rejected them with a message naming generated code the user
   ## never wrote ("'c.n' cannot be assigned to"). A rejection Nim makes is a
   ## rejection Tuck should make first, with a code the user can look up.
-  if e.target == nil or writesIntoSlabCell(e.target): return
-  let root = assignRoot(e.target)
+  if e.target == nil: return
+  tc.failIfPlaceImmutable(e.target, "assign to", e.span)
+
+proc failIfPlaceImmutable(tc: var TypeChecker, place: Expr, verb: string,
+                          sp: Span) =
+  ## A write into `place` — a name, or fields and elements down from one —
+  ## needs a `var` at its root: never a parameter, never a `let`. Shared by
+  ## assignment and by an extern that `[writes:]` its argument in place.
+  if place == nil or writesIntoSlabCell(place): return
+  let root = assignRoot(place)
   if root == nil or root.kind != exkVar: return
   let (found, b) = tc.lookup(root.name)
   if not found: return
-  let whole = root.id == e.target.id   # `c = v` vs `c.n = v`
+  let whole = root.id == place.id   # `c = v` vs `c.n = v`
   if b.isParam:
     fail(dcTyParamMutation,
-         "cannot assign to " &
+         "cannot " & verb & " " &
          (if whole: "parameter '" & root.name & "'"
           else: "a field of parameter '" & root.name & "'") &
          " — a parameter is a value the caller owns, not a var. Fix: copy " &
          "it first (`var s = " & root.name & "`), change the copy, and " &
-         "return it", e.span)
+         "return it", sp)
   if not b.isVar:
     fail(dcTyImmutable,
-         "cannot assign to " &
+         "cannot " & verb & " " &
          (if whole: "'" & root.name & "'"
           else: "a field of '" & root.name & "'") &
-         " — it was declared with 'let'; use 'var'", e.span)
+         " — it was declared with 'let'; use 'var'", sp)
+
+proc failIfWritesImmutable(tc: var TypeChecker, call: Expr, callee: Decl) =
+  ## An extern that changes an argument in place (`[writes: items]`) is a
+  ## write into that place, held to the rule an assignment is (audit O1b): it
+  ## was not, and `setAt` on a `let` or a parameter changed the caller's
+  ## value, or a view of it, unseen.
+  if callee == nil: return
+  for param in callee.externWrites:
+    let place = writtenArg(semLayer, call, callee, param)
+    if place != nil:
+      tc.failIfPlaceImmutable(place, "let '" & callee.name & "' change",
+                              place.span)
 
 proc synthAssignVal(tc: var TypeChecker, e: Expr, targetT: Type): Type =
   ## spec 4.4b: the RHS of a checked transition assignment may construct a
@@ -5593,7 +5655,8 @@ proc synthQualified(tc: var TypeChecker, e: Expr): Type =
   for p in sig.params:
     ps.add(p.typ)
     names.add(p.name)
-  Type(span: e.span, kind: tkFunc, params: ps, paramNames: names, result: sig.ret)
+  Type(span: e.span, kind: tkFunc, params: ps, paramNames: names, result: sig.ret,
+       funcEffects: sig.effects)
 
 proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   ## The checker's expression dispatch: one `synth*` per ExprKind, no `else`,
@@ -6829,6 +6892,19 @@ proc selfRooted(res: Resolution, e: Expr): bool =
     r = assignRoot(r.brReceiver)
   r != nil and r.kind == exkVar and (r.name == "self" or res.isOwnerField(r))
 
+proc externWritesSelf(res: Resolution, n: Expr): bool =
+  ## An extern that changes an argument in place (`[writes: items]`), given
+  ## `self` or a field of it: `self.recs.setAt {..}` changes the object, and
+  ## was not counted, so such a member took `self` by value and the write
+  ## was lost (audit O1c).
+  let c = if n.kind == exkCall: n else: res.call(n)
+  if c == nil or c.kind != exkCall: return false
+  let callee = res.declFor(c)
+  if callee == nil: return false
+  for param in callee.externWrites:
+    if selfRooted(res, writtenArg(res, c, callee, param)): return true
+  false
+
 proc writesSelfDirectly(res: Resolution, fn: Decl): bool =
   ## Does member `fn`'s own body write its object: an assignment, an
   ## element write or a `..` chain on `self` or a field of it?
@@ -6837,6 +6913,7 @@ proc writesSelfDirectly(res: Resolution, fn: Decl): bool =
       return true
     if n.kind == exkBracketAssign and selfRooted(res, n.brTarget): return true
     if n.kind == exkChain and selfRooted(res, n.base): return true
+    if externWritesSelf(res, n): return true
   false
 
 proc selfCallees(res: Resolution, objs: Table[string, Decl], fn: Decl): seq[Decl] =
@@ -6970,6 +7047,31 @@ proc checkUrgentPlacement(mods: seq[tuple[name, path: string, m: Module]]) =
              "only an actor's `on` handler may be: it is a message that " &
              "jumps the actor's queue. Fix: remove [urgent]", d.span)
 
+proc unregisteredIn(m: Module, d: Decl, seen: HashSet[(int, int)]): seq[string] =
+  ## The member calls of one body that `memberCalls` does not hold.
+  for n in d.fnBody.nodes:
+    let c = if n.kind == exkCall: n else: semLayer.call(n)
+    if c == nil or c.kind != exkCall or memberCallDecl(semLayer, m, c) == nil:
+      continue
+    if c.args.len == 0 or c.args[0] == nil or c.args[0].kind == exkStruct: continue
+    if (c.span.line, c.span.col) notin seen and (n.span.line, n.span.col) notin seen:
+      result.add nameOf(m.id) & ":" & $c.span.line & ":" & $c.span.col &
+                 " calls member '" & c.callee.name & "' unregistered"
+
+proc unregisteredMemberCalls(mods: seq[tuple[name, path: string, m: Module]]): seq[string] =
+  ## Every call that reaches an object member through a receiver VALUE is one
+  ## checkSelfWrites must judge, so it must be in `memberCalls`. A spelling
+  ## that built the call without registering it (`c.bump` in value position,
+  ## audit O5) let a self-writing member run on a `let`. Chain steps are
+  ## judged by `..`'s own rule (failIfMutatingLet) and are not asked here.
+  var seen: HashSet[(int, int)]
+  for mc in memberCalls: seen.incl (mc.span.line, mc.span.col)
+  for (_, _, m) in mods:
+    for d in m.allDecls:
+      if d != nil and d.kind in {dkFn, dkTask} and d.fnBody != nil and
+         not isImportedCopy(d):
+        result.add unregisteredIn(m, d, seen)
+
 proc checkSelfWrites(mods: seq[tuple[name, path: string, m: Module]]) =
   ## A member that changes its object may be called on a `var` only — never
   ## on a parameter or a `let` (ruled 2026-09-28: a parameter is immutable
@@ -6979,6 +7081,8 @@ proc checkSelfWrites(mods: seq[tuple[name, path: string, m: Module]]) =
   ## whether a member writes `self` can depend on members in other modules.
   ## The answer is kept on the semantic layer for the backends: a member
   ## that only reads takes `self` by value.
+  # Invariant: the list judged below is complete (see unregisteredMemberCalls).
+  report("member calls", unregisteredMemberCalls(mods))
   var writers = computeSelfWriters(mods)
   addHoistedWriters(mods, writers)
   semLayer.selfWriters = writers

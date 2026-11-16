@@ -47,6 +47,7 @@ proc collectNames(prog: seq[LoadedModule]) =
       # `on Registry.Event(...)`: the only top-level fn whose name has a dot.
       if '.' in d.name and not isImportedCopy(d):
         semLayer.handlerSites.mgetOrPut(d.name, @[]).add(d.id)
+        semLayer.handlerDecls.mgetOrPut(d.name, @[]).add(d)
   collect(dkActor, actorNames, "an actor")
   collect(dkRegister, registerNames, "a register")
   collect(dkRegistry, registryNames, "a registry")
