@@ -2475,6 +2475,71 @@ proc failIfWrapperSubject(e: Expr, subjT: Type) =
        "result or optional as its subject: test `.ok` and match `.value`, or " &
        "match the error with `match r.err:`", e.subject.span)
 
+proc failIfUnknownErrArm(e: Expr) =
+  ## `match r.err` where nothing says which enums r's errors come from — a
+  ## `!T` parameter, a field, a slot's result. A bare `Nope:` there is read
+  ## as a BINDING, which matches every error (audit T5: the arm meant for
+  ## Nope took Never too). A capitalized name is never a binding in Tuck.
+  let s = e.subject
+  if s == nil or s.kind != exkField or s.fieldName != "err": return
+  for arm in e.arms:
+    let p = arm.pattern
+    if p == nil or p.kind notin {pkVar, pkBind} or p.name.len == 0 or
+       '.' in p.name or p.name[0] notin {'A'..'Z'}: continue
+    fail(dcTyErrNeedsList,
+         "'" & p.name & "' names an error, but which enum this result's errors " &
+         "come from is not known here (a parameter, a field or a slot's " &
+         "result carries no error list). Fix: qualify the arm, `<Enum>." &
+         p.name & ":`", p.span)
+
+proc armCatchesAll(tc: TypeChecker, p: Pattern, body: Type): bool =
+  ## `_`, or a bare lowercase name that is no variant and no const: a binding.
+  if p == nil or p.kind in {pkWild, pkBind}: return true
+  p.kind == pkVar and '.' notin p.name and p.name.len > 0 and
+    p.name[0] notin {'A'..'Z'} and
+    not (body != nil and body.kind == tkSum and hasVariant(body, p.name)) and
+    constDeclFor(tc.module, p.name) == nil
+
+proc checkArmShape(tc: TypeChecker, p: Pattern, subjT, body: Type,
+                   seen: var HashSet[string]) =
+  ## One arm of a match over a sum (audit T16).
+  if p == nil: return
+  let isSum = body != nil and body.kind == tkSum
+  if isSum and p.kind == pkLit:
+    fail("Type Error: a literal cannot match a value of " & typeName(subjT) &
+         " — its arms are its variants", p.span)
+  if p.kind != pkVar: return
+  # `Door.Open:` is the subject's own variant, written qualified.
+  let dot = p.name.rfind('.')
+  if isSum and dot > 0 and hasVariant(body, p.name[dot + 1 .. ^1]) and
+     p.name[0 ..< dot] == typeName(subjT):
+    p.name = p.name[dot + 1 .. ^1]
+  if p.name in seen:
+    fail("Type Error: '" & p.name & "' is matched twice — the second arm " &
+         "can never run", p.span)
+  seen.incl p.name
+  if isSum and '.' notin p.name and p.name.len > 0 and
+     p.name[0] in {'A'..'Z'} and not hasVariant(body, p.name) and
+     constDeclFor(tc.module, p.name) == nil:
+    fail("Type Error: '" & p.name & "' is not a variant of " & typeName(subjT) &
+         " — a capitalized name in an arm is a variant, never a binding" &
+         spellingHint(p.name), p.span)
+
+proc checkArmShapes(tc: TypeChecker, e: Expr, subjT: Type) =
+  ## Arms a match could never reach, or that do not mean what they say: one
+  ## after a catch-all, one matched twice, a misspelled variant read as a
+  ## binding that caught every value, and a literal against a sum. A
+  ## qualified arm of the subject's own sum is counted as its variant.
+  let body = tc.resolve(subjT)
+  var seen: HashSet[string]
+  var caught = false
+  for arm in e.arms.mitems:
+    if caught:
+      fail("Type Error: this arm can never run — an arm before it catches " &
+           "every value", (if arm.pattern != nil: arm.pattern.span else: arm.span))
+    tc.checkArmShape(arm.pattern, subjT, body, seen)
+    if tc.armCatchesAll(arm.pattern, body): caught = true
+
 proc synthMatch(tc: var TypeChecker, e: Expr): Type =
   ## A match types every arm to one type, then checks it covers its subject.
   let subjT = tc.synthesize(e.subject)
@@ -2498,6 +2563,9 @@ proc synthMatch(tc: var TypeChecker, e: Expr): Type =
   let errEnums = tc.matchErrEnums(e.subject)
   if errEnums.len > 0:
     for arm in e.arms.mitems: tc.qualifyErrArm(arm, errEnums)
+  else:
+    failIfUnknownErrArm(e)
+    tc.checkArmShapes(e, subjT)
   result = tc.synthArms(e, subjT, trackedVar, trackedType)
   tc.checkExhaustive(e, tc.matchDomain(subjT, trackedType, errEnums))
   # `match r.err` is closed by the error enum its arms name, not by the u16 tag.
@@ -5239,22 +5307,47 @@ proc synthLoopExit(tc: var TypeChecker, e: Expr, what: string): Type =
     fail("Control Flow Error: " & what & " outside of a loop", e.span)
   unitType(e.span)
 
+proc errTypesOf(tc: TypeChecker, val: Expr): seq[string] =
+  ## The declared error enums of the result `val` produces, or empty when
+  ## nothing says: a call of a fn (local, imported bare or `mod::fn`), or a
+  ## copy of a binding that already knows them (audit T5 — `let r2 = r` and
+  ## `lib::mf` forgot them, and `match r2.err` arms went unchecked).
+  if val == nil: return
+  if val.kind == exkVar: return tc.varErrTypes.getOrDefault(val.name)
+  if val.kind != exkCall or val.callee == nil: return
+  var key = ""
+  if val.callee.kind == exkVar:
+    key = val.callee.name
+    for fd in tc.module.decls:
+      if fd != nil and fd.kind == dkFn and fd.name == key and
+         fd.fnErrorTypes.len > 0:
+        return fd.fnErrorTypes
+  elif val.callee.kind == exkQualified and val.callee.modulePath.len > 0:
+    key = val.callee.modulePath[0] & "::" & val.callee.qualName
+  # An imported fn is not among this module's decls; its signature, seeded
+  # from the import scope, carries the same list (R11, A30).
+  for sig in tc.fnSigs.getOrDefault(key):
+    if sig.errTypes.len > 0: return sig.errTypes
+
 proc rememberErrTypes(tc: var TypeChecker, name: string, val: Expr) =
   ## A result binding remembers its producer's declared error enums, so
   ## `match r.err` can be typed.
-  if val == nil or val.kind != exkCall or val.callee == nil or
-     val.callee.kind != exkVar: return
-  for fd in tc.module.decls:
-    if fd != nil and fd.kind == dkFn and fd.name == val.callee.name and
-       fd.fnErrorTypes.len > 0:
-      tc.varErrTypes[name] = fd.fnErrorTypes
-      return
-  # An imported fn is not among this module's decls; its signature, seeded
-  # from the import scope, carries the same list (R11, A30).
-  for sig in tc.fnSigs.getOrDefault(val.callee.name):
-    if sig.errTypes.len > 0:
-      tc.varErrTypes[name] = sig.errTypes
-      return
+  let ets = tc.errTypesOf(val)
+  if ets.len > 0: tc.varErrTypes[name] = ets
+
+proc failIfErrorsUndeclared(tc: TypeChecker, ets: seq[string], sp: Span) =
+  ## A result handed on — `return r`, `err r.err` — carries its producer's
+  ## errors out of this fn, so each must be one this fn declares (audit T4:
+  ## `wrap` declared E and returned `mg`'s F; Nim failed to build, Odin
+  ## returned, D threw).
+  for en in ets:
+    if en notin tc.currentErrTypes:
+      fail(dcTyErrNeedsList,
+           "'" & tc.currentFn & "' passes on errors of " & en & ", but declares " &
+           (if tc.currentErrTypes.len == 0: "no error list"
+            else: "[error: " & tc.currentErrTypes.join(" | ") & "]") &
+           ". Fix: add " & en & " to its [error: ...], or handle the error here",
+           sp)
 
 proc synthDeclAssign(tc: var TypeChecker, e: Expr) =
   ## A fresh binding. spec 4.4b: a tracked type starts at the RHS's set.
@@ -5585,6 +5678,9 @@ proc synthReturn(tc: var TypeChecker, e: Expr): Type =
   ## that declares none takes no value at all.
   if e.returnVal != nil and tc.currentRet != nil:
     tc.checkReturnValue(e)
+    if isWrapper(tc.currentRet) and e.returnVal.kind == exkVar:
+      tc.failIfErrorsUndeclared(tc.varErrTypes.getOrDefault(e.returnVal.name),
+                                e.span)
   elif e.returnVal != nil:
     discard tc.synthesize(e.returnVal)
     tc.failValueWithoutReturnType(e)
@@ -5727,7 +5823,12 @@ proc synthRaise(tc: var TypeChecker, e: Expr): Type =
   let rv = e.raiseVal
   if rv != nil and rv.kind == exkVar: tc.resolveBareErr(e, rv)
   elif tc.isQualifiedErr(rv): tc.checkQualifiedErr(e, rv)
-  else: discard tc.synthesize(rv)  # dynamic re-raise
+  else:
+    discard tc.synthesize(rv)  # dynamic re-raise
+    if rv != nil and rv.kind == exkField and rv.fieldName == "err" and
+       rv.receiver != nil and rv.receiver.kind == exkVar:
+      tc.failIfErrorsUndeclared(tc.varErrTypes.getOrDefault(rv.receiver.name),
+                                e.span)
   # `err X` BUILDS the error case of the fn's !T — errors are values in Tuck,
   # not exceptions, so this yields that result type and `return err X` is an
   # ordinary checked return. It used to yield unit, which type-checked only
@@ -6313,8 +6414,25 @@ proc collectRows(tc: var TypeChecker, d: Decl): seq[DecisionRow] =
     if s.kind != exkMatch or s.arms.len == 0: continue
     let pats = rowPatterns(s.arms[0].pattern)
     checkRowWidth(d, pats, s.span)
+    # A literal in a column is a value of that column's input (audit T11:
+    # `"a"` against an int input was accepted).
+    for c, p in pats:
+      if p == nil or p.kind != pkLit or c >= d.fnParams.len: continue
+      let lt = tc.synthesize(Expr(span: p.span, kind: exkLit,
+                                  litKind: p.litKind, litValue: p.litValue))
+      if not tc.compatible(lt, d.fnParams[c].typ):
+        fail("Decision Error: '" & p.litValue & "' is not a value of " &
+             typeName(d.fnParams[c].typ) & " (input '" & d.fnParams[c].name &
+             "' of table '" & d.name & "')", p.span)
     result.add((pats, s.span))
-    discard tc.synthesize(s.arms[0].body)
+    # Every row's result is the table's declared result (audit T11: a row
+    # returning 5 from a table declared `-> Act` was accepted).
+    let rt = tc.synthesize(s.arms[0].body)
+    if d.fnReturnType != nil and not isFlexible(rt) and
+       not tc.compatible(rt, d.fnReturnType):
+      fail("Decision Error: a row of '" & d.name & "' yields " & typeName(rt) &
+           " but the table declares " & typeName(d.fnReturnType),
+           s.arms[0].body.span)
 
 proc checkDecisionTable(tc: var TypeChecker, d: Decl) =
   ## spec 6.1: row width, unreachable rows, completeness.

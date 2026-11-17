@@ -7287,4 +7287,273 @@ fn main() -> int [io]:
   t.quietly: t.badCheck "A167: ...nor is another sealed type's variant", "Sealed Error"
   t.bugFixed "A167: ...nor is another sealed type's variant"
 
+  # A168 (class D, T4/T5). T4: `return r` handed out `mg`'s F from a fn
+  # declaring [error: E] — nothing compared the lists (Nim failed, Odin
+  # returned, D threw). T5: `match r.err` lost its enum through a copy and an
+  # imported fn, and where no enum is knowable (a `!T` parameter) a bare
+  # `Nope:` arm was a binding that caught every error.
+  t.src """
+type E:
+  | Bad
+
+type F:
+  | Oops
+  | Other
+  | Third
+
+fn mg({n: int}) -> !{v: int} [io, error: F]:
+  if n < 0:
+    err F.Third
+  return {v: n}
+
+fn wrap({n: int}) -> !{v: int} [io, error: E]:
+  let r = {n: n} mg
+  return r
+
+fn main() -> int [io]:
+  let r = {n: -1} wrap
+  if r.ok:
+    return 0
+  let c = match r.err:
+    Bad: 10
+  return c
+"""
+  t.quietly: t.badCheck "A168: errors passed on must be declared", "passes on errors of F"
+  t.bugFixed "A168: errors passed on must be declared"
+  t.src """
+type LE:
+  | Nope
+  | Never
+
+fn mf({n: int}) -> !{v: int} [io, error: LE]:
+  if n < 0:
+    err LE.Never
+  return {v: n}
+
+fn main() -> int [io]:
+  let r = {n: -1} mf
+  let r2 = r
+  if r2.ok:
+    return 0
+  let c = match r2.err:
+    Nope: 1
+  return c + 40
+"""
+  t.quietly: t.badCheck "A168: a copy keeps its error enum", "missing LE.Never"
+  t.bugFixed "A168: a copy keeps its error enum"
+  t.src """
+import lib
+
+fn main() -> int [io]:
+  let r = {n: -1} lib::mf
+  if r.ok:
+    return 0
+  let c = match r.err:
+    Nope: 10
+  return c
+"""
+  t.addFile("lib.tuck", """type LE:
+  | Nope
+  | Never
+
+type Color = {Red, Green, Blue}
+
+type Shape:
+  | Circle({r: int})
+  | Square({s: int})
+
+fn mi({n: int}) -> int?:
+  if n < 0:
+    return none
+  return n
+
+fn mf({n: int}) -> !{v: int} [io, error: LE]:
+  if n < 0:
+    err LE.Never
+  return {v: n}
+""")
+  t.quietly: t.badCheck "A168: a `mod::fn` result keeps its error enum", "missing LE.Never"
+  t.bugFixed "A168: a `mod::fn` result keeps its error enum"
+  t.src """
+type LE:
+  | Nope
+  | Never
+
+fn mf({n: int}) -> !{v: int} [io, error: LE]:
+  if n < 0:
+    err LE.Never
+  return {v: n}
+
+fn look({r: !{v: int}}) -> int:
+  if r.ok:
+    return 0
+  let c = match r.err:
+    Nope: 1
+  return c + 40
+
+fn main() -> int [io]:
+  let r = {n: -1} mf
+  return {r: r} look
+"""
+  t.quietly: t.badCheck "A168: an unknown error arm is not a catch-all", "names an error"
+  t.bugFixed "A168: an unknown error arm is not a catch-all"
+
+  # A169 (class D, T16/T11). Match arms that could never run or did not mean
+  # what they said: a misspelled variant read as a binding that caught every
+  # value, an arm after a catch-all, a variant matched twice, a literal against
+  # a sum; and a qualified arm `Door.Open:` was not counted. A decision table
+  # took a row literal of the wrong type and a row result of the wrong type.
+  t.src """
+type Door:
+  | Closed
+  | Open
+  | Locked
+
+type Shape:
+  | Circle({r: int})
+  | Rect({w: int, h: int})
+
+type Maybe[T]:
+  | Some({v: T})
+  | Nothing
+
+type Holder:
+  st: {Red, Green, Blue}
+  d: Door?
+
+fn main() -> int [io]:
+  let d = Door.Open
+  let z = match d:
+    Closed: 1
+    Opn: 2
+  return z
+"""
+  t.quietly: t.badCheck "A169: a misspelled variant is no binding", "not a variant of Door"
+  t.bugFixed "A169: a misspelled variant is no binding"
+  t.src """
+type Door:
+  | Closed
+  | Open
+  | Locked
+
+type Shape:
+  | Circle({r: int})
+  | Rect({w: int, h: int})
+
+type Maybe[T]:
+  | Some({v: T})
+  | Nothing
+
+type Holder:
+  st: {Red, Green, Blue}
+  d: Door?
+
+fn main() -> int [io]:
+  let d = Door.Open
+  let z = match d:
+    _: 1
+    Open: 3
+  return z
+"""
+  t.quietly: t.badCheck "A169: an arm after a catch-all can never run", "can never run"
+  t.bugFixed "A169: an arm after a catch-all can never run"
+  t.src """
+type Door:
+  | Closed
+  | Open
+  | Locked
+
+type Shape:
+  | Circle({r: int})
+  | Rect({w: int, h: int})
+
+type Maybe[T]:
+  | Some({v: T})
+  | Nothing
+
+type Holder:
+  st: {Red, Green, Blue}
+  d: Door?
+
+fn main() -> int [io]:
+  let d = Door.Open
+  let z = match d:
+    Closed: 1
+    Open: 2
+    Locked: 5
+    Closed: 8
+  return z
+"""
+  t.quietly: t.badCheck "A169: a variant matched twice", "matched twice"
+  t.bugFixed "A169: a variant matched twice"
+  t.src """
+type Door:
+  | Closed
+  | Open
+  | Locked
+
+type Shape:
+  | Circle({r: int})
+  | Rect({w: int, h: int})
+
+type Maybe[T]:
+  | Some({v: T})
+  | Nothing
+
+type Holder:
+  st: {Red, Green, Blue}
+  d: Door?
+
+fn main() -> int [io]:
+  let d = Door.Open
+  let z = match d:
+    0: 1
+    _: 2
+  return z
+"""
+  t.quietly: t.badCheck "A169: a literal cannot match a sum", "literal cannot match"
+  t.bugFixed "A169: a literal cannot match a sum"
+  t.src """
+type Door:
+  | Closed
+  | Open
+fn main() -> int:
+  let d = Door.Open
+  let z = match d:
+    Door.Closed: 1
+    Door.Open: 2
+  return z
+"""
+  t.quietly: t.runs "A169: a qualified arm counts as its variant", 2
+  t.bugFixed "A169: a qualified arm counts as its variant"
+  t.src """
+decision d5({n: int}) -> int:
+  | "a" -> 1
+  | _ -> 2
+
+fn main() -> int [io]:
+  return {n: 3} d5
+"""
+  t.quietly: t.badCheck "A169: a decision row literal has its input's type", "not a value of int"
+  t.bugFixed "A169: a decision row literal has its input's type"
+  t.src """
+type Pri = {low, high}
+type Act:
+  | Fast
+  | Slow
+
+decision d6({p: Pri}) -> Act:
+  | low -> Fast
+  | high -> 5
+
+fn main() -> int [io]:
+  let a = {p: high} d6
+  let z = match a:
+    Fast: 1
+    Slow: 2
+  return z
+"""
+  t.quietly: t.badCheck "A169: a decision row yields the table's type", "yields int"
+  t.bugFixed "A169: a decision row yields the table's type"
+
   t.finish()
