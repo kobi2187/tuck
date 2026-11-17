@@ -5712,9 +5712,8 @@ proc synthReturn(tc: var TypeChecker, e: Expr): Type =
   ## that declares none takes no value at all.
   if e.returnVal != nil and tc.currentRet != nil:
     tc.checkReturnValue(e)
-    if isWrapper(tc.currentRet) and e.returnVal.kind == exkVar:
-      tc.failIfErrorsUndeclared(tc.varErrTypes.getOrDefault(e.returnVal.name),
-                                e.span)
+    if isWrapper(tc.currentRet):
+      tc.failIfErrorsUndeclared(tc.errTypesOf(e.returnVal), e.span)
   elif e.returnVal != nil:
     discard tc.synthesize(e.returnVal)
     tc.failValueWithoutReturnType(e)

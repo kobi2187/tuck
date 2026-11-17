@@ -7719,4 +7719,44 @@ fn main() -> int [io]:
   t.quietly: t.runsOdin "A172: ...on Odin", 12
   t.bugFixed "A172: ...on Odin"
 
+  # A165 guard: a call of a FN with a payload (`var g = {n: 6} graph`) is not
+  # a partial construction — its result is complete, and returning it hands
+  # back no holes (the first draft of A165 refused stdlib-project's graph and
+  # todo-cli here).
+  t.src """
+type G:
+  size: int
+  adj: int
+fn graph({n: int}) -> G:
+  return {size: n, adj: 0} G
+fn sample() -> G:
+  var g = {n: 6} graph
+  g.adj = 1
+  return g
+fn main() -> int:
+  let g = sample
+  return g.size + g.adj
+"""
+  t.quietly: t.runs "A165: ...a fn's result bound and returned has no holes", 7
+  t.bugFixed "A165: ...a fn's result bound and returned has no holes"
+
+  # A173 (class E, C1): `let a = Grow.name` read another actor's `str` field
+  # as a temporary and MOVED it into the local, so the local and the actor
+  # both freed it (an Odin segfault). The actor keeps its field; the local
+  # gets a copy. (Whether such a read may cross threads is C2, open.)
+  t.src """
+actor Grow [queue: 8]:
+  name: str = "hello"
+  on go():
+    name = "x"
+
+fn main() -> int:
+  let a = Grow.name
+  return a.len
+"""
+  t.quietly: t.runs "A173: another actor's field read into a local is a copy", 5
+  t.bugFixed "A173: another actor's field read into a local is a copy"
+  t.quietly: t.runsOdin "A173: ...on Odin", 5
+  t.bugFixed "A173: ...on Odin"
+
   t.finish()

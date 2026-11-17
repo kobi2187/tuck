@@ -66,9 +66,13 @@ rules; this file is about HOW to fix things.
   `bugFixed` (next free `A<n>`, a comment saying what was wrong and why).
   Include the VALID neighbours of a new refusal as passing assertions, so the
   fix cannot over-reach unnoticed.
-- After a checker change, compare `tuck ch` over `examples/`, `std/`,
-  `stdlib-project/` and `benches/` before and after: a new refusal there is
-  either a real bug in that file or a sign the fix is too broad.
+- After a checker change, run `tools/corpus_check.sh OLD NEW` (OLD built from
+  the commit you compare against): `tuck ch` over `examples/`, `std/`,
+  `stdlib-project/` and `benches/` with each file's own flags. A new refusal
+  there is either a real bug in that file or a sign the fix is too broad.
+  Checking `stdlib-project/` or `benches/` WITHOUT `--stdlib:stdlib-project
+  --root:` makes every file fail identically before and after, and hides
+  exactly the regressions the check exists to find (it hid three once).
 - After a codegen or ownership change, run `tools/emit_examples.sh` and read
   `git diff examples/`.
 - Run the affected suites, then the full `./tests/run`. Never edit compiler

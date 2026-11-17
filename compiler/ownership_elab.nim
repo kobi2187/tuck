@@ -689,6 +689,12 @@ proc readsElement*(res: Resolution, m: Module, v: Expr): bool =
   ## to a body-less callee that declares its result a `[view: x]`. A sink of
   ## one copies it.
   if v.kind in {exkBracket, exkSlabCell}: return true   # a slab's cell too
+  # Another actor's field (`Grow.name`): the actor keeps it. Taken as a
+  # temporary, it moved the actor's string into the local, and both freed it
+  # (audit C1, an Odin segfault). Whether such a read may cross threads at
+  # all is a separate question (C2), waiting on a ruling.
+  if v.kind == exkField and v.receiver != nil and v.receiver.kind == exkActorRef:
+    return true
   if v.kind == exkSlabOp and v.slabOp == soGet: return true
   if v.kind == exkField and not res.hasCall(v) and v.receiver != nil:
     return res.readsElement(m, v.receiver)  # `items[i].key`: part of one

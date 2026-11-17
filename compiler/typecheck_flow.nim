@@ -332,19 +332,23 @@ proc uninitFieldsRead*(tc: TypeChecker, fnName, param: string,
     if h in reads: result.add(h)
 
 proc returnedName(body: Expr): string =
-  ## The local a body returns, when every top-level `return` names the same
-  ## bare local; "" otherwise.
-  for s in body.children:
+  ## The local a body returns, when EVERY `return`, at any depth, names the
+  ## same bare local; "" otherwise.
+  for s in body.nodes:
     if s != nil and s.kind == exkReturn and s.returnVal != nil:
       if s.returnVal.kind != exkVar: return ""
       if result != "" and result != s.returnVal.name: return ""
       result = s.returnVal.name
 
-proc builtByConstruction(body: Expr, name: string): bool =
-  ## Is `name` bound to a `{...} T` construction somewhere in `body`?
+proc builtByConstruction(body: Expr, name, typeName: string): bool =
+  ## Is `name` bound to a `{...} T` construction of the type `typeName`
+  ## somewhere in `body`? A call of a FN with a payload (`{n: 6} graph`) is
+  ## not one: its result is whatever that fn returns, complete.
   for n in body.nodes:
     if n.kind == exkAssign and n.isDecl and namesVar(n.target, name) and
        n.assignVal != nil and n.assignVal.kind == exkCall and
+       n.assignVal.callee != nil and n.assignVal.callee.kind == exkVar and
+       n.assignVal.callee.name == typeName and
        n.assignVal.args.len == 1 and n.assignVal.args[0] != nil and
        n.assignVal.args[0].kind == exkStruct:
       return true
@@ -369,7 +373,9 @@ proc returnHoles*(tc: TypeChecker, fnName: string,
         if h notin written: result.incl h
       return
   # A local built by a construction: what it listed, and what was set since.
-  if not builtByConstruction(d.fnBody, r): return
+  let tn = if d.fnReturnType != nil and d.fnReturnType.kind == tkNamed:
+             d.fnReturnType.name else: ""
+  if tn == "" or not builtByConstruction(d.fnBody, r, tn): return
   for f in declared:
     if f notin written: result.incl f
 
