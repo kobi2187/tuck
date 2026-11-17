@@ -732,6 +732,17 @@ proc asPlainField(tc: var TypeChecker, e: Expr, fields: seq[FieldDef],
     return f.typ
   nil
 
+proc receiverVariants(tc: TypeChecker, recv: Expr): (bool, seq[string]) =
+  ## The variants a payload read's receiver may hold: a tracked var's, an arm
+  ## subject's, or empty (any). `false` when a reassignment in the arm left
+  ## no variant known at all (O7).
+  if recv == nil or recv.kind != exkVar: return (true, @[])
+  if tc.varVariants.hasKey(recv.name): return (true, tc.varVariants[recv.name])
+  if tc.armVariants.hasKey(recv.name):
+    let vs = tc.armVariants[recv.name]
+    return (vs.len > 0, vs)
+  (true, @[])
+
 proc asVariantPayloadField(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## `v.field` where `v` is a payload SUM. The field belongs to a VARIANT, not
   ## to the sum, and getFieldsForType answers `@[]` for a sum on purpose — so
@@ -749,15 +760,8 @@ proc asVariantPayloadField(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## consulted first.
   let body = tc.resolve(recvT)
   if body == nil or body.kind != tkSum: return nil
-  var narrowed: seq[string]
-  if e.receiver != nil and e.receiver.kind == exkVar and
-     tc.varVariants.hasKey(e.receiver.name):
-    narrowed = tc.varVariants[e.receiver.name]
-  elif e.receiver != nil and e.receiver.kind == exkVar and
-       tc.armVariants.hasKey(e.receiver.name):
-    narrowed = tc.armVariants[e.receiver.name]
-    # Reassigned in the arm to a value of no known variant: none is known.
-    if narrowed.len == 0: return nil
+  let (known, narrowed) = tc.receiverVariants(e.receiver)
+  if not known: return nil
   for v in body.variants:
     if narrowed.len > 0 and v.name notin narrowed: continue
     for f in v.fields:
@@ -2500,6 +2504,19 @@ proc armCatchesAll(tc: TypeChecker, p: Pattern, body: Type): bool =
     not (body != nil and body.kind == tkSum and hasVariant(body, p.name)) and
     constDeclFor(tc.module, p.name) == nil
 
+proc unqualifyOwnVariant(p: Pattern, subjT, body: Type) =
+  ## `Door.Open:` is the subject's own variant, written qualified: counted,
+  ## and emitted, as `Open`.
+  let dot = p.name.rfind('.')
+  if dot > 0 and hasVariant(body, p.name[dot + 1 .. ^1]) and
+     p.name[0 ..< dot] == typeName(subjT):
+    p.name = p.name[dot + 1 .. ^1]
+
+proc isMisspeltVariant(tc: TypeChecker, name: string, body: Type): bool =
+  ## A capitalized bare name that is neither a variant of the sum nor a const.
+  '.' notin name and name.len > 0 and name[0] in {'A'..'Z'} and
+    not hasVariant(body, name) and constDeclFor(tc.module, name) == nil
+
 proc checkArmShape(tc: TypeChecker, p: Pattern, subjT, body: Type,
                    seen: var HashSet[string]) =
   ## One arm of a match over a sum (audit T16).
@@ -2509,18 +2526,12 @@ proc checkArmShape(tc: TypeChecker, p: Pattern, subjT, body: Type,
     fail("Type Error: a literal cannot match a value of " & typeName(subjT) &
          " — its arms are its variants", p.span)
   if p.kind != pkVar: return
-  # `Door.Open:` is the subject's own variant, written qualified.
-  let dot = p.name.rfind('.')
-  if isSum and dot > 0 and hasVariant(body, p.name[dot + 1 .. ^1]) and
-     p.name[0 ..< dot] == typeName(subjT):
-    p.name = p.name[dot + 1 .. ^1]
+  if isSum: unqualifyOwnVariant(p, subjT, body)
   if p.name in seen:
     fail("Type Error: '" & p.name & "' is matched twice — the second arm " &
          "can never run", p.span)
   seen.incl p.name
-  if isSum and '.' notin p.name and p.name.len > 0 and
-     p.name[0] in {'A'..'Z'} and not hasVariant(body, p.name) and
-     constDeclFor(tc.module, p.name) == nil:
+  if isSum and isMisspeltVariant(tc, p.name, body):
     fail("Type Error: '" & p.name & "' is not a variant of " & typeName(subjT) &
          " — a capitalized name in an arm is a variant, never a binding" &
          spellingHint(p.name), p.span)
@@ -5307,6 +5318,13 @@ proc synthLoopExit(tc: var TypeChecker, e: Expr, what: string): Type =
     fail("Control Flow Error: " & what & " outside of a loop", e.span)
   unitType(e.span)
 
+proc ownErrTypes(m: Module, fnName: string): seq[string] =
+  ## The error list of a fn this module declares, or empty.
+  for fd in m.decls:
+    if fd != nil and fd.kind == dkFn and fd.name == fnName and
+       fd.fnErrorTypes.len > 0:
+      return fd.fnErrorTypes
+
 proc errTypesOf(tc: TypeChecker, val: Expr): seq[string] =
   ## The declared error enums of the result `val` produces, or empty when
   ## nothing says: a call of a fn (local, imported bare or `mod::fn`), or a
@@ -5315,15 +5333,10 @@ proc errTypesOf(tc: TypeChecker, val: Expr): seq[string] =
   if val == nil: return
   if val.kind == exkVar: return tc.varErrTypes.getOrDefault(val.name)
   if val.kind != exkCall or val.callee == nil: return
-  var key = ""
+  let key = callKey(val.callee)
   if val.callee.kind == exkVar:
-    key = val.callee.name
-    for fd in tc.module.decls:
-      if fd != nil and fd.kind == dkFn and fd.name == key and
-         fd.fnErrorTypes.len > 0:
-        return fd.fnErrorTypes
-  elif val.callee.kind == exkQualified and val.callee.modulePath.len > 0:
-    key = val.callee.modulePath[0] & "::" & val.callee.qualName
+    let own = tc.module.ownErrTypes(key)
+    if own.len > 0: return own
   # An imported fn is not among this module's decls; its signature, seeded
   # from the import scope, carries the same list (R11, A30).
   for sig in tc.fnSigs.getOrDefault(key):
@@ -5524,6 +5537,45 @@ proc synthAssignTarget(tc: var TypeChecker, target: Expr): Type =
   if result == nil: return tc.synthesize(target)   # no such field: its error
   setType(semLayer, target, result)
 
+proc noteVarGiven(tc: var TypeChecker, e: Expr, targetT, valT: Type) =
+  ## A bare var given a new value: what is known about it now is the new
+  ## value's — its variant in a match arm (O7), its holes (T10), and whether
+  ## it is still narrowed.
+  let name = e.target.name
+  # The arm's subject given a new value holds that value's variant, not the
+  # arm's: `m = {n: 1} Msg.Gone` inside `Pile:` and `m.xs` is no field (O7).
+  if tc.armVariants.hasKey(name):
+    let tn = typeName(targetT)
+    tc.armVariants[name] =
+      if tc.typeDecls.hasKey(tn): tc.exprVariants(tn, e.assignVal) else: @[]
+  # `y = x` gives y x's value, holes and all (audit T10): a record var keeps
+  # exactly the holes of what it was last given.
+  let holes = holesOf(tc.resolve(valT))
+  let tt = tc.lookup(name)
+  if holes.len > 0: tc.setBindingType(name, tc.resolve(valT))
+  elif tt.found and tt.b.typ != nil and tt.b.typ.kind == tkRecord:
+    tc.setHoles(name, holes)
+  # A narrowed `x` given a `?T` again is no longer known present: the guard
+  # held for the OLD value. Without this, `if x.ok: x = none; x.value`
+  # checked clean — and a loop narrowing on `x.ok` (#98) rebinds x every
+  # iteration. A plain T assigned in is present, and keeps it narrowed.
+  if isWrapper(valT) and tc.isNarrowed(name): tc.setNarrowed(name, false)
+
+proc forgetGuardsUnder(tc: var TypeChecker, e: Expr, valT: Type) =
+  ## Whatever was proved UNDER the place written (`r = ...` forgets
+  ## `r.fault`; `r.cfg = ...` forgets `r.cfg.port`), and a field path's own
+  ## guard when it is given a `?T` again.
+  let key = guardKey(e.target)
+  if key != "":
+    tc.forgetPaths(key)
+    if '.' in key and isWrapper(valT): tc.setNarrowed(key, false)
+  # A write into a slab cell reaches every reference to that cell: `b = a;
+  # b.next = none` changed `a.next` too, and a guard on `a.next` said nothing
+  # about it any more (audit T2). Which references alias is not known here,
+  # so every guarded path to a field of that name is forgotten.
+  if e.target != nil and e.target.kind == exkField and writesIntoSlabCell(e.target):
+    tc.forgetFieldPaths(e.target.fieldName)
+
 proc synthReassign(tc: var TypeChecker, e: Expr) =
   ## Assignment to an existing binding.
   tc.failIfTargetUnbound(e)
@@ -5544,40 +5596,9 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
     fail("Type Error: cannot assign " & typeName(valT) & " to " &
          typeName(targetT), e.span)
   tc.checkTransition(e, targetT)
-  # The arm's subject given a new value holds that value's variant, not the
-  # arm's: `m = {n: 1} Msg.Gone` inside `Pile:` and `m.xs` is no field (O7).
-  if e.target != nil and e.target.kind == exkVar and
-     tc.armVariants.hasKey(e.target.name):
-    let tn = typeName(targetT)
-    tc.armVariants[e.target.name] =
-      if tc.typeDecls.hasKey(tn): tc.exprVariants(tn, e.assignVal) else: @[]
-  # `y = x` gives y x's value, holes and all (audit T10): a record var keeps
-  # exactly the holes of what it was last given.
   if e.target != nil and e.target.kind == exkVar:
-    let holes = holesOf(tc.resolve(valT))
-    let tt = tc.lookup(e.target.name)
-    if holes.len > 0: tc.setBindingType(e.target.name, tc.resolve(valT))
-    elif tt.found and tt.b.typ != nil and tt.b.typ.kind == tkRecord:
-      tc.setHoles(e.target.name, holes)
-  # A narrowed `x` given a `?T` again is no longer known present: the guard
-  # held for the OLD value. Without this, `if x.ok: x = none; x.value`
-  # checked clean — and a loop narrowing on `x.ok` (#98) rebinds x every
-  # iteration. A plain T assigned in is present, and keeps it narrowed.
-  if e.target != nil and e.target.kind == exkVar and isWrapper(valT) and
-     tc.isNarrowed(e.target.name):
-    tc.setNarrowed(e.target.name, false)
-  # The same for a field path, and whatever was proved UNDER the place written
-  # (`r = ...` forgets `r.fault`; `r.cfg = ...` forgets `r.cfg.port`).
-  let key = guardKey(e.target)
-  if key != "":
-    tc.forgetPaths(key)
-    if '.' in key and isWrapper(valT): tc.setNarrowed(key, false)
-  # A write into a slab cell reaches every reference to that cell: `b = a;
-  # b.next = none` changed `a.next` too, and a guard on `a.next` said nothing
-  # about it any more (audit T2). Which references alias is not known here,
-  # so every guarded path to a field of that name is forgotten.
-  if e.target != nil and e.target.kind == exkField and writesIntoSlabCell(e.target):
-    tc.forgetFieldPaths(e.target.fieldName)
+    tc.noteVarGiven(e, targetT, valT)
+  tc.forgetGuardsUnder(e, valT)
 
 proc synthAssign(tc: var TypeChecker, e: Expr): Type =
   ## An assignment is a statement: it yields unit.

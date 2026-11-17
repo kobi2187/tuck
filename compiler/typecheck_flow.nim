@@ -290,6 +290,17 @@ proc copiesOf(param: string, body: Expr): seq[string] =
         result.add n.target.name
         grew = true
 
+iterator handedOn(body: Expr, names: seq[string]): (string, string) =
+  ## Each `(callee, field)` where one of `names` is passed whole as a payload
+  ## field of a direct call: `{p: p} readB` gives `("readB", "p")`.
+  for c in body.nodes:
+    if c.kind != exkCall or c.callee == nil or c.callee.kind != exkVar or
+       c.args.len != 1 or c.args[0] == nil or c.args[0].kind != exkStruct:
+      continue
+    for f in c.args[0].fields:
+      if f.value != nil and f.value.kind == exkVar and f.value.name in names:
+        yield (c.callee.name, f.name)
+
 proc paramReads(tc: TypeChecker, fnName, param: string,
                 seen: var HashSet[string], acc: var HashSet[string]) =
   ## The fields `fnName` reads off `param`: directly, through a local copy of
@@ -304,12 +315,8 @@ proc paramReads(tc: TypeChecker, fnName, param: string,
   for n in names:
     if n == param: collectFieldReads(n, d.fnBody, acc)
     else: collectCopyReads(n, d.fnBody, acc)
-  for c in d.fnBody.nodes:
-    if c.kind != exkCall or c.callee == nil or c.callee.kind != exkVar: continue
-    if c.args.len != 1 or c.args[0] == nil or c.args[0].kind != exkStruct: continue
-    for f in c.args[0].fields:
-      if f.value != nil and f.value.kind == exkVar and f.value.name in names:
-        tc.paramReads(c.callee.name, f.name, seen, acc)
+  for (callee, field) in handedOn(d.fnBody, names):
+    tc.paramReads(callee, field, seen, acc)
 
 proc uninitFieldsRead*(tc: TypeChecker, fnName, param: string,
                        holes: HashSet[string]): seq[string] =
@@ -333,6 +340,15 @@ proc returnedName(body: Expr): string =
       if result != "" and result != s.returnVal.name: return ""
       result = s.returnVal.name
 
+proc builtByConstruction(body: Expr, name: string): bool =
+  ## Is `name` bound to a `{...} T` construction somewhere in `body`?
+  for n in body.nodes:
+    if n.kind == exkAssign and n.isDecl and namesVar(n.target, name) and
+       n.assignVal != nil and n.assignVal.kind == exkCall and
+       n.assignVal.args.len == 1 and n.assignVal.args[0] != nil and
+       n.assignVal.args[0].kind == exkStruct:
+      return true
+
 proc returnHoles*(tc: TypeChecker, fnName: string,
                   argHoles: Table[string, HashSet[string]],
                   declared: seq[string]): HashSet[string] =
@@ -353,14 +369,7 @@ proc returnHoles*(tc: TypeChecker, fnName: string,
         if h notin written: result.incl h
       return
   # A local built by a construction: what it listed, and what was set since.
-  var built = false
-  for n in d.fnBody.nodes:
-    if n.kind == exkAssign and n.isDecl and namesVar(n.target, r) and
-       n.assignVal != nil and n.assignVal.kind == exkCall and
-       n.assignVal.args.len == 1 and n.assignVal.args[0] != nil and
-       n.assignVal.args[0].kind == exkStruct:
-      built = true
-  if not built: return
+  if not builtByConstruction(d.fnBody, r): return
   for f in declared:
     if f notin written: result.incl f
 
