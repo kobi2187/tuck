@@ -344,6 +344,7 @@ proc builtByConstruction(body: Expr, name, typeName: string): bool =
   ## Is `name` bound to a `{...} T` construction of the type `typeName`
   ## somewhere in `body`? A call of a FN with a payload (`{n: 6} graph`) is
   ## not one: its result is whatever that fn returns, complete.
+  if typeName == "": return false
   for n in body.nodes:
     if n.kind == exkAssign and n.isDecl and namesVar(n.target, name) and
        n.assignVal != nil and n.assignVal.kind == exkCall and
@@ -352,6 +353,17 @@ proc builtByConstruction(body: Expr, name, typeName: string): bool =
        n.assignVal.args.len == 1 and n.assignVal.args[0] != nil and
        n.assignVal.args[0].kind == exkStruct:
       return true
+
+proc paramReturned(d: Decl, r: string): string =
+  ## The parameter whose copy the returned local `r` is, or "".
+  for p in d.fnParams:
+    if r in copiesOf(p.name, d.fnBody): return p.name
+  ""
+
+proc returnTypeName(d: Decl): string =
+  ## The named type a fn declares it returns, or "".
+  if d.fnReturnType != nil and d.fnReturnType.kind == tkNamed: d.fnReturnType.name
+  else: ""
 
 proc returnHoles*(tc: TypeChecker, fnName: string,
                   argHoles: Table[string, HashSet[string]],
@@ -367,17 +379,14 @@ proc returnHoles*(tc: TypeChecker, fnName: string,
   if r == "": return
   var written: HashSet[string]
   collectFieldWrites(r, d.fnBody, written)
-  for p in d.fnParams:
-    if r in copiesOf(p.name, d.fnBody):
-      for h in argHoles.getOrDefault(p.name):
-        if h notin written: result.incl h
-      return
-  # A local built by a construction: what it listed, and what was set since.
-  let tn = if d.fnReturnType != nil and d.fnReturnType.kind == tkNamed:
-             d.fnReturnType.name else: ""
-  if tn == "" or not builtByConstruction(d.fnBody, r, tn): return
-  for f in declared:
-    if f notin written: result.incl f
+  let source = paramReturned(d, r)
+  if source != "":
+    for h in argHoles.getOrDefault(source):
+      if h notin written: result.incl h
+  elif builtByConstruction(d.fnBody, r, returnTypeName(d)):
+    # A local built by a construction: what it listed, and what was set since.
+    for f in declared:
+      if f notin written: result.incl f
 
 proc addTailValue(tc: TypeChecker, typeName: string, v: Expr,
                   acc: var seq[string], exact: var bool) =

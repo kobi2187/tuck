@@ -682,20 +682,23 @@ proc owns*(ps: Places, place: string): bool =
   ## Does the body own this place (a local, or a consuming parameter)?
   place in ps.owned
 
+proc heldByAnother(v: Expr): bool =
+  ## A place some other value keeps, read as it is: an element (rule U), a
+  ## slab's cell, a slab `get`, or another actor's field (`Grow.name`). That
+  ## last one was taken as a temporary and MOVED the actor's string into the
+  ## local, so both freed it (audit C1, an Odin segfault). Whether such a read
+  ## may cross threads at all is a separate question (C2), waiting on a ruling.
+  v.kind in {exkBracket, exkSlabCell} or
+    (v.kind == exkSlabOp and v.slabOp == soGet) or
+    (v.kind == exkField and v.receiver != nil and v.receiver.kind == exkActorRef)
+
 proc readsElement*(res: Resolution, m: Module, v: Expr): bool =
   ## A read of something another value holds, not a fresh value: `items[i]`
   ## (rule U: an element is never moved out of its container), a slab's cell
   ## (`Lists.get {r: l}`: the slab keeps it), or a call
   ## to a body-less callee that declares its result a `[view: x]`. A sink of
   ## one copies it.
-  if v.kind in {exkBracket, exkSlabCell}: return true   # a slab's cell too
-  # Another actor's field (`Grow.name`): the actor keeps it. Taken as a
-  # temporary, it moved the actor's string into the local, and both freed it
-  # (audit C1, an Odin segfault). Whether such a read may cross threads at
-  # all is a separate question (C2), waiting on a ruling.
-  if v.kind == exkField and v.receiver != nil and v.receiver.kind == exkActorRef:
-    return true
-  if v.kind == exkSlabOp and v.slabOp == soGet: return true
+  if heldByAnother(v): return true
   if v.kind == exkField and not res.hasCall(v) and v.receiver != nil:
     return res.readsElement(m, v.receiver)  # `items[i].key`: part of one
   let call = if v.kind == exkCall: v elif res.hasCall(v): res.call(v) else: nil

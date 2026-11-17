@@ -368,7 +368,7 @@ fn checkErrors() -> int [io, io: net]:
     return 52
   return 0
 
-fn httpListen() -> !Listener [io, io: net, io: clock]:
+fn httpListen() -> !Listener [io, io: net, io: clock, error: NetError]:
   let now = nowMs
   let base = {value: now.epochMs} int
   for attempt in 0 .. 6:

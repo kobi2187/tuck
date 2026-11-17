@@ -69,6 +69,15 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | O4 a copy is no final read when an overlapping place is first read in a later block (SSA `readAfter`) | A166 | |
 | T8b/c only the construction a tracked assignment's transition produces may build a sealed non-initial variant | A167 | `transitionSite` replaces the flag |
 | a group provider borrows its parameters (a generic body reaches it by name): Nim double-freed `keyOf`'s `self.s` | A156 | |
+| T4 a result handed on (`return r`, `return f(..)`, `err r.err`) carries its producer's error enums, each of which the fn must declare | A168 | stdlib-project socket and net-http client now declare `NetError` |
+| T5 a copy and a `mod::fn` result keep their error enum; with no knowable enum (a `!T` parameter) a bare capitalized arm is refused, not read as a catch-all binding | A168 | |
+| T16 an arm after a catch-all, a variant matched twice, a misspelled variant and a literal against a sum are refused; `Door.Open:` counts as its variant | A169 | |
+| T11 a decision row's literal has its input's type, its result the table's | A169 | |
+| O1a a write through an element of a parameter or `let` (`xs[0] ..v {7}`, `xs[0].v = 7`) is refused | A170 | `mutationRoot` |
+| O2 a call of the actor's own member ends views of its fields | A171 | |
+| O3 a `for` whose body writes the walked collection walks a copy of it | A171 | |
+| O6 a task owns its parameters: the caller hands over a copy or its last use, the task drops it | A172 | |
+| C1 another actor's field read into a local is a copy, never a move | A173 | C2 (may it cross threads?) still open |
 
 **Still open in class B.** M14's refusal for a private or un-imported callee is a restriction, not the end
 state: the clone should be checked in the library's scope.
