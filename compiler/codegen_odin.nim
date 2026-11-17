@@ -310,10 +310,8 @@ proc genRtCall(calleeStr: string, args: seq[string]): string =
 proc genCallWithArgs(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string,
                      args: seq[string]): string =
   ## The emission forms, once the arguments are built.
-  # Looked up by the name as declared: calleeStr already carries an
-  # imported type's package (M10).
-  let satName = if e.callee != nil and e.callee.kind == exkVar: e.callee.name
-                else: calleeStr
+  # By the name as declared: calleeStr carries an imported type's package (M10).
+  let satName = declaredCalleeName(e, calleeStr)
   let satT = ctx.index.saturatingType(satName)
   if satT != nil and args.len == 1:
     # An imported saturating type is named through its package (R11, A35).

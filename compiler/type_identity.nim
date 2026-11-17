@@ -81,6 +81,13 @@ proc failAmbiguous(lm: LoadedModule, name: string, owners: seq[string], sp: Span
     err.msg = lm.path & ":" & $err.line & ":" & $err.col & ": " & err.msg
     raise err
 
+proc reaches(lm: LoadedModule, byName: Table[string, LoadedModule],
+             q, name: string): bool =
+  ## Does `q::name`, written in `lm`, name a type: `lm`'s own, or one an
+  ## import of `lm` provides?
+  q == lm.name and lm.declaresType(name) or
+    q in byName and q in importsOf(lm.m) and byName[q].providesType(name)
+
 proc qualifyType(lm: LoadedModule, byName: Table[string, LoadedModule],
                  names: HashSet[string], t: Type) =
   ## Every colliding name under `t` becomes the qualified name it means.
@@ -89,18 +96,14 @@ proc qualifyType(lm: LoadedModule, byName: Table[string, LoadedModule],
   if t.kind != tkNamed: return
   if t.name notin names:
     # `a::Entry` where only `a` declares it: the plain name (M24).
-    if t.qualifier.len == 1:
-      let q = t.qualifier[0]
-      if q == lm.name and lm.declaresType(t.name) or
-         q in byName and q in importsOf(lm.m) and byName[q].providesType(t.name):
-        t.qualifier = @[]
+    if t.qualifier.len == 1 and lm.reaches(byName, t.qualifier[0], t.name):
+      t.qualifier = @[]
     return
   if t.qualifier.len > 0:
     # Written `mod::Name`: that module's type, if it really provides it;
     # otherwise the checker's own qualified-name check says why not.
     let q = t.qualifier[^1]
-    if q == lm.name and lm.declaresType(t.name) or
-       q in byName and q in importsOf(lm.m) and byName[q].providesType(t.name):
+    if lm.reaches(byName, q, t.name):
       t.name = q & "::" & t.name
       t.qualifier = @[]
     return
@@ -137,8 +140,7 @@ proc qualifiedRef(lm: LoadedModule, byName: Table[string, LoadedModule],
   if e == nil: return nil
   if e.kind == exkQualified and e.modulePath.len == 1:
     let q = e.modulePath[0]
-    if q == lm.name and lm.declaresType(e.qualName) or
-       q in byName and q in importsOf(lm.m) and byName[q].providesType(e.qualName):
+    if lm.reaches(byName, q, e.qualName):
       # It takes the qualified node's place, and its id with it. A type only
       # one module declares is visible by its plain name, which is what the
       # qualified spelling means too (M24): `{key: 4} a::Entry`.

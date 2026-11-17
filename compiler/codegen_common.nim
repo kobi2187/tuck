@@ -710,6 +710,19 @@ proc ownProvidersConcrete(home: Module, req: string): bool =
     if t.kind != tkNamed or t.name in d.fnGenerics: return false
   true
 
+proc hasGenericProvider(home: Module, real: ModuleMap, grp: Decl): bool =
+  ## Is some requirement of `grp` met by a GENERIC fn (`get[V]` for a
+  ## `Table[V]`)? A call site hands a provider over by value, and only a
+  ## concrete fn has one; such a group keeps being resolved by name.
+  for mem in grp.groupMembers:
+    if mem == nil or mem.kind != dkFn: continue
+    let req = prefixed(mem.name, nkFn)
+    var mods = @[home]
+    for other in real.values: mods.add other
+    for m in mods:
+      for d in m.decls(dkFn):
+        if d.name == req and d.fnGenerics.len > 0: return true
+
 proc boundGroup(home: Module, real: ModuleMap, bound: Type): Decl =
   ## The group a bound names, plain (`Sized`) or applied (`Keyed[K]`, every
   ## parameter given), or nil.
@@ -719,7 +732,10 @@ proc boundGroup(home: Module, real: ModuleMap, bound: Type): Decl =
     if result != nil and result.groupGenerics.len != 0: result = nil
   elif bound.kind == tkApp and bound.base != nil and bound.base.kind == tkNamed:
     result = findGroup(home, real, bound.base.name)
-    if result != nil and result.groupGenerics.len != bound.args.len: result = nil
+    if result != nil and (result.groupGenerics.len != bound.args.len or
+                          hasGenericProvider(home, real, result)):
+      result = nil
+
 
 proc isPlainBound(home: Module, real: ModuleMap, bound: Type): bool =
   ## A bound whose providers can be handed over: a group, plain or with its
@@ -972,3 +988,9 @@ proc memoIndexExpr*(d: Decl,
     let dom = memoTypeDomain(p.typ.name)
     let term = offset(p.name, p.typ.name == "bool", dom.half)
     result = if i == 0: term else: "(" & result & ") * " & $dom.size & " + " & term
+
+proc declaredCalleeName*(e: Expr, emitted: string): string =
+  ## A call's callee as declared — the bare name of an exkVar callee — when
+  ## the emitted spelling may carry an imported type's package (M10); else
+  ## the emitted one.
+  if e.callee != nil and e.callee.kind == exkVar: e.callee.name else: emitted

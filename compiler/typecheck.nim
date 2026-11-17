@@ -2953,6 +2953,29 @@ proc providerAmongImports(tc: TypeChecker, member: string,
        tc.sigsAcceptReceiver(qualified, concreteT):
       return qualified
 
+proc importedProviderFor(tc: TypeChecker, member: string, concreteT: Type): string =
+  ## The import whose `member` takes `concreteT` as its receiver, or "" (M7).
+  let found = tc.providerAmongImports(member, concreteT)
+  if found != "": return found
+  for imp in tc.module.decls(dkImport):
+    let q = imp.name & "::" & member
+    if tc.fnSigs.hasKey(q) and tc.sigsAcceptReceiver(q, concreteT): return q
+  ""
+
+proc ownerProviderFor(tc: TypeChecker, qualified, member: string,
+                      concreteT: Type): string =
+  ## The bounded fn's owner declares `member`: its provider is the default,
+  ## but only when it takes this type.
+  if concreteT == nil or tc.sigsAcceptReceiver(qualified, concreteT):
+    return qualified
+  # A provider the IMPORTING module declares bare is the one for its own type.
+  if tc.fnSigs.hasKey(member) and tc.sigsAcceptReceiver(member, concreteT):
+    return member
+  # ...or the one of several imports that provides it for this type: the
+  # owner's own `put` is for the owner's type (A105).
+  let other = tc.providerAmongImports(member, concreteT)
+  if other != "": other else: qualified
+
 proc requirementKey(tc: TypeChecker, member, fnName: string,
                     concreteT: Type = nil): string =
   ## Which `hashOf` satisfies a bound — the one visible to the module that
@@ -2969,29 +2992,14 @@ proc requirementKey(tc: TypeChecker, member, fnName: string,
     if "::" in fnName: fnName.split("::")[0]
     else: tc.bareOwnerOf.getOrDefault(fnName)
   if owner != "" and tc.fnSigs.hasKey(owner & "::" & member):
-    let qualified = owner & "::" & member
-    # The owner's provider is the default, but only when it takes this type: a
-    # provider the IMPORTING module declares bare is the one for its own type.
-    if concreteT != nil and tc.fnSigs.hasKey(member) and
-       not tc.sigsAcceptReceiver(qualified, concreteT) and
-       tc.sigsAcceptReceiver(member, concreteT):
-      return member
-    # ...or the one of several imports that provides it for this type: the
-    # owner's own `put` is for the owner's type (A105).
-    if concreteT != nil and not tc.sigsAcceptReceiver(qualified, concreteT):
-      let other = tc.providerAmongImports(member, concreteT)
-      if other != "": return other
-    return qualified
+    return tc.ownerProviderFor(owner & "::" & member, member, concreteT)
   # The bare name serves when one of ITS fns takes this type. A module's own
   # `keyOf` for its own `C` hid the imports' `keyOf`s for `A` and `B`: the
   # bound on an `A` was checked against `C`'s (audit M7).
   if concreteT != nil and
      (not tc.fnSigs.hasKey(member) or not tc.sigsAcceptReceiver(member, concreteT)):
-    let found = tc.providerAmongImports(member, concreteT)
+    let found = tc.importedProviderFor(member, concreteT)
     if found != "": return found
-    for imp in tc.module.decls(dkImport):
-      let q = imp.name & "::" & member
-      if tc.fnSigs.hasKey(q) and tc.sigsAcceptReceiver(q, concreteT): return q
   member
 
 proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,
