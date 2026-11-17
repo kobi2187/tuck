@@ -52,11 +52,10 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | M6 a name with arguments in front is a fn call: the member the payload's `self` names, else own fn, else import's; a member is not exported as a module fn | A150 | |
 | M21 imported tasks: task-ness from the call edge (`taskCallee`); the scheduler boots for the program's tasks, not the entry module's | A151 | |
 | `mod::name` written bare is a value (const or nullary call); `:mod::name` is the reference | A152 | the id invariant caught the first draft |
+| interfaces and actors of one name in two modules are told apart (`a::Logger send log`); an object's missing member is refused, not found on a namesake | A153-A155 | |
 | M14 generic clones resolve names in the library's scope (a name the caller cannot reach is refused with the fix named) | A146 | |
 
-**Still open in class B.** Interfaces and actors of one name in two modules (not yet
-nominal in `type_identity`: their names are also carried as strings in `satisfies`, match
-arms and dispatch nodes); M7 (valid code rejected); M10 (imported alias attributes);
+**Still open in class B.** M7 (valid code rejected); M10 (imported alias attributes);
 M17/M18/M20/M23/M24; M10b (warm
 cache). M14's refusal for a private or un-imported callee is a restriction, not the end
 state: the clone should be checked in the library's scope.

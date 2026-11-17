@@ -6420,4 +6420,101 @@ fn seven() -> int:
   t.quietly: t.runsOdin "A152: ...on Odin", 21
   t.bugFixed "A152: ...on Odin"
 
+  # A153 (class B): two modules' `interface Shape` were one contract, so a
+  # value of b's was checked, and dispatched, against a's. An interface is
+  # nominal like a type; a qualified one is renamed by the mangler, and the
+  # marks the checker leaves for lowering carry that spelling.
+  t.src """
+import a
+import b
+
+fn main() -> int:
+  let x = {} a::sa
+  let y = {} b::sb
+  return x.area + y.perim
+"""
+  t.addFile("a.tuck", """interface Shape:
+  fn area({self: Self}) -> int
+object Sq:
+  satisfies Shape
+  s: int
+  fn area({self: Sq}) -> int:
+    return self.s * self.s
+fn sa() -> Shape:
+  return {s: 3} Sq
+""")
+  t.addFile("b.tuck", """interface Shape:
+  fn perim({self: Self}) -> int
+object Ci:
+  satisfies Shape
+  r: int
+  fn perim({self: Ci}) -> int:
+    return self.r * 6
+fn sb() -> Shape:
+  return {r: 2} Ci
+""")
+  t.quietly: t.runs "A153: two modules' interfaces of one name are two contracts", 21
+  t.bugFixed "A153: two modules' interfaces of one name are two contracts"
+  t.quietly: t.runsOdin "A153: ...on Odin", 21
+  t.bugFixed "A153: ...on Odin"
+
+  # A154 (class B): `y.bump` on b's `Counter`, which has no `bump`, checked
+  # clean because a's `Counter` has one, and failed in every backend. The
+  # receiver's own type decides.
+  t.src """
+import a
+import b
+
+fn main() -> int:
+  let y = {} b::mkB
+  return y.bump
+"""
+  t.addFile("a.tuck", """object Counter:
+  n: int
+  fn bump() -> int:
+    return n + 1
+fn mkA() -> Counter:
+  return {n: 1} Counter
+""")
+  t.addFile("b.tuck", """object Counter:
+  m: str
+  fn shout() -> str:
+    return m
+fn mkB() -> Counter:
+  return {m: "hi"} Counter
+""")
+  t.quietly: t.badCheck "A154: an object's missing member is refused, not found on a namesake", "b::Counter has no field or member 'bump'"
+  t.bugFixed "A154: an object's missing member is refused, not found on a namesake"
+
+  # A155 (class B): two `actor Logger` in two modules were refused outright,
+  # with nothing to write instead. An actor is nominal like a type: each is
+  # sent to, read and waited on by its module's name.
+  t.src """
+import a
+import b
+
+fn main() -> int:
+  a::Logger send log {n: 3}
+  b::Logger send log {s: "hi"}
+  a::Logger.waitUntil {pred: :seen}
+  return a::Logger.count
+
+fn seen() -> bool:
+  return a::Logger.count == 3
+"""
+  t.addFile("a.tuck", """actor Logger:
+  count: int = 0
+  on log({n: int}) -> void:
+    count = count + n
+""")
+  t.addFile("b.tuck", """actor Logger:
+  text: str = ""
+  on log({s: str}) -> void:
+    text = s
+""")
+  t.quietly: t.runs "A155: two modules' actors of one name are two actors", 3
+  t.bugFixed "A155: two modules' actors of one name are two actors"
+  t.quietly: t.runsOdin "A155: ...on Odin", 3
+  t.bugFixed "A155: ...on Odin"
+
   t.finish()

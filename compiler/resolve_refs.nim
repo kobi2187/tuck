@@ -17,7 +17,7 @@
 # AST-cache-persisted per file — means an unchanged, cache-hit file's names
 # still get registered every run.
 
-import tables, sets
+import tables, sets, strutils
 import ast
 import ast_query
 import resolution
@@ -115,7 +115,10 @@ proc resolveVarSlot(e: Expr): Expr =
   ## shadowing question to ask here: this pass runs before typecheck even
   ## builds a scope, and does not need one.
   if e == nil: return e
-  if e.kind == exkVar and e.name.len > 0 and e.name[0] in {'A'..'Z'}:
+  # The NAME is Capitalized, after any module type_identity put in front of
+  # it (`a::Logger`, an actor two modules declare).
+  let bare = if e.kind == exkVar: e.name.rsplit("::", 1)[^1] else: ""
+  if bare.len > 0 and bare[0] in {'A'..'Z'}:
     let r = declRefFor(e.name)
     if r != nil:
       r.span = e.span

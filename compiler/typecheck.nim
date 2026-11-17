@@ -1015,6 +1015,20 @@ proc checkActorCall(tc: TypeChecker, e: Expr, name: string) =
        owner & "', so only " & owner & "'s own handlers and fns may call " &
        "it. Fix: send " & owner & " a message whose handler calls it", e.span)
 
+proc failIfNoSuchMember(tc: TypeChecker, e: Expr, recvT: Type) =
+  ## `y.bump` on an object that declares no `bump`, where no fn of the module
+  ## or of an import takes it either. The name was found because ANOTHER
+  ## object declares a member of it (two modules' `Counter`s: a's has `bump`,
+  ## b's has not), and the call went to the backends, which had nothing to
+  ## call (audit, class B). The receiver's own type decides.
+  if recvT == nil or recvT.kind != tkNamed: return
+  let obj = tc.objDecls.getOrDefault(recvT.name)
+  if obj == nil or findObjectMember(obj, e.fieldName) != nil: return
+  if tc.module.declaresFn(e.fieldName) or tc.importedSigs.hasKey(e.fieldName): return
+  fail("Type Error: " & typeName(recvT) & " has no field or member '" &
+       e.fieldName & "' (another object declares one; this one does not)",
+       e.span)
+
 proc asFnByName(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## Not a field: `x.name` resolves to a fn by LOOKUP rather than syntax.
   ## `.fn {args}` is the method form (receiver first, args fill the rest);
@@ -1030,6 +1044,7 @@ proc asFnByName(tc: var TypeChecker, e: Expr, recvT: Type): Type =
             "call it as `{...} " & e.fieldName & "` from the actor's own code"
           else: "send it: `" & owners[0] & " send " & e.fieldName & " {...}`"),
          e.span)
+  tc.failIfNoSuchMember(e, recvT)
   tc.recordMemberCall(e, recvT)
   if e.dotArg != nil:
     let mc = tc.synthMethodCall(e.fieldName, e.receiver, recvT,

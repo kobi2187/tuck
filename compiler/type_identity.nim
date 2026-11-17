@@ -22,14 +22,16 @@
 import tables, sets, strutils
 import ast, ast_ops, ast_query, modules, typecheck_util, diagnostics, semantics
 
-const Nominal = {dkType, dkObject, dkFnSig, dkGroup}
+const Nominal = {dkType, dkObject, dkFnSig, dkGroup, dkInterface, dkActor}
   ## The declarations that NAME A TYPE and are told apart by this pass: a
   ## record or sum (`type`), an object, a named signature (`fnsig`) and a
   ## `group` (named where a type parameter is bounded). It knew `type` only,
   ## so two modules' `object Thing`, or a `type Thing` and an `object Thing`,
   ## were one type to every later stage (first copy wins); two `fnsig Op` left
-  ## a slot unable to say which it held; and of two `group Keyed` an importer
-  ## of both held the last one imported (audit M2, M9, M8).
+  ## a slot unable to say which it held; of two `group Keyed` an importer of
+  ## both held the last one imported; and two `interface Shape` were one
+  ## contract, so a value of b's was checked against a's (audit M2, M9, M8).
+  ## Two `actor Logger` were refused outright, with nothing to write instead.
 
 type View = object
   ## What a bare type name means in one module.
@@ -95,6 +97,16 @@ proc qualifyType(lm: LoadedModule, byName: Table[string, LoadedModule],
   if v.owner != "": t.name = v.owner & "::" & t.name
   elif v.owners.len > 1: failAmbiguous(lm, t.name, v.owners, t.span)
 
+proc qualifyName(lm: LoadedModule, byName: Table[string, LoadedModule],
+                 names: HashSet[string], name: var string, sp: Span) =
+  ## A type named by a bare STRING rather than a Type node: the interfaces an
+  ## object `satisfies`, the object a type-test arm names. Same reading as a
+  ## Type's (qualifyType); a string is the one other place a name is kept.
+  if name notin names: return
+  let t = Type(span: sp, kind: tkNamed, name: name)
+  qualifyType(lm, byName, names, t)
+  name = t.name
+
 proc qualifiedRef(lm: LoadedModule, byName: Table[string, LoadedModule],
                   names: HashSet[string], e: Expr): Expr =
   ## A type name in an expression — a construction's callee or the receiver of
@@ -120,6 +132,12 @@ proc qualifyExprs(lm: LoadedModule, byName: Table[string, LoadedModule],
   ## The places an expression names a type: a callee, a receiver, and the
   ## types a binding, a cast and a send state.
   for n in body.nodes:
+    if n.kind == exkMatch:
+      for arm in n.arms.mitems:
+        if arm.pattern != nil and arm.pattern.kind == pkTypeTest:
+          lm.qualifyName(byName, names, arm.pattern.testType, arm.pattern.span)
+    if n.kind == exkSend:
+      lm.qualifyName(byName, names, n.sendActor, n.span)
     if n.kind == exkCall:
       let q = qualifiedRef(lm, byName, names, n.callee)
       if q != nil: n.callee = q
@@ -128,10 +146,19 @@ proc qualifyExprs(lm: LoadedModule, byName: Table[string, LoadedModule],
       if q != nil: n.receiver = q
     for t in n.writtenTypes: qualifyType(lm, byName, names, t)
 
+proc qualifyStrings(lm: LoadedModule, byName: Table[string, LoadedModule],
+                    names: HashSet[string], d: Decl) =
+  if d.kind == dkObject:
+    for n in d.satisfies.mitems: lm.qualifyName(byName, names, n, d.span)
+  elif d.kind == dkSatisfies:
+    lm.qualifyName(byName, names, d.name, d.span)
+    for n in d.satisfyTargets.mitems: lm.qualifyName(byName, names, n, d.span)
+
 proc qualifyReferences(lm: LoadedModule, byName: Table[string, LoadedModule],
                        names: HashSet[string]) =
   ## Every type reference in `lm`, in its declarations and its bodies.
   for d in lm.m.allDecls:
+    lm.qualifyStrings(byName, names, d)
     for t in d.ownTypes: qualifyType(lm, byName, names, t)
     # `fn use[T: Keyed]`: the bound names a group, which ownTypes does not list
     if d.kind == dkFn:

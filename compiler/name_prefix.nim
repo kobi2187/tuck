@@ -48,6 +48,8 @@ type NameKind* = enum
   nkObject = "object"
   nkActor = "actor"
   nkFnSig = "fnsig"
+  nkInterface = "iface"    ## an interface two modules declare (`a::Shape`):
+                           ## only then is it renamed (mangle.isManglable)
   nkConst = "const"
   nkPool = "pool"
   nkSlab = "slab"
@@ -131,6 +133,7 @@ proc declKind*(d: Decl): NameKind =
   of dkObject: nkObject
   of dkActor: nkActor
   of dkFnSig: nkFnSig
+  of dkInterface: nkInterface
   of dkConst: nkConst
   of dkPool: nkPool
   of dkSlab: nkSlab
@@ -138,6 +141,6 @@ proc declKind*(d: Decl): NameKind =
   of dkRegister: nkRegister
   of dkRegistry: nkRegistry
   of dkMixin, dkExtern, dkPending, dkExpr, dkStaticAssert, dkErrors,
-     dkResources, dkImport, dkSelect, dkSatisfies, dkInterface, dkGroup,
+     dkResources, dkImport, dkSelect, dkSatisfies, dkGroup,
      dkPublic, dkWhen:
     raiseAssert "name_prefix: a " & $d.kind & " declares no emitted name"

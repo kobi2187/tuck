@@ -400,6 +400,14 @@ proc isAsync*(r: Resolution, e: Expr): bool =
   ## suspend at?
   e != nil and e.id.isSet and e.id in r.asyncCalls
 
+proc ifaceSpelling*(iface: string): string =
+  ## An interface as the passes after the checker name it. One that
+  ## type_identity qualified (`a::Shape`: two modules declare one) is renamed
+  ## by the mangler, which runs before lowering and codegen read these marks;
+  ## any other keeps the name it was written with. Recorded in that spelling,
+  ## or lowering found no satisfier of `a::Shape` and dispatched to nothing.
+  if iface.contains("::"): prefixed(iface, nkInterface) else: iface
+
 proc markWrap*(r: Resolution, e: Expr, objName, iface: string) =
   ## Flag an expression as an interface wrap: a concrete object entering an
   ## interface slot. Codegen emits the tagged variant here rather than the bare
@@ -407,8 +415,9 @@ proc markWrap*(r: Resolution, e: Expr, objName, iface: string) =
   ## variant gets a branch for it.
   if e == nil: return
   ensureId(e)
-  r.wraps[e.id] = (objName: objName, iface: iface)
-  r.ifacePairs.incl((objName: objName, iface: iface))
+  let spelled = ifaceSpelling(iface)
+  r.wraps[e.id] = (objName: objName, iface: spelled)
+  r.ifacePairs.incl((objName: objName, iface: spelled))
 
 proc wrapOf*(r: Resolution, e: Expr): tuple[objName, iface: string] =
   ## The interface wrap recorded on `e` — which object enters which interface
@@ -422,7 +431,7 @@ proc markIfaceCall*(r: Resolution, e: Expr, iface, member: string) =
   ## implementation runs is carried by the value, not known here.
   if e == nil: return
   ensureId(e)
-  r.ifaceCalls[e.id] = (iface: iface, member: member)
+  r.ifaceCalls[e.id] = (iface: ifaceSpelling(iface), member: member)
 
 proc ifaceCallOf*(r: Resolution, e: Expr): tuple[iface, member: string] =
   ## The interface call recorded on `e` — the interface and the member called

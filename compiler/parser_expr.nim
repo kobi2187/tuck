@@ -534,6 +534,9 @@ proc chainSend(p: var Parser, expr: Expr, sp: Span): Expr =
   if expr.kind == exkBracket:
     actorName = expr.brReceiver.name
     for a in expr.brArgs: actorArgs.add(typeOfTypeExpr(a))
+  elif expr.kind == exkQualified:
+    # `a::Logger send log`: an actor two modules declare, named by its module.
+    actorName = expr.modulePath[0] & "::" & expr.qualName
   else:
     actorName = expr.name
   Expr(span: sp, kind: exkSend, sendActor: actorName,
@@ -546,6 +549,8 @@ proc isSendStep(p: Parser, expr: Expr): bool =
           p.peek().kind == tkIdent):
     return false
   expr.kind == exkVar or
+    (expr.kind == exkQualified and expr.modulePath.len == 1 and
+     not expr.isFnRef) or
     (expr.kind == exkBracket and expr.brReceiver != nil and
      expr.brReceiver.kind == exkVar)
 
