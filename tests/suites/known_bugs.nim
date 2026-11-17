@@ -7759,4 +7759,58 @@ fn main() -> int:
   t.quietly: t.runsOdin "A173: ...on Odin", 5
   t.bugFixed "A173: ...on Odin"
 
+  # A174 (class F, Y12/Y13/Y14): each checked clean and no backend built it.
+  # Y12: `let a: P = {x: 1}` — a literal at a place naming its type is that
+  # type's construction. Y13: a generic `T` into a `T?` field, and an
+  # `if c: 5 else: none` value bound as `int?`, were not wrapped. Y14: an
+  # extra payload field to an imported extern became an extra argument;
+  # spec §2.5 says extras are ignored.
+  t.src """
+import sys
+
+type P = {x: int}
+
+fn main() -> int:
+  let a: P = {x: 1}
+  return a.x
+"""
+  t.quietly: t.runs "A174: a record literal under its stated type is its construction", 1
+  t.bugFixed "A174: a record literal under its stated type is its construction"
+  t.quietly: t.runsOdin "A174: ...on Odin", 1
+  t.bugFixed "A174: ...on Odin"
+  t.src """
+type Box[T] = {v: T?}
+fn wrapBox[T]({x: T}) -> Box[T]:
+  return {v: x} Box
+fn pick({c: bool}) -> int?:
+  let r: int? = if c: 5 else: none
+  return r
+fn main() -> int:
+  let b = {x: 7} wrapBox
+  let p = {c: true} pick
+  let q = {c: false} pick
+  var n = 0
+  if b.v.ok:
+    n = n + b.v.value
+  if p.ok:
+    n = n + p.value
+  if q.ok:
+    n = n + 100
+  return n
+"""
+  t.quietly: t.runs "A174: a plain value into a `?T` is wrapped (generic field, if value)", 12
+  t.bugFixed "A174: a plain value into a `?T` is wrapped (generic field, if value)"
+  t.quietly: t.runsOdin "A174: ...on Odin", 12
+  t.bugFixed "A174: ...on Odin"
+  t.src """
+import console
+import sys
+
+fn main() -> void [io]:
+  {text: "x", extra: 3} printLine
+  0 exit
+"""
+  t.quietly: t.runs "A174: an extra payload field to an imported extern is ignored", 0
+  t.bugFixed "A174: an extra payload field to an imported extern is ignored"
+
   t.finish()

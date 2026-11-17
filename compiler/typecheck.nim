@@ -232,7 +232,13 @@ proc markIfPlainIntoOptional(tc: TypeChecker, v: Expr, got, place: Type) =
   ## A plain `T` accepted into a `?T` place is WRAPPED there — noted for
   ## lowering_optional, which prints the wrap. Only a place that names its own
   ## type counts (a field or parameter), never a context merely passed down.
-  if place == nil or got == nil or isFlexible(got) or isWrappedType(got): return
+  # A generic fn's own `T` is flexible but still a VALUE of T, never a `T?`:
+  # `{v: x} Box` with `v: T?` wraps it like any plain value (audit Y13 —
+  # every backend refused the unwrapped `x`).
+  let typeParam = got != nil and got.kind == tkNamed and
+                  got.name.startsWith(NamedTypeParamPrefix)
+  if place == nil or got == nil or (isFlexible(got) and not typeParam) or
+     isWrappedType(got): return
   if not absenceIsDeclared(place): return
   if tc.compatible(got, place.args[0]): semLayer.markOptWrap(v, place)
 
@@ -3018,7 +3024,13 @@ proc recordCallParams(tc: var TypeChecker, fnName: string, params: seq[Param],
     # backend), so its payload explodes like anyone's. It used to take one
     # `payload: T`, and a two-field call did not compile (issue #70). A
     # member taking `self` keeps no stub of that shape, so stays out.
-    let d = tc.declOfFn(fnName)
+    # An IMPORTED fn (an extern of another module, `printLine`) is not in
+    # this module's tables; its declaration is the call's resolved edge.
+    # Without its params, the payload was printed as written and an extra
+    # field became an extra argument (audit Y14; spec §2.5 says extras are
+    # ignored).
+    var d = tc.declOfFn(fnName)
+    if d == nil: d = semLayer.declFor(e)
     if d == nil or d.kind != dkFn or d.isPending and d.takesSelf(): return
   var names: seq[string]
   for p in params: names.add(p.name)
@@ -5375,6 +5387,23 @@ proc failIfErrorsUndeclared(tc: TypeChecker, ets: seq[string], sp: Span) =
            ". Fix: add " & en & " to its [error: ...], or handle the error here",
            sp)
 
+proc constructAsStated(tc: TypeChecker, e: Expr) =
+  ## `let a: P = {x: 1}` — a bare record literal under a stated named record
+  ## type is that type's construction, `{x: 1} P`. The literal at a place that
+  ## names its type is legal (failIfAnonymousForNamed), but no backend built
+  ## it: each printed an anonymous record where a `P` was declared (audit Y12).
+  ## Rewritten here, once, so every backend sees an ordinary construction.
+  let t = e.declType
+  if e.assignVal == nil or e.assignVal.kind != exkStruct or t == nil or
+     t.kind != tkNamed or t.qualifier.len > 0: return
+  let d = tc.typeDecls.getOrDefault(t.name, nil)
+  if d == nil or d.kind != tkRecord: return
+  let lit = e.assignVal
+  e.assignVal = Expr(id: newNodeId(), span: lit.span, kind: exkCall,
+                     callee: Expr(id: newNodeId(), span: t.span, kind: exkVar,
+                                  name: t.name),
+                     args: @[lit])
+
 proc synthDeclAssign(tc: var TypeChecker, e: Expr) =
   ## A fresh binding. spec 4.4b: a tracked type starts at the RHS's set.
   ##
@@ -5395,6 +5424,7 @@ proc synthDeclAssign(tc: var TypeChecker, e: Expr) =
     tc.checkIfaceElems(tc.ifaceElemSlot(e.declType), e.assignVal, what)
     valT = e.declType
   elif e.declType != nil:
+    tc.constructAsStated(e)
     # A NOMINAL name is kept as written: resolving `Seq16` to its `u16` body
     # would throw away the very name that says how its arithmetic behaves.
     let nominal = e.declType.kind == tkNamed and

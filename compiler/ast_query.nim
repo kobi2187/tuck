@@ -1601,13 +1601,32 @@ proc placeAssign*(e: Expr): bool =
   t != nil and t.kind == exkVar and (t == e.target or t.name != "self")
 
 proc isRtPushCall(call: Expr): bool =
-  ## A runtime `push` with its payload still a struct literal. Matched on the
-  ## UNMANGLED name: mangling runs before codegen, so a user's own `fn push`
-  ## is `tuck_push` here and only the runtime's is `push`.
-  call != nil and call.kind == exkCall and call.args.len == 1 and
+  ## A runtime `push`, its payload a struct literal or already exploded into
+  ## its two params. Matched on the UNMANGLED name: mangling runs before
+  ## codegen, so a user's own `fn push` is `tuck_push` here and only the
+  ## runtime's is `push`.
+  call != nil and call.kind == exkCall and
     call.callee != nil and call.callee.kind == exkVar and
     call.callee.name == "push" and
-    call.args[0] != nil and call.args[0].kind == exkStruct
+    ((call.args.len == 1 and call.args[0] != nil and call.args[0].kind == exkStruct) or
+     (call.argsExploded and call.args.len == 2))
+
+proc pushArgs(res: Resolution, call: Expr): tuple[items, value: Expr] =
+  ## `push`'s `items` and `value`: by name from a payload literal, or by the
+  ## recorded param order once lowering exploded it (`push(xs, v)`). The
+  ## order is recorded since an imported extern's params are (audit Y14);
+  ## reading only the literal then lost every in-place append.
+  if not call.argsExploded:
+    for f in call.args[0].fields:
+      if f.name == "items": result.items = f.value
+      elif f.name == "value": result.value = f.value
+    return
+  let params = res.knownCallParams(call)
+  if params.isNone: return
+  for i, name in params.get:
+    if i >= call.args.len: break
+    if name == "items": result.items = call.args[i]
+    elif name == "value": result.value = call.args[i]
 
 proc pushCallOf(res: Resolution, e: Expr): Expr =
   ## The runtime `push` call this plain assignment's value is, or nil.
@@ -1637,13 +1656,8 @@ proc selfAppendParts*(res: Resolution, e: Expr): tuple[read, value: Expr] =
   ##
   let call = pushCallOf(res, e)
   if call == nil: return
-  # The payload is still a STRUCT at this point — the positional explosion
-  # happens in the emitters — so the two arguments are read by the names
-  # std/seq declares them with.
-  var items, value: Expr
-  for f in call.args[0].fields:
-    if f.name == "items": items = f.value
-    elif f.name == "value": value = f.value
+  # Read by the names std/seq declares them with.
+  let (items, value) = pushArgs(res, call)
   if items == nil or value == nil: return
   if items.kind notin {exkVar, exkField} or pathOf(items) != pathOf(e.target):
     return
