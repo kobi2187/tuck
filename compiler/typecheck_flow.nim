@@ -263,6 +263,54 @@ proc mutatorFillsFields*(tc: TypeChecker, fnName: string): HashSet[string] =
   if returned == "": return
   collectFieldWrites(returned, d.fnBody, result)
 
+proc collectCopyReads(name: string, e: Expr, acc: var HashSet[string]) =
+  ## Every `name.field` read in this subtree, except as the place an
+  ## assignment writes (`name.f = v` gives f a value; it reads nothing). For a
+  ## local COPY of a parameter, which, unlike the parameter, may be written.
+  if e == nil: return
+  if e.kind == exkAssign and e.target != nil and e.target.kind == exkField and
+     namesVar(e.target.receiver, name):
+    collectCopyReads(name, e.assignVal, acc)
+    return
+  if e.kind == exkField and namesVar(e.receiver, name):
+    acc.incl(e.fieldName)
+  for c in e.children: collectCopyReads(name, c, acc)
+
+proc copiesOf(param: string, body: Expr): seq[string] =
+  ## The locals bound to a bare copy of `param` (`var q = p`), and of those.
+  result = @[param]
+  var grew = true
+  while grew:
+    grew = false
+    for n in body.nodes:
+      if n.kind == exkAssign and n.isDecl and n.target != nil and
+         n.target.kind == exkVar and n.assignVal != nil and
+         n.assignVal.kind == exkVar and n.assignVal.name in result and
+         n.target.name notin result:
+        result.add n.target.name
+        grew = true
+
+proc paramReads(tc: TypeChecker, fnName, param: string,
+                seen: var HashSet[string], acc: var HashSet[string]) =
+  ## The fields `fnName` reads off `param`: directly, through a local copy of
+  ## it, or by handing it whole to another fn that reads them (audit T10 —
+  ## `readViaTwo` passing `p` to `readB` read `p.b`, and was answered empty).
+  let key = fnName & "/" & param
+  if key in seen: return
+  seen.incl key
+  let d = tc.topLevelDeclOfFn(fnName)
+  if d == nil or d.kind != dkFn or d.fnBody == nil: return
+  let names = copiesOf(param, d.fnBody)
+  for n in names:
+    if n == param: collectFieldReads(n, d.fnBody, acc)
+    else: collectCopyReads(n, d.fnBody, acc)
+  for c in d.fnBody.nodes:
+    if c.kind != exkCall or c.callee == nil or c.callee.kind != exkVar: continue
+    if c.args.len != 1 or c.args[0] == nil or c.args[0].kind != exkStruct: continue
+    for f in c.args[0].fields:
+      if f.value != nil and f.value.kind == exkVar and f.value.name in names:
+        tc.paramReads(c.callee.name, f.name, seen, acc)
+
 proc uninitFieldsRead*(tc: TypeChecker, fnName, param: string,
                        holes: HashSet[string]): seq[string] =
   ## Which of `holes` the named fn actually reads off `param`.
@@ -271,12 +319,50 @@ proc uninitFieldsRead*(tc: TypeChecker, fnName, param: string,
   ## record is fine. An unknown callee (imported, pending, a fn slot) has no
   ## body to scan and answers empty too — permissive, matching how the rest of
   ## the checker degrades when it cannot see something.
-  let d = tc.topLevelDeclOfFn(fnName)
-  if d == nil or d.kind != dkFn or d.fnBody == nil: return @[]
-  var reads: HashSet[string]
-  collectFieldReads(param, d.fnBody, reads)
+  var reads, seen: HashSet[string]
+  tc.paramReads(fnName, param, seen, reads)
   for h in holes:
     if h in reads: result.add(h)
+
+proc returnedName(body: Expr): string =
+  ## The local a body returns, when every top-level `return` names the same
+  ## bare local; "" otherwise.
+  for s in body.children:
+    if s != nil and s.kind == exkReturn and s.returnVal != nil:
+      if s.returnVal.kind != exkVar: return ""
+      if result != "" and result != s.returnVal.name: return ""
+      result = s.returnVal.name
+
+proc returnHoles*(tc: TypeChecker, fnName: string,
+                  argHoles: Table[string, HashSet[string]],
+                  declared: seq[string]): HashSet[string] =
+  ## The fields a call's RESULT still lacks (audit T10). A fn returning its
+  ## parameter, or a copy of it, hands back the caller's holes less what it
+  ## set (`ident` returned `p` with `b` missing and the caller read `y.b`); a
+  ## fn returning a local it built partly hands back the fields it never
+  ## supplied (`ret`). Anything not traceable answers empty, as before.
+  let d = tc.topLevelDeclOfFn(fnName)
+  if d == nil or d.kind != dkFn or d.fnBody == nil: return
+  let r = returnedName(d.fnBody)
+  if r == "": return
+  var written: HashSet[string]
+  collectFieldWrites(r, d.fnBody, written)
+  for p in d.fnParams:
+    if r in copiesOf(p.name, d.fnBody):
+      for h in argHoles.getOrDefault(p.name):
+        if h notin written: result.incl h
+      return
+  # A local built by a construction: what it listed, and what was set since.
+  var built = false
+  for n in d.fnBody.nodes:
+    if n.kind == exkAssign and n.isDecl and namesVar(n.target, r) and
+       n.assignVal != nil and n.assignVal.kind == exkCall and
+       n.assignVal.args.len == 1 and n.assignVal.args[0] != nil and
+       n.assignVal.args[0].kind == exkStruct:
+      built = true
+  if not built: return
+  for f in declared:
+    if f notin written: result.incl f
 
 proc addTailValue(tc: TypeChecker, typeName: string, v: Expr,
                   acc: var seq[string], exact: var bool) =
@@ -340,7 +426,7 @@ proc mergeVariants*(a, b: Table[string, seq[string]]): Table[string, seq[string]
 
 # --- GROUP 3: control flow -------------------------------------------------
 
-proc alwaysExits(e: Expr): bool =
+proc alwaysExits*(e: Expr): bool =
   ## True when control cannot fall out the bottom of this branch — the
   ## condition that lets an early-return guard narrow what follows it.
   if e == nil: return false

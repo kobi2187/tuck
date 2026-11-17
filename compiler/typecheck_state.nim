@@ -89,6 +89,14 @@ type
     currentFn*: string
     currentActor*: string
       ## The actor whose handlers and member fns are being checked, or "".
+    armVariants*: Table[string, seq[string]]
+      ## Inside a match arm, the variant its subject var holds, for reading a
+      ## payload field — for every sum, tracked (`transitions:`) or not. A
+      ## reassignment in the arm changes it (audit O7).
+    ownFields*: seq[string]
+      ## The fields of the actor or object whose code is being checked, bound
+      ## bare in its scope. A write through `self` or a call of its own member
+      ## may change any of them, so a guard on one ends there (audit T3).
     actorMemberOwner*: Table[string, seq[string]]
       ## A `fn` declared in an actor -> the actors declaring one of that name
       ## (A24). Callable only from the actor's own code: anywhere else it
@@ -115,6 +123,11 @@ type
                                   # is the implicit return, not a discard
     transitionCtx*: bool          # constructing THROUGH transitionTo: sealed
                                   # non-initial variants are legal there
+    transitionSite*: NodeId       # the ONE construction a tracked assignment's
+                                  # transition produces (`s = Sess.Busy {..}`).
+                                  # Was a flag over the whole right-hand side,
+                                  # so `s = {o: Other.End {..}} f` built any
+                                  # sealed variant inside it (audit T8b/c).
     negatedLit*: bool         # the literal being typed is the operand of a unary minus
     expectedType*: Type       # the type context expects the expression
     composing*: bool          # synthesizing the operand of a `+ Type` composition
@@ -360,6 +373,14 @@ proc forgetPaths*(tc: var TypeChecker, prefix: string) =
     if p.startsWith(prefix & "."): gone.add p
   for p in gone: tc.narrowedPaths.excl(p)
 
+proc forgetFieldPaths*(tc: var TypeChecker, field: string) =
+  ## Every guarded path through a field named `field`, on any root: a write
+  ## through a shared cell may have reached it by another name.
+  var gone: seq[string]
+  for p in tc.narrowedPaths:
+    if p.endsWith("." & field) or ("." & field & ".") in p: gone.add p
+  for p in gone: tc.narrowedPaths.excl(p)
+
 proc bindName*(tc: var TypeChecker, name: string, typ: Type, isVar: bool,
                isParam = false, span = Span(), site: Expr = nil) =
   ## A fresh binding is never narrowed: guarding is something that happens to
@@ -467,6 +488,59 @@ proc clearUninit*(tc: var TypeChecker, name: string, field = "") =
     if tc.scopes[i].hasKey(name):
       tc.scopes[i][name].typ = filled(tc.scopes[i][name].typ, field)
       return
+
+type HoleState* = Table[string, HashSet[string]]
+  ## Per visible binding, the fields of its record that are still unsupplied.
+
+proc holeState*(tc: TypeChecker): HoleState =
+  ## Every visible binding's holes, innermost binding of each name.
+  for i in countdown(tc.scopes.high, 0):
+    for name, b in tc.scopes[i]:
+      if result.hasKey(name): continue
+      var hs: HashSet[string]
+      if b.typ != nil and b.typ.kind == tkRecord:
+        for f in b.typ.fields:
+          if isUninit(f.typ): hs.incl f.name
+      result[name] = hs
+
+proc unfilled*(t: Type, field: string): Type =
+  ## `t` with `field` marked unsupplied again.
+  if t == nil or t.kind != tkRecord: return t
+  var fs: seq[FieldDef]
+  for f in t.fields:
+    if f.name == field: fs.add(FieldDef(name: f.name, typ: markUninit(f.typ, f.span), span: f.span))
+    else: fs.add(f)
+  Type(span: t.span, kind: tkRecord, fields: fs)
+
+proc setBindingType*(tc: var TypeChecker, name: string, t: Type) =
+  ## The innermost binding of `name` now holds a value of type `t`.
+  for i in countdown(tc.scopes.high, 0):
+    if tc.scopes[i].hasKey(name):
+      tc.scopes[i][name].typ = t
+      return
+
+proc setHoles*(tc: var TypeChecker, name: string, holes: HashSet[string]) =
+  ## `name` was given a whole new value: its holes are exactly that value's.
+  for i in countdown(tc.scopes.high, 0):
+    if tc.scopes[i].hasKey(name):
+      var t = filled(tc.scopes[i][name].typ, "")
+      for h in holes: t = unfilled(t, h)
+      tc.scopes[i][name].typ = t
+      return
+
+proc joinHoles*(tc: var TypeChecker, paths: openArray[HoleState]) =
+  ## After paths rejoin, a field is a hole if it is one on ANY path: filled in
+  ## the then-branch of an `if` with no `else`, in one arm, or in a loop body
+  ## that may not run, it may still be missing (audit T10).
+  for i in countdown(tc.scopes.high, 0):
+    for name, b in tc.scopes[i].mpairs:
+      if b.typ == nil or b.typ.kind != tkRecord: continue
+      for p in paths:
+        for f in p.getOrDefault(name):
+          var has = false
+          for fd in b.typ.fields:
+            if fd.name == f: has = not isUninit(fd.typ)
+          if has: b.typ = unfilled(b.typ, f)
 
 proc resolvesToOwnerField*(tc: TypeChecker, name: string): bool =
   ## Does a bare `name` read the enclosing owner's field? Only if the

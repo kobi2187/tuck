@@ -173,6 +173,18 @@ proc overlapping(fn: SsaFn): Table[ValueId, seq[ValueId]] =
                                fn.values[int32(b)].place):
           result.mgetOrPut(a, @[]).add b
 
+proc reaches(succ: seq[seq[BlockId]], start, target: BlockId): bool =
+  ## Can control get from `start` to `target` (through at least one edge)?
+  var seen: HashSet[BlockId]
+  var stack = succ[int32(start)]
+  while stack.len > 0:
+    let b = stack.pop()
+    if b == target: return true
+    if b in seen: continue
+    seen.incl b
+    for s in succ[int32(b)]: stack.add s
+  false
+
 proc readAfter(fn: SsaFn, succ: seq[seq[BlockId]],
                phis: Table[(int32, Place), ValueId], others: seq[ValueId],
                u: Use): bool =
@@ -183,6 +195,13 @@ proc readAfter(fn: SsaFn, succ: seq[seq[BlockId]],
     for w in fn.values[int32(o)].uses:
       if w.blk == u.blk and (w.line, w.col) > (u.line, u.col): return true
     if fn.readAgain(succ, phis, o, u.blk): return true
+    # `others` are read out of the SAME record version as `u`. One first
+    # named in a later block (`if c: r = q.xs.len` after `var m = q`) has no
+    # value yet where `u` is, so carrying it across the edge found nothing and
+    # `var m = q` looked final — Nim moved `q` and read an empty `q.xs` (audit
+    # O4). Any read of it in a block reachable from here reads that buffer.
+    for w in fn.values[int32(o)].uses:
+      if w.blk != u.blk and reaches(succ, u.blk, w.blk): return true
   false
 
 proc finalUses*(fn: SsaFn): HashSet[NodeId] =

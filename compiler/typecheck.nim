@@ -512,7 +512,8 @@ proc sealedEntryOnly(tc: TypeChecker, t: Type, e: Expr): bool =
   ## Is this a sealed type being constructed at a variant that is not its
   ## entry point, outside a transition and without the [unsafe] escape?
   isSealed(t) and t.variants.len > 0 and e.fieldName != t.variants[0].name and
-    not e.ctorUnsafe and not tc.transitionCtx
+    not e.ctorUnsafe and not tc.transitionCtx and
+    not (e.id.isSet and e.id == tc.transitionSite)
 
 proc checkVariantPayload(tc: var TypeChecker, declared: Type, variant: string,
                          payload: Expr, sp: Span) =
@@ -752,6 +753,11 @@ proc asVariantPayloadField(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   if e.receiver != nil and e.receiver.kind == exkVar and
      tc.varVariants.hasKey(e.receiver.name):
     narrowed = tc.varVariants[e.receiver.name]
+  elif e.receiver != nil and e.receiver.kind == exkVar and
+       tc.armVariants.hasKey(e.receiver.name):
+    narrowed = tc.armVariants[e.receiver.name]
+    # Reassigned in the arm to a value of no known variant: none is known.
+    if narrowed.len == 0: return nil
   for v in body.variants:
     if narrowed.len > 0 and v.name notin narrowed: continue
     for f in v.fields:
@@ -990,7 +996,7 @@ proc namesActorOnly(tc: TypeChecker, name: string): bool =
   (tc.actorHandlerOwner.hasKey(name) or tc.actorMemberOwner.hasKey(name)) and
     not tc.module.declaresFn(name)
 
-proc checkActorCall(tc: TypeChecker, e: Expr, name: string) =
+proc checkActorCall(tc: var TypeChecker, e: Expr, name: string) =
   ## A call naming something declared in an actor (A24). An `on` handler is
   ## a message and is sent, never called (TK-AC03); a member `fn` runs on the
   ## actor's thread, so only that actor's own code calls it (TK-AC04). A
@@ -1003,6 +1009,8 @@ proc checkActorCall(tc: TypeChecker, e: Expr, name: string) =
   if tc.currentActor != "" and tc.currentActor in members:
     ensureId(e)       # a nullary call is built by the checker, id-less so far
     semLayer.actorMemberCalls[e.id] = (tc.currentActor, name)
+    # The member may write any field: a guard on one ends here (audit T3).
+    for f in tc.ownFields: tc.setNarrowed(f, false)
     return
   let ownHandler = tc.currentActor != "" and tc.currentActor in handlers
   if not ownHandler and not tc.namesActorOnly(name): return
@@ -2157,14 +2165,20 @@ proc synthBranches(tc: var TypeChecker, e: Expr, guard: string,
   ## Both branches from the same entry state; the after-if state is their union.
   if guard != "": tc.setNarrowed(guard, true)
   let entryVariants = tc.varVariants
+  let entryHoles = tc.holeState()
   let thenT = tc.synthesize(e.thenBranch)
   let thenVariants = tc.varVariants
+  # A branch that always leaves contributes no state to what follows.
+  let thenHoles = if alwaysExits(e.thenBranch): entryHoles else: tc.holeState()
   if guard != "": tc.setNarrowed(guard, false)
   tc.varVariants = entryVariants
+  tc.joinHoles([entryHoles])   # the else path starts from the entry holes
   if elseGuard != "": tc.setNarrowed(elseGuard, true)
   let elseT = tc.synthesize(e.elseBranch)
   if elseGuard != "": tc.setNarrowed(elseGuard, false)
   tc.varVariants = mergeVariants(thenVariants, tc.varVariants)
+  if not (e.elseBranch != nil and alwaysExits(e.elseBranch)):
+    tc.joinHoles([thenHoles])
   (thenT, elseT)
 
 proc isNoValue(t: Type): bool =
@@ -2305,15 +2319,30 @@ proc synthArms(tc: var TypeChecker, e: Expr, subjT: Type, trackedVar,
   let entryVariants = tc.varVariants
   var mergedExit: Table[string, seq[string]]
   var firstArm = true
+  var armHoles: seq[HoleState]
   result = nil
+  let entryHoles = tc.holeState()
+  let subjName = if e.subject != nil and e.subject.kind == exkVar: e.subject.name
+                 else: ""
+  let subjBody = tc.resolve(subjT)
+  let outerArm = tc.armVariants
   for arm in e.arms.mitems:
     tc.varVariants = entryVariants
+    tc.joinHoles([entryHoles])   # each arm starts from the entry holes
+    tc.armVariants = outerArm
+    if subjName != "" and subjBody != nil and subjBody.kind == tkSum and
+       arm.pattern != nil and arm.pattern.kind == pkVar and
+       hasVariant(subjBody, arm.pattern.name):
+      tc.armVariants[subjName] = @[arm.pattern.name]
     let t = tc.synthArm(arm, subjT, trackedVar, trackedType)
     mergedExit = if firstArm: tc.varVariants
                  else: mergeVariants(mergedExit, tc.varVariants)
     firstArm = false
+    if not alwaysExits(arm.body): armHoles.add tc.holeState()
     tc.unifyArmType(result, t, arm.span)
   if not firstArm: tc.varVariants = mergedExit
+  tc.armVariants = outerArm
+  tc.joinHoles(armHoles)
 
 proc errDomain(tc: TypeChecker, errEnums: seq[string]): seq[string] =
   for en in errEnums:
@@ -2653,6 +2682,10 @@ proc synthChain(tc: var TypeChecker, e: Expr): Type =
   # `x ..fault {none}` rewrites x's fields: nothing proved under x still holds.
   let key = guardKey(e.base)
   if key != "": tc.forgetPaths(key)
+  # `self ..slot {none}` writes the field a bare `slot` names (audit T3).
+  if key == "self":
+    for step in e.steps:
+      if stepMember(step) in tc.ownFields: tc.setNarrowed(stepMember(step), false)
 
 proc failIfAnonymousForNamed(tc: TypeChecker, e: Expr, actual, expected: Type,
                              what: string) =
@@ -3939,6 +3972,23 @@ proc payloadSelfMember(tc: TypeChecker, e: Expr, name: string): Decl =
     if obj != nil: return findObjectMember(obj, name)
   nil
 
+proc withResultHoles(tc: var TypeChecker, fnName: string, e: Expr,
+                     ret: Type): Type =
+  ## `ret`, as the record it is with the fields the call leaves unsupplied
+  ## marked (typecheck_flow.returnHoles); `ret` itself when there are none.
+  let rt = tc.resolve(ret)
+  if rt == nil or rt.kind != tkRecord: return ret
+  var argHoles: Table[string, HashSet[string]]
+  if e.args.len == 1 and e.args[0] != nil and e.args[0].kind == exkStruct:
+    for f in e.args[0].fields:
+      argHoles[f.name] = holesOf(tc.resolve(semLayer.typeFor(f.value)))
+  var declared: seq[string]
+  for f in rt.fields: declared.add f.name
+  let holes = tc.returnHoles(fnName, argHoles, declared)
+  if holes.len == 0: return ret
+  result = rt
+  for h in holes: result = unfilled(result, h)
+
 proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   ## A call to a fn with a known signature. NAMES the callee, so a top-level
   ## fn wins over an object member of the same name.
@@ -3988,7 +4038,7 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   # its result type is omitted.
   let ret = if sig.ret == nil: Type(span: e.span, kind: tkNamed, name: "void")
             else: sig.ret
-  if sig.generics.len == 0: return ret
+  if sig.generics.len == 0: return tc.withResultHoles(calleeName, e, ret)
   tc.recordCallTypeArgs(sig, bindings, e)
   tc.recordIfaceInstance(calleeName, sig, bindings, e)
   for g in sig.generics:
@@ -4570,7 +4620,8 @@ proc failIfSealedBareVariant(tc: TypeChecker, owner: string, e: Expr) =
   ## variant; the BARE spelling reached the same value unchecked (audit T8a).
   let body = tc.typeDecls.getOrDefault(owner)
   if body == nil or not isSealed(body) or body.variants.len == 0 or
-     tc.transitionCtx or e.name == body.variants[0].name: return
+     tc.transitionCtx or (e.id.isSet and e.id == tc.transitionSite) or
+     e.name == body.variants[0].name: return
   fail("Sealed Error: " & e.name & " cannot be constructed directly — sealed " &
        "types start at '" & body.variants[0].name & "'; reach '" &
        e.name & "' via transitions, or mark [unsafe] for deserialization",
@@ -5120,14 +5171,38 @@ proc bindLoopVars(tc: var TypeChecker, iter: Pattern, elemT: Type) =
     if iter.elems.len >= 2 and iter.elems[1].kind == pkVar:
       tc.bindName(iter.elems[1].name, elemT, false)
 
-proc synthLoopBody(tc: var TypeChecker, body: Expr) =
+proc narrowedNames(tc: TypeChecker): HashSet[string] =
+  ## Every binding in scope that a guard has narrowed.
+  for sc in tc.scopes:
+    for name, b in sc:
+      if b.narrowed: result.incl name
+
+proc synthLoopBody(tc: var TypeChecker, body: Expr, guard = "") =
   ## spec 4.4b: the body is checked ONCE against the entry set (no
   ## fixed-point simulation); after the loop the state is entry ∪ body-exit.
+  ##
+  ## Optional narrowing is the exception (audit T1): a name narrowed on
+  ## entry that the body un-narrows (`r = {n: -1} mi`) is not narrowed at the
+  ## top of the next iteration, so `r.value` there read a `none`. The body is
+  ## checked again with those names un-narrowed — once, only when that
+  ## happened, against the same variant sets as the first pass. A `for x.ok:`
+  ## guard is re-established at the top of every iteration, so it stays.
   let entryVariants = tc.varVariants
+  let entryNarrowed = tc.narrowedNames()
+  let entryHoles = tc.holeState()   # the body may not run (T10)
   inc tc.loopDepth
   discard tc.synthesize(body)
+  var lost = entryNarrowed - tc.narrowedNames()
+  lost.excl guard
+  if lost.len > 0:
+    let firstExit = tc.varVariants
+    tc.varVariants = entryVariants
+    for n in lost: tc.setNarrowed(n, false)
+    discard tc.synthesize(body)
+    tc.varVariants = firstExit
   dec tc.loopDepth
   tc.varVariants = mergeVariants(entryVariants, tc.varVariants)
+  tc.joinHoles([entryHoles])
 
 proc synthFor(tc: var TypeChecker, e: Expr): Type =
   ## The loop variable carries the ELEMENT type. Binding it Unknown silently
@@ -5154,7 +5229,7 @@ proc synthWhile(tc: var TypeChecker, e: Expr): Type =
       fail("Type Error: loop condition must be bool, got " & typeName(ct),
            e.whileCond.span)
   if guard != "": tc.setNarrowed(guard, true)
-  tc.synthLoopBody(e.whileBody)
+  tc.synthLoopBody(e.whileBody, guard)
   if guard != "": tc.setNarrowed(guard, false)
   unitType(e.span)
 
@@ -5304,17 +5379,27 @@ proc failIfWritesImmutable(tc: var TypeChecker, call: Expr, callee: Decl) =
       tc.failIfPlaceImmutable(place, "let '" & callee.name & "' change",
                               place.span)
 
+proc constructionSite(v: Expr): NodeId =
+  ## The node naming the variant a right-hand side builds DIRECTLY: `Sess.Busy`
+  ## in `Sess.Busy`, `{..} Sess.Busy` or a bare `Busy`. Nothing nested in a
+  ## call's arguments is the assignment's transition.
+  if v == nil: return NodeId(0)
+  if v.kind in {exkField, exkVar}: return v.id
+  if v.kind == exkCall and v.callee != nil and v.callee.kind in {exkField, exkVar}:
+    return v.callee.id
+  NodeId(0)
+
 proc synthAssignVal(tc: var TypeChecker, e: Expr, targetT: Type): Type =
   ## spec 4.4b: the RHS of a checked transition assignment may construct a
   ## non-initial sealed variant — the transition IS the legal path (static
   ## analogue of the old transitionTo-chain exemption).
   let tracked = e.target != nil and e.target.kind == exkVar and
                 tc.transType(targetT) != ""
-  let prevCtx = tc.transitionCtx
-  if tracked: tc.transitionCtx = true
+  let prevSite = tc.transitionSite
+  if tracked: tc.transitionSite = constructionSite(e.assignVal)
   tc.withExpected(targetT):
     result = tc.synthesize(e.assignVal)
-  tc.transitionCtx = prevCtx
+  tc.transitionSite = prevSite
 
 proc checkTransition(tc: var TypeChecker, e: Expr, targetT: Type) =
   ## spec 4.4b: a reassignment that changes variant IS a transition —
@@ -5366,6 +5451,21 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
     fail("Type Error: cannot assign " & typeName(valT) & " to " &
          typeName(targetT), e.span)
   tc.checkTransition(e, targetT)
+  # The arm's subject given a new value holds that value's variant, not the
+  # arm's: `m = {n: 1} Msg.Gone` inside `Pile:` and `m.xs` is no field (O7).
+  if e.target != nil and e.target.kind == exkVar and
+     tc.armVariants.hasKey(e.target.name):
+    let tn = typeName(targetT)
+    tc.armVariants[e.target.name] =
+      if tc.typeDecls.hasKey(tn): tc.exprVariants(tn, e.assignVal) else: @[]
+  # `y = x` gives y x's value, holes and all (audit T10): a record var keeps
+  # exactly the holes of what it was last given.
+  if e.target != nil and e.target.kind == exkVar:
+    let holes = holesOf(tc.resolve(valT))
+    let tt = tc.lookup(e.target.name)
+    if holes.len > 0: tc.setBindingType(e.target.name, tc.resolve(valT))
+    elif tt.found and tt.b.typ != nil and tt.b.typ.kind == tkRecord:
+      tc.setHoles(e.target.name, holes)
   # A narrowed `x` given a `?T` again is no longer known present: the guard
   # held for the OLD value. Without this, `if x.ok: x = none; x.value`
   # checked clean — and a loop narrowing on `x.ok` (#98) rebinds x every
@@ -5379,6 +5479,12 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
   if key != "":
     tc.forgetPaths(key)
     if '.' in key and isWrapper(valT): tc.setNarrowed(key, false)
+  # A write into a slab cell reaches every reference to that cell: `b = a;
+  # b.next = none` changed `a.next` too, and a guard on `a.next` said nothing
+  # about it any more (audit T2). Which references alias is not known here,
+  # so every guarded path to a field of that name is forgotten.
+  if e.target != nil and e.target.kind == exkField and writesIntoSlabCell(e.target):
+    tc.forgetFieldPaths(e.target.fieldName)
 
 proc synthAssign(tc: var TypeChecker, e: Expr): Type =
   ## An assignment is a statement: it yields unit.
@@ -6259,8 +6365,12 @@ proc checkObjectDecl(tc: var TypeChecker, d: Decl) =
   tc.pushScope()
   for f in d.objFields: tc.bindName(f.name, f.typ, true)
   tc.bindName("self", tc.namedType(d.name, d.span), true)
+  let outerFields = tc.ownFields
+  tc.ownFields = @[]
+  for f in d.objFields: tc.ownFields.add f.name
   tc.withOwnerFields:
     for m in d.objMembers: tc.checkDecl(m)
+  tc.ownFields = outerFields
   tc.popScope()
 
 proc checkHandler(tc: var TypeChecker, h: Decl) =
@@ -6554,10 +6664,14 @@ proc checkActorDecl(tc: var TypeChecker, d: Decl) =
   for f in d.actorFields: tc.bindName(f.name, f.typ, true)
   tc.bindName("self", tc.namedType(d.name, d.span), true)
   let outerActor = tc.currentActor
+  let outerFields = tc.ownFields
   tc.currentActor = d.name
+  tc.ownFields = @[]
+  for f in d.actorFields: tc.ownFields.add f.name
   tc.withOwnerFields:
     for h in d.handlers: tc.checkHandler(h)
   tc.currentActor = outerActor
+  tc.ownFields = outerFields
   tc.popScope()
 
 proc checkDecl(tc: var TypeChecker, d: Decl) =

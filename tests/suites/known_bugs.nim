@@ -6768,4 +6768,523 @@ fn main() -> int:
   t.quietly: t.badCheck "A162: a type named like a pool's generated handle", "TK-TY51"
   t.bugFixed "A162: a type named like a pool's generated handle"
 
+  # A163 (class C, T1): a name narrowed on loop entry and un-narrowed in the
+  # body (`r = {n: -1} mi`) was still narrowed at the top of the next
+  # iteration, so `r.value` read a `none`. The body is checked again with it
+  # un-narrowed. A `for r.ok:` guard is re-established each iteration and
+  # stays narrowed.
+  t.src """
+fn mi({n: int}) -> int?:
+  if n < 0:
+    return none
+  return n
+
+fn main() -> int:
+  var r = {n: 7} mi
+  if not r.ok:
+    return 1
+  var s = 0
+  for i in 0 .. 2:
+    s = s + r.value
+    r = {n: -1} mi
+  return s
+"""
+  t.quietly: t.badCheck "A163: narrowing does not survive the loop back edge", "unhandled"
+  t.bugFixed "A163: narrowing does not survive the loop back edge"
+  t.src """
+fn mi({n: int}) -> int?:
+  if n < 0:
+    return none
+  return n - 1
+
+fn main() -> int:
+  var r = {n: 3} mi
+  var s = 0
+  for r.ok:
+    s = s + r.value
+    r = {n: r.value} mi
+  return s
+"""
+  t.quietly: t.runs "A163: ...a `for r.ok:` guard still narrows every iteration", 2
+  t.bugFixed "A163: ...a `for r.ok:` guard still narrows every iteration"
+
+  # A164 (class C, T2/T3): a guard on a field outlived a write that reached it
+  # by another way: through an alias of the same slab cell (`b = a;
+  # b.next = none`), through `self ..slot {none}`, or inside a call of the
+  # actor's own member that writes it. The read after it took a `none`.
+  t.src """
+type Node:
+  data: int
+  next: int?
+
+slab Nodes = Node
+
+fn main() -> int [io]:
+  let a = Nodes.new {data: 1, next: 5}
+  let b = a
+  if not a.next.ok:
+    return 1
+  b.next = none
+  let v = a.next.value
+  Nodes.free {r: a}
+  return v + 100
+"""
+  t.quietly: t.badCheck "A164: a write through a slab alias ends the guard", "unhandled"
+  t.bugFixed "A164: a write through a slab alias ends the guard"
+  t.src """
+import scheduler
+
+actor Cell:
+  slot: int? = 3
+  total: int = 0
+  on go():
+    if not slot.ok:
+      return
+    self ..slot {none}
+    total = slot.value + 100
+
+fn done() -> bool:
+  return Cell.total == 100
+
+fn main() -> int:
+  Cell send go
+  Cell.waitUntil {pred: :done}
+  return Cell.total
+"""
+  t.quietly: t.badCheck "A164: `self ..slot {none}` ends the guard on `slot`", "unhandled"
+  t.bugFixed "A164: `self ..slot {none}` ends the guard on `slot`"
+  t.src """
+import scheduler
+
+actor Cell:
+  slot: int? = 3
+  total: int = 0
+  fn wipe():
+    slot = none
+  on go():
+    if not slot.ok:
+      return
+    wipe
+    total = slot.value + 100
+
+fn done() -> bool:
+  return Cell.total == 100
+
+fn main() -> int:
+  Cell send go
+  Cell.waitUntil {pred: :done}
+  return Cell.total
+"""
+  t.quietly: t.badCheck "A164: a call of the actor's own member ends field guards", "unhandled"
+  t.bugFixed "A164: a call of the actor's own member ends field guards"
+
+  # A165 (class C, T10): TK-TY16 holes laundered through a second call, a
+  # returned parameter or partial local, a fill on only one path, and a plain
+  # assignment. The rule is the spec's: leaving a field out is fine, READING
+  # it is the error — so each of these is a read the checker missed.
+  t.src """
+type P:
+  a: int
+  b: int
+
+type Q:
+  p: P
+
+type S:
+  | V({p: P})
+  | W
+
+fn readB({p: P}) -> int:
+  return p.b
+
+fn readViaTwo({p: P}) -> int:
+  return {p: p} readB
+
+fn ret({a: int}) -> P:
+  let x = {a: a} P
+  return x
+
+fn ident({p: P}) -> P:
+  return p
+
+fn gid[T]({x: T}) -> T:
+  return x
+
+fn setB({p: P}) -> P:
+  var q = p
+  q.b = 5
+  return q
+
+fn main() -> int [io]:
+  let x = {a: 1} P
+  return {p: x} readViaTwo
+"""
+  t.quietly: t.badCheck "A165: a hole read two calls down", "TK-TY16"
+  t.bugFixed "A165: a hole read two calls down"
+  t.src """
+type P:
+  a: int
+  b: int
+
+type Q:
+  p: P
+
+type S:
+  | V({p: P})
+  | W
+
+fn readB({p: P}) -> int:
+  return p.b
+
+fn readViaTwo({p: P}) -> int:
+  return {p: p} readB
+
+fn ret({a: int}) -> P:
+  let x = {a: a} P
+  return x
+
+fn ident({p: P}) -> P:
+  return p
+
+fn gid[T]({x: T}) -> T:
+  return x
+
+fn setB({p: P}) -> P:
+  var q = p
+  q.b = 5
+  return q
+
+fn main() -> int [io]:
+  let x = {a: 1} P
+  let y = {p: x} ident
+  return y.b
+"""
+  t.quietly: t.badCheck "A165: a parameter returned keeps its holes", "TK-TY16"
+  t.bugFixed "A165: a parameter returned keeps its holes"
+  t.src """
+type P:
+  a: int
+  b: int
+
+type Q:
+  p: P
+
+type S:
+  | V({p: P})
+  | W
+
+fn readB({p: P}) -> int:
+  return p.b
+
+fn readViaTwo({p: P}) -> int:
+  return {p: p} readB
+
+fn ret({a: int}) -> P:
+  let x = {a: a} P
+  return x
+
+fn ident({p: P}) -> P:
+  return p
+
+fn gid[T]({x: T}) -> T:
+  return x
+
+fn setB({p: P}) -> P:
+  var q = p
+  q.b = 5
+  return q
+
+fn main() -> int [io]:
+  let y = {a: 1} ret
+  return y.b
+"""
+  t.quietly: t.badCheck "A165: a partly built local returned keeps its holes", "TK-TY16"
+  t.bugFixed "A165: a partly built local returned keeps its holes"
+  t.src """
+type P:
+  a: int
+  b: int
+
+type Q:
+  p: P
+
+type S:
+  | V({p: P})
+  | W
+
+fn readB({p: P}) -> int:
+  return p.b
+
+fn readViaTwo({p: P}) -> int:
+  return {p: p} readB
+
+fn ret({a: int}) -> P:
+  let x = {a: a} P
+  return x
+
+fn ident({p: P}) -> P:
+  return p
+
+fn gid[T]({x: T}) -> T:
+  return x
+
+fn setB({p: P}) -> P:
+  var q = p
+  q.b = 5
+  return q
+
+fn main() -> int [io]:
+  var x = {a: 1} P
+  if x.a > 0:
+    x.b = 2
+  return x.b
+"""
+  t.quietly: t.badCheck "A165: a field filled in one branch", "TK-TY16"
+  t.bugFixed "A165: a field filled in one branch"
+  t.src """
+type P:
+  a: int
+  b: int
+
+type Q:
+  p: P
+
+type S:
+  | V({p: P})
+  | W
+
+fn readB({p: P}) -> int:
+  return p.b
+
+fn readViaTwo({p: P}) -> int:
+  return {p: p} readB
+
+fn ret({a: int}) -> P:
+  let x = {a: a} P
+  return x
+
+fn ident({p: P}) -> P:
+  return p
+
+fn gid[T]({x: T}) -> T:
+  return x
+
+fn setB({p: P}) -> P:
+  var q = p
+  q.b = 5
+  return q
+
+fn main() -> int [io]:
+  var x = {a: 1} P
+  for i in 0 .. 1:
+    x.b = 2
+  return x.b
+"""
+  t.quietly: t.badCheck "A165: a field filled in a loop body that may not run", "TK-TY16"
+  t.bugFixed "A165: a field filled in a loop body that may not run"
+  t.src """
+type P:
+  a: int
+  b: int
+
+type Q:
+  p: P
+
+type S:
+  | V({p: P})
+  | W
+
+fn readB({p: P}) -> int:
+  return p.b
+
+fn readViaTwo({p: P}) -> int:
+  return {p: p} readB
+
+fn ret({a: int}) -> P:
+  let x = {a: a} P
+  return x
+
+fn ident({p: P}) -> P:
+  return p
+
+fn gid[T]({x: T}) -> T:
+  return x
+
+fn setB({p: P}) -> P:
+  var q = p
+  q.b = 5
+  return q
+
+fn main() -> int [io]:
+  let x = {a: 1} P
+  var y = {a: 0, b: 0} P
+  y = x
+  return y.b
+"""
+  t.quietly: t.badCheck "A165: `y = x` gives y the holes of x", "TK-TY16"
+  t.bugFixed "A165: `y = x` gives y the holes of x"
+  t.src """
+type P:
+  a: int
+  b: int
+
+type Q:
+  p: P
+
+type S:
+  | V({p: P})
+  | W
+
+fn readB({p: P}) -> int:
+  return p.b
+
+fn readViaTwo({p: P}) -> int:
+  return {p: p} readB
+
+fn ret({a: int}) -> P:
+  let x = {a: a} P
+  return x
+
+fn ident({p: P}) -> P:
+  return p
+
+fn gid[T]({x: T}) -> T:
+  return x
+
+fn setB({p: P}) -> P:
+  var q = p
+  q.b = 5
+  return q
+
+fn main() -> int [io]:
+  let x = {a: 1} P
+  let f = {p: x} setB
+  return f.b
+"""
+  t.quietly: t.okCheck "A165: ...a fn that sets the field before returning the copy fills it"
+  t.bugFixed "A165: ...a fn that sets the field before returning the copy fills it"
+  t.src """
+type P:
+  a: int
+  b: int
+fn main() -> int:
+  var x = {a: 1} P
+  if x.a > 0:
+    x.b = 2
+  else:
+    x.b = 3
+  return x.b
+"""
+  t.quietly: t.runs "A165: ...a field filled on both paths is filled", 2
+  t.bugFixed "A165: ...a field filled on both paths is filled"
+
+  # A166 (class C, O7/O4). O7: inside `Pile:`, `m = {n: 1} Msg.Gone` and
+  # then `m.xs` read a field the value no longer has — an arm narrowed its
+  # subject only for sums with `transitions:`. O4: `var m = q` was judged
+  # q's final read although `q.xs.len` is read later inside an `if`, so Nim
+  # moved q out and read an empty Seq (3, where Odin and D said 6).
+  t.src """
+import seq
+
+type Msg:
+  | Pile({xs: Seq[int]})
+  | Gone({n: int})
+
+fn initM({n: int}) -> Msg:
+  return {xs: [7, 8, 9]} Msg.Pile
+
+fn main() -> int:
+  var m = {n: 0} initM
+  var r = 0
+  match m:
+    Pile:
+      let k = 0
+      m = {n: 1} Msg.Gone
+      r = m.xs.len + m.xs.at {index: 0}
+    Gone:
+      r = 100
+  return r
+"""
+  t.quietly: t.badCheck "A166: the arm's subject reassigned has the new value's variant", "no field 'xs'"
+  t.bugFixed "A166: the arm's subject reassigned has the new value's variant"
+  t.src """
+import seq
+
+type Box:
+  xs: Seq[int]
+
+fn main() -> int:
+  let q = {xs: [7, 8, 9]} Box
+  var m = q
+  var r = 0
+  if r == 0:
+    r = q.xs.len
+  r = r + m.xs.len
+  return r
+"""
+  t.quietly: t.runs "A166: a copy is no final read when a field is read in a later block", 6
+  t.bugFixed "A166: a copy is no final read when a field is read in a later block"
+
+  # A167 (class C, T8b/c): a tracked assignment let its WHOLE right-hand side
+  # build sealed non-initial variants, so `s = {s: Sess.Done {..}} ident`
+  # and even another sealed type's `Other.End` inside a call argument were
+  # accepted. Only the construction the transition itself produces is exempt.
+  t.src """
+type Sess [sealed]:
+  | Idle
+  | Busy({n: int})
+  | Done({n: int})
+
+  transitions:
+    Idle -> Busy
+    Busy -> Done
+
+fn ident({s: Sess}) -> Sess:
+  return s
+
+fn fresh() -> Sess:
+  return Sess.Idle
+
+fn main() -> int [io]:
+  var s = Sess.Idle
+  s = {s: Sess.Done {n: 41}} ident
+  let t: Sess = fresh
+  let a = match s:
+    Idle: 0
+    Busy: 1
+    Done: s.n
+  let b = match t:
+    Idle: 0
+    Busy: 1
+    Done: 1
+  return a + b
+"""
+  t.quietly: t.badCheck "A167: a sealed variant inside a call argument is not the transition", "Sealed Error"
+  t.bugFixed "A167: a sealed variant inside a call argument is not the transition"
+  t.src """
+type Sess [sealed]:
+  | Idle
+  | Busy({n: int})
+
+  transitions:
+    Idle -> Busy
+
+type Other [sealed]:
+  | Start
+  | End({n: int})
+
+  transitions:
+    Start -> End
+
+fn fromOther({o: Other}) -> Sess:
+  return Sess.Idle
+
+fn main() -> int [io]:
+  var s = Sess.Idle
+  s = {o: Other.End {n: 3}} fromOther
+  return 0
+"""
+  t.quietly: t.badCheck "A167: ...nor is another sealed type's variant", "Sealed Error"
+  t.bugFixed "A167: ...nor is another sealed type's variant"
+
   t.finish()
