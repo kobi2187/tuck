@@ -23,6 +23,7 @@ TuckFˑtuckˑtaskˑfetchFeed :: struct {
 	url: string,
 	tuckˑvˑresp: rt.TuckResult(tuckˑmodˑshapes_14_task.TRec_body(string)),
 	tuckDefer0: bool,
+	tuckDefer1: bool,
 }
 
 TuckNewˑtuckˑtaskˑfetchFeed :: proc(tuckAt: ^TuckFˑtuckˑtaskˑfetchFeed, tuckRes: ^rt.TuckSlot(rt.TuckResult(tuckˑmodˑshapes_14_task.TRec_feed(tuckˑtypeˑFeed))), tuckDest: ^rt.TuckResult(tuckˑmodˑshapes_14_task.TRec_feed(tuckˑtypeˑFeed)), url: string) -> ^TuckFˑtuckˑtaskˑfetchFeed {
@@ -46,6 +47,7 @@ TuckRetˑtuckˑtaskˑfetchFeed :: proc(tuckF: ^TuckFˑtuckˑtaskˑfetchFeed, v: 
 TuckSˑtuckˑtaskˑfetchFeedˑ0 :: proc(env: rawptr) -> rt.TuckHop {
   tuckF := (^TuckFˑtuckˑtaskˑfetchFeed)(env)
   using tuckF
+  tuckDefer0 = true
   return rt.tuckSlYield(&tuckF.tuckHdr, TuckSˑtuckˑtaskˑfetchFeedˑ1)
 }
 
@@ -64,7 +66,7 @@ TuckIOˑtuckˑtaskˑfetchFeedˑ0 :: proc(env: rawptr) {
 TuckSˑtuckˑtaskˑfetchFeedˑ2 :: proc(env: rawptr) -> rt.TuckHop {
   tuckF := (^TuckFˑtuckˑtaskˑfetchFeed)(env)
   using tuckF
-  tuckDefer0 = true
+  tuckDefer1 = true
   if (tuckˑvˑresp.status == .Ok) {
       return TuckRetˑtuckˑtaskˑfetchFeed(tuckF, rt.tok(tuckˑfnˑparse(tuckˑvˑresp.value.body)))
   }
@@ -73,15 +75,23 @@ TuckSˑtuckˑtaskˑfetchFeedˑ2 :: proc(env: rawptr) -> rt.TuckHop {
 
 TuckExitˑtuckˑtaskˑfetchFeed :: proc(tuckF: ^TuckFˑtuckˑtaskˑfetchFeed) {
   using tuckF
-  if tuckDefer0 {
+  if tuckDefer1 {
     rt.tuckDrop(tuckˑvˑresp)
+    tuckDefer1 = false
+  }
+  if tuckDefer0 {
+    rt.tuckDrop(url)
     tuckDefer0 = false
   }
 }
 TuckXˑtuckˑtaskˑfetchFeedˑ0 :: proc(tuckF: ^TuckFˑtuckˑtaskˑfetchFeed) {
   using tuckF
-  if tuckDefer0 {
+  if tuckDefer1 {
     rt.tuckDrop(tuckˑvˑresp)
+    tuckDefer1 = false
+  }
+  if tuckDefer0 {
+    rt.tuckDrop(url)
     tuckDefer0 = false
   }
 }

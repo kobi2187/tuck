@@ -7674,4 +7674,49 @@ fn main() -> int:
   t.quietly: t.runsOdin "A171: ...on Odin, without reading freed memory", 1
   t.bugFixed "A171: ...on Odin, without reading freed memory"
 
+  # A172 (class E, O6): a fire-and-forget task borrowed the caller's buffer
+  # while the caller went on changing it (`xs.setAt`, `xs = xs.push`): Nim
+  # crashed, Odin and D summed garbage. A task owns its parameters: the
+  # caller hands over a copy (or moves its last use), and the task drops it.
+  t.src """
+import seq
+import time
+import scheduler
+
+actor Sink [queue: 8]:
+  total: int = 0
+  seen: int = 0
+
+  on take({xs: Seq[int]}):
+    var t = 0
+    for e in xs:
+      t = t + e
+    total = t
+    seen = seen + 1
+
+task worker({xs: Seq[int]}) -> void [io]:
+  {ms: 20} sleepMs
+  var t = 0
+  for e in xs:
+    t = t + e
+  let ys = xs.push {value: t}
+  Sink send take {xs: ys}
+
+fn ready() -> bool:
+  return Sink.seen == 1
+
+fn main() -> int [io]:
+  var xs: Seq[int] = [1, 2, 3]
+  {xs: xs} worker
+  xs.setAt {index: 0, value: 100}
+  xs = xs.push {value: 1000}
+  {ms: 100} sleepMs
+  Sink.waitUntil {pred: :ready}
+  return Sink.total
+"""
+  t.quietly: t.runs "A172: a task owns its parameters", 12
+  t.bugFixed "A172: a task owns its parameters"
+  t.quietly: t.runsOdin "A172: ...on Odin", 12
+  t.bugFixed "A172: ...on Odin"
+
   t.finish()

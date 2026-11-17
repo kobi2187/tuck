@@ -145,6 +145,7 @@ __validated_tuckˑtypeˑVolume :: proc(v: tuckˑtypeˑVolume) -> tuckˑtypeˑVol
 }
 
 tuckˑtaskˑstreamReader :: proc(streamId: u8, chunks: [dynamic]u32) -> rt.TuckResult(rt.TuckUnit) {
+  defer delete(chunks)
   for tuckˑvˑi in chunks {
       tuckˑvˑbuf := rt.tuckPoolAcquire(&tuckˑpoolˑBufferPool)
       if !(tuckˑvˑbuf.status == .Ok) {

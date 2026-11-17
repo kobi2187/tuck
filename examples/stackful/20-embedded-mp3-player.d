@@ -127,6 +127,7 @@ tuckˑtypeˑVolume __validated_tuckˑtypeˑVolume(tuckˑtypeˑVolume v)
 }
 
 rt.TuckResult!(rt.TuckUnit) tuckˑtaskˑstreamReader(ubyte streamId, uint[] chunks) {
+    scope(exit) rt.tuckDrop(chunks);
     foreach (tuckˑvˑi; chunks) {
         rt.TuckResult!(rt.PoolHandle) tuckˑvˑbuf = rt.tuckPoolAcquire(tuckˑpoolˑBufferPool);
         if (!(tuckˑvˑbuf.status == rt.TuckStatus.Ok)) {

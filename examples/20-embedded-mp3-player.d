@@ -133,6 +133,7 @@ struct TuckFˑtuckˑtaskˑstreamReader
     rt.TuckResult!(rt.TuckUnit)* tuckDest;
     ubyte streamId;
     uint[] chunks;
+    bool tuckDefer0;
 }
 
 TuckFˑtuckˑtaskˑstreamReader* TuckNewˑtuckˑtaskˑstreamReader(TuckFˑtuckˑtaskˑstreamReader* tuckAt, rt.TuckSlot!(rt.TuckResult!(rt.TuckUnit))* tuckRes, rt.TuckResult!(rt.TuckUnit)* tuckDest, ubyte streamId, uint[] chunks)
@@ -160,6 +161,7 @@ rt.TuckHop TuckSˑtuckˑtaskˑstreamReaderˑ0(void* env)
     auto tuckF = cast(TuckFˑtuckˑtaskˑstreamReader*) env;
     with (*tuckF)
     {
+        tuckDefer0 = true;
         foreach (tuckˑvˑi; chunks) {
             rt.TuckResult!(rt.PoolHandle) tuckˑvˑbuf = rt.tuckPoolAcquire(tuckˑpoolˑBufferPool);
             if (!(tuckˑvˑbuf.status == rt.TuckStatus.Ok)) {
@@ -176,6 +178,22 @@ void TuckExitˑtuckˑtaskˑstreamReader(TuckFˑtuckˑtaskˑstreamReader* tuckF)
 {
     with (*tuckF)
     {
+        if (tuckDefer0)
+        {
+            rt.tuckDrop(chunks);
+            tuckDefer0 = false;
+        }
+    }
+}
+void TuckXˑtuckˑtaskˑstreamReaderˑ0(TuckFˑtuckˑtaskˑstreamReader* tuckF)
+{
+    with (*tuckF)
+    {
+        if (tuckDefer0)
+        {
+            rt.tuckDrop(chunks);
+            tuckDefer0 = false;
+        }
     }
 }
 

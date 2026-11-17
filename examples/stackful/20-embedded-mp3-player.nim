@@ -124,6 +124,8 @@ proc tuckˑregisterˑDMA1_CH3_TCIE_set*(value: bool) {.inline.} =
 
 var tuckˑpoolˑBufferPool* = ObjectPool[array[512, uint8], 4]()
 proc tuckˑtaskˑstreamReader*(streamId: uint8, chunks: seq[uint32]): TuckResult[tuple[]] =
+  var chunks = tuckBits(chunks)
+  defer: tuckDrop(chunks)
   for tuckˑvˑi in chunks:
     if true:
       var tuckˑvˑbuf = tuckPoolAcquire(tuckˑpoolˑBufferPool)
