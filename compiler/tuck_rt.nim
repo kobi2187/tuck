@@ -366,6 +366,28 @@ proc tuckOverflowTrap*(ty, op: string) {.noreturn.} =
   stderr.writeLine("Arithmetic overflow on " & ty & ": " & op)
   quit(1)
 
+proc tuckDivTrap*(ty, op: string) {.noreturn.} =
+  ## Integer `/i` or `%` by zero: stops at the site with exit 1, as an
+  ## overflow trap does, on every backend (audit Y2 — Nim raised a defect
+  ## (1), Odin died on SIGILL (132), D on SIGFPE (136)).
+  stderr.writeLine("Division by zero on " & ty & ": " & op)
+  quit(1)
+
+proc tuckDivI*[T: SomeInteger](a, b: T): T {.inline.} =
+  ## `a /i b`, truncating, with the one case each host faults on instead of
+  ## answering — the minimum divided by -1 — stopped as an overflow.
+  if b == 0: tuckDivTrap($T, "/i")
+  when T is SomeSignedInt:
+    if b == -1 and a == low(T): tuckOverflowTrap($T, "/i")
+  a div b
+
+proc tuckModI*[T: SomeInteger](a, b: T): T {.inline.} =
+  ## `a % b`. The minimum mod -1 is 0, which the host's divide faults on.
+  if b == 0: tuckDivTrap($T, "%")
+  when T is SomeSignedInt:
+    if b == -1: return 0
+  a mod b
+
 type ArithRes[T] = tuple[r: T, over, high: bool]
   ## A wrapped result, whether the exact one did not fit, and which end of the
   ## range the exact result lies past.

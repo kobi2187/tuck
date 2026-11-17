@@ -462,8 +462,44 @@ void tuckOverflowTrap(string ty, string op)
 {
     import std.stdio : stderr;
     import core.stdc.stdlib : exit;
+    import std.stdio : stdout;
+    stdout.flush();
     stderr.writeln("Arithmetic overflow on ", ty, ": ", op);
     exit(1);
+}
+
+/// Integer `/i` or `%` by zero stops at the site with exit 1, as an overflow
+/// trap does, on every backend (audit Y2: D died on SIGFPE, exit 136).
+void tuckDivTrap(string ty, string op)
+{
+    import std.stdio : stderr, stdout;
+    import core.stdc.stdlib : exit;
+    stdout.flush();
+    stderr.writeln("Division by zero on ", ty, ": ", op);
+    exit(1);
+}
+
+/// `a /i b`, truncating; the minimum divided by -1 faults on the host, so it
+/// stops as an overflow.
+pragma(inline, true)
+T tuckDivI(T)(T a, T b)
+{
+    import std.traits : isSigned;
+    if (b == 0) tuckDivTrap(T.stringof, "/i");
+    static if (isSigned!T)
+        if (b == -1 && a == T.min) tuckOverflowTrap(T.stringof, "/i");
+    return cast(T)(a / b);
+}
+
+/// `a % b`; the minimum mod -1 is 0, which the host's divide faults on.
+pragma(inline, true)
+T tuckModI(T)(T a, T b)
+{
+    import std.traits : isSigned;
+    if (b == 0) tuckDivTrap(T.stringof, "%");
+    static if (isSigned!T)
+        if (b == -1) return 0;
+    return cast(T)(a % b);
 }
 
 T tuckArith(T, OvOp op, OvPolicy pol)(T a, T b)
@@ -627,11 +663,14 @@ ulong hashKey(T)(T key)
 // of fannkuch on D, by callgrind).
 private noreturn tuckOutOfBounds(long index, long length, string op)
 {
-    import core.stdc.stdlib : abort;
-    import std.stdio : stderr;
+    // exit(1) with stdout flushed, as every Tuck trap stops (audit Y3: abort()
+    // gave 134 and dropped what the program had already printed).
+    import core.stdc.stdlib : exit;
+    import std.stdio : stderr, stdout;
+    stdout.flush();
     stderr.writeln(op, ": index ", index,
                    " out of bounds for seq of length ", length);
-    abort();
+    exit(1);
 }
 
 pragma(inline, true)

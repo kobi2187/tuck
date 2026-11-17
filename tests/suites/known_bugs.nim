@@ -7832,4 +7832,52 @@ fn main() -> int [io]:
   t.quietly: t.badCheck "A175: `with` on a sum type is refused", "is a sum type"
   t.bugFixed "A175: `with` on a sum type is refused"
 
+  # A176 (class G, Y2/Y3): a runtime trap stopped differently on each
+  # backend. Division by zero: Nim 1, Odin 132 (SIGILL), D 136 (SIGFPE); the
+  # minimum /i -1 faulted; out of bounds: Nim 1, Odin 132 (an `assert`,
+  # stripped under -disable-assert), D 134 (abort, losing printed output).
+  # Every one now stops at the site with a message and exit 1, as an overflow
+  # trap and an invariant failure already did (ROADMAP S3.1).
+  t.src """
+fn main() -> int:
+  let a = 5
+  let z = 0
+  return a /i z
+"""
+  t.quietly: t.runs "A176: integer division by zero exits 1", 1
+  t.bugFixed "A176: integer division by zero exits 1"
+  t.quietly: t.runsOdin "A176: division by zero on Odin", 1
+  t.bugFixed "A176: division by zero on Odin"
+  t.src """
+fn main() -> int:
+  let a: i32 = 0 - 2147483647 - 1
+  let n: i32 = 0 - 1
+  let r = a % n
+  let q = a /i n
+  return 0
+"""
+  t.quietly: t.runs "A176: the minimum /i -1 is an overflow trap, mod -1 is 0", 1
+  t.bugFixed "A176: the minimum /i -1 is an overflow trap, mod -1 is 0"
+  t.quietly: t.runsOdin "A176: minimum /i -1 on Odin", 1
+  t.bugFixed "A176: minimum /i -1 on Odin"
+  t.src """
+import seq
+fn main() -> int:
+  let xs: Seq[int] = [1, 2, 3]
+  let i = 3
+  return {items: xs, index: i} at
+"""
+  t.quietly: t.runs "A176: out of bounds exits 1", 1
+  t.bugFixed "A176: out of bounds exits 1"
+  t.quietly: t.runsOdin "A176: out of bounds on Odin", 1
+  t.bugFixed "A176: out of bounds on Odin"
+  t.src """
+import str
+fn main() -> int:
+  let o = {ch: ""} ord
+  return 0
+"""
+  t.quietly: t.runsOdin "A176: ord of an empty str exits 1 on Odin", 1
+  t.bugFixed "A176: ord of an empty str exits 1 on Odin"
+
   t.finish()

@@ -82,6 +82,7 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | Y13 a plain value into a `T?` is wrapped for a generic `T` field and branch by branch in an `if`/`match` value | A174 | |
 | T14 `with` on a sum type is refused (spec: it replaces fields of a declared record) | A175 | |
 | Y14 an imported extern's params are recorded, so extra payload fields are ignored (spec §2.5) instead of passed | A174 | the in-place `push` recogniser reads the exploded form too |
+| Y2/Y3 division by zero, minimum `/i` -1 and out of bounds stop with a message and exit 1 on all three backends, as overflow and invariant traps already did (S3.1); `%` by -1 is 0; D flushes stdout before it stops | A176 | integer `/i` and `%` go through `tuckDivI`/`tuckModI`; Odin bounds checks no longer depend on `assert` |
 
 **Still open in class B.** M14's refusal for a private or un-imported callee is a restriction, not the end
 state: the clone should be checked in the library's scope.

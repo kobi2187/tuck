@@ -850,6 +850,24 @@ proc overflowPlan*(m: Module, real: ModuleMap, t: Type): OverflowPlan =
   OverflowPlan(active: true, policy: (if attr == "": "Trap" else: attr),
                base: base, named: t.name)
 
+const IntegerNames* = ["int", "i8", "i16", "i32", "i64",
+                       "u8", "u16", "u32", "u64", "usize"]
+
+proc checkedDivision*(e: Expr, t: Type): bool =
+  ## Is `e` an integer `/i` or `%` on a primitive integer type `t`? Those go
+  ## through the runtime's `tuckDivI`/`tuckModI`, which stop with exit 1 on a
+  ## zero divisor where each host faulted its own way (audit Y2: Nim 1, Odin
+  ## 132, D 136), and answer the minimum mod -1 the host's divide faults on.
+  ## A named type over an integer keeps the plain operator: its helpers would
+  ## need the host's distinct-type arithmetic, which each backend spells
+  ## differently.
+  e.binOp in {boDivInt, boMod} and t != nil and t.kind == tkNamed and
+    t.name in IntegerNames
+
+proc divHelper*(op: BinOp): string =
+  ## The runtime helper for a checked integer division.
+  if op == boMod: "tuckModI" else: "tuckDivI"
+
 proc ovOpName*(op: BinOp): string =
   ## The checked-arithmetic helper's operator enum member (OvOp.Add ...).
   case op

@@ -789,6 +789,10 @@ proc genBinary(ctx: var CodegenCtx, e: Expr): string =
   if e.binOp in {boAdd, boSub, boMul}:
     let plan = overflowPlan(ctx.module, ctx.realModules, ctx.res.typeFor(e))
     if plan.active: return ctx.genCheckedArith(e, plan)
+  let rt = ctx.res.typeFor(e)
+  if checkedDivision(e, rt):
+    return divHelper(e.binOp) & "[" & genType(rt) & "](" & ctx.genExpr(e.left) &
+           ", " & ctx.genExpr(e.right) & ")"
   "(" & ctx.genExpr(e.left) & " " & nimBinOp(e.binOp) & " " &
     ctx.genExpr(e.right) & ")"
 

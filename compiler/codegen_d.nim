@@ -630,6 +630,10 @@ proc genDBinary(ctx: var DCodegenCtx, e: Expr): string =
       return "rt.tuckArith!(" & tname & ", rt.OvOp." & ovOpName(e.binOp) &
              ", rt.OvPolicy." & plan.policy & ")(" & ctx.genDExpr(e.left) &
              ", " & ctx.genDExpr(e.right) & ")"
+  let rt = ctx.res.typeFor(e)
+  if checkedDivision(e, rt):
+    return "rt." & divHelper(e.binOp) & "!(" & ctx.dType(rt) & ")(" &
+           ctx.genDExpr(e.left) & ", " & ctx.genDExpr(e.right) & ")"
   "(" & ctx.genDExpr(e.left) & " " & dBinOp(e.binOp) & " " &
     ctx.genDExpr(e.right) & ")"
 

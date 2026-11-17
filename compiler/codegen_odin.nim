@@ -1228,6 +1228,11 @@ proc genBinary(ctx: var OdinCodegenCtx, e: Expr): string =
       return "rt.tuckArith(" & ctx.genOdinExpr(e.left) & ", " &
              ctx.genOdinExpr(e.right) & ", ." & ovOpName(e.binOp) & ", ." &
              plan.policy & ")"
+  let rt = ctx.res.typeFor(e)
+  if checkedDivision(e, rt):
+    let tn = ctx.odinType(rt)
+    return "rt." & divHelper(e.binOp) & "(" & tn & "(" & ctx.genOdinExpr(e.left) &
+           "), " & tn & "(" & ctx.genOdinExpr(e.right) & "))"
   "(" & ctx.genOdinExpr(e.left) & " " & odinBinOp(e.binOp) & " " &
     ctx.genOdinExpr(e.right) & ")"
 
