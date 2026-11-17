@@ -6517,4 +6517,255 @@ fn seen() -> bool:
   t.quietly: t.runsOdin "A155: ...on Odin", 3
   t.bugFixed "A155: ...on Odin"
 
+  # A156 (class B, M7): a group requirement met by a fn another module
+  # declares was looked up by its bare name, so a receiver whose provider sat
+  # in an import (two imports each with a `keyOf`) found nothing or the wrong
+  # one, and Odin's provider of a generic group (`Keyed[K]`) dropped `K`.
+  t.src """
+import g
+import p1
+import p2
+type C:
+  z: int
+fn keyOf({self: C}) -> int:
+  return self.z + 100
+fn main() -> int:
+  let a = {n: 1} A
+  let b = {s: "xy"} B
+  let c = {z: 5} C
+  let ka = {x: a} use
+  let kb = {x: b} use
+  let kc = {x: c} use
+  return ka + kb.len + kc
+"""
+  t.addFile("g.tuck", """group Keyed[K]:
+  fn keyOf({self: Self}) -> K
+fn use[T: Keyed[K], K]({x: T}) -> K:
+  return {self: x} keyOf
+""")
+  t.addFile("p1.tuck", """type A:
+  n: int
+fn keyOf({self: A}) -> int:
+  return self.n
+""")
+  t.addFile("p2.tuck", """type B:
+  s: str
+fn keyOf({self: B}) -> str:
+  return self.s
+""")
+  t.quietly: t.runs "A156: a group requirement met in an imported module", 108
+  t.bugFixed "A156: a group requirement met in an imported module"
+  t.quietly: t.runsOdin "A156: ...on Odin", 108
+  t.bugFixed "A156: ...on Odin"
+
+  # A157 (class B, M10): a conversion to an imported alias, distinct or
+  # wrapping type emitted the type's bare name on Odin and D, which never
+  # merge another package's names into scope.
+  t.src """
+import lib
+fn main() -> int:
+  let a = {value: 25} Small
+  let b = {value: 3} Ms
+  let c = {value: 2} W
+  return {value: a} int + {value: b} int + {value: c} int
+"""
+  t.addFile("lib.tuck", """type Small = u8
+distinct Ms = u32
+type W = u8 [wrapping]
+""")
+  t.quietly: t.runs "A157: a conversion to an imported alias or distinct type", 30
+  t.bugFixed "A157: a conversion to an imported alias or distinct type"
+  t.quietly: t.runsOdin "A157: ...on Odin", 30
+  t.bugFixed "A157: ...on Odin"
+
+  # A158 (class B, M17/M12): two spellings Nim folds to one name (`my_val`,
+  # `myVal`) built on Odin and D and failed on Nim with "redefinition". The
+  # rule is the language's: refused in every scope that reaches Nim intact.
+  t.src """
+fn my_val() -> int:
+  return 1
+fn myVal() -> int:
+  return 10
+fn main() -> int:
+  return {} my_val + {} myVal
+"""
+  t.quietly: t.badCheck "A158: two top-level fns Nim folds to one", "TK-TY50"
+  t.bugFixed "A158: two top-level fns Nim folds to one"
+  t.src """
+type P:
+  max_x: int
+  maxX: int
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A158: two fields Nim folds to one", "TK-TY50"
+  t.bugFixed "A158: two fields Nim folds to one"
+  t.src """
+fn f({lo_w: int, loW: int}) -> int:
+  return lo_w + loW
+fn main() -> int:
+  let a_b = 1
+  return a_b
+"""
+  t.quietly: t.badCheck "A158: two params Nim folds to one", "TK-TY50"
+  t.bugFixed "A158: two params Nim folds to one"
+  t.src """
+fn main() -> int:
+  let a_b = 1
+  let aB = 2
+  return a_b * 100 + aB
+"""
+  t.quietly: t.badCheck "A158: two locals Nim folds to one", "TK-TY50"
+  t.bugFixed "A158: two locals Nim folds to one"
+
+  t.src """
+import a_b
+import ab
+fn main() -> int:
+  return {} a_b::val + {} ab::val
+"""
+  t.addFile("a_b.tuck", "fn val() -> int:\n  return 1\n")
+  t.addFile("ab.tuck", "fn val() -> int:\n  return 10\n")
+  t.quietly: t.badCheck "A158: two modules Nim folds to one", "TK-TY50"
+  t.bugFixed "A158: two modules Nim folds to one"
+
+  # A159 (class B, M18): `states:` named its protocol by a bare string looked
+  # up program-wide, so two imports' `DbState` said "names no sum type", and
+  # `states: a::DbState` did not parse.
+  t.src """
+import a
+import b
+resources:
+  db [cap: 32, states: DbState]
+fn main() -> int:
+  return 0
+"""
+  t.addFile("a.tuck", """type DbState:
+  | Open
+  | Closed
+  transitions:
+    Open -> Closed
+""")
+  t.addFile("b.tuck", """type DbState:
+  | Idle
+  | Busy
+  transitions:
+    Idle -> Busy
+""")
+  t.quietly: t.badCheck "A159: a bare `states:` two imports declare is ambiguous", "TK-TY47"
+  t.bugFixed "A159: a bare `states:` two imports declare is ambiguous"
+  t.src """
+import a
+import b
+resources:
+  db [cap: 32, states: b::DbState]
+fn main() -> int:
+  return 0
+"""
+  t.addFile("a.tuck", """type DbState:
+  | Open
+  | Closed
+  transitions:
+    Open -> Closed
+""")
+  t.addFile("b.tuck", """type DbState:
+  | Idle
+  | Busy
+  transitions:
+    Idle -> Busy
+""")
+  t.quietly: t.okCheck "A159: `states: b::DbState` names b's protocol"
+  t.bugFixed "A159: `states: b::DbState` names b's protocol"
+
+  # A160 (class B, M24): a type only one module declares, written through its
+  # module (`{key: 4} a::Entry`), was read as a call of a fn `Entry`; and
+  # `{e: en} a::Shape.Dot` parsed as `({e: en} a::Shape).Dot`.
+  t.src """
+import a
+import b
+fn tag({s: a::Shape}) -> int:
+  match s:
+    Dot: return 100
+    Line: return 20
+fn main() -> int:
+  let en = {key: 4} a::Entry
+  let s1 = {e: en} a::Shape.Dot
+  let s2 = {k: 30} a::Shape.Line
+  let s3 = {n: 1} b::Shape.Dot
+  let x: a::Entry = {key: 5} Entry
+  return {s: s1} tag + {s: s2} tag + x.key + en.key
+"""
+  t.addFile("a.tuck", """type Entry:
+  key: int
+type Shape:
+  | Dot({e: Entry})
+  | Line({k: int})
+""")
+  t.addFile("b.tuck", """type Shape:
+  | Dot({n: int})
+""")
+  t.quietly: t.runs "A160: a type written through its module", 129
+  t.bugFixed "A160: a type written through its module"
+  t.quietly: t.runsOdin "A160: ...on Odin", 129
+  t.bugFixed "A160: ...on Odin"
+
+  # A161 (class B, M20): two modules' private `mixin Tag` (or `pool Bufs`)
+  # were refused as "declared more than once in this program". Each is its
+  # module's, told apart like a type.
+  t.src """
+import m1
+import m2
+fn main() -> int:
+  let a = {n: 0} A1
+  let b = {n: 0} B1
+  return a.label * 10 + b.label + {} take1 + {} take2
+"""
+  t.addFile("m1.tuck", """mixin Tag:
+  fn label({self: Self}) -> int:
+    return 1
+object A1:
+  + Tag
+  n: int
+pool Bufs = Array[4, u8] [count: 2]
+fn take1() -> int:
+  let b = Bufs.acquire
+  if not b.ok:
+    return 0
+  Bufs.release {b.value}
+  return 100
+""")
+  t.addFile("m2.tuck", """mixin Tag:
+  fn label({self: Self}) -> int:
+    return 2
+object B1:
+  + Tag
+  n: int
+pool Bufs = Array[8, u8] [count: 3]
+fn take2() -> int:
+  let b = Bufs.acquire
+  if not b.ok:
+    return 0
+  Bufs.release {b.value}
+  return 50
+""")
+  t.quietly: t.runs "A161: two modules' mixins and pools of one name", 162
+  t.bugFixed "A161: two modules' mixins and pools of one name"
+  t.quietly: t.runsOdin "A161: ...on Odin", 162
+  t.bugFixed "A161: ...on Odin"
+
+  # A162 (class B, M23): `type SessionsHandle` beside `pool Sessions` was
+  # silently replaced by the pool's generated handle type.
+  t.src """
+type Session:
+  clientId: u32
+type SessionsHandle:
+  mine: int
+pool Sessions = Session [count: 4]
+fn main() -> int:
+  let h = {mine: 3} SessionsHandle
+  return h.mine
+"""
+  t.quietly: t.badCheck "A162: a type named like a pool's generated handle", "TK-TY51"
+  t.bugFixed "A162: a type named like a pool's generated handle"
+
   t.finish()

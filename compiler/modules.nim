@@ -671,10 +671,19 @@ proc loadProgramIndexed*(entryPath: string):
     visiting.incl(ap)
     var m = if isEntry: parseTuckFile(ap) else: loadModuleCached(ap)
     m.id = moduleId(extractFilename(ap).changeFileExt(""))
+    # `import kv {put -> putEntry}` is checked against kv's declarations, and
+    # against every other import's (the rename must not hide one, M19): an
+    # index entry holds neither, so a module that renames loads its imports in
+    # full. Served from the index, the second `tuck ch` reported that kv
+    # "exports no fn 'put'" where the first had passed (M10b).
+    var renames = false
+    for d in m.decls(dkImport):
+      if d.importRenames.len > 0: renames = true
     for imp in importsOf(m):
       let ipath = resolveImport(ap, imp)
       claimModuleName(owners, absolutePath(ipath))
-      if absolutePath(ipath) notin done and entryValid(idx, dir, imp):
+      if absolutePath(ipath) notin done and not renames and
+         entryValid(idx, dir, imp):
         sigOnly[imp] = idx[imp]
       else:
         visit(ipath, false)

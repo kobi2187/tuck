@@ -1140,6 +1140,13 @@ by the same separator (`tuckˑobjectˑOrderˑbook`), so it cannot meet an object
 params stay bare** (namespaced by their record, and a param is a contract); **externs are never mangled** — they bind foreign symbols by
 name. Idempotent, since each backend lowers its own deep copy.
 
+What the prefix cannot separate is two names of ONE kind that Nim folds
+together: `my_val` and `myVal`, `Foo_bar` and `FooBar`. In one scope — the
+top-level declarations of a kind, one record's fields, one fn's params, one
+body's locals — the checker refuses the pair (TK-TY50,
+`compiler/name_fold.nim`), on every backend, so a program does not build on
+Odin and D and fail on Nim.
+
 ---
 
 ## 13. Externs and C FFI

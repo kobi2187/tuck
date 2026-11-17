@@ -310,10 +310,14 @@ proc genRtCall(calleeStr: string, args: seq[string]): string =
 proc genCallWithArgs(ctx: var OdinCodegenCtx, e: Expr, calleeStr: string,
                      args: seq[string]): string =
   ## The emission forms, once the arguments are built.
-  let satT = ctx.index.saturatingType(calleeStr)
+  # Looked up by the name as declared: calleeStr already carries an
+  # imported type's package (M10).
+  let satName = if e.callee != nil and e.callee.kind == exkVar: e.callee.name
+                else: calleeStr
+  let satT = ctx.index.saturatingType(satName)
   if satT != nil and args.len == 1:
     # An imported saturating type is named through its package (R11, A35).
-    return ctx.genSaturatingCtor(satT, ctx.importedTypeQualifier(calleeStr), args[0])
+    return ctx.genSaturatingCtor(satT, ctx.importedTypeQualifier(satName), args[0])
   let invRet = ctx.index.externInvRet(calleeStr)
   if invRet != "":
     # extern boundary: the returned value validates on entry
@@ -822,7 +826,9 @@ proc genVar(ctx: var OdinCodegenCtx, e: Expr): string =
   if foreign != "": return foreign
   let co = constOrigin(ctx.module, ctx.realModules, e.name)
   if co != NoModule: return ctx.pkgQualifier(co) & e.name   # R11, A33
-  e.name
+  # A type named as a value — the callee of `{value: 250} Small`, a conversion
+  # to an imported alias or distinct type — is its module's (M10).
+  ctx.importedTypeQualifier(e.name)
 
 proc genOdinPoolOp(ctx: var OdinCodegenCtx, e: Expr): string =
   ## A pool operation: `codegen_common.poolOpProc`, the pool by pointer.

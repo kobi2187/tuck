@@ -54,10 +54,16 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | `mod::name` written bare is a value (const or nullary call); `:mod::name` is the reference | A152 | the id invariant caught the first draft |
 | interfaces and actors of one name in two modules are told apart (`a::Logger send log`); an object's missing member is refused, not found on a namesake | A153-A155 | |
 | M14 generic clones resolve names in the library's scope (a name the caller cannot reach is refused with the fix named) | A146 | |
+| M7 a group requirement met in an imported module is found there (the receiver decides among imports); a generic group's provider keeps its arguments on Odin | A156 | |
+| M10 a conversion to an imported alias, distinct or wrapping type names it through its module on Odin and D | A157 | the saturating-type constructor is looked up by the declared name |
+| M17/M12 two spellings Nim folds to one (`my_val`/`myVal`) in one scope, or two module names, are refused on every backend: TK-TY50 (`name_fold.nim`) | A158 | |
+| M18 `states:` is a type reference: ambiguous bare name is TK-TY47, `states: b::DbState` parses and resolves | A159 | |
+| M24 a type written through its module (`{key: 4} a::Entry`, `a::Shape.Dot`) when only one module declares it | A160 | the parser read `{..} a::Shape.Dot` as `({..} a::Shape).Dot` |
+| M20 mixins, pools, slabs, arenas, registers of one name in two modules are each their module's (type_identity) | A161 | a registry stays one per program (TK-RG05, by spec) |
+| M23 a type named like a generated one (`<Pool>Handle`, `<Slab>Ref`, `<Arena>Ref`, `<Kind>Handle`) is refused: TK-TY51 | A162 | |
+| M10b a module that renames at an import loads its imports from source, so a warm `tuck ch` agrees with a cold one | cross_module | |
 
-**Still open in class B.** M7 (valid code rejected); M10 (imported alias attributes);
-M17/M18/M20/M23/M24; M10b (warm
-cache). M14's refusal for a private or un-imported callee is a restriction, not the end
+**Still open in class B.** M14's refusal for a private or un-imported callee is a restriction, not the end
 state: the clone should be checked in the library's scope.
 
 **Waiting on a ruling.** E4 (does binding a task's result, an await, need `[io]` in the

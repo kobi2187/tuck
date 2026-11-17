@@ -22,7 +22,8 @@
 import tables, sets, strutils
 import ast, ast_ops, ast_query, modules, typecheck_util, diagnostics, semantics
 
-const Nominal = {dkType, dkObject, dkFnSig, dkGroup, dkInterface, dkActor}
+const Nominal = {dkType, dkObject, dkFnSig, dkGroup, dkInterface, dkActor,
+                 dkMixin, dkPool, dkSlab, dkArena, dkRegister, dkRegistry}
   ## The declarations that NAME A TYPE and are told apart by this pass: a
   ## record or sum (`type`), an object, a named signature (`fnsig`) and a
   ## `group` (named where a type parameter is bounded). It knew `type` only,
@@ -31,7 +32,9 @@ const Nominal = {dkType, dkObject, dkFnSig, dkGroup, dkInterface, dkActor}
   ## a slot unable to say which it held; of two `group Keyed` an importer of
   ## both held the last one imported; and two `interface Shape` were one
   ## contract, so a value of b's was checked against a's (audit M2, M9, M8).
-  ## Two `actor Logger` were refused outright, with nothing to write instead.
+  ## Two `actor Logger` were refused outright, with nothing to write instead,
+  ## and so were two modules' private `mixin Tag` or `pool Nodes` — each a
+  ## singleton of its own module (M20).
 
 type View = object
   ## What a bare type name means in one module.
@@ -83,7 +86,15 @@ proc qualifyType(lm: LoadedModule, byName: Table[string, LoadedModule],
   ## Every colliding name under `t` becomes the qualified name it means.
   if t == nil: return
   for c in t.children: qualifyType(lm, byName, names, c)
-  if t.kind != tkNamed or t.name notin names: return
+  if t.kind != tkNamed: return
+  if t.name notin names:
+    # `a::Entry` where only `a` declares it: the plain name (M24).
+    if t.qualifier.len == 1:
+      let q = t.qualifier[0]
+      if q == lm.name and lm.declaresType(t.name) or
+         q in byName and q in importsOf(lm.m) and byName[q].providesType(t.name):
+        t.qualifier = @[]
+    return
   if t.qualifier.len > 0:
     # Written `mod::Name`: that module's type, if it really provides it;
     # otherwise the checker's own qualified-name check says why not.
@@ -102,8 +113,18 @@ proc qualifyName(lm: LoadedModule, byName: Table[string, LoadedModule],
   ## A type named by a bare STRING rather than a Type node: the interfaces an
   ## object `satisfies`, the object a type-test arm names. Same reading as a
   ## Type's (qualifyType); a string is the one other place a name is kept.
-  if name notin names: return
-  let t = Type(span: sp, kind: tkNamed, name: name)
+  # Written `mod::Name` (`states: a::DbState`): read as a Type would be.
+  let parts = name.rsplit("::", 1)
+  let bare = parts[^1]
+  if bare notin names:
+    # Qualified though only one module declares it: the plain name, when
+    # that module really provides it (M24).
+    if parts.len > 1 and parts[0] in byName and parts[0] in importsOf(lm.m) and
+       byName[parts[0]].providesType(bare):
+      name = bare
+    return
+  let t = Type(span: sp, kind: tkNamed, name: bare,
+               qualifier: (if parts.len > 1: @[parts[0]] else: @[]))
   qualifyType(lm, byName, names, t)
   name = t.name
 
@@ -114,12 +135,15 @@ proc qualifiedRef(lm: LoadedModule, byName: Table[string, LoadedModule],
   ## in place; a written `mod::Name` comes back as the node to put in its
   ## place (nil otherwise).
   if e == nil: return nil
-  if e.kind == exkQualified and e.modulePath.len == 1 and e.qualName in names:
+  if e.kind == exkQualified and e.modulePath.len == 1:
     let q = e.modulePath[0]
     if q == lm.name and lm.declaresType(e.qualName) or
        q in byName and q in importsOf(lm.m) and byName[q].providesType(e.qualName):
-      # It takes the qualified node's place, and its id with it.
-      return Expr(id: e.id, span: e.span, kind: exkVar, name: q & "::" & e.qualName)
+      # It takes the qualified node's place, and its id with it. A type only
+      # one module declares is visible by its plain name, which is what the
+      # qualified spelling means too (M24): `{key: 4} a::Entry`.
+      let name = if e.qualName in names: q & "::" & e.qualName else: e.qualName
+      return Expr(id: e.id, span: e.span, kind: exkVar, name: name)
     return nil
   if e.kind != exkVar or e.name notin names: return nil
   let v = viewOf(lm, byName, e.name)
@@ -153,6 +177,10 @@ proc qualifyStrings(lm: LoadedModule, byName: Table[string, LoadedModule],
   elif d.kind == dkSatisfies:
     lm.qualifyName(byName, names, d.name, d.span)
     for n in d.satisfyTargets.mitems: lm.qualifyName(byName, names, n, d.span)
+  elif d.kind == dkResources:
+    # `states: DbState` names a resource kind's protocol type (M18).
+    for k in d.resKinds.mitems:
+      lm.qualifyName(byName, names, k.statesType, k.statesSpan)
 
 proc qualifyReferences(lm: LoadedModule, byName: Table[string, LoadedModule],
                        names: HashSet[string]) =
@@ -179,8 +207,9 @@ proc qualifyDeclarations(lm: LoadedModule, names: HashSet[string]) =
 
 proc qualifyCollidingTypes*(prog: var seq[LoadedModule]) =
   ## Run on the loaded program, before imported types are injected.
+  # No early return when nothing collides: a written `mod::Name` still
+  # resolves here (M24).
   let names = collidingTypeNames(prog)
-  if names.len == 0: return
   var byName = initTable[string, LoadedModule]()
   for lm in prog: byName[lm.name] = lm
   for lm in prog: qualifyReferences(lm, byName, names)

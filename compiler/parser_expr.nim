@@ -374,8 +374,16 @@ proc parsePostfixCall(p: var Parser, expr: Expr, sp: Span): Expr =
     let moduleName = p.advance().value
     discard p.expect(tkColonColon)
     let name = p.expect(tkIdent, "Expected identifier after '::'").value
-    let calleeExpr = Expr(span: sp, kind: exkQualified, modulePath: @[moduleName], qualName: name)
-    return Expr(span: sp, kind: exkCall, callee: calleeExpr, args: @[expr])
+    var qCallee = Expr(span: sp, kind: exkQualified, modulePath: @[moduleName], qualName: name)
+    # `{e: en} a::Shape.Dot` — a variant of another module's sum. The `.Dot`
+    # belongs to the callee, as it does for a bare `Shape.Dot`; read after the
+    # call it built `({e: en} a::Shape).Dot` (M24).
+    if p.current().kind == tkDot and p.peek().kind == tkIdent:
+      discard p.advance()
+      let fname = p.expectName("Expected name after '.'").value
+      qCallee = Expr(span: sp, kind: exkField, receiver: qCallee, fieldName: fname)
+      if p.tryUnsafeMarker(): qCallee.ctorUnsafe = true
+    return Expr(span: sp, kind: exkCall, callee: qCallee, args: @[expr])
   let callee = p.advance().value
   var calleeExpr = Expr(span: sp, kind: exkVar, name: callee)
   # Qualified postfix: the callee may be a dotted path — `{a, b} Shape.Circle`

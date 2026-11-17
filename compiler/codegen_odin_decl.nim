@@ -178,7 +178,8 @@ proc markFirstTypeParam(ty, g: string): string =
 proc providerProcType(ctx: var OdinCodegenCtx, need: ProviderNeed): string =
   ## `proc(self: T) -> int`: the group's signature with `Self` read as the
   ## bounded type parameter, at any depth (`-> {next: Self, ...}` too).
-  let subs = {"Self": Type(kind: tkNamed, name: need.param)}.toTable
+  var subs = need.groupArgs
+  subs["Self"] = Type(kind: tkNamed, name: need.param)
   var ps: seq[string]
   for p in need.member.fnParams:
     ps.add(p.name & ": " & ctx.odinType(substType(p.typ, subs)))

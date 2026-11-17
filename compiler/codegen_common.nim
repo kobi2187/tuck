@@ -682,6 +682,9 @@ type ProviderNeed* = object
   member*: Decl      # the group's signature for it
   param*: string     # the bounded type parameter, `T` in `[T: Sized]`
   paramIdx*: int     # a fn parameter whose type is exactly `param`
+  groupArgs*: Table[string, Type]  # a generic group's parameters as the bound
+                                   # names them: `Keyed[K]` maps the group's
+                                   # own K to the fn's K
 
 proc findGroup(m: Module, real: ModuleMap, name: string): Decl =
   result = m.findDecl(dkGroup, name)
@@ -707,11 +710,23 @@ proc ownProvidersConcrete(home: Module, req: string): bool =
     if t.kind != tkNamed or t.name in d.fnGenerics: return false
   true
 
+proc boundGroup(home: Module, real: ModuleMap, bound: Type): Decl =
+  ## The group a bound names, plain (`Sized`) or applied (`Keyed[K]`, every
+  ## parameter given), or nil.
+  if bound == nil: return nil
+  if bound.kind == tkNamed:
+    result = findGroup(home, real, bound.name)
+    if result != nil and result.groupGenerics.len != 0: result = nil
+  elif bound.kind == tkApp and bound.base != nil and bound.base.kind == tkNamed:
+    result = findGroup(home, real, bound.base.name)
+    if result != nil and result.groupGenerics.len != bound.args.len: result = nil
+
 proc isPlainBound(home: Module, real: ModuleMap, bound: Type): bool =
-  ## A bound naming a group that takes no type parameters of its own.
-  if bound == nil or bound.kind != tkNamed: return false
-  let grp = findGroup(home, real, bound.name)
-  grp != nil and grp.groupGenerics.len == 0
+  ## A bound whose providers can be handed over: a group, plain or with its
+  ## parameters given. A generic group was left out, so its providers were
+  ## found by NAME where the generic is written, and of several modules'
+  ## `keyOf`s Odin and D called the first (audit M7).
+  boundGroup(home, real, bound) != nil
 
 proc needsOfBound(home: Module, real: ModuleMap, bound: Type,
                   param: string, idx: int, always: bool): seq[ProviderNeed] =
@@ -719,13 +734,17 @@ proc needsOfBound(home: Module, real: ModuleMap, bound: Type,
   ## fn: each requirement of a plain group that module does not itself declare
   ## - or, when `always`, every one, since a provider `home` declares serves
   ## only its own type and a caller's type brings its own (A74).
-  if not isPlainBound(home, real, bound): return
-  let grp = findGroup(home, real, bound.name)
+  let grp = boundGroup(home, real, bound)
+  if grp == nil: return
+  var args = initTable[string, Type]()
+  if bound.kind == tkApp:
+    for i, g in grp.groupGenerics: args[g] = bound.args[i]
   for mem in grp.groupMembers:
     if mem == nil or mem.kind != dkFn: continue
     let req = prefixed(mem.name, nkFn)
     if (always and ownProvidersConcrete(home, req)) or not home.declaresFn(req):
-      result.add ProviderNeed(req: req, member: mem, param: param, paramIdx: idx)
+      result.add ProviderNeed(req: req, member: mem, param: param, paramIdx: idx,
+                              groupArgs: args)
 
 proc providerNeeds*(home: Module, real: ModuleMap, f: Decl): seq[ProviderNeed] =
   ## The providers `f` (declared in `home`) is passed. Only a plain bound on a

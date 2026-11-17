@@ -2982,9 +2982,16 @@ proc requirementKey(tc: TypeChecker, member, fnName: string,
       let other = tc.providerAmongImports(member, concreteT)
       if other != "": return other
     return qualified
-  if concreteT != nil and not tc.fnSigs.hasKey(member):
+  # The bare name serves when one of ITS fns takes this type. A module's own
+  # `keyOf` for its own `C` hid the imports' `keyOf`s for `A` and `B`: the
+  # bound on an `A` was checked against `C`'s (audit M7).
+  if concreteT != nil and
+     (not tc.fnSigs.hasKey(member) or not tc.sigsAcceptReceiver(member, concreteT)):
     let found = tc.providerAmongImports(member, concreteT)
     if found != "": return found
+    for imp in tc.module.decls(dkImport):
+      let q = imp.name & "::" & member
+      if tc.fnSigs.hasKey(q) and tc.sigsAcceptReceiver(q, concreteT): return q
   member
 
 proc checkGroupMember(tc: TypeChecker, want: Decl, concreteT: Type,

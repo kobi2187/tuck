@@ -907,6 +907,12 @@ proc parseResourceAttrs(p: var Parser, attrs: var seq[TypeAttr]) =
       discard p.advance()
       val = if p.current().kind in {tkIntLit, tkNone}: p.advance().value
             else: p.expectVocabWord("Expected a value after '" & name & ":'").value
+      # `states: a::DbState` — a type two imports declare, named through its
+      # module (M18). Kept as the one string `a::DbState`; type_identity
+      # reads it as a type reference.
+      while p.current().kind == tkColonColon:
+        discard p.advance()
+        val.add "::" & p.expectVocabWord("Expected a name after '::'").value
     attrs.add(TypeAttr(name: name, value: val, span: sp))
     if p.current().kind == tkComma: discard p.advance()
   discard p.expect(tkRBracket)

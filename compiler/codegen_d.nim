@@ -274,6 +274,11 @@ proc resolveDCallee*(ctx: var DCodegenCtx, e: Expr): string =
   if e.callee != nil and e.callee.kind == exkVar:
     let owner = ctx.importDeclaring(e.callee.name)
     if owner != NoModule: return ctx.pkgQualifierD(owner) & e.callee.name
+    # A conversion to an imported alias or distinct type (`{value: 250}
+    # Small`) names the type in its module (M10).
+    if e.callee.name notin ctx.providerParams and
+       moduleDeclaringType(ctx.module, e.callee.name) != NoModule:
+      return ctx.importedTypeQualifierD(e.callee.name)
   # A fn reference in CALLEE position is not a value: `&f` is how D spells
   # taking its address, and `&f(x)` parses as taking the address of the
   # RESULT — "cannot take address of expression because it is not an
@@ -485,10 +490,14 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   if calleeStr == "echo":
     # `echo` is the builtin debug print; writeln is D's identical construct.
     return "writeln(" & args.join(", ") & ")"
-  let satT = ctx.index.saturatingType(calleeStr)
+  # Looked up by the name as declared: calleeStr already carries an
+  # imported type's package (M10).
+  let satName = if e.callee != nil and e.callee.kind == exkVar: e.callee.name
+                else: calleeStr
+  let satT = ctx.index.saturatingType(satName)
   if satT != nil and args.len == 1:
     # An imported saturating type is named through its module (R11, A35).
-    return ctx.genDSaturatingCtor(satT, ctx.importedTypeQualifierD(calleeStr), args[0])
+    return ctx.genDSaturatingCtor(satT, ctx.importedTypeQualifierD(satName), args[0])
   let rt = genDRtCall(calleeStr, args)
   if rt != "": return rt
   # A type param mentioned by no parameter cannot be deduced from the call, so
