@@ -231,8 +231,9 @@ proc parseQualifiedRef(p: var Parser, sp: Span): Expr =
       discard p.advance()
       let member = p.expect(tkIdent).value
       return Expr(span: sp, kind: exkQualified, modulePath: @[name],
-                  qualName: member)
-    return Expr(span: sp, kind: exkQualified, modulePath: @[], qualName: name)
+                  qualName: member, isFnRef: true)
+    return Expr(span: sp, kind: exkQualified, modulePath: @[], qualName: name,
+                isFnRef: true)
   nil
 
 proc parseListLiteral(p: var Parser, sp: Span): Expr =

@@ -588,6 +588,11 @@ type
       modulePath*: seq[string]
       qualModule*: ModuleId  # the module `modulePath[0]` names, NoModule for none
       qualName*: string
+      isFnRef*: bool         # written `:name` / `:mod::name`: a REFERENCE. A
+                             # bare `mod::name` is a value like any bare name:
+                             # a call of a nullary fn, or a const. The two
+                             # spellings parsed to one node, so `lib::seven`
+                             # typed as `() -> int` (audit, class B)
     of exkStruct:
       fields*: seq[FieldInit]
     of exkList:

@@ -341,12 +341,9 @@ proc genDRtCall(calleeStr: string, args: seq[string]): string =
     return "rt." & calleeStr & "(" & args.join(", ") & ")"
   ""
 
-proc taskRetTypeD(ctx: var DCodegenCtx, name: string): string =
+proc taskRetTypeD(ctx: var DCodegenCtx, task: Decl): string =
   ## The D type a task hands back, for the result slot.
-  for d in ctx.module.decls:
-    if d != nil and d.kind == dkTask and d.name == name:
-      return ctx.dType(d.fnReturnType)
-  "void"
+  if task != nil: ctx.dType(task.fnReturnType) else: "void"
 
 proc asDPrimConversion(ctx: var DCodegenCtx, e: Expr,
                        calleeStr: string): string =
@@ -478,7 +475,8 @@ proc genDCall(ctx: var DCodegenCtx, e: Expr): string =
   # Calling a task in STATEMENT position schedules it and moves on —
   # fire-and-forget (spec §9.2). A result-BOUND call is handled in
   # genDAssign, which needs the target to build the slot.
-  if ctx.index.isTaskName(calleeStr): return ctx.genDSpawn(e, calleeStr)
+  # The task the call reaches, wherever it is declared (M21).
+  if taskCallee(ctx.res, ctx.module, e) != nil: return ctx.genDSpawn(e, calleeStr)
   let member = ctx.dMemberCallee(e)
   if member != "": calleeStr = member
   let combinator = ctx.asCombinatorCallD(e, calleeStr)
@@ -986,6 +984,9 @@ proc genDStacklessBind(ctx: var DCodegenCtx, e: Expr, ret: string,
   ## frame gets a slot here, and this fn lends its thread until it is done.
   ## (A frame's own await is a stage cut, never this.)
   let v = e.assignVal
+  # The callee as this module spells it: `lib.tuckˑtaskˑt` for an imported
+  # task, so the frame's names carry its module (M21).
+  let callName = ctx.resolveDCallee(v)
   let declT = ctx.dDeclType(ctx.res.typeFor(e.target))
   let target =
     if e.target.kind == exkVar and e.target.name notin ctx.definedVars:
@@ -994,8 +995,8 @@ proc genDStacklessBind(ctx: var DCodegenCtx, e: Expr, ret: string,
     else: ctx.genDExpr(e.target)
   # Its root frame on THIS stack (#219): this fn waits right here.
   "rt.TuckSlot!(" & (if ret == "void": "bool" else: ret) & ") " & slot & ";\n" &
-    ctx.indD & stacklessCtorD(v.callee.name).replace("TuckNewˑ", "TuckFˑ") & " " & slot & "F;\n" &
-    ctx.indD & "rt.tuckSlReady(&" & stacklessCtorD(v.callee.name) & "(&" & slot & "F, &" & slot &
+    ctx.indD & stacklessCtorD(callName).replace("TuckNewˑ", "TuckFˑ") & " " & slot & "F;\n" &
+    ctx.indD & "rt.tuckSlReady(&" & stacklessCtorD(callName) & "(&" & slot & "F, &" & slot &
     ", null" & (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr);\n" &
     ctx.indD & target & " = rt.tuckSlAwaitMain(&" & slot & ")"
 
@@ -1008,17 +1009,17 @@ proc genDBoundTaskCall(ctx: var DCodegenCtx, e: Expr): string =
   ## the scheduler instead. Mirrors the Nim backend's newAsyncResult /
   ## spawnResult / awaitResult triple.
   let v = e.assignVal
-  if v == nil or v.kind != exkCall or v.callee == nil or
-     v.callee.kind != exkVar: return ""
-  if not ctx.index.isTaskName(v.callee.name): return ""
-  let ret = ctx.taskRetTypeD(v.callee.name)
+  let task = taskCallee(ctx.res, ctx.module, v)
+  if task == nil: return ""
+  let ret = ctx.taskRetTypeD(task)
+  let callName = ctx.resolveDCallee(v)
   let args = ctx.genDCallArgs(v)
   let slot = ctx.freshName("tuckSlot")
   if concurrencyMode == cmStackless: return ctx.genDStacklessBind(e, ret, args, slot)
   # Three statements, laid out here — the caller strips its own indent and
   # terminator for this shape (see genDStmt's boundTaskCall test).
   var res = "auto " & slot & " = rt.newAsyncResult!(" & ret & ")();\n"
-  res.add(ctx.indD & "rt.spawnResult(" & slot & ", &" & v.callee.name &
+  res.add(ctx.indD & "rt.spawnResult(" & slot & ", &" & callName &
           (if args.len > 0: ", " & args.join(", ") else: "") & ");\n")
   let declT = ctx.dDeclType(ctx.res.typeFor(e.target))
   let targetDecl =

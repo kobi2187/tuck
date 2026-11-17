@@ -264,7 +264,7 @@ proc stacklessHelper*(calleeStr, prefix: string): string =
   if dot < 0: prefix & calleeStr else: calleeStr[0 .. dot] & prefix & calleeStr[dot + 1 .. ^1]
 
 proc genSpawnCall(ctx: var CodegenCtx, calleeStr, callName: string,
-                  args: seq[string]): string =
+                  args: seq[string], task: Decl): string =
   ## Calling a task SCHEDULES it as a coroutine — it runs concurrently, main
   ## drives it via tuckRun (spec §9.2). Fire-and-forget; a result-bound call
   ## is genTaskAssignment's.
@@ -276,7 +276,7 @@ proc genSpawnCall(ctx: var CodegenCtx, calleeStr, callName: string,
     # A frame with nowhere for its result: it is dropped when it finishes.
     return "tuckSlReady(addr " & stacklessHelper(calleeStr, "TuckNewˑ") &
            "(nil, nil, nil" & (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr)"
-  let spawn = if ctx.taskRetType(calleeStr) == "void": "tuckSpawnJob"
+  let spawn = if taskRetType(task) == "void": "tuckSpawnJob"
               else: "tuckSpawnJobDrop"
   spawn & "(" & callName & (if args.len > 0: ", " & args.join(", ") else: "") & ")"
 
@@ -313,7 +313,8 @@ proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
                  elif prim != calleeStr: prim
                  else: calleeStr
   let call = callName & "(" & args.join(", ") & ")"
-  if ctx.index.isTaskName(calleeStr): return ctx.genSpawnCall(calleeStr, callName, args)
+  if callee != nil and callee.kind == dkTask:
+    return ctx.genSpawnCall(calleeStr, callName, args, callee)
   if ctx.index.externInvRet(calleeStr) != "": return ctx.genValidatedCall(call)
   call
 
@@ -846,8 +847,7 @@ proc stmtValueDropped(ctx: var CodegenCtx, s: Expr): bool =
   # which is a void expression — discarding it is the very "no type (or is
   # ambiguous)" error this proc exists to avoid, just one level out. The
   # task's own return type says nothing about the emitted statement.
-  if s.callee != nil and s.callee.kind == exkVar and
-     ctx.index.isTaskName(s.callee.name): return false
+  if ctx.taskOf(s) != nil: return false
   let t = ctx.res.typeFor(s)
   if t == nil: return false
   # `discard` over a void call is itself an error in Nim, so the question is
@@ -1079,8 +1079,7 @@ proc genDiscard(ctx: var CodegenCtx, e: Expr): string =
   ## of a void ("has no type", A97).
   let v = e.discardVal
   if v == nil: "discard"
-  elif v.kind == exkCall and v.callee != nil and v.callee.kind == exkVar and
-       ctx.index.isTaskName(v.callee.name): ctx.genExpr(v)
+  elif ctx.taskOf(v) != nil: ctx.genExpr(v)
   else: "discard " & ctx.genExpr(v)
 
 proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
@@ -1105,12 +1104,13 @@ proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
 
 proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
   ## Result-bound task call assignment with result slot and await.
-  if e.assignVal == nil or e.assignVal.kind != exkCall or
-     e.assignVal.callee == nil or e.assignVal.callee.kind != exkVar or
-     not ctx.index.isTaskName(e.assignVal.callee.name):
-    return ""
-  let tname = e.assignVal.callee.name
-  let ret = ctx.taskRetType(tname)
+  let task = ctx.taskOf(e.assignVal)
+  if task == nil: return ""
+  # `t` or `lib::t`: the qualified spelling is the module's alias, a dot, and
+  # the name, which stacklessHelper prefixes after the dot.
+  let tname = if e.assignVal.callee.kind == exkVar: e.assignVal.callee.name
+              else: ctx.genExpr(e.assignVal.callee)
+  let ret = taskRetType(task)
   let argParts = ctx.genCallArgs(e.assignVal)
   let slot = "tuckSlot" & $ctx.tmpCounter
   ctx.tmpCounter.inc

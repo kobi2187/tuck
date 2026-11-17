@@ -4555,10 +4555,11 @@ proc failIfConstCollides(tc: TypeChecker, e: Expr, fnOwner: string) =
   if fnOwner != "" and fnOwner notin owners and owners.len > 0:
     owners.add fnOwner
   if owners.len < 2: return
+  var shown: seq[string]
+  for o in owners: shown.add "`" & o & "::" & e.name & "`"
   fail("Type Error: '" & e.name & "' is exported by " & $owners.len &
        " imports (" & owners.join(", ") & "), and nothing here says which. " &
-       "A const cannot be written qualified yet, so: import only the one " &
-       "meant here, or read the other through a fn of its module", e.span)
+       "Fix: qualify it, " & shown.join(" or "), e.span)
 
 proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   ## A bare sum-type variant is a value of its sum type. `Light.Red` is the
@@ -5720,6 +5721,33 @@ proc synthSelect(tc: var TypeChecker, e: Expr): Type =
     discard tc.synthesize(arm.body)
   branchOutcomeType(e.span)
 
+proc moduleImportNames(m: Module): seq[string] =
+  for d in m.decls:
+    if d != nil and d.kind == dkImport: result.add d.name
+
+proc asQualifiedValue(tc: var TypeChecker, e: Expr, key: string): Type =
+  ## `mod::Size` or `mod::seven`, written bare: a const of that module, or a
+  ## call of its nullary fn (spec 2.3, a bare name IS a call). nil for
+  ## anything else, which the reference reading below then judges.
+  ##
+  ## The call is made REAL here: the node becomes an `exkCall` of the
+  ## qualified fn, so every later pass and backend meets an ordinary call
+  ## rather than learning that a qualified name may stand for one.
+  let target = knownModule(e.modulePath[0])
+  let c = semLayer.constsByModule.getOrDefault(target).getOrDefault(e.qualName)
+  if c != nil and e.modulePath[0] in moduleImportNames(tc.module):
+    resolveTo(semLayer, e, c)
+    return tc.synthesize(c.constVal)
+  if tc.fnSigs.hasKey(key) and tc.sigOf(key).params.len == 0:
+    let callee = Expr(span: e.span, kind: exkQualified, modulePath: e.modulePath,
+                      qualModule: e.qualModule, qualName: e.qualName,
+                      id: newNodeId())
+    let id = e.id
+    e[] = Expr(span: e.span, kind: exkCall, callee: callee, args: @[])[]
+    e.id = id
+    return tc.synthesize(e)
+  nil
+
 proc synthQualified(tc: var TypeChecker, e: Expr): Type =
   ## `:name` is a FUNCTION REFERENCE (`{add: :plus}`, `waitUntil {pred:
   ## :ready}`). Resolving it to a real tkFunc keeps the signature — params and
@@ -5736,6 +5764,10 @@ proc synthQualified(tc: var TypeChecker, e: Expr): Type =
   let key =
     if e.modulePath.len != 0: e.modulePath[0] & "::" & e.qualName
     else: e.qualName
+  # A bare `mod::name` (no `:`) is a value like any bare name.
+  if not e.isFnRef and e.modulePath.len != 0:
+    let asValue = tc.asQualifiedValue(e, key)
+    if asValue != nil: return asValue
   if not tc.fnSigs.hasKey(key):
     fail(dcTyUndeclared, "'" & key & "' is not a declared function" &
          spellingHint(e.qualName), e.span)

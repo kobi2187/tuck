@@ -442,9 +442,10 @@ proc genOdinCall(ctx: var OdinCodegenCtx, e: Expr): string =
   if emitted != "": return emitted
   # Stackless (#216): a task call reached here is never bound, so it spawns
   # a frame — with arguments or without (a frame holds them, nothing captures).
-  if concurrencyMode == cmStackless and ctx.index.isTaskName(calleeStr):
+  let task = taskCallee(ctx.res, ctx.module, e)
+  if concurrencyMode == cmStackless and task != nil:
     return ctx.genStacklessSpawn(e)
-  if ctx.index.isTaskName(calleeStr) and args.len == 0:
+  if task != nil and args.len == 0:
     # Calling a task SCHEDULES it as a coroutine — it runs concurrently and
     # tuckRun drives it (spec §9.2). Mirrors the Nim backend, which has always
     # emitted tuckSpawn here.
@@ -1285,11 +1286,10 @@ proc genRoutedStmt(ctx: var OdinCodegenCtx, s: Expr, stmtCode,
 proc isTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr): bool =
   ## `let r = {args} someTask` — binding a task's result awaits it (spec
   ## §9.2), and the task takes real arguments (a nullary task call is the
-  ## OTHER case, already spawned via genOdinCall's isTaskName branch).
+  ## OTHER case, already spawned via genOdinCall's task branch).
   e.kind == exkAssign and e.assignVal != nil and
-    e.assignVal.kind == exkCall and e.assignVal.callee != nil and
-    e.assignVal.callee.kind == exkVar and
-    ctx.index.isTaskName(e.assignVal.callee.name) and e.assignVal.args.len > 0
+    e.assignVal.kind == exkCall and e.assignVal.args.len > 0 and
+    taskCallee(ctx.res, ctx.module, e.assignVal) != nil
 
 proc stacklessCtor(calleeStr: string): string =
   ## `pkg.task` -> `pkg.TuckNewˑtask`: the frame constructor (#216).
@@ -1299,8 +1299,7 @@ proc stacklessCtor(calleeStr: string): string =
 proc genStacklessBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## `let r = {args} task` outside a frame, under stackless: the frame gets a
   ## slot here, and this fn lends its thread until the slot is done.
-  let tname = e.assignVal.callee.name
-  let task = ctx.module.findFn(tname)
+  let task = taskCallee(ctx.res, ctx.module, e.assignVal)
   let retType = if task.fnReturnType != nil: ctx.odinType(task.fnReturnType) else: "bool"
   let args = ctx.genCallArgs(e.assignVal)
   let slotVar = "slot" & $ctx.tmpCounter
@@ -1352,8 +1351,11 @@ proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string 
   ## together, so exactly one wrapper does the whole job: read args, call
   ## the real task, write the slot.
   if concurrencyMode == cmStackless: return ctx.genStacklessBind(e, ind)
-  let tname = e.assignVal.callee.name
-  let task = ctx.module.findFn(tname)
+  # The task as declared, wherever it is (an import's included, M21); the
+  # wrapper is named by the task, and calls it as this module spells it.
+  let task = taskCallee(ctx.res, ctx.module, e.assignVal)
+  let tname = task.name
+  let callName = ctx.genOdinExpr(e.assignVal.callee)
   let params = task.paramNames()
   let paramTypes = task.paramTypes()
   let retType = if task.fnReturnType != nil: ctx.odinType(task.fnReturnType)
@@ -1370,7 +1372,7 @@ proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string 
     for p in params: argExprs.add("e." & p)
     ctx.hoisted.add(wrapName & " :: proc() {\n" &
       "\te := (^" & envName & ")(context.user_ptr)\n" &
-      "\te.slot.value = " & tname & "(" & argExprs.join(", ") & ")\n" &
+      "\te.slot.value = " & callName & "(" & argExprs.join(", ") & ")\n" &
       "\te.slot.done = true\n" &
       "\tfree(e)\n}")
   let argParts = ctx.genCallArgs(e.assignVal)
@@ -1403,12 +1405,10 @@ proc genOdinTaskArgsBind(ctx: var OdinCodegenCtx, e: Expr, ind: string): string 
 
 proc isTaskArgsSpawn(ctx: var OdinCodegenCtx, s: Expr): bool =
   ## `{args} someTask` as a statement: fire and forget, a task that takes real
-  ## arguments (the nullary case is genOdinCall's isTaskName branch, and the
+  ## arguments (the nullary case is genOdinCall's task branch, and the
   ## bound `let r = {args} task` is genOdinTaskArgsBind).
-  s.kind == exkCall and s.callee != nil and s.callee.kind == exkVar and
-    ctx.index.isTaskName(s.callee.name) and
-    ctx.module.findFn(s.callee.name) != nil and
-    ctx.module.findFn(s.callee.name).fnParams.len > 0
+  let task = taskCallee(ctx.res, ctx.module, s)
+  task != nil and task.fnParams.len > 0
 
 proc genOdinTaskArgsSpawn(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   ## Spawn a task with arguments and do not wait for it. Same marshalling as
@@ -1417,8 +1417,9 @@ proc genOdinTaskArgsSpawn(ctx: var OdinCodegenCtx, e: Expr, ind: string): string
   ## and frees the env. Without this the task body ran on the MAIN context, so
   ## the first socket read inside it hit "cannot await outside a coroutine".
   if concurrencyMode == cmStackless: return ind & ctx.genStacklessSpawn(e)
-  let tname = e.callee.name
-  let task = ctx.module.findFn(tname)
+  let task = taskCallee(ctx.res, ctx.module, e)
+  let tname = task.name
+  let callName = ctx.genOdinExpr(e.callee)
   let params = task.paramNames()
   let paramTypes = task.paramTypes()
   let envName = "SpawnEnv_" & tname
@@ -1436,7 +1437,7 @@ proc genOdinTaskArgsSpawn(ctx: var OdinCodegenCtx, e: Expr, ind: string): string
                    else: "_ = "
     ctx.hoisted.add(wrapName & " :: proc() {\n" &
       "\te := (^" & envName & ")(context.user_ptr)\n" &
-      "\t" & discards & tname & "(" & argExprs.join(", ") & ")\n" &
+      "\t" & discards & callName & "(" & argExprs.join(", ") & ")\n" &
       "\tfree(e)\n}")
   let argParts = ctx.genCallArgs(e)
   doAssert argParts.len == params.len,

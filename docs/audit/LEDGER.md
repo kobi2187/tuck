@@ -50,16 +50,14 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | M16, C12 actor member/handler names: every owner kept, the actor's own inside it, the module's fn outside | A148 | |
 | M5 const/const and const/fn collisions across imports are explicit | A149 | |
 | M6 a name with arguments in front is a fn call: the member the payload's `self` names, else own fn, else import's; a member is not exported as a module fn | A150 | |
+| M21 imported tasks: task-ness from the call edge (`taskCallee`); the scheduler boots for the program's tasks, not the entry module's | A151 | |
+| `mod::name` written bare is a value (const or nullary call); `:mod::name` is the reference | A152 | the id invariant caught the first draft |
 | M14 generic clones resolve names in the library's scope (a name the caller cannot reach is refused with the fix named) | A146 | |
 
 **Still open in class B.** Interfaces and actors of one name in two modules (not yet
 nominal in `type_identity`: their names are also carried as strings in `satisfies`, match
-arms and dispatch nodes); a const cannot be written qualified (`a::Size`), so an M5
-collision has no in-place fix yet; M7 (valid code rejected); M10 (imported alias attributes);
-M21 (an imported task does not build on any backend: every backend decides "is this a
-task" by `isTaskName(name)` against the calling module's own tasks, about a dozen sites
-across the three emitters, and the task's procs are not exported; it needs one
-`taskCallee(res, m, call)` answered from the call edge, which E14 now records); M17/M18/M20/M23/M24; M10b (warm
+arms and dispatch nodes); M7 (valid code rejected); M10 (imported alias attributes);
+M17/M18/M20/M23/M24; M10b (warm
 cache). M14's refusal for a private or un-imported callee is a restriction, not the end
 state: the clone should be checked in the library's scope.
 

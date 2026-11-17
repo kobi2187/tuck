@@ -801,6 +801,30 @@ proc pendingMemberDecl*(res: Resolution, m: Module, e: Expr): Decl =
   for mem in pendingMembers(m, owner):
     if spells(e.callee.name, mem.name, nkFn): return mem
 
+proc programHasTasks*(m: Module, real: ModuleMap): bool =
+  ## Does the PROGRAM declare a task, in `m` or any module it is built with?
+  ## The entry point boots the scheduler and drains its frames when it does.
+  ## Odin and D asked the entry module alone, so a program whose tasks all
+  ## came from imports spawned frames nothing ever ran (audit M21; Nim's
+  ## entry already asked every module).
+  for d in m.decls:
+    if d != nil and d.kind == dkTask: return true
+  for _, other in real:
+    for d in other.decls:
+      if d != nil and d.kind == dkTask: return true
+
+proc taskCallee*(res: Resolution, m: Module, call: Expr): Decl =
+  ## The TASK a call spawns, or nil. By the call's edge first: a task an
+  ## import declares is no name of this module, and every backend asked
+  ## "is this a task" of the calling module's own names, so an imported task
+  ## went out as a plain call and built nowhere (audit M21). Then by this
+  ## module's own name, for a call lowering built after the check.
+  if call == nil or call.kind != exkCall: return nil
+  let edge = res.declFor(call)
+  if edge != nil: return (if edge.kind == dkTask: edge else: nil)
+  if call.callee == nil or call.callee.kind != exkVar: return nil
+  m.findDecl(dkTask, call.callee.name)
+
 proc calleeDecl*(res: Resolution, m: Module, call: Expr): Decl =
   ## THE answer to "which declaration does this call reach", for every pass
   ## that needs one: the ownership rules, slab ownership, the mock surface.

@@ -6300,7 +6300,7 @@ fn width() -> int:
 """)
   t.addFile("c2.tuck", """const Size: int = 4
 """)
-  t.quietly: t.badCheck "A149: two imports' consts of one name collide", "'Size' is exported by 2 imports"
+  t.quietly: t.badCheck "A149: two imports' consts of one name collide", "'Size' is exported by 2 imports.*`a::Size` or `c2::Size`"
   t.bugFixed "A149: two imports' consts of one name collide"
   t.src """
 import a
@@ -6364,5 +6364,60 @@ fn mk() -> Bag:
 """)
   t.quietly: t.runs "A150: an imported object's member does not take an import's fn", 102
   t.bugFixed "A150: an imported object's member does not take an import's fn"
+
+  # A151 (audit M21): a task another module declares built on no backend:
+  # each asked "is this a task" of the calling module's own task names, so
+  # the call went out as a plain call to a proc the stackless and stackful
+  # runtimes never emit; and Odin and D booted and drained the scheduler only
+  # when the entry module itself declared a task, so a spawn of an imported
+  # one never ran. Task-ness comes from the call's edge (ast_query.
+  # taskCallee), and the entry point asks the whole program.
+  t.src """
+import lib
+
+fn main() -> int [io]:
+  {n: 1} say
+  {} beep
+  let a = {n: 2} t
+  let b = {n: 3} lib::t
+  return a.r + b.r
+"""
+  t.addFile("lib.tuck", """import console
+task say({n: int}) -> void [io]:
+  {text: "said"} printLine
+task beep() -> void [io]:
+  {text: "beep"} printLine
+task t({n: int}) -> {r: int}:
+  return {r: n + 1}
+""")
+  t.quietly: t.outputs "A151: an imported task is spawned and awaited", "said\nbeep\n"
+  t.bugFixed "A151: an imported task is spawned and awaited"
+  t.quietly: t.runs "A151: ...and its result is the program's", 7
+  t.bugFixed "A151: ...and its result is the program's"
+  t.quietly: t.runsOdin "A151: ...on Odin", 7
+  t.bugFixed "A151: ...on Odin"
+
+  # A152 (class B): `mod::name` written bare parsed to the same node as the
+  # reference `:mod::name`, so `lib::seven` typed as `() -> int` and a const
+  # could not be named by its module at all (an M5 collision had no fix in
+  # place). A bare qualified name is a value: a call of a nullary fn, or that
+  # module's const.
+  t.src """
+import a
+import c2
+
+fn main() -> int:
+  return a::Size + c2::Size + a::seven
+"""
+  t.addFile("a.tuck", """const Size: int = 10
+fn seven() -> int:
+  return 7
+""")
+  t.addFile("c2.tuck", """const Size: int = 4
+""")
+  t.quietly: t.runs "A152: a bare qualified name is a const or a call", 21
+  t.bugFixed "A152: a bare qualified name is a const or a call"
+  t.quietly: t.runsOdin "A152: ...on Odin", 21
+  t.bugFixed "A152: ...on Odin"
 
   t.finish()
