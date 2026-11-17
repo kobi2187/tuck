@@ -773,6 +773,19 @@ proc asVariantPayloadField(tc: var TypeChecker, e: Expr, recvT: Type): Type =
 var ifaceMatchModule*: string
   ## The path of the module being checked, for an interface match's report.
 
+proc mutationRoot*(e: Expr): Expr =
+  ## The binding a write CHANGES: `xs` for `xs[0].v = 7` and for
+  ## `xs[0] ..v {7}`. assignRoot stops at an index, which is right for "which
+  ## variable is written" but not for "may it be changed": an element's field
+  ## is part of the collection, so a parameter's or a `let`'s element is no
+  ## more writable than the whole (audit O1a — Odin and D changed the
+  ## caller's Seq through a parameter).
+  result = e
+  while result != nil:
+    if result.kind == exkField and result.receiver != nil: result = result.receiver
+    elif result.kind == exkBracket and result.brReceiver != nil: result = result.brReceiver
+    else: break
+
 proc assignRoot*(e: Expr): Expr =
   ## The variable a write ultimately lands on: `c` for `c`, `c.n`, or
   ## `c.inner.n`. Indexing is deliberately NOT followed — `xs[i]` writes
@@ -2601,7 +2614,7 @@ proc failIfMutatingLet(tc: var TypeChecker, e: Expr) =
   ## to its root binding rather than bailing on anything that is not a bare
   ## name.
   if e.base == nil: return
-  let base = assignRoot(e.base)
+  let base = mutationRoot(e.base)
   if base == nil or base.kind != exkVar: return
   if e.steps.len == 0: return   # every step is a `..` mutation
   let (found, b) = tc.lookup(base.name)
@@ -5453,7 +5466,7 @@ proc failIfPlaceImmutable(tc: var TypeChecker, place: Expr, verb: string,
   ## needs a `var` at its root: never a parameter, never a `let`. Shared by
   ## assignment and by an extern that `[writes:]` its argument in place.
   if place == nil or writesIntoSlabCell(place): return
-  let root = assignRoot(place)
+  let root = mutationRoot(place)
   if root == nil or root.kind != exkVar: return
   let (found, b) = tc.lookup(root.name)
   if not found: return
@@ -6248,7 +6261,7 @@ proc failIfMutatingIndexTarget(tc: var TypeChecker, e: Expr) =
   ## wrote. Found while auditing stage boundaries for the D backend.
   let br = e.brTarget
   if br == nil or br.brReceiver == nil: return
-  let base = assignRoot(br.brReceiver)
+  let base = mutationRoot(br.brReceiver)
   if base == nil or base.kind != exkVar: return
   let (found, b) = tc.lookup(base.name)
   if not found: return

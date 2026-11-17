@@ -98,6 +98,10 @@ proc consumesWhy*(res: Resolution, m: Module, d: Decl, pname: string,
   ## Rule P with its reason: the first final read of `pname` that is a sink,
   ## named, or "" when `d` only borrows it. Not memoised; `consumes` is.
   if d.fnBody == nil: return ""
+  # A task runs after its caller has moved on, so it OWNS what it is given
+  # (spec §9.2): a borrow of the caller's buffer was read while the caller
+  # kept changing it (audit O6 — Nim crashed, Odin and D summed garbage).
+  if d.kind == dkTask: return "a task, which owns its parameters"
   # A group provider borrows: its callers through the group cannot see it
   # (resolution.groupRequirements). Keeping `self` made `keyOf` move
   # `self.s` out of a value the generic caller still owned — a double free

@@ -7556,4 +7556,122 @@ fn main() -> int [io]:
   t.quietly: t.badCheck "A169: a decision row yields the table's type", "yields int"
   t.bugFixed "A169: a decision row yields the table's type"
 
+  # A170 (class E, O1a): `xs[0] ..v {7}` and `xs[0].v = 7` on a parameter
+  # or a `let` were accepted — the mutability check found the root through
+  # assignRoot, which stops at an index — and Odin and D changed the
+  # caller's Seq. An element's field is part of the collection.
+  t.src """
+import seq
+type Cell:
+  v: int
+
+fn f({xs: Seq[Cell]}) -> int:
+  xs[0] ..v {7}
+  return xs[0].v
+
+fn main() -> int:
+  let c = {v: 1} Cell
+  var xs: Seq[Cell] = [c]
+  let r = {xs: xs} f
+  return r * 10 + xs[0].v
+"""
+  t.quietly: t.badCheck "A170: a chain write through a parameter's element", "TK-TY15"
+  t.bugFixed "A170: a chain write through a parameter's element"
+  t.src """
+import seq
+type Cell:
+  v: int
+fn main() -> int:
+  let c = {v: 1} Cell
+  let xs: Seq[Cell] = [c]
+  xs[0].v = 3
+  return xs[0].v
+"""
+  t.quietly: t.badCheck "A170: an assignment through a let's element", "TK-TY13"
+  t.bugFixed "A170: an assignment through a let's element"
+
+  # A171 (class E, O2/O3). O2: a view `let v = recs[0]` outlived a call of
+  # the actor's own member `replace`, which wrote `recs` — Odin and D read
+  # freed memory (0 for 1). O3: a `for` binding is a view of the collection
+  # it walks, and the body replaced that element (`xs.setAt {index: 0, ..}`):
+  # Nim read the new element (50), Odin and D freed memory (0). By value
+  # semantics the loop walks the collection as it was: a copy, when the body
+  # writes it.
+  t.src """
+import seq
+import scheduler
+
+type Rec:
+  tag: int
+  items: Seq[int]
+
+fn mk({n: int}) -> Rec:
+  var s: Seq[int] = []
+  s = s.push {value: n}
+  s = s.push {value: n + 1}
+  return {tag: n, items: s} Rec
+
+actor Store [queue: 8]:
+  recs: Seq[Rec] = []
+  res: int = 0
+  done: bool = false
+
+  fn replace():
+    let r2 = mk {n: 50}
+    recs.setAt {index: 0, value: r2}
+
+  fn go():
+    let v = recs[0]
+    replace
+    let a = v.items.at {index: 0}
+    res = a
+
+  on init():
+    let r1 = mk {n: 1}
+    recs = recs.push {value: r1}
+    go
+    done = true
+
+fn ready() -> bool:
+  return Store.done
+
+fn main() -> int:
+  Store send init {}
+  Store.waitUntil {pred: :ready}
+  return Store.res
+"""
+  t.quietly: t.runs "A171: a view ends at a call of the actor's own member", 1
+  t.bugFixed "A171: a view ends at a call of the actor's own member"
+  t.quietly: t.runsOdin "A171: ...on Odin", 1
+  t.bugFixed "A171: ...on Odin"
+  t.src """
+import seq
+
+type Rec:
+  tag: int
+  items: Seq[int]
+
+fn mk({n: int}) -> Rec:
+  var s: Seq[int] = []
+  s = s.push {value: n}
+  s = s.push {value: n + 1}
+  return {tag: n, items: s} Rec
+
+fn main() -> int:
+  var xs: Seq[Rec] = []
+  let r1 = mk {n: 1}
+  xs = xs.push {value: r1}
+  var total = 0
+  for r in xs:
+    let r2 = mk {n: 50}
+    xs.setAt {index: 0, value: r2}
+    let a = r.items.at {index: 0}
+    total = total + a
+  return total
+"""
+  t.quietly: t.runs "A171: a loop walks the collection as it was when the body writes it", 1
+  t.bugFixed "A171: a loop walks the collection as it was when the body writes it"
+  t.quietly: t.runsOdin "A171: ...on Odin, without reading freed memory", 1
+  t.bugFixed "A171: ...on Odin, without reading freed memory"
+
   t.finish()
