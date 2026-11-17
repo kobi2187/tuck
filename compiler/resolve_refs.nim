@@ -48,6 +48,10 @@ proc collectNames(prog: seq[LoadedModule]) =
       if '.' in d.name and not isImportedCopy(d):
         semLayer.handlerSites.mgetOrPut(d.name, @[]).add(d.id)
         semLayer.handlerDecls.mgetOrPut(d.name, @[]).add(d)
+  for lm in prog:
+    for g in lm.m.decls(dkGroup):
+      for mem in g.groupMembers:
+        if mem != nil and mem.kind == dkFn: semLayer.groupRequirements.incl mem.name
   collect(dkActor, actorNames, "an actor")
   collect(dkRegister, registerNames, "a register")
   collect(dkRegistry, registryNames, "a registry")

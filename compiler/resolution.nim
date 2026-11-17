@@ -88,6 +88,11 @@ type
     # module's own const shadows any other module's.
     constNames*: Table[string, Decl]
     ambiguousConsts*: HashSet[string]
+    groupRequirements*: HashSet[string]
+      ## Every fn name a `group` requires, as written. A fn of that name is
+      ## a PROVIDER: a generic body reaches it through the group, by name,
+      ## with no call edge, so its callers cannot know whether it keeps an
+      ## argument — it borrows them (ownership_elab.consumesWhy).
     # Each module's OWN consts. A name is only meaningful to a module that
     # declares it or imports its declarer directly; constNames alone answered
     # for every module in the program, so a const two imports away was
@@ -511,6 +516,7 @@ proc resetResolution*() =
   let mixinNames = semLayer.mixinNames
   let constNames = semLayer.constNames
   let ambiguousConsts = semLayer.ambiguousConsts
+  let groupRequirements = semLayer.groupRequirements
   let constsByModule = semLayer.constsByModule
   let handlerSites = semLayer.handlerSites
   let handlerDecls = semLayer.handlerDecls
@@ -526,6 +532,7 @@ proc resetResolution*() =
   semLayer.mixinNames = mixinNames
   semLayer.constNames = constNames
   semLayer.ambiguousConsts = ambiguousConsts
+  semLayer.groupRequirements = groupRequirements
   semLayer.constsByModule = constsByModule
 
 proc placeArenaSlabs*(m: var Module) =

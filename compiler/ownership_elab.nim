@@ -98,6 +98,11 @@ proc consumesWhy*(res: Resolution, m: Module, d: Decl, pname: string,
   ## Rule P with its reason: the first final read of `pname` that is a sink,
   ## named, or "" when `d` only borrows it. Not memoised; `consumes` is.
   if d.fnBody == nil: return ""
+  # A group provider borrows: its callers through the group cannot see it
+  # (resolution.groupRequirements). Keeping `self` made `keyOf` move
+  # `self.s` out of a value the generic caller still owned — a double free
+  # on Nim, which calls it by name.
+  if writtenName(d) in res.groupRequirements: return ""
   for pu in res.placeUsesOf(d.fnBody):
     if rootOf(pu.path) != pname or not res.isLastUse(pu.read): continue
     if not res.owning(m, res.typeFor(pu.read)): continue   # carries nothing

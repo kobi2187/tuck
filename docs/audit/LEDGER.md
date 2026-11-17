@@ -62,13 +62,23 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | M20 mixins, pools, slabs, arenas, registers of one name in two modules are each their module's (type_identity) | A161 | a registry stays one per program (TK-RG05, by spec) |
 | M23 a type named like a generated one (`<Pool>Handle`, `<Slab>Ref`, `<Arena>Ref`, `<Kind>Handle`) is refused: TK-TY51 | A162 | |
 | M10b a module that renames at an import loads its imports from source, so a warm `tuck ch` agrees with a cold one | cross_module | |
+| T1 a name narrowed on loop entry and un-narrowed in the body is checked un-narrowed on a second pass | A163 | |
+| T2/T3 a write through a slab alias, `self ..f {v}`, or a call of the actor's own member ends field guards | A164 | |
+| T10 TK-TY16 holes follow a parameter passed on, copied or returned, a partial local returned, a one-path fill and an assignment | A165 | (c16 was no bug: Tuck has no string interpolation) |
+| O7 the arm's subject reassigned in its arm holds the new value's variant, for every sum | A166 | |
+| O4 a copy is no final read when an overlapping place is first read in a later block (SSA `readAfter`) | A166 | |
+| T8b/c only the construction a tracked assignment's transition produces may build a sealed non-initial variant | A167 | `transitionSite` replaces the flag |
+| a group provider borrows its parameters (a generic body reaches it by name): Nim double-freed `keyOf`'s `self.s` | A156 | |
 
 **Still open in class B.** M14's refusal for a private or un-imported callee is a restriction, not the end
 state: the clone should be checked in the library's scope.
 
 **Waiting on a ruling.** E4 (does binding a task's result, an await, need `[io]` in the
 caller?), E16 (`on select` arm budgets, F2), C18's second half (a predicate reading only its
-own actor's fields), and the concurrency items C2/C4/C5.
+own actor's fields), the concurrency items C2/C4/C5, Y1 (int/i64 overflow policy), T9 (spec
+§4.4b rules out a loop fixed point for variant sets, so a transition legal on iteration 1 and
+not on 2 passes), and two TK-TY16 holes the checker cannot follow: a partial record put in a
+sum payload (un/c11) and a slab `new` that omits a field (sl2) — refuse the store, or track?
 
 ---
 
