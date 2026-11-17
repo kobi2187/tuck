@@ -4,6 +4,10 @@ struct TRec_epochMs(T_epochMs) {
     T_epochMs epochMs;
 }
 
+struct TRec_ns(T_ns) {
+    T_ns ns;
+}
+
 struct TRec_fd(T_fd) {
     T_fd fd;
 }

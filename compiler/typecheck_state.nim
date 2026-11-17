@@ -89,12 +89,16 @@ type
     currentFn*: string
     currentActor*: string
       ## The actor whose handlers and member fns are being checked, or "".
-    actorMemberOwner*: Table[string, string]
-      ## A `fn` declared in an actor -> that actor (A24). Callable only from
-      ## the actor's own code: anywhere else it would run on the caller's
-      ## thread, against the actor's state.
-    actorHandlerOwner*: Table[string, string]
-      ## An `on` handler -> its actor. A message: sent, never called.
+    actorMemberOwner*: Table[string, seq[string]]
+      ## A `fn` declared in an actor -> the actors declaring one of that name
+      ## (A24). Callable only from the actor's own code: anywhere else it
+      ## would run on the caller's thread, against the actor's state. EVERY
+      ## owner, not one: it held the last actor to declare the name, so two
+      ## actors each with a `bump` left the first unable to call its own, and
+      ## an imported actor's `size` refused a call of the importer's own
+      ## top-level `size` (audit M16, C12).
+    actorHandlerOwner*: Table[string, seq[string]]
+      ## An `on` handler -> its actors. A message: sent, never called.
     pendingFns*: Table[string, Span]
     implementedFns*: HashSet[string]
     errPolicy*: string            # strict (default) | continue | exit
@@ -197,6 +201,10 @@ type
     topLevelFns*: HashSet[string]     # plain top-level `fn` decls: the only
                                       # callees lowering explodes payloads for
                                       # (tasks and member fns are the backends')
+    importedSigs*: Table[string, seq[FnSig]]
+      ## What this module's imports export, as seeded into `fnSigs`, kept
+      ## apart: a call NAMING a fn reaches the module's own, then an import's,
+      ## and only then anything else filed under the name (audit M6).
     objectMemberFns*: HashSet[string]
       ## Fn names declared INSIDE a `type` or `object` body. Distinct from
       ## "not top-level": a mixin/extern/pending member is collected with
@@ -292,6 +300,12 @@ proc sigOf*(tc: TypeChecker, name: string): FnSig =
   ## know a receiver keeps its current behaviour.
   tc.fnSigs[name][^1]
 
+proc importedFnNamed*(tc: TypeChecker, name: string): bool =
+  ## Does a call NAMING `name` reach an import's fn: an import exports one and
+  ## this module declares no fn of the name itself (an object's member is not
+  ## one: it is reached through a receiver)?
+  tc.importedSigs.hasKey(name) and not tc.module.declaresFn(name)
+
 proc sigOfCallByName*(tc: TypeChecker, name: string): FnSig =
   ## The signature for a call that NAMES a fn (`{r: x} peek`) rather than
   ## reaching one through a receiver. Prefers the top-level fn, since that is
@@ -299,6 +313,11 @@ proc sigOfCallByName*(tc: TypeChecker, name: string): FnSig =
   ## reached only via a receiver, and picking it demanded a `self` the caller
   ## had no reason to pass. Derived from the decl itself rather than by index,
   ## so it cannot drift out of step with fnSigs' own ordering.
+  # An import's fn, when this module declares none of the name itself. Every
+  # other answer below is "whatever is filed under the name", and a local
+  # object's member is filed after the imports: `{items: xs} count` then
+  # demanded the `self: Pile` of an unrelated object (audit M6).
+  if tc.importedFnNamed(name): return tc.importedSigs[name][^1]
   let d = tc.topLevelDeclOfFn(name)
   if d != nil and d.kind == dkFn:
     return (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects,

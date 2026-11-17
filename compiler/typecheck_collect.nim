@@ -78,7 +78,7 @@ proc collectFnSigType*(tc: var TypeChecker, d: Decl) =
   ## A signature TYPE declares no effects of its own — what gets baked into
   ## the slot carries them.
   tc.setFnSig(d.name, (d.sigParams, d.sigReturn,
-                       newSeq[string](), newSeq[EffectMarker](), newSeq[string](),
+                       newSeq[string](), d.sigEffects, newSeq[string](),
                        newSeq[string]()))
   tc.fnSigNames.incl(d.name)
   if d.sigGenerics.len > 0: tc.fnSigGenerics[d.name] = d.sigGenerics
@@ -246,8 +246,8 @@ proc collectHeartbeatSigs(tc: var TypeChecker, d: Decl) =
   for (member, ret) in [("pingUs", optInt),
                         ("alive", Type(span: d.span, kind: tkNamed,
                                        name: "bool"))]:
-    if tc.actorMemberOwner.getOrDefault(member) == d.name or
-       tc.actorHandlerOwner.getOrDefault(member) == d.name: continue
+    if d.name in tc.actorMemberOwner.getOrDefault(member) or
+       d.name in tc.actorHandlerOwner.getOrDefault(member): continue
     # Blocks the caller until the actor answers or the deadline passes.
     tc.setFnSig(d.name & "." & member,
       (within, ret, newSeq[string](), @[emIo], newSeq[string](),
@@ -270,6 +270,10 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
       tc.setFnSig(d.name, (d.fnParams, d.fnReturnType,
                            newSeq[string](), d.fnEffects,
                            d.fnResourceKinds, d.fnErrorTypes))
+      # A spawn is a call: it gets an edge like one. Without it a task an
+      # IMPORT declares was a name the effect pass could not place, so a
+      # `[pure]` fn spawned it unseen (audit E14).
+      if top: tc.recordFnBody(d)
     of dkFnSig: tc.collectFnSigType(d)
     of dkPool: tc.collectPoolSigs(d)
     of dkSlab: tc.collectSlabSigs(d)
@@ -290,8 +294,8 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
       tc.collectSigs(d.handlers)
       for h in d.handlers:
         if h == nil or h.kind != dkFn: continue
-        if h.isOnHandler: tc.actorHandlerOwner[h.name] = d.name
-        else: tc.actorMemberOwner[h.name] = d.name
+        if h.isOnHandler: tc.actorHandlerOwner.mgetOrPut(h.name, @[]).add d.name
+        else: tc.actorMemberOwner.mgetOrPut(h.name, @[]).add d.name
       # `<Actor>.waitUntil {pred: :p}` — a static member call, registered the
       # same way `Pool.acquire` is. A plain signature in the flat table, so the
       # call resolves through the ordinary path: the compiler does NOT special-
@@ -384,6 +388,11 @@ proc resolveDeclTypeRefs*(tc: TypeChecker, d: Decl) =
   for t in d.ownTypes:
     resolveTypeRefs(tc, t)
     tc.failIfBadArraySize(t, gs)
+  # Types spelled INSIDE bodies (`let xs: Seq[P] = ...`, casts, sends) are
+  # not in ownTypes; unresolved they reached the checker without an edge.
+  for ex in d.ownExprs:
+    for n in ex.nodes:
+      for t in n.writtenTypes: resolveTypeRefs(tc, t)
   for m in d.childDecls: resolveDeclTypeRefs(tc, m)
 
 proc resolveTypeNames*(tc: TypeChecker, m: Module) =

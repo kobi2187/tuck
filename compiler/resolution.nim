@@ -27,6 +27,11 @@ type
     shortcuts*: Table[NodeId, string]  # errors-policy drop sites
     asyncCalls*: HashSet[NodeId]       # call sites whose callee is [io] —
                                        # codegen awaits/yields them (async)
+    slotCalls*: Table[NodeId, seq[EffectMarker]]
+      # a call THROUGH a fn-valued slot (a `fnsig` field, param or local): no
+      # single callee, so what it may do is the slot type's effect contract,
+      # recorded by the checker. The effect pass charges it to the caller; a
+      # call through a slot with no record fails `assertCallEdges` (audit E1).
     # Name resolution, recorded once by the checker and read by every later
     # pass. `decls` is the index — "give me that declaration" — and `declOf`
     # is the edge a reference has to its target: "what does this name mean".
@@ -64,6 +69,9 @@ type
     # registry knows an event has such handlers (codegen_common.
     # hasForeignHandlers) and so keeps a list of function references for them.
     handlerSites*: Table[string, seq[NodeId]]
+    # ...and the handler declarations themselves: a raise calls every one of
+    # them synchronously (spec Part 10), so what it may do is theirs (audit E5).
+    handlerDecls*: Table[string, seq[Decl]]
     registerNames*: Table[string, Decl]
     registryNames*: Table[string, Decl]
     poolNames*: Table[string, Decl]
@@ -80,6 +88,11 @@ type
     # module's own const shadows any other module's.
     constNames*: Table[string, Decl]
     ambiguousConsts*: HashSet[string]
+    # Each module's OWN consts. A name is only meaningful to a module that
+    # declares it or imports its declarer directly; constNames alone answered
+    # for every module in the program, so a const two imports away was
+    # reachable by bare name (audit M3).
+    constsByModule*: Table[ModuleId, Table[string, Decl]]
     # How a call's payload maps onto its callee's parameters, decided once by
     # checkCallArgs. `argFields[i]` names the payload FIELD that satisfies
     # param i — matched by name, or by type when the names differ — and
@@ -304,6 +317,7 @@ proc copyMeaning(r: Resolution, src, dst: NodeId) =
   if src in r.types: r.types[dst] = r.types[src]
   if src in r.shortcuts: r.shortcuts[dst] = r.shortcuts[src]
   if src in r.asyncCalls: r.asyncCalls.incl dst
+  if src in r.slotCalls: r.slotCalls[dst] = r.slotCalls[src]
   if src in r.declOf: r.declOf[dst] = r.declOf[src]
   if src in r.argFields: r.argFields[dst] = r.argFields[src]
   if src in r.callParams: r.callParams[dst] = r.callParams[src]
@@ -368,6 +382,19 @@ proc markAsync*(r: Resolution, e: Expr) =
   ensureId(e)
   r.asyncCalls.incl(e.id)
 
+proc markSlotCall*(r: Resolution, e: Expr, effects: seq[EffectMarker]) =
+  ## `e` calls through a slot whose type promises `effects`.
+  if e == nil: return
+  ensureId(e)
+  r.slotCalls[e.id] = effects
+
+proc isSlotCall*(r: Resolution, e: Expr): bool =
+  e != nil and e.id.isSet and r.slotCalls.hasKey(e.id)
+
+proc slotEffects*(r: Resolution, e: Expr): seq[EffectMarker] =
+  ## What a call through a slot may do (empty unless `isSlotCall`).
+  if e != nil and e.id.isSet: r.slotCalls.getOrDefault(e.id) else: @[]
+
 proc isAsync*(r: Resolution, e: Expr): bool =
   ## Is `e` a call site of an `[io]` callee — one the task transform must
   ## suspend at?
@@ -411,6 +438,7 @@ proc newResolution*(): Resolution =
              types: initTable[NodeId, Type](),
              shortcuts: initTable[NodeId, string](),
              asyncCalls: initHashSet[NodeId](),
+             slotCalls: initTable[NodeId, seq[EffectMarker]](),
              decls: initTable[NodeId, Decl](),
              declOf: initTable[NodeId, NodeId](),
              argFields: initTable[NodeId, seq[string]](),
@@ -474,9 +502,12 @@ proc resetResolution*() =
   let mixinNames = semLayer.mixinNames
   let constNames = semLayer.constNames
   let ambiguousConsts = semLayer.ambiguousConsts
+  let constsByModule = semLayer.constsByModule
   let handlerSites = semLayer.handlerSites
+  let handlerDecls = semLayer.handlerDecls
   semLayer = newResolution()
   semLayer.handlerSites = handlerSites
+  semLayer.handlerDecls = handlerDecls
   semLayer.actorNames = actorNames
   semLayer.registerNames = registerNames
   semLayer.registryNames = registryNames
@@ -486,6 +517,7 @@ proc resetResolution*() =
   semLayer.mixinNames = mixinNames
   semLayer.constNames = constNames
   semLayer.ambiguousConsts = ambiguousConsts
+  semLayer.constsByModule = constsByModule
 
 proc placeArenaSlabs*(m: var Module) =
   ## Each slab the checker made for an arena (one per element type its

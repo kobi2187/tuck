@@ -5414,4 +5414,1010 @@ fn main() -> int:
   t.quietly: t.badCheck "A116: an int is not an i64 argument without a conversion", "\\^i64|i64"
   t.bugOpen "A116: an int is not an i64 argument without a conversion"
 
+  # A119 (audit E7): a fn named `main` in ANY module got the entry's all-effects
+  # budget, so `lib::main` could print through a caller that declared nothing.
+  # Only the entry module's top-level `main` has that budget, and the pipeline
+  # asserts it was granted exactly once (assertMainBudgetOnce).
+  t.src """
+import lib
+
+fn viaLib() -> int:
+  return {} lib::main
+
+fn main() -> int:
+  return {} viaLib
+"""
+  t.addFile("lib.tuck", """import console
+fn main() -> int:
+  {text: "lib main io"} printLine
+  return 1
+""")
+  t.quietly: t.badCheck "A119: only the entry module's main has the full effect budget", "TK-EF01"
+  t.bugFixed "A119: only the entry module's main has the full effect budget"
+
+  # A120 (audit T6): a match over an int or str with no catch-all was accepted;
+  # a value outside the arms had no arm (Nim refused the build, Odin took the
+  # last arm, D threw). Open domains end in `_`.
+  t.src """
+fn pick({n: int}) -> int:
+  match n:
+    | 0 -> return 1
+    | 1 -> return 2
+  return 0
+
+fn main() -> int:
+  return {n: 1} pick
+"""
+  t.quietly: t.badCheck "A120: a match over an int needs a catch-all", "catch-all"
+  t.bugFixed "A120: a match over an int needs a catch-all"
+
+  # A121 (audit T7): a match on a result/optional discarded the error silently
+  # while `discard r` was refused. Test `.ok` or `match r.err`.
+  t.src """
+fn mi({n: int}) -> int?:
+  if n < 0:
+    return none
+  return n
+
+fn main() -> int:
+  let r = {n: 3} mi
+  match r:
+    | _ -> return 1
+  return 0
+"""
+  t.quietly: t.badCheck "A121: a match cannot take a result or optional as its subject", "cannot take a result or optional"
+  t.bugFixed "A121: a match cannot take a result or optional as its subject"
+
+  # A122 (audit T8a): `Door.Locked` was refused for a sealed type, but the bare
+  # spelling `Locked` reached the same value unchecked.
+  t.src """
+type Door [sealed]:
+  | Closed
+  | Open
+  | Locked
+
+  transitions:
+    Closed -> Open
+    Open -> Closed
+    Closed -> Locked
+
+fn mk() -> Door:
+  return Locked
+
+fn main() -> int:
+  let d = mk
+  return 0
+"""
+  t.quietly: t.badCheck "A122: a bare variant of a sealed type is not constructible directly", "Sealed Error"
+  t.bugFixed "A122: a bare variant of a sealed type is not constructible directly"
+
+  # A123 (audit E3a): an interface member could allocate under a
+  # `[pure, no_alloc]` contract. A capability (`io`) is a permission an
+  # implementation may use LESS of; a restriction (`pure`, `no_alloc`) is a
+  # promise it must MAKE. One subset rule had been applied to both.
+  t.src """
+interface Animal:
+  fn noise({self: Self}) -> int [pure, no_alloc]
+
+object Dog:
+  satisfies Animal
+  name: str
+  fn noise({self: Dog}) -> int:
+    return 1
+
+fn main() -> int:
+  let d = {name: "rex"} Dog
+  let a: Animal = d
+  return a.noise
+"""
+  t.quietly: t.badCheck "A123: an implementation must carry the contract's restrictions", "promises \\[pure\\]|does not satisfy"
+  t.bugFixed "A123: an implementation must carry the contract's restrictions"
+
+  # A124 (audit Y9/Y10): operators were checked for AGREEMENT between their
+  # sides, not for operand KIND: `not 5`, `-"x"`, `true < false`, `s - t` on
+  # text and `5.5 % 2.0` all checked clean and each backend answered its own way.
+  for (name, body) in [("not on an int", "let b = not 5\n  if b:\n    return 1"),
+                       ("negating text", "let b = -\"x\"\n  if b == \"\":\n    return 1"),
+                       ("ordering bools", "if true < false:\n    return 1"),
+                       ("subtracting text", "let b = \"a\" - \"b\"\n  if b == \"\":\n    return 1"),
+                       ("modulo of floats", "let b = 5.5 % 2.0\n  if b > 1.0:\n    return 1")]:
+    t.src "fn main() -> int:\n  " & body & "\n  return 0\n"
+    t.quietly: t.badCheck "A124: " & name & " is refused", "takes"
+    t.bugFixed "A124: " & name & " is refused"
+
+  # A125 (audit M9): two imports each declaring `fnsig Op`, then a call through
+  # a slot of that type, died with a KeyError in the checker. A fnsig is a
+  # nominal type like a `type`: type_identity gives each colliding one its
+  # module's name (`f1::Op`), so each slot knows which signature it holds.
+  t.src """
+import f1
+import f2
+
+fn main() -> int:
+  let c1 = {} mk1
+  let c2 = {} mk2
+  let x = {a: 1, b: 2} c1.op
+  let y = {s: "ab"} c2.op
+  return x + y
+"""
+  t.addFile("f1.tuck", """fnsig Op = {a: int, b: int} -> int
+type Calc = {op: Op}
+fn plus({a: int, b: int}) -> int:
+  return a + b
+fn mk1() -> Calc:
+  return {op: :plus} Calc
+""")
+  t.addFile("f2.tuck", """fnsig Op = {s: str} -> int
+type Calc2 = {op: Op}
+fn slen({s: str}) -> int:
+  return s.len
+fn mk2() -> Calc2:
+  return {op: :slen} Calc2
+""")
+  t.quietly: t.runs "A125: two imports' fnsigs of one name are two signatures", 5
+  t.bugFixed "A125: two imports' fnsigs of one name are two signatures"
+  t.quietly: t.runsOdin "A125: ...on Odin", 5
+  t.bugFixed "A125: ...on Odin"
+
+  # A126 (audit Y17): a type spelled inside a body (`let xs: Seq[P] = ...`)
+  # never got its declaration edge before the checker used it, and lowering
+  # asserted "has a declaration but no edge". Body-spelled types are resolved
+  # with the declaration's, and the edge invariant now covers them.
+  t.src """
+type P = {x: int}
+
+fn main() -> int:
+  let xs: Seq[P] = [{x: 1}]
+  return 0
+"""
+  t.quietly: t.okCheck "A126: a Seq of a named record annotated in a body checks"
+  t.bugFixed "A126: a Seq of a named record annotated in a body checks"
+
+  # A127 (audit M3): a const is in scope where it is declared or where its
+  # declarer is imported DIRECTLY. `main` imports lib, lib imports deep, and
+  # `Deep` was still reachable from main by bare name.
+  t.src """
+import lib
+
+fn main() -> int:
+  return Deep
+"""
+  t.addFile("lib.tuck", """import deep
+fn l() -> int:
+  return Deep
+""")
+  t.addFile("deep.tuck", """const Deep: int = 9
+""")
+  t.quietly: t.badCheck "A127: a const two imports away is not in scope", "not declared"
+  t.bugFixed "A127: a const two imports away is not in scope"
+
+  # A128 (audit E1): a call through a `fnsig` slot had no callee, so the effect
+  # check found nothing to charge and an `[io]` fn stored in the slot ran from a
+  # fn that declared none (and was not a suspend point in a task). The effect
+  # bracket is now part of the fnsig: a stored fn must fit it, and a call
+  # through the slot is charged with it. `assertCallEdges` fails the build when
+  # a call through a slot carries no recorded contract.
+  t.src """
+import console
+
+fnsig Act = {n: int} -> int
+type Holder = {act: Act}
+
+fn noisy({n: int}) -> int [io]:
+  {text: "side effect"} printLine
+  return n + 1
+
+fn viaPlain({h: Holder}) -> int:
+  return {n: 1} h.act
+
+fn main() -> int:
+  let h = {act: :noisy} Holder
+  return {h} viaPlain
+"""
+  t.quietly: t.badCheck "A128: an [io] fn does not fit a fnsig slot without [io]", "expects Act but got .*\\[io\\]"
+  t.bugFixed "A128: an [io] fn does not fit a fnsig slot without [io]"
+  t.src """
+import console
+
+fnsig Act = {n: int} -> int [io]
+type Holder = {act: Act}
+
+fn noisy({n: int}) -> int [io]:
+  {text: "side effect"} printLine
+  return n + 1
+
+fn viaPlain({h: Holder}) -> int:
+  return {n: 1} h.act
+
+fn main() -> int:
+  let h = {act: :noisy} Holder
+  return {h} viaPlain
+"""
+  t.quietly: t.badCheck "A128: a call through an [io] slot needs [io] in the caller", "TK-EF01"
+  t.bugFixed "A128: a call through an [io] slot needs [io] in the caller"
+  t.src """
+fnsig Rule = {x: int} -> bool
+fn small({x: int}) -> bool:
+  return x < 10
+fn test({r: Rule, x: int}) -> bool [pure]:
+  return {x} r
+
+fn main() -> int:
+  if {r: :small, x: 3} test:
+    return 1
+  return 0
+"""
+  t.quietly: t.badCheck "A128: a [pure] fn may not call through a slot that does not promise [pure]", "TK-EF03"
+  t.bugFixed "A128: a [pure] fn may not call through a slot that does not promise [pure]"
+
+  # A129 (audit E3c): a call through an INTERFACE value resolved to no callee in
+  # the restriction check, and an unknown callee is never a violation, so a
+  # `[pure]` fn could dispatch to any member. It reaches the contract's
+  # requirement now, which every satisfier keeps.
+  t.src """
+interface Animal:
+  fn noise({self: Self}) -> int
+
+object Dog:
+  satisfies Animal
+  name: str
+  fn noise({self: Dog}) -> int:
+    return 3
+
+fn hear({a: Animal}) -> int [pure]:
+  return a.noise
+
+fn main() -> int:
+  let d = {name: "rex"} Dog
+  let a: Animal = d
+  return {a} hear
+"""
+  t.quietly: t.badCheck "A129: a [pure] fn may not dispatch to an interface member that is not [pure]", "TK-EF03"
+  t.bugFixed "A129: a [pure] fn may not dispatch to an interface member that is not [pure]"
+
+  # A130 (audit E5): `Ev.raise Ping` runs every `on Ev.Ping` handler right
+  # there (spec Part 10), but had no edge to them, so an `[io]` handler ran
+  # from a fn that declared nothing. A raise carries its handlers' joint
+  # contract: every capability any of them uses, the restrictions all make.
+  t.src """
+import console
+
+registry Ev:
+  | Ping({n: int})
+
+on Ev.Ping({n: int}) [io]:
+  {text: "handler did io"} printLine
+
+fn raiser() -> void:
+  Ev.raise Ping {n: 1}
+
+fn main() -> int:
+  {} raiser
+  return 0
+"""
+  t.quietly: t.badCheck "A130: raising an event charges its handlers' effects", "TK-EF01"
+  t.bugFixed "A130: raising an event charges its handlers' effects"
+
+  # A131 (audit E13): a `..` step that calls a mutator resolves to a call that
+  # is not in the tree, and the effect and restriction passes walked the tree,
+  # so an `[io]` member ran from a `[pure]` fn. Passes ask `callSites` now,
+  # and the edge invariant covers step calls.
+  t.src """
+import console
+
+object Server:
+  port: int
+  fn bump({self: Server}) -> Server [io]:
+    {text: "io in bump"} printLine
+    return self
+
+fn f() -> int [pure]:
+  var s = {port: 1} Server
+  s ..bump
+  return s.port
+
+fn main() -> int:
+  return {} f
+"""
+  t.quietly: t.badCheck "A131: a `..` mutator step is a call the effect rules see", "TK-EF03"
+  t.bugFixed "A131: a `..` mutator step is a call the effect rules see"
+
+  # A132 (audit E10): a type's `invariant:` runs at every construction and
+  # write, but the effect pass never visited it, so an `[io]` predicate made
+  # every construction do I/O unseen. Invariants are effect-free.
+  t.src """
+import console
+
+fn noisy({v: int}) -> bool [io]:
+  {text: "io in invariant"} printLine
+  return v > 0
+
+type Pos:
+  v: int
+  invariant:
+    {v: v} noisy
+
+fn main() -> int:
+  let p = {v: 3} Pos
+  return p.v
+"""
+  t.quietly: t.badCheck "A132: an invariant may not do I/O", "invariant of 'Pos' may not do \\[io\\]"
+  t.bugFixed "A132: an invariant may not do I/O"
+
+  # A133 (audit E15): an actor field's initialiser runs when the actor starts,
+  # before `main`, and was never budget-checked. It is effect-free.
+  t.src """
+import console
+
+actor A [queue: 4]:
+  v: int = {} noisyInt
+  on poke():
+    v += 1
+
+fn noisyInt() -> int [io]:
+  {text: "io at actor field init"} printLine
+  return 1
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A133: an actor field initialiser may not do I/O", "initialiser of 'A.v' may not do \\[io\\]"
+  t.bugFixed "A133: an actor field initialiser may not do I/O"
+
+  # A134 (audit E12, E14): a task's restriction markers were never held, and a
+  # task an IMPORT declares had no call edge, so the effect pass could not tell
+  # its spawn from an unknown name. Task calls get edges like fn calls, and a
+  # task's restrictions are checked like a fn's.
+  t.src """
+fn alloc() -> int:
+  let xs = [1, 2]
+  return xs.len
+
+task tk() -> void [no_alloc]:
+  let r = {} alloc
+  return
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A134: a [no_alloc] task may not call an allocating fn", "'tk' is \\[no_alloc\\]"
+  t.bugFixed "A134: a [no_alloc] task may not call an allocating fn"
+  t.src """
+import lib
+
+fn sneaky() -> int [pure]:
+  let r = {} slow
+  return r.v
+
+fn main() -> int:
+  return {} sneaky
+"""
+  t.addFile("lib.tuck", """import console
+task slow() -> {v: int} [io]:
+  {text: "lib task start"} printLine
+  return {v: 7}
+""")
+  t.quietly: t.badCheck "A134: a [pure] fn may not spawn an imported task", "spawns task 'slow'"
+  t.bugFixed "A134: a [pure] fn may not spawn an imported task"
+
+  # A135 (audit E6): `[pure]` held calls only, so a pure fn could send to an
+  # actor, read another thread's actor fields, or take from a pool; and an
+  # `[irq_safe]` fn could block in `waitUntil`. TK-EF10 holds the constructs.
+  for (name, body) in [("sending", "Worker send job {n: 1}\n  return 0"),
+                       ("reading an actor's field", "return Worker.processed"),
+                       ("taking from a pool", "let h = Readings.acquire\n  if not h.ok:\n    return 0\n  Readings.release {h: h.value}\n  return 1")]:
+    t.src """
+actor Worker [queue: 4]:
+  processed: int = 0
+  on job({n: int}):
+    processed += n
+
+type Reading:
+  value: u16
+
+pool Readings = Reading [count: 4]
+
+fn p() -> int [pure]:
+  """ & body & """
+
+fn main() -> int:
+  return {} p
+"""
+    t.quietly: t.badCheck "A135: a [pure] fn may not touch shared state: " & name, "TK-EF10"
+    t.bugFixed "A135: a [pure] fn may not touch shared state: " & name
+  t.src """
+actor Worker [queue: 4]:
+  processed: int = 0
+  on job({n: int}):
+    processed += n
+
+fn done() -> bool:
+  return true
+
+fn isr() -> void [irq_safe, no_alloc]:
+  Worker.waitUntil {pred: :done}
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A135: an [irq_safe] fn may not wait on an actor", "TK-EF10"
+  t.bugFixed "A135: an [irq_safe] fn may not wait on an actor"
+
+  # A136 (audit E9): a `pending:` member of an object is a contract to come;
+  # an `[io]` one did not charge its callers, since a pending member is not
+  # among the members a call resolves to for codegen.
+  t.src """
+object App:
+  id: int
+  pending:
+    fn fetchFeed({self: App}) -> int [io]
+
+fn c({x: App}) -> int:
+  return x.fetchFeed
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A136: a pending [io] member charges its callers", "TK-EF01"
+  t.bugFixed "A136: a pending [io] member charges its callers"
+
+  # A137 (audit O1b): `setAt` changes its `items` in place, but an extern could
+  # not say so, and `zs.setAt {..}` on a `let` checked clean. `[writes: p]`
+  # declares it; the argument must then be a place rooted at a `var`.
+  t.src """
+import seq
+
+fn main() -> int:
+  let ys: Seq[int] = [1, 2, 3]
+  {items: ys, index: 0, value: 99} setAt
+  return ys[0]
+"""
+  t.quietly: t.badCheck "A137: an extern that writes its argument needs a var", "cannot let 'setAt' change 'ys'"
+  t.bugFixed "A137: an extern that writes its argument needs a var"
+  t.src """
+import seq
+
+fn bump({xs: Seq[int]}) -> int:
+  xs.setAt {index: 0, value: 99}
+  return xs[0]
+
+fn main() -> int:
+  return {xs: [1, 2]} bump
+"""
+  t.quietly: t.badCheck "A137: ...nor a parameter", "TK-TY15"
+  t.bugFixed "A137: ...nor a parameter"
+
+  # A138 (audit O1c): a member whose only change to its object is
+  # `self.recs.setAt {..}` was not classed as changing `self`, so it took
+  # `self` by value (Nim refused the build), and a view of `s.recs[0]` taken
+  # before the call outlived it on Odin and D, which read freed memory.
+  t.src """
+import seq
+
+type Rec:
+  tag: int
+  items: Seq[int]
+
+fn mk({n: int}) -> Rec:
+  var s: Seq[int] = []
+  s = s.push {value: n}
+  s = s.push {value: n + 1}
+  return {tag: n, items: s} Rec
+
+object Store:
+  recs: Seq[Rec]
+  fn replace({self: Store}) -> void:
+    let r2 = mk {n: 50}
+    self.recs.setAt {index: 0, value: r2}
+
+fn main() -> int:
+  let r1 = mk {n: 1}
+  var s: Store = {recs: [r1]} Store
+  let v = s.recs[0]
+  s.replace
+  let a = v.items.at {index: 0}
+  return a
+"""
+  t.quietly: t.runs "A138: a member writing self through an extern changes its object", 1
+  t.bugFixed "A138: a member writing self through an extern changes its object"
+  t.quietly: t.runsOdin "A138: ...and a view taken before it is not stale on Odin", 1
+  t.bugFixed "A138: ...and a view taken before it is not stale on Odin"
+
+  # A139 (audit O5): `let r = c.bump` built the member call through the
+  # postfix path, which never registered it, so a member changing its object
+  # ran on a `let`. Every member call is registered, and the checker asserts
+  # it (unregisteredMemberCalls).
+  t.src """
+object Cnt:
+  n: int
+  fn bump({self: Cnt}) -> int:
+    self ..n {self.n + 1}
+    return self.n
+
+fn main() -> int:
+  let c = {n: 1} Cnt
+  let r = c.bump
+  return r * 10 + c.n
+"""
+  t.quietly: t.badCheck "A139: a self-changing member in value position needs a var", "cannot call 'bump' on 'c'"
+  t.bugFixed "A139: a self-changing member in value position needs a var"
+
+  # A140 (audit C3): slab ownership (TK-AC08) follows call edges, and three
+  # calls had none: through a fn slot, through an interface value, and a
+  # `waitUntil` predicate, which runs on the ACTOR's thread. A slab of main's
+  # thread was reached from an actor through each.
+  t.src """
+type Node:
+  data: int
+
+slab Nodes = Node
+
+fnsig Cb = {} -> int
+type H = {cb: Cb}
+
+fn touch() -> int:
+  let r = Nodes.new {data: 1}
+  let d = r.data
+  Nodes.free {r: r}
+  return d
+
+actor W [queue: 8]:
+  n: int = 0
+  on go({h: H}):
+    n += {} h.cb
+
+fn main() -> int:
+  let h = {cb: :touch} H
+  W send go {h: h}
+  return {} touch
+"""
+  t.quietly: t.badCheck "A140: a slab reached through a fn slot from an actor", "TK-AC08"
+  t.bugFixed "A140: a slab reached through a fn slot from an actor"
+  t.src """
+type Node:
+  data: int
+
+slab Nodes = Node
+
+actor Probe [queue: 8]:
+  halted: bool = false
+  on halt():
+    halted = true
+
+fn pred() -> bool:
+  let a = Nodes.new {data: 1}
+  Nodes.free {r: a}
+  return Probe.halted
+
+fn main() -> int:
+  let n = Nodes.new {data: 2}
+  Nodes.free {r: n}
+  Probe send halt {}
+  Probe.waitUntil {pred: :pred}
+  return 0
+"""
+  t.quietly: t.badCheck "A140: a waitUntil predicate runs on the actor's thread", "actor 'Probe' reaches slab 'Nodes'"
+  t.bugFixed "A140: a waitUntil predicate runs on the actor's thread"
+
+  # A141 (audit E2/M4): the effect pass looked a callee's markers up in ONE
+  # table for the whole program, keyed by bare name, so the last module to
+  # declare `work` answered for every caller: x's `[no_alloc]` fn calling ma's
+  # allocating `work` passed when the entry also imported mb, whose `work` is
+  # `[no_alloc]`. Each module now sees its own imports' names, bare where the
+  # checker gave that import the name (typecheck.moduleScopes).
+  t.src """
+import x
+import mb
+
+fn main() -> int:
+  let e: Seq[int] = []
+  let r = {xs: e} xna
+  return 0
+"""
+  t.addFile("x.tuck", """import ma
+fn xna({xs: Seq[int]}) -> Seq[int] [no_alloc]:
+  return {xs} work
+""")
+  t.addFile("ma.tuck", """import seq
+fn work({xs: Seq[int]}) -> Seq[int]:
+  return {items: xs, value: 1} push
+""")
+  t.addFile("mb.tuck", """fn work({xs: Seq[int]}) -> Seq[int] [no_alloc]:
+  return xs
+""")
+  t.quietly: t.badCheck "A141: a callee's effects are its own module's, not a namesake's", "x.tuck.*'xna' is \\[no_alloc\\] but calls 'work'"
+  t.bugFixed "A141: a callee's effects are its own module's, not a namesake's"
+
+  # A142 (audit M1): a module is known by its file name. A local `bits.tuck`
+  # beside the entry and the stdlib's `bits.tuck` (which `random` imports)
+  # were loaded as ONE module, and the program ran whichever body the backend
+  # met first. Two files of one name are refused where both paths are known.
+  t.src """
+import bits
+import random
+
+fn main() -> int:
+  let r = {a: 12, b: 10} bits::bitAnd
+  let d = {seed: 5} newDice
+  if r == 7:
+    return 3
+  return 0
+"""
+  t.addFile("bits.tuck", """fn bitAnd({a: u64, b: u64}) -> u64:
+  return 7
+""")
+  t.quietly: t.badCheck "A142: two files of one module name are refused", "two modules are named 'bits'"
+  t.bugFixed "A142: two files of one module name are refused"
+
+  # A143 (audit M2): `type Thing` in one module and `object Thing` in another
+  # were one type to every later stage, first copy wins. An object is a
+  # nominal type like a `type`, told apart by its module.
+  t.src """
+import a
+import b
+
+fn main() -> int:
+  let x = {} a::mkA
+  let y = {} b::mkB
+  return x.x + y.size
+"""
+  t.addFile("a.tuck", """type Thing:
+  x: int
+fn mkA() -> Thing:
+  return {x: 4} Thing
+""")
+  t.addFile("b.tuck", """object Thing:
+  s: str
+  fn size() -> int:
+    return s.len
+fn mkB() -> Thing:
+  return {s: "hello"} Thing
+""")
+  t.quietly: t.runs "A143: a type and an object of one name in two modules are two types", 9
+  t.bugFixed "A143: a type and an object of one name in two modules are two types"
+  t.quietly: t.runsOdin "A143: ...on Odin", 9
+  t.bugFixed "A143: ...on Odin"
+
+  # A144 (audit M19): `import ka {put -> putEntry}` took over `putEntry` when
+  # another import already exported that name: a call meant for kb's ran ka's.
+  # A rename onto a name another import brings in is refused.
+  t.src """
+import ka {put -> putEntry}
+import kb
+
+fn main() -> int:
+  let r = {n: 1} putEntry
+  return r
+"""
+  t.addFile("ka.tuck", """fn put({n: int}) -> int:
+  return n + 1
+""")
+  t.addFile("kb.tuck", """fn putEntry({n: int}) -> int:
+  return n + 100
+""")
+  t.quietly: t.badCheck "A144: a rename may not take a name another import exports", "already a fn of kb"
+  t.bugFixed "A144: a rename may not take a name another import exports"
+
+  # A145 (audit M8): two modules each declaring `group Keyed`: an importer of
+  # both held the last one imported, and the first module's bounded fn was
+  # checked against the other's requirements. A group is nominal, told apart
+  # by its module like a type.
+  t.src """
+import g1
+import g2
+import p
+
+fn main() -> int:
+  let a = {n: 1} A
+  let b = {s: "xy"} B
+  let r1 = {x: a} use1
+  let r2 = {x: b} use2
+  return r1 + r2
+"""
+  t.addFile("g1.tuck", """group Keyed:
+  fn keyOf({self: Self}) -> int
+fn use1[T: Keyed]({x: T}) -> int:
+  return {self: x} keyOf
+""")
+  t.addFile("g2.tuck", """group Keyed:
+  fn nameOf({self: Self}) -> str
+fn use2[T: Keyed]({x: T}) -> int:
+  let s = {self: x} nameOf
+  return s.len
+""")
+  t.addFile("p.tuck", """type A:
+  n: int
+fn keyOf({self: A}) -> int:
+  return self.n
+type B:
+  s: str
+fn nameOf({self: B}) -> str:
+  return self.s
+""")
+  t.quietly: t.runs "A145: two modules' groups of one name are two groups", 3
+  t.bugFixed "A145: two modules' groups of one name are two groups"
+  t.quietly: t.runsOdin "A145: ...on Odin", 3
+  t.bugFixed "A145: ...on Odin"
+
+  # A146 (audit M14): an interface-bounded generic is cloned into the module
+  # that calls it and checked again THERE, so a bare name in the library's
+  # body meant the caller's own fn of that name, which ran instead (1002
+  # expected, 7 computed). The clone spells each fn by the module that owns
+  # it in the library's scope; one the caller cannot name is refused at the
+  # call that asks for the clone.
+  t.src """
+import lib
+
+object Foo:
+  satisfies Src
+  k: int
+  fn v({self: Foo}) -> int:
+    return self.k
+
+fn helper({n: int}) -> int:
+  return n + 5
+
+fn main() -> int:
+  let f = {k: 1} Foo
+  let r = {x: f} run
+  if r == 1002:
+    return 0
+  return 1
+"""
+  t.addFile("lib.tuck", """interface Src:
+  fn v({self: Self}) -> int
+fn helper({n: int}) -> int:
+  return n + 1000
+fn run[T: Src]({x: T}) -> int:
+  let a = {n: 1} helper
+  let b = {self: x} v
+  return a + b
+""")
+  t.quietly: t.runs "A146: a generic's clone calls the library's fn, not the caller's namesake", 0
+  t.bugFixed "A146: a generic's clone calls the library's fn, not the caller's namesake"
+  t.quietly: t.runsOdin "A146: ...on Odin", 0
+  t.bugFixed "A146: ...on Odin"
+  t.src """
+import lib
+
+object Foo:
+  satisfies Src
+  k: int
+  fn v({self: Foo}) -> int:
+    return self.k
+
+fn main() -> int:
+  let f = {k: 1} Foo
+  return {x: f} run
+"""
+  t.addFile("lib.tuck", """public:
+  Src run
+
+interface Src:
+  fn v({self: Self}) -> int
+fn secret({n: int}) -> int:
+  return n + 1000
+fn run[T: Src]({x: T}) -> int:
+  let a = {n: 1} secret
+  let b = {self: x} v
+  return a + b
+""")
+  t.quietly: t.badCheck "A146: a clone needing a name the caller cannot reach says which", "its body calls 'secret' of module 'lib'"
+  t.bugFixed "A146: a clone needing a name the caller cannot reach says which"
+
+  # A147 (audit M13): `ea::conv` on an extern with `[emit: "toUpperAscii"]`
+  # went out as `ea.conv`: the Nim emitter looked the emit name up by the
+  # printed callee in a table keyed by bare name. It reads the declaration
+  # the call reaches, so two modules' externs of one name keep their own.
+  t.src """
+import ea
+import eb
+
+fn main() -> int:
+  let x = {s: "aB"} ea::conv
+  let y = {s: "aB"} eb::conv
+  if x == "AB" and y == "ab":
+    return 7
+  return 1
+"""
+  t.addFile("ea.tuck", """extern [impl: nim "std/strutils"]:
+  fn conv({s: str}) -> str [emit: "toUpperAscii"]
+""")
+  t.addFile("eb.tuck", """extern [impl: nim "std/strutils"]:
+  fn conv({s: str}) -> str [emit: "toLowerAscii"]
+""")
+  t.quietly: t.runs "A147: a qualified extern call keeps its own emit name", 7
+  t.bugFixed "A147: a qualified extern call keeps its own emit name"
+
+  # A148 (audit M16, C12): which actor a member or handler name belongs to was
+  # one owner per NAME. Two actors each with a `bump` left the first unable to
+  # call its own, and an imported actor's `tick`/`size` refused calls of the
+  # importer's own top-level fns of those names. A name is the actor's inside
+  # that actor, and the module's own fn everywhere else.
+  t.src """
+actor A [queue: 8]:
+  n: int = 0
+  fn bump() -> int:
+    n += 1
+    return n
+  on go():
+    let r = bump
+    n += r
+
+actor B [queue: 8]:
+  m: int = 0
+  fn bump() -> int:
+    m += 10
+    return m
+  on go():
+    let r = bump
+    m += r
+
+fn main() -> int:
+  A send go {}
+  B send go {}
+  return 0
+"""
+  t.quietly: t.okCheck "A148: two actors may each have a member of one name"
+  t.bugFixed "A148: two actors may each have a member of one name"
+  t.src """
+import act
+
+fn tick({by: int}) -> int:
+  return by + 1
+
+fn size() -> int:
+  return 5
+
+fn main() -> int:
+  let a = {by: 2} tick
+  let b = {} size
+  return a + b
+"""
+  t.addFile("act.tuck", """actor Ticker:
+  n: int = 0
+  on tick({by: int}) -> void:
+    n = n + by
+  fn size() -> int:
+    return n
+""")
+  t.quietly: t.runs "A148: an imported actor's names do not take the importer's own fns", 8
+  t.bugFixed "A148: an imported actor's names do not take the importer's own fns"
+
+  # A149 (audit M5): a bare name two imports give two meanings. Two consts
+  # read as "not declared"; a const in one and a fn in the other silently
+  # took the fn. Both are a collision, said with both owners.
+  t.src """
+import a
+import c2
+
+fn main() -> int:
+  return Size
+"""
+  t.addFile("a.tuck", """const Size: int = 10
+fn width() -> int:
+  return 3
+""")
+  t.addFile("c2.tuck", """const Size: int = 4
+""")
+  t.quietly: t.badCheck "A149: two imports' consts of one name collide", "'Size' is exported by 2 imports.*`a::Size` or `c2::Size`"
+  t.bugFixed "A149: two imports' consts of one name collide"
+  t.src """
+import a
+import c
+
+fn main() -> int:
+  return width
+"""
+  t.addFile("a.tuck", """const Size: int = 10
+fn width() -> int:
+  return 3
+""")
+  t.addFile("c.tuck", """const width: int = 4
+""")
+  t.quietly: t.badCheck "A149: an imported const and an imported fn of one name collide", "'width' is exported by 2 imports"
+  t.bugFixed "A149: an imported const and an imported fn of one name collide"
+
+  # A150 (audit M6): with arguments in front of it a name is a CALL (a field
+  # is a value; a fn reference is invoked another way), so it means a fn:
+  # the member of the object the payload's `self` names, else the module's
+  # own fn, else an import's. It was chosen by the NAME alone, so an object's
+  # member `count` took `{items: xs} count` and `xs.count` from std/seq's,
+  # and an imported object's member took the bare name from every importer.
+  t.src """
+import seq
+
+object Pile:
+  items: Seq[int]
+  fn count({self: Pile}) -> int:
+    return 7
+
+fn main() -> int:
+  var xs: Seq[int] = [1, 2]
+  let p = {items: xs} Pile
+  let n = {items: xs} count
+  let m = {self: p} count
+  let k = p.count
+  let j = xs.count
+  return n * 1000 + m * 100 + k * 10 + j
+"""
+  t.quietly: t.runs "A150: a payload call picks the fn its payload is for", 212
+  t.bugFixed "A150: a payload call picks the fn its payload is for"
+  t.quietly: t.runsOdin "A150: ...on Odin", 212
+  t.bugFixed "A150: ...on Odin"
+  t.src """
+import lib
+import seq
+
+fn main() -> int:
+  var xs: Seq[int] = []
+  xs = {items: xs, value: 4} push
+  let b = {} mk
+  return xs.count + b.count
+"""
+  t.addFile("lib.tuck", """object Bag:
+  n: int
+  fn count({self: Bag}) -> int:
+    return self.n + 100
+fn mk() -> Bag:
+  return {n: 1} Bag
+""")
+  t.quietly: t.runs "A150: an imported object's member does not take an import's fn", 102
+  t.bugFixed "A150: an imported object's member does not take an import's fn"
+
+  # A151 (audit M21): a task another module declares built on no backend:
+  # each asked "is this a task" of the calling module's own task names, so
+  # the call went out as a plain call to a proc the stackless and stackful
+  # runtimes never emit; and Odin and D booted and drained the scheduler only
+  # when the entry module itself declared a task, so a spawn of an imported
+  # one never ran. Task-ness comes from the call's edge (ast_query.
+  # taskCallee), and the entry point asks the whole program.
+  t.src """
+import lib
+
+fn main() -> int [io]:
+  {n: 1} say
+  {} beep
+  let a = {n: 2} t
+  let b = {n: 3} lib::t
+  return a.r + b.r
+"""
+  t.addFile("lib.tuck", """import console
+task say({n: int}) -> void [io]:
+  {text: "said"} printLine
+task beep() -> void [io]:
+  {text: "beep"} printLine
+task t({n: int}) -> {r: int}:
+  return {r: n + 1}
+""")
+  t.quietly: t.outputs "A151: an imported task is spawned and awaited", "said\nbeep\n"
+  t.bugFixed "A151: an imported task is spawned and awaited"
+  t.quietly: t.runs "A151: ...and its result is the program's", 7
+  t.bugFixed "A151: ...and its result is the program's"
+  t.quietly: t.runsOdin "A151: ...on Odin", 7
+  t.bugFixed "A151: ...on Odin"
+
+  # A152 (class B): `mod::name` written bare parsed to the same node as the
+  # reference `:mod::name`, so `lib::seven` typed as `() -> int` and a const
+  # could not be named by its module at all (an M5 collision had no fix in
+  # place). A bare qualified name is a value: a call of a nullary fn, or that
+  # module's const.
+  t.src """
+import a
+import c2
+
+fn main() -> int:
+  return a::Size + c2::Size + a::seven
+"""
+  t.addFile("a.tuck", """const Size: int = 10
+fn seven() -> int:
+  return 7
+""")
+  t.addFile("c2.tuck", """const Size: int = 4
+""")
+  t.quietly: t.runs "A152: a bare qualified name is a const or a call", 21
+  t.bugFixed "A152: a bare qualified name is a const or a call"
+  t.quietly: t.runsOdin "A152: ...on Odin", 21
+  t.bugFixed "A152: ...on Odin"
+
   t.finish()

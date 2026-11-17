@@ -5,9 +5,10 @@ extern:
   # What each one does with what it is given is declared, since the
   # compiler cannot read a body-less fn: `at` hands back the element itself
   # (`[view: items]`: the caller copies it to keep it), `setAt` and `push` store
-  # the `value` they are given (`[keeps: value]`). Everything else is read.
+  # the `value` they are given (`[keeps: value]`), and `setAt` changes `items`
+  # in place (`[writes: items]`: it must be a `var`). Everything else is read.
   fn at[T]({items: Seq[T], index: int}) -> T [view: items, pure, no_alloc]
-  fn setAt[T]({items: Seq[T], index: int, value: T}) -> void [keeps: value, no_alloc]
+  fn setAt[T]({items: Seq[T], index: int, value: T}) -> void [writes: items, keeps: value, no_alloc]
   # `push` returns the grown seq rather than mutating `items` in place —
   # `at`/`setAt` mutate through a receiver the caller already owns as a
   # `var`, but growing can reallocate, so there is no shared backing store

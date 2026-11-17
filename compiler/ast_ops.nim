@@ -84,6 +84,35 @@ func admits*(budget: openArray[EffectMarker], e: EffectMarker): bool =
   for b in budget:
     if b == e or (b == emIo and e in IoKinds): return true
 
+func effectFitProblem*(have, allowed: openArray[EffectMarker]): string =
+  ## Can something doing `have` stand where `allowed` is the contract? A
+  ## CAPABILITY is a permission, used at most as granted; a RESTRICTION is a
+  ## promise, which must be made. "" when it fits, else what breaks it. The
+  ## one rule for an interface member against its contract and a fn against
+  ## the `fnsig` slot it is stored in (audit E1, E3a).
+  for e in have:
+    if familyOf(e) == mfCapability and not admits(allowed, e):
+      return "does [" & effectName(e) & "], which the contract does not permit"
+  for e in allowed:
+    if familyOf(e) == mfRestriction and e notin have:
+      return "is not [" & effectName(e) & "], which the contract promises"
+  ""
+
+func jointContract*(each: openArray[seq[EffectMarker]]): seq[EffectMarker] =
+  ## What one call that runs SEVERAL bodies may do: every capability any of
+  ## them uses, and only the restrictions all of them make. A registry raise
+  ## runs each handler of its event (audit E5).
+  for i, effs in each:
+    for e in effs:
+      if familyOf(e) == mfCapability and e notin result: result.add e
+  if each.len > 0:
+    for e in each[0]:
+      if familyOf(e) != mfRestriction: continue
+      var everyOne = true
+      for effs in each:
+        if e notin effs: everyOne = false
+      if everyOne: result.add e
+
 func excludes*(e: EffectMarker): set[EffectMarker] =
   ## Markers that cannot be declared TOGETHER with `e`: an interrupt context
   ## cannot do I/O or block, and a pure fn does neither.
@@ -424,6 +453,21 @@ iterator childDecls*(d: Decl): Decl =
        dkPool, dkSlab, dkArena, dkRegister, dkImport, dkFnSig, dkSatisfies, dkResources:
       discard
 
+iterator writtenTypes*(e: Expr): Type =
+  ## The types an expression node SPELLS: a `let x: T` annotation, a `~T`/`^T`
+  ## cast target, the instantiation of an actor `send`. `ownTypes` covers a
+  ## declaration's signature; these live in bodies, and a body type nobody
+  ## resolved reaches the checker without its declaration edge (audit Y17:
+  ## `let xs: Seq[P] = [{x: 1}]` crashed lowering).
+  if e != nil:
+    case e.kind
+    of exkCast: yield e.castType
+    of exkAssign:
+      if e.isDecl: yield e.declType
+    of exkSend:
+      for t in e.sendActorArgs: yield t
+    else: discard
+
 iterator ownTypes*(d: Decl): Type =
   ## Every type this declaration mentions DIRECTLY — its fields' types, its
   ## params and return, a pool's element type. Not its members' (walk
@@ -747,7 +791,7 @@ proc substType*(t: Type, subs: Table[string, Type]): Type =
   of tkFunc:
     Type(span: t.span, kind: tkFunc, attrs: t.attrs,
          params: substAll(t.params, subs), result: substType(t.result, subs),
-         paramNames: t.paramNames)
+         paramNames: t.paramNames, funcEffects: t.funcEffects)
   of tkRecord:
     Type(span: t.span, kind: tkRecord, attrs: t.attrs,
          fields: substFields(t.fields, subs))

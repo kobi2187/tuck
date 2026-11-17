@@ -152,6 +152,8 @@
 import ast, semantics, lowering, tables, strutils, sets, options, algorithm
 import resolution
 import ast_query
+import call_args  # writtenArg: which argument an extern writes
+import tree_invariants  # report: a stage invariant that does not hold
 import rewrite   # isLiteralPayload — recognize the wrap the pass introduced
 import typecheck_util
 export typecheck_util
@@ -265,6 +267,17 @@ proc inferBindings(tc: TypeChecker, declared, actual: Type,
                    fnName: string, sp: Span)
   ## Forward-declared: a method call solves its generics from the receiver.
 
+proc isImportedSig(tc: TypeChecker, fnName: string, sig: FnSig): bool =
+  ## Is `sig` one an import exports under `fnName` (the very signature: the
+  ## checker's table was seeded from the import's, so its types are the same
+  ## nodes)?
+  for theirs in tc.importedSigs.getOrDefault(fnName):
+    if theirs.params.len != sig.params.len or theirs.ret != sig.ret: continue
+    var same = true
+    for i in 0 ..< sig.params.len:
+      if theirs.params[i].typ != sig.params[i].typ: same = false
+    if same: return true
+
 proc failIfReceiverSlotMismatched(tc: var TypeChecker, fnName: string,
                                   sig: FnSig, recvT: Type, sp: Span): bool =
   ## Which slot the receiver of `d.crank {step: 1}` fills depends on whether
@@ -299,9 +312,10 @@ proc failIfReceiverSlotMismatched(tc: var TypeChecker, fnName: string,
   ## never fired, when it should have).
   # A fn an IMPORT brought in is as top-level as one declared here (`xs.push
   # {7}`, `xs.at {index: 0}`): its first parameter is the receiver's slot.
-  let isTopLevel = fnName in tc.topLevelFns or
-                   (tc.bareOwnerOf.hasKey(fnName) and
-                    fnName notin tc.objectMemberFns)
+  # Asked of the SIGNATURE the receiver picked, not of the name: an imported
+  # object's member `push` made every `xs.push {..}` on a Seq read as a
+  # member with an implicit self (audit M6).
+  let isTopLevel = fnName in tc.topLevelFns or tc.isImportedSig(fnName, sig)
   if isTopLevel and sig.params.len == 0:
     fail("Type Error: '" & fnName & "' takes no parameters — it cannot be " &
          "called as a method on " & typeName(recvT), sp)
@@ -320,6 +334,17 @@ proc failIfReceiverSlotMismatched(tc: var TypeChecker, fnName: string,
          typeName(sig.params[0].typ) & " but the receiver is " &
          typeName(recvT), sp)
 
+proc takesReceiver(tc: TypeChecker, sig: FnSig, recvT: Type): bool =
+  ## Does `sig`'s FIRST param accept this receiver? Its type variables accept
+  ## anything, wherever they sit: only a bare `T` did, so `Seq[T]` refused a
+  ## `Seq[int]` and the receiver fell to whichever overload was filed last,
+  ## an unrelated object's member of the name (audit M6).
+  if sig.params.len == 0 or sig.params[0].typ == nil: return false
+  var anyType = initTable[string, Type]()
+  for g in sig.generics:
+    anyType[g] = Type(kind: tkNamed, name: TypeParamName)
+  tc.compatible(recvT, substType(sig.params[0].typ, anyType))
+
 proc sigForReceiver(tc: TypeChecker, name: string, recvT: Type): FnSig =
   ## The overload of `name` whose FIRST param accepts this receiver.
   ##
@@ -336,20 +361,13 @@ proc sigForReceiver(tc: TypeChecker, name: string, recvT: Type): FnSig =
   let all = tc.sigsOf(name)
   if all.len <= 1 or recvT == nil: return tc.sigOf(name)
   for sig in all:
-    if sig.params.len == 0: continue
-    let pt = sig.params[0].typ
-    if pt == nil: continue
-    if pt.kind == tkNamed and pt.name in sig.generics: return sig  # accepts any
-    if tc.compatible(recvT, pt): return sig
+    if tc.takesReceiver(sig, recvT): return sig
   tc.sigOf(name)
 
 proc sigsAcceptReceiver(tc: TypeChecker, name: string, recvT: Type): bool =
   ## Does some overload of `name` take `recvT` as its first parameter?
   for sig in tc.sigsOf(name):
-    if sig.params.len == 0 or sig.params[0].typ == nil: continue
-    let pt = sig.params[0].typ
-    if (pt.kind == tkNamed and pt.name in sig.generics) or
-       tc.compatible(recvT, pt): return true
+    if tc.takesReceiver(sig, recvT): return true
 
 proc bindPayloadFields(tc: var TypeChecker, fnName: string,
                        params: seq[Param], argStruct: Expr, sp: Span): seq[Expr]
@@ -363,6 +381,19 @@ proc sameGenericShape(declared, actual: Type): bool =
     actual.kind == tkApp and declared.base != nil and actual.base != nil and
     declared.base.kind == tkNamed and actual.base.kind == tkNamed and
     declared.base.name == actual.base.name
+
+proc namedFnDecl(tc: TypeChecker, name: string, callee: Expr): Decl
+proc failIfWritesImmutable(tc: var TypeChecker, call: Expr, callee: Decl)
+
+proc linkMethodCall(tc: TypeChecker, call: Expr, fnName: string, recvT: Type) =
+  ## The edge for a call built in the METHOD form (`x.f {..}`, `x ..f {..}`).
+  ## A member of the receiver's object is reached by the receiver
+  ## (`memberCallDecl`) and needs none; anything else is a free fn taking the
+  ## receiver first, and had no edge at all, so a `..` step through one was
+  ## invisible to the passes that follow edges (audit E13).
+  if memberDeclOf(tc.module, memberOwner(tc.module, recvT), fnName) != nil: return
+  let d = tc.namedFnDecl(fnName, call.callee)
+  if d != nil: resolveTo(semLayer, call, d)
 
 proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
                      recvT: Type, argStruct: Expr, sp: Span): Expr =
@@ -389,6 +420,8 @@ proc synthMethodCall(tc: var TypeChecker, fnName: string, receiver: Expr,
   let args = @[receiver] & tc.bindPayloadFields(fnName, rest, argStruct, sp)
   result = Expr(span: sp, kind: exkCall,
                 callee: Expr(span: sp, kind: exkVar, name: fnName), args: args)
+  tc.linkMethodCall(result, fnName, recvT)
+  tc.failIfWritesImmutable(result, semLayer.declFor(result))
   # No `->` is `-> void` (R5). A nil type here read as "unresolved", and
   # `d.turn {step: 2}` on a member with no `->` was "called with arguments
   # here but is not declared" (found 2026-09-28).
@@ -583,11 +616,23 @@ proc failIfArgMismatched(tc: var TypeChecker, sig: FnSig, recvT: Type, e: Expr) 
   ## The receiver must fit the single param it is about to fill. A generic
   ## param accepts anything — checking against an unbound type VARIABLE would
   ## reject every receiver.
-  let pt = sig.params[0].typ
+  ##
+  ## A type variable INSIDE the param too (`Seq[T]`): the receiver solves it,
+  ## and the param as that receiver sees it is what it must fit. Only a bare
+  ## `T` was excused, so `xs.count` on a `Seq[int]` was refused as "expects
+  ## Seq[T] but got Seq[int]" while `{items: xs} count` passed (audit M6).
+  var pt = sig.params[0].typ
   let isTypeVar = pt != nil and pt.kind == tkNamed and pt.name in sig.generics
-  if not isTypeVar and not tc.compatible(recvT, pt):
+  if isTypeVar: return
+  if sig.generics.len > 0:
+    var solved = initTable[string, Type]()
+    tc.inferBindings(pt, recvT, sig.generics, solved, e.fieldName, e.span)
+    pt = substType(pt, solved)
+  if not tc.compatible(recvT, pt):
     fail("Type Error: argument to '" & e.fieldName & "' expects " &
          typeName(pt) & " but got " & typeName(recvT), e.span)
+
+proc recordMemberCall(tc: TypeChecker, e: Expr, recvT: Type)
 
 proc asPostfixApplication(tc: var TypeChecker, e: Expr): Type =
   ## Postfix application in a fn BODY: `5.ms`, `n.toStr`. `x doSth` and
@@ -640,6 +685,10 @@ proc asPostfixApplication(tc: var TypeChecker, e: Expr): Type =
          typeName(recvT) & ", so the MEMBER is used here. Write " &
          "`{...} " & e.fieldName & "` to reach the top-level one.",
          e.span.line, e.span.col)
+  # Registered as every member call is: a member that changes its object may
+  # not run on a `let` or a parameter, and `let r = c.bump` reached it only
+  # through here, unregistered (audit O5).
+  tc.recordMemberCall(e, recvT)
   setCall(semLayer, e, Expr(span: e.span, kind: exkCall, args: @[e.receiver],
                             callee: callee))
   sig.ret
@@ -930,6 +979,17 @@ proc asInterfaceCall(tc: var TypeChecker, e: Expr, recvT: Type): Type =
        " (a member the concrete object has but the contract does not is not " &
        "reachable through the interface)", e.span)
 
+proc namesActorOnly(tc: TypeChecker, name: string): bool =
+  ## Does `name` mean ONLY something declared in an actor here: no top-level
+  ## fn of this module carries it? A name is the actor's inside that actor and
+  ## the module's own fn everywhere else; the actor tables alone decided, so a
+  ## local `size` was refused because an imported actor had a member `size`
+  ## (audit M16).
+  # `declaresFn` reads the module's own top-level decls: an actor's handlers
+  # and members are filed in `topLevelFnDecl` too, so that table cannot say.
+  (tc.actorHandlerOwner.hasKey(name) or tc.actorMemberOwner.hasKey(name)) and
+    not tc.module.declaresFn(name)
+
 proc checkActorCall(tc: TypeChecker, e: Expr, name: string) =
   ## A call naming something declared in an actor (A24). An `on` handler is
   ## a message and is sent, never called (TK-AC03); a member `fn` runs on the
@@ -937,32 +997,39 @@ proc checkActorCall(tc: TypeChecker, e: Expr, name: string) =
   ## call that may stand is recorded, so each backend prints the member's
   ## proc with `self` passed on.
   if name == "": return
-  if tc.actorHandlerOwner.hasKey(name) and not tc.actorMemberOwner.hasKey(name):
-    let owner = tc.actorHandlerOwner[name]
+  let members = tc.actorMemberOwner.getOrDefault(name)
+  let handlers = tc.actorHandlerOwner.getOrDefault(name)
+  # Inside an actor, its OWN member: whichever other actor also has one.
+  if tc.currentActor != "" and tc.currentActor in members:
+    ensureId(e)       # a nullary call is built by the checker, id-less so far
+    semLayer.actorMemberCalls[e.id] = (tc.currentActor, name)
+    return
+  let ownHandler = tc.currentActor != "" and tc.currentActor in handlers
+  if not ownHandler and not tc.namesActorOnly(name): return
+  if handlers.len > 0 and (ownHandler or members.len == 0):
+    let owner = if ownHandler: tc.currentActor else: handlers[0]
     fail(dcAcHandlerCalled, "'" & name & "' is a message handler of actor '" &
          owner & "' — send it: `" & owner & " send " & name & " {...}`", e.span)
-  if not tc.actorMemberOwner.hasKey(name): return
-  let owner = tc.actorMemberOwner[name]
-  if tc.currentActor != owner:
-    fail(dcAcMemberOutside, "'" & name & "' is a member fn of actor '" &
-         owner & "', so only " & owner & "'s own handlers and fns may call " &
-         "it. Fix: send " & owner & " a message whose handler calls it", e.span)
-  ensureId(e)       # a nullary call is built by the checker, id-less so far
-  semLayer.actorMemberCalls[e.id] = (owner, name)
+  let owner = members[0]
+  fail(dcAcMemberOutside, "'" & name & "' is a member fn of actor '" &
+       owner & "', so only " & owner & "'s own handlers and fns may call " &
+       "it. Fix: send " & owner & " a message whose handler calls it", e.span)
 
 proc asFnByName(tc: var TypeChecker, e: Expr, recvT: Type): Type =
   ## Not a field: `x.name` resolves to a fn by LOOKUP rather than syntax.
   ## `.fn {args}` is the method form (receiver first, args fill the rest);
   ## bare `.fn` is a whitespace call with the receiver as the payload.
   if not tc.fnSigs.hasKey(e.fieldName): return nil
-  if tc.actorHandlerOwner.hasKey(e.fieldName) or
-     tc.actorMemberOwner.hasKey(e.fieldName):
+  if tc.namesActorOnly(e.fieldName) and e.fieldName notin tc.objectMemberFns:
     # Neither has a receiver: a handler is sent, a member is `{...} name`.
-    tc.checkActorCall(e, e.fieldName)
+    let owners = tc.actorMemberOwner.getOrDefault(e.fieldName) &
+                 tc.actorHandlerOwner.getOrDefault(e.fieldName)
     fail(dcAcMemberOutside, "'" & e.fieldName & "' is declared in actor '" &
-         tc.actorMemberOwner.getOrDefault(e.fieldName) & "' and takes no " &
-         "receiver. Fix: call it as `{...} " & e.fieldName & "` from the " &
-         "actor's own code", e.span)
+         owners[0] & "' and takes no receiver. Fix: " &
+         (if tc.actorMemberOwner.hasKey(e.fieldName):
+            "call it as `{...} " & e.fieldName & "` from the actor's own code"
+          else: "send it: `" & owners[0] & " send " & e.fieldName & " {...}`"),
+         e.span)
   tc.recordMemberCall(e, recvT)
   if e.dotArg != nil:
     let mc = tc.synthMethodCall(e.fieldName, e.receiver, recvT,
@@ -1430,6 +1497,15 @@ proc checkThroughFnSig(tc: var TypeChecker, slotT: Type, call: Expr): Type =
   var sig: FnSig
   if slotT != nil and slotT.kind == tkNamed and slotT.name in tc.fnSigNames:
     name = slotT.name
+    # Two imports can each export a `fnsig` of this name: the bare name is then
+    # given up (addBare), so the slot's type names no single signature and the
+    # table lookup raised KeyError (audit M9). A type carries its NAME, not its
+    # module, so which `Op` this slot holds cannot be told; say so, once.
+    if not tc.fnSigs.hasKey(name):
+      fail("Type Error: a call through a slot of type '" & name & "' cannot " &
+           "pick a signature — two imports each declare `fnsig " & name & "`. " &
+           "A type is known here by its name alone, so the slot cannot say which. " &
+           "Fix: call it from a module that imports only one of them", call.span)
     sig = tc.sigOf(name)
   elif slotT != nil and slotT.kind == tkApp and slotT.base != nil and
        slotT.base.kind == tkNamed and slotT.base.name in tc.fnSigNames and
@@ -1440,6 +1516,7 @@ proc checkThroughFnSig(tc: var TypeChecker, slotT: Type, call: Expr): Type =
     return nil
   var bindings = initTable[string, Type]()
   tc.checkCallArgs(name, sig, call, bindings)
+  semLayer.markSlotCall(call, sig.effects)
   sig.ret
 
 proc invokeArgs(tc: var TypeChecker, e: Expr): seq[Expr] =
@@ -1848,10 +1925,46 @@ proc failIfSeqOperand(tc: TypeChecker, lt, rt: Type, e: Expr) =
            typeName(t) & " — sequences are not added; build the result with " &
            "`push` in a loop", side.span)
 
+proc isScalarOf(tc: TypeChecker, t: Type, text, chars: bool): bool =
+  ## Is `t` (through aliases) a number, or, when asked, text or a char?
+  let r = tc.resolve(t)
+  for x in [t, r]:
+    if x == nil: continue
+    if isNumeric(x): return true
+    if x.kind == tkNamed and ((text and x.name in ["str", "string"]) or
+                              (chars and x.name == "char")): return true
+
+proc failIfOperandKind(tc: TypeChecker, lt, rt: Type, e: Expr, what: string,
+                       text, chars: bool) =
+  ## Every operator names the kinds it takes (audit Y9/Y10). `compatible` only
+  ## asks that the two sides AGREE, so `true < false`, `s - t` on text and
+  ## `5.5 % 2.0` were accepted and each backend printed its own answer.
+  for (t, side) in operands(lt, rt, e):
+    if isFlexible(t): continue
+    if not tc.isScalarOf(t, text, chars):
+      fail("Type Error: " & what & " takes " &
+           (if text: "numbers or text" else: "numbers") & ", got " &
+           typeName(t), side.span)
+
+proc failIfFloatModulo(lt, rt: Type, e: Expr) =
+  ## `%` is the integer remainder: Nim, Odin and D disagree on a float's.
+  for (t, side) in operands(lt, rt, e):
+    if not isFlexible(t) and typeName(t) in FloatTypeNames:
+      fail("Type Error: `%` takes integers, got " & typeName(t) &
+           " — a float has no remainder operator here", side.span)
+
 proc synthArithmetic(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
   ## `+ - * %`: both operands must agree; the result has their type.
   tc.failIfRecordOperand(lt, rt, e)
   tc.failIfSeqOperand(lt, rt, e)
+  # `+` is also text concatenation; `- * %` are numbers only.
+  tc.failIfOperandKind(lt, rt, e, (case e.binOp
+                         of boAdd: "`+`"
+                         of boSub: "`-`"
+                         of boMul: "`*`"
+                         else: "`%`"),
+                       text = e.binOp == boAdd, chars = false)
+  if e.binOp == boMod: failIfFloatModulo(lt, rt, e)
   tc.failIfMismatched(lt, rt, "arithmetic", e.span)
   widerOperand(lt, rt)
 
@@ -1874,12 +1987,17 @@ proc synthDivision(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
   ## `/i` and `/f`: the operator must match the operand kind (integer or
   ## float), the operands must agree, and the result has their type.
   tc.failIfRecordOperand(lt, rt, e)
+  tc.failIfOperandKind(lt, rt, e, "division", text = false, chars = false)
   failIfWrongDivKind(lt, rt, e)
   tc.failIfMismatched(lt, rt, "division", e.span)
   widerOperand(lt, rt)
 
 proc synthComparison(tc: TypeChecker, lt, rt: Type, e: Expr): Type =
-  ## `== != < > <= >=`: both operands must agree; the result is `bool`.
+  ## `== != < > <= >=`: both operands must agree; the result is `bool`. An
+  ## ORDER needs numbers, text or chars: a bool, record or Seq has none.
+  if e.binOp in {boLt, boGt, boLe, boGe}:
+    tc.failIfOperandKind(lt, rt, e, "an ordering comparison", text = true,
+                         chars = true)
   tc.failIfMismatched(lt, rt, "comparison", e.span)
   Type(span: e.span, kind: tkNamed, name: "bool")
 
@@ -2182,24 +2300,45 @@ proc synthArms(tc: var TypeChecker, e: Expr, subjT: Type, trackedVar,
     tc.unifyArmType(result, t, arm.span)
   if not firstArm: tc.varVariants = mergedExit
 
+proc errDomain(tc: TypeChecker, errEnums: seq[string]): seq[string] =
+  for en in errEnums:
+    if tc.typeDecls.hasKey(en) and tc.typeDecls[en].kind == tkSum:
+      for v in tc.typeDecls[en].variants: result.add(en & "." & v.name)
+
 proc matchDomain(tc: TypeChecker, subjT: Type, trackedType: string,
                  errEnums: seq[string]): seq[string] =
   ## Every case a closed subject can take. Open domains (int/str/unknown)
   ## cannot be enumerated, so they return empty and go unchecked — same as Nim.
-  if errEnums.len > 0:
-    for en in errEnums:
-      if tc.typeDecls.hasKey(en) and tc.typeDecls[en].kind == tkSum:
-        for v in tc.typeDecls[en].variants: result.add(en & "." & v.name)
-    return
+  if errEnums.len > 0: return tc.errDomain(errEnums)
   let sumName = if trackedType != "": trackedType
                 elif subjT != nil and subjT.kind == tkNamed and
                      tc.typeDecls.hasKey(subjT.name) and
                      tc.typeDecls[subjT.name].kind == tkSum: subjT.name
                 else: ""
   if sumName != "": tc.allVariants(sumName)
+  elif subjT != nil and subjT.kind == tkSum:
+    # An INLINE sum (`st: {Red, Green, Blue}`): closed like a named one. It was
+    # skipped, so a missing arm built on no backend or picked the wrong arm
+    # (audit T6).
+    for v in subjT.variants: result.add(v.name)
+    result
   elif subjT != nil and subjT.kind == tkNamed and subjT.name == "bool":
     @["true", "false"]
   else: @[]
+
+proc isOpenDomain(subjT: Type): bool =
+  ## A subject whose cases cannot be listed: numbers and text. A match over one
+  ## ends in a catch-all, or a value outside the arms has no arm (Nim refuses
+  ## the build, Odin returns the last arm, D throws: audit T6).
+  subjT != nil and subjT.kind == tkNamed and
+    (isNumeric(subjT) or subjT.name in ["str", "string", "char"])
+
+proc failIfOpenMatchHasNoCatchAll(e: Expr, subjT: Type) =
+  if not isOpenDomain(subjT): return
+  for arm in e.arms:
+    if arm.pattern == nil or arm.pattern.kind in {pkWild, pkBind}: return
+  fail("Type Error: match over " & typeName(subjT) & " is not exhaustive — it " &
+       "cannot list every value; end it with a catch-all `_`", e.span)
 
 proc checkExhaustive(tc: TypeChecker, e: Expr, domain: seq[string]) =
   ## spec #10b: a match over a closed domain must cover every case OR end
@@ -2283,9 +2422,19 @@ proc checkIfaceArms(tc: TypeChecker, e: Expr, iname: string) =
       rec.covered.add(n)
   ifaceMatches.add(rec)
 
+proc failIfWrapperSubject(e: Expr, subjT: Type) =
+  ## A result or optional is read through `.ok`/`.value`, or its error through
+  ## `match r.err`. Matching the carrier itself discarded the error silently
+  ## while `discard r` is refused (audit T7).
+  if not isWrapper(subjT): return
+  fail("Type Error: unhandled " & typeName(subjT) & " — a match cannot take a " &
+       "result or optional as its subject: test `.ok` and match `.value`, or " &
+       "match the error with `match r.err:`", e.subject.span)
+
 proc synthMatch(tc: var TypeChecker, e: Expr): Type =
   ## A match types every arm to one type, then checks it covers its subject.
   let subjT = tc.synthesize(e.subject)
+  failIfWrapperSubject(e, subjT)
   if subjT != nil and subjT.kind == tkNamed and
      tc.ifaceDecls.hasKey(subjT.name):
     tc.checkIfaceArms(e, subjT.name)
@@ -2307,6 +2456,8 @@ proc synthMatch(tc: var TypeChecker, e: Expr): Type =
     for arm in e.arms.mitems: tc.qualifyErrArm(arm, errEnums)
   result = tc.synthArms(e, subjT, trackedVar, trackedType)
   tc.checkExhaustive(e, tc.matchDomain(subjT, trackedType, errEnums))
+  # `match r.err` is closed by the error enum its arms name, not by the u16 tag.
+  if errEnums.len == 0: failIfOpenMatchHasNoCatchAll(e, subjT)
 
 # === CHAINS AND MUTATION ===================================================
 # `x ..field {v}` / `x ..fn`. Who may be written (mutability), what a step
@@ -3482,10 +3633,11 @@ proc checkFnValueCall(tc: var TypeChecker, fnT: Type, e: Expr): Type =
   for i, typ in fnT.params:
     let name = if i < fnT.paramNames.len: fnT.paramNames[i] else: "arg" & $i
     params.add(Param(name: name, typ: typ, span: e.span))
-  let sig: FnSig = (params: params, ret: fnT.result, generics: @[], effects: @[],
-                 resources: @[], errTypes: @[])
+  let sig: FnSig = (params: params, ret: fnT.result, generics: @[],
+                 effects: fnT.funcEffects, resources: @[], errTypes: @[])
   var bindings = initTable[string, Type]()
   tc.checkCallArgs("<function>", sig, e, bindings)
+  semLayer.markSlotCall(e, fnT.funcEffects)
   sig.ret
 
 # What `{payload} name` MEANS: a construction, a restructuring builtin
@@ -3729,10 +3881,47 @@ proc asGenericConstruction(tc: var TypeChecker, e: Expr,
   Type(span: e.span, kind: tkApp, args: gargs,
        base: tc.namedType(calleeName, e.span))
 
+proc namedFnDecl(tc: TypeChecker, name: string, callee: Expr): Decl =
+  ## The fn a call NAMING `name` reaches in this module's scope: its own
+  ## top-level fn, else the import that owns the bare name here (not
+  ## whichever same-named fn the program-wide table holds, A112), else the
+  ## program's fn by the callee's key (`mod::fn`).
+  # An import's fn before "whatever is filed under the name": that fallback
+  # answered with a local object's member of the name, and the call's edge
+  # pointed at it (audit M6).
+  if not tc.importedFnNamed(name): result = tc.topLevelDeclOfFn(name)
+  if result == nil:
+    let owner = tc.bareOwnerOf.getOrDefault(name)
+    if owner != "": result = semLayer.programFn(owner & "::" & name)
+  if result == nil and callee != nil: result = semLayer.programFn(callKey(callee))
+
+proc payloadSelfMember(tc: TypeChecker, e: Expr, name: string): Decl =
+  ## `{self: p} count`: the member `name` of the object `p` is, or nil. The
+  ## payload says which fn it is meant for; read off a named `self` bound in
+  ## scope, so nothing is synthesized twice. It was decided by the NAME alone,
+  ## and an import's `count` took the call (audit M6).
+  if e.args.len != 1 or e.args[0] == nil or e.args[0].kind != exkStruct: return nil
+  for f in e.args[0].fields:
+    if f.name != "self" or f.value == nil or f.value.kind != exkVar: continue
+    let (found, b) = tc.lookup(f.value.name)
+    if not found or b.typ == nil or b.typ.kind != tkNamed: return nil
+    let obj = tc.objDecls.getOrDefault(b.typ.name)
+    if obj != nil: return findObjectMember(obj, name)
+  nil
+
 proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   ## A call to a fn with a known signature. NAMES the callee, so a top-level
   ## fn wins over an object member of the same name.
-  let sig = tc.sigOfCallByName(calleeName)
+  # Arguments in front of a name make it a CALL (a field is a value, a fn
+  # reference is invoked another way), so the name means a fn: the member of
+  # the object the payload's `self` names, else this module's own fn, else an
+  # import's (sigOfCallByName).
+  let selfMember = tc.payloadSelfMember(e, calleeName)
+  let sig: FnSig = if selfMember != nil:
+              (selfMember.fnParams, selfMember.fnReturnType,
+               selfMember.fnGenerics, selfMember.fnEffects,
+               selfMember.fnResourceKinds, selfMember.fnErrorTypes)
+            else: tc.sigOfCallByName(calleeName)
   # The name resolved here; record the edge so later passes read the answer
   # instead of scanning the decl list to re-derive it.
   # A payload call names a fn directly, so prefer the top-level one over an
@@ -3742,14 +3931,10 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
   # calleeDecl) instead of each re-deriving it from the name it happens to
   # know how to read; the stage check `assertCallEdges` holds every call to
   # a fn with a body to having one.
-  var calleeDecl = tc.topLevelDeclOfFn(calleeName)
-  if calleeDecl == nil:
-    # An import's fn, written bare: the module that owns the name in THIS
-    # scope, not whichever same-named fn the program-wide table holds (A112).
-    let owner = tc.bareOwnerOf.getOrDefault(calleeName)
-    if owner != "":
-      calleeDecl = semLayer.programFn(owner & "::" & calleeName)
-  if calleeDecl == nil: calleeDecl = semLayer.programFn(callKey(e.callee))
+  # A member is reached by its receiver (`memberCallDecl` reads the payload's
+  # `self`), so it gets no name edge.
+  let calleeDecl = if selfMember != nil: nil
+                   else: tc.namedFnDecl(calleeName, e.callee)
   if calleeDecl != nil:
     resolveTo(semLayer, e, calleeDecl)
   # The other half of TK-TY27: this call NAMED the fn, so it reaches the
@@ -3766,6 +3951,7 @@ proc asDeclaredCall(tc: var TypeChecker, e: Expr, calleeName: string): Type =
          e.span.line, e.span.col)
   var bindings = initTable[string, Type]()
   tc.checkCallArgs(calleeName, sig, e, bindings)
+  tc.failIfWritesImmutable(e, calleeDecl)
   # A fn with no `->` returns `void` — exactly as if it said `-> void` (ruled
   # 2026-09-27, #5). Without this the resolved call answers nil and falls
   # into synthCall's undeclared-callee error — the callee IS declared, only
@@ -4161,6 +4347,14 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
   ## then a callee that is not a bare name at all. Nothing claims it is an
   ## error. The record combinators are NOT here — they are exkCombinator
   ## nodes the parser already decided on.
+  # `Ev.raise Ping` runs every `on Ev.Ping` handler, here and now: it has no
+  # single callee, so it carries their joint contract like a call through a
+  # slot (audit E5). It had none, and an [io] handler laundered its I/O.
+  let raised = raisedEvent(e)
+  if raised != "":
+    var each: seq[seq[EffectMarker]]
+    for h in semLayer.handlerDecls.getOrDefault(raised): each.add h.fnEffects
+    semLayer.markSlotCall(e, jointContract(each))
   let calleeName = tc.calleeNameOf(e)
   tc.checkActorCall(e, calleeName)
   # Group dispatch BEFORE the ambiguity check: a requirement on a bounded type
@@ -4341,6 +4535,32 @@ proc stampVariantValue(tc: TypeChecker, e: Expr, owner: Type) =
   setCall(semLayer, e, Expr(span: e.span, kind: exkField, fieldName: e.name,
           receiver: Expr(span: e.span, kind: exkVar, name: owner.name)))
 
+proc failIfSealedBareVariant(tc: TypeChecker, owner: string, e: Expr) =
+  ## The qualified form `Door.Locked` is refused for a sealed type's non-entry
+  ## variant; the BARE spelling reached the same value unchecked (audit T8a).
+  let body = tc.typeDecls.getOrDefault(owner)
+  if body == nil or not isSealed(body) or body.variants.len == 0 or
+     tc.transitionCtx or e.name == body.variants[0].name: return
+  fail("Sealed Error: " & e.name & " cannot be constructed directly — sealed " &
+       "types start at '" & body.variants[0].name & "'; reach '" &
+       e.name & "' via transitions, or mark [unsafe] for deserialization",
+       e.span)
+
+proc failIfConstCollides(tc: TypeChecker, e: Expr, fnOwner: string) =
+  ## A bare name that two imports give two meanings: a const in each, or a
+  ## const in one and a fn (`fnOwner`'s) in the other. Two consts read as
+  ## "not declared", and const-against-fn silently took the fn (audit M5). A
+  ## collision is said, with both owners named.
+  var owners = importedConstOwners(tc.module, e.name)
+  if fnOwner != "" and fnOwner notin owners and owners.len > 0:
+    owners.add fnOwner
+  if owners.len < 2: return
+  var shown: seq[string]
+  for o in owners: shown.add "`" & o & "::" & e.name & "`"
+  fail("Type Error: '" & e.name & "' is exported by " & $owners.len &
+       " imports (" & owners.join(", ") & "), and nothing here says which. " &
+       "Fix: qualify it, " & shown.join(" or "), e.span)
+
 proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   ## A bare sum-type variant is a value of its sum type. `Light.Red` is the
   ## qualified form of the same thing, handled by the field-access path.
@@ -4351,6 +4571,7 @@ proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
     return
   let owner = if owners.len == 1: owners[0] else: ""
   if owner != "":
+    tc.failIfSealedBareVariant(owner, e)
     result = tc.namedType(owner, e.span)
     tc.stampVariantValue(e, result)
     return
@@ -4381,6 +4602,7 @@ proc synthBareVariant(tc: var TypeChecker, e: Expr): Type =
   # the reference (`constOrigin`).
   let imported = constDeclFor(tc.module, e.name)
   if imported != nil: return tc.synthesize(imported.constVal)
+  tc.failIfConstCollides(e, "")
   # Every legitimate shape a bare Capitalized-or-lowercase name can be —
   # local, nullary call, sum variant, registry event, pending marker,
   # declared type/object name, inline sum variant inside a match arm — is
@@ -4413,6 +4635,8 @@ proc synthVar(tc: var TypeChecker, e: Expr): Type =
     else: tc.markErrSeen(e.name)
     b.typ
   elif tc.fnSigs.hasKey(e.name) and tc.sigOf(e.name).params.len == 0:
+    if not tc.topLevelFnDecl.hasKey(e.name):
+      tc.failIfConstCollides(e, tc.bareOwnerOf.getOrDefault(e.name))
     tc.synthNullaryCall(e)
   elif tc.fnSigs.hasKey(e.name):
     let sig = tc.sigOf(e.name)
@@ -4421,7 +4645,8 @@ proc synthVar(tc: var TypeChecker, e: Expr): Type =
     for p in sig.params:
       ps.add(p.typ)
       names.add(p.name)
-    Type(span: e.span, kind: tkFunc, params: ps, paramNames: names, result: sig.ret)
+    Type(span: e.span, kind: tkFunc, params: ps, paramNames: names, result: sig.ret,
+         funcEffects: sig.effects)
   else:
     tc.synthBareVariant(e)
 
@@ -4610,6 +4835,19 @@ proc synthFill(tc: var TypeChecker, e: Expr): Type =
   Type(span: e.span, kind: tkApp, base: tc.namedType("Array", e.span),
        args: @[sizeT, elemT])
 
+proc failIfUnaryOperandKind(tc: TypeChecker, e: Expr, t: Type) =
+  ## `not` takes a bool and `-` a number (audit Y9): `not 5` and `-"x"` had no
+  ## meaning, and each backend gave one anyway.
+  if isFlexible(t): return
+  case e.unaryOp
+  of uoNot:
+    if not (t.kind == tkNamed and t.name == "bool"):
+      fail("Type Error: `not` takes a bool, got " & typeName(t), e.operand.span)
+  of uoNeg:
+    if not tc.isScalarOf(t, false, false):
+      fail("Type Error: `-` takes a number, got " & typeName(t), e.operand.span)
+  of uoComposition: discard
+
 proc synthUnary(tc: var TypeChecker, e: Expr): Type =
   ## `not` yields bool; every other unary keeps its operand's type.
   # `+ Type` in a type body names the type to compose: a bare type name is
@@ -4628,6 +4866,7 @@ proc synthUnary(tc: var TypeChecker, e: Expr): Type =
     fail(dcTyNotOnOptional, "`not` needs a bool, but this is an unhandled " &
          typeName(t) & " — test presence with `.ok` (`not x.ok`), or pass " &
          "it to a handling function", e.operand.span)
+  tc.failIfUnaryOperandKind(e, t)
   if e.unaryOp == uoNot: Type(span: e.span, kind: tkNamed, name: "bool") else: t
 
 proc failIfCastNotNumeric(e: Expr, target, src: Type) =
@@ -4979,6 +5218,9 @@ proc writesIntoSlabCell(target: Expr): bool =
     t = t.receiver
   false
 
+proc failIfPlaceImmutable(tc: var TypeChecker, place: Expr, verb: string,
+                          sp: Span)
+
 proc failIfTargetImmutable(tc: var TypeChecker, e: Expr) =
   ## An assignment may not write through a parameter or a `let`, whether it
   ## names the binding itself (`c = ...`), one of its fields (`c.n = ...`), or
@@ -4991,26 +5233,46 @@ proc failIfTargetImmutable(tc: var TypeChecker, e: Expr) =
   ## where NIM rejected them with a message naming generated code the user
   ## never wrote ("'c.n' cannot be assigned to"). A rejection Nim makes is a
   ## rejection Tuck should make first, with a code the user can look up.
-  if e.target == nil or writesIntoSlabCell(e.target): return
-  let root = assignRoot(e.target)
+  if e.target == nil: return
+  tc.failIfPlaceImmutable(e.target, "assign to", e.span)
+
+proc failIfPlaceImmutable(tc: var TypeChecker, place: Expr, verb: string,
+                          sp: Span) =
+  ## A write into `place` — a name, or fields and elements down from one —
+  ## needs a `var` at its root: never a parameter, never a `let`. Shared by
+  ## assignment and by an extern that `[writes:]` its argument in place.
+  if place == nil or writesIntoSlabCell(place): return
+  let root = assignRoot(place)
   if root == nil or root.kind != exkVar: return
   let (found, b) = tc.lookup(root.name)
   if not found: return
-  let whole = root.id == e.target.id   # `c = v` vs `c.n = v`
+  let whole = root.id == place.id   # `c = v` vs `c.n = v`
   if b.isParam:
     fail(dcTyParamMutation,
-         "cannot assign to " &
+         "cannot " & verb & " " &
          (if whole: "parameter '" & root.name & "'"
           else: "a field of parameter '" & root.name & "'") &
          " — a parameter is a value the caller owns, not a var. Fix: copy " &
          "it first (`var s = " & root.name & "`), change the copy, and " &
-         "return it", e.span)
+         "return it", sp)
   if not b.isVar:
     fail(dcTyImmutable,
-         "cannot assign to " &
+         "cannot " & verb & " " &
          (if whole: "'" & root.name & "'"
           else: "a field of '" & root.name & "'") &
-         " — it was declared with 'let'; use 'var'", e.span)
+         " — it was declared with 'let'; use 'var'", sp)
+
+proc failIfWritesImmutable(tc: var TypeChecker, call: Expr, callee: Decl) =
+  ## An extern that changes an argument in place (`[writes: items]`) is a
+  ## write into that place, held to the rule an assignment is (audit O1b): it
+  ## was not, and `setAt` on a `let` or a parameter changed the caller's
+  ## value, or a view of it, unseen.
+  if callee == nil: return
+  for param in callee.externWrites:
+    let place = writtenArg(semLayer, call, callee, param)
+    if place != nil:
+      tc.failIfPlaceImmutable(place, "let '" & callee.name & "' change",
+                              place.span)
 
 proc synthAssignVal(tc: var TypeChecker, e: Expr, targetT: Type): Type =
   ## spec 4.4b: the RHS of a checked transition assignment may construct a
@@ -5459,6 +5721,33 @@ proc synthSelect(tc: var TypeChecker, e: Expr): Type =
     discard tc.synthesize(arm.body)
   branchOutcomeType(e.span)
 
+proc moduleImportNames(m: Module): seq[string] =
+  for d in m.decls:
+    if d != nil and d.kind == dkImport: result.add d.name
+
+proc asQualifiedValue(tc: var TypeChecker, e: Expr, key: string): Type =
+  ## `mod::Size` or `mod::seven`, written bare: a const of that module, or a
+  ## call of its nullary fn (spec 2.3, a bare name IS a call). nil for
+  ## anything else, which the reference reading below then judges.
+  ##
+  ## The call is made REAL here: the node becomes an `exkCall` of the
+  ## qualified fn, so every later pass and backend meets an ordinary call
+  ## rather than learning that a qualified name may stand for one.
+  let target = knownModule(e.modulePath[0])
+  let c = semLayer.constsByModule.getOrDefault(target).getOrDefault(e.qualName)
+  if c != nil and e.modulePath[0] in moduleImportNames(tc.module):
+    resolveTo(semLayer, e, c)
+    return tc.synthesize(c.constVal)
+  if tc.fnSigs.hasKey(key) and tc.sigOf(key).params.len == 0:
+    let callee = Expr(span: e.span, kind: exkQualified, modulePath: e.modulePath,
+                      qualModule: e.qualModule, qualName: e.qualName,
+                      id: newNodeId())
+    let id = e.id
+    e[] = Expr(span: e.span, kind: exkCall, callee: callee, args: @[])[]
+    e.id = id
+    return tc.synthesize(e)
+  nil
+
 proc synthQualified(tc: var TypeChecker, e: Expr): Type =
   ## `:name` is a FUNCTION REFERENCE (`{add: :plus}`, `waitUntil {pred:
   ## :ready}`). Resolving it to a real tkFunc keeps the signature — params and
@@ -5475,6 +5764,10 @@ proc synthQualified(tc: var TypeChecker, e: Expr): Type =
   let key =
     if e.modulePath.len != 0: e.modulePath[0] & "::" & e.qualName
     else: e.qualName
+  # A bare `mod::name` (no `:`) is a value like any bare name.
+  if not e.isFnRef and e.modulePath.len != 0:
+    let asValue = tc.asQualifiedValue(e, key)
+    if asValue != nil: return asValue
   if not tc.fnSigs.hasKey(key):
     fail(dcTyUndeclared, "'" & key & "' is not a declared function" &
          spellingHint(e.qualName), e.span)
@@ -5484,7 +5777,8 @@ proc synthQualified(tc: var TypeChecker, e: Expr): Type =
   for p in sig.params:
     ps.add(p.typ)
     names.add(p.name)
-  Type(span: e.span, kind: tkFunc, params: ps, paramNames: names, result: sig.ret)
+  Type(span: e.span, kind: tkFunc, params: ps, paramNames: names, result: sig.ret,
+       funcEffects: sig.effects)
 
 proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   ## The checker's expression dispatch: one `synth*` per ExprKind, no `else`,
@@ -6556,6 +6850,20 @@ proc moduleImports(m: Module): seq[string] =
   for d in m.decls:
     if d != nil and d.kind == dkImport: result.add(d.name)
 
+proc onlyMembersNamed(tc: TypeChecker, m: Module, name: string): bool =
+  ## Is every fn filed under `name` an object's or a type's MEMBER? A member
+  ## is reached through a receiver, whose type the importer holds a copy of
+  ## (members and all); it is not one of the module's fns. Exported as one it
+  ## claimed the bare name in every importer: an imported `Bag.count` made a
+  ## second import's `count` "exported by 2 imports" (audit M6).
+  if name notin tc.objectMemberFns or tc.topLevelFnDecl.hasKey(name): return false
+  var members = 0
+  for d in m.decls:
+    if d == nil or d.kind notin {dkObject, dkType}: continue
+    for mem in (if d.kind == dkObject: d.objMembers else: d.typeMembers):
+      if mem != nil and mem.kind == dkFn and mem.name == name: inc members
+  members >= tc.sigsOf(name).len
+
 proc collectProgramSigs(mods: seq[tuple[name, path: string, m: Module]]): ProgramSigs =
   ## Every module's signatures and pending fns, before any body is checked.
   for (name, path, m) in mods:
@@ -6580,7 +6888,7 @@ proc collectProgramSigs(mods: seq[tuple[name, path: string, m: Module]]): Progra
       not restricted or n in allowed or "::" in n
     var sigs: Table[string, seq[FnSig]]
     for n, sg in tc.fnSigs:
-      if visible(n): sigs[n] = sg
+      if visible(n) and not tc.onlyMembersNamed(m, n): sigs[n] = sg
     result.byMod[name] = sigs
     result.pendByMod[name] = tc.pendingFns
     result.importsByMod[name] = moduleImports(m)
@@ -6627,6 +6935,12 @@ proc importChecked(scope: var ImportScope, sigs: ProgramSigs, imp: string) =
     if "::" notin fname:
       scope.extern[imp & "::" & fname] = sig
       scope.addBare(fname, imp, sig)
+    elif fname.startsWith(imp & "::"):
+      # A name type_identity already made this module's own (`f1::Op`, a
+      # `fnsig` two modules declare): it IS its qualified spelling, and comes
+      # in as written. It was skipped as "already qualified", so the importer
+      # knew the name as a fnsig but held no signature for it (audit M9).
+      scope.extern[fname] = sig
   for fname, sp in sigs.pendByMod.getOrDefault(imp):
     if "::" notin fname:
       scope.pending[imp & "::" & fname] = sp
@@ -6664,6 +6978,19 @@ proc importScopeFor(sigs: ProgramSigs, preSigs: Table[string, seq[SigInfo]],
     if sigs.byMod.hasKey(imp): result.importChecked(sigs, imp)
     else: result.importPrebuilt(preSigs, imp)
 
+type ModuleScope* = object
+  ## What one module's imports put in its scope, as the checker decided it:
+  ## the modules it imports directly, and which of them owns each name it may
+  ## write bare. Kept for the passes after the checker, so they scope a name
+  ## the way the checker did instead of each asking a program-wide table
+  ## (audit E2/M4: the effect pass did, and the last module to declare a name
+  ## answered for every caller).
+  imports*: seq[string]
+  bareOwner*: Table[string, string]
+
+var moduleScopes*: Table[string, ModuleScope]
+  ## This check round's scopes, by module name; reset by checkProgramOnce.
+
 proc checkProgramOnce(mods: seq[tuple[name, path: string, m: Module]],
                       preSigs: Table[string, seq[SigInfo]]): seq[string] =
   ## Signatures are gathered across the whole program first, then each module
@@ -6675,8 +7002,11 @@ proc checkProgramOnce(mods: seq[tuple[name, path: string, m: Module]],
   memberCalls = @[]
   ifaceMatches = @[]
   let sigs = collectProgramSigs(mods)
+  moduleScopes.clear()
   for (name, path, m) in mods:
     let scope = importScopeFor(sigs, preSigs, name)
+    moduleScopes[name] = ModuleScope(imports: sigs.importsByMod[name],
+                                     bareOwner: scope.bareOwner)
     ifaceMatchModule = path
     try:
       result = typecheckModule(m, scope.extern, scope.pending,
@@ -6720,6 +7050,19 @@ proc selfRooted(res: Resolution, e: Expr): bool =
     r = assignRoot(r.brReceiver)
   r != nil and r.kind == exkVar and (r.name == "self" or res.isOwnerField(r))
 
+proc externWritesSelf(res: Resolution, n: Expr): bool =
+  ## An extern that changes an argument in place (`[writes: items]`), given
+  ## `self` or a field of it: `self.recs.setAt {..}` changes the object, and
+  ## was not counted, so such a member took `self` by value and the write
+  ## was lost (audit O1c).
+  let c = if n.kind == exkCall: n else: res.call(n)
+  if c == nil or c.kind != exkCall: return false
+  let callee = res.declFor(c)
+  if callee == nil: return false
+  for param in callee.externWrites:
+    if selfRooted(res, writtenArg(res, c, callee, param)): return true
+  false
+
 proc writesSelfDirectly(res: Resolution, fn: Decl): bool =
   ## Does member `fn`'s own body write its object: an assignment, an
   ## element write or a `..` chain on `self` or a field of it?
@@ -6728,6 +7071,7 @@ proc writesSelfDirectly(res: Resolution, fn: Decl): bool =
       return true
     if n.kind == exkBracketAssign and selfRooted(res, n.brTarget): return true
     if n.kind == exkChain and selfRooted(res, n.base): return true
+    if externWritesSelf(res, n): return true
   false
 
 proc selfCallees(res: Resolution, objs: Table[string, Decl], fn: Decl): seq[Decl] =
@@ -6861,6 +7205,31 @@ proc checkUrgentPlacement(mods: seq[tuple[name, path: string, m: Module]]) =
              "only an actor's `on` handler may be: it is a message that " &
              "jumps the actor's queue. Fix: remove [urgent]", d.span)
 
+proc unregisteredIn(m: Module, d: Decl, seen: HashSet[(int, int)]): seq[string] =
+  ## The member calls of one body that `memberCalls` does not hold.
+  for n in d.fnBody.nodes:
+    let c = if n.kind == exkCall: n else: semLayer.call(n)
+    if c == nil or c.kind != exkCall or memberCallDecl(semLayer, m, c) == nil:
+      continue
+    if c.args.len == 0 or c.args[0] == nil or c.args[0].kind == exkStruct: continue
+    if (c.span.line, c.span.col) notin seen and (n.span.line, n.span.col) notin seen:
+      result.add nameOf(m.id) & ":" & $c.span.line & ":" & $c.span.col &
+                 " calls member '" & c.callee.name & "' unregistered"
+
+proc unregisteredMemberCalls(mods: seq[tuple[name, path: string, m: Module]]): seq[string] =
+  ## Every call that reaches an object member through a receiver VALUE is one
+  ## checkSelfWrites must judge, so it must be in `memberCalls`. A spelling
+  ## that built the call without registering it (`c.bump` in value position,
+  ## audit O5) let a self-writing member run on a `let`. Chain steps are
+  ## judged by `..`'s own rule (failIfMutatingLet) and are not asked here.
+  var seen: HashSet[(int, int)]
+  for mc in memberCalls: seen.incl (mc.span.line, mc.span.col)
+  for (_, _, m) in mods:
+    for d in m.allDecls:
+      if d != nil and d.kind in {dkFn, dkTask} and d.fnBody != nil and
+         not isImportedCopy(d):
+        result.add unregisteredIn(m, d, seen)
+
 proc checkSelfWrites(mods: seq[tuple[name, path: string, m: Module]]) =
   ## A member that changes its object may be called on a `var` only — never
   ## on a parameter or a `let` (ruled 2026-09-28: a parameter is immutable
@@ -6870,6 +7239,8 @@ proc checkSelfWrites(mods: seq[tuple[name, path: string, m: Module]]) =
   ## whether a member writes `self` can depend on members in other modules.
   ## The answer is kept on the semantic layer for the backends: a member
   ## that only reads takes `self` by value.
+  # Invariant: the list judged below is complete (see unregisteredMemberCalls).
+  report("member calls", unregisteredMemberCalls(mods))
   var writers = computeSelfWriters(mods)
   addHoistedWriters(mods, writers)
   semLayer.selfWriters = writers
@@ -6901,8 +7272,13 @@ proc typecheckExpanding*(mods: var seq[tuple[name, path: string, m: Module]],
   var rounds = 0
   while true:
     var expanded = false
+    var scopes: Scopes
+    for name, sc in moduleScopes: scopes[name] = sc.bareOwner
     for i in 0 ..< mods.len:
-      if expandIfaceGenerics(semLayer, mods, i): expanded = true
+      try:
+        if expandIfaceGenerics(semLayer, mods, i, scopes): expanded = true
+      except SemanticError as err:
+        raise withModulePrefix(err, mods[i].path)
     if not expanded: break
     inc rounds
     if rounds > MaxExpansionRounds:

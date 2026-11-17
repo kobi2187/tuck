@@ -29,6 +29,7 @@
 import ast, ast_ops, ast_query
 import resolution
 import ownership_rules, ownership_elab
+import call_args  # writtenArg: the argument an extern changes in place
 from ssa_ir import rootOf
 
 proc rootName(e: Expr): string =
@@ -65,9 +66,26 @@ proc mutatesViaExtern(res: Resolution, m: Module, pu: PlaceUse): bool =
     (d.fnReturnType == nil or
      (d.fnReturnType.kind == tkNamed and d.fnReturnType.name == "void"))
 
+proc callWrites(res: Resolution, m: Module, stmt: Expr, root: string): bool =
+  ## Does a CALL in `stmt` change `root` in place: a member that writes its
+  ## `self` called on it (`s.replace`), or an extern that `[writes:]` the
+  ## argument it is given (`s.recs.setAt {..}`)? Neither is an assignment, so
+  ## the walk below missed both, and a view of `s.recs[0]` outlived the
+  ## member that freed it (audit O1c, Odin and D read freed memory).
+  for c in callSites(res, stmt):
+    let mem = memberCallDecl(res, m, c)
+    if mem != nil and res.writesSelf(mem) and c.args.len > 0 and
+       rootName(c.args[0]) == root: return true
+    let callee = res.calleeOf(m, c)
+    if callee == nil: continue
+    for param in callee.externWrites:
+      if rootName(writtenArg(res, c, callee, param)) == root: return true
+  false
+
 proc writes(res: Resolution, m: Module, memo: var ConsumeMemo, stmt: Expr,
             root: string): bool =
   ## Does `stmt` write, append to, hand away or consume the local `root`?
+  if res.callWrites(m, stmt, root): return true
   for n in stmt.nodes:
     case n.kind
     of exkAssign:

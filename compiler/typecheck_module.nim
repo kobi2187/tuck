@@ -113,6 +113,7 @@ proc newModuleChecker*(m: Module, externSigs: Table[string, seq[FnSig]],
   ## A checker seeded with what this module's imports export.
   result = TypeChecker(module: m,
                        fnSigs: externSigs,
+                       importedSigs: externSigs,
                        pendingFns: externPending,
                        typeDecls: initTable[string, Type](),
                        distinctNames: initHashSet[string](),

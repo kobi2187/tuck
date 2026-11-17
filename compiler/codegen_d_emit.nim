@@ -154,9 +154,7 @@ proc genDEntryPoint*(ctx: DCodegenCtx, m: Module, mains: string): string =
   ## value-returning `fn main` IS the process exit code — D's `int main`
   ## says exactly that natively (the Nim backend needs quit(), Odin
   ## os.exit(); this is the identical-construct rule paying off).
-  var hasTasks = false
-  for d in m.decls:
-    if d != nil and d.kind == dkTask: hasTasks = true
+  let hasTasks = programHasTasks(m, ctx.realModules)
   let mainFn = mainDecl(m)
   if mainFn == nil and mains == "": return ""
   # The command line reaches std/sys through the runtime, which cannot read

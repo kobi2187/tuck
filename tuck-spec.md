@@ -560,6 +560,11 @@ version that compiles):
   fixed value; `applyOperation` receives it. What narrows is the argument list
   at the call site, not the record.
 
+A `fnsig` takes an effect bracket like a fn (`fnsig Say = {text: str} -> void
+[io]`). It is the slot's contract: a stored fn may use no capability it does not
+grant and must make every restriction it names, and a call through the slot is
+charged with it. No bracket means no I/O.
+
 `bake` unifies partial application, dependency injection, and the strategy
 pattern into one operation. It is not currently a zero-cost one: a `fnsig`
 field emits as a Nim `{.closure.}` proc value passed at runtime, so a baked

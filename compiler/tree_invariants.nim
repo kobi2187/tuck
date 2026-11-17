@@ -82,6 +82,15 @@ proc declaredTypeNames(m: Module): HashSet[string] =
   for d in m.decls:
     if d != nil and d.kind in {dkType, dkObject}: result.incl d.name
 
+proc mentionedTypes(d: Decl): seq[Type] =
+  ## Every type a declaration spells: its signature, and what its body spells
+  ## (annotations, casts, sends). A type resolved only later reached the
+  ## checker edge-less (audit Y17).
+  for t in d.ownTypes: result.add t
+  for ex in d.ownExprs:
+    for n in ex.nodes:
+      for t in n.writtenTypes: result.add t
+
 proc typeEdgeErrors*(res: Resolution, mods: seq[Module]): seq[string] =
   ## #21, program-wide: every named type a declaration mentions, whose name is
   ## a type this module can see, carries the edge to that declaration.
@@ -96,8 +105,7 @@ proc typeEdgeErrors*(res: Resolution, mods: seq[Module]): seq[string] =
       let d = stack.pop()
       if d == nil: continue
       for m2 in d.childDecls: stack.add m2
-      var ts: seq[Type]
-      for t in d.ownTypes: ts.add t
+      var ts = d.mentionedTypes
       while ts.len > 0:
         let t = ts.pop()
         if t == nil: continue

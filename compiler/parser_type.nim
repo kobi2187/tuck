@@ -248,6 +248,7 @@ type
     resources*: seq[string]
     keeps*: seq[string]
     view*: string
+    writes*: seq[string]  # `[writes: items]`: the arguments it changes in place
     badIo*: string   # `[io: <name>]` naming no kind; the parser reports it
     depth*: int   # [recursion: N] — recursion allowed to N nested calls; 0 = unset
     urgent*: bool # `on reset() [urgent]:` — a message that jumps the queue
@@ -262,6 +263,7 @@ proc takeAttr*(tail: var SignatureTail, name, value: string): bool =
   of "resource": tail.resources.add(value)  # [resource: udp] §7.4
   of "keeps": tail.keeps.add(value)
   of "view": tail.view = value
+  of "writes": tail.writes.add(value)
   of "recursion":
     try: tail.depth = parseInt(value)
     except ValueError: return false

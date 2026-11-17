@@ -174,6 +174,7 @@ type
     dcEfIsrSend = "TK-EF07"             ## a send from an [irq_safe] fn (the mailbox takes a lock)
     dcEfMemo = "TK-EF08"                ## `fn memo` on a fn that cannot be memoized
     dcEfMemoUnbounded = "TK-EF09"       ## `fn memo` with no size: the cache grows without bound
+    dcEfSharedState = "TK-EF10"         ## a [pure] fn touching shared state, or an [irq_safe] one waiting
     dcPeClash = "TK-PE01"               ## `pending:` clashes with a real decl
     dcPoMalformed = "TK-PO01"           ## the errors policy block is malformed
     dcSeConstruction = "TK-SE01"        ## a sealed type built outside a transition
@@ -902,6 +903,14 @@ proc ruleExplanation(d: DiagCode): string =
     "fn may not send. Fix: have the interrupt set a flag or write a ring " &
     "buffer that a task or actor drains; a lock-free single-producer mailbox " &
     "for ISR-only senders is a possible later addition."
+  of dcEfSharedState:
+    "A `[pure]` fn's answer depends on its arguments alone, which is what lets " &
+    "it be memoized, run at compile time or reordered. State another thread " &
+    "or the hardware owns breaks that: an actor's fields and `alive` (its " &
+    "thread changes them), a send or a `waitUntil`, a pool's or slab's cells, " &
+    "a register, the registry's `latest`. So a `[pure]` fn touches none of " &
+    "them. Separately, an `[irq_safe]` fn may not `waitUntil`: an interrupt " &
+    "cannot block. Fix: pass the value in as an argument, or drop the marker."
   of dcEfMemo:
     "`fn memo` caches a fn's result by its arguments, which is only correct " &
     "when the same arguments always give the same result. So the fn must be " &

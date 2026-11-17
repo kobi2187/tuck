@@ -216,6 +216,8 @@ type
       params*: seq[Type]
       result*: Type
       paramNames*: seq[string]
+      funcEffects*: seq[EffectMarker]  # what calling it may do: a `:fn`
+                                       # reference carries its fn's bracket
     of tkRecord:
       fields*: seq[FieldDef]
       anonLiteral*: bool  ## typed from a bare `{...}` literal, no type name (TK-TY45)
@@ -586,6 +588,11 @@ type
       modulePath*: seq[string]
       qualModule*: ModuleId  # the module `modulePath[0]` names, NoModule for none
       qualName*: string
+      isFnRef*: bool         # written `:name` / `:mod::name`: a REFERENCE. A
+                             # bare `mod::name` is a value like any bare name:
+                             # a call of a nullary fn, or a const. The two
+                             # spellings parsed to one node, so `lib::seven`
+                             # typed as `() -> int` (audit, class B)
     of exkStruct:
       fields*: seq[FieldInit]
     of exkList:
@@ -1037,6 +1044,10 @@ type
                                 # hands them over. Every other one is read.
       externView*: string   # [view: items] — its owning result is part of
                             # this argument, which it reads: not a fresh value
+      externWrites*: seq[string] # [writes: items] — the arguments it changes
+                                 # in place: each must be a `var` place, and a
+                                 # member passing `self` there changes its
+                                 # object (audit O1b, O1c)
       externLib*: string    # extern [c, header: "zlib.h", lib: "z"] — the C
                             # library to link. Nim emits {.passL: "-lz".};
                             # Odin emits `foreign import z "system:z"`.
@@ -1118,6 +1129,10 @@ type
       sigGenerics*: seq[string]
       sigParams*: seq[Param]
       sigReturn*: Type
+      sigEffects*: seq[EffectMarker]  # `fnsig Op = {..} -> int [io]`: what a
+                                      # call THROUGH the slot may do. A fn
+                                      # stored in it may do no more, and must
+                                      # make its restrictions (audit E1)
       # declared INSIDE an `extern [c, ...]` block: a C function pointer, so it
       # must use the C calling convention. Nim's default {.closure.} is a
       # two-word (proc, env) pair that no C function pointer can receive.

@@ -120,12 +120,14 @@ proc satisfiersOf*(ctx: CodegenCtx, iface: string): seq[Decl] =
   ## Whole-program satisfier set — see codegen_common.satisfiersOf.
   satisfiersOf(ctx.module, ctx.realModules, iface)
 
-proc taskRetType*(ctx: CodegenCtx, name: string): string =
-  ## The Nim return type of a declared task, for its result slot.
-  for d in ctx.module.decls:
-    if d != nil and d.kind == dkTask and d.name == name:
-      return if d.fnReturnType != nil: genType(d.fnReturnType) else: "void"
-  "void"
+proc taskRetType*(task: Decl): string =
+  ## The Nim return type of a task, for its result slot.
+  if task != nil and task.fnReturnType != nil: genType(task.fnReturnType)
+  else: "void"
+
+proc taskOf*(ctx: CodegenCtx, call: Expr): Decl =
+  ## The task `call` spawns, wherever it is declared (ast_query.taskCallee).
+  taskCallee(ctx.res, ctx.module, call)
 
 proc fieldType*(ctx: var CodegenCtx, parent: string, f: FieldDef): string =
   ## Field type emission. Nim forbids anonymous enums in field positions, so
