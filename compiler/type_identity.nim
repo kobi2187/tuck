@@ -22,6 +22,15 @@
 import tables, sets, strutils
 import ast, ast_ops, ast_query, modules, typecheck_util, diagnostics, semantics
 
+const Nominal = {dkType, dkObject, dkFnSig, dkGroup}
+  ## The declarations that NAME A TYPE and are told apart by this pass: a
+  ## record or sum (`type`), an object, a named signature (`fnsig`) and a
+  ## `group` (named where a type parameter is bounded). It knew `type` only,
+  ## so two modules' `object Thing`, or a `type Thing` and an `object Thing`,
+  ## were one type to every later stage (first copy wins); two `fnsig Op` left
+  ## a slot unable to say which it held; and of two `group Keyed` an importer
+  ## of both held the last one imported (audit M2, M9, M8).
+
 type View = object
   ## What a bare type name means in one module.
   owner: string          ## the module it resolves to; "" when none or ambiguous
@@ -32,13 +41,13 @@ proc collidingTypeNames(prog: seq[LoadedModule]): HashSet[string] =
   var seen = initTable[string, string]()
   for lm in prog:
     for d in lm.m.decls:
-      if d == nil or d.kind != dkType or d.origin != NoModule: continue
+      if d == nil or d.kind notin Nominal or d.origin != NoModule: continue
       if d.name in seen and seen[d.name] != lm.name: result.incl d.name
       else: seen[d.name] = lm.name
 
 proc declaresType(lm: LoadedModule, name: string): bool =
   for d in lm.m.decls:
-    if d != nil and d.kind == dkType and d.origin == NoModule and d.name == name:
+    if d != nil and d.kind in Nominal and d.origin == NoModule and d.name == name:
       return true
 
 proc providesType(lm: LoadedModule, name: string): bool =
@@ -117,23 +126,24 @@ proc qualifyExprs(lm: LoadedModule, byName: Table[string, LoadedModule],
     elif n.kind == exkField:
       let q = qualifiedRef(lm, byName, names, n.receiver)
       if q != nil: n.receiver = q
-    elif n.kind == exkAssign: qualifyType(lm, byName, names, n.declType)
-    elif n.kind == exkCast: qualifyType(lm, byName, names, n.castType)
-    elif n.kind == exkSend:
-      for t in n.sendActorArgs: qualifyType(lm, byName, names, t)
+    for t in n.writtenTypes: qualifyType(lm, byName, names, t)
 
 proc qualifyReferences(lm: LoadedModule, byName: Table[string, LoadedModule],
                        names: HashSet[string]) =
   ## Every type reference in `lm`, in its declarations and its bodies.
   for d in lm.m.allDecls:
     for t in d.ownTypes: qualifyType(lm, byName, names, t)
+    # `fn use[T: Keyed]`: the bound names a group, which ownTypes does not list
+    if d.kind == dkFn:
+      for bs in d.fnGenericBounds:
+        for b in bs: qualifyType(lm, byName, names, b)
   for body in lm.m.bodies: qualifyExprs(lm, byName, names, body)
 
 proc qualifyDeclarations(lm: LoadedModule, names: HashSet[string]) =
   ## `lm`'s own declarations of a colliding name, and the `public:` entries
   ## that export them.
   for d in lm.m.decls:
-    if d != nil and d.kind == dkType and d.origin == NoModule and d.name in names:
+    if d != nil and d.kind in Nominal and d.origin == NoModule and d.name in names:
       d.name = lm.name & "::" & d.name
   for d in lm.m.decls(dkPublic):
     for n in d.publicNames.mitems:

@@ -978,6 +978,16 @@ proc constDeclFor*(m: Module, raw: string): Decl =
       if result != nil and result != found: return nil
       result = found
 
+proc importedConstOwners*(m: Module, raw: string): seq[string] =
+  ## The modules `m` imports directly that each declare a const `raw`, by
+  ## name. More than one, or one beside an imported fn of the name, is a
+  ## collision the checker reports where the bare name is written.
+  for imp in m.decls:
+    if imp == nil or imp.kind != dkImport: continue
+    let theirs = semLayer.constsByModule.getOrDefault(imp.importTarget)
+    if theirs.hasKey(raw) or theirs.hasKey(prefixed(raw, nkConst)):
+      if imp.name notin result: result.add imp.name
+
 proc constIntOf*(m: Module, text: string, depth = 0): Option[int] =
   ## A size written as TEXT — an attribute's value, or an `Array[N, T]` size,
   ## both of which the parser keeps as source text rather than as an

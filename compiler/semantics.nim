@@ -742,7 +742,10 @@ proc collectLocal(c: var Checker, m: Module) =
         if h.kind == dkFn:
           c.declared[h.name] = Demands(effects: h.fnEffects,
                                        resources: h.fnResourceKinds)
-    of dkExtern:
+    of dkExtern, dkPending:
+      # A `pending:` stub's bracket is the contract to come; it reached this
+      # table only through the program-wide import table, which listed the
+      # module's own names too.
       # local `extern:` block — register each declared fn's effects so an [io]
       # extern marks its call sites async (else a task calling it never yields).
       # §7.4's own acquire example is an extern signature, so the resource

@@ -246,8 +246,8 @@ proc collectHeartbeatSigs(tc: var TypeChecker, d: Decl) =
   for (member, ret) in [("pingUs", optInt),
                         ("alive", Type(span: d.span, kind: tkNamed,
                                        name: "bool"))]:
-    if tc.actorMemberOwner.getOrDefault(member) == d.name or
-       tc.actorHandlerOwner.getOrDefault(member) == d.name: continue
+    if d.name in tc.actorMemberOwner.getOrDefault(member) or
+       d.name in tc.actorHandlerOwner.getOrDefault(member): continue
     # Blocks the caller until the actor answers or the deadline passes.
     tc.setFnSig(d.name & "." & member,
       (within, ret, newSeq[string](), @[emIo], newSeq[string](),
@@ -294,8 +294,8 @@ proc collectSigs*(tc: var TypeChecker, decls: seq[Decl], top = true) =
       tc.collectSigs(d.handlers)
       for h in d.handlers:
         if h == nil or h.kind != dkFn: continue
-        if h.isOnHandler: tc.actorHandlerOwner[h.name] = d.name
-        else: tc.actorMemberOwner[h.name] = d.name
+        if h.isOnHandler: tc.actorHandlerOwner.mgetOrPut(h.name, @[]).add d.name
+        else: tc.actorMemberOwner.mgetOrPut(h.name, @[]).add d.name
       # `<Actor>.waitUntil {pred: :p}` — a static member call, registered the
       # same way `Pool.acquire` is. A plain signature in the flat table, so the
       # call resolves through the ordinary path: the compiler does NOT special-

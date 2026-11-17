@@ -286,12 +286,21 @@ proc genValidatedCall(ctx: var CodegenCtx, call: string): string =
   "(let " & tmp & " = " & call & "; validate(" & tmp & "); " & tmp & ")"
 
 proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
-                  args: seq[string]): string =
+                  args: seq[string], callee: Decl = nil): string =
   ## An ordinary call, wrapped by whatever the callee is: a spawned task, an
   ## invariant-validating extern, or neither.
   ##
   ## extern [emit: "..."] renames the emitted call to the real runtime/C proc.
-  let emitName = ctx.externEmitName(calleeStr)
+  ##
+  ## `callee` is the DECLARATION the call reaches (ast_query.calleeDecl), and
+  ## what it is comes from there. It used to come from the printed name, asked
+  ## of tables keyed by bare name: `ea::conv` printed as `ea.conv`, which no
+  ## table held, so its `[emit:]` was dropped, and two modules' externs of
+  ## one name shared whichever emit was filed last (audit M13). The task test
+  ## below is still by name: an imported task is not spawnable yet (M21).
+  let emitName = if callee != nil and callee.isExtern and callee.externEmit != "":
+                   callee.externEmit
+                 else: ctx.externEmitName(calleeStr)
   # A PRIMITIVE conversion — `{value: n} u64` — names a Tuck type, and the
   # backend's name for it is not the same word: `u64(n)` reached Nim as an
   # undeclared identifier because Nim spells it `uint64`. The same table
@@ -309,12 +318,12 @@ proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
   call
 
 proc genCallWithArgs(ctx: var CodegenCtx, calleeStr: string,
-                     args: seq[string]): string =
+                     args: seq[string], callee: Decl = nil): string =
   ## The emission forms, once the arguments are built.
   let satBase = ctx.saturatingBase(calleeStr)
   if satBase != "" and args.len == 1:
     return genSaturatingCtor(satBase, calleeStr, args[0])
-  ctx.genPlainCall(calleeStr, args)
+  ctx.genPlainCall(calleeStr, args, callee)
 
 proc withTypeArgs(ctx: CodegenCtx, calleeStr: string, e: Expr): string =
   ## `tuck_firstOf` -> `tuck_firstOf[tuck_Row, int]` when the checker recorded
@@ -364,7 +373,8 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   let combinator = ctx.explodeRecordArg(e, calleeStr)
   if combinator != "": return combinator
   let args = ctx.genCallArgs(e)
-  ctx.genCallWithArgs(ctx.withTypeArgs(calleeStr, e), args)
+  ctx.genCallWithArgs(ctx.withTypeArgs(calleeStr, e), args,
+                      calleeDecl(ctx.res, ctx.module, e))
 
 # exkReturn emission: auto-wrapped tok()/terr() results, typed struct
 # literals, invariant-carrying returns, or a plain return.

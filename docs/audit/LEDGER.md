@@ -27,7 +27,7 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | T6 open-domain match, T7 match on a wrapper, T8a sealed bare variant | A120-A122 | |
 | E3a restriction subset in conformance | A123 | one rule, `ast_ops.effectFitProblem` |
 | Y9/Y10 operand kinds | A124 | |
-| M9 two `fnsig Op` (refused; full fix needs class B) | A125 | |
+| M9 two `fnsig Op`: each is its module's own (`type_identity`) | A125 | |
 | Y17 body-spelled type edges | A126 | `typeEdgeErrors` covers body types |
 | M3 const scope | A127 | per-module const table |
 | E1 fnsig slots carry effects | A128 | `assertCallEdges`: a slot call has a contract |
@@ -42,6 +42,26 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | O1c self-writes through an extern; views across them | A138 | |
 | O5 member calls registered on every path | A139 | `unregisteredMemberCalls` |
 | C3 slab ownership through slots, dispatch, predicates | A140 | |
+| E2/M4 effect tables scoped per module by the checker's own scope | A141 | `typecheck.moduleScopes` is the one scope |
+| M1 two files of one module name | A142 | `claimModuleName` at load |
+| M2 `type`/`object` of one name; M8 two `group`s of one name | A143, A145 | `type_identity.Nominal` |
+| M19 rename onto another import's name | A144 | |
+| M13 a qualified extern call keeps its `[emit:]` (Nim reads it off the callee's declaration) | A147 | |
+| M16, C12 actor member/handler names: every owner kept, the actor's own inside it, the module's fn outside | A148 | |
+| M5 const/const and const/fn collisions across imports are explicit | A149 | |
+| M6 a name with arguments in front is a fn call: the member the payload's `self` names, else own fn, else import's; a member is not exported as a module fn | A150 | |
+| M14 generic clones resolve names in the library's scope (a name the caller cannot reach is refused with the fix named) | A146 | |
+
+**Still open in class B.** Interfaces and actors of one name in two modules (not yet
+nominal in `type_identity`: their names are also carried as strings in `satisfies`, match
+arms and dispatch nodes); a const cannot be written qualified (`a::Size`), so an M5
+collision has no in-place fix yet; M7 (valid code rejected); M10 (imported alias attributes);
+M21 (an imported task does not build on any backend: every backend decides "is this a
+task" by `isTaskName(name)` against the calling module's own tasks, about a dozen sites
+across the three emitters, and the task's procs are not exported; it needs one
+`taskCallee(res, m, call)` answered from the call edge, which E14 now records); M17/M18/M20/M23/M24; M10b (warm
+cache). M14's refusal for a private or un-imported callee is a restriction, not the end
+state: the clone should be checked in the library's scope.
 
 **Waiting on a ruling.** E4 (does binding a task's result, an await, need `[io]` in the
 caller?), E16 (`on select` arm budgets, F2), C18's second half (a predicate reading only its

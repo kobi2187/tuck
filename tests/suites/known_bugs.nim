@@ -5526,17 +5526,19 @@ fn main() -> int:
     t.bugFixed "A124: " & name & " is refused"
 
   # A125 (audit M9): two imports each declaring `fnsig Op`, then a call through
-  # a slot of that type, died with a KeyError in the checker. A type is known
-  # by its name alone, so the slot cannot say which `Op` it holds; the checker
-  # now says so instead of crashing.
+  # a slot of that type, died with a KeyError in the checker. A fnsig is a
+  # nominal type like a `type`: type_identity gives each colliding one its
+  # module's name (`f1::Op`), so each slot knows which signature it holds.
   t.src """
 import f1
 import f2
 
 fn main() -> int:
   let c1 = {} mk1
+  let c2 = {} mk2
   let x = {a: 1, b: 2} c1.op
-  return x
+  let y = {s: "ab"} c2.op
+  return x + y
 """
   t.addFile("f1.tuck", """fnsig Op = {a: int, b: int} -> int
 type Calc = {op: Op}
@@ -5552,8 +5554,10 @@ fn slen({s: str}) -> int:
 fn mk2() -> Calc2:
   return {op: :slen} Calc2
 """)
-  t.quietly: t.badCheck "A125: a slot of an fnsig two imports declare is refused, not a crash", "cannot pick a signature"
-  t.bugFixed "A125: a slot of an fnsig two imports declare is refused, not a crash"
+  t.quietly: t.runs "A125: two imports' fnsigs of one name are two signatures", 5
+  t.bugFixed "A125: two imports' fnsigs of one name are two signatures"
+  t.quietly: t.runsOdin "A125: ...on Odin", 5
+  t.bugFixed "A125: ...on Odin"
 
   # A126 (audit Y17): a type spelled inside a body (`let xs: Seq[P] = ...`)
   # never got its declaration edge before the checker used it, and lowering
@@ -5994,5 +5998,371 @@ fn main() -> int:
 """
   t.quietly: t.badCheck "A140: a waitUntil predicate runs on the actor's thread", "actor 'Probe' reaches slab 'Nodes'"
   t.bugFixed "A140: a waitUntil predicate runs on the actor's thread"
+
+  # A141 (audit E2/M4): the effect pass looked a callee's markers up in ONE
+  # table for the whole program, keyed by bare name, so the last module to
+  # declare `work` answered for every caller: x's `[no_alloc]` fn calling ma's
+  # allocating `work` passed when the entry also imported mb, whose `work` is
+  # `[no_alloc]`. Each module now sees its own imports' names, bare where the
+  # checker gave that import the name (typecheck.moduleScopes).
+  t.src """
+import x
+import mb
+
+fn main() -> int:
+  let e: Seq[int] = []
+  let r = {xs: e} xna
+  return 0
+"""
+  t.addFile("x.tuck", """import ma
+fn xna({xs: Seq[int]}) -> Seq[int] [no_alloc]:
+  return {xs} work
+""")
+  t.addFile("ma.tuck", """import seq
+fn work({xs: Seq[int]}) -> Seq[int]:
+  return {items: xs, value: 1} push
+""")
+  t.addFile("mb.tuck", """fn work({xs: Seq[int]}) -> Seq[int] [no_alloc]:
+  return xs
+""")
+  t.quietly: t.badCheck "A141: a callee's effects are its own module's, not a namesake's", "x.tuck.*'xna' is \\[no_alloc\\] but calls 'work'"
+  t.bugFixed "A141: a callee's effects are its own module's, not a namesake's"
+
+  # A142 (audit M1): a module is known by its file name. A local `bits.tuck`
+  # beside the entry and the stdlib's `bits.tuck` (which `random` imports)
+  # were loaded as ONE module, and the program ran whichever body the backend
+  # met first. Two files of one name are refused where both paths are known.
+  t.src """
+import bits
+import random
+
+fn main() -> int:
+  let r = {a: 12, b: 10} bits::bitAnd
+  let d = {seed: 5} newDice
+  if r == 7:
+    return 3
+  return 0
+"""
+  t.addFile("bits.tuck", """fn bitAnd({a: u64, b: u64}) -> u64:
+  return 7
+""")
+  t.quietly: t.badCheck "A142: two files of one module name are refused", "two modules are named 'bits'"
+  t.bugFixed "A142: two files of one module name are refused"
+
+  # A143 (audit M2): `type Thing` in one module and `object Thing` in another
+  # were one type to every later stage, first copy wins. An object is a
+  # nominal type like a `type`, told apart by its module.
+  t.src """
+import a
+import b
+
+fn main() -> int:
+  let x = {} a::mkA
+  let y = {} b::mkB
+  return x.x + y.size
+"""
+  t.addFile("a.tuck", """type Thing:
+  x: int
+fn mkA() -> Thing:
+  return {x: 4} Thing
+""")
+  t.addFile("b.tuck", """object Thing:
+  s: str
+  fn size() -> int:
+    return s.len
+fn mkB() -> Thing:
+  return {s: "hello"} Thing
+""")
+  t.quietly: t.runs "A143: a type and an object of one name in two modules are two types", 9
+  t.bugFixed "A143: a type and an object of one name in two modules are two types"
+  t.quietly: t.runsOdin "A143: ...on Odin", 9
+  t.bugFixed "A143: ...on Odin"
+
+  # A144 (audit M19): `import ka {put -> putEntry}` took over `putEntry` when
+  # another import already exported that name: a call meant for kb's ran ka's.
+  # A rename onto a name another import brings in is refused.
+  t.src """
+import ka {put -> putEntry}
+import kb
+
+fn main() -> int:
+  let r = {n: 1} putEntry
+  return r
+"""
+  t.addFile("ka.tuck", """fn put({n: int}) -> int:
+  return n + 1
+""")
+  t.addFile("kb.tuck", """fn putEntry({n: int}) -> int:
+  return n + 100
+""")
+  t.quietly: t.badCheck "A144: a rename may not take a name another import exports", "already a fn of kb"
+  t.bugFixed "A144: a rename may not take a name another import exports"
+
+  # A145 (audit M8): two modules each declaring `group Keyed`: an importer of
+  # both held the last one imported, and the first module's bounded fn was
+  # checked against the other's requirements. A group is nominal, told apart
+  # by its module like a type.
+  t.src """
+import g1
+import g2
+import p
+
+fn main() -> int:
+  let a = {n: 1} A
+  let b = {s: "xy"} B
+  let r1 = {x: a} use1
+  let r2 = {x: b} use2
+  return r1 + r2
+"""
+  t.addFile("g1.tuck", """group Keyed:
+  fn keyOf({self: Self}) -> int
+fn use1[T: Keyed]({x: T}) -> int:
+  return {self: x} keyOf
+""")
+  t.addFile("g2.tuck", """group Keyed:
+  fn nameOf({self: Self}) -> str
+fn use2[T: Keyed]({x: T}) -> int:
+  let s = {self: x} nameOf
+  return s.len
+""")
+  t.addFile("p.tuck", """type A:
+  n: int
+fn keyOf({self: A}) -> int:
+  return self.n
+type B:
+  s: str
+fn nameOf({self: B}) -> str:
+  return self.s
+""")
+  t.quietly: t.runs "A145: two modules' groups of one name are two groups", 3
+  t.bugFixed "A145: two modules' groups of one name are two groups"
+  t.quietly: t.runsOdin "A145: ...on Odin", 3
+  t.bugFixed "A145: ...on Odin"
+
+  # A146 (audit M14): an interface-bounded generic is cloned into the module
+  # that calls it and checked again THERE, so a bare name in the library's
+  # body meant the caller's own fn of that name, which ran instead (1002
+  # expected, 7 computed). The clone spells each fn by the module that owns
+  # it in the library's scope; one the caller cannot name is refused at the
+  # call that asks for the clone.
+  t.src """
+import lib
+
+object Foo:
+  satisfies Src
+  k: int
+  fn v({self: Foo}) -> int:
+    return self.k
+
+fn helper({n: int}) -> int:
+  return n + 5
+
+fn main() -> int:
+  let f = {k: 1} Foo
+  let r = {x: f} run
+  if r == 1002:
+    return 0
+  return 1
+"""
+  t.addFile("lib.tuck", """interface Src:
+  fn v({self: Self}) -> int
+fn helper({n: int}) -> int:
+  return n + 1000
+fn run[T: Src]({x: T}) -> int:
+  let a = {n: 1} helper
+  let b = {self: x} v
+  return a + b
+""")
+  t.quietly: t.runs "A146: a generic's clone calls the library's fn, not the caller's namesake", 0
+  t.bugFixed "A146: a generic's clone calls the library's fn, not the caller's namesake"
+  t.quietly: t.runsOdin "A146: ...on Odin", 0
+  t.bugFixed "A146: ...on Odin"
+  t.src """
+import lib
+
+object Foo:
+  satisfies Src
+  k: int
+  fn v({self: Foo}) -> int:
+    return self.k
+
+fn main() -> int:
+  let f = {k: 1} Foo
+  return {x: f} run
+"""
+  t.addFile("lib.tuck", """public:
+  Src run
+
+interface Src:
+  fn v({self: Self}) -> int
+fn secret({n: int}) -> int:
+  return n + 1000
+fn run[T: Src]({x: T}) -> int:
+  let a = {n: 1} secret
+  let b = {self: x} v
+  return a + b
+""")
+  t.quietly: t.badCheck "A146: a clone needing a name the caller cannot reach says which", "its body calls 'secret' of module 'lib'"
+  t.bugFixed "A146: a clone needing a name the caller cannot reach says which"
+
+  # A147 (audit M13): `ea::conv` on an extern with `[emit: "toUpperAscii"]`
+  # went out as `ea.conv`: the Nim emitter looked the emit name up by the
+  # printed callee in a table keyed by bare name. It reads the declaration
+  # the call reaches, so two modules' externs of one name keep their own.
+  t.src """
+import ea
+import eb
+
+fn main() -> int:
+  let x = {s: "aB"} ea::conv
+  let y = {s: "aB"} eb::conv
+  if x == "AB" and y == "ab":
+    return 7
+  return 1
+"""
+  t.addFile("ea.tuck", """extern [impl: nim "std/strutils"]:
+  fn conv({s: str}) -> str [emit: "toUpperAscii"]
+""")
+  t.addFile("eb.tuck", """extern [impl: nim "std/strutils"]:
+  fn conv({s: str}) -> str [emit: "toLowerAscii"]
+""")
+  t.quietly: t.runs "A147: a qualified extern call keeps its own emit name", 7
+  t.bugFixed "A147: a qualified extern call keeps its own emit name"
+
+  # A148 (audit M16, C12): which actor a member or handler name belongs to was
+  # one owner per NAME. Two actors each with a `bump` left the first unable to
+  # call its own, and an imported actor's `tick`/`size` refused calls of the
+  # importer's own top-level fns of those names. A name is the actor's inside
+  # that actor, and the module's own fn everywhere else.
+  t.src """
+actor A [queue: 8]:
+  n: int = 0
+  fn bump() -> int:
+    n += 1
+    return n
+  on go():
+    let r = bump
+    n += r
+
+actor B [queue: 8]:
+  m: int = 0
+  fn bump() -> int:
+    m += 10
+    return m
+  on go():
+    let r = bump
+    m += r
+
+fn main() -> int:
+  A send go {}
+  B send go {}
+  return 0
+"""
+  t.quietly: t.okCheck "A148: two actors may each have a member of one name"
+  t.bugFixed "A148: two actors may each have a member of one name"
+  t.src """
+import act
+
+fn tick({by: int}) -> int:
+  return by + 1
+
+fn size() -> int:
+  return 5
+
+fn main() -> int:
+  let a = {by: 2} tick
+  let b = {} size
+  return a + b
+"""
+  t.addFile("act.tuck", """actor Ticker:
+  n: int = 0
+  on tick({by: int}) -> void:
+    n = n + by
+  fn size() -> int:
+    return n
+""")
+  t.quietly: t.runs "A148: an imported actor's names do not take the importer's own fns", 8
+  t.bugFixed "A148: an imported actor's names do not take the importer's own fns"
+
+  # A149 (audit M5): a bare name two imports give two meanings. Two consts
+  # read as "not declared"; a const in one and a fn in the other silently
+  # took the fn. Both are a collision, said with both owners.
+  t.src """
+import a
+import c2
+
+fn main() -> int:
+  return Size
+"""
+  t.addFile("a.tuck", """const Size: int = 10
+fn width() -> int:
+  return 3
+""")
+  t.addFile("c2.tuck", """const Size: int = 4
+""")
+  t.quietly: t.badCheck "A149: two imports' consts of one name collide", "'Size' is exported by 2 imports"
+  t.bugFixed "A149: two imports' consts of one name collide"
+  t.src """
+import a
+import c
+
+fn main() -> int:
+  return width
+"""
+  t.addFile("a.tuck", """const Size: int = 10
+fn width() -> int:
+  return 3
+""")
+  t.addFile("c.tuck", """const width: int = 4
+""")
+  t.quietly: t.badCheck "A149: an imported const and an imported fn of one name collide", "'width' is exported by 2 imports"
+  t.bugFixed "A149: an imported const and an imported fn of one name collide"
+
+  # A150 (audit M6): with arguments in front of it a name is a CALL (a field
+  # is a value; a fn reference is invoked another way), so it means a fn:
+  # the member of the object the payload's `self` names, else the module's
+  # own fn, else an import's. It was chosen by the NAME alone, so an object's
+  # member `count` took `{items: xs} count` and `xs.count` from std/seq's,
+  # and an imported object's member took the bare name from every importer.
+  t.src """
+import seq
+
+object Pile:
+  items: Seq[int]
+  fn count({self: Pile}) -> int:
+    return 7
+
+fn main() -> int:
+  var xs: Seq[int] = [1, 2]
+  let p = {items: xs} Pile
+  let n = {items: xs} count
+  let m = {self: p} count
+  let k = p.count
+  let j = xs.count
+  return n * 1000 + m * 100 + k * 10 + j
+"""
+  t.quietly: t.runs "A150: a payload call picks the fn its payload is for", 212
+  t.bugFixed "A150: a payload call picks the fn its payload is for"
+  t.quietly: t.runsOdin "A150: ...on Odin", 212
+  t.bugFixed "A150: ...on Odin"
+  t.src """
+import lib
+import seq
+
+fn main() -> int:
+  var xs: Seq[int] = []
+  xs = {items: xs, value: 4} push
+  let b = {} mk
+  return xs.count + b.count
+"""
+  t.addFile("lib.tuck", """object Bag:
+  n: int
+  fn count({self: Bag}) -> int:
+    return self.n + 100
+fn mk() -> Bag:
+  return {n: 1} Bag
+""")
+  t.quietly: t.runs "A150: an imported object's member does not take an import's fn", 102
+  t.bugFixed "A150: an imported object's member does not take an import's fn"
 
   t.finish()
