@@ -3950,7 +3950,16 @@ proc asWithCall(tc: var TypeChecker, e: Expr): Type =
   ## the type the receiver was. That rule is `with`'s alone — `bake` builds
   ## up a context struct and is free to widen it.
   let recvT = tc.synthesize(e.combRecv)
-  let fields = tc.fieldsOf(tc.resolve(recvT))
+  # A sum has variants, not fields: `s with {n: 3}` on a `Sess` was accepted
+  # and no backend built it (audit T14). Spec: `with` replaces a field of a
+  # DECLARED record.
+  let body = tc.resolve(recvT)
+  if body != nil and body.kind == tkSum:
+    fail(dcTyNoSuchField,
+         "`with` replaces fields of a record, and " & typeName(recvT) &
+         " is a sum type, which has variants. Fix: build the variant you " &
+         "mean, `{...} " & typeName(recvT) & ".<Variant>`", e.span)
+  let fields = tc.fieldsOf(body)
   if fields.len == 0:
     for (_, valExpr) in e.combArg.fields.items: discard tc.synthesize(valExpr)
     return recvT                      # sketch receiver — stays gradual

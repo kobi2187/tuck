@@ -80,6 +80,7 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | C1 another actor's field read into a local is a copy, never a move | A173 | C2 (may it cross threads?) still open |
 | Y12 a record literal under a stated named type is that type's construction | A174 | |
 | Y13 a plain value into a `T?` is wrapped for a generic `T` field and branch by branch in an `if`/`match` value | A174 | |
+| T14 `with` on a sum type is refused (spec: it replaces fields of a declared record) | A175 | |
 | Y14 an imported extern's params are recorded, so extra payload fields are ignored (spec §2.5) instead of passed | A174 | the in-place `push` recogniser reads the exploded form too |
 
 **Still open in class B.** M14's refusal for a private or un-imported callee is a restriction, not the end
@@ -88,7 +89,10 @@ state: the clone should be checked in the library's scope.
 **Waiting on a ruling.** E4 (does binding a task's result, an await, need `[io]` in the
 caller?), E16 (`on select` arm budgets, F2), C18's second half (a predicate reading only its
 own actor's fields), the concurrency items C2/C4/C5, Y1 (int/i64 overflow policy), Y11 (generic
-bodies: rigid type parameters, or re-checked per instantiation?), T9 (spec
+bodies: rigid type parameters, or re-checked per instantiation?), T13 (may a type parameter
+bind a `T?`, so that `len` takes a `Seq[int]?` unguarded?), Y18 (`int` and `i64`: the
+2026-08-25 ruling says they never need a cast, open bug A116 says the checker should refuse
+the mismatch; today Odin returns 12 where Nim and D return 0 on types/mix1), T9 (spec
 §4.4b rules out a loop fixed point for variant sets, so a transition legal on iteration 1 and
 not on 2 passes), and two TK-TY16 holes the checker cannot follow: a partial record put in a
 sum payload (un/c11) and a slab `new` that omits a field (sl2) — refuse the store, or track?

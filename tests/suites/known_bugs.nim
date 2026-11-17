@@ -7813,4 +7813,23 @@ fn main() -> void [io]:
   t.quietly: t.runs "A174: an extra payload field to an imported extern is ignored", 0
   t.bugFixed "A174: an extra payload field to an imported extern is ignored"
 
+  # A175 (class F, T14): `s with {n: 3}` on a sum type checked clean and no
+  # backend built it. `with` replaces fields of a declared record (spec); a
+  # sum has variants.
+  t.src """
+type Sess:
+  | Idle
+  | Busy({n: int})
+
+fn main() -> int [io]:
+  let s = Sess.Idle
+  let t = s with {n: 3}
+  let z = match t:
+    Idle: 0
+    Busy: t.n
+  return z
+"""
+  t.quietly: t.badCheck "A175: `with` on a sum type is refused", "is a sum type"
+  t.bugFixed "A175: `with` on a sum type is refused"
+
   t.finish()
