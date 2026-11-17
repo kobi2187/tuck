@@ -5414,4 +5414,57 @@ fn main() -> int:
   t.quietly: t.badCheck "A116: an int is not an i64 argument without a conversion", "\\^i64|i64"
   t.bugOpen "A116: an int is not an i64 argument without a conversion"
 
+  # A117 (found building alloc.lru): inside a generic fn, a value of type `V` going
+  # into a `V?` field of a generic construction was not wrapped as present, so
+  # no backend could print it (Nim: "got 'int' for ... expected TuckResult[int]").
+  # A named type parameter reads as "flexible" to the checker, which skipped the
+  # wrap; it is matched by name now.
+  t.src """
+type Box[V]:
+  tag: int
+  found: V?
+
+fn wrap[V]({x: V}) -> Box[V]:
+  return {tag: 1, found: x} Box
+
+fn main() -> int:
+  let b = {x: 5} wrap
+  if not b.found.ok:
+    return 1
+  if b.found.value != 5:
+    return 2
+  return 0
+"""
+  t.quietly: t.runs "A117: a V into a V? field of a generic construction is present", 0
+  t.bugFixed "A117: a V into a V? field of a generic construction is present"
+  t.quietly: t.runsOdin "A117: a V into a V? field of a generic construction is present on Odin", 0
+  t.bugFixed "A117: a V into a V? field of a generic construction is present on Odin"
+
+  # A118 (found building alloc.lru): on D, a generic fn whose parameter is another
+  # module's generic type (`fn f[V]({c: Cell[V]})`) could not be called: dmd and ldc
+  # fail to deduce V through a renamed-import qualifier (`mod.Cell!(V)`), reporting
+  # "undefined identifier V". Another module's template is applied through a
+  # file-level alias now, which deduces.
+  t.src """
+import cell
+
+type Wrap[V]:
+  c: Cell[V]
+  n: int
+
+fn wrapIt[V]({c: Cell[V], n: int}) -> Wrap[V]:
+  return {c: c, n: n} Wrap
+
+fn main() -> int:
+  let c: Cell[int] = {v: 4} Cell
+  let w = {c: c, n: 2} wrapIt
+  return w.n + w.c.v
+"""
+  t.addFile "cell.tuck", """
+type Cell[T]:
+  v: T
+"""
+  t.quietly: t.emitsD "", "alias \\S+ = \\S+Cell;"
+  t.bugFixed "A118: another module's generic type is deducible on D"
+
   t.finish()

@@ -1,0 +1,174 @@
+# alloc.trie — strings to values, with lookup by prefix.
+#
+# Autocomplete, routing tables, dictionaries of words: "everything that starts
+# with `ab`" in the time of the prefix, not of the table. Nodes live in one Seq and
+# refer to each other by index; a node's children are a short list of (label, child)
+# edges, scanned linearly (right for text, where a node has a handful of children).
+# Keys are walked byte by byte, so any UTF-8 text works. A node that ends a key
+# remembers the key itself (a `str` cannot be rebuilt from bytes), and
+# `keysWith` answers them sorted.
+#
+# Value semantics like every container: `t = {t: t, key: "abc", value: 1} put`.
+# An empty trie is a construction under a stated type:
+#   var words: Trie[int] = {nodes: [], size: 0} Trie
+import seq
+import str
+import text
+import iter
+
+type Edge:
+  label: int
+  child: int
+
+type Node[V]:
+  edges: Seq[Edge]
+  key: str
+  value: V?
+
+type Trie[V]:
+  nodes: Seq[Node[V]]
+  size: int
+
+fn count[V]({t: Trie[V]}) -> int:
+  return t.size
+
+fn byteOf({k: str, index: int}) -> int:
+  let b = {t: k, index: index} byteAt
+  return {value: b} int
+
+# The child of `node` along `label`, or -1.
+fn step[V]({t: Trie[V], node: int, label: int}) -> int:
+  let es = t.nodes[node].edges
+  for i in 0 .. es.len - 1:
+    if es[i].label == label:
+      return es[i].child
+  return 0 - 1
+
+# The node a path ends at, or -1 when the path is not in the trie.
+fn walk[V]({t: Trie[V], key: str}) -> int:
+  if t.nodes.len == 0:
+    return 0 - 1
+  var node = 0
+  for i in 0 .. {t: key} byteCount - 1:
+    let b = {k: key, index: i} byteOf
+    node = {t: t, node: node, label: b} step
+    if node < 0:
+      return 0 - 1
+  return node
+
+fn get[V]({t: Trie[V], key: str}) -> V?:
+  let at = {t: t, key: key} walk
+  if at < 0:
+    return
+  return t.nodes[at].value
+
+fn has[V]({t: Trie[V], key: str}) -> bool:
+  let found = {t: t, key: key} get
+  return found.ok
+
+fn put[V]({t: Trie[V], key: str, value: V}) -> Trie[V]:
+  var nodes = t.nodes
+  if nodes.len == 0:
+    let root: Node[V] = {edges: [], key: "", value: none} Node
+    nodes = {items: nodes, value: root} push
+  var node = 0
+  for i in 0 .. {t: key} byteCount - 1:
+    let b = {k: key, index: i} byteOf
+    var child = 0 - 1
+    let es = nodes[node].edges
+    for k in 0 .. es.len - 1:
+      if es[k].label == b:
+        child = es[k].child
+    if child < 0:
+      child = nodes.len
+      let fresh: Node[V] = {edges: [], key: "", value: none} Node
+      nodes = {items: nodes, value: fresh} push
+      let parent = nodes[node]
+      var edges = parent.edges
+      let edge = {label: b, child: child} Edge
+      edges = {items: edges, value: edge} push
+      let updated: Node[V] = {edges: edges, key: parent.key, value: parent.value} Node
+      {items: nodes, index: node, value: updated} setAt
+    node = child
+  let target = nodes[node]
+  var size = t.size
+  if not target.value.ok:
+    size = size + 1
+  let present: V? = value
+  let done: Node[V] = {edges: target.edges, key: key, value: present} Node
+  {items: nodes, index: node, value: done} setAt
+  return {nodes: nodes, size: size} Trie
+
+# Every key from `node` down, in no particular order.
+fn collect[V]({t: Trie[V], node: int}) -> Seq[str]:
+  var out: Seq[str] = []
+  let n = t.nodes[node]
+  if n.value.ok:
+    out = {items: out, value: n.key} push
+  for i in 0 .. n.edges.len - 1:
+    let below = {t: t, node: n.edges[i].child} collect
+    for k in 0 .. below.len - 1:
+      out = {items: out, value: below[k]} push
+  return out
+
+# The keys that start with `prefix` ("" gives them all), sorted.
+fn keysWith[V]({t: Trie[V], prefix: str}) -> Seq[str]:
+  let at = {t: t, key: prefix} walk
+  if at < 0:
+    let nothing: Seq[str] = []
+    return nothing
+  let found = {t: t, node: at} collect
+  return {items: found} sort
+
+# --- self-check --------------------------------------------------------------
+
+fn main() -> int:
+  var t: Trie[int] = {nodes: [], size: 0} Trie
+  t = {t: t, key: "car", value: 1} put
+  t = {t: t, key: "card", value: 2} put
+  t = {t: t, key: "care", value: 3} put
+  t = {t: t, key: "cat", value: 4} put
+  t = {t: t, key: "dog", value: 5} put
+  if {t: t} count != 5:
+    return 1
+  let c = {t: t, key: "card"} get
+  if not c.ok:
+    return 2
+  if c.value != 2:
+    return 2
+  if {t: t, key: "ca"} has:
+    return 3
+  if not ({t: t, key: "dog"} has):
+    return 4
+  let missing = {t: t, key: "cow"} get
+  if missing.ok:
+    return 5
+  let ca = {t: t, prefix: "car"} keysWith
+  if ca.len != 3 or ca[0] != "car" or ca[1] != "card" or ca[2] != "care":
+    return 6
+  let all = {t: t, prefix: ""} keysWith
+  if all.len != 5 or all[0] != "car" or all[4] != "dog":
+    return 7
+  let nothing = {t: t, prefix: "x"} keysWith
+  if nothing.len != 0:
+    return 8
+  # replacing a key keeps the count
+  t = {t: t, key: "car", value: 10} put
+  if {t: t} count != 5:
+    return 9
+  let again = {t: t, key: "car"} get
+  if not again.ok:
+    return 10
+  if again.value != 10:
+    return 10
+  # UTF-8 and the empty key
+  t = {t: t, key: "naïve", value: 7} put
+  t = {t: t, key: "", value: 0} put
+  if {t: t} count != 7:
+    return 11
+  let u = {t: t, key: "naïve"} get
+  if not u.ok:
+    return 12
+  if u.value != 7:
+    return 12
+  return 0

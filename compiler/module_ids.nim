@@ -65,9 +65,13 @@ type ModuleUse* = ref object
   ## lands in the one import list: a file imports exactly the modules it
   ## qualified a name with.
   ids*: HashSet[ModuleId]
+  templateAliases*: Table[string, string]
+    ## D only: `alias -> mod.Template` for each generic type of another module
+    ## the file applied. dmd and ldc cannot deduce a template parameter through
+    ## a renamed-import qualifier (`cm.Cell!(V)`), but can through an alias.
 
 proc newModuleUse*(): ModuleUse =
-  ModuleUse(ids: initHashSet[ModuleId]())
+  ModuleUse(ids: initHashSet[ModuleId](), templateAliases: initTable[string, string]())
 
 proc byName*(u: ModuleUse): seq[ModuleId] =
   ## The modules used, in name order, so an import list does not depend on

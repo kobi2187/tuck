@@ -47,6 +47,18 @@ tuckˑmodˑshapes_43_literal_payload.TRec_path!(string) exePath() {
     return rt.exePath!(tuckˑmodˑshapes_43_literal_payload.TRec_path!(string))();
 }
 
+tuckˑmodˑshapes_43_literal_payload.TRec_cores!(long) cpuCount() {
+    return rt.cpuCount!(tuckˑmodˑshapes_43_literal_payload.TRec_cores!(long))();
+}
+
+tuckˑmodˑshapes_43_literal_payload.TRec_name!(string) hostName() {
+    return rt.hostName!(tuckˑmodˑshapes_43_literal_payload.TRec_name!(string))();
+}
+
+tuckˑmodˑshapes_43_literal_payload.TRec_name!(string) osName() {
+    return rt.osName!(tuckˑmodˑshapes_43_literal_payload.TRec_name!(string))();
+}
+
 tuckˑmodˑshapes_43_literal_payload.TRec_pid_input_output_errors!(long, long, long, long) spawnProcess(string argv) {
     return rt.spawnProcess!(tuckˑmodˑshapes_43_literal_payload.TRec_pid_input_output_errors!(long, long, long, long))(argv);
 }

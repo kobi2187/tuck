@@ -25,6 +25,14 @@ struct TRec_path(T_path) {
     T_path path;
 }
 
+struct TRec_cores(T_cores) {
+    T_cores cores;
+}
+
+struct TRec_name(T_name) {
+    T_name name;
+}
+
 struct TRec_pid_input_output_errors(T_pid, T_input, T_output, T_errors) {
     T_pid pid;
     T_input input;
@@ -46,6 +54,10 @@ struct TRec_number(T_number) {
 
 struct TRec_epochMs(T_epochMs) {
     T_epochMs epochMs;
+}
+
+struct TRec_ns(T_ns) {
+    T_ns ns;
 }
 
 struct TRec_ok(T_ok) {

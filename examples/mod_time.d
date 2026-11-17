@@ -25,6 +25,10 @@ tuckˑmodˑshapes_32_duration_units.TRec_epochMs!(ulong) nowMs() {
     return rt.nowMs!(tuckˑmodˑshapes_32_duration_units.TRec_epochMs!(ulong))();
 }
 
+tuckˑmodˑshapes_32_duration_units.TRec_ns!(ulong) monoNs() {
+    return rt.monoNs!(tuckˑmodˑshapes_32_duration_units.TRec_ns!(ulong))();
+}
+
 void sleepMs(uint ms) {
     rt.sleepMs(ms);
 }

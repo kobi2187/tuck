@@ -4,6 +4,10 @@ struct TRec_epochMs(T_epochMs) {
     T_epochMs epochMs;
 }
 
+struct TRec_ns(T_ns) {
+    T_ns ns;
+}
+
 struct TRec_hasNew_episodes_metadata(T_hasNew, T_episodes, T_metadata) {
     T_hasNew hasNew;
     T_episodes episodes;
