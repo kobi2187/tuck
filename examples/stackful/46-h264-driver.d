@@ -80,15 +80,15 @@ void validate_tuckˑtypeˑFrame(tuckˑtypeˑFrame self)
     version (tuckNoInvariants) {} else
     {
         if (!((self.width > 0L)))
-            rt.tuckInvariantFailed("(self.width > 0L)", "tuckˑtypeˑFrame");
+            rt.tuckInvariantFailed("width > 0", "Frame");
         if (!((self.height > 0L)))
-            rt.tuckInvariantFailed("(self.height > 0L)", "tuckˑtypeˑFrame");
+            rt.tuckInvariantFailed("height > 0", "Frame");
         if (!((self.width <= 1920L)))
-            rt.tuckInvariantFailed("(self.width <= 1920L)", "tuckˑtypeˑFrame");
+            rt.tuckInvariantFailed("width <= 1920", "Frame");
         if (!((self.height <= 1080L)))
-            rt.tuckInvariantFailed("(self.height <= 1080L)", "tuckˑtypeˑFrame");
+            rt.tuckInvariantFailed("height <= 1080", "Frame");
         if (!((self.bytes <= 4096L)))
-            rt.tuckInvariantFailed("(self.bytes <= 4096L)", "tuckˑtypeˑFrame");
+            rt.tuckInvariantFailed("bytes <= 4096", "Frame");
     }
 }
 

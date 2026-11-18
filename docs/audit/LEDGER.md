@@ -83,6 +83,13 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | T14 `with` on a sum type is refused (spec: it replaces fields of a declared record) | A175 | |
 | Y14 an imported extern's params are recorded, so extra payload fields are ignored (spec §2.5) instead of passed | A174 | the in-place `push` recogniser reads the exploded form too |
 | Y2/Y3 division by zero, minimum `/i` -1 and out of bounds stop with a message and exit 1 on all three backends, as overflow and invariant traps already did (S3.1); `%` by -1 is 0; D flushes stdout before it stops | A176 | integer `/i` and `%` go through `tuckDivI`/`tuckModI`; Odin bounds checks no longer depend on `assert` |
+| Y8 a `+ - *` chain STORED into a `[saturating]` type (`let`/`var` init, assignment, `+=`, field set, construction) is computed on a saturating 64-bit intermediate and clamped once, on every backend (spec 4.1); D builds it | A177 | `lowering_saturating` marks the stores (`Resolution.satStores`); a 64-bit base keeps the spec's stated ceiling |
+| Overflow and division traps name the TUCK type (`i8`, not `int8`/`byte`): the emitter passes it, since D cannot tell `int` from `i64` | A177 | |
+| Y15 `usize` is `size_t` on D; Y16 `0 .. top` with a narrow `top` names the type on both ends on Nim | A177 | |
+| Y4 the minimum literal of a signed type (`-128` on `i8`, `-9223372036854775808`) is the type's minimum on Nim and D; a subnormal float literal is its exact hex form on D | A177 | |
+| Y7 a float literal the checker typed `f32` is `'f32` on Nim; D float arithmetic on a literal no longer folds in 80-bit `real` (`0.1 + 0.2`) | A177 | |
+| Y5 a const that divides by zero, or whose narrow-integer `+ - *` overflows, is a Const Error (it built on Odin only, stopping at start) | A177 | `int`/`i64` const overflow is Y1, untouched |
+| An invariant violation reports the predicate as written and the type's Tuck name, one text on all three (it was each host's emitted code) | invariants suite | |
 
 **Still open in class B.** M14's refusal for a private or un-imported callee is a restriction, not the end
 state: the clone should be checked in the library's scope.
@@ -95,7 +102,11 @@ bind a `T?`, so that `len` takes a `Seq[int]?` unguarded?), Y18 (`int` and `i64`
 2026-08-25 ruling says they never need a cast, open bug A116 says the checker should refuse
 the mismatch; today Odin returns 12 where Nim and D return 0 on types/mix1), T9 (spec
 §4.4b rules out a loop fixed point for variant sets, so a transition legal on iteration 1 and
-not on 2 passes), and two TK-TY16 holes the checker cannot follow: a partial record put in a
+not on 2 passes), Y6 (what an out-of-range or NaN float `~int` gives: Odin 0, Nim and D the
+minimum; and a constant one Nim and Odin refuse to build), Y8's other half (a `[saturating]`
+chain that is compared, passed or returned rather than stored still wraps; spec 4.1 names only
+stores), the precedence of `-128 Temp` (it is `-(128 Temp)`, so -127 on a saturating `i8`),
+and two TK-TY16 holes the checker cannot follow: a partial record put in a
 sum payload (un/c11) and a slab `new` that omits a field (sl2) — refuse the store, or track?
 
 ---

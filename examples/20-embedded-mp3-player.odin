@@ -135,7 +135,7 @@ tuckˑtypeˑVolume :: struct {
 validate_tuckˑtypeˑVolume :: proc(self: tuckˑtypeˑVolume) {
 	when !#config(tuckNoInvariants, false) {
 		if !((self.level <= u8(100))) {
-			rt.tuckInvariantFailed("(self.level <= u8(100))", "tuckˑtypeˑVolume")
+			rt.tuckInvariantFailed("level <= 100", "Volume")
 		}
 	}
 }

@@ -13,7 +13,7 @@ extern (C) int callBack(tuckˑfnsigˑBinOp cb, int a, int b);
 
 
 extern (C) int tuckˑfnˑaddTwo(int a, int b) {
-    return rt.tuckArith!(int, rt.OvOp.Add, rt.OvPolicy.Trap)(a, b);
+    return rt.tuckArith!(int, rt.OvOp.Add, rt.OvPolicy.Trap)(a, b, "i32");
 }
 
 void tuckˑfnˑmain() {

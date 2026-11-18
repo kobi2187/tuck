@@ -115,6 +115,12 @@ type
       ## argument — keyed by the value, holding the `?T` it goes into.
       ## lowering_optional wraps each one; assignments and returns it wraps
       ## on its own.
+    satStores*: Table[NodeId, string]
+      ## A `+ - *` chain whose value is STORED into a `[saturating]` type
+      ## (spec 4.1: construction, `let`/`var` init, assignment, field set),
+      ## keyed by the chain's outermost node, holding the type's base integer
+      ## (`u16`). lowering_saturating marks them; each emitter computes the
+      ## chain on a saturating 64-bit intermediate and clamps it once.
     actorMemberCalls*: Table[NodeId, (string, string)]
                     ## A call to an actor's member `fn`, by the call's id, to
                     ## (the actor, the member), both as written (A24). The
@@ -313,24 +319,29 @@ proc grafted*(e: Expr): Expr =
     for ch in n.children: stack.add ch
   e
 
+proc carry[V](t: var Table[NodeId, V], src, dst: NodeId) {.inline.} =
+  ## `dst` gets what `src` has in `t`, when it has anything.
+  if src in t: t[dst] = t[src]
+
 proc copyMeaning(r: Resolution, src, dst: NodeId) =
   ## Carry what a node MEANS to its copy: its type, what it resolved to, its
   ## call's argument mapping. Not `lastUses` — whether a read
   ## is the last one depends on the body it sits in, and a copy sits in a
   ## different one; left unstamped it is merely not moved, which is safe.
-  if src in r.calls: r.calls[dst] = r.calls[src]
-  if src in r.types: r.types[dst] = r.types[src]
-  if src in r.shortcuts: r.shortcuts[dst] = r.shortcuts[src]
+  r.calls.carry(src, dst)
+  r.types.carry(src, dst)
+  r.shortcuts.carry(src, dst)
   if src in r.asyncCalls: r.asyncCalls.incl dst
-  if src in r.slotCalls: r.slotCalls[dst] = r.slotCalls[src]
-  if src in r.declOf: r.declOf[dst] = r.declOf[src]
-  if src in r.argFields: r.argFields[dst] = r.argFields[src]
-  if src in r.callParams: r.callParams[dst] = r.callParams[src]
-  if src in r.optWraps: r.optWraps[dst] = r.optWraps[src]
-  if src in r.slabDerefs: r.slabDerefs[dst] = r.slabDerefs[src]
-  if src in r.callTypeArgs: r.callTypeArgs[dst] = r.callTypeArgs[src]
-  if src in r.wraps: r.wraps[dst] = r.wraps[src]
-  if src in r.ifaceCalls: r.ifaceCalls[dst] = r.ifaceCalls[src]
+  r.slotCalls.carry(src, dst)
+  r.declOf.carry(src, dst)
+  r.argFields.carry(src, dst)
+  r.callParams.carry(src, dst)
+  r.optWraps.carry(src, dst)
+  r.satStores.carry(src, dst)
+  r.slabDerefs.carry(src, dst)
+  r.callTypeArgs.carry(src, dst)
+  r.wraps.carry(src, dst)
+  r.ifaceCalls.carry(src, dst)
 
 proc renumber(r: Resolution, orig, copy: Expr) =
   ## Walk an original and its deepCopy in step, giving each copied node a
@@ -458,6 +469,7 @@ proc newResolution*(): Resolution =
              argFields: initTable[NodeId, seq[string]](),
              callParams: initTable[NodeId, seq[string]](),
              optWraps: initTable[NodeId, Type](),
+             satStores: initTable[NodeId, string](),
              slabDerefs: initTable[NodeId, Decl](),
              callTypeArgs: initTable[NodeId, seq[Type]](),
              wraps: initTable[NodeId, tuple[objName, iface: string]](),
@@ -723,6 +735,17 @@ proc markOptWrap*(r: Resolution, e: Expr, place: Type) =
   if e == nil: return
   ensureId(e)
   r.optWraps[e.id] = place
+
+proc markSatStore*(r: Resolution, e: Expr, base: string) =
+  ## `e`, a `+ - *` chain, is stored into a `[saturating]` type over `base`.
+  assert e != nil and e.kind == exkBinary, "a saturating store marks a chain"
+  ensureId(e)
+  r.satStores[e.id] = base
+
+proc satStoreBase*(r: Resolution, e: Expr): string =
+  ## The base integer `e` is clamped to as a saturating store, or "".
+  if e == nil or not e.id.isSet: return ""
+  r.satStores.getOrDefault(e.id, "")
 
 proc optWrapOf*(r: Resolution, e: Expr): Type =
   ## The `?T` place `e` was accepted into as a plain `T`, or nil.

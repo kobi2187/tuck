@@ -7880,4 +7880,113 @@ fn main() -> int:
   t.quietly: t.runsOdin "A176: ord of an empty str exits 1 on Odin", 1
   t.bugFixed "A176: ord of an empty str exits 1 on Odin"
 
+  # A177 (class G, Y4-Y8, Y15, Y16): one program, three answers.
+  # [saturating] clamped only at construction: `let r = a + b` wrapped on Nim
+  # and Odin and D did not build (spec 4.1 says a store clamps, on a wider
+  # intermediate). A trap named each host's type (`int8`/`i8`/`byte`).
+  # `usize` did not exist on D; `0 .. top` with `top: u8` did not build on
+  # Nim; the minimum literal (`-128` on an i8, `-9223372036854775808`) failed
+  # on D or Nim; `x * 10.0` with `x: f32` was computed in f64 on Nim; D folded
+  # `0.1 + 0.2` in 80-bit precision and refused a subnormal literal. A const
+  # that divides by zero or overflows a narrow integer built on Odin only.
+  t.src """
+type Rpm = u16 [saturating]
+type Temp = i8 [saturating]
+type Engine:
+  rpm: Rpm
+
+fn main() -> int:
+  let a = 60000 Rpm
+  let b = a + a
+  if b != 65535 Rpm:
+    return 1
+  let c = a - a - a
+  if c != 0 Rpm:
+    return 2
+  var e = {rpm: a + a} Engine
+  if e.rpm != 65535 Rpm:
+    return 3
+  e.rpm = a - a - a
+  if e.rpm != 0 Rpm:
+    return 4
+  var acc = 65000 Rpm
+  acc += 1000 Rpm
+  if acc != 65535 Rpm:
+    return 5
+  let x = a + a - a
+  if x != 60000 Rpm:
+    return 6
+  let t = 100 Temp
+  let u = 0 Temp - t - t
+  if u != (0 - 128) Temp:
+    return 7
+  return 0
+"""
+  t.quietly: t.hostRuns "A177: a [saturating] store clamps on every backend", 0
+  t.bugFixed "A177: a [saturating] store clamps on every backend"
+  t.src """
+fn main() -> int:
+  let a: i8 = 100
+  let b = a + a
+  return 0
+"""
+  t.quietly: t.hostRuns "A177: a trap names the Tuck type", 1, "Arithmetic overflow on i8: \\+"
+  t.bugFixed "A177: a trap names the Tuck type"
+  t.src """
+fn main() -> int:
+  let a: usize = 3
+  let top: u8 = 255
+  var n = 0
+  for i in 0 .. top:
+    n = n + 1
+  let lo: i8 = -128
+  let wide: int = -9223372036854775808
+  if n != 256 or lo != -128 or wide >= 0:
+    return 1
+  return 0
+"""
+  t.quietly: t.hostRuns "A177: usize, a u8 range and minimum literals", 0
+  t.bugFixed "A177: usize, a u8 range and minimum literals"
+  t.src """
+import str
+import console
+fn main() -> int [io]:
+  let e: f32 = 16777216.0
+  let f = e + 1.0
+  let s = 0.1 + 0.2
+  let sub = 1.0e-310 * 1.0
+  {text: s.toStr} printLine
+  {text: sub.toStr} printLine
+  if f != e:
+    return 1
+  return 0
+"""
+  t.quietly: t.hostRuns "A177: float literals keep their width and IEEE f64", 0, "0.30000000000000004"
+  t.bugFixed "A177: float literals keep their width and IEEE f64"
+  t.quietly: t.hostRuns "A177: a subnormal literal", 0, "1e-310"
+  t.bugFixed "A177: a subnormal literal"
+  t.src """
+const Z = 5 /i 0
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A177: a const dividing by zero is refused", "divides by zero"
+  t.bugFixed "A177: a const dividing by zero is refused"
+  t.src """
+const A: u8 = 250
+const B: u8 = A + 10
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A177: a narrow const that overflows is refused", "overflows u8"
+  t.bugFixed "A177: a narrow const that overflows is refused"
+  t.src """
+const A: u8 = 250
+const B: u8 = A + 5
+const Q = 7 /i 2
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "A177: ...and a const that fits, or divides by non-zero, is not"
+
   t.finish()

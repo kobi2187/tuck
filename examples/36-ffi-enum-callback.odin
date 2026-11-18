@@ -16,7 +16,7 @@ foreign point {
 }
 
 tuckˑfnˑaddTwo :: proc "c" (a: i32, b: i32) -> i32 {
-  return rt.tuckArith(a, b, .Add, .Trap)
+  return rt.tuckArith(a, b, .Add, .Trap, "i32")
 }
 
 tuckˑfnˑmain :: proc () {

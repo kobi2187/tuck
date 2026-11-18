@@ -77,6 +77,14 @@ proc isMangledName*(name: string): bool =
   ## each backend lowers its own deep copy and re-runs it.
   name.startsWith(MangledPrefix)
 
+proc writtenSpelling*(text: string): string =
+  ## `text` with every mangled name in it spelled as the user wrote it:
+  ## `tuckˑtypeˑTemp` is `Temp`, `tuckˑtypeˑcliˑEntry` is `cli::Entry`. For a
+  ## message a program prints, which must read the same on every backend.
+  result = text
+  for k in NameKind: result = result.replace(MangledPrefix & $k & KindSeparator, "")
+  result = result.replace(KindSeparator, "::")
+
 proc joinedName*(owner, part: string): string =
   ## A name the compiler derives from two others — an object's member fn is
   ## `joinedName(<the object>, <the member>)`. Joined by the separator, which

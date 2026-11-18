@@ -25,6 +25,7 @@ import resolution
 import ast, lowering, ast_query, ast_ops, strutils, sets, tables, options, algorithm
 import ./ast_query
 import twin_shape
+import parser_stringify   # an invariant message prints the predicate as written
 import call_args
 export call_args
 import name_prefix
@@ -85,11 +86,18 @@ proc sumPayloadField*(variantName: string): string =
   ## union member directly.
   prefixed(variantName.toLowerAscii(), nkVariant)
 
-proc invariantCondLit*(cond: string): string =
+proc invariantCondLit*(cond: Expr): string =
   ## A violated invariant's condition, as the string literal every backend's
-  ## `tuckInvariantFailed` reports it by: `"` shown as `'` (the message
-  ## quotes nothing), anything else escaped for the host.
-  "\"" & escapeStringLit(cond.replace("\"", "'")) & "\""
+  ## `tuckInvariantFailed` reports it by: the predicate as WRITTEN, so the
+  ## message is one text on every backend (it was each host's emitted code:
+  ## `-f32(273.15)` on Odin, `-273.15'f32` on Nim). `"` shown as `'` (the
+  ## message quotes nothing), anything else escaped for the host.
+  let text = writtenSpelling(cond.toString)
+  "\"" & escapeStringLit(text.replace("\"", "'")) & "\""
+
+proc invariantTypeLit*(name: string): string =
+  ## The type a violated invariant belongs to, by its Tuck name.
+  "\"" & writtenSpelling(name) & "\""
 
 proc poolOpProc*(op: PoolOpKind): string =
   ## The runtime proc a pool operation calls — one name in all three
@@ -863,6 +871,27 @@ proc checkedDivision*(e: Expr, t: Type): bool =
   ## differently.
   e.binOp in {boDivInt, boMod} and t != nil and t.kind == tkNamed and
     t.name in IntegerNames
+
+const SignedMinMagnitude = {
+  "i8": "128", "i16": "32768", "i32": "2147483648",
+  "i64": "9223372036854775808", "int": "9223372036854775808",
+}.toTable
+
+proc isMinimumLiteral*(e: Expr, t: Type): bool =
+  ## Is `e` a negated literal that is exactly the minimum of `t` (`-128` on an
+  ## `i8`)? Its magnitude does not fit the type it negates in, so Nim refused
+  ## `-9223372036854775808` and D `-cast(byte)128` (audit Y4); the emitters
+  ## print the type's own minimum instead.
+  e != nil and e.kind == exkUnary and e.unaryOp == uoNeg and
+    e.operand.kind == exkLit and e.operand.litKind == lkInt and
+    t != nil and t.kind == tkNamed and
+    SignedMinMagnitude.getOrDefault(t.name, "") == e.operand.litValue
+
+proc quoteTypeName*(name: string): string =
+  ## A Tuck type's name as a string literal for the runtime's traps, which
+  ## report the TUCK type: each host names it its own way (`int8`, `i8`,
+  ## `byte`), and D cannot tell `int` from `i64` (both `long`).
+  "\"" & name & "\""
 
 proc divHelper*(op: BinOp): string =
   ## The runtime helper for a checked integer division.

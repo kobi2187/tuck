@@ -1203,6 +1203,14 @@ proc seqEquality(ctx: var OdinCodegenCtx, e: Expr): string =
              ctx.genOdinExpr(e.right) & ")"
   if e.binOp == boEq: call else: "(!" & call & ")"
 
+proc genSatWide(ctx: var OdinCodegenCtx, e: Expr): string =
+  ## A stored `[saturating]` chain on its 64-bit intermediate, which itself
+  ## saturates, so no step of it can wrap (lowering_saturating).
+  if e.kind == exkBinary and e.binOp in {boAdd, boSub, boMul}:
+    return "rt.tuckArith(" & ctx.genSatWide(e.left) & ", " &
+           ctx.genSatWide(e.right) & ", ." & ovOpName(e.binOp) & ", .Sat, \"i64\")"
+  "i64(" & ctx.genOdinExpr(e) & ")"
+
 proc genBinary(ctx: var OdinCodegenCtx, e: Expr): string =
   ## rt.tuckConcat — `concat` was the Beef runtime's name and never existed in
   ## the Odin one (tuckrt/tuck_rt.odin:87), so any string `+` emitted an
@@ -1222,17 +1230,24 @@ proc genBinary(ctx: var OdinCodegenCtx, e: Expr): string =
       return if e.binOp == boEq: call else: "(!" & call & ")"
   let seqEq = ctx.seqEquality(e)
   if seqEq != "": return seqEq
+  let satBase = ctx.res.satStoreBase(e)
+  if satBase != "":
+    # spec 4.1: a chain stored into a `[saturating]` type, clamped once.
+    return ctx.odinType(ctx.res.typeFor(e)) & "(rt.tuckSatI(" &
+           ctx.odinType(Type(kind: tkNamed, name: satBase)) & ", " &
+           ctx.genSatWide(e) & "))"
   if e.binOp in {boAdd, boSub, boMul}:
     let plan = overflowPlan(ctx.module, ctx.realModules, ctx.res.typeFor(e))
     if plan.active:
       return "rt.tuckArith(" & ctx.genOdinExpr(e.left) & ", " &
              ctx.genOdinExpr(e.right) & ", ." & ovOpName(e.binOp) & ", ." &
-             plan.policy & ")"
+             plan.policy & ", " & quoteTypeName(plan.base) & ")"
   let rt = ctx.res.typeFor(e)
   if checkedDivision(e, rt):
     let tn = ctx.odinType(rt)
     return "rt." & divHelper(e.binOp) & "(" & tn & "(" & ctx.genOdinExpr(e.left) &
-           "), " & tn & "(" & ctx.genOdinExpr(e.right) & "))"
+           "), " & tn & "(" & ctx.genOdinExpr(e.right) & "), " &
+           quoteTypeName(rt.name) & ")"
   "(" & ctx.genOdinExpr(e.left) & " " & odinBinOp(e.binOp) & " " &
     ctx.genOdinExpr(e.right) & ")"
 

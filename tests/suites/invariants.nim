@@ -282,7 +282,7 @@ fn main() -> int:
   return a.n
 """
   t.hostRuns "...and a violated invariant still aborts", 1,
-             "Invariant violated on tuckˑtypeˑLive"
+             "Invariant violated on Live: n > 0"
 
   # A return that is NOT a construction keeps its wrap: nothing proves where
   # that value came from, so it is still checked on the way out.
@@ -315,7 +315,7 @@ fn main() -> int:
   return 7
 """
   t.hostRuns "a violation reads the same on every backend", 1,
-             "Invariant violated on tuckˑtypeˑTemp: \\(self\\.celsius >= -273"
+             "Invariant violated on Temp: celsius >= -273"
   t.emitsOdin "Odin guards its checks behind the opt-out",
               r"when !#config\(tuckNoInvariants, false\)"
   t.omitsOdin "...and not with `assert`, which -disable-assert strips",

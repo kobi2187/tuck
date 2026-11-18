@@ -671,8 +671,8 @@ proc genRecordType*(ctx: var OdinCodegenCtx, d: Decl): string =
       let condStr = checkCtx.genOdinExpr(member.expr)
       invariantChecks.add(ind & "\t\tif !(" & condStr & ") {\n" & ind &
                           "\t\t\trt.tuckInvariantFailed(" &
-                          invariantCondLit(condStr) & ", \"" & d.name &
-                          "\")\n" & ind & "\t\t}")
+                          invariantCondLit(member.expr) & ", " &
+                          invariantTypeLit(d.name) & ")\n" & ind & "\t\t}")
   if invariantChecks.len > 0:
     # Odin has no overloading, so these are type-qualified rather than
     # relying on the parameter type to disambiguate.

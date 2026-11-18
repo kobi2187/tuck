@@ -116,7 +116,7 @@ void validate_tuckˑtypeˑVolume(tuckˑtypeˑVolume self)
     version (tuckNoInvariants) {} else
     {
         if (!((self.level <= cast(ubyte)100)))
-            rt.tuckInvariantFailed("(self.level <= cast(ubyte)100)", "tuckˑtypeˑVolume");
+            rt.tuckInvariantFailed("level <= 100", "Volume");
     }
 }
 

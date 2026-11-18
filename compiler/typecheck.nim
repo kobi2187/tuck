@@ -6976,18 +6976,35 @@ proc sigLine*(si: SigInfo): string =
 
 
 
+const TrappingIntNames = ["i8", "i16", "i32", "u8", "u16", "u32"]
+  ## The narrow integers whose `+ - *` trap by default (issue #16, step 3),
+  ## and whose values a compile-time evaluation holds exactly.
+
+proc failIfConstOverflows(m: Module, d: Decl, t: Type) =
+  ## A const of a narrow integer whose `+ - *` does not fit: the operation
+  ## traps, at compile time. Nim and D failed to build it (their evaluators
+  ## hit the trap) and Odin built a program that stopped at start (audit Y5).
+  ## `int`/`i64` overflow is the open ruling Y1 and is left alone.
+  if t == nil or t.kind != tkNamed or t.name notin TrappingIntNames: return
+  for n in nodes(d.constVal):
+    if n.kind != exkBinary or n.binOp notin {boAdd, boSub, boMul}: continue
+    let v = evalConstExpr(m, n)
+    if v.isSome and not fitsIn(t.name, v.get):
+      fail("Const Error: 'const " & d.name & "' overflows " & t.name &
+           ": an operation in it makes " & $v.get & ", and " & t.name &
+           " arithmetic traps", d.span)
+
 proc bindConsts*(tc: var TypeChecker, m: Module) =
   ## const declarations are bound BEFORE body checks so any fn can reference
   ## them; constCheck says what a const is allowed to be.
   for d in m.decls:
     if d != nil and d.kind == dkConst:
       constCheck(tc, m, d.name, d.constVal, d.span)
-      if d.constType != nil:
-        let want = tc.resolve(d.constType)
-        tc.check(d.constVal, want, "'" & d.name & "'")
-        tc.bindName(d.name, want, false)
-      else:
-        tc.bindName(d.name, tc.synthesize(d.constVal), false)
+      let t = if d.constType != nil: tc.resolve(d.constType)
+              else: tc.synthesize(d.constVal)
+      if d.constType != nil: tc.check(d.constVal, t, "'" & d.name & "'")
+      tc.bindName(d.name, t, false)
+      failIfConstOverflows(m, d, t)
 
 proc failIfBadQualifiedType(m: Module, t: Type) =
   ## `mod::Name` must name a type that module declares and this one imports.

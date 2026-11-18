@@ -343,7 +343,7 @@ fn main() -> int [io]:
            r"rt\.TuckResult!\(long\) tuckˑfnˑhalf\(long n\)"
   t.emitsD "T20: raise RETURNS an error value, carrying a compile-folded code",
            r"return rt\.terr!\(long\)\(0x[0-9A-F]{4} /\* odd \*/\)"
-  t.emitsD "T20: a value return wraps in tok", r"return rt\.tok\(rt\.tuckDivI!\(long\)\(n, 2L\)\);"
+  t.emitsD "T20: a value return wraps in tok", r"return rt\.tok\(rt\.tuckDivI!\(long\)\(n, 2L, ""int""\)\);"
   t.emitsD "T20: .ok is a status test", r"a\.status == rt\.TuckStatus\.Ok"
   t.omitsD "T20: no exceptions anywhere near the error path", r"\bthrow\b"
   t.runsD "T20: the ok branch reads .value, the err branch does not", 10, dmdExe

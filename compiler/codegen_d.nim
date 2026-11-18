@@ -62,6 +62,22 @@ proc genDQualified(ctx: DCodegenCtx, e: Expr): string =
   # mangler into one name
   modName & "_" & e.qualName
 
+proc dFloatLit(text: string): string =
+  ## A float literal as D accepts it. D refuses a DECIMAL literal whose value
+  ## is subnormal ("`5.0e-324` is not representable as a `double`") where Nim
+  ## and Odin take it (audit Y4), so a subnormal goes out as its exact hex
+  ## spelling: the integer multiple of 2^-1074 it is.
+  var v: float
+  try: v = parseFloat(text)
+  except ValueError: return text
+  if v == 0.0 or abs(v) >= 2.2250738585072014e-308: return text
+  const half = 2.0e0 * float(1'i64 shl 62) * float(1'i64 shl 62) *
+               float(1'i64 shl 62) * float(1'i64 shl 62) * float(1'i64 shl 62) *
+               float(1'i64 shl 62) * float(1'i64 shl 62) * float(1'i64 shl 62) *
+               float(1'i64 shl 40)     # 2^537, so half * half is 2^1074
+  let m = uint64(abs(v) * half * half)  # exact: scaling by a power of two
+  (if v < 0: "-" else: "") & "0x" & m.toHex.strip(trailing = false, chars = {'0'}) & "p-1074"
+
 proc genDLit(e: Expr): string =
   ## A literal in D syntax. Integers get `L` (Tuck's `int` is D's `long`) or
   ## `UL` past the signed range; strings are re-escaped for D; unit prints
@@ -89,7 +105,8 @@ proc genDLit(e: Expr): string =
          (e.litValue.len == 19 and e.litValue > "9223372036854775807"):
       e.litValue & "UL"
     else: e.litValue & "L"
-  of lkFloat, lkBool: e.litValue
+  of lkFloat: dFloatLit(e.litValue)
+  of lkBool: e.litValue
 
 proc genDLitTyped(ctx: var DCodegenCtx, e: Expr): string =
   ## A literal, carrying the narrow integer width the checker gave it. A bare
@@ -614,11 +631,42 @@ proc genDBracket(ctx: var DCodegenCtx, e: Expr): string =
            ctx.genDExpr(e.brTarget.brArgs[0]) & "] = " & ctx.genDExpr(e.brValue)
   if ctx.res.hasCall(e): ctx.genDExpr(ctx.res.call(e)) else: ""
 
+proc genDSatWide(ctx: var DCodegenCtx, e: Expr): string =
+  ## A stored `[saturating]` chain on its 64-bit intermediate, which itself
+  ## saturates, so no step of it can wrap (lowering_saturating).
+  if e.kind == exkBinary and e.binOp in {boAdd, boSub, boMul}:
+    return "rt.tuckArith!(long, rt.OvOp." & ovOpName(e.binOp) &
+           ", rt.OvPolicy.Sat)(" & ctx.genDSatWide(e.left) & ", " &
+           ctx.genDSatWide(e.right) & ", \"i64\")"
+  "cast(long)(" & ctx.genDExpr(e) & ")"
+
+proc isFloatArith(ctx: var DCodegenCtx, e: Expr): bool =
+  ## `+ - * /f` on floats.
+  let t = ctx.res.typeFor(e)
+  e.binOp in {boAdd, boSub, boMul, boDivFloat} and t != nil and
+    t.kind == tkNamed and t.name in ["f32", "f64", "float"]
+
+proc dFloatOperand(ctx: var DCodegenCtx, e: Expr): string =
+  ## An operand of float arithmetic; a literal goes through `rt.tuckFlt`, so
+  ## D does not fold the operation in `real` precision (see the runtime).
+  if e.kind == exkLit and e.litKind in {lkFloat, lkInt}:
+    return "rt.tuckFlt!(" & ctx.dType(ctx.res.typeFor(e)) & ")(" &
+           ctx.genDExpr(e) & ")"
+  ctx.genDExpr(e)
+
 proc genDBinary(ctx: var DCodegenCtx, e: Expr): string =
   ## A binary expression, parenthesised. `str + str` is D's `~`; a range
   ## outside a `for` header has no D value and is refused.
   if isStringConcat(e):
     return "rt.tuckCat(" & ctx.genDExpr(e.left) & ", " & ctx.genDExpr(e.right) & ")"
+  if ctx.isFloatArith(e):
+    return "(" & ctx.dFloatOperand(e.left) & " " & dBinOp(e.binOp) & " " &
+           ctx.dFloatOperand(e.right) & ")"
+  let satBase = ctx.res.satStoreBase(e)
+  if satBase != "":
+    # spec 4.1: a chain stored into a `[saturating]` type, clamped once.
+    return "rt.tuckSatI!(" & ctx.dType(Type(kind: tkNamed, name: satBase)) &
+           ")(" & ctx.genDSatWide(e) & ")"
   if e.binOp in {boRangeIncl, boRangeExcl}:
     return dUnsupported("a range outside a for loop")
   if e.binOp in {boAdd, boSub, boMul}:
@@ -629,17 +677,20 @@ proc genDBinary(ctx: var DCodegenCtx, e: Expr): string =
                                         else: plan.base)))
       return "rt.tuckArith!(" & tname & ", rt.OvOp." & ovOpName(e.binOp) &
              ", rt.OvPolicy." & plan.policy & ")(" & ctx.genDExpr(e.left) &
-             ", " & ctx.genDExpr(e.right) & ")"
+             ", " & ctx.genDExpr(e.right) & ", " & quoteTypeName(plan.base) & ")"
   let rt = ctx.res.typeFor(e)
   if checkedDivision(e, rt):
     return "rt." & divHelper(e.binOp) & "!(" & ctx.dType(rt) & ")(" &
-           ctx.genDExpr(e.left) & ", " & ctx.genDExpr(e.right) & ")"
+           ctx.genDExpr(e.left) & ", " & ctx.genDExpr(e.right) & ", " &
+           quoteTypeName(rt.name) & ")"
   "(" & ctx.genDExpr(e.left) & " " & dBinOp(e.binOp) & " " &
     ctx.genDExpr(e.right) & ")"
 
 proc genDUnary(ctx: var DCodegenCtx, e: Expr): string =
   ## A unary expression: `-` and `!`. A composition entry is a declaration
   ## member, sifted out before emission, so reaching here is a compiler bug.
+  let t = ctx.res.typeFor(e)
+  if isMinimumLiteral(e, t): return ctx.dType(t) & ".min"
   case e.unaryOp
   of uoNeg: "-" & ctx.genDExpr(e.operand)
   of uoNot: "!" & ctx.genDExpr(e.operand)

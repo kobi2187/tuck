@@ -11,7 +11,7 @@
 # program — no io, no calls that could. Small recursive walk, no coupling to
 # synthesis.
 import resolution
-import ast, tables, sets, strutils
+import ast, tables, sets, strutils, options
 import ast_query, lowering
 import typecheck_state
 import typecheck_util
@@ -60,6 +60,17 @@ proc constCheckCall*(tc: TypeChecker, m: Module, cname: string, e: Expr,
   if e.callee != nil and e.callee.kind == exkVar:
     constCheckCallee(tc, m, cname, e.callee.name, sp)
 
+proc failIfConstDividesByZero(m: Module, cname: string, e: Expr, sp: Span) =
+  ## `const Z = 5 /i 0` has no value under any overflow policy: it is a trap
+  ## at compile time. Nim and D failed to build it (their const evaluators
+  ## hit the runtime trap) while Odin built a program that stopped at start
+  ## (audit Y5), so it is refused here, on every backend.
+  if e.binOp notin {boDivInt, boMod}: return
+  let divisor = evalConstExpr(m, e.right)
+  if divisor.isSome and divisor.get == 0:
+    fail("Const Error: 'const " & cname & "' divides by zero (`" &
+         (if e.binOp == boMod: "%" else: "/i") & "` by 0 has no value)", sp)
+
 proc constCheck*(tc: TypeChecker, m: Module, cname: string, e: Expr, sp: Span) =
   ## Reject what a const cannot be. Nim-static semantics: arbitrary PURE
   ## computation, evaluated at compile time by the backend's const evaluator,
@@ -77,6 +88,7 @@ proc constCheck*(tc: TypeChecker, m: Module, cname: string, e: Expr, sp: Span) =
   of exkBinary:
     constCheck(tc, m, cname, e.left, sp)
     constCheck(tc, m, cname, e.right, sp)
+    failIfConstDividesByZero(m, cname, e, sp)
   of exkField: constCheckField(tc, m, cname, e, sp)
   of exkCall: constCheckCall(tc, m, cname, e, sp)
   of exkCombinator:

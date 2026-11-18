@@ -536,6 +536,15 @@ proc genLit(ctx: CodegenCtx, e: Expr): string =
     if t != nil and t.kind == tkNamed and t.name in NimLitSuffix:
       return e.litValue & NimLitSuffix[t.name]
     e.litValue
+  of lkFloat:
+    # A float literal Nim reads as `float` (64-bit) whatever it meets, so
+    # `x * 10.0` with `x: f32` was computed and kept in f64 on Nim alone
+    # (audit Y7). The width the checker settled on is spelled, as for ints.
+    let t = ctx.res.typeFor(e)
+    if t != nil and t.kind == tkNamed and t.name == "f32" and
+       e.litValue.allCharsInSet({'0'..'9', '.', 'e', 'E', '-', '+'}):
+      return e.litValue & "'f32"
+    e.litValue
   else: e.litValue
 
 proc genInputPayload(ctx: CodegenCtx): string =
@@ -778,27 +787,65 @@ proc genCheckedArith(ctx: var CodegenCtx, e: Expr, plan: OverflowPlan): string =
     l = base & "(" & l & ")"
     r = base & "(" & r & ")"
   let call = "tuckArith(" & l & ", " & r & ", " & op & ", ov" &
-             plan.policy & ")"
+             plan.policy & ", " & quoteTypeName(plan.base) & ")"
   if plan.named != "": genType(Type(kind: tkNamed, name: plan.named)) & "(" & call & ")"
   else: call
+
+proc genRange(ctx: var CodegenCtx, e: Expr): string =
+  ## `lo .. hi` with both ends in the range's own integer type. Nim's `..`
+  ## takes one type for both ends, and `0 .. top` with `top: u8` was
+  ## ambiguous between its uint32 and uint64 overloads (audit Y16); Odin and
+  ## D read the literal as the other end's type, so Nim spells it out.
+  var t = ctx.res.typeFor(e.left)
+  if e.left.kind == exkLit or t == nil: t = ctx.res.typeFor(e.right)
+  var lo = ctx.genExpr(e.left)
+  var hi = ctx.genExpr(e.right)
+  if t != nil and t.kind == tkNamed and t.name in IntegerNames and t.name != "int":
+    let tn = genType(t)
+    lo = tn & "(" & lo & ")"
+    hi = tn & "(" & hi & ")"
+  "(" & lo & " " & nimBinOp(e.binOp) & " " & hi & ")"
+
+proc genSatWide(ctx: var CodegenCtx, e: Expr): string =
+  ## A stored `[saturating]` chain on its 64-bit intermediate, which itself
+  ## saturates, so no step of it can wrap (lowering_saturating).
+  if e.kind == exkBinary and e.binOp in {boAdd, boSub, boMul}:
+    let op = case e.binOp
+             of boAdd: "ovAdd"
+             of boSub: "ovSub"
+             else: "ovMul"
+    return "tuckArith(" & ctx.genSatWide(e.left) & ", " &
+           ctx.genSatWide(e.right) & ", " & op & ", ovSat, \"i64\")"
+  "int64(" & ctx.genExpr(e) & ")"
+
+proc genSatStore(ctx: var CodegenCtx, e: Expr, base: string): string =
+  ## spec 4.1: a chain stored into a `[saturating]` type, clamped once.
+  let named = genType(ctx.res.typeFor(e))
+  named & "(tuckSatI[" & genType(Type(kind: tkNamed, name: base)) & "](" &
+    ctx.genSatWide(e) & "))"
 
 proc genBinary(ctx: var CodegenCtx, e: Expr): string =
   ## A binary expression, parenthesised; `str + str` goes through `tuckConcat`.
   if isStringConcat(e):
     return "tuckConcat(" & ctx.genExpr(e.left) & ", " & ctx.genExpr(e.right) & ")"
+  let satBase = ctx.res.satStoreBase(e)
+  if satBase != "": return ctx.genSatStore(e, satBase)
   if e.binOp in {boAdd, boSub, boMul}:
     let plan = overflowPlan(ctx.module, ctx.realModules, ctx.res.typeFor(e))
     if plan.active: return ctx.genCheckedArith(e, plan)
+  if e.binOp in {boRangeIncl, boRangeExcl}: return ctx.genRange(e)
   let rt = ctx.res.typeFor(e)
   if checkedDivision(e, rt):
     return divHelper(e.binOp) & "[" & genType(rt) & "](" & ctx.genExpr(e.left) &
-           ", " & ctx.genExpr(e.right) & ")"
+           ", " & ctx.genExpr(e.right) & ", " & quoteTypeName(rt.name) & ")"
   "(" & ctx.genExpr(e.left) & " " & nimBinOp(e.binOp) & " " &
     ctx.genExpr(e.right) & ")"
 
 proc genUnary(ctx: var CodegenCtx, e: Expr): string =
   ## A unary expression: `-` and `not`. A composition entry is a declaration
   ## member, sifted out before emission, so reaching here is a compiler bug.
+  let t = ctx.res.typeFor(e)
+  if isMinimumLiteral(e, t): return "low(" & genType(t) & ")"
   let opStr = case e.unaryOp
               of uoNeg: "-"
               of uoNot: "not "

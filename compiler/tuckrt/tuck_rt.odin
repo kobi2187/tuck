@@ -807,7 +807,7 @@ OvPolicy :: enum { Trap, Wrap, Sat }
 // Contextless, because arithmetic is emitted inside callbacks with a foreign
 // calling convention (a `"c"` proc has no Odin `context`); the trap makes the
 // context it needs itself.
-tuckOverflowTrap :: proc "contextless" (ty: typeid, op: string) {
+tuckOverflowTrap :: proc "contextless" (ty: string, op: string) {
 	context = runtime.default_context()
 	fmt.eprintln("Arithmetic overflow on ", ty, ": ", op, sep = "")
 	os.exit(1)
@@ -815,7 +815,7 @@ tuckOverflowTrap :: proc "contextless" (ty: typeid, op: string) {
 
 // Integer `/i` or `%` by zero stops at the site with exit 1, as an overflow
 // trap does, on every backend (audit Y2: Odin died on SIGILL, exit 132).
-tuckDivTrap :: proc "contextless" (ty: typeid, op: string) {
+tuckDivTrap :: proc "contextless" (ty: string, op: string) {
 	context = runtime.default_context()
 	fmt.eprintln("Division by zero on ", ty, ": ", op, sep = "")
 	os.exit(1)
@@ -823,26 +823,26 @@ tuckDivTrap :: proc "contextless" (ty: typeid, op: string) {
 
 // `a /i b`, truncating; the minimum divided by -1 faults on the host, so it
 // stops as an overflow.
-tuckDivI :: #force_inline proc "contextless" (a, b: $T) -> T
+tuckDivI :: #force_inline proc "contextless" (a, b: $T, tn: string) -> T
 	where intrinsics.type_is_integer(T) {
-	if b == 0 { tuckDivTrap(T, "/i") }
+	if b == 0 { tuckDivTrap(tn, "/i") }
 	when intrinsics.type_is_unsigned(T) == false {
-		if b == -1 && a == min(T) { tuckOverflowTrap(T, "/i") }
+		if b == -1 && a == min(T) { tuckOverflowTrap(tn, "/i") }
 	}
 	return a / b
 }
 
 // `a % b`; the minimum mod -1 is 0, which the host's divide faults on.
-tuckModI :: #force_inline proc "contextless" (a, b: $T) -> T
+tuckModI :: #force_inline proc "contextless" (a, b: $T, tn: string) -> T
 	where intrinsics.type_is_integer(T) {
-	if b == 0 { tuckDivTrap(T, "%") }
+	if b == 0 { tuckDivTrap(tn, "%") }
 	when intrinsics.type_is_unsigned(T) == false {
 		if b == -1 { return 0 }
 	}
 	return a % b
 }
 
-tuckArith :: proc "contextless" (a, b: $T, $op: OvOp, $pol: OvPolicy) -> T
+tuckArith :: proc "contextless" (a, b: $T, $op: OvOp, $pol: OvPolicy, tn: string) -> T
 	where intrinsics.type_is_integer(T) {
 	r: T
 	over: bool
@@ -857,7 +857,7 @@ tuckArith :: proc "contextless" (a, b: $T, $op: OvOp, $pol: OvPolicy) -> T
 		when pol == .Trap {
 			opname := "*"
 			when op == .Add { opname = "+" } else when op == .Sub { opname = "-" }
-			tuckOverflowTrap(T, opname)
+			tuckOverflowTrap(tn, opname)
 		} else when pol == .Sat {
 			// Which end the EXACT result is past.
 			when intrinsics.type_is_unsigned(T) {
