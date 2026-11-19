@@ -80,13 +80,19 @@ Tuck can do better because `transitions:` is already a first-class construct.
 Make a peripheral a sealed state machine and let the checker enforce it:
 
 ```tuck
-type Uart [transitions:
-  Unconfigured -> Configured
-  Configured   -> Active]:
-  ...
+type UartState:
+  | Unconfigured({})
+  | Configured({baud: int})
+  | Active({baud: int})
 
-# `uart.write` exists only on Uart in state Active; calling it on
-# Unconfigured is a compile error, like today's sealed state machines.
+  transitions:
+    Unconfigured -> Configured
+    Configured   -> Active
+
+# A member `fn write({self: Self, bytes: Seq[u8]}, ...)` is available only on
+# UartState.Active; calling it on Unconfigured is a compile error, exactly like
+# today's sealed state machines. The group/type-state spelling is finalised in
+# step 1 of IMPLEMENTATION-GROUND.md.
 ```
 
 Compiler errors for: writing reserved bits; using a peripheral before its

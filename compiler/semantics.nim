@@ -452,12 +452,18 @@ proc checkMarkerCombinations(d: Decl) =
           "'" & d.name & "' declares [" & effectName(m) & "] together with [" &
           effectName(x) & "], which it excludes. Fix: remove [" &
           effectName(x) & "] or remove [" & effectName(m) & "]"), d.span)
+    # Report ALL markers a marker requires in one message. Two round trips
+    # ("add no_alloc" -> recompile -> "add irq_safe") are technically correct
+    # but read as the compiler withholding information from the developer.
+    var missing: seq[string]
     for x in requires(m):
-      if x notin d.fnEffects:
-        reportError(withCode(dcEfCombination,
-          "'" & d.name & "' is [" & effectName(m) & "], which also requires [" &
-          effectName(x) & "]. Fix: add [" & effectName(x) & "] to its bracket"),
-          d.span)
+      if x notin d.fnEffects: missing.add effectName(x)
+    if missing.len > 0:
+      reportError(withCode(dcEfCombination,
+        "'" & d.name & "' is [" & effectName(m) & "], which also requires " &
+        missing.mapIt("[" & it & "]").join(", ") & ". Fix: add " &
+        (if missing.len == 1: "[" & missing[0] & "] to its bracket"
+         else: "all of them to its bracket")), d.span)
 
 proc boundName(b: Type): string =
   ## The group a bound names: `Source`, or `Indexable` for `Indexable[E]`.
@@ -681,6 +687,7 @@ proc holds(c: Checker, facts: Table[string, Facts], callee: Callee,
   of emPure: f.pure
   of emNoAlloc: f.noAlloc
   of emIrqSafe: f.irqSafe
+  of emIrq: false   # a context marker is never a restriction to satisfy
   else: false
 
 proc callsOf(c: Checker, d: Decl): seq[Callee] =
@@ -719,6 +726,7 @@ proc restrictionHolds(f: Facts, r: EffectMarker): bool =
   case r
   of emPure: f.pure
   of emNoAlloc: f.noAlloc
+  of emIrq: false   # context, not a restriction
   else: f.irqSafe
 
 proc settle(c: var Checker, order: seq[Decl], state: HashSet[string],

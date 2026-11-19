@@ -78,6 +78,7 @@ import compiler/import_renames  # `tuck effects --manifest` (#63)
 import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
 import compiler/frames   # `tuck frames`: the stackless colouring (#216)
+import compiler/isr_access  # `tuck audit --isr`: shared-state inventory
 import compiler/concurrency   # --concurrency:stackful|stackless
 import compiler/actor_mode
 import compiler/pipeline
@@ -217,6 +218,19 @@ called with generated arguments (default 200 cases, seeded and
 repeatable); the invariant is the property. Every failing call is
 printed and written to FILE (default property-failures.txt) as a Tuck
 call with its literals. A folder is scanned file by file.""",
+  "audit": """tuck audit file.tuck --isr
+
+Inventory what an interrupt handler can touch (embedded debugging vision,
+§7a). Every fn declared [irq] is a root; fns it reaches become ISR-reachable.
+The report lists those fns and every piece of shared state a register, pool,
+slab, arena, actor or registry declares that ISR and non-ISR code both touch,
+with the file/line of each access.
+
+  --isr   the ISR shared-access report (the only report today)
+
+This is an INVENTORY, not a gate: nothing is rejected yet. The point is to
+make the shared-data table that embedded teams keep on paper visible in the
+compiler, so a developer can see who writes what before adding a rule.""",
   "frames": """tuck frames file.tuck
 
 The stackless transform's colouring (#216, docs/stackless-concurrency.md),
@@ -1207,6 +1221,12 @@ when isMainModule:
       for d in lm.m.decls:
         if d == nil or d.kind notin {dkFn, dkTask}: continue
         echo ssa_query.render(ssaOf(semLayer, d, ssChecked).fn)
+  of "audit":
+    if not opts.anyIt(it == "--isr"):
+      die("tuck audit: name a report (--isr). Try `tuck help audit`.")
+    let prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
+    let entry = prog[prog.high].m
+    stdout.write render(auditShared(semLayer, entry), prog[prog.high].path)
   of "frames":
     # Stackless transform, phase 1 (#216): which fns would become frames and
     # where each can pause, for the whole import closure.

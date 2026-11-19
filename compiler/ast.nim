@@ -61,7 +61,11 @@ type
     emIoFs        # [io: fs]
     emIoClock     # [io: clock]
     emIoConsole   # [io: console]
-    emIoSys       # [io: sys]      — arguments, environment, exit
+    emIoSys       # [io: sys]     
+    emIrq         # [irq]          — ISR ENTRY POINT (a context, not a promise):
+                  #                 roots isr-reachability for the shared-access
+                  #                 report and the ISR gate. Appended: the
+                  #                 signature cache stores marker ordinals. — arguments, environment, exit
 
 
   ResourcePolicy* = enum
