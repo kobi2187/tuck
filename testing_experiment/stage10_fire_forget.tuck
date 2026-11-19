@@ -1,0 +1,13 @@
+# Fire-and-forget stackless tasks: main returns, wrapper drives frames.
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+task worker({id: int}) -> void [io]:
+  {text: "WORKER\n"} say
+  return
+
+fn main() -> int [io]:
+  {text: "MAIN\n"} say
+  {id: 1} worker
+  {id: 2} worker
+  return 0

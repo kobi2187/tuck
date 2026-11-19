@@ -1,0 +1,36 @@
+# Bare-metal LED blink for STM32F103 (Blue Pill) under QEMU.
+# No OS, no heap, no tasks: just register access + busy wait.
+
+register RCC_APB2ENR at 0x40021018:
+  IOPCEN: bit 4 [read, write]
+
+register GPIOC_CRH at 0x40011004:
+  MODE13: bits 20..21 [read, write]
+  CNF13:  bits 22..23 [read, write]
+
+register GPIOC_ODR at 0x4001100C:
+  ODR13: bit 13 [read, write]
+
+fn delay({n: int}) -> void:
+  for i in 0 .. n - 1:
+    i discard
+  return
+
+fn setup() -> void:
+  RCC_APB2ENR.IOPCEN = true
+  GPIOC_CRH.MODE13 = 2
+  GPIOC_CRH.CNF13 = 0
+  return
+
+fn blinkOnce() -> void:
+  GPIOC_ODR.ODR13 = false
+  {n: 200000} delay
+  GPIOC_ODR.ODR13 = true
+  {n: 200000} delay
+  return
+
+fn main() -> int:
+  {} setup
+  for k in 0 .. 9:
+    {} blinkOnce
+  return 0

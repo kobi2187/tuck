@@ -460,7 +460,7 @@ proc pickFastCC(): string =
   # needs, and fails with "undeclared identifier: 'atomicStoreN'". tcc built
   # this ~0.2s faster per program; a `readLine` that stops every timer and
   # actor in the process until the user hits enter is the thing being bought.
-  if findExe("clang") != "": " --cc:clang --threads:on "
+  if findExe("clang") != "" and getEnv("TUCK_CC") != "gcc": " --cc:clang --threads:on "
   else: " --threads:on "
 
 proc reportBuild(binPath: string, buildMs: float): string =
@@ -1627,7 +1627,8 @@ when isMainModule:
         if extraImports != "": writeFile(mainNim, extraImports & readFile(mainNim))
         var asyncInit = ""
         var asyncDrive = ""
-        if usesRuntime:
+        let freestandingMode = opts.anyIt(it.contains("freestanding"))
+        if usesRuntime and not freestandingMode:
           let asyncImp = relativePath(getAppDir() / "compiler" / "tuck_async", outDir).replace('\\', '/')
           writeFile(mainNim, "import " & asyncImp & "\n" & readFile(mainNim))
           asyncInit = "  tuckAsyncInit()\n"
@@ -1690,11 +1691,22 @@ when isMainModule:
         var guarded = ""
         for ln in mainBody.splitLines:
           guarded.add(if ln.len > 0: "  " & ln & "\n" else: "\n")
-        writeFile(mainNim, readFile(mainNim) &
-          "\nwhen isMainModule:\n  try:\n" & guarded &
-          "  except Exception as tuckErr:\n" &
-          "    stderr.writeLine(\"Error: unhandled exception: \" & tuckErr.msg & \" [\" & $tuckErr.name & \"]\")\n" &
-          "    quit(1)\n")
+        let freestanding = opts.anyIt(it.contains("freestanding"))
+        if freestanding:
+          # No libc exit(): on bare metal main simply returns to the reset
+          # handler's idle loop. Calling quit() drags in newlib's ARM-mode
+          # exit/_malloc_r, which cannot run on a Thumb-only Cortex-M.
+          # Drive any unawaited stackless frames before returning.
+          let drive = if hasTasks and concurrencyMode == cmStackless:
+                        "\n  tuckSlRunAll()" else: ""
+          writeFile(mainNim, readFile(mainNim) &
+            "\nwhen isMainModule:\n  discard " & tuckMain & drive & "\n")
+        else:
+          writeFile(mainNim, readFile(mainNim) &
+            "\nwhen isMainModule:\n  try:\n" & guarded &
+            "  except Exception as tuckErr:\n" &
+            "    stderr.writeLine(\"Error: unhandled exception: \" & tuckErr.msg & \" [\" & $tuckErr.name & \"]\")\n" &
+            "    quit(1)\n")
         # nim flags passthrough for cross/bare-metal: --nim:"--os:standalone ..."
         var nimFlags = ""
         for o in opts:

@@ -1,0 +1,22 @@
+# Stage 1 — LED blink. No concurrency, no heap. Baseline that the whole
+# toolchain can emit and link a binary for the target.
+
+import seq
+
+# HAL shim: implemented per target (host sim prints; device hits MMIO).
+extern [impl: nim "./host_sim/hal_shim", odin "./host_sim", d "./host_sim/hal_shim"]:
+  fn ledOn({}) -> void [io]
+  fn ledOff({}) -> void [io]
+  fn delayMs({ms: int}) -> void [io]
+
+fn blink({count: u32}) -> void [io]:
+  for i in 0 .. count - 1:
+    {} ledOn
+    {ms: 500} delayMs
+    {} ledOff
+    {ms: 500} delayMs
+  return
+
+fn main() -> int [io]:
+  {count: 10} blink
+  return 0

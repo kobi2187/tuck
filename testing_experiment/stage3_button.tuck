@@ -1,0 +1,22 @@
+# Stage 3 — button input + debounce, no allocation, no heap.
+
+extern [impl: nim "./host_sim/hal_shim", odin "./host_sim", d "./host_sim/hal_shim"]:
+  fn buttonPressed({}) -> bool [io]
+  fn ledOn({}) -> void [io]
+  fn ledOff({}) -> void [io]
+  fn delayMs({ms: int}) -> void [io]
+
+fn debounceRead({}) -> bool [io]:
+  if not {} buttonPressed:
+    return false
+  {ms: 20} delayMs
+  return {} buttonPressed
+
+fn main() -> int [io]:
+  for i in 0 .. 1000 - 1:
+    if {} debounceRead:
+      {} ledOn
+    else:
+      {} ledOff
+    {ms: 10} delayMs
+  return 0

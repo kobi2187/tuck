@@ -1,0 +1,21 @@
+# Stage 4 — UART echo: bytes cross as values (Seq[u8]), tight poll loop.
+
+import seq
+
+extern [impl: nim "./host_sim/hal_shim", odin "./host_sim", d "./host_sim/hal_shim"]:
+  fn uartHasByte({}) -> bool [io]
+  fn uartReadByte({}) -> u8 [io]
+  fn uartWriteByte({b: u8}) -> void [io]
+  fn delayMs({ms: int}) -> void [io]
+
+fn echoLoop({iters: u32}) -> void [io]:
+  for i in 0 .. iters - 1:
+    if {} uartHasByte:
+      let b = {} uartReadByte
+      {b: b} uartWriteByte
+    {ms: 1} delayMs
+  return
+
+fn main() -> int [io]:
+  {iters: 10000} echoLoop
+  return 0

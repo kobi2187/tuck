@@ -1,0 +1,31 @@
+# Stage 5 — THE TEST: two stackless tasks, each with an [io] yield,
+# driving two LEDs at independent rates. Build with --concurrency:stackless.
+# Frames come from a pool (ruling 4): no heap in the scheduler path.
+
+import seq
+
+extern [impl: nim "./host_sim/hal_shim", odin "./host_sim", d "./host_sim/hal_shim"]:
+  fn ledSet({id: u8, lit: bool}) -> void [io]
+  fn delayMs({ms: int}) -> void [io]
+
+# A task that blinks one LED N times. The `delayMs` call is an [io] pause,
+# so under stackless this becomes a frame + stages, no stack switching.
+task blinker({id: u8, times: int, periodMs: int}) -> {done: bool} [io]:
+  for i in 0 .. times - 1:
+    {id: id, lit: true} ledSet
+    {ms: periodMs} delayMs
+    {id: id, lit: false} ledSet
+    {ms: periodMs} delayMs
+  return {done: true}
+
+task runner({}) -> {ok: bool} [io]:
+  # Fire-and-forget one blinker, await the other: two independent rates.
+  {id: 1, times: 5, periodMs: 100} blinker
+  let a = {id: 0, times: 5, periodMs: 250} blinker
+  return {ok: a.done}
+
+fn main() -> int [io]:
+  let r = {} runner
+  if not r.ok:
+    return 1
+  return 0

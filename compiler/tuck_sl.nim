@@ -82,6 +82,48 @@ proc tuckSlRunAll*() =
   ## spawned task nobody awaits still runs to its end, as under minicoro.
   while tuckSlRunOne(): discard
 
+# --- volatile MMIO -------------------------------------------------------------
+when defined(freestanding):
+  proc tuckVolatileLoad*(p: ptr uint32): uint32 {.inline.} =
+    {.emit: "`result` = *(volatile NU32*)`p`;".}
+
+  proc tuckVolatileStore*(p: ptr uint32, v: uint32) {.inline.} =
+    {.emit: "*(volatile NU32*)`p` = `v`;".}
+
+# --- freestanding allocator -----------------------------------------------------
+# Under --os:standalone there is no libc malloc. Provide a tiny bump allocator
+# so the frame freelist (and any other alloc call) can obtain storage. Frames
+# are normally reused from the freelist, so this is only hit on first use.
+when defined(freestanding):
+  const FreestandingHeapSize = 2048
+  var freestandingHeap {.global.}: array[FreestandingHeapSize, byte]
+  var freestandingHeapCursor {.global.}: int = 0
+  proc alloc*(size: int): pointer =
+    let aligned = (freestandingHeapCursor + 7) and (not 7)
+    if aligned + size > FreestandingHeapSize:
+      return nil
+    result = addr freestandingHeap[aligned]
+    freestandingHeapCursor = aligned + size
+  proc allocShared0*(size: int): pointer = alloc(size)
+  proc dealloc*(p: pointer) = discard
+
+  proc tuckSlAwaitMain*[T](s: ptr TuckSlot[T]): T =
+    ## Freestanding await: no reactor or OS loop, just drive the ready frames
+    ## until the slot is filled. Matches tuck_async's version for a program
+    ## with no fd/timer waits (the only kind that runs on metal today).
+    while not s.done:
+      tuckSlRunAll()
+    tuckMove(s.value)
+
+  proc tuckSlOnStack*(f: ptr TuckFrameHdr, next: TuckStageFn,
+                      body: proc (env: pointer) {.nimcall.}): TuckHop =
+    ## No helper stack on metal: a pausing statement runs inline on the caller's
+    ## stack. Safe when the statement's waits are polled externs (our shims),
+    ## which do not park a coroutine — they complete before returning.
+    f.stage = next
+    body(cast[pointer](f))
+    TuckHop(fn: next, env: f)
+
 # --- frames ---------------------------------------------------------------------
 proc tuckSlFreeList[T](_: typedesc[T]): ptr ptr TuckFrameHdr {.inline.} =
   ## One freelist per frame type: a generic's global is per instantiation.
