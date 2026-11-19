@@ -163,6 +163,7 @@ proc kindUses(res: Resolution, e: Expr): seq[ChildUse] =
   of exkDiscard: @[(e.discardVal, uBorrow)]
   of exkSend: @[(e.sendPayload, uSink)]        # rule T: into the mailbox
   of exkSelect: selectUses(e)
+  of exkCritical: @[(e.criticalBody, uNone)]
   of exkDefer: @[(e.deferBody, uNone)]
   of exkAcquire: @[(e.acquireRef, uBorrow)]
   of exkFinish: @[(e.finishHandle, uBorrow)]

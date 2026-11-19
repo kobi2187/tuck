@@ -89,7 +89,7 @@ type
     ## has no locks at all.
     cur*: ptr Batch[T, TuckBatchCount]  ## the borrowed batch, or nil
     sends*: int              ## counts down to the next deadline check
-    opened*: int64          ## when the current batch took its first message (ticks)
+    opened*: MonoTime        ## when the current batch took its first message
     mb*: ptr Mailbox[T, Cap] ## where to hand over
     registered*: bool        ## already on this thread's flush-hook list
 

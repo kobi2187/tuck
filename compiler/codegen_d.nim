@@ -1635,6 +1635,11 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
       ctx.genDExpr(e.validated) & ")"
   of exkSend: ctx.genDSend(e)
   of exkSelect: ctx.genDSelect(e)
+  of exkCritical:
+    if e.criticalBody == nil: ""
+    else: ctx.indD & "rt.tuckCriticalEnter();\n" &
+          ctx.genDBlock(e.criticalBody) & "\n" &
+          ctx.indD & "rt.tuckCriticalExit();"
   of exkDefer: ctx.genDDefer(e)
   of exkFinish:
     "rt.finishResource(" & resourceTableName(e.finishKind) & ", " &

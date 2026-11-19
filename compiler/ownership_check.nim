@@ -422,6 +422,7 @@ proc walkExpr(c: var Check, e: Expr, use: Use) =
   of exkAssign: c.walkAssign(e)
   of exkReturn, exkRaise: c.walkExit(e)
   of exkBreak, exkContinue: c.walkJump(e)
+  of exkCritical: discard
   of exkDefer: c.deferDrops(e)
   of exkReset: c.walkReset(e)
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill,

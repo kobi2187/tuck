@@ -82,6 +82,20 @@ proc tuckSlRunAll*() =
   ## spawned task nobody awaits still runs to its end, as under minicoro.
   while tuckSlRunOne(): discard
 
+# --- critical sections ---------------------------------------------------------
+# A `critical:` block lowers to a pair of calls. On metal they disable and
+# re-enable configurable interrupts (CPSID/CPSIE on Cortex-M); on a hosted
+# build they are no-ops, because there is no ISR to exclude. Kept as a pair of
+# procs rather than inline asm at every call site so nesting is a single place
+# to change later (BASEPRI instead of PRIMASK).
+proc tuckCriticalEnter*() {.inline.} =
+  when defined(freestanding):
+    {.emit: "__asm volatile(\"cpsid i\" ::: \"memory\");".}
+
+proc tuckCriticalExit*() {.inline.} =
+  when defined(freestanding):
+    {.emit: "__asm volatile(\"cpsie i\" ::: \"memory\");".}
+
 # --- volatile MMIO -------------------------------------------------------------
 when defined(freestanding):
   proc tuckVolatileLoad*(p: ptr uint32): uint32 {.inline.} =

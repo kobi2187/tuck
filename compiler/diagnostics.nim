@@ -928,11 +928,12 @@ proc ruleExplanation(d: DiagCode): string =
     "make one context the sole writer (an ISR signals a task that writes it), " &
     "or keep both accesses inside one critical section."
   of dcEfIsrProtected:
-    "State declared `isrShared` may only be touched inside a `critical:` " &
-    "block: the declaration is a promise that every access disables " &
-    "interrupts, and this one does not. Fix: wrap the access in `critical:` " &
-    "(it lowers to CPSID/CPSIE on Cortex-M), or remove `isrShared` if the " &
-    "state is not in fact shared with an interrupt."
+    "A `critical:` block disables interrupts for the duration of its body. " &
+    "It must therefore contain no I/O, no blocking wait and no allocation: " &
+    "any of those would leave interrupts off for an unbounded time, which " &
+    "is worse than the shared access the block was written to prevent. " &
+    "Fix: move the I/O or allocation out of `critical:` and leave only the " &
+    "short shared-state access inside it."
   of dcEfUnused:
     "A fn declares `[io]` but nothing in its body performs I/O, suspends or " &
     "spawns, so the marker promises a suspend point there is not. Declared " &

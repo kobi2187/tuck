@@ -820,7 +820,7 @@ proc ownsItsLayout(res: Resolution, s: Expr): bool =
   ## Nodes that carry their own indentation. (A `..` chain was one, and a
   ## call or binding fed by one; lowering_chains rewrites every chain into
   ## plain statements before any emitter runs.)
-  s.kind in {exkIf, exkBlock, exkFor, exkWhile, exkDefer}
+  s.kind in {exkIf, exkBlock, exkFor, exkWhile, exkCritical, exkDefer}
 
 proc stmtValueDropped(ctx: var CodegenCtx, s: Expr): bool =
   ## A call in STATEMENT position whose value nothing consumes. Nim rejects
@@ -905,6 +905,14 @@ proc genBlock(ctx: var CodegenCtx, e: Expr, ind: string): string =
   let body = ctx.genStmts(e, ind)
   if body.len == 0: return ind & "discard"
   ind & "if true:\n" & body
+
+proc genCritical(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## `critical:` — interrupts off on entry, back on at the end. The body is a
+  ## nested block (same `if true:` trick as genBlock, so a `break` reaches the
+  ## enclosing loop); masking is a runtime pair, never inline asm here.
+  if e.criticalBody == nil: return ind & "discard"
+  ind & "tuckCriticalEnter()\n" & ctx.genBlock(e.criticalBody, ind) &
+    "\n" & ind & "tuckCriticalExit()"
 
 proc genDefer(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## `defer:` (spec §7.4) — Nim spells it identically, scope-exit-ordered and
@@ -1027,6 +1035,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
       "rewrites every one into statements"
   of exkSend: ctx.genExprSend(e)
   of exkSelect: ctx.genExprSelect(e)
+  of exkCritical: ctx.genCritical(e, ind)
   of exkDefer: ctx.genDefer(e, ind)
   of exkFinish:
     # The kind names the table directly, so there is no dispatch and no

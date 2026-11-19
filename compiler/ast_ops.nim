@@ -339,6 +339,7 @@ iterator childSlots*(e: Expr): var Expr =
       for arm in e.selArms.mitems:
         yield arm.arg
         yield arm.body
+    of exkCritical: yield e.criticalBody
     of exkDefer: yield e.deferBody
     of exkAcquire: yield e.acquireRef
     of exkFinish: yield e.finishHandle

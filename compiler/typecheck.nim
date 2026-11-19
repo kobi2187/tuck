@@ -5265,6 +5265,14 @@ proc synthFinish(tc: var TypeChecker, e: Expr): Type =
          e.span)
   unitType(e.span)
 
+proc synthCritical(tc: var TypeChecker, e: Expr): Type =
+  ## `critical:` — the body is checked where it is written. It is a statement,
+  ## so its value is unit; its EFFECTS still propagate to the enclosing fn,
+  ## which is how an `[irq_safe]` caller is refused if it I/Os in here.
+  if e.criticalBody != nil:
+    discard tc.synthesize(e.criticalBody)
+  unitType(e.span)
+
 proc synthDefer(tc: var TypeChecker, e: Expr): Type =
   ## `defer:` (spec §7.4) — the body is checked exactly as if it sat where the
   ## block is written; only WHEN it runs moves, not what it means. The
@@ -5526,6 +5534,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkChain: tc.synthChain(e)
   of exkSend: tc.synthSend(e)
   of exkSelect: tc.synthSelect(e)
+  of exkCritical: tc.synthCritical(e)
   of exkDefer: tc.synthDefer(e)
   of exkAcquire: tc.synthAcquire(e)
   of exkFinish: tc.synthFinish(e)

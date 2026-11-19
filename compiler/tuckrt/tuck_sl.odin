@@ -131,3 +131,7 @@ tuckSlAwaitMain :: proc(s: ^TuckSlot($T)) -> T {
 	}
 	return s.value
 }
+
+// A `critical:` block lowers to this pair. No hosted ISR to exclude: no-op.
+tuckCriticalEnter :: proc() {}
+tuckCriticalExit :: proc() {}

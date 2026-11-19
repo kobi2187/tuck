@@ -30,6 +30,13 @@ proc gateSays(t: var T, name, pattern: string) =
   else:
     t.no name, "wrong gate diagnostic: " & text
 
+proc gateAllows(t: var T, name: string) =
+  let idx = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck", "--isr-check:error"])
+  if t.phase == pCollect: return
+  let (rc, text) = resultOf(t, idx)
+  if rc == 0: t.ok name
+  else: t.no name, "gate rejected a fully protected program: " & text
+
 proc run*(t: var T) =
   t.src """
 register FLAG at 0x40000000:
@@ -47,5 +54,24 @@ fn main() -> int:
     "ISR", "isr() [irq, irq_safe, no_alloc] writes",
     "main() -> int writes", "FLAG"]
   t.gateSays "TK-EF10 gate names both contexts", "normal code main() -> int"
+
+  # A `critical:` block around BOTH accesses makes the same program safe.
+  t.src """
+register FLAG at 0x40000000:
+  VALUE: bits 0..7 [read, write]
+
+fn isr() [irq, irq_safe, no_alloc]:
+  critical:
+    FLAG.VALUE = 1
+  return
+
+fn main() -> int:
+  critical:
+    FLAG.VALUE = 2
+  return 0
+"""
+  t.gateAllows "critical: protects shared ISR state"
+  t.auditSays "audit marks critical: accesses as protected", @[
+    "[protected: critical:]", "All shared accesses are inside critical"]
 
   t.finish()

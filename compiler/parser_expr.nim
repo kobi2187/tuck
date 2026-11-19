@@ -960,6 +960,21 @@ proc parseDeferExpr(p: var Parser, sp: Span): Expr =
                   "a line of its own.", line = sp.line, col = sp.col)
   Expr(span: sp, kind: exkDefer, deferBody: p.parseBlock())
 
+proc parseCriticalExpr(p: var Parser, sp: Span): Expr =
+  ## `critical:` then an indented block: a section where interrupts are
+  ## disabled, so shared ISR state can be touched without a torn access.
+  ## Recognised contextually (like `defer`), so `critical` stays usable as an
+  ## ordinary name everywhere else. One line is refused for the same reason
+  ## `defer`'s is: a section whose boundaries are invisible risks being
+  ## extended by accident.
+  discard p.advance()          # eat `critical`
+  discard p.expect(tkColon)
+  if p.current().kind notin {tkNewline, tkEOF}:
+    p.reportError("`critical` takes an indented block, not a single line. " &
+                  "Interrupt masking is a boundary worth seeing at a glance.",
+                  line = sp.line, col = sp.col)
+  Expr(span: sp, kind: exkCritical, criticalBody: p.parseBlock())
+
 proc contextualStmt(p: var Parser, sp: Span): Expr =
   ## The statement forms whose opening word the LEXER does not tokenize —
   ## `defer:`, `acquire`, `finish`. The expression-level twin of
@@ -981,6 +996,8 @@ proc contextualStmt(p: var Parser, sp: Span): Expr =
   case p.current().value
   of "defer":
     if p.peek().kind == tkColon: return p.parseDeferExpr(sp)
+  of "critical":
+    if p.peek().kind == tkColon: return p.parseCriticalExpr(sp)
   of "finish":
     if p.peek().kind in {tkIdent, tkLBrace}:
       return p.parseResourceOp(sp, exkFinish)

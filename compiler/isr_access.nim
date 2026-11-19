@@ -29,6 +29,7 @@ type
     fnSig*: string        ## display only: its signature
     span*: Span
     isr*: bool            ## true: reached from an [irq] fn
+    protected*: bool      ## true: the access sits inside a `critical:` block
 
   IsrFn* = object
     id*: NodeId
@@ -39,6 +40,7 @@ type
     isrFns*: seq[IsrFn]             ## ISR-reachable closure, incl. roots
     access*: seq[IsrAccess]
     shared*: seq[string]            ## state touched by both ISR and non-ISR code
+    unsafe*: seq[string]            ## shared state with at least one UNPROTECTED access
 
 proc stateRefName(n: Expr): string =
   ## The shared-state name an expression node refers to, or "".
@@ -91,23 +93,38 @@ proc reachable*(res: Resolution, m: Module, roots: seq[Decl]): seq[Decl] =
       if callee.id notin seenIds: work.add callee
   result.sort(proc (a, b: Decl): int = cmp(uint32(a.id), uint32(b.id)))
 
+proc collectAccesses(e: Expr, prot: bool, states: HashSet[string],
+                     fnId: NodeId, sig: string, result: var seq[IsrAccess]) =
+  ## Walk one expression. A `critical:` block flips `prot` for its whole
+  ## subtree; an assignment target is counted as a write and not walked again
+  ## as a read. Everything else keeps the current protection state.
+  if e == nil: return
+  case e.kind
+  of exkCritical:
+    collectAccesses(e.criticalBody, true, states, fnId, sig, result)
+    return
+  of exkAssign:
+    if e.target != nil:
+      for t in e.target.nodes:
+        let s = stateRefName(t)
+        if s != "" and s in states:
+          result.add IsrAccess(state: s, isWrite: true, fnId: fnId, fnSig: sig,
+                               span: t.span, protected: prot)
+    collectAccesses(e.assignVal, prot, states, fnId, sig, result)
+    return
+  else: discard
+  let s = stateRefName(e)
+  if s != "" and s in states:
+    result.add IsrAccess(state: s, isWrite: false, fnId: fnId, fnSig: sig,
+                         span: e.span, protected: prot)
+  for ch in e.children:
+    collectAccesses(ch, prot, states, fnId, sig, result)
+
 proc accessesOf(m: Module, d: Decl, states: HashSet[string]): seq[IsrAccess] =
-  ## Every access to shared state in `d`: writes from assignment targets,
-  ## reads from every other reference. A node under a write target is counted
-  ## once, as a write. `d` is the declaration itself, never a name lookup.
+  ## Every access to shared state in `d`; `d` is the declaration itself,
+  ## never a name lookup.
   if d == nil or d.fnBody == nil: return
-  var written: seq[Span]
-  for n in d.fnBody.nodes:
-    if n.kind != exkAssign or n.target == nil: continue
-    for t in n.target.nodes:
-      if stateRefName(t) in states: written.add t.span
-  let sig = signature(d)
-  for n in d.fnBody.nodes:
-    let s = stateRefName(n)
-    if s == "" or s notin states: continue
-    let isWrite = written.anyIt(it.line == n.span.line and it.col == n.span.col)
-    result.add IsrAccess(state: s, isWrite: isWrite, fnId: d.id, fnSig: sig,
-                         span: n.span)
+  collectAccesses(d.fnBody, false, states, d.id, signature(d), result)
 
 proc auditShared*(res: Resolution, m: Module): IsrAudit =
   let states = stateNamesOf(m)
@@ -128,11 +145,15 @@ proc auditShared*(res: Resolution, m: Module): IsrAudit =
     let isr = d.id in isrIds
     for a in accessesOf(m, d, states):
       result.access.add IsrAccess(state: a.state, isWrite: a.isWrite,
-        fnId: a.fnId, fnSig: a.fnSig, span: a.span, isr: isr)
+        fnId: a.fnId, fnSig: a.fnSig, span: a.span, isr: isr,
+        protected: a.protected)
       if isr: isrState.incl a.state
       else: nonIsrState.incl a.state
   result.shared = (isrState * nonIsrState).toSeq
   result.shared.sort
+  for s in result.shared:
+    if result.access.anyIt(it.state == s and not it.protected):
+      result.unsafe.add s
 
 proc render*(a: IsrAudit, path: string): string =
   ## Human-readable first. The JSON/SARIF emitters (vision §9) are added by
@@ -154,10 +175,14 @@ proc render*(a: IsrAudit, path: string): string =
       for x in a.access.filterIt(it.state == s):
         let ctx = alignLeft(if x.isr: "ISR" else: "normal code", 12)
         let op = if x.isWrite: "writes" else: "reads "
+        let guard = if x.protected: " [protected: critical:]" else: " [UNPROTECTED]"
         result.add "    " & ctx & ": " & x.fnSig & " " & op & " at " & path &
-          ":" & $x.span.line & ":" & $x.span.col & "\n"
-    result.add "\n  Next: declare this state isrShared and touch it only inside a\n"
-    result.add "  critical: block, or hand a value to a task through an ISR-safe SPSC slot\n"
-    result.add "  (sendFromIsr) so the two contexts never share a writable value.\n"
-  result.add "\nInventory only: nothing is rejected yet. These findings become\n"
-  result.add "TK-EF10/11 errors when built with --isr-check:error.\n"
+          ":" & $x.span.line & ":" & $x.span.col & guard & "\n"
+    result.add "\n  Fix: put every access inside a `critical:` block, or make one\n"
+    result.add "  context the sole writer (an ISR signals a task that writes it).\n"
+  if a.unsafe.len > 0:
+    result.add "\nUnprotected shared state: " & a.unsafe.join(", ") & "\n"
+  else:
+    result.add "\nAll shared accesses are inside critical: blocks.\n"
+  result.add "Inventory only: nothing is rejected yet. TK-EF10 fires under\n"
+  result.add "--isr-check:error only for the unprotected entries above.\n"

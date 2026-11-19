@@ -794,8 +794,8 @@ proc gateIsrShared(prog: seq[LoadedModule]) =
   if not isrCheckError: return
   for lm in prog:
     let a = auditShared(semLayer, lm.m)
-    if a.shared.len == 0: continue
-    for s in a.shared:
+    if a.unsafe.len == 0: continue
+    for s in a.unsafe:
       let sites = a.access.filterIt(it.state == s)
       let isrIdx = sites.findIt(it.isr)
       if isrIdx < 0: continue

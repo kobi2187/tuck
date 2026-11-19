@@ -172,6 +172,38 @@ Do **one** end-to-end slice before any of the rest:
 If this slice stays small, the remaining rules are repetitions of the same
 mechanism — which is the whole point of building the supporting layers first.
 
+## 9a. Progress (2026-11-19)
+
+- **Slice 1** — `[irq]` context marker; one-shot combination diagnostics. ✅
+- **Slice 2** — `tuck audit FILE --isr`: signature-keyed display, id-keyed
+  identity, shared-state inventory with source locations and a what/why/fix
+  explanation. ✅ (QEMU + `isr_discipline` suite)
+- **Slice 3** — TK-EF10 gate under `--isr-check:error`, opt-in; clean
+  `file:line:col` diagnostic naming both contexts. ✅ (QEMU: default build
+  boots, gated build refused)
+- **Slice 4** — `critical:` as its own AST node kind; Nim/Odin/D codegen emit a
+  critical-enter/exit pair (CPSID/CPSIE on freestanding); the audit marks
+  protected accesses and the gate fires only for unprotected ones. ✅ (QEMU:
+  `stage12_critical` boots and prints `CRITICAL_OK`)
+
+Still to do here: TK-EF11 (no I/O/blocking/allocation inside `critical:`), the
+ISR-safe SPSC `sendFromIsr` primitive, and the shared reporter layer (JSON +
+SARIF) from §3.
+
+**Two traps hit while building these slices (worth remembering):**
+
+1. **Stale incremental Nim cache.** After adding enum entries to
+   `compiler/diagnostics.nim`, `nim c -o:tuck tuck.nim` reused stale objects and
+   every diagnostic code shifted (`TK-RG01` came out as `TK-IV01`) until
+   `rm -rf ~/.cache/nim/tuck_d` forced a clean rebuild. After ANY enum change,
+   wipe that cache before trusting a test result.
+2. **Freestanding edits inside a hosted-only section.** I changed
+   `opened*: MonoTime` to `int64` in `tuck_rt_stdlib_externs.nim` while making
+   the freestanding build compile — but that whole file is included only when
+   NOT freestanding, so the change broke `--actors:batch` on hosted builds and
+   was invisible to `--quick`. Ask "which builds actually include this code?"
+   before editing a shared runtime file for a freestanding problem.
+
 ## 10. Scope discipline
 
 - No general RTOS: actors + tasks + the deterministic stackless scheduler are

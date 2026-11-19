@@ -1863,6 +1863,10 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
       "lowering_chains rewrites every one into statements"
   of exkSend: ctx.genSend(e)
   of exkSelect: ctx.genOdinSelect(e, ind)
+  of exkCritical:
+    if e.criticalBody == nil: ""
+    else: ind & "rt.tuckCriticalEnter()\n" & ctx.genBlock(e.criticalBody, ind) &
+          "\n" & ind & "rt.tuckCriticalExit()"
   of exkDefer: ctx.genDefer(e, ind)
   of exkFinish:
     "rt.finishResource(&" & resourceTableName(e.finishKind) & ", " &

@@ -122,3 +122,7 @@ TuckHop tuckSlAwait(T)(TuckFrameHdr* f, TuckSlot!T* s, TuckStageFn next)
     s.waiter = f;
     return TuckHop.init;
 }
+
+// A `critical:` block lowers to this pair. No hosted ISR to exclude: no-op.
+void tuckCriticalEnter() {}
+void tuckCriticalExit() {}
