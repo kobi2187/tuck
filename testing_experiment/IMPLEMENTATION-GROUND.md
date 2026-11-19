@@ -186,9 +186,12 @@ mechanism — which is the whole point of building the supporting layers first.
   protected accesses and the gate fires only for unprotected ones. ✅ (QEMU:
   `stage12_critical` boots and prints `CRITICAL_OK`)
 
-Still to do here: TK-EF11 (no I/O/blocking/allocation inside `critical:`), the
-ISR-safe SPSC `sendFromIsr` primitive, and the shared reporter layer (JSON +
-SARIF) from §3.
+**Slice 5** — TK-EF11 refuses I/O, blocking waits and allocation inside a
+`critical:` block, with a diagnostic naming the block and the fix. ✅ (QEMU
+re-verified, `isr_discipline` suite)
+
+Still to do here: the ISR-safe SPSC `sendFromIsr` primitive, and the shared
+reporter layer (JSON + SARIF) from §3.
 
 **Two traps hit while building these slices (worth remembering):**
 

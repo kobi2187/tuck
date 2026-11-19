@@ -30,6 +30,17 @@ proc gateSays(t: var T, name, pattern: string) =
   else:
     t.no name, "wrong gate diagnostic: " & text
 
+proc gateSays11(t: var T, name, pattern: string) =
+  let idx = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck"])
+  if t.phase == pCollect: return
+  let (rc, text) = resultOf(t, idx)
+  if rc == 0:
+    t.no name, "critical: with I/O was accepted"
+  elif strutils.contains(text, pattern) and strutils.contains(text, "TK-EF11"):
+    t.ok name
+  else:
+    t.no name, "wrong TK-EF11 diagnostic: " & text
+
 proc gateAllows(t: var T, name: string) =
   let idx = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck", "--isr-check:error"])
   if t.phase == pCollect: return
@@ -73,5 +84,17 @@ fn main() -> int:
   t.gateAllows "critical: protects shared ISR state"
   t.auditSays "audit marks critical: accesses as protected", @[
     "[protected: critical:]", "All shared accesses are inside critical"]
+
+  # A critical: block may not hold a capability effect: interrupts stay off.
+  t.src """
+extern [impl: nim "./host_sim/hal_shim", odin "./host_sim", d "./host_sim/hal_shim"]:
+  fn say({text: str}) -> void [io]
+
+fn main() -> int [io]:
+  critical:
+    {text: "hi\n"} say
+  return 0
+"""
+  t.gateSays11 "TK-EF11 refuses I/O inside critical:", "would stay disabled"
 
   t.finish()

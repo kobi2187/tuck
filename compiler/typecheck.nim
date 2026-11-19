@@ -5267,8 +5267,9 @@ proc synthFinish(tc: var TypeChecker, e: Expr): Type =
 
 proc synthCritical(tc: var TypeChecker, e: Expr): Type =
   ## `critical:` — the body is checked where it is written. It is a statement,
-  ## so its value is unit; its EFFECTS still propagate to the enclosing fn,
-  ## which is how an `[irq_safe]` caller is refused if it I/Os in here.
+  ## so its value is unit; its EFFECTS still propagate to the enclosing fn.
+  ## TK-EF11 (no I/O/block/alloc inside a critical section) is checked in the
+  ## semantic pass, where resolved call edges and Demands are available.
   if e.criticalBody != nil:
     discard tc.synthesize(e.criticalBody)
   unitType(e.span)

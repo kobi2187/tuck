@@ -318,6 +318,32 @@ proc checkIsrSends(d: Decl) =
         "takes a lock an interrupted thread may hold. Fix: set a flag or ring " &
         "buffer that a task drains, or drop [irq_safe]"), n.span)
 
+proc allocatingConstruct*(n: Expr): string  # defined below; used here too
+
+proc checkCriticalBodies(c: var Checker, d: Decl) =
+  ## TK-EF11: a `critical:` section disables interrupts for its whole body.
+  ## I/O, a blocking wait or an allocation in there leaves interrupts off for
+  ## an unbounded time — worse than the race the section was written to stop.
+  if d.fnBody == nil: return
+  for n in d.fnBody.nodes:
+    if n.kind != exkCritical or n.criticalBody == nil: continue
+    let body = c.synthesizeExpr(n.criticalBody)
+    for mk in body.effects:
+      if familyOf(mk) == mfCapability:
+        reportError(withCode(dcEfIsrProtected,
+          "'" & d.name & "' has a critical: block at " & $n.span.line & ":" &
+          $n.span.col & " that performs [" & effectName(mk) & "]. Interrupts " &
+          "would stay disabled while it runs. Fix: move that work outside " &
+          "critical: and leave only the short shared-state access inside"),
+          n.span)
+    for x in n.criticalBody.nodes:
+      let what = allocatingConstruct(x)
+      if what != "":
+        reportError(withCode(dcEfIsrProtected,
+          "'" & d.name & "' has a critical: block at " & $n.span.line & ":" &
+          $n.span.col & " containing " & what & ". An allocator cannot run " &
+          "with interrupts disabled. Fix: allocate before the block"), x.span)
+
 proc checkRestrictions(c: Checker, d: Decl) =
   ## The restriction call rule (TK-EF03): in a fn declaring `no_alloc`,
   ## `irq_safe` or `pure`, every call must reach a callee that declares it.
@@ -336,7 +362,7 @@ proc checkRestrictions(c: Checker, d: Decl) =
       for r in restr:
         if r notin callee.markers: failRestriction(d.name, r, callee, n.span)
 
-proc allocatingConstruct(n: Expr): string =
+proc allocatingConstruct*(n: Expr): string =
   ## What `n` allocates, or "" if it does not. THE list of allocating syntax
   ## for `[no_alloc]` (TK-EF05): a new construct that allocates has to be
   ## classified here. Calls are not listed — the restriction rule sees them.
@@ -505,6 +531,7 @@ proc verifyFn(c: var Checker, d: Decl) =
     checkMarkerCombinations(d)
     checkMemo(d)
     checkNoAlloc(d)
+    c.checkCriticalBodies(d)
   if d == nil or d.fnBody == nil or d.name in c.visiting: return
   c.visiting.incl(d.name)
   # main is ASSUMED to touch I/O — the [io] marker distinguishes pure fns
