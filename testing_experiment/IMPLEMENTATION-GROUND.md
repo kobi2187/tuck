@@ -194,7 +194,13 @@ re-verified, `isr_discipline` suite)
 emits jq-friendly JSON and standard SARIF 2.1.0, with TK-EF10 as the rule id.
 ✅ (parsed with python json; pinned in the suite)
 
-Still to do here: the ISR-safe SPSC `sendFromIsr` primitive.
+**Slice 7** — ISR-safe SPSC handoff: the runtime exposes a preallocated
+single-slot `tuckIsrPost` / `tuckIsrTake` pair (volatile flag + DMB on metal,
+no lock, no allocation). An ISR posts a word through it without violating
+TK-EF07. `stage13_isr_spsc` boots under QEMU and prints ISR_SPSC_OK. The slot
+is a raw 0..15 index today; named/declared slots are a future refinement.
+
+This slice completes the ISR-discipline vertical slice.
 
 **Two traps hit while building these slices (worth remembering):**
 

@@ -1,0 +1,21 @@
+# ISR-safe SPSC handoff: an ISR posts a word through a preallocated slot,
+# a task drains it. No mailbox lock, no allocation (TK-EF07 stays satisfied).
+
+extern [impl: nim "./host_sim/isr_shim", odin "./host_sim", d "./host_sim/isr_shim"]:
+  fn isrPost({slot: int, value: int}) -> void [irq_safe, no_alloc]
+  fn isrTake({slot: int}) -> int [irq_safe, no_alloc]
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+fn handler() [irq, irq_safe, no_alloc]:
+  {slot: 0, value: 42} isrPost
+  return
+
+fn main() -> int:
+  handler
+  let v = {slot: 0} isrTake
+  if v == 42:
+    {text: "ISR_SPSC_OK\n"} say
+  else:
+    {text: "ISR_SPSC_BAD\n"} say
+  return 0

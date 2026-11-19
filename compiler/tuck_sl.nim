@@ -82,6 +82,33 @@ proc tuckSlRunAll*() =
   ## spawned task nobody awaits still runs to its end, as under minicoro.
   while tuckSlRunOne(): discard
 
+# --- ISR-safe SPSC handoff -----------------------------------------------------
+# A preallocated, single-slot mailbox. An ISR posts one word; a task takes it.
+# No lock, no allocation: one producer and one consumer, so a volatile flag is
+# enough. This is the allocation-free alternative to `send` from an ISR (which
+# TK-EF07 forbids because a mailbox takes a lock).
+const IsrSlotCount = 16
+var isrSlotsValue {.global.}: array[IsrSlotCount, int]
+var isrSlotsPending {.global.}: array[IsrSlotCount, bool]
+
+proc tuckIsrPost*(slot: int, value: int) =
+  ## Called from an ISR. Publish the value, then the flag: the barrier keeps
+  ## the compiler and the CPU from reordering the two on Cortex-M.
+  if slot < 0 or slot >= IsrSlotCount: return
+  isrSlotsValue[slot] = value
+  when defined(freestanding):
+    {.emit: "__asm volatile(\"dmb\" ::: \"memory\");".}
+  isrSlotsPending[slot] = true
+
+proc tuckIsrTake*(slot: int): int =
+  ## Called from task context: 0 when empty, else the posted value and clears
+  ## the flag. Returns 0 as the empty sentinel, so post 0 as a bare signal.
+  if slot < 0 or slot >= IsrSlotCount: return 0
+  if not isrSlotsPending[slot]: return 0
+  let v = isrSlotsValue[slot]
+  isrSlotsPending[slot] = false
+  v
+
 # --- critical sections ---------------------------------------------------------
 # A `critical:` block lowers to a pair of calls. On metal they disable and
 # re-enable configurable interrupts (CPSID/CPSIE on Cortex-M); on a hosted
