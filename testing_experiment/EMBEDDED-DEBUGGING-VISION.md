@@ -214,6 +214,69 @@ observability into a built-in developer experience.
 - Built-in tracing must stay near-zero cost or it becomes another Heisenbug;
   word-writes to a preallocated ring only, never formatting on the hot path.
 
+## 7a. How the industry copes today (and what we adopt)
+
+The honest answer to "how do veterans live with ISR preemption without static
+analysis?": they do not eliminate it — they **shrink it until a human can hold
+it in their head**, then apply a small set of battle-tested patterns with
+near-religious discipline.
+
+**The trodden path:**
+
+- **The ISR does almost nothing** ("top half" / "bottom half"): acknowledge the
+  peripheral, capture one word, post it, return. All real work runs in task
+  context. A short ISR has a small preemption window, so few interleavings
+  exist.
+- **Single-writer ownership, written down**: teams keep a literal *shared-data
+  table* — variable, who writes, who reads, what protects it. This is the
+  manual ancestor of the compiler report in §8.1 #4.
+- **Tiny critical sections**, `CPSID i` / `BASEPRI` around a few instructions;
+  "keep it short" enforced by review and GPIO/DWT measurement, not by the
+  compiler. Nesting counted so interrupts aren't re-enabled too early.
+- **Lock-free handshakes**: SPSC ring (head owned by producer, tail by
+  consumer), double buffering / DMA ping-pong, seqlocks, and `WFE`/`SEV`
+  instead of flag + `WFI` (a sticky event bit makes lost wakeups impossible).
+- **No allocation in ISRs, ever** — static pools, preallocated message slots;
+  a hard review gate and a MISRA-style rule.
+- **RTOS APIs split by context**: FreeRTOS forbids `xQueueSend()` from an ISR
+  and provides `xQueueSendFromISR()` instead. The API split *is* the
+  discipline. Tuck should mirror this with an ISR-safe `send` primitive.
+- **Hardware as guardrail**: deliberate NVIC priority map, `BASEPRI`,
+  bit-banding, MPU, separate MSP/PSP stacks, DMA; watchdog as backstop.
+- **Verification by stress, not proof**: soak/torture tests with interrupts
+  hammered at max rate across voltage/temperature; trace and GPIO timing;
+  deliberately widening a critical section to expose a race.
+- **Process instead of types**: MISRA C / CERT C, naming conventions, checklists,
+  review. C static analyzers catch uninitialised variables and overruns but are
+  weak on ISR preemption — that needs whole-program interrupt-context and
+  atomicity reasoning C cannot express.
+
+It works because "tiny ISR + few documented shared variables + short critical
+sections" reduces the state space to something a careful human can enumerate.
+It is fragile for the same reason: the discipline lives in people's heads and
+documents, and decays with turnover. Tuck's move is not to invent new best
+practices but to **turn these exact ones into checked rules**, using their
+existing vocabulary so the path feels familiar.
+
+| Manual practice today | Tuck equivalent to add |
+|---|---|
+| ISR posts to a preallocated SPSC slot | An ISR-safe `send` primitive, allocation-free by construction |
+| "No malloc in ISR" taboo | `[no_alloc]` / `[irq_safe]` effects checked through call edges |
+| Shared-data table in the docs | Generated shared-access report (SARIF/JSON) |
+| "Keep critical sections short" | Static bound + `tuck timing` report of longest masked interval |
+| Priority map / nesting policy | Declared priorities with priority-ceiling checks |
+| Soak tests / widen-the-window trick | Deterministic interrupt-storm fault injection in the QEMU loop |
+| Watchdog + safe state | Declarative `watchdog` / `safeState` (§8.2 #7) |
+
+**Two additions this inspires (beyond §8):**
+
+- **A distinct ISR call surface** — `sendFromIsr`, `poolTakeFromIsr`, etc.,
+  rather than one API with a runtime check. The FreeRTOS lesson: the *name* of
+  the call is the discipline; the wrong path should not exist.
+- **A "widen the window" test mode** — a compile flag inserting deliberate
+  delays at every preemption point, so fault-injection runs expose races
+  instead of relying on luck. This formalises the veteran's trick.
+
 ---
 
 ## 8. Loose edges — notes for the future
