@@ -174,6 +174,8 @@ type
     dcEfIsrSend = "TK-EF07"             ## a send from an [irq_safe] fn (the mailbox takes a lock)
     dcEfMemo = "TK-EF08"                ## `fn memo` on a fn that cannot be memoized
     dcEfMemoUnbounded = "TK-EF09"       ## `fn memo` with no size: the cache grows without bound
+    dcEfIsrShared = "TK-EF10"            ## state touched by both an ISR and normal code
+    dcEfIsrProtected = "TK-EF11"         ## isrShared state accessed outside a critical section
     dcPeClash = "TK-PE01"               ## `pending:` clashes with a real decl
     dcPoMalformed = "TK-PO01"           ## the errors policy block is malformed
     dcSeConstruction = "TK-SE01"        ## a sealed type built outside a transition
@@ -917,6 +919,20 @@ proc ruleExplanation(d: DiagCode): string =
     "long-running or embedded program that is a slow memory leak. Fix: give " &
     "it a size, `fn memo(256) name(...)`: a fixed table that forgets old " &
     "entries instead of growing. A forgotten entry only costs a recompute."
+  of dcEfIsrShared:
+    "A piece of hardware state (a register, pool, slab, arena, actor or " &
+    "registry) is touched by a function reachable from an `[irq]` handler " &
+    "AND by normal code. An interrupt can preempt the other access at any " &
+    "instruction: a read can see a half-updated value and two writes can " &
+    "overwrite each other. `tuck audit FILE --isr` names every site. Fix: " &
+    "make one context the sole writer (an ISR signals a task that writes it), " &
+    "or keep both accesses inside one critical section."
+  of dcEfIsrProtected:
+    "State declared `isrShared` may only be touched inside a `critical:` " &
+    "block: the declaration is a promise that every access disables " &
+    "interrupts, and this one does not. Fix: wrap the access in `critical:` " &
+    "(it lowers to CPSID/CPSIE on Cortex-M), or remove `isrShared` if the " &
+    "state is not in fact shared with an interrupt."
   of dcEfUnused:
     "A fn declares `[io]` but nothing in its body performs I/O, suspends or " &
     "spawns, so the marker promises a suspend point there is not. Declared " &

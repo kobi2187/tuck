@@ -781,6 +781,39 @@ proc dumpTree(mods: seq[Module], fmt: string, withSem = false) =
 var reportNarrowing = false
   ## `--report-narrowing`: list every `~` cast after a successful check.
 
+var isrCheckError = false
+  ## `--isr-check:error`: turn the ISR shared-state inventory into a gate.
+  ## `tuck audit FILE --isr` remains the report at every setting. The gate is
+  ## opt-in while the corpus is cleaned up; the default is deliberately quiet.
+
+proc gateIsrShared(prog: seq[LoadedModule]) =
+  ## Reject state that an `[irq]`-reachable fn and normal code both touch.
+  ## This is TK-EF10. It raises at the FIRST offending access, with both sites
+  ## in the message: a developer should never have to hunt for the other half
+  ## of a race after being told only where one side is.
+  if not isrCheckError: return
+  for lm in prog:
+    let a = auditShared(semLayer, lm.m)
+    if a.shared.len == 0: continue
+    for s in a.shared:
+      let sites = a.access.filterIt(it.state == s)
+      let isrIdx = sites.findIt(it.isr)
+      if isrIdx < 0: continue
+      let isrSite = sites[isrIdx]
+      var msg = s & " is shared between an interrupt and normal code: "
+      for x in sites:
+        let ctx = if x.isr: "ISR" else: "normal code"
+        msg.add ctx & " " & x.fnSig & " at " & lm.path & ":" &
+          $x.span.line & ":" & $x.span.col & "; "
+      msg.removeSuffix("; ")
+      msg.add(". Fix: make one context the sole writer (an ISR signals a task " &
+        "that writes it), or keep both accesses inside one critical section. " &
+        "Run `tuck audit " & lm.path & " --isr` for the full inventory.")
+      var err = newException(SemanticError, withCode(dcEfIsrShared, msg))
+      err.line = isrSite.span.line
+      err.col = isrSite.span.col
+      raise err
+
 proc narrowingEntries(): seq[string] =
   ## One line per narrowing cast the author wrote: where, the two types, and
   ## whether the compiler confirmed the value fits or the author accepted the
@@ -840,6 +873,10 @@ proc checkProgram(path: string, needBodies = false,
     for lm in result: loadedMods.add lm.m
     assertTreeIds("load", loadedMods)
   let shortcuts = checkOrDie(path, result, sigOnly, verifyStages)
+  try:
+    gateIsrShared(result)
+  except SemanticError as err:
+    dieSemanticError(path, err)
   # Non-fatal diagnostics, printed at the offending line exactly as an error
   # is — same file:line:col prefix — but the build carries on. Drained AFTER
   # checkOrDie so a program that fails to check reports its error and nothing
@@ -1167,6 +1204,13 @@ when isMainModule:
   # rather than in the build arm because the check runs before it.
   sizeIsError = "--release" in opts
   reportNarrowing = "--report-narrowing" in opts
+  for o in opts:
+    if not o.startsWith("--isr-check:"): continue
+    case o["--isr-check:".len .. ^1]
+    of "error": isrCheckError = true
+    of "warn": isrCheckError = false
+    else: die("tuck: --isr-check: no such mode: '" & o["--isr-check:".len .. ^1] &
+              "'\n  available: warn, error")
   # `-v` = level 1, `-vv` = level 2 (adds per-module sub-steps), `--verbose`
   # = level 1. Whichever flag asks loudest wins if more than one is given.
   for o in opts:

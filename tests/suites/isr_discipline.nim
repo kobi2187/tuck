@@ -18,6 +18,18 @@ proc auditSays(t: var T, name: string, wanted: seq[string]) =
   else:
     t.no name, "audit did not name every site. Got: " & text
 
+proc gateSays(t: var T, name, pattern: string) =
+  ## The gate must reject with a clean TK-EF10 that names BOTH contexts.
+  let idx = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck", "--isr-check:error"])
+  if t.phase == pCollect: return
+  let (rc, text) = resultOf(t, idx)
+  if rc == 0:
+    t.no name, "gate accepted shared ISR state"
+  elif strutils.contains(text, pattern) and strutils.contains(text, "TK-EF10"):
+    t.ok name
+  else:
+    t.no name, "wrong gate diagnostic: " & text
+
 proc run*(t: var T) =
   t.src """
 register FLAG at 0x40000000:
@@ -34,5 +46,6 @@ fn main() -> int:
   t.auditSays "ISR audit names both writers by signature and the shared register", @[
     "ISR", "isr() [irq, irq_safe, no_alloc] writes",
     "main() -> int writes", "FLAG"]
+  t.gateSays "TK-EF10 gate names both contexts", "normal code main() -> int"
 
   t.finish()
