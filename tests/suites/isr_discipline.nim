@@ -30,6 +30,13 @@ proc gateSays(t: var T, name, pattern: string) =
   else:
     t.no name, "wrong gate diagnostic: " & text
 
+proc formatSays(t: var T, name, flag, pattern: string) =
+  let idx = t.needCmd(@["./tuck", "audit", t.curDir / "t.tuck", "--isr", flag])
+  if t.phase == pCollect: return
+  let (rc, text) = resultOf(t, idx)
+  if rc == 0 and strutils.contains(text, pattern): t.ok name
+  else: t.no name, "wrong " & flag & " report: " & text
+
 proc gateSays11(t: var T, name, pattern: string) =
   let idx = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck"])
   if t.phase == pCollect: return
@@ -66,6 +73,12 @@ fn main() -> int:
     "main() -> int writes", "FLAG"]
   t.gateSays "TK-EF10 gate names both contexts", "normal code main() -> int"
 
+  t.formatSays "audit --format:json emits a finding",
+               "--format:json", "\"code\": \"TK-EF10\""
+  t.formatSays "audit --format:sarif emits a SARIF 2.1.0 run",
+               "--format:sarif", "\"version\": \"2.1.0\""
+
+
   # A `critical:` block around BOTH accesses makes the same program safe.
   t.src """
 register FLAG at 0x40000000:
@@ -97,4 +110,5 @@ fn main() -> int [io]:
 """
   t.gateSays11 "TK-EF11 refuses I/O inside critical:", "would stay disabled"
 
+  # Machine-readable findings: jq-friendly JSON and standard SARIF 2.1.0.
   t.finish()

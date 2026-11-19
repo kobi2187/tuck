@@ -190,8 +190,11 @@ mechanism — which is the whole point of building the supporting layers first.
 `critical:` block, with a diagnostic naming the block and the fix. ✅ (QEMU
 re-verified, `isr_discipline` suite)
 
-Still to do here: the ISR-safe SPSC `sendFromIsr` primitive, and the shared
-reporter layer (JSON + SARIF) from §3.
+**Slice 6** — shared reporter layer: `tuck audit --isr --format:json|sarif`
+emits jq-friendly JSON and standard SARIF 2.1.0, with TK-EF10 as the rule id.
+✅ (parsed with python json; pinned in the suite)
+
+Still to do here: the ISR-safe SPSC `sendFromIsr` primitive.
 
 **Two traps hit while building these slices (worth remembering):**
 

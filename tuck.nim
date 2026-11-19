@@ -79,6 +79,7 @@ import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
 import compiler/frames   # `tuck frames`: the stackless colouring (#216)
 import compiler/isr_access  # `tuck audit --isr`: shared-state inventory
+import compiler/report_format  # JSON + SARIF emitters for reports
 import compiler/concurrency   # --concurrency:stackful|stackless
 import compiler/actor_mode
 import compiler/pipeline
@@ -226,7 +227,9 @@ The report lists those fns and every piece of shared state a register, pool,
 slab, arena, actor or registry declares that ISR and non-ISR code both touch,
 with the file/line of each access.
 
-  --isr   the ISR shared-access report (the only report today)
+  --isr           the ISR shared-access report (the only report today)
+  --format:json   emit machine-readable findings (jq-friendly)
+  --format:sarif  emit SARIF 2.1.0 (GitHub/GitLab code-scanning UIs)
 
 This is an INVENTORY, not a gate: nothing is rejected yet. The point is to
 make the shared-data table that embedded teams keep on paper visible in the
@@ -1270,7 +1273,25 @@ when isMainModule:
       die("tuck audit: name a report (--isr). Try `tuck help audit`.")
     let prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
     let entry = prog[prog.high].m
-    stdout.write render(auditShared(semLayer, entry), prog[prog.high].path)
+    let srcPath = prog[prog.high].path
+    let a = auditShared(semLayer, entry)
+    let wantJson = opts.anyIt(it == "--format:json")
+    let wantSarif = opts.anyIt(it == "--format:sarif")
+    if not wantJson and not wantSarif:
+      stdout.write render(a, srcPath)
+    else:
+      var findings: seq[Finding]
+      for s in a.unsafe:
+        let sites = a.access.filterIt(it.state == s and not it.protected)
+        if sites.len == 0: continue
+        var msg = s & " is shared between an interrupt and normal code: "
+        for x in sites:
+          msg.add (if x.isr: "ISR " else: "normal code ") & x.fnSig & " at " &
+            srcPath & ":" & $x.span.line & ":" & $x.span.col & "; "
+        msg.removeSuffix("; ")
+        findings.add Finding(code: "TK-EF10", msg: msg, path: srcPath,
+                             line: sites[0].span.line, col: sites[0].span.col)
+      stdout.write (if wantSarif: toSarif(findings) else: toJson(findings))
   of "frames":
     # Stackless transform, phase 1 (#216): which fns would become frames and
     # where each can pause, for the whole import closure.
