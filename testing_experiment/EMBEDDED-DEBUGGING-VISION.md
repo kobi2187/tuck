@@ -213,3 +213,166 @@ observability into a built-in developer experience.
 - Conservative WCET can cry wolf; the report-first rollout is deliberate.
 - Built-in tracing must stay near-zero cost or it becomes another Heisenbug;
   word-writes to a preallocated ring only, never formatting on the hot path.
+
+---
+
+## 8. Loose edges — notes for the future
+
+This is a very large milestone; several items below are future features, not
+work for the next session. They are recorded so nothing is lost. Each item is
+tagged with when it matters and, where applicable, the **existing convention or
+file format** to use so developers can parse the output with tools they already
+have (see also §9).
+
+### 8.1 Refinements to the four layers (settle before steps 0–6)
+
+1. **A stable event / crash binary format** — *settle before step 5.* The ring
+   buffer (Layer 3) and the crash dump need a format shared between target and
+   host decoder. Define it once, versioned, or recorder and decoder drift apart.
+   Prefer an existing container: emit records as **ELF `NOTE` sections** with a
+   vendor namespace, and export the decoded view as **JSON**. ELF notes are
+   readable by `readelf`/`objdump` and are the same mechanism core dumps use;
+   JSON is universally parseable.
+2. **Verify debug info early** — *check during step 0, before promising Layer 3.*
+   `tuck decode-crash` maps PC→Tuck line only if emitted code carries line
+   tables. Check whether Nim `--os:standalone` output has usable **DWARF**; if
+   not, the compiler must emit a side-table. DWARF is the standard GDB/LLDB
+   consumes — if present, `tuck build --debug` gets source-level debugging for
+   free (see #10).
+3. **SVD overlay semantics** — *part of step 1.* Define merge/conflict rules for
+   vendor corrections ("patch this field's reset value", "this reserved bit is
+   writable on rev B"). Use **CMSIS-SVD** as the base (the format vendors ship
+   and `svd2rust` parses) and **device tree overlays (`.dtbo` / DTS syntax)** for
+   board-level wiring, pin mux, and clock corrections — both are formats
+   embedded developers already parse with `dtc` and vendor toolchains.
+4. **Escape hatches must be loud** — *design principle for steps 1–3.* Typestate
+   and ISR discipline need `steal()`-style bypasses for driver authors (Rust has
+   this). Make them impossible to trigger accidentally: an explicit keyword, a
+   diagnostic that cannot be silenced, and a report listing every escape hatch
+   in the build. "Fearless" means the loopholes are visible. Report them in
+   **SARIF** alongside audit results (§9).
+
+### 8.2 Next-wave tools — what makes the four layers *usable* (high value)
+
+5. **Virtual board + `pending:` for hardware** — *fold into steps 0/6.* Declare
+   a `board` with peripherals, compile and **run** against a simulated board
+   before the PCB exists — the same typed-hole workflow Tuck already uses for
+   programs. Describe the board in **device tree (DTS/DTSI)**, the format Linux
+   and embedded vendors already use, reusing `stdlib-project`'s
+   `platform.devicetree`. This attacks "approachable" at the root: a developer
+   designs and runs firmware before any hardware exists.
+6. **Clock tree as a declaration** — *Layer 1, as important as registers.*
+   STM32 clock setup (PLL multipliers, bus dividers, peripheral limits, wrong
+   UART baud) is a legendary time-sink. Make clocks declarative; the compiler
+   computes frequencies, checks each peripheral's maximum, generates the
+   register writes, and prints the tree. Express it with standard **device tree
+   clock bindings** (`clocks`, `clock-names`, `assigned-clock-rates`), which
+   `dtc` and vendor tools already understand.
+7. **Watchdog + safe state as language constructs** — *Layer 1/2.* A `watchdog`
+   declaration tied to task liveness: the compiler ensures each critical task
+   feeds it and generates the feed. A `safeState` for outputs, guaranteed at
+   startup and on any fault path. Removes "device bricked / actuator left on"
+   bugs. This is the "fearless" feature par excellence; feed/failure events go
+   into the event ring (#13).
+8. **Power-state effects** — *Layer 1.* `sleep`/`stop`/`standby` as declared
+   effects: check which peripherals and IRQs can wake from each mode and that
+   clocks/register config are restored after wake. "Woke from stop mode with
+   the wrong clock" becomes a compile error. Map modes to standard **device
+   tree power-domain bindings**.
+9. **Probe abstraction: `tuck flash`, `tuck probe`, `tuck monitor`** — *Layer 3/4
+   usability.* Hide OpenOCD/pyOCD/probe-specific commands behind one CLI: flash,
+   reset, read the event ring, dump crash state. Wrap **OpenOCD/pyOCD** and
+   **CMSIS-DAP**, and accept their standard `.cfg` files — a newcomer shouldn't
+   need to learn three probe toolchains to use the built-in observability.
+10. **Source-level GDB via DWARF** — *same check as #2.* If emitted code has line
+    tables, `tuck build --debug` gives GDB/Tuck source-level debugging for free.
+    Standard **DWARF** + **GDB remote serial protocol** over the existing probe.
+11. **Virtual time in the QEMU loop** — *refinement of Layer 4.* A 1 Hz blink
+    shouldn't take a wall-clock second to test. Run with an accelerated virtual
+    clock and inject timer interrupts deterministically so days of simulated
+    time pass in seconds. This is what makes Layer 4 usable for real timing
+    tests rather than smoke tests.
+12. **Fault injection in simulation** — *pairs with #7 and #11.* Deliberately
+    flip register bits, drop an interrupt, stall a clock, exhaust a pool — then
+    assert the program still reaches its `safeState`. "Fearless" means you've
+    seen it fail on purpose. Record results in **JUnit XML** so CI dashboards
+    parse them.
+
+### 8.3 Domain gaps (small, high value for approachability)
+
+15. **Fixed-point ranges and boundary literals** — Tuck has `[saturating]` /
+    `[wrapping]`, but MISSING-FEATURES **A51** ("minimum of a signed type cannot
+    be written") is a known paper cut. Fix it and add range-checked fixed-point
+    types using standard **Q notation** (`Q7.8`, `Q15.16`) that DSP developers
+    already use.
+16. **Audit stdlib for `[irq_safe]`** — `platform.hal` / `platform.interrupt`
+    exist, but nobody has verified that stdlib paths callable from an ISR are
+    allocation-free and effect-clean. One-time audit + a CI guard makes the ISR
+    discipline (#1b) credible. Emit findings as **SARIF**.
+17. **MPU configuration from `platform.boot` regions** — *later.* Those regions
+    already describe memory; generate **ARM MPU** regions from them so a stack
+    overflow or wild write hits a HardFault. Complements `flip-link` with
+    hardware protection on cores that have an MPU.
+18. **Board self-checks** — *cheap.* stdlib modules have a `main` of self-checks
+    run on all backends; do the same for board packages: a `main` that verifies
+    register maps, pin mux, and clock config in simulation. Catches board-file
+    mistakes before hardware; results in **JUnit XML**.
+19. **Multi-backend clarity on metal** — *doc decision.* The experiment uses
+    Nim; Odin has a freestanding target; D's story is unclear. Newcomers will
+    ask "which backend do I use for MCU work?" Answer explicitly with a support
+    matrix in the README, or "approachable" fails at the first question.
+
+### 8.4 Later / north star
+
+13. **Zero-overhead profiling from the event ring** — *refinement of Layer 3,
+    after the ring exists.* Add **DWT cycle-counter** reads and `tuck profile`
+    renders a timeline/flamegraph. Export as **CTF (Common Trace Format)** so
+    Babeltrace / Trace Compass — the tools trace engineers already use — can
+    open it.
+14. **"Explain my crash"** — *north star, needs Layers 3 + 5.* Given a crash dump
+    + event ring, emit a diagnosis in Tuck terms, not just data: "task X was
+    waiting on mailbox Y, which was full because consumer Z was blocked on
+    `[io]` at line 42." The tool stops giving information and tells you what
+    went wrong — AI-assisted diagnosis built on structured, compiler-generated
+    facts. Deliver the explanation as **SARIF** results + Markdown so it lands
+    in CI/PR UIs.
+20. **HIL CI / board rack** — *for teams.* `tuck test --hardware` on a rack of
+    boards, results in **JUnit XML**. Not needed for individual approachability,
+    but it is how the guarantees stay honest across MCU revisions.
+
+### 8.5 Scope discipline — explicitly *not* building (revisit, don't calcify)
+
+- **A general RTOS** — actors + tasks + the deterministic stackless scheduler
+  *are* the concurrency model; wrapping an RTOS would reintroduce the bugs we
+  are removing.
+- **A GUI IDE** — one CLI (`tuck flash`, `tuck probe`, `tuck audit`, `tuck
+  timing`) plus editor integration is enough; the research shows the pain is
+  tooling fragmentation, not the absence of a GUI.
+- **Hand-written packages for 100 MCUs** — SVD + overlay or nothing.
+- **WCET as a hard gate on day one** — report first, opt-in gating, as in §6.
+
+## 9. Conventions and file formats — use what developers already parse
+
+Every output should land in a format an embedded developer's existing toolchain
+already reads. This is a deliberate constraint: it makes the tools adoptable
+and makes our output composable with the tools in §1's ladder rather than
+competing with them.
+
+| Concern | Use this convention | Tools that already parse it |
+|---|---|---|
+| Register / peripheral metadata | **CMSIS-SVD** (vendor XML) | `svd2rust`, vendor packs, SVD parsers |
+| Board wiring, pin mux, clocks, power domains | **Device Tree** `.dts`/`.dtsi` + **overlays** `.dtbo` | `dtc`, Linux, vendor SDKs; Tuck's `platform.devicetree` |
+| Diagnostics, audit findings, escape-hatch list, crash explanation | **SARIF 2.1.0** | GitHub code scanning, Azure DevOps, GitLab |
+| Timing / audit metrics (machine-readable) | **JSON** (+ CSV for tables) | `jq`, spreadsheets, dashboards |
+| Debug info and source-level debugging | **DWARF** + **GDB remote serial protocol** | GDB, LLDB, IDEs |
+| Event trace / profiles | **CTF (Common Trace Format)** | Babeltrace, Trace Compass |
+| Crash dump container | **ELF `NOTE` sections** + JSON-decoded view | `readelf`, `objdump`, our decoder |
+| Probe / flash control | **OpenOCD / pyOCD / CMSIS-DAP** config conventions | existing probe scripts and `.cfg` files |
+| Test / fault-injection results | **JUnit XML** | CI dashboards (Jenkins, GitHub, GitLab) |
+| Fixed-point types | **Q notation** (`Q7.8`, `Q15.16`) | DSP libraries, existing developer habit |
+
+Where no standard exists, use a **versioned JSON schema** and publish it; never
+invent a bespoke text format that needs a bespoke parser. The one deliberate
+exception is the on-target ring record, which is a fixed-size binary word for
+speed — but it is exported into CTF/JSON by `tuck trace`/`tuck decode-crash`, so
+developers never have to parse the raw binary themselves.
