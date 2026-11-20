@@ -202,6 +202,12 @@ is a raw 0..15 index today; named/declared slots are a future refinement.
 
 This slice completes the ISR-discipline vertical slice.
 
+**Slice 8** — Event ring: a fixed 256-entry ring in `tuck_sl` records task
+switches (ready/run) and ISR posts with one word write each (no formatting on
+the hot path). `tuckEventDump` reports the count over semihosting.
+`stage10_fire_forget` prints `DUMP-ENTER HEAD=2 DUMP-DONE` then `WORKER WORKER`
+under QEMU.
+
 **Two traps hit while building these slices (worth remembering):**
 
 1. **Stale incremental Nim cache.** After adding enum entries to
