@@ -167,13 +167,24 @@ the `freestanding-loop.sh` driver, we got a real bare-metal build running.
   emits a plain `discard tuck_main()` (no libc `quit`/`exit`, no `tuck_async`
   import) and a `tuckSlRunAll()` after main.
 
-### Results
+### Results (updated 2026-11-20)
 | stage | result |
 |---|---|
 | `bare_metal_nop.tuck` (no tasks) | **boots, runs to idle, no fault** |
 | `bare_metal_led.tuck` (register writes) | **boots, runs to idle, no fault** |
-| `stage9_minimal_task.tuck` (one `[io]` task returning a value) | builds + links; awaits but on QEMU the frame never finishes (see blocker) |
-| `stage10_fire_forget.tuck` | builds + links; tasks do not run to completion |
+| `stage9_minimal_task.tuck` (one `[io]` task returning a value) | **runs to completion, prints TASK_OK** |
+| `stage10_fire_forget.tuck` | **runs to completion, both workers print WORKER** |
+| `stage12_critical.tuck` (protected shared state) | **boots, prints CRITICAL_OK** |
+| `stage13_isr_spsc.tuck` (ISR-safe handoff) | **boots, prints ISR_SPSC_OK** |
+| `stage14_fault.tuck` (deliberate null-call fault) | **fault captured: prints FAULT PC=... CFSR=... HFSR=...** |
+
+### Root cause of the now-resolved blocker
+Nim's `nimZeroMem` calls newlib's `memset`, which `arm-none-eabi-gcc` ships in
+**ARM state**; Cortex-M is Thumb-only. Fixed by vendoring **picolibc 1.8.12**
+(Thumb `memset`) under `testing_experiment/vendor/picolibc/` and linking it via
+`boards/build-picolibc.sh`. A second blocker — TLS threadvars not staying
+consistent under `--threads:off` — was fixed by making `slHead`/`slTail`/
+`tuckSlDriving` plain globals under `defined(freestanding)`.
 
 ### Root cause of the remaining blocker (important)
 Nim's C output calls **newlib's `memset`** (through `nimZeroMem`) to clear task

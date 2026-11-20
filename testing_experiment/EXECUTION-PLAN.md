@@ -93,7 +93,7 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
 - **Exit:** `stage9_minimal_task` (await a task returning a value) runs to
   completion under QEMU and prints its `TASK_OK` line.
 
-### T3 — Full vector table and fault handlers  [T2]  [S]  ⏳ PENDING
+### T3 — Full vector table and fault handlers  [T2]  [S]  ✅ DONE
 
 - **Outcome:** all Cortex-M exceptions land in known handlers, not garbage.
 - **Files:** `testing_experiment/boards/startup_lm3s6965evb.c`,
