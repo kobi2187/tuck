@@ -44,6 +44,8 @@ LANE 1 — METAL RUNTIME   LANE 2 — STATIC FEATURES      LANE 3 — APPROACHAB
   T4 tasks complete       T13 Q-fixed-point + A51        T17 watchdog/safeState
      under QEMU               (unblocked, independent)       (needs T4)
           │
+  T18 tuck sim      (needs T3,T4) ──► T19 host sim ──► T20 virtual time
+
           ├──► T5 event ring ──► T6 crash dump + decoder
           │                       (T6 also needs done reporter)
           └──► T7 virtual time + fault injection
@@ -206,20 +208,45 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
   guaranteed in a safe state at startup and on every fault path.
 - **Exit:** fault injection (T7) proves the safe state is reached.
 
+### T18 — `tuck sim`: build + run under QEMU in one command  [T3, T4]  [S]  ✅ DONE
+
+- **Outcome:** a developer runs `tuck sim file.tuck` and gets a sub-second test
+  cycle instead of a 10-minute flash-and-see. Captures semihosting output,
+  exit code, and fault reports.
+- **Exit:** clean run prints program output and exits 0; fault run prints
+  `FAULT PC=...` and exits 1. Verified with stage11, stage14.
+
+### T19 — `tuck sim --host`: fastest path  [none]  [S]
+
+- **Outcome:** builds against host sim shims, runs in milliseconds, no
+  cross-toolchain needed. Validates logic and scheduler.
+- **Exit:** `tuck sim --host file.tuck` completes in <1s with correct output.
+
+### T20 — Virtual time + fault injection  [T4, T5, T18]  [M]
+
+- **Outcome:** accelerated virtual clock so days of simulated time pass in
+  seconds; `--fault:isr-drop` injects dropped interrupts and checks safeState.
+- **Exit:** a 1 Hz blink completes in <100ms wall time; a fault-injected run
+  produces a reproducible failure + event trace.
+
 ## 3. Immediate next actions (in order)
 
-1–6 above are **complete** (T1–T4, with the TLS threadvar discovery documented
-in `IMPLEMENTATION-GROUND.md` §9a). Remaining:
+T1–T4 are **complete** (picolibc vendored, tasks run to completion on metal).
+T3 (full vectors) is also **complete** — the default handler records PC/LR/xPSR/
+CFSR/HFSR/BFAR and prints a one-line FAULT report; `tuck decode-crash ELF PC`
+maps the PC to the nearest symbol. T5 (event ring) is also **complete**:
+`tuckEventDump` reports the ring count over semihosting.
 
-7. **T3 — full vectors.** Populate the vector table + fault recorder; verify
-   the deliberate-fault case lands in our handler. Not yet done; the table still
-   has only the reset vector.
-8. **T5 — event ring.** Now unblocked. First step: a fixed `pool`-backed ring
-   in `tuck_sl` (freestanding) recording task switches, exported via
-   `tuck trace`.
-9. **T6 — crash dump + decoder.** Depends on T3 + T5.
-10. **T7 — virtual time + fault injection.** Depends on T4 (done) + T5.
-11. **T8 — SVD importer** (Lane 2, unblocked, can interleave).
+Remaining:
+
+12. **T6 — crash dump + decoder.** Depends on T3 (done) + T5 (done). Now
+    unblocked. First step: emit a compiler side-table mapping PC→Tuck source
+    line so `tuck decode-crash` reports source locations, not just symbol names.
+13. **T7 — virtual time + fault injection.** Depends on T4 (done) + T5 (done).
+    Now unblocked. First step: `--icount` integration + a `--fault` flag on
+    `tuck sim`.
+14. **T8 — SVD importer** (Lane 2, unblocked, can interleave).
+15. **T11 — `tuck timing`** (Lane 2, unblocked, can interleave).
 
 Each ends with: rebuild tuck (clean Nim cache after enum changes), run the
 affected `tests/run` suite, run `freestanding-loop.sh <stage>`, and write a
