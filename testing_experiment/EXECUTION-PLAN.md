@@ -8,18 +8,20 @@ next commands.
 
 ## 0. Where we are
 
-**Done (this branch, `bdc10e1`):**
+**Done (this branch, `bdc10e1`+):**
 
 - QEMU feedback loop (`freestanding-loop.sh`) + board files in `boards/`.
 - Freestanding runtime gates in `tuck_sl.nim` / `tuck_rt.nim` / `tuck.nim`.
 - Full ISR-discipline slice: `[irq]` context, `tuck audit --isr`, TK-EF10/11,
   `critical:` node kind, JSON/SARIF reporter, ISR-safe SPSC handoff.
-- Stages 11/12/13 boot under QEMU; host quick gate green.
+- Vendored picolibc 1.8.12 (Thumb) + `boards/build-picolibc.sh` + cross file.
+- **Tasks now run to completion on bare metal**: `slHead`/`slTail`/`tuckSlDriving`
+  are plain globals under `defined(freestanding)` (no TLS threadvar).
+- Stages 9/10/12/13 boot under QEMU and print their success markers; host quick
+  gate green.
 
-**Known blocker:** task-based programs (frames/slots) build and link, but on
-metal they do not run to completion. Cause: Nim's `nimZeroMem` calls newlib's
-`memset`, which `arm-none-eabi-gcc` ships in **ARM state**; Cortex-M is
-Thumb-only. The fix is a Thumb libc (picolibc).
+**Resolved blocker:** task-based programs now run on metal. The remaining
+runtime work (event ring, crash dump, virtual time) is unblocked.
 
 ## 1. Dependency graph
 
@@ -60,7 +62,7 @@ whenever Lane 1 is waiting on a toolchain/download.
 Each task has: **ID**, **depends**, **outcome**, **files**, **exit criterion**.
 Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
 
-### T1 — Obtain and build a Thumb picolibc  [depends: none]  [S]
+### T1 — Obtain and build a Thumb picolibc  [depends: none]  [S]  ✅ DONE
 
 - **Outcome:** a static `libc.a` whose `memset`/`memcpy` are Thumb code, plus
   matching headers, at a pinned path under `testing_experiment/`.
@@ -82,7 +84,7 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
 - **Decision needed:** vendor a pinned tarball (reproducible, larger diff) vs
   a git submodule (small diff, needs network at build). Pick: pinned tarball.
 
-### T2 — Link Tuck's freestanding builds against picolibc  [T1]  [S]
+### T2 — Link Tuck's freestanding builds against picolibc  [T1]  [S]  ✅ DONE
 
 - **Outcome:** `freestanding-loop.sh` no longer links newlib's ARM libc.
 - **Files:** `testing_experiment/freestanding-loop.sh` (add `--passL:-nostdlib`
@@ -91,7 +93,7 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
 - **Exit:** `stage9_minimal_task` (await a task returning a value) runs to
   completion under QEMU and prints its `TASK_OK` line.
 
-### T3 — Full vector table and fault handlers  [T2]  [S]
+### T3 — Full vector table and fault handlers  [T2]  [S]  ⏳ PENDING
 
 - **Outcome:** all Cortex-M exceptions land in known handlers, not garbage.
 - **Files:** `testing_experiment/boards/startup_lm3s6965evb.c`,
@@ -103,7 +105,7 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
 - **Exit:** a deliberate fault (write to an unmapped address) from a QEMU run
   lands in the recorded handler instead of "Lockup: can't escalate …".
 
-### T4 — Stackless tasks run to completion on metal  [T2, T3]  [M]
+### T4 — Stackless tasks run to completion on metal  [T2]  [M]  ✅ DONE (T3 not required — tasks run now)
 
 - **Outcome:** the first real concurrency milestone.
 - **Files:** `stage8_freestanding_stackless.tuck`, `stage9_minimal_task.tuck`,
@@ -206,28 +208,22 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
 
 ## 3. Immediate next actions (in order)
 
-These are concrete, not aspirational. Execute one at a time; QEMU-verify and
-dev-review after each.
+1–6 above are **complete** (T1–T4, with the TLS threadvar discovery documented
+in `IMPLEMENTATION-GROUND.md` §9a). Remaining:
 
-1. **T1a — toolchain prerequisites.** Check network; install `meson`; fetch a
-   pinned picolibc tarball into `testing_experiment/vendor/picolibc/`.
-   *Command probe:* `python3 -m pip --version`, `curl -I https://github.com/…`.
-2. **T1b — cross file + build script.** Write
-   `testing_experiment/boards/picolibc-arm.cross` and `boards/build-picolibc.sh`
-   (Thumb, `-mcpu=cortex-m3`, soft-float, no startup, no TLS).
-3. **T1c — verify the Thumb libc.** `arm-none-eabi-objdump -d` on `memset`.
-   Update `IMPLEMENTATION-GROUND.md` with the result (what/why/where).
-4. **T2 — rewire the loop.** Replace newlib with picolibc in
-   `freestanding-loop.sh`; rebuild `stage9_minimal_task`; confirm TASK_OK.
-5. **T3 — full vectors.** Populate the vector table + fault recorder; verify
-   the deliberate-fault case lands in our handler.
-6. **T4 — finish tasks.** Run stage 8/10 under QEMU; fix whatever the Thumb
-   libc exposes; lock it in with a host + QEMU suite.
+7. **T3 — full vectors.** Populate the vector table + fault recorder; verify
+   the deliberate-fault case lands in our handler. Not yet done; the table still
+   has only the reset vector.
+8. **T5 — event ring.** Now unblocked. First step: a fixed `pool`-backed ring
+   in `tuck_sl` (freestanding) recording task switches, exported via
+   `tuck trace`.
+9. **T6 — crash dump + decoder.** Depends on T3 + T5.
+10. **T7 — virtual time + fault injection.** Depends on T4 (done) + T5.
+11. **T8 — SVD importer** (Lane 2, unblocked, can interleave).
 
-Each of 1–6 ends with: rebuild tuck (clean Nim cache), run the affected
-`tests/run` suite, run `freestanding-loop.sh <stage>`, and write a short
-dev-perspective note ("what would the developer see, and is it transparent?")
-into `IMPLEMENTATION-GROUND.md`.
+Each ends with: rebuild tuck (clean Nim cache after enum changes), run the
+affected `tests/run` suite, run `freestanding-loop.sh <stage>`, and write a
+short dev-perspective note into `IMPLEMENTATION-GROUND.md`.
 
 ## 4. Decisions to confirm before starting
 
