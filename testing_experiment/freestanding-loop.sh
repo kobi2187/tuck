@@ -35,7 +35,7 @@ echo "=== tuck check ==="
 
 echo "=== freestanding build ==="
 ./tuck b "testing_experiment/${STAGE}.tuck" \
-  --nim:"--os:standalone --cpu:arm --mm:none -d:freestanding --exceptions:goto --cc:gcc --gcc.exe:arm-none-eabi-gcc --gcc.linkerexe:arm-none-eabi-gcc --threads:off --tlsEmulation:off --passC:-mthumb --passC:-mcpu=cortex-m3 --passC:-I$PICOLIBC/include --passL:-nostartfiles --passL:$OUT/startup.o --passL:$OUT/stubs.o --passL:$OUT/semihost.o --passL:$PICOLIBC/lib/libc.a --passL:-T$BOARDS/lm3s6965evb.ld" \
+  --nim:"--os:standalone --cpu:arm --mm:none -d:freestanding --exceptions:goto --cc:gcc --gcc.exe:arm-none-eabi-gcc --gcc.linkerexe:arm-none-eabi-gcc --threads:off --tlsEmulation:off --passC:-mthumb --passC:-mcpu=cortex-m3 --passC:-g --passC:-I$PICOLIBC/include --passL:-nostartfiles --passL:$OUT/startup.o --passL:$OUT/stubs.o --passL:$OUT/semihost.o --passL:$PICOLIBC/lib/libc.a --passL:-T$BOARDS/lm3s6965evb.ld" \
   -o:"$OUT" 2>&1 | tail -20
 
 ELF="$OUT/${STAGE}"

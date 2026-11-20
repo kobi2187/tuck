@@ -126,7 +126,7 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
 - **Exit:** a QEMU run produces a CTF file that Babeltrace can read, showing
   two tasks interleaving.
 
-### T6 — Crash dump + source decoder  [T5, done reporter]  [M]
+### T6 — Crash dump + source decoder  [T5, done reporter]  [M]  (partial)
 
 - **Outcome:** deliberate fault → ELF-note dump over semihosting →
   `tuck decode-crash` maps PC/LR to Tuck source lines, emits SARIF + Markdown.

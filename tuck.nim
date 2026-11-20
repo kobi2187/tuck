@@ -243,6 +243,15 @@ pause, or a fn one of them reaches that can pause. After them come the
 handlers that never pause (the actor loop calls them, so they need no
 frame) and the [io] fns a root reaches that never pause (they stay native).
 Nothing is rewritten; this is what the transform will start from.""",
+  "decode-crash": """tuck decode-crash ELF PC
+
+Map a faulting PC from a Cortex-M crash to the nearest symbol in an ELF.
+Reads the fault record printed by the runtime's default handler (FAULT
+PC=... LR=... CFSR=...) and names the function. Without DWARF, only the
+symbol name is recoverable; source-line mapping needs a future side-table.
+
+  ELF   the linked ELF (e.g. from `tuck build --concurrency:stackless`)
+  PC    the faulting program counter, hex (e.g. 0x20000e30)""",
   "explain": """tuck explain CODE
 
 Print what a diagnostic code means and how to fix it, e.g.:
@@ -255,7 +264,7 @@ tuck prints. This is the one command that takes a CODE, not a file."""
 
 const CommandAliases = {"l": "lex", "p": "parse", "ch": "check",
                          "c": "compile", "b": "build", "d": "dump", "ef": "effects",
-                         "v": "validate"}.toTable
+                         "v": "validate", "dc": "decode-crash"}.toTable
 
 proc printCommandHelp(cmd: string, code = 0) =
   ## `tuck help <cmd>`: prints one command's help (aliases accepted) and exits
@@ -1036,6 +1045,32 @@ when isMainModule:
           " (codes look like TK-TY05)")
     echo $dc, "  ", categoryName(dc), " ", severityOf(dc)
     echo "  ", explanationOf(dc)
+    quit(0)
+  # `decode-crash` takes an ELF and a PC, not a .tuck file.
+  if cmd == "decode-crash":
+    if paramCount() < 3: usage()
+    let elf = paramStr(2)
+    let pcStr = paramStr(3)
+    let pc = parseHexInt(pcStr)
+    # Map PC to the nearest symbol via arm-none-eabi-nm; a Thumb PC has bit 0
+    # set, so mask it before the lookup.
+    let nm = execProcess("/usr/bin/arm-none-eabi-nm", args=[elf], options = {poStdErrToStdOut})
+    var bestName = "?"
+    var bestAddr: int64 = -1
+    for line in nm.splitLines():
+      let parts = line.splitWhitespace()
+      if parts.len < 3: continue
+      try:
+        let symAddr = parseHexInt("0x" & parts[0])
+        if symAddr <= pc and symAddr > bestAddr:
+          bestAddr = symAddr
+          bestName = parts[2]
+      except ValueError: discard
+    echo "decode-crash: PC " & pcStr & " -> " & bestName &
+         " (base 0x" & toHex(bestAddr, 8) & ")"
+    echo "  function: " & bestName
+    echo "  Note: without DWARF, only the symbol name is recoverable. A future"
+    echo "  `tuck build --debug` with a side-table will map to source lines."
     quit(0)
   let path = paramStr(2)
   if not fileExists(path) and not (cmd == "test" and dirExists(path)):
