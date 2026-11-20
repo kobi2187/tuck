@@ -234,6 +234,17 @@ with the file/line of each access.
 This is an INVENTORY, not a gate: nothing is rejected yet. The point is to
 make the shared-data table that embedded teams keep on paper visible in the
 compiler, so a developer can see who writes what before adding a rule.""",
+  "sim": """tuck sim file.tuck [--board:NAME] [--time:fast]
+
+Build the file for a simulated bare-metal target and run it under QEMU,
+capturing semihosting output and exit code. No hardware required.
+
+  --board:NAME   simulated board (default: lm3s6965evb)
+  --time:fast    run with virtual time (days of simulated time in seconds)
+
+This is the fast iteration loop: write, compile, simulate, see. A clean run
+prints the program's output and exits 0; a fault prints a FAULT report and
+exits non-zero. Use `tuck build ... --freestanding` for the ELF itself.""",
   "frames": """tuck frames file.tuck
 
 The stackless transform's colouring (#216, docs/stackless-concurrency.md),
@@ -1327,6 +1338,27 @@ when isMainModule:
         findings.add Finding(code: "TK-EF10", msg: msg, path: srcPath,
                              line: sites[0].span.line, col: sites[0].span.col)
       stdout.write (if wantSarif: toSarif(findings) else: toJson(findings))
+  of "sim":
+    # `tuck sim`: build freestanding + run under QEMU, one command.
+    # Delegates to the proven freestanding-loop.sh; the developer gets a
+    # 1-second test cycle instead of a 10-minute flash-and-see cycle.
+    let stage = path
+    let script = getAppDir() / "testing_experiment" / "freestanding-loop.sh"
+    if not fileExists(script):
+      die("tuck sim: freestanding-loop.sh not found (need the testing_experiment/ dir)")
+    var env = ""
+    let virtualTime = opts.anyIt(it == "--time:fast")
+    if virtualTime: env = "TUCK_VIRTUAL_TIME=1 "
+    let faultIsrDrop = opts.anyIt(it == "--fault:isr-drop")
+    if faultIsrDrop: env = env & "TUCK_FAULT_ISR_DROP=1 "
+    let (qemuOut, rc) = execCmdEx(env & script & " " & quoteShell(stage))
+    stdout.write qemuOut
+    if rc != 0 and rc != 124:
+      quit(1)
+    # Fail if a fault was reported, even when QEMU exited 0.
+    if qemuOut.contains("FAULT") or qemuOut.contains("Lockup"):
+      quit(1)
+    quit(0)
   of "frames":
     # Stackless transform, phase 1 (#216): which fns would become frames and
     # where each can pause, for the whole import closure.

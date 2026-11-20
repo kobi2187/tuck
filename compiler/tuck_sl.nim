@@ -284,16 +284,14 @@ proc tuckEventDump*() =
   ## verified by the count; per-event detail is decoded on the host by
   ## `tuck trace` (CTF export), not printed from the hot path.
   proc sh(s: cstring) {.importc: "tuck_semihost_write".}
-  sh("DUMP-ENTER\n")
   var buf: array[16, char]
   var j = 0
-  buf[j] = 'H'; j += 1
   buf[j] = 'E'; j += 1
-  buf[j] = 'A'; j += 1
-  buf[j] = 'D'; j += 1
+  buf[j] = 'V'; j += 1
+  buf[j] = 'T'; j += 1
+  buf[j] = 'S'; j += 1
   buf[j] = '='; j += 1
   buf[j] = char(ord('0') + (eventRingHead mod 10)); j += 1
   buf[j] = '\n'; j += 1
   buf[j] = '\0'; j += 1
   sh(cast[cstring](addr buf[0]))
-  sh("DUMP-DONE\n")
