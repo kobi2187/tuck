@@ -26,6 +26,7 @@
 #   IV  invariant    an `invariant:` predicate that cannot mean anything (4.7)
 #   RG  registry     the event registry's rules (Part 10)
 #   RE  register     a memory-mapped register's layout or access mode (8.1)
+#   TM  timing       a static timing/space budget report, not a rejection
 #
 # NUMBERS ARE PERMANENT. Once a code appears in a release it names that
 # diagnostic forever. A diagnostic that is deleted RETIRES its number — the
@@ -229,6 +230,8 @@ type
     dcRsBadStatesType = "TK-RS10"       ## `states:` names no sum type, or one with no edges
     dcRsIncoherent = "TK-RS11"          ## two knobs on one kind that cannot both mean anything
     dcRsUnfinished = "TK-RS12"          ## a handle whose only use is `.ok`: never finished or handed on
+    dcTmCriticalNest = "TK-TM01"        ## `critical:` blocks nested inside each other
+    dcTmStackDepth = "TK-TM02"          ## approximate worst-case stack, reported not rejected
 
 const UncodedNote* = """
 UNCODED DIAGNOSTICS. `dcNone` exists because codes are being adopted site by
@@ -266,9 +269,11 @@ proc categoryName*(d: DiagCode): string =
   of "IV": "Invariant"
   of "RG": "Registry"
   of "RE": "Register"
+  of "TM": "Timing"
   else: "Semantic"   # SM, and a category added without a word here
 
-const WarningCodes* = {dcTyMemberShadowsFn, dcMeArenaInert}  # ME02 retired
+const WarningCodes* = {dcTyMemberShadowsFn, dcMeArenaInert,  # ME02 retired
+                       dcTmCriticalNest, dcTmStackDepth}    # reports, never gates
   ## Codes that REPORT without stopping the build. Kept beside the registry
   ## rather than inferred from the category letters, because severity is a
   ## property of the individual diagnostic and not of its category — TY holds
@@ -1208,6 +1213,18 @@ proc ruleExplanation(d: DiagCode): string =
     "it must declare an effect it reaches (spec §3.7 — explicit, not " &
     "inferred). Fix: add `[resource: k]` to this fn's own bracket, or " &
     "finish the handle here so it does not escape."
+  of dcTmCriticalNest:
+    "A `critical:` block already disables interrupts for everything inside " &
+    "it, so a `critical:` inside another adds nothing and hides the real " &
+    "bound: a reader counting nesting cannot tell which section actually " &
+    "runs. Fix: keep one block, or split the outer one so each section is " &
+    "flat. Reported by `tuck timing`, never rejected."
+  of dcTmStackDepth:
+    "A static estimate, not a measurement: `tuck timing` sums a rough frame " &
+    "size (header, parameters, locals) along the deepest resolved call path " &
+    "from each fn. Use it to spot order-of-magnitude budget problems on a " &
+    "small-SRAM target — never to size a real stack. The runtime's own " &
+    "high-water mark is the authoritative number."
   else: ""
 
 proc explanationOf*(d: DiagCode): string =

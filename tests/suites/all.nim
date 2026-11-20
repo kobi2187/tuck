@@ -70,6 +70,7 @@ import stdlib_project
 import stdlib_surface
 import syntax_ceilings
 import task_select
+import timing_report
 import typecheck
 import uninit
 import validate
@@ -148,6 +149,7 @@ let registry: seq[Entry] = @[
   ("stdlib_surface",      SuiteProc(stdlib_surface.run),      false),
   ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     true),
   ("task_select",         SuiteProc(task_select.run),         false),
+  ("timing_report",       SuiteProc(timing_report.run),       true),
   ("typecheck",           SuiteProc(typecheck.run),           true),
   ("uninit",              SuiteProc(uninit.run),              false),
   ("validate",            SuiteProc(validate.run),            false),

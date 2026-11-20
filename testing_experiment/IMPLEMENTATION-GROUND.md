@@ -147,6 +147,22 @@ Extend the existing `checkStackBound` from "no cycle" to an actual bound:
 Output through layer A (JSON + SARIF + a Markdown table). This is the step that
 turns "three days with a logic analyzer" into a line of `tuck timing`.
 
+**Built 2026-11-20 (first slice).** `compiler/timing_report.nim` + the
+`tuck timing` command report:
+- critical-section nesting per body-owning decl, via `allDecls` + `ownExprs`
+  (fn, task, `on select` arms, actor initialisers — the hand-rolled
+  `decls` + `dkFn` walk missed all but the first);
+- an approximate worst-case stack that SUMS frames along the deepest
+  `calleeDecl` path and names the path (`main() -> top() -> middle()`);
+- text, JSON, and SARIF 2.1.0 (`TK-TM01` nesting, `TK-TM02` stack, both
+  warnings). The stack number is a budget flag, not a measurement; the text
+  output says so.
+
+Still to do: WCET, task utilization, longest masked interval, and
+`[period:, deadline:]` gating. The dev-perspective check that shaped this
+slice: a number without the path that produced it is not actionable, and a
+report that calls an estimate an error teaches the reader to distrust it.
+
 ## 8. Metal lane — depends on picolibc (step 0 of the vision)
 
 After a Thumb libc links, the runtime layers become possible:

@@ -166,12 +166,18 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
   mux, clocks) run in simulation on all backends.
 - **Exit:** registered in `stdlib_project` suite; results in JUnit XML.
 
-### T11 — `tuck timing` reports  [none; validates against T4]  [M]
+### T11 — `tuck timing` reports  [none; validates against T4]  [M]  ◐ PARTIAL
 
-- **Outcome:** worst-case stack, conservative WCET, task utilization, longest
-  masked interval — report first, opt-in gating later.
-- **Exit:** produces a JSON + Markdown report for every example; deadline
-  declarations `[period:, deadline:]` are flagged when exceeded.
+- **Built (2026-11-20):** `tuck timing FILE` reports worst-case
+  **critical-section nesting** per fn and an **approximate worst-case stack**
+  along the resolved call graph, worst-first. Output is text, JSON
+  (`--format:json`), or SARIF 2.1.0 (`--format:sarif`, TK-TM01/TM02 as
+  warnings). The stack number SUMS the call path; it is a budget flag, not a
+  measurement.
+- **Still to do:** conservative WCET, task utilization, longest masked
+  interval, and `[period:, deadline:]` deadline gating.
+- **Exit (remaining):** a JSON + Markdown report for every example; a
+  deadline declaration that cannot be met is flagged.
 
 ### T12 — MPU regions from `platform.boot`  [T3]  [S]
 
@@ -235,18 +241,21 @@ T1–T4 are **complete** (picolibc vendored, tasks run to completion on metal).
 T3 (full vectors) is also **complete** — the default handler records PC/LR/xPSR/
 CFSR/HFSR/BFAR and prints a one-line FAULT report; `tuck decode-crash ELF PC`
 maps the PC to the nearest symbol. T5 (event ring) is also **complete**:
-`tuckEventDump` reports the ring count over semihosting.
+`tuckEventDump` reports the ring count over semihosting. T7 (virtual time +
+fault injection) and T18 (`tuck sim`) are **complete**. T11 is **partial**:
+`tuck timing` now reports critical-section nesting and an approximate
+worst-case stack (text/JSON/SARIF); WCET, utilization and deadline gating
+remain.
 
 Remaining:
 
 12. **T6 — crash dump + decoder.** Depends on T3 (done) + T5 (done). Now
     unblocked. First step: emit a compiler side-table mapping PC→Tuck source
     line so `tuck decode-crash` reports source locations, not just symbol names.
-13. **T7 — virtual time + fault injection.** Depends on T4 (done) + T5 (done).
-    Now unblocked. First step: `--icount` integration + a `--fault` flag on
-    `tuck sim`.
+13. **T11 (rest) — WCET, task utilization, longest masked interval, deadline
+    gating.** The stack + critical-nesting report is built; these need the
+    call graph's timing facts and `[period:, deadline:]` declarations.
 14. **T8 — SVD importer** (Lane 2, unblocked, can interleave).
-15. **T11 — `tuck timing`** (Lane 2, unblocked, can interleave).
 
 Each ends with: rebuild tuck (clean Nim cache after enum changes), run the
 affected `tests/run` suite, run `freestanding-loop.sh <stage>`, and write a

@@ -17,6 +17,7 @@ QUICK = {
     "interface_wrap", "interface_call", "actor_result", "bare_variant",
     "member_names", "mangle", "complexity", "duplicates", "fuzz_corpus",
     "syntax_ceilings", "fn_size", "actor_mode", "frames", "isr_discipline",
+    "timing_report",
 }
 
 # Not suites: the registry itself, and helper modules that export no `run`.

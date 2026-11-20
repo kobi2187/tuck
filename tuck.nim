@@ -79,6 +79,7 @@ import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
 import compiler/frames   # `tuck frames`: the stackless colouring (#216)
 import compiler/isr_access  # `tuck audit --isr`: shared-state inventory
+import compiler/timing_report  # `tuck timing`: stack + critical-section reports
 import compiler/report_format  # JSON + SARIF emitters for reports
 import compiler/concurrency   # --concurrency:stackful|stackless
 import compiler/actor_mode
@@ -234,6 +235,12 @@ with the file/line of each access.
 This is an INVENTORY, not a gate: nothing is rejected yet. The point is to
 make the shared-data table that embedded teams keep on paper visible in the
 compiler, so a developer can see who writes what before adding a rule.""",
+  "timing": """tuck timing file.tuck
+
+Static timing report: worst-case CRITICAL-SECTION nesting per fn (embedded
+ISR budget) and worst-case STACK per fn from the call graph (small-SRAM
+budget). Approximate stack numbers (4-byte header, params + locals). JSON and
+SARIF output for CI.""",
   "sim": """tuck sim file.tuck [--board:NAME] [--time:fast]
 
 Build the file for a simulated bare-metal target and run it under QEMU,
@@ -303,6 +310,8 @@ commands:
   check, ch     parse + effect check + type check + pending report
   compile, c    check + transpile — one target: Nim, or --odin, or --dlang
   build, b      compile + nim c to a binary (fn main runs at start)
+  sim           build for a simulated board + run under QEMU (embedded loop)
+  timing        static report: critical-section nesting + worst-case stack
   dump, d       run the pipeline up to --stage=X and print the tree
   explain CODE  what a diagnostic code means, e.g. `tuck explain TK-TY05`
   help, -h, --help [command]  this message, or one command's own usage
@@ -1359,6 +1368,18 @@ when isMainModule:
     if qemuOut.contains("FAULT") or qemuOut.contains("Lockup"):
       quit(1)
     quit(0)
+  of "timing":
+    # Static timing report: critical-section nesting + worst-case stack.
+    let prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
+    let entry = prog[prog.high].m
+    let srcPath = prog[prog.high].path
+    let rep = timingOf(semLayer, entry)
+    if opts.anyIt(it == "--format:json"):
+      stdout.write renderJson(rep, srcPath)
+    elif opts.anyIt(it == "--format:sarif"):
+      stdout.write toSarif(rep.toFindings(srcPath))
+    else:
+      stdout.write renderText(rep, srcPath)
   of "frames":
     # Stackless transform, phase 1 (#216): which fns would become frames and
     # where each can pause, for the whole import closure.

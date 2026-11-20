@@ -167,6 +167,18 @@ the `freestanding-loop.sh` driver, we got a real bare-metal build running.
   emits a plain `discard tuck_main()` (no libc `quit`/`exit`, no `tuck_async`
   import) and a `tuckSlRunAll()` after main.
 
+### The developer loop: `tuck sim` and `tuck timing`
+
+- `tuck sim FILE.tuck` builds the file freestanding and boots it under QEMU in
+  one command (about a second), printing the program's semihosting output. It
+  exits non-zero on a fault. `--time:fast` uses QEMU virtual time;
+  `--fault:isr-drop` injects a dropped interrupt at compile time.
+- `tuck timing FILE.tuck` is the static budget report: worst-case
+  **critical-section nesting** per fn and an **approximate worst-case stack**
+  along the resolved call graph. `--format:json` and `--format:sarif` feed CI;
+  `tuck explain TK-TM01` / `TK-TM02` explain the rules. Stack numbers SUM the
+  call path and are a budget flag, not a measurement.
+
 ### Results (updated 2026-11-20)
 | stage | result |
 |---|---|
