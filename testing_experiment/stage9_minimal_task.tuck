@@ -6,6 +6,7 @@ task worker({}) -> {v: int} [io]:
   return {v: 42}
 
 fn main() -> int [io]:
+  {text: "ENTER\n"} say
   let r = {} worker
   if r.v == 42:
     {text: "TASK_OK\n"} say

@@ -41,9 +41,13 @@ type
 const tuckNoStep* = TuckHop()
 
 # --- the ready list: an intrusive FIFO ------------------------------------------
-var slHead {.threadvar.}, slTail {.threadvar.}: ptr TuckFrameHdr
-  ## Per THREAD: a thread-mode actor's handler that spawns a task queues its
-  ## frame on the actor's own thread, never on main's.
+when defined(freestanding):
+  var slHead, slTail: ptr TuckFrameHdr
+    ## Single thread on bare metal: no threadvar, no TLS read_tp.
+else:
+  var slHead {.threadvar.}, slTail {.threadvar.}: ptr TuckFrameHdr
+    ## Per THREAD: a thread-mode actor's handler that spawns a task queues its
+    ## frame on the actor's own thread, never on main's.
 
 proc tuckSlReady*(f: ptr TuckFrameHdr) {.inline.} =
   ## Queue `f` to run its `stage` when the frames ahead of it have had theirs.
@@ -51,7 +55,10 @@ proc tuckSlReady*(f: ptr TuckFrameHdr) {.inline.} =
   if slTail == nil: slHead = f else: slTail.next = f
   slTail = f
 
-var tuckSlDriving* {.threadvar.}: int
+when defined(freestanding):
+  var tuckSlDriving*: int
+else:
+  var tuckSlDriving* {.threadvar.}: int
   ## How many drivers are running stages on this thread. A blocking wait
   ## made inside a stage (`tuckLendUntil`) checks it: see tuckSlCannotPark.
 

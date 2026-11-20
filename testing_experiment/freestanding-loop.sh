@@ -25,6 +25,7 @@ proc panic*(s: string) {.exportc, noreturn.} =
 EOF
 
 BOARDS="$ROOT/testing_experiment/boards"
+PICOLIBC="$ROOT/testing_experiment/build/picolibc/install"
 arm-none-eabi-gcc -c -mcpu=cortex-m3 -mthumb "$BOARDS/startup_lm3s6965evb.c" -o "$OUT/startup.o" 2>&1
 arm-none-eabi-gcc -c -mcpu=cortex-m3 -mthumb "$BOARDS/stubs.c" -o "$OUT/stubs.o" 2>&1
 arm-none-eabi-as  -mcpu=cortex-m3 -mthumb "$BOARDS/semihost.s" -o "$OUT/semihost.o" 2>&1
@@ -34,7 +35,7 @@ echo "=== tuck check ==="
 
 echo "=== freestanding build ==="
 ./tuck b "testing_experiment/${STAGE}.tuck" \
-  --nim:"--os:standalone --cpu:arm --mm:none -d:freestanding --exceptions:goto --cc:gcc --gcc.exe:arm-none-eabi-gcc --gcc.linkerexe:arm-none-eabi-gcc --threads:off --tlsEmulation:off --passC:-mthumb --passC:-mcpu=cortex-m3 --passL:-nostartfiles --passL:$OUT/startup.o --passL:$OUT/stubs.o --passL:$OUT/semihost.o --passL:-T$BOARDS/lm3s6965evb.ld" \
+  --nim:"--os:standalone --cpu:arm --mm:none -d:freestanding --exceptions:goto --cc:gcc --gcc.exe:arm-none-eabi-gcc --gcc.linkerexe:arm-none-eabi-gcc --threads:off --tlsEmulation:off --passC:-mthumb --passC:-mcpu=cortex-m3 --passC:-I$PICOLIBC/include --passL:-nostartfiles --passL:$OUT/startup.o --passL:$OUT/stubs.o --passL:$OUT/semihost.o --passL:$PICOLIBC/lib/libc.a --passL:-T$BOARDS/lm3s6965evb.ld" \
   -o:"$OUT" 2>&1 | tail -20
 
 ELF="$OUT/${STAGE}"

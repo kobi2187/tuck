@@ -1,0 +1,18 @@
+# Meson cross file: picolibc for Tuck freestanding ARM Cortex-M3 (Thumb, soft-float).
+[binaries]
+c = ['arm-none-eabi-gcc', '-mcpu=cortex-m3', '-mthumb', '-msoft-float', '-ffreestanding', '-nostdlib', '-fno-omit-frame-pointer', '-fno-stack-protector']
+ar = 'arm-none-eabi-ar'
+as = 'arm-none-eabi-as'
+nm = 'arm-none-eabi-nm'
+strip = 'arm-none-eabi-strip'
+objcopy = 'arm-none-eabi-objcopy'
+
+[host_machine]
+system = 'none'
+cpu_family = 'arm'
+cpu = 'cortex-m3'
+endian = 'little'
+
+[properties]
+skip_sanity_check = true
+needs_exe_wrapper = true
