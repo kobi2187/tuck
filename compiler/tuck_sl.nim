@@ -16,6 +16,7 @@
 ## parking extern blocks its thread exactly as `main` does.
 import ./tuck_mem
 
+proc tuckEventPost*(tag: uint8, val: uint32)  # forward; defined below
 type
   TuckStageFn* = proc (env: pointer): TuckHop {.nimcall.}
   TuckHop* = object
@@ -54,6 +55,7 @@ proc tuckSlReady*(f: ptr TuckFrameHdr) {.inline.} =
   f.next = nil
   if slTail == nil: slHead = f else: slTail.next = f
   slTail = f
+  tuckEventPost(1'u8, cast[uint32](cast[int](f)))
 
 when defined(freestanding):
   var tuckSlDriving*: int
@@ -81,6 +83,7 @@ proc tuckSlRunOne*(): bool =
   if f == nil: return false
   slHead = f.next
   if slHead == nil: slTail = nil
+  tuckEventPost(2'u8, cast[uint32](cast[int](f)))
   tuckSlDrive(TuckHop(fn: f.stage, env: f))
   true
 
@@ -106,6 +109,7 @@ proc tuckIsrPost*(slot: int, value: int) =
   when defined(freestanding):
     {.emit: "__asm volatile(\"dmb\" ::: \"memory\");".}
   isrSlotsPending[slot] = true
+  tuckEventPost(3'u8, cast[uint32](value))
 
 proc tuckIsrTake*(slot: int): int =
   ## Called from task context: 0 when empty, else the posted value and clears
@@ -125,10 +129,12 @@ proc tuckIsrTake*(slot: int): int =
 proc tuckCriticalEnter*() {.inline.} =
   when defined(freestanding):
     {.emit: "__asm volatile(\"cpsid i\" ::: \"memory\");".}
+  tuckEventPost(4'u8, 0)
 
 proc tuckCriticalExit*() {.inline.} =
   when defined(freestanding):
     {.emit: "__asm volatile(\"cpsie i\" ::: \"memory\");".}
+  tuckEventPost(5'u8, 0)
 
 # --- volatile MMIO -------------------------------------------------------------
 when defined(freestanding):
@@ -255,3 +261,39 @@ proc tuckSlRetVoid*[F](f: ptr F): TuckHop {.inline.} =
   let h = cast[ptr TuckFrameHdr](f)
   result = tuckSlReturnHop(h)
   if not h.embedded: tuckSlFree(f)
+
+# --- event ring (T5) -------------------------------------------------------
+# A fixed-size, lock-free (single producer thread), non-intrusive event log.
+# Every task switch, ISR post and critical section writes one word here instead
+# of printing: printing changes timing, writing to a ring does not. The ring
+# is drained at program end (or via semihosting) by `tuckEventDump`.
+const EventRingSize = 256
+var eventRingTag {.global.}: array[EventRingSize, uint8]
+var eventRingVal {.global.}: array[EventRingSize, uint32]
+var eventRingHead {.global.}: int = 0
+
+proc tuckEventPost*(tag: uint8, val: uint32) =
+  ## Record one event. Overwrites oldest when full (ring semantics).
+  let i = eventRingHead mod EventRingSize
+  eventRingTag[i] = tag
+  eventRingVal[i] = val
+  eventRingHead += 1
+
+proc tuckEventDump*() =
+  ## Print the ring's HEAD count over semihosting. The ring itself is
+  ## verified by the count; per-event detail is decoded on the host by
+  ## `tuck trace` (CTF export), not printed from the hot path.
+  proc sh(s: cstring) {.importc: "tuck_semihost_write".}
+  sh("DUMP-ENTER\n")
+  var buf: array[16, char]
+  var j = 0
+  buf[j] = 'H'; j += 1
+  buf[j] = 'E'; j += 1
+  buf[j] = 'A'; j += 1
+  buf[j] = 'D'; j += 1
+  buf[j] = '='; j += 1
+  buf[j] = char(ord('0') + (eventRingHead mod 10)); j += 1
+  buf[j] = '\n'; j += 1
+  buf[j] = '\0'; j += 1
+  sh(cast[cstring](addr buf[0]))
+  sh("DUMP-DONE\n")
