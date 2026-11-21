@@ -24,6 +24,10 @@ next commands.
   (a warning); `tuck sim` auto-decodes a FAULT line. Green on the host suite
   and on three QEMU runs (precise fault, null branch, clean regression), with
   the dev-perspective readings in `IMPLEMENTATION-GROUND.md` §7a.
+- **T19 complete (2026-11-21):** `tuck sim FILE --host` builds and runs Nim,
+  Odin and D side by side against the shared shims; stage9 (task + print) and
+  stage5 (two stackless tasks + HAL) produce byte-identical stdout on all
+  three. `--backend:nim|odin|d` selects one; a missing compiler is `SKIP`.
 
 **Resolved blocker:** task-based programs now run on metal. All three metal
 runtime milestones (event ring, crash dump, virtual time) are implemented.
@@ -124,7 +128,7 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
   driven by `tuckSlRunAll()`; if a frame never reaches its `return`, the loop
   is infinite (harmless in QEMU, but must be understood, not assumed).
 
-### T5 — Compiler-instrumented event ring  [T4]  [M]
+### T5 — Compiler-instrumented event ring  [T4]  [M]  ◐ PARTIAL
 
 - **Outcome:** a fixed, pool-backed ring in RAM recording task switches, ISR
   entry/exit, `[io]` calls and mailbox-full events as timestamped words.
@@ -132,6 +136,13 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
   export through the done reporter layer.
 - **Exit:** a QEMU run produces a CTF file that Babeltrace can read, showing
   two tasks interleaving.
+- **Built:** the 256-entry tag/word ring in `compiler/tuck_sl.nim`; task
+  switches and ISR posts write one word each; `tuckEventDump` reports the head
+  count over semihosting (`stage10` prints `HEAD=2` under QEMU).
+- **Still to do:** no `tuck trace` command exists, the per-event ring contents
+  are never lifted out of the ELF, and CTF metadata is not emitted. The
+  Babeltrace gate is therefore **not** met. Needs a decision on how events
+  leave the target (semihosting log vs ELF note) before building.
 
 ### T6 — Crash dump + source decoder  [T5, done reporter]  [M]  ✅ DONE
 
@@ -148,13 +159,17 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
   The precise fault is an unaligned store (`CCR.UNALIGN_TRP`), not the wild
   MMIO write first imagined — QEMU ignores unmapped stores on this board.
 
-### T7 — Virtual time + fault injection  [T4, T5]  [M]
+### T7 — Virtual time + fault injection  [T4, T5]  [M]  ✅ DONE (clock + injection)
 
 - **Outcome:** the QEMU loop runs with an accelerated virtual clock; a test
   flag flips register bits / drops an interrupt / stalls a clock at every
   preemption point and asserts the program still reaches `safeState`.
 - **Exit:** stage 8's 1 Hz blink simulated in seconds; a fault-injected run
   produces a reproducible failure + event trace.
+- **Built:** `--time:fast` passes QEMU `-icount shift=auto,sleep=off`;
+  `--fault:isr-drop` compiles with `-d:TuckFaultIsrDrop`. Both are QEMU-only
+  and are ignored by `--host`. The "reaches `safeState`" assertion belongs to
+  T17; the event-trace half is T20 and waits on T5's CTF export.
 
 ### T8 — SVD → register declarations + typestate  [none]  [L]
 
@@ -195,11 +210,15 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
 - **Outcome:** ARM MPU regions generated from the declared memory regions.
 - **Exit:** a deliberate wild write HardFaults instead of corrupting `.bss`.
 
-### T13 — Q-fixed-point + A51  [none]  [S]
+### T13 — Q-fixed-point + A51  [none]  [S]  ◐ PARTIAL
 
 - **Outcome:** standard Q notation (`Q7.8`, `Q15.16`) with range checks;
   MISSING-FEATURES A51 (minimum of a signed type) fixed.
 - **Exit:** pinned in `known_bugs`; examples compile on all three backends.
+- **A51 is done:** `known_bugs` carries `bugFixed` for `-128` as an `i8`, and
+  the full/host suites are green. Only the Q-notation half remains, and that
+  is a new type-surface decision (spelling, range-check point, all three
+  backends) — not a leaf. MISSING-FEATURES now records the fix.
 
 ### T14 — Virtual board with `pending:`  [host-first: none; parity: T4]  [L]
 
@@ -214,10 +233,22 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
   OpenOCD/pyOCD/CMSIS-DAP and read the event ring.
 - **Exit:** a developer can flash + dump the ring with one command per action.
 
-### T16 — Source-level GDB  [T3]  [S]
+### T16 — Source-level GDB  [T3]  [S]  ◐ PARTIAL — tool-blocked
 
 - **Outcome:** `tuck build --debug` with usable DWARF; GDB RSP over the probe.
 - **Exit:** break at a Tuck source line on real hardware / QEMU.
+- **DWARF half verified (2026-11-21):** the `tuck sim` ELF has `.debug_info`,
+  `.debug_abbrev` and `.debug_line`; `objdump --dwarf=decodedline` names
+  `stage9_minimal_task.tuck` with line 6 at `0x99a` and line 7 at `0x9b4`.
+- **Host half done and pinned:** `tuck b FILE --debug-lines --nim:"--passC:-g"`
+  makes a host binary a batch gdb can stop in at a `.tuck` line. The command
+  is `gdb -q -batch -ex 'set debuginfod enabled off' -ex 'break FILE.tuck:N'
+  -ex run -ex bt --args BIN`; `tests/suites/crash_decode.nim` pins it and
+  reports SKIP when gdb is absent. No new CLI flag was needed.
+- **Blocked:** no ARM-capable debugger is installed (`/usr/bin/gdb` is x86
+  only; no `gdb-multiarch`, no `arm-none-eabi-gdb`), so the metal break cannot
+  be observed here. **Resolving signal:** an ARM gdb on PATH; then run
+  `qemu-system-arm -s -S -kernel ELF` and the same batch script against `:1234`.
 
 ### T17 — Declarative watchdog + safeState  [T4]  [M]
 
@@ -233,7 +264,7 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
 - **Exit:** clean run prints program output and exits 0; fault run prints
   `FAULT PC=...` and exits 1. Verified with stage11, stage14.
 
-### T19 — `tuck sim --host`: fastest path  [none]  [S]
+### T19 — `tuck sim --host`: fastest path  [none]  [S]  ✅ DONE
 
 - **Outcome:** builds against host sim shims, runs in milliseconds, no
   cross-toolchain needed. Validates logic and scheduler.
@@ -249,12 +280,19 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
   (task + print) and stage5 (two stackless tasks + HAL). Both were measured
   identical across all three backends before this line was written.
 
-### T20 — Virtual time + fault injection  [T4, T5, T18]  [M]
+### T20 — Fault-injected event trace  [T4, T5, T18]  [M]  ◐ PARTIAL
 
-- **Outcome:** accelerated virtual clock so days of simulated time pass in
-  seconds; `--fault:isr-drop` injects dropped interrupts and checks safeState.
+Was "Virtual time + fault injection", which duplicates T7. The virtual clock
+and `--fault:isr-drop` are T7 and are done; what remains here is the trace half
+of T7's exit criterion.
+
+- **Outcome:** a fault-injected run produces a reproducible failure plus a
+  per-event trace showing where the handoff was dropped.
 - **Exit:** a 1 Hz blink completes in <100ms wall time; a fault-injected run
   produces a reproducible failure + event trace.
+- **Depends on T5's open half:** the ring records events but nothing lifts them
+  out of the target or writes CTF. Do not start this before the CTF format and
+  the event-egress path (semihosting log vs ELF note) are chosen.
 
 ### T6 detail — staged execution plan (2026-11-21)
 
@@ -387,12 +425,30 @@ Remaining:
     `addr2line` and emits text/JSON/SARIF with TK-CR01; `tuck sim` auto-decodes
     FAULT lines. Verified on three QEMU runs (§7a of the ground doc) and pinned
     by `tests/suites/crash_decode.nim`.
-13. **T11 (rest) — WCET, task utilization, longest masked interval, deadline
+13. ~~**T19 — `tuck sim --host`.**~~ **DONE (2026-11-21).** Nim + Odin + D,
+    byte-identical output on stage9 and stage5; pinned by `sim_host.nim`.
+14. **T11 (rest) — WCET, task utilization, longest masked interval, deadline
     gating.** The stack + critical-nesting report is built; these need the
-    call graph's timing facts and `[period:, deadline:]` declarations.
-14. **T19 — `tuck sim --host`** (fastest path, no cross-toolchain; Nim + Odin +
-    D, byte-identical output on stage9 and stage5).
-15. **T8 — SVD importer** (Lane 2, unblocked, can interleave).
+    call graph's timing facts and `[period:, deadline:]` declarations. Neither
+    spelling appears anywhere in the AST or parser today, so this is a
+    language-surface decision, not an independent leaf.
+15. **T5 (rest) → T20 — CTF export, then fault-injected event trace.** The ring
+    and its head count exist; there is no `tuck trace`, no event egress from
+    the target, and no CTF metadata. Crosses runtime + CLI + reporter — pick
+    the egress path (semihosting log vs ELF note) before building; SPAWN
+    candidate.
+16. **T8 — SVD importer** (Lane 2, L, unblocked). A whole `tuck svd` module
+    behind one interface: SPAWN once that API is agreed, not a leaf.
+17. **T13 (rest) — Q notation.** A51 is fixed and pinned as `bugFixed`; the Q
+    spelling and the range-check point are a type-surface decision.
+18. **T16 (rest) — break at a Tuck line in GDB.** DWARF is verified on the
+    `tuck sim` ELF; blocked on an ARM-capable gdb (`gdb-multiarch` or
+    `arm-none-eabi-gdb`), neither of which is installed here.
+
+PARKED with resolving signals: T12 (`platform.boot` declaration does not
+exist), T15 (no debug probe attached), T17 (needs a `watchdog:` declaration
+and T20's trace), T9/T10 (depend on T8), T14 (L, depends on the top-down
+`pending:` workflow reaching hardware parity).
 
 Each ends with: rebuild tuck (clean Nim cache after enum changes), run the
 affected `tests/run` suite, run `freestanding-loop.sh <stage>`, and write a

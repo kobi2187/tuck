@@ -306,6 +306,40 @@ regressions (stage16 fault, stage14 null branch, stage11 clean run) still
 report `rc=1 / 1 / 0` with the same decoded locations after the shared shim
 edit.
 
+## 7c. Supporting layer E/G — source-level breakpoints (T16, host half)
+
+```
+$ gdb -q -batch -ex 'set debuginfod enabled off' \
+      -ex 'break testing_experiment/stage9_minimal_task.tuck:10' \
+      -ex run -ex bt --args /tmp/opencode/dbg/stage9_minimal_task
+Breakpoint 1 at 0x12ad5: stage9_minimal_task.tuck:10. (2 locations)
+Breakpoint 1.2, ...main_E () at testing_experiment/stage9_minimal_task.tuck:10
+#0  ...main_E () at testing_experiment/stage9_minimal_task.tuck:10
+```
+
+**What happened.** A host binary built with the *already existing* flags
+`--debug-lines --nim:"--passC:-g"` stops on a breakpoint set by `.tuck` file
+and line; the backtrace names the `.tuck`, not the generated `.nim`. The
+`tuck sim` ELF likewise carries `.debug_info` / `.debug_abbrev` / `.debug_line`,
+and `objdump --dwarf=decodedline` names `stage9_minimal_task.tuck:6` at `0x99a`.
+The new assertion in `tests/suites/crash_decode.nim` pins the host half (13/13
+pass) and reports SKIP where gdb is absent.
+
+**Why it matters.** This is the last unverified claim in the "explain my crash"
+story: T6 decodes a fault after the fact, but a developer also needs to stop a
+healthy program on a line they wrote. It costs no new CLI surface — the gap was
+documentation and a pinned recipe, not a missing feature. It also bounds T16
+honestly: the compiler's DWARF half is done; the *metal* half is blocked by the
+absence of an ARM gdb, not by Tuck.
+
+**How to fix it / what was done.** Added the recipe to T16 in the plan with the
+evidence above; pinned the batch-gdb flow with `debuginfod` disabled (no CI
+prompt) in a private output dir (the pool runs the addr2line build in parallel,
+so sharing its `out/` was a race — the first run correctly failed with "out/t:
+No such file or directory"). To finish T16: install `gdb-multiarch` or
+`arm-none-eabi-gdb`, launch `qemu-system-arm -s -S -kernel ELF`, and point the
+same script at `:1234`.
+
 ## 8. Metal lane — depends on picolibc (step 0 of the vision)
 
 After a Thumb libc links, the runtime layers become possible:

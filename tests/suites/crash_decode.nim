@@ -185,4 +185,29 @@ fn main() -> int:
       else:
         t.no "addr2line names the .tuck with --debug-lines", text
 
+  # --- 5. a debugger can stop on a Tuck line (T16, host half) --------------
+  # The ARM step needs an ARM gdb, which is not installed here. The same DWARF
+  # on the host binary proves the compiler's half: a batch gdb sets a source
+  # breakpoint on the .tuck, runs into it, and reports the .tuck in the frame.
+  # debuginfod is disabled so a CI machine never blocks on a y/n prompt.
+  # Build into a private dir: the pool may run this alongside the addr2line
+  # command, which builds into `out/` as a side effect of its own script.
+  let gdbScript = "cd " & quoteShell(dir) & " && " &
+    "command -v gdb >/dev/null 2>&1 || exit 0; " &
+    quoteShell(exe) & " b t.tuck --debug-lines --nim:\"--passC:-g\" " &
+    "-o:gdbout >/dev/null 2>&1 && " &
+    "gdb -q -batch -ex 'set debuginfod enabled off' " &
+    "-ex 'break t.tuck:5' -ex run -ex bt --args gdbout/t 2>&1"
+  let gidx = t.needCmd(@["/bin/sh", "-c", gdbScript], vBuild)
+  if t.phase != pCollect:
+    if t.skippedCmd(gidx) or findExe("gdb") == "":
+      t.skip "gdb stops at a Tuck source line"
+    else:
+      let (rc, text) = resultOf(t, gidx)
+      if rc == 0 and text.contains("Breakpoint") and
+         text.contains("t.tuck:5"):
+        t.ok "gdb stops at a Tuck source line"
+      else:
+        t.no "gdb stops at a Tuck source line", text
+
   t.finish()
