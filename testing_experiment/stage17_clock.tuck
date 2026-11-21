@@ -1,0 +1,29 @@
+# SysTick guest clock, verified under QEMU.
+#
+# Imports the reusable `systick_clock` module and proves that the counter
+# advances across a busy loop. `tuck sim testing_experiment/stage17_clock.tuck`
+# prints CLOCK_OK and ends in the idle loop (qemu exit: 124) at every
+# --tick:SHIFT from 0 to 10, on both supported boards.
+
+import systick_clock
+
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+fn spin({iters: int}) -> int:
+  var n: int = 0
+  for i in 0 .. iters - 1:
+    n = n + 1
+  return n
+
+fn main() -> int:
+  {reload: 0xFFFFFF} clock_init
+  let before = clock_now
+  let sink = {iters: 100000} spin
+  let after = clock_now
+  let cycles = {start: before, stop: after} clock_elapsed
+  if cycles > 0 and sink == 100000:
+    {text: "CLOCK_OK\n"} say
+  else:
+    {text: "CLOCK_BAD\n"} say
+  return 0

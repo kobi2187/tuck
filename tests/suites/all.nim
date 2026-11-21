@@ -62,6 +62,7 @@ import resources
 import resources_rt
 import roadmap
 import sim_host
+import sim_tick
 import slabs
 import ssa
 import ssa_golden
@@ -144,6 +145,7 @@ let registry: seq[Entry] = @[
   ("resources_rt",        SuiteProc(resources_rt.run),        false),
   ("roadmap",             SuiteProc(roadmap.run),             false),
   ("sim_host",            SuiteProc(sim_host.run),            false),
+  ("sim_tick",            SuiteProc(sim_tick.run),            false),
   ("slabs",               SuiteProc(slabs.run),               false),
   ("ssa",                 SuiteProc(ssa.run),                 false),
   ("ssa_golden",          SuiteProc(ssa_golden.run),          false),

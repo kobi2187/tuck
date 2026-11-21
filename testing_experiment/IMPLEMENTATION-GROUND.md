@@ -378,6 +378,56 @@ section moved into `renderCostText` rather than raising the gate. `tests/suites/
 timing_report.nim` now pins call-path accumulation, constant-loop scaling,
 worst-arm branch symmetry, unprovable-loop notes, and IO notes (21/21 pass).
 
+## 7e. T7 finished — SysTick guest clock, tick length, and a second board (2026-11-21)
+
+```
+$ ./tuck sim testing_experiment/stage17_clock.tuck --tick:0
+...
+=== qemu run (10s, board=lm3s6965evb, -icount shift=0,sleep=off) ===
+CLOCK_OK
+qemu exit: 124   (124 = clean run into idle loop)
+
+$ TUCK_BOARD=stm32vldiscovery ./tuck sim testing_experiment/stage17_clock.tuck --tick:10
+...
+=== qemu run (10s, board=stm32vldiscovery, -icount shift=10,sleep=off) ===
+CLOCK_OK
+qemu exit: 124
+```
+
+**What happened.** QEMU 8.2 does not emulate DWT (`0xE0001004` reads zero), so
+the reusable `systick_clock.tuck` reads SysTick's 24-bit down-counter instead:
+`clock_init(reload)`, `clock_now() -> u32`, wrap-safe `clock_elapsed`. QEMU's
+ptimer uses `PTIMER_POLICY_NO_IMMEDIATE_RELOAD` — writing `CVR` clears it and the
+first reload is one edge later — so `clock_init` burns 1000 reads to warm the
+counter. `--tick:N` (0..10) now drives `-icount shift=N,sleep=off` (each step
+doubles virtual ns per instruction); `--time:fast` is the shift-10 preset.
+
+**Two boards, one loop.** `TUCK_BOARD` selects the QEMU machine, CPU, linker
+script and initial SP. Adding `stm32vldiscovery` (128K flash/8K SRAM, SP
+`0x20002000`) exposed three real metal bugs, each found by reading the fault
+record rather than guessing:
+1. the C `__aeabi_read_tp` clobbered r3, which Nim's generated TLS access keeps
+   the GOT offset in across the call — every error-flag/overflow-trap read
+   faulted at `BFAR=40001c78`. Moved the accessor to `semihost.s` (EABI: only
+   r0 may change) and made `tuck_tls` a global there.
+2. `tuckOverflowTrap` formatted a string through the freestanding `appendString`
+   magic; under `-d:freestanding` it now discards `ty`/`op` and just `quit(1)`.
+3. QEMU's `stm32vldiscovery` loader does not initialise a RAM load segment, so
+   the GOT was set from garbage; the linker script copies `.got` with `.data`.
+
+**Verification.** Both boards print `CLOCK_OK` and fall into the idle loop
+(`qemu exit: 124`) at shifts 0, 4 and 10. `bare_metal_led_svd` and
+`stage11_irq_marker` still boot cleanly on `stm32vldiscovery` and `lm3s6965evb`
+respectively (no regression). `tests/suites/sim_tick.nim` pins the four
+`--tick` rejections and one scenario per board, SKIPping cleanly without QEMU /
+the ARM toolchain / picolibc. The loop script gained `TUCK_SKIP_TUCK_BUILD` and
+`TUCK_OUT_DIR` so parallel scenarios do not rebuild `tuck` or share an ELF.
+
+**Deferred.** Higher-end boards (Cortex-M4 `mps2-an386`, M7 `mps2-an500`) need
+fresh startup/linker/semihost wiring and a machine map; staged until a feature
+needs their peripherals. A real `tuck profile` should prefer DWT on hardware
+and fall back to SysTick under emulation — blocked on T5's CTF/egress decision.
+
 ## 8. Metal lane — depends on picolibc (step 0 of the vision)
 
 After a Thumb libc links, the runtime layers become possible:

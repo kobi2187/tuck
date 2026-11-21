@@ -177,9 +177,13 @@ the `freestanding-loop.sh` driver, we got a real bare-metal build running.
 
 - `tuck sim FILE.tuck` builds the file freestanding and boots it under QEMU in
   one command (about a second), printing the program's semihosting output. It
-  exits non-zero on a fault. `--time:fast` uses QEMU virtual time;
-  `--fault:isr-drop` injects a dropped interrupt at compile time. When a FAULT
-  line appears it prints the decoded crash report automatically and exits 1.
+  exits non-zero on a fault. `--tick:N` (`0..10`, each step doubles virtual ns
+  per instruction) sets a fixed QEMU `-icount shift=N,sleep=off`;
+  `--time:fast` is the `shift=10` preset. `--fault:isr-drop` injects a dropped
+  interrupt at compile time. Set `TUCK_BOARD=lm3s6965evb|stm32vldiscovery` to
+  pick the QEMU machine, CPU, linker script and initial stack pointer. When a
+  FAULT line appears it prints the decoded crash report automatically and
+  exits 1. `tuck sim --host` ignores all QEMU-only flags; see T19.
 - `tuck timing FILE.tuck` is the static budget report: worst-case
   **critical-section nesting** per fn and an **approximate worst-case stack**
   along the resolved call graph. `--format:json` and `--format:sarif` feed CI;
@@ -207,8 +211,36 @@ TUCK_STDLIB=testing_experiment/tools/svd2tuck/generated \
   ./freestanding-loop.sh bare_metal_led_svd
 ```
 
+### Guest clock, tick length, and board profiles (T7)
+
+`systick_clock.tuck` is a reusable polled clock: `clock_init(reload)`,
+`clock_now() -> u32`, and wrap-safe `clock_elapsed(start, stop)`. QEMU 8.2 does
+not emulate the DWT cycle counter (`0xE0001004` reads zero), so the clock uses
+SysTick's 24-bit down-counter instead — no interrupt, safe to call from an ISR.
+QEMU's ptimer applies `PTIMER_POLICY_NO_IMMEDIATE_RELOAD` (writing `CVR` clears
+it; the first reload lands on the next edge), so `clock_init` burns a fixed
+1000 reads to warm the counter before it is sampled. `stage17_clock.tuck`
+imports the module and prints `CLOCK_OK` when the counter advances.
+
+Two boards are supported via `TUCK_BOARD` (machine, CPU, linker script, initial
+SP), and tick length is fixed at any `-icount shift` 0..10:
+
+```sh
+./tuck sim testing_experiment/stage17_clock.tuck --tick:0
+TUCK_BOARD=stm32vldiscovery ./tuck sim testing_experiment/stage17_clock.tuck --tick:10
+```
+
+Both print `CLOCK_OK` and end in the idle loop (`qemu exit: 124`) at shifts 0,
+4 and 10. `tests/suites/sim_tick.nim` pins the `--tick` rejection cases and one
+scenario per board; it SKIPs when QEMU, the ARM toolchain or vendored picolibc
+is absent. The loop script accepts `TUCK_SKIP_TUCK_BUILD=1` and `TUCK_OUT_DIR`
+so parallel scenarios neither rebuild `tuck` redundantly nor share a scratch
+directory.
+
 ### Results (updated 2026-11-21)
 | stage | result |
+|---|---|
+| `stage17_clock.tuck` (both boards, ticks 0/4/10) | **prints `CLOCK_OK`, idle loop, no fault** |
 |---|---|
 | `bare_metal_nop.tuck` (no tasks) | **boots, runs to idle, no fault** |
 | `bare_metal_led.tuck` (register writes) | **boots, runs to idle, no fault** |

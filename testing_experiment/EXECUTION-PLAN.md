@@ -172,10 +172,22 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
   preemption point and asserts the program still reaches `safeState`.
 - **Exit:** stage 8's 1 Hz blink simulated in seconds; a fault-injected run
   produces a reproducible failure + event trace.
-- **Built:** `--time:fast` passes QEMU `-icount shift=auto,sleep=off`;
-  `--fault:isr-drop` compiles with `-d:TuckFaultIsrDrop`. Both are QEMU-only
-  and are ignored by `--host`. The "reaches `safeState`" assertion belongs to
-  T17; the event-trace half is T20 and waits on T5's CTF export.
+- **Built:** a reusable SysTick guest clock (`systick_clock.tuck`) with
+  deterministic tick-length control. QEMU 8.2 does not emulate DWT, so the
+  clock reads SysTick's 24-bit down-counter (no interrupt; polled, ISR-safe);
+  `clock_init` warms the ptimer counter before sampling because QEMU's
+  `PTIMER_POLICY_NO_IMMEDIATE_RELOAD` delays the first reload by one edge.
+  `--tick:N` (`0..10`, each step doubles virtual ns per instruction) sets
+  QEMU `-icount shift=N,sleep=off`; `--time:fast` is the `shift=10` preset.
+  `--fault:isr-drop` compiles with `-d:TuckFaultIsrDrop`. All are QEMU-only
+  and ignored by `--host`. A board profile (`TUCK_BOARD`) selects the QEMU
+  machine, CPU, linker script and initial SP; `lm3s6965evb` and
+  `stm32vldiscovery` both boot `stage17_clock` cleanly (`CLOCK_OK`, qemu 124)
+  at shifts 0, 4 and 10. The "reaches `safeState`" assertion belongs to T17;
+  the event-trace half is T20 and waits on T5's CTF export.
+- **Pinned:** `tests/suites/sim_tick.nim` checks `--tick` rejection
+  (`11`, `-1`, non-numeric, empty) and boots the clock fixture on both boards;
+  it SKIPs cleanly without QEMU / the ARM toolchain / vendored picolibc.
 
 ### T8 — SVD → register declarations + typestate  [none]  [L]  ◐ PARTIAL
 
@@ -437,7 +449,10 @@ CFSR/HFSR/BFAR and prints a one-line FAULT report; `tuck decode-crash ELF PC`
 maps the PC to the nearest symbol. T5's **ring half** is complete:
 `tuckEventDump` reports the ring count over semihosting; its CTF-export half
 remains and is tracked as T20. T7 (virtual time + fault injection), T18
-(`tuck sim`) and T8's register-import half are **complete**. T11 is **partial**:
+(`tuck sim`) and T8's register-import half are **complete**. T7 now includes
+a reusable SysTick guest clock with deterministic `--tick:N` length control
+and a second QEMU board (`stm32vldiscovery`), both green under QEMU and pinned
+by `sim_tick.nim`. T11 is **partial**:
 `tuck timing` now reports critical-section nesting and an approximate
 worst-case stack (text/JSON/SARIF); WCET, utilization and deadline gating
 remain.
@@ -451,25 +466,36 @@ Remaining:
     by `tests/suites/crash_decode.nim`.
 13. ~~**T19 — `tuck sim --host`.**~~ **DONE (2026-11-21).** Nim + Odin + D,
     byte-identical output on stage9 and stage5; pinned by `sim_host.nim`.
-14. **T11 (rest) — WCET, task utilization, longest masked interval, deadline
+14. ~~**T7 (rest) — SysTick clock, deterministic tick length, board parity.**~~
+    **DONE (2026-11-21).** `systick_clock.tuck` reads the SysTick down-counter
+    (DWT is unemulated in QEMU 8.2); `--tick:0..10` sets a fixed `-icount`
+    shift and `--time:fast` is the shift-10 preset. Added the
+    `stm32vldiscovery` board profile (machine/CPU/linker/SP); fixed the shared
+    Cortex-M startup and an EABI-correct assembly `__aeabi_read_tp` (a C
+    version clobbered r3, faulting every TLS/overflow-trap read on the STM32
+    board), plus a freestanding-safe `tuckOverflowTrap`. Both boards print
+    `CLOCK_OK` at shifts 0/4/10; `sim_tick.nim` pins parsing and both scenarios.
+    Higher-end boards (Cortex-M4 `mps2-an386`, M7 `mps2-an500`) stay deferred
+    until a board needs their peripherals.
+15. **T11 (rest) — WCET, task utilization, longest masked interval, deadline
     gating.** The stack + critical-nesting report is built; these need the
     call graph's timing facts and `[period:, deadline:]` declarations. Neither
     spelling appears anywhere in the AST or parser today, so this is a
     language-surface decision, not an independent leaf.
-15. **T5 (rest) → T20 — CTF export, then fault-injected event trace.** The ring
+16. **T5 (rest) → T20 — CTF export, then fault-injected event trace.** The ring
     and its head count exist; there is no `tuck trace`, no event egress from
     the target, and no CTF metadata. Crosses runtime + CLI + reporter — pick
     the egress path (semihosting log vs ELF note) before building; SPAWN
     candidate.
-16. ~~**T8 — SVD importer (register half).**~~ **DONE (2026-11-21).**
+17. ~~**T8 — SVD importer (register half).**~~ **DONE (2026-11-21).**
     Standalone Nim tool, vendored MIT parser front half, Apache-2.0 SVD input,
     committed whole-device and Blue Pill modules, imported-register seam fixed
     in all three backends, 11/11 in `svd_import.nim`, QEMU `124` on the
     generated-register fixture. Remaining typestate is parked behind a type
     decision.
-17. **T13 (rest) — Q notation.** A51 is fixed and pinned as `bugFixed`; the Q
+18. **T13 (rest) — Q notation.** A51 is fixed and pinned as `bugFixed`; the Q
     spelling and the range-check point are a type-surface decision.
-18. **T16 (rest) — break at a Tuck line in GDB.** DWARF is verified on the
+19. **T16 (rest) — break at a Tuck line in GDB.** DWARF is verified on the
     `tuck sim` ELF; blocked on an ARM-capable gdb (`gdb-multiarch` or
     `arm-none-eabi-gdb`), neither of which is installed here.
 

@@ -244,7 +244,7 @@ and a coarse CYCLE score (time budget; report only, not a measured WCET).
 Approximate stack numbers (4-byte header, params + locals). Unprovable loop
 bounds and IO calls are listed as notes, never guessed. JSON and SARIF for CI.""",
   "sim": """tuck sim file.tuck [--host] [--backend:NAME] [--time:fast]
-                            [--fault:isr-drop] [--format:json|sarif]
+                            [--tick:SHIFT] [--fault:isr-drop] [--format:json|sarif]
 
 Two loops, one command:
 
@@ -258,7 +258,9 @@ Two loops, one command:
                  backend whose compiler is absent is reported SKIP.
 
   --backend:NAME host only: nim | odin | d | all (default all)
-  --time:fast    QEMU only: virtual time (days of simulated time in seconds)
+  --time:fast    QEMU only: virtual time at the fastest tick (shift 10)
+  --tick:SHIFT   QEMU only: 0..10; each step doubles virtual ns per instruction
+                 (0 = 1 ns, finest; 10 = 1024 ns, fastest). Implies virtual time.
   --fault:isr-drop  QEMU only: inject a dropped ISR handoff
 
 Both loops use `--debug-lines` so DWARF names Tuck lines. Use
@@ -1393,7 +1395,21 @@ when isMainModule:
     if not hostMode:
       # Virtual time and fault injection are QEMU/runtime features. On the
       # host they have no meaning, so --host ignores them rather than lying.
-      if opts.anyIt(it == "--time:fast"): env = "TUCK_VIRTUAL_TIME=1 "
+      # `--time:fast` is the shift=10 preset; `--tick:N` overrides it.
+      var tickShift = 10
+      var tickGiven = false
+      for o in opts:
+        if o.startsWith("--tick:"):
+          let raw = o[7 .. ^1]
+          tickGiven = true
+          try:
+            tickShift = parseInt(raw)
+          except ValueError:
+            die("tuck sim: --tick needs 0..10, got " & raw)
+          if tickShift < 0 or tickShift > 10:
+            die("tuck sim: --tick needs 0..10, got " & raw)
+      if opts.anyIt(it == "--time:fast") or tickGiven:
+        env = "TUCK_VIRTUAL_TIME=1 TUCK_ICOUNT_SHIFT=" & $tickShift & " "
       if opts.anyIt(it == "--fault:isr-drop"): env = env & "TUCK_FAULT_ISR_DROP=1 "
     # `--backend:` picks one host compiler; absent means run all available
     # ones. Not to be confused with the global `--target:`, which selects

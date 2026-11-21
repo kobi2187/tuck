@@ -397,7 +397,11 @@ have (see also §9).
     after the ring exists.* Add **DWT cycle-counter** reads and `tuck profile`
     renders a timeline/flamegraph. Export as **CTF (Common Trace Format)** so
     Babeltrace / Trace Compass — the tools trace engineers already use — can
-    open it.
+    open it. *QEMU caveat (2026-11-21): QEMU 8.2 does not emulate DWT, so the
+    current guest clock (`systick_clock.tuck`) reads the SysTick down-counter
+    instead. A real `tuck profile` should prefer DWT on hardware and fall back
+    to SysTick under emulation — but that needs the T5 CTF/egress decision
+    first.*
 14. **"Explain my crash"** — *north star, needs Layers 3 + 5.* Given a crash dump
     + event ring, emit a diagnosis in Tuck terms, not just data: "task X was
     waiting on mailbox Y, which was full because consumer Z was blocked on

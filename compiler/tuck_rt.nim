@@ -371,7 +371,13 @@ proc tuckOverflowTrap*(ty, op: string) {.noreturn.} =
   ## Stops AT the site, naming the type and the operator, in every build:
   ## a wrong number that keeps travelling is worse than a stopped program
   ## (ROADMAP ruling 2026-08-25 §4), so this is real code, not an assert.
-  stderr.writeLine("Arithmetic overflow on " & ty & ": " & op)
+  ## A standalone/freestanding image has no `appendString` compiler magic, so
+  ## the descriptive message is host-only; the trap itself still stops here.
+  when not defined(freestanding):
+    stderr.writeLine("Arithmetic overflow on " & ty & ": " & op)
+  else:
+    discard ty
+    discard op
   quit(1)
 
 type ArithRes[T] = tuple[r: T, over, high: bool]

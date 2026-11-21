@@ -6,6 +6,12 @@
 extern int main(void);
 void Reset_Handler(void);
 
+/* Shared Cortex-M3 startup. The board profile passes its SRAM top so the
+   vector table's initial SP matches the linked RAM size. */
+#ifndef TUCK_INITIAL_SP
+#define TUCK_INITIAL_SP 0x20010000
+#endif
+
 /* --- fault record (read by a debugger / post-mortem dumper) ---------- */
 typedef struct {
   unsigned int pc;      /* stacked PC: where the faulting instruction was */
@@ -83,7 +89,7 @@ __attribute__((naked)) static void defaultHandler(void) {
 /* --- vector table ------------------------------------------------------- */
 __attribute__((section(".isr_vector"), used))
 const unsigned int vectors[] = {
-  0x20010000,                 /* 0:  initial stack pointer  */
+  TUCK_INITIAL_SP,            /* 0:  initial stack pointer  */
   ((unsigned int)Reset_Handler + 1), /* 1: reset */
   ((unsigned int)defaultHandler + 1), /* 2: NMI */
   ((unsigned int)defaultHandler + 1), /* 3: HardFault */
