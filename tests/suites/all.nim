@@ -15,6 +15,7 @@ import bare_variant
 import cli_smoke
 import complexity
 import containers_bench
+import crash_decode
 import cross_module
 import d_backend
 import decision_tables
@@ -94,6 +95,7 @@ let registry: seq[Entry] = @[
   ("cli_smoke",           SuiteProc(cli_smoke.run),           false),
   ("complexity",          SuiteProc(complexity.run),          true),
   ("containers_bench",    SuiteProc(containers_bench.run),    false),
+  ("crash_decode",        SuiteProc(crash_decode.run),        true),
   ("cross_module",        SuiteProc(cross_module.run),        false),
   ("d_backend",           SuiteProc(d_backend.run),           false),
   ("decision_tables",     SuiteProc(decision_tables.run),     false),

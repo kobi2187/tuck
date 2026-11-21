@@ -163,6 +163,105 @@ Still to do: WCET, task utilization, longest masked interval, and
 slice: a number without the path that produced it is not actionable, and a
 report that calls an estimate an error teaches the reader to distrust it.
 
+## 7a. Supporting layer F — `tuck decode-crash` (post-mortem source mapping)
+
+T6 closes the loop the report layers opened: a fault on metal becomes something
+a developer can act on without reading compiler source. It is two halves that
+meet in the ELF.
+
+- **On metal**, `boards/startup_lm3s6965evb.c` prints one parseable
+  `FAULT PC=... LR=... CFSR=... HFSR=... BFAR=... xPSR=...` line. The handler is
+  `__attribute__((naked))`: it does `mov r0, sp; b recordFault`, so `sp[5..7]`
+  really are the stacked LR/PC/xPSR. Before that fix a compiled C prologue
+  shifted the frame four words, and the report printed R1/R2/R3 *as* LR/PC/xPSR
+  — a convincing-looking lie that sent us to "PC in RAM". QEMU ignores stores
+  to unmapped addresses on this board, so the precise fault is an unaligned
+  32-bit store with `CCR.UNALIGN_TRP` set (`host_sim/fault_shim.nim`) rather
+  than the wild MMIO write the plan originally imagined.
+- **On the host**, `compiler/crash_decode.nim` parses that line (or explicit
+  flags), decodes CFSR/HFSR bits into words, resolves PC/LR via
+  `arm-none-eabi-nm -n` + `arm-none-eabi-addr2line`, and renders text / JSON /
+  SARIF 2.1.0. `TK-CR01` is registered as a **warning** and SARIF says
+  `level: "warning"` — a post-mortem report never gates a build. Emitted Nim
+  carries `{.line: ("file.tuck", N).}:` pragmas **only** under `--debug-lines`,
+  so DWARF names the `.tuck` rather than the generated `.nim`, and default
+  codegen is byte-identical (`git diff examples/` clean after re-emit).
+
+Three rules came out of getting this right, each from a wrong answer on the way:
+
+1. `nearestSymbol`/`sourceLine` take numeric addresses. Formatting `$f.pc`
+   produced the decimal string `"346"` for `0x15a`, which `hexVal` re-read as
+   `0x346` and named `recordFault` instead of `preciseFaultStore`.
+2. `PC=0` is a null target, not "nearest symbol at or below 0" (which names the
+   vector table). The decoder says so and points at LR.
+3. An imprecise fault never gets a source line from the PC; `bestSite` returns
+   the caller. A buffered store faults several instructions later, so trusting
+   the PC sends the developer to the wrong line.
+
+### QEMU — precise fault (`tuck sim testing_experiment/stage16_precise_fault.tuck`)
+
+```
+FAULT PC=0000015a LR=00000185 CFSR=01000000 HFSR=40000000 BFAR=00000000 xPSR=01000000
+...
+=== decoded crash ===
+Crash: UsageFault (CFSR=0x01000000, HFSR=0x40000000)
+  bit: UNALIGNED: unaligned word load/store (CCR.UNALIGN_TRP)
+  bit: FORCED: a Mem/Bus/Usage fault escalated to HardFault
+  What: UNALIGNED: unaligned word load/store (CCR.UNALIGN_TRP); escalated to HardFault because its handler was not enabled
+  PC 0000015A -> preciseFaultStore_u0__...fault95shim (host_sim/fault_shim.nim:22)
+  LR 00000185 -> tuckXCBX91fnXCBX91main__u0__stage1695precise95fault (call site stage16_precise_fault.tuck:19)
+  Why: The stacked PC points at the failing instruction, so a source line can be recovered from DWARF built with --debug-lines.
+  Fix: Align the address to 4 bytes, or use a byte/halfword access. Cortex-M traps unaligned word accesses when CCR.UNALIGN_TRP is set.
+sim rc=1
+```
+
+**What happened.** A directly-called shim did an unaligned word store; the core
+raised a *precise* UsageFault and the stacked PC names the faulting instruction.
+**Why it matters.** PC and LR agree on one call chain, so the report can name
+both the failing machine address and the Tuck line that led there — the developer
+edits `stage16_precise_fault.tuck:19`, not a generated `.nim`. **How to fix it.**
+Align the store or use byte/halfword accesses; the report says exactly that.
+`sim` exits 1 because a FAULT line was present.
+
+### QEMU — null branch (`tuck sim testing_experiment/stage14_fault.tuck`)
+
+```
+FAULT PC=00000000 LR=00000189 CFSR=00020000 HFSR=40000000 BFAR=00000000 xPSR=40000000
+...
+=== decoded crash ===
+Crash: UsageFault (CFSR=0x00020000, HFSR=0x40000000)
+  bit: INVSTATE: invalid EPSR state (Thumb bit lost?)
+  bit: FORCED: a Mem/Bus/Usage fault escalated to HardFault
+  PC 00000000 -> (null target — no symbol)
+  LR 00000189 -> faultWrite_u0__...fault95shim (call site host_sim/fault_shim.nim:12)
+  Why: The core branched to address 0: there is no code there, so no source line can be named for the PC. LR still names the call site that performed the jump.
+  Fix: A branch landed on an even address: Cortex-M Thumb code needs bit 0 set. Check a null or uninitialised function pointer, and decode LR-2 for the call site that made the jump.
+sim rc=1
+```
+
+**What happened.** An indirect call through a null function pointer branched to
+address 0 with the Thumb bit clear; CFSR reports `INVSTATE`, not the
+`IMPRECISERR` the pre-naked-handler build appeared to show. **Why it matters.**
+The old handler had printed `R2` as the PC, which looked like "PC in RAM"; the
+naked handler fixed that, and the decoder now refuses to name a symbol for
+`PC=0`. This is the case where a plausible-looking location would have been
+worse than no location. **How to fix it.** Check the function pointer before the
+call; LR still identifies the call site that made the jump.
+
+### QEMU — clean regression (`tuck sim testing_experiment/stage11_irq_marker.tuck`)
+
+```
+IRQ_MARKER_OK
+qemu exit: 124   (124 = clean run into idle loop)
+sim rc=0
+```
+
+**What happened.** The `--debug-lines` / decoder changes did not disturb the
+clean path: the program prints its success marker and `tuck sim` exits 0.
+**Why it matters.** The decoder is opt-in and post-mortem; it must never change
+the behaviour of a healthy run. **How to fix it.** Nothing — this is the gate
+that proves the other two outputs are faults, not a broken simulator.
+
 ## 8. Metal lane — depends on picolibc (step 0 of the vision)
 
 After a Thumb libc links, the runtime layers become possible:

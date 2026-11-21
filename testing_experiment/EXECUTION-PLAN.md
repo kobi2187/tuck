@@ -19,9 +19,14 @@ next commands.
   are plain globals under `defined(freestanding)` (no TLS threadvar).
 - Stages 9/10/12/13 boot under QEMU and print their success markers; host quick
   gate green.
+- **T6 complete (2026-11-21):** `--debug-lines` maps faults to `.tuck` lines;
+  `tuck decode-crash` decodes CFSR/HFSR and emits text/JSON/SARIF with TK-CR01
+  (a warning); `tuck sim` auto-decodes a FAULT line. Green on the host suite
+  and on three QEMU runs (precise fault, null branch, clean regression), with
+  the dev-perspective readings in `IMPLEMENTATION-GROUND.md` §7a.
 
-**Resolved blocker:** task-based programs now run on metal. The remaining
-runtime work (event ring, crash dump, virtual time) is unblocked.
+**Resolved blocker:** task-based programs now run on metal. All three metal
+runtime milestones (event ring, crash dump, virtual time) are implemented.
 
 ## 1. Dependency graph
 
@@ -128,14 +133,20 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
 - **Exit:** a QEMU run produces a CTF file that Babeltrace can read, showing
   two tasks interleaving.
 
-### T6 — Crash dump + source decoder  [T5, done reporter]  [M]  (partial)
+### T6 — Crash dump + source decoder  [T5, done reporter]  [M]  ✅ DONE
 
-- **Outcome:** deliberate fault → ELF-note dump over semihosting →
-  `tuck decode-crash` maps PC/LR to Tuck source lines, emits SARIF + Markdown.
-- **Files:** new `compiler/crash_decode.nim`, fault handler from T3, DWARF
-  check (vision §8.1 #2) in the build flags.
-- **Exit:** `tuck decode-crash dump.bin` names the source line of the faulting
-  `[io]` call in a stackless task.
+- **Outcome:** a FAULT line from the metal handler → `tuck decode-crash` maps
+  PC/LR to Tuck source lines and emits text/JSON/SARIF through the shared
+  reporter (no Markdown renderer was needed — SARIF is the tool-parseable form
+  the vision asked for, and the text form carries the what/why/fix reading).
+- **Files:** `compiler/crash_decode.nim`, `compiler/diagnostics.nim` (TK-CR01),
+  `compiler/codegen*.nim` + `tuck.nim` (`--debug-lines`), the naked fault
+  handler in `boards/startup_lm3s6965evb.c`, `host_sim/fault_shim.nim`,
+  `freestanding-loop.sh`, `tests/suites/crash_decode.nim`.
+- **Exit (observed):** `tuck sim stage16_precise_fault.tuck` prints
+  `stage16_precise_fault.tuck:19` as the call site and exits 1; stage11 exits 0.
+  The precise fault is an unaligned store (`CCR.UNALIGN_TRP`), not the wild
+  MMIO write first imagined — QEMU ignores unmapped stores on this board.
 
 ### T7 — Virtual time + fault injection  [T4, T5]  [M]
 
@@ -235,6 +246,118 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
 - **Exit:** a 1 Hz blink completes in <100ms wall time; a fault-injected run
   produces a reproducible failure + event trace.
 
+### T6 detail — staged execution plan (2026-11-21)
+
+This is the working breakdown for item 12 in §3. Every stage ends in an
+observed result (a command + its output), not "code written". A stage is not
+done on host evidence alone where a QEMU check exists. Each stage is small
+enough to fit one feedback loop; if a check fails, fix that stage before
+opening the next one.
+
+**Stage 1 — Tuck line numbers reach DWARF (host proof)**
+
+1.1 `CodegenCtx` carries `lineInfo`/`srcPath`; `emitNim` passes them through;
+`genStmt` wraps statements in `{.line: ("file.tuck", N).}:` only when on.
+1.2 `tuck` turns `--debug-lines` into that emit state and appends
+`--lineDir:on` to the `nim c` flags, so Nim writes `#line` into the C.
+1.3 Host proof: build a small file with `--debug-lines` and `--passC:-g`;
+`addr2line -e BIN -f -C ADDR` must say `file.tuck:N`, not `file.nim:N`.
+1.4 Guard the default: without `--debug-lines` the emitted Nim is unchanged,
+so tracked `examples/` need no re-emit.
+
+Exit: the `addr2line` result is recorded, and `git diff examples/` is empty
+after a normal `tuck c`. Status: **all done** — a host build mapped `0x65d0`
+to `lineinfo_fresh.tuck:2`; re-emitting examples left `git diff examples/`
+empty and the default emit carries zero line pragmas (the `--debug-lines`
+emit carries them). The regression suite pins the same property on a host
+binary built from a two-line `.tuck`.
+
+**Stage 2 — a complete, parseable fault record on metal**
+
+2.1 `startup_lm3s6965evb.c`: print `BFAR=` and `xPSR=` alongside the existing
+`PC`/`LR`/`CFSR`/`HFSR` fields. Keep the `KEY=value` shape so a script can
+parse it without a regex guess.
+2.2 Add `stage16_precise_fault.tuck`: a directly called shim performs an
+unaligned 32-bit store while `CCR.UNALIGN_TRP` is set. This was chosen over the
+planned wild MMIO write after QEMU ignored stores to every unmapped address
+tried (`0x60000000`, `0x80000000`, `0xFFFFFFF0`, …). The fault is *precise*: the
+stacked PC names the faulting instruction. Stage14's indirect null call turned
+out to be `INVSTATE`, not the `IMPRECISERR` the pre-naked handler appeared to
+show — that earlier reading was really R2 from a compiled C prologue.
+2.3 QEMU run must print one FAULT line and halt, with no "Lockup".
+
+Exit: `FAULT PC=... LR=... CFSR=... HFSR=... BFAR=... xPSR=...` observed, with
+CFSR `0x01000000` = `UNALIGNED` (and HFSR `0x40000000` = `FORCED`) — a precise
+UsageFault, not an imprecise bus fault with an unreliable stacked PC.
+
+**Stage 3 — decoder module `compiler/crash_decode.nim`**
+
+3.1 Parse a fault record from `--log:FILE` or explicit `--pc/--lr/--cfsr/
+--hfsr/--bfar` flags; tolerate the `FAULT ` prefix and hex with/without `0x`.
+3.2 Decode CFSR's MMFSR/BFSR/UFSR bits and HFSR bits into plain language;
+say explicitly when the PC is imprecise (IMPRECISERR) and must not be trusted
+as the faulting instruction.
+3.3 Resolve PC via `arm-none-eabi-nm -n` (nearest symbol, Thumb bit masked)
+and via `arm-none-eabi-addr2line -f -C` (Tuck file/line); keep both, because a
+symbol explains *what code* and a line explains *where to edit*.
+3.4 Render text as what happened / why it matters / how to fix it; JSON and
+SARIF 2.1.0 through `report_format`, with one new registered code
+(`TK-CR01`, a warning) so GitHub's code-scanning UI can show a fault site.
+
+Exit: decoding a captured log names the symbol and, for a precise fault, the
+Tuck line; an imprecise fault is labelled as such and not given a fake line.
+
+**Stage 4 — CLI and `tuck sim` integration**
+
+4.1 Rewrite `tuck decode-crash ELF PC` to use the module, keeping the old
+two-positional form working and adding the flags from 3.1 plus
+`--format:json|sarif`.
+4.2 `freestanding-loop.sh` prints `ELF=<path>` so one captured log is
+self-describing; pass `--debug-lines` for sim builds.
+4.3 `tuck sim` detects a FAULT line, finds the ELF, and prints the decoded
+report before exiting 1. A clean run still exits 0.
+
+Exit: one `tuck sim stage16_precise_fault.tuck` prints the decoded Tuck line.
+
+**Stage 5 — regression suite `tests/suites/crash_decode.nim`**
+
+5.1 Table-test the status-bit decoder (precise bus fault vs imprecise vs
+MemManage vs UsageFault) without needing QEMU.
+5.2 Assert log parsing, `--format:json` and `--format:sarif` shape (rule id,
+location), and `tuck explain TK-CR01`.
+5.3 Host DWARF mapping: write a two-line `.tuck`, build with `--debug-lines`,
+look up a function address with `nm` and ask `addr2line` for it; SKIP the
+assertion when `nm`/`addr2line` are absent.
+5.4 Register the suite in `tests/suites/regen.py` QUICK set; run the named
+suite and `./quick-test.sh`.
+
+Exit: suite green, no golden churn, no new SKIP in the normal environment.
+
+**Stage 6 — QEMU end-to-end, developer's eye**
+
+6.1 `tuck sim stage16_precise_fault.tuck`: report names the Tuck call site
+(`stage16_precise_fault.tuck:19`) and explains the unaligned store + fix.
+6.2 `tuck sim stage14_fault.tuck`: report says `PC=0` is a null target with no
+symbol, decodes `INVSTATE`, and points at LR for the call site. (The planned
+IMPRECISERR wording was wrong: the fault is precise, and earlier evidence came
+from a non-naked handler that printed R2 as the PC.)
+6.3 `tuck sim stage11_irq_marker.tuck`: clean run stays green (no regression).
+
+Exit: all three outputs (rc 1, 1, 0) pasted into `IMPLEMENTATION-GROUND.md`
+§7a with a short what/why/fix reading, not just a pass/fail line.
+
+**Stage 7 — docs, gates, commit**
+
+7.1 Update §0/§3 here, the README developer loop, `IMPLEMENTATION-GROUND.md`
+(a new T6 layer note), and `tuck help decode-crash`/`tuck help sim`.
+7.2 Run `./quick-test.sh`, `./tests/run --quick`, `tools/doc_snippets --list`,
+`git diff examples/`, and the QEMU checks from stage 6 one final time.
+7.3 Commit on `claude/freestanding-baremetal-qemu`; do not push.
+
+Exit: a commit whose message names the verified QEMU result (`gsd` is not
+clean: these experiment files and the new suite are part of the commit). Then
+return to §3's next item (T19 host sim).
+
 ## 3. Immediate next actions (in order)
 
 T1–T4 are **complete** (picolibc vendored, tasks run to completion on metal).
@@ -249,13 +372,16 @@ remain.
 
 Remaining:
 
-12. **T6 — crash dump + decoder.** Depends on T3 (done) + T5 (done). Now
-    unblocked. First step: emit a compiler side-table mapping PC→Tuck source
-    line so `tuck decode-crash` reports source locations, not just symbol names.
+12. ~~**T6 — crash dump + decoder.**~~ **DONE (2026-11-21).** `--debug-lines`
+    puts Tuck coordinates in DWARF; the decoder maps PC/LR through `nm` +
+    `addr2line` and emits text/JSON/SARIF with TK-CR01; `tuck sim` auto-decodes
+    FAULT lines. Verified on three QEMU runs (§7a of the ground doc) and pinned
+    by `tests/suites/crash_decode.nim`.
 13. **T11 (rest) — WCET, task utilization, longest masked interval, deadline
     gating.** The stack + critical-nesting report is built; these need the
     call graph's timing facts and `[period:, deadline:]` declarations.
-14. **T8 — SVD importer** (Lane 2, unblocked, can interleave).
+14. **T19 — `tuck sim --host`** (fastest path, no cross-toolchain).
+15. **T8 — SVD importer** (Lane 2, unblocked, can interleave).
 
 Each ends with: rebuild tuck (clean Nim cache after enum changes), run the
 affected `tests/run` suite, run `freestanding-loop.sh <stage>`, and write a

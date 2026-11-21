@@ -864,6 +864,29 @@ proc genBoundErrorRouted(ctx: var CodegenCtx, s: Expr, stmtCode,
                 UnhandledHandlerName & "(" & name & ".err, \"" & site & "\")"
   stmtCode & "\n" & ind & "  if " & name & ".status == tsErr: " & onErr
 
+proc escapeNimStr(s: string): string =
+  ## A Tuck path inside the emitted `{.line: ("...", N).}` pragma.
+  result = s.replace("\\", "\\\\").replace("\"", "\\\"")
+
+proc genLineWrapped(ctx: CodegenCtx; s: Expr; code, ind: string;
+                    layout: bool): string =
+  ## One statement wrapped in `{.line: ("file.tuck", N).}:`, which is what
+  ## makes DWARF name the TUCK line instead of the generated Nim one. Only
+  ## emitted under `--debug-lines`; without it the output is byte-identical.
+  ##
+  ## The pragma is a block pragma, so the statement moves one level deeper.
+  ## Every line loses the statement's own base indent and gains the wrapper's,
+  ## which keeps relative layout (case arms, multi-line sends) intact.
+  let base = if layout: ind else: ind & "  "
+  result = ind & "  {.line: (\"" & escapeNimStr(ctx.srcPath) & "\", " &
+           $s.span.line & ").}:\n"
+  for ln in code.splitLines:
+    if ln.len == 0:
+      result.add "\n"
+    else:
+      let stripped = if ln.startsWith(base): ln[base.len .. ^1] else: ln
+      result.add ind & "    " & stripped & "\n"
+
 proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
   var code = ctx.genExpr(s)
@@ -873,7 +896,10 @@ proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =
   elif code != "" and ctx.stmtValueDropped(s):
     code = "discard " & code
   if code == "": return ""
-  if ownsItsLayout(ctx.res, s): code else: ind & "  " & code
+  let layout = ownsItsLayout(ctx.res, s)
+  if ctx.lineInfo and ctx.srcPath != "" and s.span.line > 0:
+    return ctx.genLineWrapped(s, code, ind, layout)
+  if layout: code else: ind & "  " & code
 
 proc genStmts*(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## The statements of a block, indented one level, with no scope around them.

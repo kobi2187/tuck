@@ -32,7 +32,7 @@ static void appendHex(char *b, int *i, unsigned int v) {
   for (int k = 28; k >= 0; k -= 4) b[(*i)++] = hexdig[(v >> k) & 0xf];
 }
 
-static void recordFault(unsigned int *sp) {
+__attribute__((used)) static void recordFault(unsigned int *sp) {
   /* Stacked frame layout (low -> high): xPSR, PC, LR, R12, R3, R2, R1, R0.
      sp points at R0, so PC is at sp+6, LR at sp+5, xPSR at sp+7. */
   faultRecord.pc = sp[6];
@@ -56,16 +56,28 @@ static void recordFault(unsigned int *sp) {
   const char *s = " HFSR=";
   for (; *s; s++) hexbuf[i++] = *s;
   appendHex(hexbuf, &i, faultRecord.hfsr);
+  /* BFAR is only valid when CFSR.BFARVALID is set; we print it unconditionally
+     so the host decoder can decide from the bit instead of a missing field. */
+  const char *t = " BFAR=";
+  for (; *t; t++) hexbuf[i++] = *t;
+  appendHex(hexbuf, &i, faultRecord.bfar);
+  const char *u = " xPSR=";
+  for (; *u; u++) hexbuf[i++] = *u;
+  appendHex(hexbuf, &i, faultRecord.xpsr);
   hexbuf[i++] = '\n';
   hexbuf[i] = 0;
   sh(hexbuf);
   for (;;) {}   /* halt; the record is in RAM for a debugger */
 }
 
-static void defaultHandler(void) {
-  unsigned int *sp;
-  __asm volatile("mov %0, sp" : "=r"(sp));
-  recordFault(sp);
+/* NAKED on purpose. A compiled C handler pushes {r7, lr} and reserves a
+   local slot before it can read SP, which shifts the exception frame by 4
+   words. The old handler printed R1/R2/R3 as LR/PC/xPSR (stage14's "PC in
+   RAM" was really R2). Here SP at entry IS the stacked frame, so recordFault
+   can index R0/R1/R2/R3/R12/LR/PC/xPSR at sp[0..7]. */
+__attribute__((naked)) static void defaultHandler(void) {
+  __asm volatile("mov r0, sp\n"
+                 "b recordFault\n");
 }
 
 /* --- vector table ------------------------------------------------------- */
@@ -96,6 +108,12 @@ void Reset_Handler(void) {
   while (dst < &_edata) *dst++ = *src++;
   dst = &_sbss;
   while (dst < &_ebss) *dst++ = 0;
+  /* Trap unaligned word accesses. With this on, an unaligned store in a
+     directly called shim faults AT that instruction (precise UsageFault), which lets
+     `tuck decode-crash` name the Tuck line. QEMU's stellaris board silently
+     ignores stores to unmapped addresses, so this is the reliable way to
+     produce a precise fault from Tuck-generated code on this board. */
+  *(volatile unsigned int *)0xE000ED14u |= (1u << 3);  /* CCR.UNALIGN_TRP */
   main();
   for (;;) {}
 }

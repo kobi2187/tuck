@@ -167,19 +167,27 @@ the `freestanding-loop.sh` driver, we got a real bare-metal build running.
   emits a plain `discard tuck_main()` (no libc `quit`/`exit`, no `tuck_async`
   import) and a `tuckSlRunAll()` after main.
 
-### The developer loop: `tuck sim` and `tuck timing`
+### The developer loop: `tuck sim`, `tuck timing`, `tuck decode-crash`
 
 - `tuck sim FILE.tuck` builds the file freestanding and boots it under QEMU in
   one command (about a second), printing the program's semihosting output. It
   exits non-zero on a fault. `--time:fast` uses QEMU virtual time;
-  `--fault:isr-drop` injects a dropped interrupt at compile time.
+  `--fault:isr-drop` injects a dropped interrupt at compile time. When a FAULT
+  line appears it prints the decoded crash report automatically and exits 1.
 - `tuck timing FILE.tuck` is the static budget report: worst-case
   **critical-section nesting** per fn and an **approximate worst-case stack**
   along the resolved call graph. `--format:json` and `--format:sarif` feed CI;
   `tuck explain TK-TM01` / `TK-TM02` explain the rules. Stack numbers SUM the
   call path and are a budget flag, not a measurement.
+- `tuck decode-crash ELF [PC]` (or `--log:FILE` from a captured QEMU run) turns
+  a fault record into a what/why/fix reading: CFSR/HFSR bits in plain language,
+  PC/LR resolved through `nm` + `addr2line` to `.tuck` lines when built with
+  `--debug-lines`, and `--format:json|sarif` with rule id `TK-CR01` (a warning,
+  so a post-mortem report never gates a build). `tuck explain TK-CR01` explains
+  it. Text output says explicitly when the stacked PC is imprecise or a null
+  target, so a guessed location is never presented as a place to edit.
 
-### Results (updated 2026-11-20)
+### Results (updated 2026-11-21)
 | stage | result |
 |---|---|
 | `bare_metal_nop.tuck` (no tasks) | **boots, runs to idle, no fault** |
@@ -188,7 +196,10 @@ the `freestanding-loop.sh` driver, we got a real bare-metal build running.
 | `stage10_fire_forget.tuck` | **runs to completion, both workers print WORKER** |
 | `stage12_critical.tuck` (protected shared state) | **boots, prints CRITICAL_OK** |
 | `stage13_isr_spsc.tuck` (ISR-safe handoff) | **boots, prints ISR_SPSC_OK** |
-| `stage14_fault.tuck` (deliberate null-call fault) | **fault captured: prints FAULT PC=... CFSR=... HFSR=...** |
+| `stage14_fault.tuck` (deliberate null-call fault) | **decoded: INVSTATE, PC=0 null target, LR names call site** |
+| `stage16_precise_fault.tuck` (unaligned store, `CCR.UNALIGN_TRP`) | **decoded: UNALIGNED, PC maps to shim, LR names `stage16_precise_fault.tuck:19`** |
+| `stage11_irq_marker.tuck` (clean run) | **prints `IRQ_MARKER_OK`, `tuck sim` exits 0** |
+| `tests/run crash_decode` | **12 passed, 0 failed** (11 in `--quick`; DWARF case SKIPs without a backend build) |
 
 ### Root cause of the now-resolved blocker
 Nim's `nimZeroMem` calls newlib's `memset`, which `arm-none-eabi-gcc` ships in
@@ -198,27 +209,10 @@ Nim's `nimZeroMem` calls newlib's `memset`, which `arm-none-eabi-gcc` ships in
 consistent under `--threads:off` — was fixed by making `slHead`/`slTail`/
 `tuckSlDriving` plain globals under `defined(freestanding)`.
 
-### Root cause of the remaining blocker (important)
-Nim's C output calls **newlib's `memset`** (through `nimZeroMem`) to clear task
-frames/slots. `arm-none-eabi-gcc`'s bundled `libc.a` is precompiled in **ARM
-state** (`e92d4030` etc.). Cortex-M3 is **Thumb-only**: a Thumb→ARM `bl` becomes
-a `bx` to an ARM target, which the core cannot execute. Simple programs avoid
-`memset` and run; any program with tasks (frames/slots) hits it. The earlier
-"START printed then faulted" symptom was this same class (libc `exit`/malloc
-dragged in by `quit`, also ARM-mode).
-
-**Fixes needed (add to the plan):**
-1. Link a **Thumb-built C library** (e.g. `picolibc`, or rebuild newlib with
-   `-mthumb`) instead of the bundled ARM `libc.a`. This is the single biggest
-   blocker for real metal.
-2. Provide proper **vector-table handlers** for all Cortex-M exceptions, not
-   just the reset vector — currently a BKPT/HardFault jumps to garbage because
-   the table has only two entries.
-3. Keep `nimZeroMem` inlined / implement a Thumb `memset` so no ARM libc is
-   reached.
-
 ### Verdict on the question "is pool + slab enough for freestanding?"
 No. Pool/slab solve *program storage*, but the compiler runtime's C/libc
-dependency (ARM-mode newlib, TLS/`__aeabi_read_tp`, the reactor, `quit`) is the
-real gate. A freestanding port needs a Thumb libc + a minimal runtime first;
-the Tuck-level pool/slab/frame work is necessary but not sufficient.
+dependency (ARM-mode newlib, TLS/`__aeabi_read_tp`, the reactor, `quit`) was the
+real gate. A freestanding port needed a Thumb libc + a minimal runtime first;
+the Tuck-level pool/slab/frame work was necessary but not sufficient. Both gates
+are now cleared on this branch — see the resolved-blocker note above and the
+QEMU results in `IMPLEMENTATION-GROUND.md` §7a.

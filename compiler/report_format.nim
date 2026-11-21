@@ -18,6 +18,10 @@ type
     path*: string
     line*: int
     col*: int
+    ## SARIF level. Defaults to "error" so every existing report keeps its
+    ## byte-identical output; a post-mortem report that never gates a build
+    ## (TK-CR01) passes "warning" and says so in the code-scanning UI too.
+    level*: string = "error"
 
 proc findingJson(f: Finding): JsonNode =
   %*{"code": f.code, "message": f.msg, "path": f.path,
@@ -32,9 +36,9 @@ proc toJson*(findings: seq[Finding]): string =
 
 proc toSarif*(findings: seq[Finding], toolName = "tuck"): string =
   ## SARIF 2.1.0: one run, one rule per distinct diagnostic code, one result
-  ## per finding with its physical location. Levels are error for codes that
-  ## gate a build and warning for the rest (today all findings gate under
-  ## --isr-check:error, so all are reported as errors).
+  ## per finding with its physical location. Each finding carries its own
+  ## level; the default "error" preserves the gating reports (ISR, timing),
+  ## while a post-mortem report sets "warning" because nothing is rejected.
   var rules = newJArray()
   var seen: seq[string]
   for f in findings:
@@ -45,7 +49,7 @@ proc toSarif*(findings: seq[Finding], toolName = "tuck"): string =
   for f in findings:
     results.add %*{
       "ruleId": f.code,
-      "level": "error",
+      "level": f.level,
       "message": %*{"text": f.msg},
       "locations": [%*{
         "physicalLocation": %*{

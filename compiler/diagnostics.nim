@@ -27,6 +27,7 @@
 #   RG  registry     the event registry's rules (Part 10)
 #   RE  register     a memory-mapped register's layout or access mode (8.1)
 #   TM  timing       a static timing/space budget report, not a rejection
+#   CR  crash        a decoded post-mortem fault report, not a rejection
 #
 # NUMBERS ARE PERMANENT. Once a code appears in a release it names that
 # diagnostic forever. A diagnostic that is deleted RETIRES its number — the
@@ -232,6 +233,7 @@ type
     dcRsUnfinished = "TK-RS12"          ## a handle whose only use is `.ok`: never finished or handed on
     dcTmCriticalNest = "TK-TM01"        ## `critical:` blocks nested inside each other
     dcTmStackDepth = "TK-TM02"          ## approximate worst-case stack, reported not rejected
+    dcCrDecoded = "TK-CR01"             ## a decoded crash fault, reported post-mortem
 
 const UncodedNote* = """
 UNCODED DIAGNOSTICS. `dcNone` exists because codes are being adopted site by
@@ -270,10 +272,12 @@ proc categoryName*(d: DiagCode): string =
   of "RG": "Registry"
   of "RE": "Register"
   of "TM": "Timing"
+  of "CR": "Crash"
   else: "Semantic"   # SM, and a category added without a word here
 
 const WarningCodes* = {dcTyMemberShadowsFn, dcMeArenaInert,  # ME02 retired
-                       dcTmCriticalNest, dcTmStackDepth}    # reports, never gates
+                       dcTmCriticalNest, dcTmStackDepth,     # reports, never gates
+                       dcCrDecoded}
   ## Codes that REPORT without stopping the build. Kept beside the registry
   ## rather than inferred from the category letters, because severity is a
   ## property of the individual diagnostic and not of its category — TY holds
@@ -1225,6 +1229,13 @@ proc ruleExplanation(d: DiagCode): string =
     "from each fn. Use it to spot order-of-magnitude budget problems on a " &
     "small-SRAM target — never to size a real stack. The runtime's own " &
     "high-water mark is the authoritative number."
+  of dcCrDecoded:
+    "A post-mortem report from `tuck decode-crash`: the fault status bits, " &
+    "the nearest symbol, and (with DWARF from `--debug-lines`) the Tuck " &
+    "source line are decoded into a what/why/fix note for the developer. " &
+    "It never rejects a build — the program already stopped. A stacked PC is " &
+    "only trustworthy when the fault is precise; IMPRECISERR is reported as " &
+    "such instead of being given a fake source line."
   else: ""
 
 proc explanationOf*(d: DiagCode): string =

@@ -43,6 +43,7 @@ import algorithm, sequtils
 import os, strutils, times, tables, std/json, osproc, std/sets
 import jsony
 import lexer
+import compiler/crash_decode
 import compiler/ast
 import compiler/parser
 import compiler/describe
@@ -250,8 +251,10 @@ capturing semihosting output and exit code. No hardware required.
   --time:fast    run with virtual time (days of simulated time in seconds)
 
 This is the fast iteration loop: write, compile, simulate, see. A clean run
-prints the program's output and exits 0; a fault prints a FAULT report and
-exits non-zero. Use `tuck build ... --freestanding` for the ELF itself.""",
+prints the program's output and exits 0; a fault prints a FAULT report,
+decodes it into a what/why/fix note with the Tuck source line, and exits 1.
+Builds use `--debug-lines` so DWARF names Tuck lines. Use
+`tuck build ... --freestanding` for the ELF itself.""",
   "frames": """tuck frames file.tuck
 
 The stackless transform's colouring (#216, docs/stackless-concurrency.md),
@@ -261,15 +264,19 @@ pause, or a fn one of them reaches that can pause. After them come the
 handlers that never pause (the actor loop calls them, so they need no
 frame) and the [io] fns a root reaches that never pause (they stay native).
 Nothing is rewritten; this is what the transform will start from.""",
-  "decode-crash": """tuck decode-crash ELF PC
+  "decode-crash": """tuck decode-crash ELF [PC] [options]
 
-Map a faulting PC from a Cortex-M crash to the nearest symbol in an ELF.
-Reads the fault record printed by the runtime's default handler (FAULT
-PC=... LR=... CFSR=...) and names the function. Without DWARF, only the
-symbol name is recoverable; source-line mapping needs a future side-table.
+Decode a Cortex-M fault record into a developer-facing report: status bits,
+precise/imprecise, nearest symbol, Tuck source line via DWARF, and a
+what/why/fix note. The old two-positional form still works.
 
-  ELF   the linked ELF (e.g. from `tuck build --concurrency:stackless`)
-  PC    the faulting program counter, hex (e.g. 0x20000e30)""",
+  ELF              linked ELF; use `-` with --log to take the ELF= line
+  PC               faulting program counter, hex (e.g. 0x15a)
+  --log:FILE       read FAULT PC=... LR=... CFSR=... from a captured sim log
+  --lr:HEX --cfsr:HEX --hfsr:HEX --bfar:HEX --xpsr:HEX
+                   override individual fields (or supply them without a log)
+  --format:text|json|sarif   text is default; SARIF uses TK-CR01
+  --nm:EXE --addr2line:EXE   tool override (tests use host binutils)""",
   "explain": """tuck explain CODE
 
 Print what a diagnostic code means and how to fix it, e.g.:
@@ -1066,31 +1073,46 @@ when isMainModule:
     echo $dc, "  ", categoryName(dc), " ", severityOf(dc)
     echo "  ", explanationOf(dc)
     quit(0)
-  # `decode-crash` takes an ELF and a PC, not a .tuck file.
+  # `decode-crash` takes an ELF and a record, not a .tuck file. All flag
+  # parsing lives here; the decoding rules live in compiler/crash_decode so
+  # a test can call the same code through this CLI with host binutils.
   if cmd == "decode-crash":
     if paramCount() < 3: usage()
-    let elf = paramStr(2)
-    let pcStr = paramStr(3)
-    let pc = parseHexInt(pcStr)
-    # Map PC to the nearest symbol via arm-none-eabi-nm; a Thumb PC has bit 0
-    # set, so mask it before the lookup.
-    let nm = execProcess("/usr/bin/arm-none-eabi-nm", args=[elf], options = {poStdErrToStdOut})
-    var bestName = "?"
-    var bestAddr: int64 = -1
-    for line in nm.splitLines():
-      let parts = line.splitWhitespace()
-      if parts.len < 3: continue
-      try:
-        let symAddr = parseHexInt("0x" & parts[0])
-        if symAddr <= pc and symAddr > bestAddr:
-          bestAddr = symAddr
-          bestName = parts[2]
-      except ValueError: discard
-    echo "decode-crash: PC " & pcStr & " -> " & bestName &
-         " (base 0x" & toHex(bestAddr, 8) & ")"
-    echo "  function: " & bestName
-    echo "  Note: without DWARF, only the symbol name is recoverable. A future"
-    echo "  `tuck build --debug` with a side-table will map to source lines."
+    var elf = paramStr(2)
+    var pcStr = ""
+    var rec = FaultRecord()
+    var logText = ""
+    var fmt = "text"
+    var nmExe = ""
+    var addrExe = ""
+    for i in 3 .. paramCount():
+      let a = paramStr(i)
+      if a.startsWith("--log:"): logText = readFile(a[6 .. ^1])
+      elif a.startsWith("--format:"): fmt = a[9 .. ^1]
+      elif a.startsWith("--nm:"): nmExe = a[5 .. ^1]
+      elif a.startsWith("--addr2line:"): addrExe = a[12 .. ^1]
+      elif a.startsWith("--pc:"): pcStr = a[5 .. ^1]
+      elif a.startsWith("--lr:"): rec.lr = hexVal(a[5 .. ^1])
+      elif a.startsWith("--cfsr:"): rec.cfsr = hexVal(a[7 .. ^1])
+      elif a.startsWith("--hfsr:"): rec.hfsr = hexVal(a[7 .. ^1])
+      elif a.startsWith("--bfar:"): rec.bfar = hexVal(a[7 .. ^1])
+      elif a.startsWith("--xpsr:"): rec.xpsr = hexVal(a[7 .. ^1])
+      elif not a.startsWith("--"):
+        if pcStr == "": pcStr = a
+        else: die("tuck decode-crash: unexpected extra argument: " & a)
+    if logText != "":
+      let fl = faultLine(logText)
+      if fl != "": rec = parseFaultLine(fl)
+      if elf == "-": elf = findElf(logText)
+    if pcStr != "": rec.pc = hexVal(pcStr)
+    if elf == "" or elf == "-":
+      die("tuck decode-crash: no ELF (pass one, or use --log with an ELF= line)")
+    let report = decodeFault(elf, rec, nmExe, addrExe)
+    case fmt
+    of "json": stdout.write renderJson(report)
+    of "sarif": stdout.write toSarif(report.toFindings())
+    of "text": stdout.write renderText(report)
+    else: die("tuck decode-crash: unknown --format:" & fmt)
     quit(0)
   let path = paramStr(2)
   if not fileExists(path) and not (cmd == "test" and dirExists(path)):
@@ -1364,8 +1386,21 @@ when isMainModule:
     stdout.write qemuOut
     if rc != 0 and rc != 124:
       quit(1)
-    # Fail if a fault was reported, even when QEMU exited 0.
-    if qemuOut.contains("FAULT") or qemuOut.contains("Lockup"):
+    # A fault is the interesting outcome: decode it here rather than making
+    # the developer copy a hex line into a second command. `freestanding-loop`
+    # prints ELF=<path>, so the log is self-describing.
+    let fl = faultLine(qemuOut)
+    if fl != "" or qemuOut.contains("Lockup"):
+      if fl != "":
+        let elf = findElf(qemuOut)
+        if elf != "":
+          let rep = decodeFault(elf, parseFaultLine(fl))
+          stdout.write "\n=== decoded crash ===\n"
+          if opts.anyIt(it == "--format:json"): stdout.write renderJson(rep)
+          elif opts.anyIt(it == "--format:sarif"): stdout.write toSarif(rep.toFindings())
+          else: stdout.write renderText(rep)
+        else:
+          stdout.write "\n(tuck sim: fault recorded but no ELF= line in the log)\n"
       quit(1)
     quit(0)
   of "timing":
@@ -1575,6 +1610,11 @@ when isMainModule:
       let nimReal = nimTree.real
       block:
         let t0 = vBegin(psEmitting)
+        # `--debug-lines`: every statement carries a Tuck source pragma, and
+        # `nim c` gets `--lineDir:on` so the C compiler records it in DWARF.
+        # That is what makes `tuck decode-crash` name a Tuck line, not the
+        # generated Nim/C one. Off by default; output is unchanged without it.
+        let wantLines = opts.anyIt(it == "--debug-lines")
         # imported modules first (each its own Nim file), entry module last
         for lm in nimProg:
           let ts = epochTime()
@@ -1600,7 +1640,9 @@ when isMainModule:
           # says `seq`, but no file by that name exists anymore.
           let outName = if isEntry: nimEntryStem(base) else: lm.name
           let nimPath = outDir / (outName & ".nim")
-          writeFile(nimPath, emitNim(lm.m, semLayer, rtImport, nimReal, outName))
+          let srcPath = if wantLines: absolutePath(lm.path) else: ""
+          writeFile(nimPath, emitNim(lm.m, semLayer, rtImport, nimReal, outName,
+                                     wantLines, srcPath))
           echo "wrote ", nimPath
           vSub(lm.name, ts)
         vEnd(psEmitting, t0)
@@ -1884,6 +1926,10 @@ when isMainModule:
         var nimFlags = ""
         for o in opts:
           if o.startsWith("--nim:"): nimFlags = o[6 .. ^1]
+        # `--debug-lines` emitted Tuck positions into the Nim source; Nim
+        # only writes them into C (`#line`) when lineDir is on. Without this
+        # the pragma is dead text and DWARF still names the generated file.
+        if "--debug-lines" in opts: nimFlags.add " --lineDir:on"
         # `binNim` is the file nim c actually COMPILES — needs the same
         # collision check as mainNim (dashes already forced binBase through
         # a rewrite for exactly this "the name on disk isn't always the

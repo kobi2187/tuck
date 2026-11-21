@@ -49,6 +49,8 @@ type
                            # a `return` finishes the frame instead (#216)
     inTask*: bool          # emitting a task body — [io] calls become async yields
     errPolicy*: string     # from the errors declaration; "" = strict
+    lineInfo*: bool        # emit `{.line: (...).}:` on statements (--debug-lines)
+    srcPath*: string       # the Tuck file those line pragmas name
     realModules*: ModuleMap  # imported modules emitted as own Nim files
     currentParams*: seq[FieldDef]  # enclosing fn's params — `input` rebuilds them
     moduleName*: string    # error codes hash over "module/Enum.Variant"
@@ -143,12 +145,15 @@ proc fieldType*(ctx: var CodegenCtx, parent: string, f: FieldDef): string =
   return genType(f.typ)
 
 proc newCodegenCtx*(m: Module, realModules: ModuleMap,
-                   moduleName: string, res: Resolution): CodegenCtx =
+                   moduleName: string, res: Resolution,
+                   lineInfo = false, srcPath = ""): CodegenCtx =
   ## A fresh Nim emission context for module `m`. The module's `errors`
   ## declaration, if any, sets the error policy every fn body is printed under.
+  ## `lineInfo`/`srcPath` turn on Tuck source positions in the emitted code
+  ## (`--debug-lines`), which is what lets DWARF name a Tuck line.
   result = CodegenCtx(definedVars: initHashSet[string](), indent: 0, module: m,
                       realModules: realModules, moduleName: moduleName,
-                      res: res)
+                      res: res, lineInfo: lineInfo, srcPath: srcPath)
   for d in m.decls:
     if d != nil and d.kind == dkErrors:
       result.errPolicy = d.policyName

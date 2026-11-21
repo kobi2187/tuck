@@ -48,6 +48,7 @@ fi
 
 echo "=== freestanding build ==="
 ./tuck b "$SRC" \
+  --debug-lines \
   --nim:"$NIMFLAGS" \
   -o:"$OUT" 2>&1 | tail -20
 
@@ -56,6 +57,9 @@ if [ ! -f "$ELF" ]; then
   echo "!!! no ELF produced"
   exit 1
 fi
+# Machine-readable handle for `tuck decode-crash --log:FILE`: one captured
+# log then carries both the fault record and the ELF it refers to.
+echo "ELF=$ELF"
 echo "=== qemu run (10s) ==="
 QEMU_EXTRA=""
 if [ "${TUCK_VIRTUAL_TIME:-}" = "1" ]; then
