@@ -1,8 +1,9 @@
 ## timing_report — the `tuck timing` static report.
 ##
-## Two reports from the checked tree, no execution:
+## Three reports from the checked tree, no execution:
 ##   - worst-case CRITICAL-SECTION nesting per fn (embedded ISR budget);
-##   - worst-case STACK per fn along the call graph (small-SRAM budget).
+##   - worst-case STACK per fn along the call graph (small-SRAM budget);
+##   - a coarse CYCLE score per fn (time budget, report-only).
 ##
 ## This is the Layer-2 (REPORT) layer of the embedded vision. Output goes
 ## through the same conventions as `tuck audit`: human text, structured JSON,
@@ -14,7 +15,7 @@
 
 import std/[tables, json, strutils, algorithm]
 import ast, ast_ops, ast_query, typecheck_util, report_format, resolution,
-       diagnostics
+       diagnostics, cost_model
 
 type
   CriticalReport* = object
@@ -30,9 +31,17 @@ type
     bytes*: int              ## approximate worst-case stack for this fn
     path*: seq[string]       ## the call path that produces it (display names)
 
+  CostReport* = object
+    fnName*: string
+    fnId*: NodeId
+    site*: Span
+    cycles*: int             ## coarse worst-case estimate, NOT a measurement
+    notes*: seq[string]      ## empty == bounded and fully modelled
+
   TimingReport* = object
     critical*: seq[CriticalReport]
     stack*: seq[StackReport]
+    cost*: seq[CostReport]
 
 proc sigFor(d: Decl): string =
   ## Display signature. The name is shown to the human, never used as a key.
@@ -126,9 +135,49 @@ proc stackOf(res: Resolution, m: Module): seq[StackReport] =
   result = rep
   result.sort(proc (a, b: StackReport): int = cmp(b.bytes, a.bytes))
 
+proc costOf*(res: Resolution, m: Module,
+             budgets: Table[NodeId, int]): seq[CostReport] =
+  ## One coarse cycle score per fn/task, worst first. `budgets` is keyed by
+  ## Decl.id: a declared deadline becomes that function's cap, so filling the
+  ## table from syntax needs no change here.
+  for d in m.allDecls:
+    if d == nil or d.kind notin {dkFn, dkTask} or d.fnBody == nil: continue
+    let s = scoreDecl(res, m, d, budgets)
+    var notes: seq[string]
+    for n in s.notes: notes.add n.text
+    result.add CostReport(fnName: sigFor(d), fnId: d.id, site: d.span,
+                          cycles: s.cycles, notes: notes)
+  result.sort(proc (a, b: CostReport): int = cmp(b.cycles, a.cycles))
+
 proc timingOf*(res: Resolution, m: Module): TimingReport =
   result.critical = criticalOf(m)
   result.stack = stackOf(res, m)
+  # No declaration supplies budgets yet; the scorer is built and pinned first,
+  # then `deadline:` parsing will fill this table without changing the API.
+  result.cost = costOf(res, m, initTable[NodeId, int]())
+
+proc renderCostText(rep: TimingReport, path: string, limit: int): string =
+  ## The cycle-score section, kept separate so renderText stays a flat
+  ## dispatcher of the three report sections (and under the ratchet).
+  result.add "Worst-case cycles (coarse static estimate; report only):\n"
+  if rep.cost.len == 0:
+    result.add "  none.\n"
+  else:
+    for i in 0 ..< min(rep.cost.len, limit):
+      let c = rep.cost[i]
+      let flag = if c.notes.len == 0: "" else: "  [not a hard bound]"
+      result.add "  ~" & $c.cycles & " cyc  " & c.fnName &
+                 "  (" & path & ":" & $c.site.line & ")" & flag & "\n"
+      for note in c.notes:
+        result.add "           " & note & "\n"
+    if rep.cost.len > limit:
+      result.add "  ... " & $(rep.cost.len - limit) & " more fn(s)\n"
+    result.add "\n  A branch costs its worst arm; a loop costs its body times\n"
+    result.add "  its trip count when that count is a compile-time constant.\n"
+    result.add "  Anything unprovable is listed above instead of being guessed.\n"
+    result.add "  No pipeline, flash wait state or interrupt interference is\n"
+    result.add "  modelled. Use this to find order-of-magnitude problems, never\n"
+    result.add "  as a measured WCET or a proof that a deadline is met.\n"
 
 proc renderText*(rep: TimingReport, path: string, stackLimit = 10): string =
   result.add "Critical-section nesting (deepest per fn):\n"
@@ -163,6 +212,7 @@ proc renderText*(rep: TimingReport, path: string, stackLimit = 10): string =
     result.add "  path, move large locals to a pool/arena, or raise the reserved\n"
     result.add "  stack in the linker script.\n"
   result.add "  Estimates only — the runtime high-water mark is authoritative.\n"
+  result.add "\n" & renderCostText(rep, path, stackLimit)
 
 proc renderJson*(rep: TimingReport, path: string): string =
   ## Structured JSON: two arrays, so a script can read either without
@@ -176,7 +226,12 @@ proc renderJson*(rep: TimingReport, path: string): string =
     stack.add %*{"fn": s.fnName, "fnId": $s.fnId, "bytesApprox": s.bytes,
                  "callPath": s.path, "path": path,
                  "line": s.site.line, "col": s.site.col}
-  pretty(%*{"critical": crit, "stack": stack})
+  var cost = newJArray()
+  for c in rep.cost:
+    cost.add %*{"fn": c.fnName, "fnId": $c.fnId, "cyclesApprox": c.cycles,
+                "exact": c.notes.len == 0, "notes": c.notes,
+                "path": path, "line": c.site.line, "col": c.site.col}
+  pretty(%*{"critical": crit, "stack": stack, "cost": cost})
 
 proc toFindings*(rep: TimingReport, path: string,
                  stackLimit = 5): seq[Finding] =

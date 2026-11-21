@@ -239,9 +239,10 @@ compiler, so a developer can see who writes what before adding a rule.""",
   "timing": """tuck timing file.tuck
 
 Static timing report: worst-case CRITICAL-SECTION nesting per fn (embedded
-ISR budget) and worst-case STACK per fn from the call graph (small-SRAM
-budget). Approximate stack numbers (4-byte header, params + locals). JSON and
-SARIF output for CI.""",
+ISR budget), worst-case STACK per fn from the call graph (small-SRAM budget),
+and a coarse CYCLE score (time budget; report only, not a measured WCET).
+Approximate stack numbers (4-byte header, params + locals). Unprovable loop
+bounds and IO calls are listed as notes, never guessed. JSON and SARIF for CI.""",
   "sim": """tuck sim file.tuck [--host] [--backend:NAME] [--time:fast]
                             [--fault:isr-drop] [--format:json|sarif]
 

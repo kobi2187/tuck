@@ -200,8 +200,18 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
   (`--format:json`), or SARIF 2.1.0 (`--format:sarif`, TK-TM01/TM02 as
   warnings). The stack number SUMS the call path; it is a budget flag, not a
   measurement.
-- **Still to do:** conservative WCET, task utilization, longest masked
-  interval, and `[period:, deadline:]` deadline gating.
+- **Scoring function done (2026-11-21):** `compiler/cost_model.nim` computes a
+  coarse worst-case cycle score from the checked AST — small per-node weights,
+  worst branch, constant-range loop trip counts, callee scores through
+  `calleeDecl`, and notes for anything unprovable or unmodelled. `tuck timing`
+  prints it in text and JSON (`cost[].cyclesApprox`, `exact`, `notes`); the
+  report says plainly that it is not a measured WCET. A budget table keyed by
+  `Decl.id` is the deadline seam: a declared `deadline:` will become that fn's
+  cap for callers and an overrun note, with no change to the scorer. Verified
+  by a direct probe: plain 3 cycles -> cap 40 gives 40; cap 2 gives 3 plus
+  "exceeds declared max 2".
+- **Still to do:** `[period:, deadline:]` syntax to fill the budget table;
+  task utilization, longest masked interval, and deadline gating in reports.
 - **Exit (remaining):** a JSON + Markdown report for every example; a
   deadline declaration that cannot be met is flagged.
 

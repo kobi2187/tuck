@@ -9,6 +9,12 @@
 import std/[json, os, strutils, sequtils]
 import ../harness
 
+proc hasNote(notes: JsonNode, part: string): bool =
+  ## A note may sit among several; look for the fragment the assertion needs.
+  for note in notes:
+    if note.getStr.contains(part): return true
+  false
+
 proc timingSays(t: var T, name: string, wanted: seq[string]) =
   let idx = t.needCmd(@["./tuck", "timing", t.curDir / "t.tuck"])
   if t.phase == pCollect: return
@@ -193,5 +199,92 @@ fn main() -> int:
       t.ok "TK-TM02 explains as a Timing Warning"
     else:
       t.no "TK-TM02 explains as a Timing Warning", text
+
+  # --- coarse cycle score (the scoring function, report-only) -------------
+  # A caller's score includes its callees' scores; names are display only,
+  # identity is fnId. Nothing here is measured or enforced.
+  t.src """
+fn leaf({x: int}) -> int:
+  return x + 1
+
+fn top({}) -> int:
+  let y = {x: 1} leaf
+  return y + 1
+
+fn main() -> int:
+  let r = {} top
+  return r
+"""
+  t.timingSays "the report prints a coarse cycle score per fn", @[
+    "Worst-case cycles", "cyc", "main()", "top()", "leaf({x: int})"]
+  t.timingJson "cycle scores accumulate along the call graph", proc (n: JsonNode): bool =
+    var byName: seq[(string, int)]
+    for e in n["cost"].getElems:
+      byName.add (e["fn"].getStr, e["cyclesApprox"].getInt)
+    proc cyclesOf(name: string): int =
+      for (fn, c) in byName:
+        if fn == name: return c
+      -1
+    cyclesOf("main()") > cyclesOf("top()") and
+      cyclesOf("top()") > cyclesOf("leaf({x: int})") and
+      n["cost"].getElems.allIt(it["exact"].getBool)
+
+  # A constant range is a provable trip count: ten iterations must cost more
+  # than two, and both stay an exact (bounded) estimate.
+  t.src """
+fn small({}) -> int:
+  var s = 0
+  for i in 1 .. 2:
+    s = s + 1
+  return s
+
+fn big({}) -> int:
+  var s = 0
+  for i in 1 .. 10:
+    s = s + 1
+  return s
+
+fn main() -> int:
+  return 0
+"""
+  t.timingJson "a constant loop bound is multiplied into the body", proc (n: JsonNode): bool =
+    var small = -1
+    var big = -1
+    for e in n["cost"].getElems:
+      if e["fn"].getStr == "small()": small = e["cyclesApprox"].getInt
+      if e["fn"].getStr == "big()": big = e["cyclesApprox"].getInt
+    big > small * 2
+
+  # A parameter bound is NOT guessed: the body is counted once, the score is
+  # marked inexact, and the text refuses to call it a hard bound.
+  t.src """
+fn dyn({n: int}) -> int:
+  var s = 0
+  for i in 0 .. n - 1:
+    s = s + 1
+  return s
+
+fn main() -> int:
+  return 0
+"""
+  t.timingSays "an unprovable loop is flagged, not silently bounded", @[
+    "[not a hard bound]", "loop bound not provable; body counted once"]
+  t.timingJson "an inexact score carries its reason", proc (n: JsonNode): bool =
+    n["cost"].getElems.anyIt(it["fn"].getStr == "dyn({n: int})" and
+      not it["exact"].getBool and
+      hasNote(it["notes"], "not provable"))
+
+  # IO has no static cost model. It must be listed as a note, never a number
+  # that looks authoritative.
+  t.src """
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+fn main() -> int:
+  {text: "hi\n"} say
+  return 0
+"""
+  t.timingJson "an IO call is reported as unmodelled", proc (n: JsonNode): bool =
+    n["cost"].getElems.anyIt(hasNote(it["notes"], "not modelled"))
 
   t.finish()

@@ -340,6 +340,44 @@ No such file or directory"). To finish T16: install `gdb-multiarch` or
 `arm-none-eabi-gdb`, launch `qemu-system-arm -s -S -kernel ELF`, and point the
 same script at `:1234`.
 
+## 7d. Supporting layer B — the coarse timing score (T11)
+
+```
+$ ./tuck timing /tmp/opencode/costprobe.tuck
+Worst-case cycles (coarse static estimate; report only):
+  ~162 cyc  main()  (costprobe.tuck:22)
+  ~125 cyc  big()   (costprobe.tuck:10)
+  ~37 cyc  small()  (costprobe.tuck:4)
+  ~27 cyc  dyn({n: int})  (costprobe.tuck:16)  [not a hard bound]
+           loop bound not provable; body counted once
+```
+
+**What happened.** A new `compiler/cost_model.nim` scores one `Decl` from the
+checked AST: a small weight per `ExprKind` (all 56 named, no silent default),
+worst arm for `if`/`match`, callee score through `calleeDecl`, and a loop body
+multiplied by its trip count when BOTH ends of a `..`/`..<` range constant-fold.
+A parameter bound or an `exkWhile` gets a note, not a guessed number. IO calls
+are noted as unmodelled. `tuck timing` prints the result in text and JSON
+(`cost[].cyclesApprox`, `exact`, `notes`) with an explicit "report only" banner.
+
+**Why it matters.** This is the answer to "how do we guess timings?": not Big-O
+and not a measured trace, but an arithmetic upper bound over the actual AST.
+It gives the developer a pre-flash answer to "did this edit double the worst
+path?" before any hardware exists, and it is honest about where it stops. That
+honesty is the difference between a useful budget flag and a number someone
+mistakes for a proof.
+
+**How to fix it / what was done.** The budget seam the owner asked for is in
+`scoreDecl(res, m, d, budgets)`: budgets are keyed by `Decl.id`, so `deadline:`
+parsing can fill the table later without touching the scorer. A declared cap
+becomes the caller-visible cost (`max(estimate, budget)`), and an estimate over
+the cap appends a note rather than being clamped away — verified directly:
+plain 3 -> cap 40 gives 40; cap 2 gives 3 plus "exceeds declared max 2". The
+complexity ratchet caught the first cut: `renderText` crossed cc=15, so the new
+section moved into `renderCostText` rather than raising the gate. `tests/suites/
+timing_report.nim` now pins call-path accumulation, constant-loop scaling,
+unprovable-loop notes, and IO notes (19/19 pass).
+
 ## 8. Metal lane — depends on picolibc (step 0 of the vision)
 
 After a Thumb libc links, the runtime layers become possible:
