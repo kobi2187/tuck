@@ -130,15 +130,17 @@ proc scoreExpr(e: Expr, ctx: var ScoreCtx): CostScore =
   of exkMatch:
     result = scoreExpr(e.subject, ctx)
     var arms: CostScore
+    var haveArm = false
     for arm in e.arms:
-      arms = if arms == CostScore(): scoreExpr(arm.body, ctx)
-             else: worst(arms, scoreExpr(arm.body, ctx))
+      let one = scoreExpr(arm.body, ctx)
+      arms = if haveArm: worst(arms, one) else: one
+      haveArm = true
     result = combine(result, arms)
   of exkFor:
     result = scoreFor(e, ctx)
   of exkWhile:
     result = combine(scoreExpr(e.whileCond, ctx), scoreExpr(e.whileBody, ctx))
-    result.addNote e.span, "while loop has no static bound"
+    result.addNote e.span, "unbounded loop has no static bound"
   else:
     result = CostScore(cycles: baseCycles(e))
     for ch in e.children:

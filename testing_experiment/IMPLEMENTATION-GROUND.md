@@ -376,7 +376,7 @@ plain 3 -> cap 40 gives 40; cap 2 gives 3 plus "exceeds declared max 2". The
 complexity ratchet caught the first cut: `renderText` crossed cc=15, so the new
 section moved into `renderCostText` rather than raising the gate. `tests/suites/
 timing_report.nim` now pins call-path accumulation, constant-loop scaling,
-unprovable-loop notes, and IO notes (19/19 pass).
+worst-arm branch symmetry, unprovable-loop notes, and IO notes (21/21 pass).
 
 ## 8. Metal lane — depends on picolibc (step 0 of the vision)
 

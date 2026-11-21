@@ -274,6 +274,53 @@ fn main() -> int:
       not it["exact"].getBool and
       hasNote(it["notes"], "not provable"))
 
+  # A branch costs its WORST arm: moving the heavy loop from then to else
+  # must not change the score. Taking the first arm, or an average, fails this.
+  t.src """
+fn thenHeavy({flag: bool}) -> int:
+  var x = 0
+  if flag:
+    for j in 1 .. 10:
+      x = x + 1
+  else:
+    x = 1
+  return x
+
+fn elseHeavy({flag: bool}) -> int:
+  var x = 0
+  if flag:
+    x = 1
+  else:
+    for j in 1 .. 10:
+      x = x + 1
+  return x
+
+fn main() -> int:
+  return 0
+"""
+  t.timingJson "a branch scores its worst arm, not the first one", proc (n: JsonNode): bool =
+    var thenC = -1
+    var elseC = -1
+    for e in n["cost"].getElems:
+      if e["fn"].getStr == "thenHeavy({flag: bool})":
+        thenC = e["cyclesApprox"].getInt
+      if e["fn"].getStr == "elseHeavy({flag: bool})":
+        elseC = e["cyclesApprox"].getInt
+    thenC > 0 and thenC == elseC
+
+  # Tuck's `loop:` has no static bound either; it is labelled, not guessed.
+  t.src """
+fn spin() -> int:
+  loop:
+    break
+  return 0
+
+fn main() -> int:
+  return 0
+"""
+  t.timingSays "an unbounded loop is flagged", @[
+    "spin()", "[not a hard bound]", "unbounded loop has no static bound"]
+
   # IO has no static cost model. It must be listed as a note, never a number
   # that looks authoritative.
   t.src """
