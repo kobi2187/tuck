@@ -471,6 +471,13 @@ proc importedShape(d: Decl, sp: Span): Decl =
          typeBody: d.typeBody, typeMembers: d.typeMembers, span: sp)
   of dkInterface:
     Decl(kind: dkInterface, name: d.name, ifaceMembers: d.ifaceMembers, span: sp)
+  of dkRegister:
+    # A generated SVD module is a provider of register decls: the importer
+    # needs the address and fields to type `PERIPH.REG.FIELD`, while the
+    # origin module alone emits the volatile accessors (see the codegen
+    # `origin != NoModule` guards in all three backends).
+    Decl(kind: dkRegister, name: d.name, regAddress: d.regAddress,
+         regFields: d.regFields, span: sp)
   of dkActor:
     # An actor's shape: its fields, its attributes (`queue`, `on_full`), and
     # each handler or member as a body-less signature. A singleton lives where
@@ -518,9 +525,10 @@ proc holdsType(m: Module, name: string): bool =
 
 proc injectable(m: Module): seq[Decl] =
   ## The declarations of `m` an importer sees: its own types, objects,
-  ## interfaces and (non-generic) actors, not the copies it holds of others'.
+  ## interfaces, registers and (non-generic) actors, not the copies it holds
+  ## of others'.
   for d in m.decls:
-    if d != nil and d.kind in {dkType, dkObject, dkInterface, dkActor} and
+    if d != nil and d.kind in {dkType, dkObject, dkInterface, dkActor, dkRegister} and
        not (d.kind == dkActor and d.actorGenerics.len > 0) and
        d.origin == NoModule:
       result.add d

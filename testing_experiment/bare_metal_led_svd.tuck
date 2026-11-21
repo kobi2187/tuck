@@ -1,0 +1,31 @@
+# Bare-metal LED blink for STM32F103 (Blue Pill) under QEMU.
+# No OS, no heap, no tasks: just register access + busy wait.
+#
+# Same program as bare_metal_led.tuck, but the five register declarations come
+# from the SVD-generated module. This is T8's zero-register-diff fixture:
+#   ./tuck ch bare_metal_led_svd.tuck --stdlib:tools/svd2tuck/generated
+import stm32f103_bluepill
+
+fn delay({n: int}) -> void:
+  for i in 0 .. n - 1:
+    i discard
+  return
+
+fn setup() -> void:
+  RCC_APB2ENR.IOPCEN = true
+  GPIOC_CRH.MODE13 = 2
+  GPIOC_CRH.CNF13 = 0
+  return
+
+fn blinkOnce() -> void:
+  GPIOC_ODR.ODR13 = false
+  {n: 200000} delay
+  GPIOC_ODR.ODR13 = true
+  {n: 200000} delay
+  return
+
+fn main() -> int:
+  {} setup
+  for k in 0 .. 9:
+    {} blinkOnce
+  return 0

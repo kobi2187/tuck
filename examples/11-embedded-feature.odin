@@ -20,7 +20,7 @@ tuckˑregisterˑRCC_CR_HSION_SHIFT :: 0
 tuckˑregisterˑRCC_CR_HSIRDY_SHIFT :: 1
 tuckˑregisterˑRCC_CR_HSITRIM_SHIFT :: 3
 tuckˑregisterˑRCC_CR_HSITRIM_WIDTH :: 7 - 3 + 1
-tuckˑregisterˑRCC_CR_HSITRIM_MASK :: u32(1 << u32(tuckˑregisterˑRCC_CR_HSITRIM_WIDTH)) - 1
+tuckˑregisterˑRCC_CR_HSITRIM_MASK :: u32(0xffffffff) >> u32(32 - tuckˑregisterˑRCC_CR_HSITRIM_WIDTH)
 tuckˑregisterˑRCC_CR_HSION_get :: proc() -> bool {
 	return (intrinsics.volatile_load(tuckˑregisterˑRCC_CR) & (u32(1) << u32(tuckˑregisterˑRCC_CR_HSION_SHIFT))) != 0
 }

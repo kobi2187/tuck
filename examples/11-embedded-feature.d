@@ -19,7 +19,7 @@ enum tuckˑregisterˑRCC_CR_HSION_SHIFT = 0;
 enum tuckˑregisterˑRCC_CR_HSIRDY_SHIFT = 1;
 enum tuckˑregisterˑRCC_CR_HSITRIM_SHIFT = 3;
 enum tuckˑregisterˑRCC_CR_HSITRIM_WIDTH = 7 - 3 + 1;
-enum uint tuckˑregisterˑRCC_CR_HSITRIM_MASK = (1u << tuckˑregisterˑRCC_CR_HSITRIM_WIDTH) - 1;
+enum uint tuckˑregisterˑRCC_CR_HSITRIM_MASK = 0xffffffffu >> (32 - tuckˑregisterˑRCC_CR_HSITRIM_WIDTH);
 bool tuckˑregisterˑRCC_CR_HSION_get() {
     return (volatileLoad(tuckˑregisterˑRCC_CR) & (1u << tuckˑregisterˑRCC_CR_HSION_SHIFT)) != 0;
 }

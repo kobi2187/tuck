@@ -18,6 +18,12 @@ else
 fi
 export PATH=/root/toolchains/nim/bin:/root/toolchains/odin:/root/toolchains/ldc2/bin:/root/toolchains/dmd2/linux/bin64:$PATH
 export TUCK_CC=gcc   # keep gcc so we can point --gcc.exe at arm-none-eabi-gcc
+# Extra flags for `tuck ch/b`, e.g. an SVD-generated module used as the stdlib:
+#   TUCK_STDLIB=testing_experiment/tools/svd2tuck/generated ./freestanding-loop.sh bare_metal_led_svd
+TUCK_FLAGS=""
+if [ -n "${TUCK_STDLIB:-}" ]; then
+  TUCK_FLAGS="--stdlib:$TUCK_STDLIB"
+fi
 
 echo "=== build tuck ==="
 nim c --hints:off -o:tuck tuck.nim 2>&1 | tail -2 || exit 1
@@ -39,7 +45,7 @@ arm-none-eabi-gcc -c -mcpu=cortex-m3 -mthumb "$BOARDS/stubs.c" -o "$OUT/stubs.o"
 arm-none-eabi-as  -mcpu=cortex-m3 -mthumb "$BOARDS/semihost.s" -o "$OUT/semihost.o" 2>&1
 
 echo "=== tuck check ==="
-./tuck ch "$SRC" 2>&1 | tail -3
+./tuck ch "$SRC" $TUCK_FLAGS 2>&1 | tail -3
 
 NIMFLAGS="--os:standalone --cpu:arm --mm:none -d:freestanding --exceptions:goto --cc:gcc --gcc.exe:arm-none-eabi-gcc --gcc.linkerexe:arm-none-eabi-gcc --threads:off --tlsEmulation:off --passC:-mthumb --passC:-mcpu=cortex-m3 --passC:-g --passC:-I$PICOLIBC/include --passL:-nostartfiles --passL:$OUT/startup.o --passL:$OUT/stubs.o --passL:$OUT/semihost.o --passL:$PICOLIBC/lib/libc.a --passL:-T$BOARDS/lm3s6965evb.ld"
 if [ "${TUCK_FAULT_ISR_DROP:-}" = "1" ]; then
@@ -48,6 +54,7 @@ fi
 
 echo "=== freestanding build ==="
 ./tuck b "$SRC" \
+  $TUCK_FLAGS \
   --debug-lines \
   --nim:"$NIMFLAGS" \
   -o:"$OUT" 2>&1 | tail -20

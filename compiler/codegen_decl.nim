@@ -757,8 +757,11 @@ proc nimBitConsts*(bf: BitFieldInfo): string =
   if bf.isRange:
     result.add("const " & bf.prefix & "_WIDTH = " & bf.hiBit & " - " &
                bf.loBit & " + 1\n")
-    result.add("const " & bf.prefix & "_MASK = (1'u32 shl " & bf.prefix &
-               "_WIDTH) - 1\n")
+    # Shift a full word right, not 1 left: a `bits 0..31` field would shift
+    # by 32 and overflow uint32 in three backends at once (SVD imports have
+    # real whole-word fields such as DMA address registers).
+    result.add("const " & bf.prefix & "_MASK = 0xFFFFFFFF'u32 shr (32 - " &
+               bf.prefix & "_WIDTH)\n")
 
 proc nimBitGetter*(bf: BitFieldInfo, regName: string): string =
   ## A range reads as a masked uint32; a single bit reads as a bool. Every
@@ -1060,7 +1063,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   ## One top-level declaration. Every DeclKind is named, so a new one fails
   ## to compile here until it is decided (CLAUDE.md).
   if d == nil: return ""
-  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.origin != NoModule:
+  if d.kind in {dkType, dkObject, dkInterface, dkActor, dkRegister} and d.origin != NoModule:
     return ""  # defined in its own module; the Nim import brings it in
   case d.kind
   of dkFn:

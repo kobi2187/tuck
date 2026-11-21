@@ -1618,6 +1618,11 @@ proc checkRegisterDecl(d: Decl) =
   ## Neither was checked. `bit 99` emitted a mask no hardware has, and two
   ## fields overlapping meant writing one silently corrupted the other, which
   ## is exactly the datasheet-transcription slip a compiler should catch.
+  ##
+  ## An imported copy is checked in its origin module, so there are no bits
+  ## left to validate here. Keeping the guard in this proc (rather than in
+  ## checkDecl's flat dispatch) leaves that dispatch name every DeclKind.
+  if isImportedCopy(d): return
   var owner: array[RegisterWidth, string]
   for f in d.regFields:
     let (lo, hi, ok) = regBits(f)

@@ -70,6 +70,7 @@ import std_text
 import stdlib_layers
 import stdlib_project
 import stdlib_surface
+import svd_import
 import syntax_ceilings
 import task_select
 import timing_report
@@ -151,6 +152,7 @@ let registry: seq[Entry] = @[
   ("stdlib_layers",       SuiteProc(stdlib_layers.run),       false),
   ("stdlib_project",      SuiteProc(stdlib_project.run),      false),
   ("stdlib_surface",      SuiteProc(stdlib_surface.run),      false),
+  ("svd_import",          SuiteProc(svd_import.run),          false),
   ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     true),
   ("task_select",         SuiteProc(task_select.run),         false),
   ("timing_report",       SuiteProc(timing_report.run),       true),

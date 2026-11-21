@@ -1214,6 +1214,18 @@ proc decodeBitField*(regName: string, f: FieldDef): BitFieldInfo =
   result.canRead = hasRead or not hasWrite
   result.canWrite = hasWrite or not hasRead
 
+proc registerAccessorOrigin*(m: Module, regName, fieldName: string): ModuleId =
+  ## The module that DECLARES this register field's accessors. An imported
+  ## register is copied into the importer for checking only; the volatile
+  ## getters/setters are emitted by the origin module, so Odin and D have to
+  ## qualify the call with that module (and import it). NoModule when the
+  ## register is local or unknown.
+  for d in m.decls:
+    if d == nil or d.kind != dkRegister or d.name != regName: continue
+    for f in d.regFields:
+      if f.name == fieldName: return d.origin
+  NoModule
+
 proc registerAccessorPrefix*(m: Module, regName, fieldName: string): string =
   ## The `<regName>_<fieldName>` accessor prefix genRegister/genDRegister
   ## already emit for this field (matching `decodeBitField`'s own `prefix`

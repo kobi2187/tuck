@@ -773,7 +773,9 @@ proc genDFieldRead(ctx: var DCodegenCtx, e: Expr): string =
   # calling the getter genDRegister already emitted for it.
   if e.receiver != nil and e.receiver.kind == exkRegisterRef:
     let prefix = registerAccessorPrefix(ctx.module, e.receiver.refName, e.fieldName)
-    if prefix != "": return prefix & "_get()"
+    if prefix != "":
+      return ctx.pkgQualifierD(registerAccessorOrigin(ctx.module,
+               e.receiver.refName, e.fieldName)) & prefix & "_get()"
   ctx.genDExpr(e.receiver) & "." & e.fieldName
 
 proc genDField(ctx: var DCodegenCtx, e: Expr): string =
@@ -1101,7 +1103,10 @@ proc genDRebind(ctx: var DCodegenCtx, e: Expr): string =
      e.target.receiver.kind == exkRegisterRef:
     let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,
                                         e.target.fieldName)
-    if prefix != "": return prefix & "_set(" & valStr & ")"
+    if prefix != "":
+      return ctx.pkgQualifierD(registerAccessorOrigin(ctx.module,
+               e.target.receiver.refName, e.target.fieldName)) & prefix &
+             "_set(" & valStr & ")"
   result = if e.dropsOld:   # the old value is dropped once the new exists
              "rt.tuckReplace(" & ctx.genDAssignTarget(e.target) & ", " & valStr & ")"
            else: ctx.genDAssignTarget(e.target) & " = " & valStr

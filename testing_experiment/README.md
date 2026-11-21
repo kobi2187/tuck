@@ -193,11 +193,26 @@ the `freestanding-loop.sh` driver, we got a real bare-metal build running.
   it. Text output says explicitly when the stacked PC is imprecise or a null
   target, so a guessed location is never presented as a place to edit.
 
+### Generated register modules (T8)
+
+`tools/svd2tuck/` is a standalone Nim generator: one CMSIS-SVD in, one
+importable Tuck module out. It vendors svd2nim's MIT parser front half and an
+Apache-2.0 STM32F103 SVD; `./tools/svd2tuck/regenerate.sh` rebuilds both
+committed modules. `bare_metal_led_svd.tuck` imports the Blue Pill module and
+uses the same five registers as `bare_metal_led.tuck` with no diff in address
+or used fields. Run it with:
+
+```sh
+TUCK_STDLIB=testing_experiment/tools/svd2tuck/generated \
+  ./freestanding-loop.sh bare_metal_led_svd
+```
+
 ### Results (updated 2026-11-21)
 | stage | result |
 |---|---|
 | `bare_metal_nop.tuck` (no tasks) | **boots, runs to idle, no fault** |
 | `bare_metal_led.tuck` (register writes) | **boots, runs to idle, no fault** |
+| `bare_metal_led_svd.tuck` (SVD-generated registers) | **boots, runs to idle, no fault — identical to hand-written** |
 | `stage9_minimal_task.tuck` (one `[io]` task returning a value) | **runs to completion, prints TASK_OK** |
 | `stage10_fire_forget.tuck` | **runs to completion, both workers print WORKER** |
 | `stage12_critical.tuck` (protected shared state) | **boots, prints CRITICAL_OK** |

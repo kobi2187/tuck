@@ -992,7 +992,9 @@ proc fieldByReceiverKind(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkRegisterRef:
     let prefix = registerAccessorPrefix(ctx.module, e.receiver.refName,
                                         e.fieldName)
-    if prefix == "": "" else: prefix & "_get()"
+    if prefix == "": ""
+    else: ctx.pkgQualifier(registerAccessorOrigin(ctx.module,
+            e.receiver.refName, e.fieldName)) & prefix & "_get()"
   else: ""
 
 proc assertedVariantField(ctx: var OdinCodegenCtx, e: Expr): string =
@@ -1691,7 +1693,10 @@ proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
      e.target.receiver.kind == exkRegisterRef:
     let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,
                                         e.target.fieldName)
-    if prefix != "": return prefix & "_set(" & valStr & ")"
+    if prefix != "":
+      return ctx.pkgQualifier(registerAccessorOrigin(ctx.module,
+               e.target.receiver.refName, e.target.fieldName)) & prefix &
+             "_set(" & valStr & ")"
   let tgt = ctx.genOdinAssignTarget(e.target)
   # THE OLD VALUE DIES HERE. A `defer` cannot reach this: it fires once, and
   # a loop abandons one buffer per iteration. Step 5 of the ownership pass.

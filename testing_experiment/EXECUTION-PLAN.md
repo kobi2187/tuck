@@ -28,6 +28,12 @@ next commands.
   Odin and D side by side against the shared shims; stage9 (task + print) and
   stage5 (two stackless tasks + HAL) produce byte-identical stdout on all
   three. `--backend:nim|odin|d` selects one; a missing compiler is `SKIP`.
+- **T8 register import complete (2026-11-21):** a standalone Nim generator
+  under `tools/svd2tuck/` turns one CMSIS-SVD into one importable Tuck module.
+  Registers can cross module boundaries on Nim, Odin and D; the generated Blue
+  Pill module has zero diff on the five registers used by
+  `bare_metal_led.tuck`, and that program boots identically under QEMU.
+  Typestate/sealed transitions remain a language decision, not a tool gap.
 
 **Resolved blocker:** task-based programs now run on metal. All three metal
 runtime milestones (event ring, crash dump, virtual time) are implemented.
@@ -171,12 +177,19 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
   and are ignored by `--host`. The "reaches `safeState`" assertion belongs to
   T17; the event-trace half is T20 and waits on T5's CTF export.
 
-### T8 — SVD → register declarations + typestate  [none]  [L]
+### T8 — SVD → register declarations + typestate  [none]  [L]  ◐ PARTIAL
 
-- **Outcome:** `tuck svd chip.svd` generates `register` decls + sealed
-  transitions + singleton ownership; a Tuck overlay patches vendor mistakes.
-- **Exit:** a Blue Pill board package generated from its SVD checks the
-  existing `bare_metal_led.tuck` with zero register diffs.
+- **Outcome (shipped):** a standalone Nim tool generates `register` decls from
+  one SVD into one importable Tuck module; a JSON overlay patches vendor
+  mistakes. Compiler-side change: imported registers are copied into the
+  importer and Odin/D qualify their accessors to the defining module.
+- **Exit (met):** `testing_experiment/tools/svd2tuck/generated/stm32f103_bluepill.tuck`
+  has the same addresses and used fields as `bare_metal_led.tuck`; the generated
+  program checks, builds on three backends and boots under QEMU identically.
+  Pinned in `tests/suites/svd_import.nim`.
+- **Still to do:** sealed transitions + singleton ownership need a Tuck type
+  surface; field enums, reset values and read actions have no `register`
+  spelling. Parked, not deferred to this tool.
 
 ### T9 — Clock tree as a declaration  [T8]  [M]
 
@@ -421,9 +434,10 @@ return to §3's next item (T19 host sim).
 T1–T4 are **complete** (picolibc vendored, tasks run to completion on metal).
 T3 (full vectors) is also **complete** — the default handler records PC/LR/xPSR/
 CFSR/HFSR/BFAR and prints a one-line FAULT report; `tuck decode-crash ELF PC`
-maps the PC to the nearest symbol. T5 (event ring) is also **complete**:
-`tuckEventDump` reports the ring count over semihosting. T7 (virtual time +
-fault injection) and T18 (`tuck sim`) are **complete**. T11 is **partial**:
+maps the PC to the nearest symbol. T5's **ring half** is complete:
+`tuckEventDump` reports the ring count over semihosting; its CTF-export half
+remains and is tracked as T20. T7 (virtual time + fault injection), T18
+(`tuck sim`) and T8's register-import half are **complete**. T11 is **partial**:
 `tuck timing` now reports critical-section nesting and an approximate
 worst-case stack (text/JSON/SARIF); WCET, utilization and deadline gating
 remain.
@@ -447,8 +461,12 @@ Remaining:
     the target, and no CTF metadata. Crosses runtime + CLI + reporter — pick
     the egress path (semihosting log vs ELF note) before building; SPAWN
     candidate.
-16. **T8 — SVD importer** (Lane 2, L, unblocked). A whole `tuck svd` module
-    behind one interface: SPAWN once that API is agreed, not a leaf.
+16. ~~**T8 — SVD importer (register half).**~~ **DONE (2026-11-21).**
+    Standalone Nim tool, vendored MIT parser front half, Apache-2.0 SVD input,
+    committed whole-device and Blue Pill modules, imported-register seam fixed
+    in all three backends, 11/11 in `svd_import.nim`, QEMU `124` on the
+    generated-register fixture. Remaining typestate is parked behind a type
+    decision.
 17. **T13 (rest) — Q notation.** A51 is fixed and pinned as `bugFixed`; the Q
     spelling and the range-check point are a type-surface decision.
 18. **T16 (rest) — break at a Tuck line in GDB.** DWARF is verified on the
@@ -464,15 +482,19 @@ Each ends with: rebuild tuck (clean Nim cache after enum changes), run the
 affected `tests/run` suite, run `freestanding-loop.sh <stage>`, and write a
 short dev-perspective note into `IMPLEMENTATION-GROUND.md`.
 
-## 4. Decisions to confirm before starting
+## 4. Decisions — all settled
 
-1. **picolibc source:** pinned tarball (my pick — reproducible) vs submodule.
-2. **Semihosting in picolibc:** enable only for printf (my pick: leave it off;
-   our `say`/crash dumper use raw `BKPT` already).
-3. **Lane priority:** stay on Lane 1 to the metal milestone, or interleave T11
-   (`tuck timing`) for an earlier developer-visible win. My pick: T1–T4 first,
-   then T11 in parallel with T5/T6, because a task runtime that doesn't work
-   undermines every later tool.
+1. **picolibc source:** pinned tarball, vendored under `vendor/picolibc/`.
+2. **Semihosting in picolibc:** off; `say`/crash dumper use raw `BKPT`.
+3. **Lane priority:** T1–T4 first, then T11 in parallel with T5/T6.
+4. **SVD generator:** standalone Nim tool, not a `tuck svd` subcommand; adapt
+   svd2nim's MIT parser front half, discard its Nim emitter, no Rust stage.
+5. **SVD input:** Apache-2.0 `modm-io/cmsis-svd-stm32`, not svd2nim's
+   unlicensed test copy.
+
+No decision is currently awaiting the owner. Open items are parked in §3 with
+resolving signals; T8's typestate half waits on a type-surface decision, not a
+generator decision.
 
 ## 5. Hard rules carried forward
 

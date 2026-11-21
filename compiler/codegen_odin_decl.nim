@@ -1315,8 +1315,9 @@ proc bitConsts*(bf: BitFieldInfo, ind: string): seq[string] =
   if bf.isRange:
     result.add(ind & bf.prefix & "_WIDTH :: " & bf.hiBit & " - " & bf.loBit &
                " + 1")
-    result.add(ind & bf.prefix & "_MASK :: u32(1 << u32(" & bf.prefix &
-               "_WIDTH)) - 1")
+    # Full word shifted right, so a 32-bit field does not shift by 32.
+    result.add(ind & bf.prefix & "_MASK :: u32(0xffffffff) >> u32(32 - " &
+               bf.prefix & "_WIDTH)")
 
 proc bitGetter*(bf: BitFieldInfo, regName, ind: string): string =
   ## A range reads as a masked u32; a single bit reads as a bool. Every access
@@ -1532,7 +1533,7 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## One top-level declaration. Every DeclKind is named, so a new one fails
   ## to compile here until it is decided (CLAUDE.md).
   if d == nil: return ""
-  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.origin != NoModule:
+  if d.kind in {dkType, dkObject, dkInterface, dkActor, dkRegister} and d.origin != NoModule:
     return ""  # defined in its own module; that module's Odin file has it
   let ind = "  ".repeat(ctx.indent)
   case d.kind
