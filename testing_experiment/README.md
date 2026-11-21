@@ -90,23 +90,29 @@ builds and runs, printing the interleaved LED lines.
 
 ## Host simulation
 
-`host_sim/` contains a fake HAL that maps the STM32 register addresses to a
-host array and prints LED state. Build a stage with:
+The fastest loop is:
 
-    cd /home/kl/prog/tuck_lexer
-    ./tuck b testing_experiment/stage1_led.tuck --concurrency:stackless
+    ./tuck sim testing_experiment/stage9_minimal_task.tuck --host
 
-Then replace the generated `main`'s register accesses? No — the register decls
-already lower to volatile loads/stores against absolute addresses, which on a
-host would segfault. So the host sim instead compiles a *variant* where the
-`register` block is swapped for a host-backed shim (see `host_sim/hal_shim.*`).
+That builds against the shims in `host_sim/` and runs locally — no ARM GCC, no
+QEMU. By default it runs **all three backends** (Nim, Odin, D) and leaves each
+program's stdout in the log so they can be compared byte-for-byte; a compiler
+missing from `PATH` is reported `SKIP`. Use `--backend:nim|odin|d` for one.
+`stage9_minimal_task` (a task + print) and `stage5_stackless_blink` (two
+stackless tasks + HAL) are the pinned three-target cases in
+`tests/suites/sim_host.nim`.
 
-Concretely: stages are written so the HAL is a set of `extern` fns
-(`ledOn`, `ledOff`, `delayMs`, `uartPutc`) rather than raw `register` blocks
-in the stage body, so the same `.tuck` compiles on both host (shim
-implementations print) and target (shim implementations hit MMIO). The
-`register` declarations are kept in `hal_stm32.tuck` for reference and
-documentation of the real addresses.
+**Why the shims exist.** Stages declare their HAL as `extern` fns rather than
+raw `register` blocks: the real addresses belong in `hal_stm32.tuck`, while
+the host shims print (or return fixed values) and the QEMU build reaches MMIO.
+Each shim has three twins — `print_shim.nim/.odin/.d` and
+`hal_shim.nim/.odin/.d` — because the FFI spelling *is* the target language:
+Nim's `stdout.write`, Odin's `fmt.print` inside one `package host_sim`, D's
+`writeln` in a module imported by bare name. The logic is shared; the syntax
+never is. `print_shim.nim` gates its semihosting import on
+`defined(freestanding)`, so the QEMU build still routes through
+`tuck_semihost_write` while the host build uses stdout, with no change to the
+freestanding output.
 
 ## stdlib-project (the embedded stack)
 

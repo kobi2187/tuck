@@ -262,6 +262,50 @@ clean path: the program prints its success marker and `tuck sim` exits 0.
 the behaviour of a healthy run. **How to fix it.** Nothing — this is the gate
 that proves the other two outputs are faults, not a broken simulator.
 
+## 7b. Supporting layer G — `tuck sim --host` (three targets)
+
+```
+$ ./tuck sim testing_experiment/stage9_minimal_task.tuck --host
+=== nim: build ===  ...  === nim: run ===  ENTER / TASK_OK  nim exit: 0
+=== odin: build === ...  === odin: run === ENTER / TASK_OK  odin exit: 0
+=== d: build ===    ...  === d: run ===    ENTER / TASK_OK  d exit: 0
+=== three-target summary: PASS ===
+```
+
+stage5 (two stackless tasks driving the HAL) was checked the same way: 20
+lines of interleaved LED output, byte-identical on all three backends.
+
+**What happened.** `tuck sim --host` used to be a manual recipe: pick a stage,
+hope the host build linked, read the output, repeat for the next backend. The
+first host `tuck b` failed at link with `undefined reference to
+tuck_semihost_write`, because the single Nim print shim imported the metal
+semihosting symbol unconditionally. The shims also existed for Nim only —
+the Odin import pointed at an empty directory and D looked for a `print_shim.d`
+that was not there.
+
+**Why it matters.** A cross-backend difference in a scheduler is a real bug,
+not a toolchain curiosity — the same AST is lowered three times, and only a
+side-by-side run shows when one lowering loses a yield or reorders an await.
+Without the host loop, the only place all three backends met was the slow
+end-to-end suite. Now the check is one command, and the fast loop tells you
+*which* backend diverged because each run's stdout is labelled and separate.
+
+**How to fix it / what was done.** `print_shim.nim` gates the semihosting import
+on `defined(freestanding)`, so the QEMU path is unchanged and the host path
+uses stdout. `print_shim` and `hal_shim` gained `.odin` and `.d` twins with the
+same observable output; the Odin files share one `package host_sim` because
+the emitted import names the directory, D imports each module by bare name.
+`host-loop.sh` runs all available backends (missing compiler = `SKIP`, not
+failure) and `--backend:nim|odin|d` selects one. `tests/suites/sim_host.nim`
+pins both stages and compares the captured program output byte-for-byte.
+Note `--target:` is *not* the backend switch — it selects `when TARGET` platform
+blocks; `--backend:` is the new flag.
+
+**Verified.** All nine `sim_host` assertions pass in full mode; the QEMU
+regressions (stage16 fault, stage14 null branch, stage11 clean run) still
+report `rc=1 / 1 / 0` with the same decoded locations after the shared shim
+edit.
+
 ## 8. Metal lane — depends on picolibc (step 0 of the vision)
 
 After a Thumb libc links, the runtime layers become possible:

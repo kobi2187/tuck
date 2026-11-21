@@ -237,7 +237,17 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
 
 - **Outcome:** builds against host sim shims, runs in milliseconds, no
   cross-toolchain needed. Validates logic and scheduler.
-- **Exit:** `tuck sim --host file.tuck` completes in <1s with correct output.
+- **Exit:** `tuck sim file.tuck --host` completes in <1s with correct output.
+- **Three targets (owner, 2026-11-21):** verification is not done on Nim alone.
+  Nim, Odin and D must all build and run the same stage with byte-identical
+  stdout. To make that possible `host_sim/print_shim` and `host_sim/hal_shim`
+  each have a `.nim`, `.odin` and `.d` twin; the Odin files share one
+  `package host_sim` because the emitted import names the directory, while D
+  imports each module by bare name. `host-loop.sh` runs all three available
+  backends by default (missing compiler = reported SKIP), and
+  `tuck sim FILE --host --backend:NAME` selects one. Pinned cases: stage9
+  (task + print) and stage5 (two stackless tasks + HAL). Both were measured
+  identical across all three backends before this line was written.
 
 ### T20 — Virtual time + fault injection  [T4, T5, T18]  [M]
 
@@ -380,7 +390,8 @@ Remaining:
 13. **T11 (rest) — WCET, task utilization, longest masked interval, deadline
     gating.** The stack + critical-nesting report is built; these need the
     call graph's timing facts and `[period:, deadline:]` declarations.
-14. **T19 — `tuck sim --host`** (fastest path, no cross-toolchain).
+14. **T19 — `tuck sim --host`** (fastest path, no cross-toolchain; Nim + Odin +
+    D, byte-identical output on stage9 and stage5).
 15. **T8 — SVD importer** (Lane 2, unblocked, can interleave).
 
 Each ends with: rebuild tuck (clean Nim cache after enum changes), run the

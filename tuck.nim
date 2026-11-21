@@ -242,18 +242,25 @@ Static timing report: worst-case CRITICAL-SECTION nesting per fn (embedded
 ISR budget) and worst-case STACK per fn from the call graph (small-SRAM
 budget). Approximate stack numbers (4-byte header, params + locals). JSON and
 SARIF output for CI.""",
-  "sim": """tuck sim file.tuck [--board:NAME] [--time:fast]
+  "sim": """tuck sim file.tuck [--host] [--backend:NAME] [--time:fast]
+                            [--fault:isr-drop] [--format:json|sarif]
 
-Build the file for a simulated bare-metal target and run it under QEMU,
-capturing semihosting output and exit code. No hardware required.
+Two loops, one command:
 
-  --board:NAME   simulated board (default: lm3s6965evb)
-  --time:fast    run with virtual time (days of simulated time in seconds)
+  default        build ARM/Thumb + run under QEMU, capturing semihosting
+                 output. A clean run prints the program's output and exits 0;
+                 a fault is decoded into a what/why/fix note naming the .tuck
+                 line, and exits 1.
+  --host         build against testing_experiment/host_sim and run locally,
+                 no cross-toolchain. Nim, Odin and D all run by default, so
+                 their stdout sits side by side for byte-level comparison; a
+                 backend whose compiler is absent is reported SKIP.
 
-This is the fast iteration loop: write, compile, simulate, see. A clean run
-prints the program's output and exits 0; a fault prints a FAULT report,
-decodes it into a what/why/fix note with the Tuck source line, and exits 1.
-Builds use `--debug-lines` so DWARF names Tuck lines. Use
+  --backend:NAME host only: nim | odin | d | all (default all)
+  --time:fast    QEMU only: virtual time (days of simulated time in seconds)
+  --fault:isr-drop  QEMU only: inject a dropped ISR handoff
+
+Both loops use `--debug-lines` so DWARF names Tuck lines. Use
 `tuck build ... --freestanding` for the ELF itself.""",
   "frames": """tuck frames file.tuck
 
@@ -1370,29 +1377,48 @@ when isMainModule:
                              line: sites[0].span.line, col: sites[0].span.col)
       stdout.write (if wantSarif: toSarif(findings) else: toJson(findings))
   of "sim":
-    # `tuck sim`: build freestanding + run under QEMU, one command.
-    # Delegates to the proven freestanding-loop.sh; the developer gets a
-    # 1-second test cycle instead of a 10-minute flash-and-see cycle.
+    # `tuck sim`: one command from source to observed behaviour.
+    #   default  -> freestanding-loop.sh: ARM/Thumb ELF + QEMU, fault decoded.
+    #   --host   -> host-loop.sh: host build against the shims, no toolchain.
+    # Both delegate to a proven loop script. A host run validates logic and the
+    # scheduler; only the QEMU run claims anything about metal.
     let stage = path
-    let script = getAppDir() / "testing_experiment" / "freestanding-loop.sh"
+    let hostMode = opts.anyIt(it == "--host")
+    let loopName = if hostMode: "host-loop.sh" else: "freestanding-loop.sh"
+    let script = getAppDir() / "testing_experiment" / loopName
     if not fileExists(script):
-      die("tuck sim: freestanding-loop.sh not found (need the testing_experiment/ dir)")
+      die("tuck sim: " & loopName & " not found (need the testing_experiment/ dir)")
     var env = ""
-    let virtualTime = opts.anyIt(it == "--time:fast")
-    if virtualTime: env = "TUCK_VIRTUAL_TIME=1 "
-    let faultIsrDrop = opts.anyIt(it == "--fault:isr-drop")
-    if faultIsrDrop: env = env & "TUCK_FAULT_ISR_DROP=1 "
-    let (qemuOut, rc) = execCmdEx(env & script & " " & quoteShell(stage))
-    stdout.write qemuOut
+    if not hostMode:
+      # Virtual time and fault injection are QEMU/runtime features. On the
+      # host they have no meaning, so --host ignores them rather than lying.
+      if opts.anyIt(it == "--time:fast"): env = "TUCK_VIRTUAL_TIME=1 "
+      if opts.anyIt(it == "--fault:isr-drop"): env = env & "TUCK_FAULT_ISR_DROP=1 "
+    # `--backend:` picks one host compiler; absent means run all available
+    # ones. Not to be confused with the global `--target:`, which selects
+    # `when TARGET == ...` platform blocks, not a backend compiler.
+    var backend = "all"
+    if hostMode:
+      for o in opts:
+        if o.startsWith("--backend:"): backend = o[10 .. ^1]
+      if backend notin ["all", "nim", "odin", "d"]:
+        die("tuck sim: unknown --backend:" & backend & " (nim, odin, d, all)")
+    let backendArg = if hostMode: " " & quoteShell(backend) else: ""
+    let (simOut, rc) = execCmdEx(env & script & " " & quoteShell(stage) & backendArg)
+    stdout.write simOut
+    if hostMode:
+      # The program's own return value is the result. Host shims never emit a
+      # FAULT record, so there is nothing to decode here.
+      quit(rc)
     if rc != 0 and rc != 124:
       quit(1)
     # A fault is the interesting outcome: decode it here rather than making
     # the developer copy a hex line into a second command. `freestanding-loop`
     # prints ELF=<path>, so the log is self-describing.
-    let fl = faultLine(qemuOut)
-    if fl != "" or qemuOut.contains("Lockup"):
+    let fl = faultLine(simOut)
+    if fl != "" or simOut.contains("Lockup"):
       if fl != "":
-        let elf = findElf(qemuOut)
+        let elf = findElf(simOut)
         if elf != "":
           let rep = decodeFault(elf, parseFaultLine(fl))
           stdout.write "\n=== decoded crash ===\n"
