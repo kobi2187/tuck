@@ -1,6 +1,6 @@
 # Execution plan — from this branch to fearless embedded Tuck
 
-Status: living plan (2026-11-20). Supersedes the ordering tables in
+Status: living plan (2026-11-21). Supersedes the ordering tables in
 `FREESTANDING-PLAN.md`, `EMBEDDED-DEBUGGING-VISION.md` and
 `IMPLEMENTATION-GROUND.md` for *what comes next*; those documents remain the
 design rationale. This one is about dependencies, exit criteria, and the very
@@ -8,7 +8,8 @@ next commands.
 
 ## 0. Where we are
 
-**Done (this branch, `bdc10e1`+):**
+**Done (this branch, `bdc10e1`+):** — latest `50c5e303` (T7 clock/board
+finish); see the pause-point snapshot at the end of §0.
 
 - QEMU feedback loop (`freestanding-loop.sh`) + board files in `boards/`.
 - Freestanding runtime gates in `tuck_sl.nim` / `tuck_rt.nim` / `tuck.nim`.
@@ -34,9 +35,35 @@ next commands.
   Pill module has zero diff on the five registers used by
   `bare_metal_led.tuck`, and that program boots identically under QEMU.
   Typestate/sealed transitions remain a language decision, not a tool gap.
+- **T7 complete (2026-11-21, `50c5e303`):** reusable SysTick guest clock
+  (`systick_clock.tuck`; DWT is unemulated in QEMU 8.2) with deterministic
+  `--tick:0..10` length control, plus a second QEMU board
+  (`stm32vldiscovery`). Both boards print `CLOCK_OK` at shifts 0/4/10, pinned
+  by `tests/suites/sim_tick.nim`.
 
 **Resolved blocker:** task-based programs now run on metal. All three metal
 runtime milestones (event ring, crash dump, virtual time) are implemented.
+
+### Pause point — 2026-11-21 (branch `claude/freestanding-baremetal-qemu`, HEAD `50c5e303`)
+
+A stable, verified checkpoint; paused here deliberately, NOT merged to `main`.
+
+- **Landed:** T1–T4, T6, T7 (clock + tick control + board parity), T8 register
+  half, T11 coarse scorer, T16 host half, T19, ISR slice, ring/count.
+- **Verified:** both QEMU boards green at ticks 0/4/10 (`CLOCK_OK`, qemu 124);
+  `sim_tick`, `complexity`, `sim_host`, `crash_decode`, `timing_report`,
+  `svd_import`, `end_to_end`, `examples`, `quick-test.sh`, `doc_snippets` all
+  green; no examples/goldens diff; tree clean at the commit.
+- **Not merged:** this branch is pushed for safekeeping only. Integration into
+  `main` is a separate decision.
+- **Known-red suites (pre-existing, unrelated to staged work):** `effect_fix`
+  (invalid Odin memo code), `resources_rt` (duplicate `_mco_*` symbols),
+  `roadmap` (cascade), `stdlib_project` (3 `hci` failures).
+- **Resume here:** §3 item 16 (T5→T20 CTF/egress — needs an egress decision) or
+  item 15 (T11 rest — needs `[period:, deadline:]` language surface). Both are
+  blocked on a decision, not code; route around with parked items if continuing
+  without one. Higher-end boards (M4 `mps2-an386`, M7 `mps2-an500`) are deferred
+  until a feature needs their peripherals.
 
 ## 1. Dependency graph
 

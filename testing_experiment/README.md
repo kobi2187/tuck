@@ -1,5 +1,12 @@
 # testing_experiment — stackless coroutines on real metal
 
+> **Status (2026-11-21):** stable checkpoint on branch
+> `claude/freestanding-baremetal-qemu` (HEAD `50c5e303`), NOT merged to `main`.
+> Bare-metal tasks run under QEMU on two boards (`lm3s6965evb`,
+> `stm32vldiscovery`) with a SysTick guest clock and deterministic tick control
+> (`--tick:0..10`). For exact progress, next steps and known-red suites, see
+> `EXECUTION-PLAN.md` §0 "Pause point" and §3 "Immediate next actions".
+
 Goal: validate that Tuck's stackless concurrency (`--concurrency:stackless`)
 can run on a **bare-metal, no-OS microcontroller** (no mmap, no stack
 switching, no heap required for the scheduler), starting from the simplest
