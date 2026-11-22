@@ -1207,10 +1207,12 @@ the party that owns it:
   the declared `rate` says it is too small). The driver names no line, no
   priority and no size, so two applications on two boards reuse it
   unchanged.
-- **Reactions are ordinary `on Events.X(...)` handlers**, declared anywhere
-  the events are visible (any importing module, an actor, a task's `on
-  select`). They run in task context after the interrupt returns, in raise
-  order, under the normal effect and error-policy rules.
+- **Reactions are ordinary `on Events.X(...)` handlers**: `on` is how any
+  event handler is written, usually at the top level of a module that
+  imports the events. No task or actor is needed to handle one; an actor or
+  a task's `on select` is just another place the same `on` may appear. The
+  runtime calls them after the interrupt returns, outside interrupt context,
+  in raise order, under the normal effect and error-policy rules.
 
 New words: `bind`, `[stream]` / `[signal]` / `[latest]`, `overflow:`, and
 `[budget, rate]`. Still open: the spelling of clear-on-read and

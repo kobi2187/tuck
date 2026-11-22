@@ -344,11 +344,14 @@ actor Console:
   registers, compute, `raise`); it is strict, bounded and stub-free
   (IRQ-1..9, TK-PO04), and no other module can add code to it.
 - **After the interrupt (bottom half):** every `on Events.X` handler wherever
-  it is declared: the top level of any module that imports the events (sub-
-  modules included), inside an actor, or a task waiting in `on select`. These
-  run in task context after the interrupt returns, in raise order, under the
-  normal rules (I/O, the error policy). The compiler collects them program-
-  wide, as it collects registry handlers today.
+  it is declared. `on` is simply how an event handler is written: usually at
+  the top level of any module that imports the events (sub-modules
+  included). No task or actor is needed to handle an event; an actor or a
+  task's `on select` is just one more place the same `on` may appear. The
+  runtime calls the handlers after the interrupt returns, outside interrupt
+  context, in raise order, under the normal rules (I/O, the error policy).
+  The compiler collects them program-wide, as it collects registry handlers
+  today.
 - **In between:** the event's kind. `stream`: a queue of the bound `queue: N`
   with the driver's overflow policy; `signal`: a counter; `latest`: one slot,
   overwritten, read without tearing. `raise` is the same verb on a host: only

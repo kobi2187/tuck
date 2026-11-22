@@ -430,7 +430,7 @@ decisions** are technical and have a recommendation.
 | D8 | How are periods and deadlines stated? | by the application for the tasks it runs; a library may state a guarantee (a bound it meets), not a requirement |
 | D9 | Fixed-point (Q notation) | a numeric type surface consistent with the 2026-08-25 numeric rulings; independent lane |
 | D12 | How do register blocks become instance-generic? | one layout type per kind, instances at addresses, zero-cost monomorphised drivers; SVD `derivedFrom` maps onto it; today's `register NAME at ADDR` keeps working |
-| D13 | Is a hardware interrupt an event in the application's registry (Part 10), a new wiring declaration, or a board-package concern? | answered first: D1, D2 and D8 follow from it. **RULED 2026-11-22: events.** A driver owns a registry per module, marks each event `[stream]`, `[signal]` or `[latest]` and fixes its overflow; one `[irq]` fn decides the cause with a `decision` table and raises; reactions are ordinary `on` handlers in task context (`DESIGN-interrupt-events.md` §5, §7) |
+| D13 | Is a hardware interrupt an event in the application's registry (Part 10), a new wiring declaration, or a board-package concern? | answered first: D1, D2 and D8 follow from it. **RULED 2026-11-22: events.** A driver owns a registry per module, marks each event `[stream]`, `[signal]` or `[latest]` and fixes its overflow; one `[irq]` fn decides the cause with a `decision` table and raises; reactions are ordinary `on` handlers, called by the runtime after the interrupt returns, no task needed (`DESIGN-interrupt-events.md` §5, §7) |
 
 ### Plumbing decisions (recommendation given)
 
