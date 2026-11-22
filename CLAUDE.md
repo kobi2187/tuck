@@ -74,6 +74,7 @@ reason the modes exist.
 ./tuck explain TK-TY15     # what a diagnostic means, and how to fix it
 ./tuck frames file.tuck    # stackless colouring (#216): frame fns, pause sites
 ./tuck b f.tuck --stdlib:stdlib-project   # build against stdlib-project's modules instead of std/
+./tuck b f.tuck --board:lm3s6965evb        # bare metal: a Cortex-M ELF for boards/NAME/
 ./tuck sim tests/metal/task_await.tuck     # bare metal: build freestanding, boot under QEMU
 ./tuck sim tests/metal/task_await.tuck --host   # ...or against host shims, on Nim, Odin and D
 ```

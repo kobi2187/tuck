@@ -1738,8 +1738,8 @@ are no longer on that list — both are run-gated on Odin and D as well.
 
 ## 20. Bare metal (experimental)
 
-`tuck sim FILE` builds a program freestanding for a Cortex-M and boots it under
-QEMU; `tuck sim FILE --host` runs it against host shims on all three backends.
+`tuck build FILE --board:NAME` builds a program freestanding for a Cortex-M
+board under `boards/`; `tuck sim FILE` builds it and boots it under QEMU; `tuck sim FILE --host` runs it against host shims on all three backends.
 The programs that pin it are in `tests/metal/`, the plan in
 `docs/bare-metal/`. Nim is the only backend on metal so far.
 

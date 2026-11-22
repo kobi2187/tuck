@@ -2201,8 +2201,9 @@ no `elif`/`else` form.
 
 ### 8.4 Bare Metal (experimental)
 
-A program can be built freestanding for a Cortex-M microcontroller and run
-under QEMU (`tuck sim FILE`; `docs/bare-metal/`). What holds today, each
+A program can be built freestanding for a Cortex-M microcontroller
+(`tuck build FILE --board:NAME`, a board under `boards/`) and run under QEMU
+(`tuck sim FILE`; `docs/bare-metal/`). What holds today, each
 pinned by a suite:
 
 - **The profile:** stackless tasks (§9's frames; no mmap, no threads, no

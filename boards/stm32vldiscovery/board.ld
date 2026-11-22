@@ -13,12 +13,17 @@ _estack = ORIGIN(RAM) + LENGTH(RAM);
 SECTIONS
 {
   .text : { KEEP(*(.isr_vector)) *(.text*) *(.rodata*) } > FLASH
+  /* 64 bytes of scratch at the start of RAM, 0x20000000..0x2000003F, kept
+     out of .data/.bss. Test programs declare a `register` there when they
+     need a word they can write and read back: peripheral space (0x40000000)
+     is a real peripheral on every board, and an address in .bss is the
+     program's own variables. */
+  .scratch (NOLOAD) : { . = . + 64; } > RAM
   .data : AT (ADDR(.text) + SIZEOF(.text)) {
     _sdata = .;
     *(.data*)
-    /* Nim's TLS access reads its offset from the GOT. Copy it with .data:
-       QEMU loads only the flash segment for this board, so a RAM segment
-       left to the ELF loader stays uninitialised. */
+    /* A GOT, if the toolchain emits one, is initialised with .data: QEMU's
+       loaders do not all initialise RAM segments themselves. */
     *(.got) *(.got.plt)
     . = ALIGN(4);   /* Reset_Handler copies whole words up to _edata */
     _edata = .;

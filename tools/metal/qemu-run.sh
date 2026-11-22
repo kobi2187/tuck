@@ -20,7 +20,6 @@ else
   BASE="$STAGE"
   SRC="tests/metal/${BASE}.tuck"
 fi
-export TUCK_CC=gcc   # keep gcc so we can point --gcc.exe at arm-none-eabi-gcc
 # Extra flags for `tuck ch/b`, e.g. an SVD-generated module used as the stdlib:
 #   TUCK_STDLIB=tools/svd2tuck/generated ./qemu-run.sh boot_led_svd
 TUCK_FLAGS=""
@@ -36,10 +35,7 @@ if [ ! -f "$BOARD_DIR/board.conf" ]; then
   echo "!!! unknown board '$BOARD': no boards/$BOARD/board.conf (have: $(ls -d "$ROOT"/boards/*/board.conf 2>/dev/null | xargs -n1 dirname | xargs -n1 basename | tr '\n' ' '))"
   exit 1
 fi
-conf() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" "$BOARD_DIR/board.conf" | head -1; }
-MACHINE="$(conf qemu)"
-CPU="$(conf cpu)"
-CONSOLE="$(conf console)"
+MACHINE="$(sed -n 's/^qemu[[:space:]]*=[[:space:]]*//p' "$BOARD_DIR/board.conf" | head -1)"
 
 if [ "${TUCK_SKIP_TUCK_BUILD:-}" = "1" ]; then
   echo "=== build tuck (skipped: TUCK_SKIP_TUCK_BUILD=1) ==="
@@ -52,47 +48,19 @@ fi
 # in parallel). Default keeps the historical path for human invocations.
 OUT="${TUCK_OUT_DIR:-${TMPDIR:-/tmp}/tuck-metal/qemu_${BASE}}"
 rm -rf "$OUT"; mkdir -p "$OUT"
-# Nim's standalone runtime routes every failed check (bounds, nil, a failed
-# assert) through `panic`. It goes to the board's tuck_fatal, which prints
-# `PANIC: msg` and traps, so the fault recorder reports it. It used to loop
-# silently, which a QEMU run read as a clean finish.
-cat > "$OUT/panicoverride.nim" <<'EOF'
-proc tuckSemihostWrite(s: cstring) {.importc: "tuck_board_puts".}
-proc tuckFatal(msg: cstring) {.importc: "tuck_fatal", noreturn.}
-proc rawoutput(msg: string) {.nimcall.} =
-  tuckSemihostWrite(msg.cstring)
-proc panic*(s: string) {.noreturn.} =
-  tuckFatal(s.cstring)
-EOF
-
-BOARDS="$ROOT/boards"
-PICOLIBC="$ROOT/build/picolibc/install"
-if [ ! -f "$PICOLIBC/lib/libc.a" ]; then
-  echo "!!! picolibc is not built: run boards/picolibc/build.sh once"
-  exit 1
-fi
-arm-none-eabi-gcc -c -mcpu=$CPU -mthumb "$BOARDS/common/startup_cortex_m.c" -o "$OUT/startup.o" 2>&1
-arm-none-eabi-gcc -c -mcpu=$CPU -mthumb "$BOARDS/common/stubs.c" -o "$OUT/stubs.o" 2>&1
-arm-none-eabi-gcc -c -mcpu=$CPU -mthumb "$BOARDS/common/$CONSOLE.c" -o "$OUT/console.o" 2>&1
-arm-none-eabi-as  -mcpu=$CPU -mthumb "$BOARDS/common/aeabi_read_tp.s" -o "$OUT/tp.o" 2>&1
-
 echo "=== tuck check ==="
 ./tuck ch "$SRC" $TUCK_FLAGS 2>&1 | tail -3
 
-NIMFLAGS="--os:standalone --cpu:arm --mm:none -d:freestanding --exceptions:goto --cc:gcc --gcc.exe:arm-none-eabi-gcc --gcc.linkerexe:arm-none-eabi-gcc --threads:off --tlsEmulation:off --passC:-mthumb --passC:-mcpu=$CPU --passC:-g --passC:-I$PICOLIBC/include --passL:-nostartfiles --passL:$OUT/startup.o --passL:$OUT/stubs.o --passL:$OUT/console.o --passL:$OUT/tp.o --passL:$PICOLIBC/lib/libc.a --passL:-T$BOARD_DIR/board.ld"
+# The board build is the compiler's (`tuck build --board:NAME`): it compiles
+# the board objects, links picolibc and the board's linker script, and sets
+# the metal profile (stackless, one thread, Tuck lines in DWARF). This script
+# only adds QEMU.
+EXTRA=""
 if [ "${TUCK_FAULT_ISR_DROP:-}" = "1" ]; then
-  NIMFLAGS="$NIMFLAGS -d:TuckFaultIsrDrop"
+  EXTRA="--nim:-d:TuckFaultIsrDrop"
 fi
-
-echo "=== freestanding build ==="
-# The metal profile is stackless whatever TUCK_CONCURRENCY says: a stackful
-# task needs an mmap'd stack, and bare metal has no mmap (POL-5).
-./tuck b "$SRC" \
-  $TUCK_FLAGS \
-  --concurrency:stackless \
-  --debug-lines \
-  --nim:"$NIMFLAGS" \
-  -o:"$OUT" 2>&1 | tail -20
+echo "=== board build (--board:$BOARD) ==="
+./tuck b "$SRC" $TUCK_FLAGS --board:"$BOARD" $EXTRA -o:"$OUT" 2>&1 | tail -20
 
 ELF="$OUT/${BASE}"
 if [ ! -f "$ELF" ]; then
