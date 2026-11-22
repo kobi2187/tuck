@@ -113,12 +113,15 @@ proc tuckOutOfBounds(index, length: int, op: string) {.noinline, noreturn.} =
   ## The cold half of tuckSeqBounds: the message is built only on failure,
   ## out of line, so the check itself is small enough to inline.
   when defined(freestanding):
-    while true: discard
+    discard index
+    discard length
+    discard op
+    tuckFatal("index out of bounds")
   else:
     raise newException(IndexDefect,
       op & ": index " & $index & " out of bounds for seq of length " & $length)
 
-proc tuckSeqBounds(index, length: int, op: string) {.inline.} =
+proc tuckSeqBounds(index, length: int, op: string) {.inline, hot.} =
   ## Raises IndexDefect unless `0 <= index < length`; `op` names the access.
   ##
   ## Bounds are a PRECONDITION: violating one is a program error,
@@ -128,7 +131,12 @@ proc tuckSeqBounds(index, length: int, op: string) {.inline.} =
   ## to tuckAt/tuckSetAt, and with the message built here they were too big
   ## to inline even under LTO — 40% of fannkuch's time was the calls
   ## themselves (benches/game).
-  if index < 0 or index >= length: tuckOutOfBounds(index, length, op)
+  when defined(freestanding):
+    # Straight to the board from the inlined check, so the trap's LR is the
+    # access site in the Tuck fn rather than a runtime helper.
+    if index < 0 or index >= length: tuckFatal("index out of bounds")
+  else:
+    if index < 0 or index >= length: tuckOutOfBounds(index, length, op)
 
 {.push boundChecks: off.}
 # The bounds are checked once, by tuckSeqBounds; Nim's own check on the index
@@ -375,10 +383,13 @@ proc tuckOverflowTrap*(ty, op: string) {.noreturn.} =
   ## the descriptive message is host-only; the trap itself still stops here.
   when not defined(freestanding):
     stderr.writeLine("Arithmetic overflow on " & ty & ": " & op)
+    quit(1)
   else:
+    # No string building on metal (no appendString magic), so a fixed text;
+    # the fault record's LR names the trapping site.
     discard ty
     discard op
-  quit(1)
+    tuckFatal("arithmetic overflow on a [trapping] integer")
 
 type ArithRes[T] = tuple[r: T, over, high: bool]
   ## A wrapped result, whether the exact one did not fit, and which end of the
@@ -536,7 +547,7 @@ proc alloc*[Size: static int](arena: var BumpArena[Size], bytes: int): pointer =
   ## `bytes` from the arena, or an `OutOfMemoryDefect` when it is exhausted.
   if arena.cursor + bytes > Size:
     when defined(freestanding):
-      while true: discard
+      tuckFatal("arena buffer exhausted")
     else:
       raise newException(OutOfMemoryDefect, "Arena buffer exhausted")
   result = addr arena.buffer[arena.cursor]

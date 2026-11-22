@@ -421,6 +421,16 @@ options:
   build under --release."""
   quit(code)
 
+proc isFreestandingBuild(opts: seq[string]): bool =
+  ## A bare-metal build: `-d:freestanding` passed through to Nim (what
+  ## freestanding-loop.sh does), or a bare `--freestanding`. It used to be
+  ## "any argument containing the word", so `-o:build/freestanding-test` on a
+  ## hosted build silently dropped the async runtime and the exit status.
+  for o in opts:
+    if o == "--freestanding": return true
+    if o.startsWith("--nim:") and o.contains("-d:freestanding"): return true
+  false
+
 proc die(msg: string) =
   ## Prints `msg` to stderr and exits 1. The driver's one way to stop on a
   ## user-facing error.
@@ -846,7 +856,9 @@ proc gateIsrShared(prog: seq[LoadedModule]) =
     if a.unsafe.len == 0: continue
     for s in a.unsafe:
       let sites = a.access.filterIt(it.state == s)
-      let isrIdx = sites.findIt(it.isr)
+      var isrIdx = -1
+      for i, x in sites:
+        if x.isr: isrIdx = i; break
       if isrIdx < 0: continue
       let isrSite = sites[isrIdx]
       var msg = s & " is shared between an interrupt and normal code: "
@@ -1427,8 +1439,10 @@ when isMainModule:
       # The program's own return value is the result. Host shims never emit a
       # FAULT record, so there is nothing to decode here.
       quit(rc)
-    if rc != 0 and rc != 124:
-      quit(1)
+    # The loop exits with QEMU's status, which the board sets from main's
+    # return through semihosting. 124 is `timeout`: the program neither
+    # exited nor faulted in the window — a firmware main loop, or a hang.
+    # It is never read as success.
     # A fault is the interesting outcome: decode it here rather than making
     # the developer copy a hex line into a second command. `freestanding-loop`
     # prints ELF=<path>, so the log is self-describing.
@@ -1445,7 +1459,10 @@ when isMainModule:
         else:
           stdout.write "\n(tuck sim: fault recorded but no ELF= line in the log)\n"
       quit(1)
-    quit(0)
+    if rc == 124:
+      stdout.write "\n(tuck sim: still running when the window closed: no exit, no fault." &
+        " A firmware main loop is expected to do this; a test program is not.)\n"
+    quit(rc)
   of "timing":
     # Static timing report: critical-section nesting + worst-case stack.
     let prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
@@ -1885,7 +1902,7 @@ when isMainModule:
         if extraImports != "": writeFile(mainNim, extraImports & readFile(mainNim))
         var asyncInit = ""
         var asyncDrive = ""
-        let freestandingMode = opts.anyIt(it.contains("freestanding"))
+        let freestandingMode = isFreestandingBuild(opts)
         if usesRuntime and not freestandingMode:
           let asyncImp = relativePath(getAppDir() / "compiler" / "tuck_async", outDir).replace('\\', '/')
           writeFile(mainNim, "import " & asyncImp & "\n" & readFile(mainNim))
@@ -1949,16 +1966,27 @@ when isMainModule:
         var guarded = ""
         for ln in mainBody.splitLines:
           guarded.add(if ln.len > 0: "  " & ln & "\n" else: "\n")
-        let freestanding = opts.anyIt(it.contains("freestanding"))
+        let freestanding = isFreestandingBuild(opts)
         if freestanding:
           # No libc exit(): on bare metal main simply returns to the reset
           # handler's idle loop. Calling quit() drags in newlib's ARM-mode
           # exit/_malloc_r, which cannot run on a Thumb-only Cortex-M.
           # Drive any unawaited stackless frames before returning.
+          #
+          # The exit status still matters on metal: the board's
+          # `tuck_board_exit` (boards/startup_*.c) ends a QEMU run through
+          # semihosting with main's low byte, so `tuck sim` sees the same
+          # number a hosted build would. Without it every run, a hang
+          # included, ended in the idle loop and read as success.
           let drive = if hasTasks and concurrencyMode == cmStackless:
                         "\n  tuckSlRunAll()" else: ""
+          let rcBind = if mainReturns: "let tuckRc = " & tuckMain
+                     else: tuckMain & "\n  let tuckRc = 0"
           writeFile(mainNim, readFile(mainNim) &
-            "\nwhen isMainModule:\n  discard " & tuckMain & drive & "\n")
+            "\nwhen isMainModule:\n" &
+            "  proc tuckBoardExit(rc: cint) {.importc: \"tuck_board_exit\", noreturn.}\n" &
+            "  " & rcBind & drive & "\n" &
+            "  tuckBoardExit(cint(tuckRc and 0xFF))\n")
         else:
           writeFile(mainNim, readFile(mainNim) &
             "\nwhen isMainModule:\n  try:\n" & guarded &

@@ -47,7 +47,7 @@ proc scenario(t: var T, name, board, tick, slot, want: string) =
     return
   if t.skippedCmd(idx): t.skip name; return
   let (rc, text) = t.resultOf(idx)
-  if rc == 0 and text.contains(want) and text.contains("qemu exit: 124"):
+  if rc == 0 and text.contains(want) and text.contains("qemu exit: 0"):
     t.ok name
   else:
     t.no name, "expected a clean run printing '" & want &
@@ -61,9 +61,9 @@ proc run*(t: var T) =
   t.rejection "--tick: with no number is rejected", "--tick:", "needs 0..10"
 
   # One tick shift per supported board: lm3s at the finest tick, the STM32
-  # board at the coarsest. Both must print the clock marker and fall into the
-  # idle loop (qemu exit: 124), proving the tick flag and board profile reach
-  # QEMU rather than merely parsing.
+  # board at the coarsest. Both must print the clock marker and exit 0 through
+  # semihosting (qemu exit: 0; 124 would be a timeout), proving the tick flag
+  # and board profile reach QEMU rather than merely parsing.
   t.scenario "clock at tick 0 on lm3s6965evb", "lm3s6965evb", "0", "lm3s",
              "CLOCK_OK"
   t.scenario "clock at tick 10 on stm32vldiscovery", "stm32vldiscovery", "10",

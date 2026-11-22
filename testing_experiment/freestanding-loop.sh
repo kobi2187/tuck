@@ -56,12 +56,17 @@ fi
 # in parallel). Default keeps the historical path for human invocations.
 OUT="${TUCK_OUT_DIR:-/tmp/scratchpad/freestanding_${BASE}}"
 rm -rf "$OUT"; mkdir -p "$OUT"
+# Nim's standalone runtime routes every failed check (bounds, nil, a failed
+# assert) through `panic`. It goes to the board's tuck_fatal, which prints
+# `PANIC: msg` and traps, so the fault recorder reports it. It used to loop
+# silently, which a QEMU run read as a clean finish.
 cat > "$OUT/panicoverride.nim" <<'EOF'
+proc tuckSemihostWrite(s: cstring) {.importc: "tuck_semihost_write".}
+proc tuckFatal(msg: cstring) {.importc: "tuck_fatal", noreturn.}
 proc rawoutput(msg: string) {.nimcall.} =
-  discard
-proc panic*(s: string) {.exportc, noreturn.} =
-  while true:
-    discard
+  tuckSemihostWrite(msg.cstring)
+proc panic*(s: string) {.noreturn.} =
+  tuckFatal(s.cstring)
 EOF
 
 BOARDS="$ROOT/testing_experiment/boards"
@@ -117,4 +122,9 @@ timeout 10 qemu-system-arm -M "$BOARD" \
   $QEMU_EXTRA \
   -semihosting-config enable=on,target=native \
   -nographic -kernel "$ELF" 2>&1 | head -40
-echo "qemu exit: ${PIPESTATUS[0]}   (124 = clean run into idle loop)"
+QEMU_RC=${PIPESTATUS[0]}
+# The board exits QEMU through semihosting with main's return value (0 = the
+# program returned 0). A fault exits 1 after printing its FAULT line. 124 is
+# `timeout`: still running after the window — never a pass for a test.
+echo "qemu exit: $QEMU_RC   (main's return value; 124 = timeout, still running)"
+exit $QEMU_RC

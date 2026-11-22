@@ -110,5 +110,49 @@ fn main() -> int [io]:
 """
   t.gateSays11 "TK-EF11 refuses I/O inside critical:", "would stay disabled"
 
-  # Machine-readable findings: jq-friendly JSON and standard SARIF 2.1.0.
+  # A TASK is normal code too. The first audit walked `fn` bodies only, so a
+  # task racing an ISR — the usual shape of firmware — read as "no shared
+  # state" and the gate let it through.
+  t.src """
+register FLAG at 0x40000000:
+  VALUE: bits 0..7 [read, write]
+
+fn isr() [irq, irq_safe, no_alloc]:
+  FLAG.VALUE = 1
+  return
+
+task worker({}) -> void [io]:
+  FLAG.VALUE = 2
+  return
+
+fn main() -> int [io]:
+  {} worker
+  return 0
+"""
+  t.auditSays "audit sees a task writing ISR state", @[
+    "task worker() -> void [io] writes", "[UNPROTECTED]"]
+  t.gateSays "TK-EF10 gate rejects a task racing an ISR", "normal code task worker()"
+
+  # Two handlers on one field: a race exactly when their priorities differ,
+  # which Tuck cannot see yet. Reported, never rejected.
+  t.src """
+register FLAG at 0x40000000:
+  VALUE: bits 0..7 [read, write]
+
+fn uartIsr() [irq, irq_safe, no_alloc]:
+  FLAG.VALUE = FLAG.VALUE + 1
+  return
+
+fn timerIsr() [irq, irq_safe, no_alloc]:
+  FLAG.VALUE = FLAG.VALUE + 1
+  return
+
+fn main() -> int:
+  return 0
+"""
+  t.auditSays "audit reports state shared by two interrupt handlers", @[
+    "written by one interrupt handler and touched by another: FLAG",
+    "same priority"]
+  t.gateAllows "two-handler sharing is reported, not gated"
+
   t.finish()

@@ -933,12 +933,26 @@ proc genBlock(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ind & "if true:\n" & body
 
 proc genCritical(ctx: var CodegenCtx, e: Expr, ind: string): string =
-  ## `critical:` — interrupts off on entry, back on at the end. The body is a
-  ## nested block (same `if true:` trick as genBlock, so a `break` reaches the
-  ## enclosing loop); masking is a runtime pair, never inline asm here.
+  ## `critical:` — interrupts off on entry, restored on EVERY exit. Enter
+  ## returns the mask state it found and exit puts that state back, so a
+  ## nested block (or a block entered with interrupts already off) never turns
+  ## them on early. `try/finally` makes a `return`, `break` or `?` inside the
+  ## body restore the mask too; an unconditional exit at the end of the text
+  ## left interrupts off for good on any early way out. The outer `if true:`
+  ## is genBlock's scope (a `break` still reaches the enclosing loop); the
+  ## saved state is named by node id so nested blocks never shadow it.
   if e.criticalBody == nil: return ind & "discard"
-  ind & "tuckCriticalEnter()\n" & ctx.genBlock(e.criticalBody, ind) &
-    "\n" & ind & "tuckCriticalExit()"
+  let saved = "tuckCs" & $uint32(e.id)
+  let inner = ind & "  "
+  ctx.indent += 1
+  var body = ctx.genStmts(e.criticalBody, inner)
+  ctx.indent -= 1
+  if body.len == 0: body = inner & "  discard"
+  ind & "if true:\n" &
+    inner & "let " & saved & " = tuckCriticalEnter()\n" &
+    inner & "try:\n" & body & "\n" &
+    inner & "finally:\n" &
+    inner & "  tuckCriticalExit(" & saved & ")"
 
 proc genDefer(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## `defer:` (spec §7.4) — Nim spells it identically, scope-exit-ordered and

@@ -1145,7 +1145,8 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
 
 proc ownsLayoutD(s: Expr): bool =
   ## Constructs that emit their own indentation, braces and newlines.
-  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkMatch, exkSelect, exkDefer}
+  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkMatch, exkSelect, exkDefer,
+             exkCritical}
 
 proc genDDroppedResult(ctx: var DCodegenCtx, s: Expr,
                        stmtCode: string): string =
@@ -1269,6 +1270,19 @@ proc genDDefer(ctx: var DCodegenCtx, e: Expr): string =
   if e.deferReleases and e.deferBody.stmts.len == 1:
     return ind & "scope(exit) " & ctx.genDExpr(e.deferBody.stmts[0]) & ";"
   ind & "scope(exit) {\n" & ctx.genDNested(e.deferBody) & ind & "}"
+
+proc genDCritical(ctx: var DCodegenCtx, e: Expr): string =
+  ## `critical:` — a braced scope whose `scope(exit)` restores the interrupt
+  ## mask that enter saved, on every exit. Restoring the saved state rather
+  ## than unmasking is what makes a nested block safe.
+  if e.criticalBody == nil: return ""
+  let ind = ctx.indD
+  let saved = "tuckCs" & $uint32(e.id)
+  let inner = ind & "    "
+  ind & "{\n" &
+    inner & "auto " & saved & " = rt.tuckCriticalEnter();\n" &
+    inner & "scope(exit) rt.tuckCriticalExit(" & saved & ");\n" &
+    ctx.genDNested(e.criticalBody) & ind & "}\n"
 
 proc genDWhile(ctx: var DCodegenCtx, e: Expr): string =
   ## A `while` loop; a condition-less `loop` is `while (true)`.
@@ -1640,11 +1654,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
       ctx.genDExpr(e.validated) & ")"
   of exkSend: ctx.genDSend(e)
   of exkSelect: ctx.genDSelect(e)
-  of exkCritical:
-    if e.criticalBody == nil: ""
-    else: ctx.indD & "rt.tuckCriticalEnter();\n" &
-          ctx.genDBlock(e.criticalBody) & "\n" &
-          ctx.indD & "rt.tuckCriticalExit();"
+  of exkCritical: ctx.genDCritical(e)
   of exkDefer: ctx.genDDefer(e)
   of exkFinish:
     "rt.finishResource(" & resourceTableName(e.finishKind) & ", " &

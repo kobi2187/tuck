@@ -207,14 +207,25 @@ proc sourceLine*(elf: string, address: int64, addrExe = ""): string =
   ## line from the generated file. As above, `address` stays numeric throughout.
   let exe = if addrExe == "": findExe("arm-none-eabi-addr2line") else: addrExe
   if exe == "": return ""
+  ##
+  ## `-i` unwinds inlining: a bounds check or register accessor inlined into a
+  ## Tuck fn is reported as runtime-file frames first and the Tuck frame last.
+  ## The line to edit is the first `.tuck` frame; without one, the innermost.
   let a = "0x" & toHex(address and not 1'i64, 8)
-  let addrOut = execProcess(exe, args=["-e", elf, "-f", "-C", a],
+  let addrOut = execProcess(exe, args=["-e", elf, "-i", "-f", "-C", a],
                             options={poStdErrToStdOut})
   let ls = addrOut.splitLines()
-  if ls.len < 2: return ""
-  let loc = ls[1].strip()
-  if loc == "" or loc.startsWith("??") or loc.contains(":?"): ""
-  else: loc
+  var first = ""
+  var i = 1
+  while i < ls.len:
+    var loc = ls[i].strip()
+    i += 2
+    if loc == "" or loc.startsWith("??") or loc.contains(":?"): continue
+    let disc = loc.find(" (discriminator")   # GCC's block id, not a line
+    if disc > 0: loc = loc[0 ..< disc]
+    if first == "": first = loc
+    if loc.contains(".tuck:"): return loc
+  first
 
 proc decodeFault*(elf: string, f: FaultRecord,
                   nmExe = "", addrExe = ""): CrashReport =
@@ -243,6 +254,15 @@ proc decodeFault*(elf: string, f: FaultRecord,
     let caller = if f.lr > 2: f.lr - 2 else: f.lr
     result.callerSymbol = nearestSymbol(elf, caller, nmExe)
     result.callerLocation = sourceLine(elf, caller, addrExe)
+  if result.pcSymbol == "tuck_fatal":
+    # Not a hardware fault: a runtime check (bounds, overflow, heap) stopped
+    # the program on purpose with an undefined instruction. tuck_fatal moved
+    # the check's return address into LR, so LR is the failing Tuck line.
+    result.what = "A runtime check failed and stopped the program (the PANIC line names it)."
+    result.why = "tuck_fatal traps on purpose, so the fault bits only say how it stopped. " &
+      "LR is the check's call site, which DWARF built with --debug-lines maps to the Tuck line."
+    result.fix = "Read the PANIC message, then the LR call site: that line made the failing " &
+      "access or arithmetic."
 
 proc lineOf(location: string): (string, int) =
   if location == "": ("", 0)

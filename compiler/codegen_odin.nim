@@ -1460,7 +1460,7 @@ proc genOdinTaskArgsSpawn(ctx: var OdinCodegenCtx, e: Expr, ind: string): string
 proc ownsItsLayout(ctx: var OdinCodegenCtx, s: Expr): bool =
   ## Constructs that emit their own indentation and terminator.
   if ctx.isTaskArgsBind(s) or ctx.isTaskArgsSpawn(s): return true
-  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkDefer}
+  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkDefer, exkCritical}
 
 proc genStmt*(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
@@ -1538,6 +1538,18 @@ proc genDefer(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   let body = ctx.genBlock(e.deferBody, ind)
   if body.len == 0: return ""
   ind & "defer {\n" & body & "\n" & ind & "}"
+
+proc genOdinCritical(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
+  ## `critical:` — a braced scope whose `defer` restores the interrupt mask
+  ## that enter saved, on every exit (return, break, end of block). Restoring
+  ## the saved state rather than unmasking is what makes nesting safe.
+  if e.criticalBody == nil: return ""
+  let saved = "tuckCs" & $uint32(e.id)
+  let inner = ind & "  "
+  ind & "{\n" &
+    inner & saved & " := rt.tuckCriticalEnter()\n" &
+    inner & "defer rt.tuckCriticalExit(" & saved & ")\n" &
+    ctx.genBlock(e.criticalBody, ind) & "\n" & ind & "}"
 
 proc genTernary(ctx: var OdinCodegenCtx, e: Expr, condStr: string): string =
   ## R2: a value-position if becomes Odin's ternary. Odin has no
@@ -1868,10 +1880,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
       "lowering_chains rewrites every one into statements"
   of exkSend: ctx.genSend(e)
   of exkSelect: ctx.genOdinSelect(e, ind)
-  of exkCritical:
-    if e.criticalBody == nil: ""
-    else: ind & "rt.tuckCriticalEnter()\n" & ctx.genBlock(e.criticalBody, ind) &
-          "\n" & ind & "rt.tuckCriticalExit()"
+  of exkCritical: ctx.genOdinCritical(e, ind)
   of exkDefer: ctx.genDefer(e, ind)
   of exkFinish:
     "rt.finishResource(&" & resourceTableName(e.finishKind) & ", " &

@@ -32,6 +32,41 @@ static void sh(const char *s) {
   __asm volatile("bkpt 0xab" :: "r"(r0), "r"(r1) : "memory");
 }
 
+/* End the run with `rc` as the QEMU exit status: semihosting
+   SYS_EXIT_EXTENDED (0x20) with ADP_Stopped_ApplicationExit and a subcode.
+   This board file is for QEMU. On silicon with no debugger attached a BKPT
+   escalates to HardFault, so a real-board startup defines tuck_board_exit as
+   an idle loop (or a reset) instead and routes output to a UART. */
+void tuck_board_exit(int rc) {
+#ifdef TUCK_NO_SEMIHOST_EXIT
+  (void)rc;
+#else
+  static volatile unsigned int block[2];
+  block[0] = 0x20026u;           /* ADP_Stopped_ApplicationExit */
+  block[1] = (unsigned int)rc;
+  register unsigned int r0 asm("r0") = 0x20;
+  register volatile unsigned int *r1 asm("r1") = block;
+  __asm volatile("bkpt 0xab" :: "r"(r0), "r"(r1) : "memory");
+#endif
+  for (;;) {}
+}
+
+/* A runtime check failed (bounds, overflow, heap exhausted, a Nim panic).
+   Say what, then trap: the undefined instruction is a UsageFault, so the
+   recorder below prints the FAULT line and ends the run with status 1. */
+void tuck_fatal(const char *msg) __attribute__((noreturn));
+void tuck_fatal(const char *msg) {
+  /* Read the return address first: the stacked LR of the trap is then the
+     instruction after the failing check's call, which DWARF built with
+     --debug-lines maps to the Tuck line. */
+  void *caller = __builtin_return_address(0);
+  sh("PANIC: ");
+  sh(msg);
+  sh("\n");
+  __asm volatile("mov lr, %0\n\tudf #0" :: "r"(caller) : "lr");
+  for (;;) {}
+}
+
 static char hexbuf[128];
 static const char *hexdig = "0123456789abcdef";
 static void appendHex(char *b, int *i, unsigned int v) {
@@ -73,7 +108,9 @@ __attribute__((used)) static void recordFault(unsigned int *sp) {
   hexbuf[i++] = '\n';
   hexbuf[i] = 0;
   sh(hexbuf);
-  for (;;) {}   /* halt; the record is in RAM for a debugger */
+  /* The record stays in RAM for a debugger; under QEMU the run ends with
+     status 1 instead of idling until the timeout. */
+  tuck_board_exit(1);
 }
 
 /* NAKED on purpose. A compiled C handler pushes {r7, lr} and reserves a

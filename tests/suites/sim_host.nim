@@ -33,6 +33,10 @@ proc simBackend(t: var T, name, stage, be: string,
   if rc != 0:
     t.no name, "tuck sim --host failed: " & text
     return ""
+  if text.contains("SKIP " & be & ": compiler not found"):
+    # The suite's promise above: a missing compiler is SKIP, never FAIL.
+    t.skip name
+    return ""
   if text.contains("!!!") or text.contains("SKIP"):
     t.no name, "backend did not run: " & text
     return ""

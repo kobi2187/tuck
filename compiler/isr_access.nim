@@ -41,6 +41,7 @@ type
     access*: seq[IsrAccess]
     shared*: seq[string]            ## state touched by both ISR and non-ISR code
     unsafe*: seq[string]            ## shared state with at least one UNPROTECTED access
+    multiIsr*: seq[string]          ## written by one [irq] root and touched by another
 
 proc stateRefName(n: Expr): string =
   ## The shared-state name an expression node refers to, or "".
@@ -57,11 +58,14 @@ proc stateNamesOf(m: Module): HashSet[string] =
       result.incl d.name
 
 proc signature(d: Decl): string =
-  ## DISPLAY of a fn: the signature, not a name-keyed identity. Local to this
-  ## report so it changes with the report and cannot be mistaken for a key.
+  ## DISPLAY of a fn or task: the signature, not a name-keyed identity. Local
+  ## to this report so it changes with the report and cannot be mistaken for
+  ## a key. Any other body owner (an `on select` arm, a const) shows its name.
+  if d.kind notin {dkFn, dkTask}:
+    return (if d.kind == dkSelect: "on select" else: writtenName(d))
   var params: seq[string]
   for p in d.fnParams: params.add p.name & ": " & typeName(p.typ)
-  result = writtenName(d) &
+  result = (if d.kind == dkTask: "task " else: "") & writtenName(d) &
     (if params.len == 0: "()" else: "({" & params.join(", ") & "})")
   if d.fnReturnType != nil: result.add " -> " & typeName(d.fnReturnType)
   if d.fnEffects.len > 0:
@@ -121,10 +125,33 @@ proc collectAccesses(e: Expr, prot: bool, states: HashSet[string],
     collectAccesses(ch, prot, states, fnId, sig, result)
 
 proc accessesOf(m: Module, d: Decl, states: HashSet[string]): seq[IsrAccess] =
-  ## Every access to shared state in `d`; `d` is the declaration itself,
-  ## never a name lookup.
-  if d == nil or d.fnBody == nil: return
-  collectAccesses(d.fnBody, false, states, d.id, signature(d), result)
+  ## Every access to shared state in every expression `d` owns; `d` is the
+  ## declaration itself, never a name lookup. `ownExprs` reaches task bodies,
+  ## `on select` arms and initialisers: the first version walked `dkFn`
+  ## bodies only, so a TASK racing an ISR — the normal shape of firmware —
+  ## was reported as "no shared state".
+  if d == nil: return
+  for body in d.ownExprs:
+    if body != nil:
+      collectAccesses(body, false, states, d.id, signature(d), result)
+
+proc multiHandlerState(res: Resolution, m: Module, roots: seq[Decl],
+                       access: seq[IsrAccess]): seq[string] =
+  ## State written by one interrupt handler and touched by another. Whether
+  ## that races depends on their NVIC priorities (equal priorities cannot
+  ## preempt each other), which Tuck does not know yet — so it is reported,
+  ## never gated.
+  var touchedBy, writtenBy: Table[string, HashSet[NodeId]]
+  for r in roots:
+    var ids: HashSet[NodeId]
+    for d in reachable(res, m, @[r]): ids.incl d.id
+    for a in access:
+      if a.fnId notin ids: continue
+      touchedBy.mgetOrPut(a.state, initHashSet[NodeId]()).incl r.id
+      if a.isWrite: writtenBy.mgetOrPut(a.state, initHashSet[NodeId]()).incl r.id
+  for s, rs in touchedBy:
+    if rs.len >= 2 and writtenBy.getOrDefault(s).len >= 1: result.add s
+  result.sort
 
 proc auditShared*(res: Resolution, m: Module): IsrAudit =
   let states = stateNamesOf(m)
@@ -140,8 +167,8 @@ proc auditShared*(res: Resolution, m: Module): IsrAudit =
 
   var isrState: HashSet[string]
   var nonIsrState: HashSet[string]
-  for d in m.decls:
-    if d == nil or d.kind != dkFn or d.fnBody == nil: continue
+  for d in m.allDecls:
+    if d == nil: continue
     let isr = d.id in isrIds
     for a in accessesOf(m, d, states):
       result.access.add IsrAccess(state: a.state, isWrite: a.isWrite,
@@ -154,6 +181,8 @@ proc auditShared*(res: Resolution, m: Module): IsrAudit =
   for s in result.shared:
     if result.access.anyIt(it.state == s and not it.protected):
       result.unsafe.add s
+
+  result.multiIsr = multiHandlerState(res, m, rootDecls, result.access)
 
 proc render*(a: IsrAudit, path: string): string =
   ## Human-readable first. The JSON/SARIF emitters (vision §9) are added by
@@ -182,7 +211,13 @@ proc render*(a: IsrAudit, path: string): string =
     result.add "  context the sole writer (an ISR signals a task that writes it).\n"
   if a.unsafe.len > 0:
     result.add "\nUnprotected shared state: " & a.unsafe.join(", ") & "\n"
-  else:
+  elif a.shared.len > 0:
     result.add "\nAll shared accesses are inside critical: blocks.\n"
+  if a.multiIsr.len > 0:
+    result.add "\nState written by one interrupt handler and touched by another: " &
+      a.multiIsr.join(", ") & "\n"
+    result.add "  Safe only if both handlers run at the same priority (neither can\n"
+    result.add "  preempt the other). Tuck does not know NVIC priorities yet, so this\n"
+    result.add "  is reported, never rejected.\n"
   result.add "Inventory only: nothing is rejected yet. TK-EF10 fires under\n"
   result.add "--isr-check:error only for the unprotected entries above.\n"

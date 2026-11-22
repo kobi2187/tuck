@@ -428,6 +428,33 @@ fresh startup/linker/semihost wiring and a machine map; staged until a feature
 needs their peripherals. A real `tuck profile` should prefer DWT on hardware
 and fall back to SysTick under emulation — blocked on T5's CTF/egress decision.
 
+## 7f. Review pass — failures that looked like success (2026-11-22)
+
+```
+$ ./tuck sim testing_experiment/stage20_bounds_panic.tuck
+PANIC: index out of bounds
+FAULT PC=000004e2 LR=0000031d CFSR=00010000 HFSR=40000000 ...
+qemu exit: 1
+  What: A runtime check failed and stopped the program (the PANIC line names it).
+  LR 0000031D -> ...pick... (call site .../stage20_bounds_panic.tuck:9)
+```
+
+**What happened.** The same program used to print `BEFORE` and nothing else,
+and `tuck sim` exited 0: Tuck's freestanding bounds check spun in
+`while true`, the loop's 10 s timeout ended QEMU with 124, and 124 meant
+"clean". Heap exhaustion was worse: 200 spawned tasks, zero ran, exit clean.
+**Why it matters.** On metal, a test that cannot fail is the most expensive
+kind: it ships. Every green QEMU line before this pass was "it printed its
+marker", never "it did not do something else afterwards". **How it was
+fixed.** One board hook per outcome: `tuck_board_exit(rc)` ends QEMU with
+main's return value, and `tuck_fatal(msg)` prints `PANIC:` and traps with
+LR set to the failing check's caller, so the existing fault recorder and
+decoder name the Tuck line (`addr2line -i`, first `.tuck` frame). A timeout
+is now reported as "still running", never success. The same pass fixed
+`critical:` nesting and early exit (stage18), the ISR slot's lost words
+(stage19) and the ISR audit's blind spot for tasks; `REVIEW-2026-11-22.md`
+has the table and the still-open list.
+
 ## 8. Metal lane — depends on picolibc (step 0 of the vision)
 
 After a Thumb libc links, the runtime layers become possible:

@@ -1,0 +1,14 @@
+# More live task frames than the 2 KB frame heap holds: a PANIC naming the
+# heap, not 200 tasks that silently never run.
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void [io]
+
+task w({id: int}) -> void [io]:
+  {text: "W\n"} say
+  return
+
+fn main() -> int [io]:
+  for i in 0 .. 199:
+    {id: i} w
+  {text: "SPAWNED\n"} say
+  return 0

@@ -1,7 +1,13 @@
 # testing_experiment — stackless coroutines on real metal
 
-> **Status (2026-11-21):** stable checkpoint on branch
-> `claude/freestanding-baremetal-qemu` (HEAD `50c5e303`), NOT merged to `main`.
+> **Status (2026-11-22):** review pass on branch
+> `claude/tuck-baremetal-review-wm43kz` (on top of
+> `claude/freestanding-baremetal-qemu`), NOT merged to `main`. Read
+> `REVIEW-2026-11-22.md` first: it lists what the review fixed and what it
+> found still missing.
+>
+> Earlier checkpoint (2026-11-21): stable on `claude/freestanding-baremetal-qemu`
+> (HEAD `50c5e303`).
 > Bare-metal tasks run under QEMU on two boards (`lm3s6965evb`,
 > `stm32vldiscovery`) with a SysTick guest clock and deterministic tick control
 > (`--tick:0..10`). For exact progress, next steps and known-red suites, see
@@ -244,7 +250,23 @@ is absent. The loop script accepts `TUCK_SKIP_TUCK_BUILD=1` and `TUCK_OUT_DIR`
 so parallel scenarios neither rebuild `tuck` redundantly nor share a scratch
 directory.
 
-### Results (updated 2026-11-21)
+### Exit status (changed 2026-11-22)
+
+A QEMU run now ENDS: the board's `tuck_board_exit` (semihosting
+SYS_EXIT_EXTENDED) makes main's return value the QEMU exit status, so
+`tuck sim` exits 0 for a program that returned 0, the program's own number
+otherwise, 1 after a fault, and **124 only when the program was still running
+when the 10 s window closed** — a firmware main loop, or a hang. Before, every
+run ended in the idle loop and 124 meant "clean"; a silent hang (a failed
+bounds check spun in `while true`) read as success. Runtime checks now stop
+through the board's `tuck_fatal`: a `PANIC: ...` line, then a trap the fault
+recorder reports with the failing Tuck line.
+
+Source-level debugging on the target: `./gdb-loop.sh stage9_minimal_task 10`
+boots the ELF halted under QEMU and stops gdb-multiarch at
+`stage9_minimal_task.tuck:10` (T16, metal half).
+
+### Results (updated 2026-11-21; where this table says "idle loop" / 124, a run now exits 0)
 | stage | result |
 |---|---|
 | `stage17_clock.tuck` (both boards, ticks 0/4/10) | **prints `CLOCK_OK`, idle loop, no fault** |

@@ -132,6 +132,7 @@ tuckSlAwaitMain :: proc(s: ^TuckSlot($T)) -> T {
 	return s.value
 }
 
-// A `critical:` block lowers to this pair. No hosted ISR to exclude: no-op.
-tuckCriticalEnter :: proc() {}
-tuckCriticalExit :: proc() {}
+// A `critical:` block lowers to this pair: enter returns the mask state it
+// found, exit restores it. No hosted ISR to exclude, so the state is 0.
+tuckCriticalEnter :: proc() -> u32 { return 0 }
+tuckCriticalExit :: proc(saved: u32) {}

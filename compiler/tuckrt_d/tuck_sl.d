@@ -123,6 +123,7 @@ TuckHop tuckSlAwait(T)(TuckFrameHdr* f, TuckSlot!T* s, TuckStageFn next)
     return TuckHop.init;
 }
 
-// A `critical:` block lowers to this pair. No hosted ISR to exclude: no-op.
-void tuckCriticalEnter() {}
-void tuckCriticalExit() {}
+// A `critical:` block lowers to this pair: enter returns the mask state it
+// found, exit restores it. No hosted ISR to exclude, so the state is 0.
+uint tuckCriticalEnter() { return 0; }
+void tuckCriticalExit(uint saved) {}

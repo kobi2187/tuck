@@ -44,6 +44,41 @@ finish); see the pause-point snapshot at the end of §0.
 **Resolved blocker:** task-based programs now run on metal. All three metal
 runtime milestones (event ring, crash dump, virtual time) are implemented.
 
+### Pause point — 2026-11-22 (review pass, branch `claude/tuck-baremetal-review-wm43kz`)
+
+A review as a senior embedded developer; full findings in
+`REVIEW-2026-11-22.md`. Fixed and pinned (new suite `metal_runtime`,
+`isr_discipline` +4): the branch now builds on the CI-pinned Nim 2.2.4;
+`critical:` saves and restores PRIMASK and restores on every exit
+(try/finally, defer, scope(exit)); bounds/heap/arena/overflow failures on metal
+print `PANIC:` and fault with the Tuck line instead of spinning silently; QEMU
+runs end with main's return value (semihosting exit; 124 now means "still
+running", never success); the ISR slot no longer overwrites an untaken value
+and counts overruns; the event ring is IRQ-safe, wraps, and is off on hosted
+builds; the ISR audit sees tasks and two-handler sharing. **T16 metal half
+done**: `gdb-loop.sh STAGE LINE` stops gdb-multiarch at a `.tuck` line on the
+QEMU target.
+
+**Re-ranked next work (the user's ordering rule: finish partial features
+before new ones).** The review found that the remaining T-items rest on
+missing foundations, so these come first:
+
+- **R1 — real interrupts.** Bind an `[irq]` fn to a vector, generate the
+  table, and prove preemption under QEMU (SysTick or UART IRQ preempting a
+  task). Today no interrupt is ever taken; every ISR test is a call from
+  `main`. Unblocks R2, T17, T20's "drop a real interrupt", and a long time base.
+- **R2 — timed wait + idle.** A SysTick-driven `sleep` that parks a frame,
+  and `WFI` when the ready list is empty. Without it every delay blocks all
+  tasks.
+- **R3 — write-1-to-clear registers.** A field spelling and a codegen rule
+  that never read-modify-writes a w1c register; svd2tuck to stop dropping
+  `modifiedWriteValues`.
+- **R4 — optimised freestanding build** (`-Os`, section GC) behind the QEMU
+  suite; the cost model's numbers mean nothing at -O0.
+
+T5→T20 (trace egress), T11 (`[period:, deadline:]`) and T13 (Q notation)
+remain decision-blocked, as below.
+
 ### Pause point — 2026-11-21 (branch `claude/freestanding-baremetal-qemu`, HEAD `50c5e303`)
 
 A stable, verified checkpoint; paused here deliberately, NOT merged to `main`.
@@ -295,7 +330,7 @@ Effort is S (<1 session), M (1–3 sessions), L (>3 sessions).
   OpenOCD/pyOCD/CMSIS-DAP and read the event ring.
 - **Exit:** a developer can flash + dump the ring with one command per action.
 
-### T16 — Source-level GDB  [T3]  [S]  ◐ PARTIAL — tool-blocked
+### T16 — Source-level GDB  [T3]  [S]  ✅ DONE (QEMU; a real probe is T15)
 
 - **Outcome:** `tuck build --debug` with usable DWARF; GDB RSP over the probe.
 - **Exit:** break at a Tuck source line on real hardware / QEMU.
@@ -522,9 +557,11 @@ Remaining:
     decision.
 18. **T13 (rest) — Q notation.** A51 is fixed and pinned as `bugFixed`; the Q
     spelling and the range-check point are a type-surface decision.
-19. **T16 (rest) — break at a Tuck line in GDB.** DWARF is verified on the
-    `tuck sim` ELF; blocked on an ARM-capable gdb (`gdb-multiarch` or
-    `arm-none-eabi-gdb`), neither of which is installed here.
+19. ~~**T16 (rest) — break at a Tuck line in GDB.**~~ **DONE (2026-11-22).**
+    `gdb-loop.sh stage9_minimal_task 10` boots the ELF halted under QEMU with
+    a gdbstub and gdb-multiarch stops at `stage9_minimal_task.tuck:10`;
+    pinned in `metal_runtime` (SKIP without an ARM gdb). Real-probe flashing
+    stays with T15.
 
 PARKED with resolving signals: T12 (`platform.boot` declaration does not
 exist), T15 (no debug probe attached), T17 (needs a `watchdog:` declaration

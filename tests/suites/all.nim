@@ -47,6 +47,7 @@ import mangle
 import member_names
 import memory
 import memory_rules
+import metal_runtime
 import numeric_cast
 import object_composition
 import odin_backend
@@ -130,6 +131,7 @@ let registry: seq[Entry] = @[
   ("member_names",        SuiteProc(member_names.run),        true),
   ("memory",              SuiteProc(memory.run),              false),
   ("memory_rules",        SuiteProc(memory_rules.run),        false),
+  ("metal_runtime",       SuiteProc(metal_runtime.run),       false),
   ("numeric_cast",        SuiteProc(numeric_cast.run),        false),
   ("object_composition",  SuiteProc(object_composition.run),  false),
   ("odin_backend",        SuiteProc(odin_backend.run),        false),
