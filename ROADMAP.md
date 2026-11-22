@@ -1214,10 +1214,14 @@ the party that owns it:
   runtime calls them after the interrupt returns, outside interrupt context,
   in raise order, under the normal effect and error-policy rules.
 
-New words: `bind`, `[stream]` / `[signal]` / `[latest]`, `overflow:`, and
-`[budget, rate]`. Still open: the spelling of clear-on-read and
-write-1-to-clear facts (D3), instance-generic register blocks (D12), and
-whether an event carries the instance when two lines bind one fn (E-Q3).
+Ruled the same day: **each `bind` names its own channel**
+(`bind USART1 -> uart.onUart as Console [...]`, then `on Console.Rx(...)`;
+E-Q3), and **how a flag clears is a field attribute** generated from SVD,
+`[w1c]` or `[clear: read SR then DR]` (D3).
+
+New words: `bind ... as`, `[stream]` / `[signal]` / `[latest]`,
+`overflow:`, `[budget, rate]`, `[w1c]`, `[clear: ...]`. Still open:
+instance-generic register blocks (D12).
 NOT BUILT: this is the design bare-metal Phase 2 builds
 (`docs/bare-metal/ROADMAP.md` 2.2, 2.7).
 
