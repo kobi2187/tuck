@@ -1,0 +1,15 @@
+# Minimal single stackless task: task returns a value, main prints once.
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+task worker({}) -> {v: int} [io]:
+  return {v: 42}
+
+fn main() -> int [io]:
+  {text: "ENTER\n"} say
+  let r = {} worker
+  if r.v == 42:
+    {text: "TASK_OK\n"} say
+  else:
+    {text: "TASK_BAD\n"} say
+  return 0

@@ -61,7 +61,11 @@ type
     emIoFs        # [io: fs]
     emIoClock     # [io: clock]
     emIoConsole   # [io: console]
-    emIoSys       # [io: sys]      — arguments, environment, exit
+    emIoSys       # [io: sys]     
+    emIrq         # [irq]          — ISR ENTRY POINT (a context, not a promise):
+                  #                 roots isr-reachability for the shared-access
+                  #                 report and the ISR gate. Appended: the
+                  #                 signature cache stores marker ordinals. — arguments, environment, exit
 
 
   ResourcePolicy* = enum
@@ -420,6 +424,9 @@ type
                  # read far more often than written, and the one reading it
                  # should not have to find the declaration of `sock` to learn
                  # which registry is being touched.
+    exkCritical  # `critical:` — an interrupt-disabled section. Its own node
+                 # kind so every pass sees the boundary; it is NOT a call to
+                 # CPSID/CPSIE and must never be mistaken for one.
     exkDefer     # `defer:` — a block that runs at scope exit, LIFO. A GENERAL
                  # statement: §7.4 needs it for release intent, but nothing
                  # about it is resource-specific, and all three backends have
@@ -690,6 +697,8 @@ type
       sendPayload*: Expr    # the `{...}` struct literal, or nil
     of exkSelect:
       selArms*: seq[SelectArm]  # read/timeout branches (spec §9.3)
+    of exkCritical:
+      criticalBody*: Expr  # the block that runs with interrupts disabled
     of exkDefer:
       deferBody*: Expr  # the block to run at scope exit
       deferReleases*: bool  # made by the ownership rules: it only releases

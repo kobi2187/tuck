@@ -20,6 +20,8 @@
 # alloc.string, alloc.deque, alloc.map and alloc.set identically.
 import seq
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 fn count[T]({items: Seq[T]}) -> int:
   return items.len
 

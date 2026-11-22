@@ -5,6 +5,9 @@
 # string here. `charAt`/`containsChar` are the minimal pair a masked-display
 # app (hangman) needs; `.len` is used elsewhere but declared NOWHERE (a
 # known bug, TODO.md §3 — it currently resolves only by Nim UFCS accident).
+
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 extern:
   fn toStr[T]({value: T}) -> str
   fn charAt({s: str, index: int}) -> str

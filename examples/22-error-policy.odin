@@ -10,6 +10,10 @@ TRec_value :: struct ($T_value: typeid) {
 tuck_unhandled :: proc(code: u16, site: string) {
 	rt.tuckReportUnhandled(code, site)
 }
+@(init)
+tuck_register_unhandled :: proc "contextless" () {
+	rt.tuckUnhandledHook = tuck_unhandled
+}
 
 tuckˑfnˑreadSensor :: proc (port: u8) -> rt.TuckResult(TRec_value(u16)) {
   if (port > u8(3)) {

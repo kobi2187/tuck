@@ -6,6 +6,7 @@ proc tuckˑfnˑpoll*(port: uint8): int
 
 proc tuck_unhandled*(code: uint16, site: string) =
   tuckReportUnhandled(code, site)
+tuckUnhandledHook = cast[TuckUnhandledProc](tuck_unhandled)
 
 proc tuckˑfnˑreadSensor*(port: uint8): TuckResult[tuple[value: uint16]] =
   if (port > 3'u8):

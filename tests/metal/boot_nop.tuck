@@ -1,0 +1,3 @@
+# Minimal freestanding smoke test: no registers, just return.
+fn main() -> int:
+  return 0

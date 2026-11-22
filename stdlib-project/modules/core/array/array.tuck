@@ -11,6 +11,8 @@
 # bracket, and the primitive itself is `extern` — no Tuck body to recurse in.
 import seq
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 extern:
   fn tuckArrayAt[N, T]({items: Array[N, T], index: int}) -> T
   fn tuckArraySetAt[N, T]({items: Array[N, T], index: int, value: T}) -> void

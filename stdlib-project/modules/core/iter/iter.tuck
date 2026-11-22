@@ -20,6 +20,8 @@
 
 import seq
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 fnsig Mapper[T, U] = {x: T} -> U
 fnsig Predicate[T] = {x: T} -> bool
 # One element to several (flatMap); `U` stands bare so every backend can infer it.

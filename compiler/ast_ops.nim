@@ -37,6 +37,7 @@ func effectName*(e: EffectMarker): string =
   of emIoClock: "io: clock"
   of emIoConsole: "io: console"
   of emIoSys: "io: sys"
+  of emIrq: "irq"
 
 type MarkerFamily* = enum
   ## How a marker PROPAGATES. The effect pass used to treat every marker as an
@@ -54,7 +55,7 @@ func familyOf*(e: EffectMarker): MarkerFamily =
   of emIo, emMayBlock, emIoNet, emIoFs, emIoClock, emIoConsole, emIoSys:
     mfCapability
   of emNoAlloc, emIrqSafe, emPure: mfRestriction
-  of emUnsafe, emNoRecursion, emPriority: mfAttribute
+  of emUnsafe, emNoRecursion, emPriority, emIrq: mfAttribute
 
 const IoKinds* = {emIoNet, emIoFs, emIoClock, emIoConsole, emIoSys}
   ## The kinds `[io: kind]` can name. Closed on purpose (ruled 2026-10-15): a
@@ -90,6 +91,7 @@ func excludes*(e: EffectMarker): set[EffectMarker] =
   case e
   of emIrqSafe: {emIo, emMayBlock} + IoKinds
   of emPure: {emIo, emMayBlock} + IoKinds
+  of emIrq: {emIo, emMayBlock} + IoKinds
   of emIo, emNoAlloc, emUnsafe, emMayBlock, emNoRecursion, emPriority,
      emIoNet, emIoFs, emIoClock, emIoConsole, emIoSys: {}
 
@@ -98,6 +100,7 @@ func requires*(e: EffectMarker): set[EffectMarker] =
   ## interrupt cannot take the allocator's lock, so `irq_safe` needs `no_alloc`.
   case e
   of emIrqSafe: {emNoAlloc}
+  of emIrq: {emIrqSafe, emNoAlloc}
   of emIo, emNoAlloc, emUnsafe, emMayBlock, emNoRecursion, emPriority, emPure,
      emIoNet, emIoFs, emIoClock, emIoConsole, emIoSys: {}
 
@@ -336,6 +339,7 @@ iterator childSlots*(e: Expr): var Expr =
       for arm in e.selArms.mitems:
         yield arm.arg
         yield arm.body
+    of exkCritical: yield e.criticalBody
     of exkDefer: yield e.deferBody
     of exkAcquire: yield e.acquireRef
     of exkFinish: yield e.finishHandle

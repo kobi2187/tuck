@@ -6,6 +6,8 @@
 # value-semantics container does: `r = {d: d, x: 3} find`, `d = r.d`.
 import seq
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 type Dsu:
   parent: Seq[int]
   rank: Seq[int]

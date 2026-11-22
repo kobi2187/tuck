@@ -1,4 +1,7 @@
 # std/sys — process environment. Implemented by tuck_rt.
+
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 extern:
   # The arguments, not counting the program: argAt 1 .. total are they, and
   # argAt 0 is the program itself; "" outside that range.

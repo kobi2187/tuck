@@ -757,8 +757,11 @@ proc nimBitConsts*(bf: BitFieldInfo): string =
   if bf.isRange:
     result.add("const " & bf.prefix & "_WIDTH = " & bf.hiBit & " - " &
                bf.loBit & " + 1\n")
-    result.add("const " & bf.prefix & "_MASK = (1'u32 shl " & bf.prefix &
-               "_WIDTH) - 1\n")
+    # Shift a full word right, not 1 left: a `bits 0..31` field would shift
+    # by 32 and overflow uint32 in three backends at once (SVD imports have
+    # real whole-word fields such as DMA address registers).
+    result.add("const " & bf.prefix & "_MASK = 0xFFFFFFFF'u32 shr (32 - " &
+               bf.prefix & "_WIDTH)\n")
 
 proc nimBitGetter*(bf: BitFieldInfo, regName: string): string =
   ## A range reads as a masked uint32; a single bit reads as a bool. Every
@@ -897,7 +900,11 @@ proc genErrHandlerBody*(ctx: var CodegenCtx, handler: Decl): string =
 
 proc genErrHandler*(ctx: var CodegenCtx, d: Decl): string =
   ## Global handler: rt logger first (errors are always visible), then the
-  ## user's handler body.
+  ## user's handler body. Emitted by the application only; a library's own
+  ## block is inert when it is imported (ruling 2026-11-22). The application
+  ## registers it with the runtime at module init, which is how a partial
+  ## library's shortcut sites reach it (`tuckRouteUnhandled`).
+  if not isPolicyEntry(ctx.res, ctx.module): return ""
   let errNames = ctx.declaredErrNames()
   if errNames.len > 0: result.add(genErrNameTable(errNames))
   result.add("proc " & UnhandledHandlerName & "*(code: uint16, site: string) =\n" &
@@ -907,6 +914,9 @@ proc genErrHandler*(ctx: var CodegenCtx, d: Decl): string =
   if d.errHandler != nil and d.errHandler.fnBody != nil:
     let body = ctx.genErrHandlerBody(d.errHandler)
     if body != "": result.add(body & "\n")
+  if d.errHandler != nil:
+    result.add("tuckUnhandledHook = cast[TuckUnhandledProc](" &
+               UnhandledHandlerName & ")\n")
 
 proc genImportcBinding*(m: Decl): string =
   ## A C-imported fn. [emit: "c_fn"] sets the importc name; else the Tuck name.
@@ -1060,7 +1070,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
   ## One top-level declaration. Every DeclKind is named, so a new one fails
   ## to compile here until it is decided (CLAUDE.md).
   if d == nil: return ""
-  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.origin != NoModule:
+  if d.kind in {dkType, dkObject, dkInterface, dkActor, dkRegister} and d.origin != NoModule:
     return ""  # defined in its own module; the Nim import brings it in
   case d.kind
   of dkFn:

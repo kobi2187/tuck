@@ -343,6 +343,11 @@ let tuckGrammar = peg("module", st: Stats):
   # deliberately does not read — it describes the language as it is LEXED, and
   # all three arrive as tkIdent.
   externDecl<- word * *attrs * "tkColon " * +nl * rawBlk
+  # spec 4.9, the bare form: `errors [policy: strict]` with no handler block.
+  # It is how a library declares itself FINISHED (ruling 2026-11-22), so
+  # every stdlib module carries one. Tried after externDecl, which needs the
+  # colon; at least one attribute, so a bare identifier line is not it.
+  policyDecl<- word * +attrs * nl
   # spec 5.4: `pending:` — the walking skeleton block
   pendingDecl <- "tkPending " * "tkColon " * +nl * rawBlk
   # spec 4.2: `distinct NAME = Type`
@@ -367,7 +372,7 @@ let tuckGrammar = peg("module", st: Stats):
                ifaceDecl | typeDecl | objectDecl | constDecl | taskDecl |
                pendingDecl | distinctDecl | staticAssertDecl | decisionDecl |
                onDecl | whenDecl |
-               poolDecl | arenaDecl | regDecl | externDecl
+               poolDecl | arenaDecl | regDecl | externDecl | policyDecl
 
   # A declaration the grammar does not state. Consumed so the file still
   # parses, and COUNTED by the caller so coverage is reported rather than

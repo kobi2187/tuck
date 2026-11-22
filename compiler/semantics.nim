@@ -318,6 +318,32 @@ proc checkIsrSends(d: Decl) =
         "takes a lock an interrupted thread may hold. Fix: set a flag or ring " &
         "buffer that a task drains, or drop [irq_safe]"), n.span)
 
+proc allocatingConstruct*(n: Expr): string  # defined below; used here too
+
+proc checkCriticalBodies(c: var Checker, d: Decl) =
+  ## TK-EF11: a `critical:` section disables interrupts for its whole body.
+  ## I/O, a blocking wait or an allocation in there leaves interrupts off for
+  ## an unbounded time — worse than the race the section was written to stop.
+  if d.fnBody == nil: return
+  for n in d.fnBody.nodes:
+    if n.kind != exkCritical or n.criticalBody == nil: continue
+    let body = c.synthesizeExpr(n.criticalBody)
+    for mk in body.effects:
+      if familyOf(mk) == mfCapability:
+        reportError(withCode(dcEfIsrProtected,
+          "'" & d.name & "' has a critical: block at " & $n.span.line & ":" &
+          $n.span.col & " that performs [" & effectName(mk) & "]. Interrupts " &
+          "would stay disabled while it runs. Fix: move that work outside " &
+          "critical: and leave only the short shared-state access inside"),
+          n.span)
+    for x in n.criticalBody.nodes:
+      let what = allocatingConstruct(x)
+      if what != "":
+        reportError(withCode(dcEfIsrProtected,
+          "'" & d.name & "' has a critical: block at " & $n.span.line & ":" &
+          $n.span.col & " containing " & what & ". An allocator cannot run " &
+          "with interrupts disabled. Fix: allocate before the block"), x.span)
+
 proc checkRestrictions(c: Checker, d: Decl) =
   ## The restriction call rule (TK-EF03): in a fn declaring `no_alloc`,
   ## `irq_safe` or `pure`, every call must reach a callee that declares it.
@@ -336,7 +362,7 @@ proc checkRestrictions(c: Checker, d: Decl) =
       for r in restr:
         if r notin callee.markers: failRestriction(d.name, r, callee, n.span)
 
-proc allocatingConstruct(n: Expr): string =
+proc allocatingConstruct*(n: Expr): string =
   ## What `n` allocates, or "" if it does not. THE list of allocating syntax
   ## for `[no_alloc]` (TK-EF05): a new construct that allocates has to be
   ## classified here. Calls are not listed — the restriction rule sees them.
@@ -452,12 +478,18 @@ proc checkMarkerCombinations(d: Decl) =
           "'" & d.name & "' declares [" & effectName(m) & "] together with [" &
           effectName(x) & "], which it excludes. Fix: remove [" &
           effectName(x) & "] or remove [" & effectName(m) & "]"), d.span)
+    # Report ALL markers a marker requires in one message. Two round trips
+    # ("add no_alloc" -> recompile -> "add irq_safe") are technically correct
+    # but read as the compiler withholding information from the developer.
+    var missing: seq[string]
     for x in requires(m):
-      if x notin d.fnEffects:
-        reportError(withCode(dcEfCombination,
-          "'" & d.name & "' is [" & effectName(m) & "], which also requires [" &
-          effectName(x) & "]. Fix: add [" & effectName(x) & "] to its bracket"),
-          d.span)
+      if x notin d.fnEffects: missing.add effectName(x)
+    if missing.len > 0:
+      reportError(withCode(dcEfCombination,
+        "'" & d.name & "' is [" & effectName(m) & "], which also requires " &
+        missing.mapIt("[" & it & "]").join(", ") & ". Fix: add " &
+        (if missing.len == 1: "[" & missing[0] & "] to its bracket"
+         else: "all of them to its bracket")), d.span)
 
 proc boundName(b: Type): string =
   ## The group a bound names: `Source`, or `Indexable` for `Indexable[E]`.
@@ -499,6 +531,7 @@ proc verifyFn(c: var Checker, d: Decl) =
     checkMarkerCombinations(d)
     checkMemo(d)
     checkNoAlloc(d)
+    c.checkCriticalBodies(d)
   if d == nil or d.fnBody == nil or d.name in c.visiting: return
   c.visiting.incl(d.name)
   # main is ASSUMED to touch I/O — the [io] marker distinguishes pure fns
@@ -681,6 +714,7 @@ proc holds(c: Checker, facts: Table[string, Facts], callee: Callee,
   of emPure: f.pure
   of emNoAlloc: f.noAlloc
   of emIrqSafe: f.irqSafe
+  of emIrq: false   # a context marker is never a restriction to satisfy
   else: false
 
 proc callsOf(c: Checker, d: Decl): seq[Callee] =
@@ -719,6 +753,7 @@ proc restrictionHolds(f: Facts, r: EffectMarker): bool =
   case r
   of emPure: f.pure
   of emNoAlloc: f.noAlloc
+  of emIrq: false   # context, not a restriction
   else: f.irqSafe
 
 proc settle(c: var Checker, order: seq[Decl], state: HashSet[string],

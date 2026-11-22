@@ -19,6 +19,8 @@ import env
 import path
 import fs
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 # $HOME, or the Windows spelling, or "" when neither is set.
 fn homeDir() -> str [io]:
   let h = {name: "HOME", fallback: ""} envOr

@@ -16,6 +16,8 @@ import seq
 import str
 import encoding
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 group Source:
   fn pull({self: Self, max: int}) -> {next: Self, data: Seq[u8]} [io]
 

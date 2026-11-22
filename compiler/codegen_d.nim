@@ -773,7 +773,9 @@ proc genDFieldRead(ctx: var DCodegenCtx, e: Expr): string =
   # calling the getter genDRegister already emitted for it.
   if e.receiver != nil and e.receiver.kind == exkRegisterRef:
     let prefix = registerAccessorPrefix(ctx.module, e.receiver.refName, e.fieldName)
-    if prefix != "": return prefix & "_get()"
+    if prefix != "":
+      return ctx.pkgQualifierD(registerAccessorOrigin(ctx.module,
+               e.receiver.refName, e.fieldName)) & prefix & "_get()"
   ctx.genDExpr(e.receiver) & "." & e.fieldName
 
 proc genDField(ctx: var DCodegenCtx, e: Expr): string =
@@ -1101,7 +1103,10 @@ proc genDRebind(ctx: var DCodegenCtx, e: Expr): string =
      e.target.receiver.kind == exkRegisterRef:
     let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,
                                         e.target.fieldName)
-    if prefix != "": return prefix & "_set(" & valStr & ")"
+    if prefix != "":
+      return ctx.pkgQualifierD(registerAccessorOrigin(ctx.module,
+               e.target.receiver.refName, e.target.fieldName)) & prefix &
+             "_set(" & valStr & ")"
   result = if e.dropsOld:   # the old value is dropped once the new exists
              "rt.tuckReplace(" & ctx.genDAssignTarget(e.target) & ", " & valStr & ")"
            else: ctx.genDAssignTarget(e.target) & " = " & valStr
@@ -1140,7 +1145,8 @@ proc genDAssign(ctx: var DCodegenCtx, e: Expr): string =
 
 proc ownsLayoutD(s: Expr): bool =
   ## Constructs that emit their own indentation, braces and newlines.
-  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkMatch, exkSelect, exkDefer}
+  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkMatch, exkSelect, exkDefer,
+             exkCritical}
 
 proc genDDroppedResult(ctx: var DCodegenCtx, s: Expr,
                        stmtCode: string): string =
@@ -1153,7 +1159,7 @@ proc genDDroppedResult(ctx: var DCodegenCtx, s: Expr,
   ## runs first: it is the hook for diagnostics, and the program stops after.
   let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
-  let handler = UnhandledHandlerName
+  let handler = unhandledCallee(ctx.res, ctx.module, "rt.")
   var onErr = handler & "(" & tn & ".err, \"" & site & "\");"
   if ctx.errPolicy == "exit":
     onErr.add(" rt.exit(1);")
@@ -1177,7 +1183,7 @@ proc genDRoutedStmt(ctx: var DCodegenCtx, s: Expr, stmtCode: string): string =
     return ctx.genDDroppedResult(s, stmtCode)
   let site = ctx.res.shortcut(s)
   let name = s.target.name
-  let handler = UnhandledHandlerName
+  let handler = unhandledCallee(ctx.res, ctx.module, "rt.")
   var onErr = handler & "(" & name & ".err, \"" & site & "\");"
   if ctx.errPolicy == "exit":
     onErr.add(" rt.exit(1);")
@@ -1264,6 +1270,19 @@ proc genDDefer(ctx: var DCodegenCtx, e: Expr): string =
   if e.deferReleases and e.deferBody.stmts.len == 1:
     return ind & "scope(exit) " & ctx.genDExpr(e.deferBody.stmts[0]) & ";"
   ind & "scope(exit) {\n" & ctx.genDNested(e.deferBody) & ind & "}"
+
+proc genDCritical(ctx: var DCodegenCtx, e: Expr): string =
+  ## `critical:` — a braced scope whose `scope(exit)` restores the interrupt
+  ## mask that enter saved, on every exit. Restoring the saved state rather
+  ## than unmasking is what makes a nested block safe.
+  if e.criticalBody == nil: return ""
+  let ind = ctx.indD
+  let saved = "tuckCs" & $uint32(e.id)
+  let inner = ind & "    "
+  ind & "{\n" &
+    inner & "auto " & saved & " = rt.tuckCriticalEnter();\n" &
+    inner & "scope(exit) rt.tuckCriticalExit(" & saved & ");\n" &
+    ctx.genDNested(e.criticalBody) & ind & "}\n"
 
 proc genDWhile(ctx: var DCodegenCtx, e: Expr): string =
   ## A `while` loop; a condition-less `loop` is `while (true)`.
@@ -1635,6 +1654,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
       ctx.genDExpr(e.validated) & ")"
   of exkSend: ctx.genDSend(e)
   of exkSelect: ctx.genDSelect(e)
+  of exkCritical: ctx.genDCritical(e)
   of exkDefer: ctx.genDDefer(e)
   of exkFinish:
     "rt.finishResource(" & resourceTableName(e.finishKind) & ", " &

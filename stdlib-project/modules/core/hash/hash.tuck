@@ -19,6 +19,8 @@ import bits
 import str
 import seq
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 # The hash of ANY key a table can hold — the one primitive here that Tuck
 # cannot write for itself, because it is generic over the key's type and the
 # host knows what a type is. A str by its bytes (the same FNV-1a as hashStr),

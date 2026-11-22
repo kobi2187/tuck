@@ -18,6 +18,8 @@
 # records that a delivery happened rather than calling anything.
 import seq
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 type Controller:
   size: int
   enabled: Seq[bool]

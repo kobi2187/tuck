@@ -500,8 +500,20 @@ sites), `continue` (handler runs, execution continues, no value fabricated),
 (`tests/suites/typecheck.nim`). Declaring a policy with no handler → `needs an 'on
 unhandled'`.
 
-> **Test coverage caveat:** only `continue` is tested. `strict` is exercised
-> implicitly as the default; **`exit` is untested.**
+**One policy per application; `strict` libraries are finished** (ruled
+2026-11-22, `tests/suites/error_policy.nim`). A site in a module that declares
+`errors [policy: strict]` is strict; every other site follows the ENTRY
+module's policy. So a library without a block, or with its own `continue`, is
+*partial*: imported, its drops go to the application's `on unhandled` (on all
+three backends, through the runtime's `tuckRouteUnhandled`) and appear in the
+application's SHORTCUTS report as `lib::...`, and its own block is inert (the
+POLICY report says so). A finished library may hold no stub (TK-PO02) and may
+import only finished ones (TK-PO03); every module in `std/` and
+`stdlib-project/modules/` is finished. Code reachable from an `[irq]` handler
+is strict and stub-free under any policy (TK-PO04).
+
+> **Test coverage caveat:** `continue` and the cross-module rules are tested;
+> `strict` is exercised as the default; **`exit` is untested.**
 
 ---
 

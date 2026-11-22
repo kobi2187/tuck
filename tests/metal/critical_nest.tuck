@@ -1,0 +1,31 @@
+# `critical:` restores the mask it found, on every exit. Inner's exit must NOT
+# re-enable interrupts inside outer's block, and a `return` from inside a
+# block must still unmask. Both were broken: exit was an unconditional CPSIE
+# placed after the body text. Prints NEST_OK on metal (QEMU).
+extern [impl: nim "./host_sim/isr_shim", odin "./host_sim", d "./host_sim/isr_shim"]:
+  fn irqMasked({}) -> bool [irq_safe, no_alloc]
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+register FLAG at 0x20000100:
+  VALUE: bits 0..7 [read, write]
+
+fn inner() -> void:
+  critical:
+    FLAG.VALUE = 1
+  return
+
+fn outer() -> bool:
+  critical:
+    {} inner
+    return {} irqMasked
+  return false
+
+fn main() -> int:
+  let maskedAfterInner = {} outer
+  let maskedAfterReturn = {} irqMasked
+  if maskedAfterInner and not maskedAfterReturn:
+    {text: "NEST_OK\n"} say
+    return 0
+  {text: "NEST_BAD\n"} say
+  return 1

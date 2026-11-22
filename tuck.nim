@@ -43,6 +43,7 @@ import algorithm, sequtils
 import os, strutils, times, tables, std/json, osproc, std/sets
 import jsony
 import lexer
+import compiler/crash_decode
 import compiler/ast
 import compiler/parser
 import compiler/describe
@@ -78,6 +79,9 @@ import compiler/import_renames  # `tuck effects --manifest` (#63)
 import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
 import compiler/frames   # `tuck frames`: the stackless colouring (#216)
+import compiler/isr_access  # `tuck audit --isr`: shared-state inventory
+import compiler/timing_report  # `tuck timing`: stack + critical-section reports
+import compiler/report_format  # JSON + SARIF emitters for reports
 import compiler/concurrency   # --concurrency:stackful|stackless
 import compiler/actor_mode
 import compiler/pipeline
@@ -217,6 +221,50 @@ called with generated arguments (default 200 cases, seeded and
 repeatable); the invariant is the property. Every failing call is
 printed and written to FILE (default property-failures.txt) as a Tuck
 call with its literals. A folder is scanned file by file.""",
+  "audit": """tuck audit file.tuck --isr
+
+Inventory what an interrupt handler can touch (embedded debugging vision,
+§7a). Every fn declared [irq] is a root; fns it reaches become ISR-reachable.
+The report lists those fns and every piece of shared state a register, pool,
+slab, arena, actor or registry declares that ISR and non-ISR code both touch,
+with the file/line of each access.
+
+  --isr           the ISR shared-access report (the only report today)
+  --format:json   emit machine-readable findings (jq-friendly)
+  --format:sarif  emit SARIF 2.1.0 (GitHub/GitLab code-scanning UIs)
+
+This is an INVENTORY, not a gate: nothing is rejected yet. The point is to
+make the shared-data table that embedded teams keep on paper visible in the
+compiler, so a developer can see who writes what before adding a rule.""",
+  "timing": """tuck timing file.tuck
+
+Static timing report: worst-case CRITICAL-SECTION nesting per fn (embedded
+ISR budget), worst-case STACK per fn from the call graph (small-SRAM budget),
+and a coarse CYCLE score (time budget; report only, not a measured WCET).
+Approximate stack numbers (4-byte header, params + locals). Unprovable loop
+bounds and IO calls are listed as notes, never guessed. JSON and SARIF for CI.""",
+  "sim": """tuck sim file.tuck [--host] [--backend:NAME] [--time:fast]
+                            [--tick:SHIFT] [--fault:isr-drop] [--format:json|sarif]
+
+Two loops, one command:
+
+  default        build ARM/Thumb + run under QEMU, capturing semihosting
+                 output. A clean run prints the program's output and exits 0;
+                 a fault is decoded into a what/why/fix note naming the .tuck
+                 line, and exits 1.
+  --host         build against tests/metal/host_sim and run locally,
+                 no cross-toolchain. Nim, Odin and D all run by default, so
+                 their stdout sits side by side for byte-level comparison; a
+                 backend whose compiler is absent is reported SKIP.
+
+  --backend:NAME host only: nim | odin | d | all (default all)
+  --time:fast    QEMU only: virtual time at the fastest tick (shift 10)
+  --tick:SHIFT   QEMU only: 0..10; each step doubles virtual ns per instruction
+                 (0 = 1 ns, finest; 10 = 1024 ns, fastest). Implies virtual time.
+  --fault:isr-drop  QEMU only: inject a dropped ISR handoff
+
+Both loops use `--debug-lines` so DWARF names Tuck lines. Use
+`tuck build ... --freestanding` for the ELF itself.""",
   "frames": """tuck frames file.tuck
 
 The stackless transform's colouring (#216, docs/stackless-concurrency.md),
@@ -226,6 +274,19 @@ pause, or a fn one of them reaches that can pause. After them come the
 handlers that never pause (the actor loop calls them, so they need no
 frame) and the [io] fns a root reaches that never pause (they stay native).
 Nothing is rewritten; this is what the transform will start from.""",
+  "decode-crash": """tuck decode-crash ELF [PC] [options]
+
+Decode a Cortex-M fault record into a developer-facing report: status bits,
+precise/imprecise, nearest symbol, Tuck source line via DWARF, and a
+what/why/fix note. The old two-positional form still works.
+
+  ELF              linked ELF; use `-` with --log to take the ELF= line
+  PC               faulting program counter, hex (e.g. 0x15a)
+  --log:FILE       read FAULT PC=... LR=... CFSR=... from a captured sim log
+  --lr:HEX --cfsr:HEX --hfsr:HEX --bfar:HEX --xpsr:HEX
+                   override individual fields (or supply them without a log)
+  --format:text|json|sarif   text is default; SARIF uses TK-CR01
+  --nm:EXE --addr2line:EXE   tool override (tests use host binutils)""",
   "explain": """tuck explain CODE
 
 Print what a diagnostic code means and how to fix it, e.g.:
@@ -238,7 +299,7 @@ tuck prints. This is the one command that takes a CODE, not a file."""
 
 const CommandAliases = {"l": "lex", "p": "parse", "ch": "check",
                          "c": "compile", "b": "build", "d": "dump", "ef": "effects",
-                         "v": "validate"}.toTable
+                         "v": "validate", "dc": "decode-crash"}.toTable
 
 proc printCommandHelp(cmd: string, code = 0) =
   ## `tuck help <cmd>`: prints one command's help (aliases accepted) and exits
@@ -266,6 +327,8 @@ commands:
   check, ch     parse + effect check + type check + pending report
   compile, c    check + transpile — one target: Nim, or --odin, or --dlang
   build, b      compile + nim c to a binary (fn main runs at start)
+  sim           build for a simulated board + run under QEMU (embedded loop)
+  timing        static report: critical-section nesting + worst-case stack
   dump, d       run the pipeline up to --stage=X and print the tree
   explain CODE  what a diagnostic code means, e.g. `tuck explain TK-TY05`
   help, -h, --help [command]  this message, or one command's own usage
@@ -357,6 +420,16 @@ options:
   Functions over either budget are REPORTED worst-first, and only fail the
   build under --release."""
   quit(code)
+
+proc isFreestandingBuild(opts: seq[string]): bool =
+  ## A bare-metal build: `-d:freestanding` passed through to Nim (what
+  ## qemu-run.sh does), or a bare `--freestanding`. It used to be
+  ## "any argument containing the word", so `-o:build/freestanding-test` on a
+  ## hosted build silently dropped the async runtime and the exit status.
+  for o in opts:
+    if o == "--freestanding": return true
+    if o.startsWith("--nim:") and o.contains("-d:freestanding"): return true
+  false
 
 proc die(msg: string) =
   ## Prints `msg` to stderr and exits 1. The driver's one way to stop on a
@@ -460,7 +533,7 @@ proc pickFastCC(): string =
   # needs, and fails with "undeclared identifier: 'atomicStoreN'". tcc built
   # this ~0.2s faster per program; a `readLine` that stops every timer and
   # actor in the process until the user hits enter is the thing being bought.
-  if findExe("clang") != "": " --cc:clang --threads:on "
+  if findExe("clang") != "" and getEnv("TUCK_CC") != "gcc": " --cc:clang --threads:on "
   else: " --threads:on "
 
 proc reportBuild(binPath: string, buildMs: float): string =
@@ -767,6 +840,41 @@ proc dumpTree(mods: seq[Module], fmt: string, withSem = false) =
 var reportNarrowing = false
   ## `--report-narrowing`: list every `~` cast after a successful check.
 
+var isrCheckError = false
+  ## `--isr-check:error`: turn the ISR shared-state inventory into a gate.
+  ## `tuck audit FILE --isr` remains the report at every setting. The gate is
+  ## opt-in while the corpus is cleaned up; the default is deliberately quiet.
+
+proc gateIsrShared(prog: seq[LoadedModule]) =
+  ## Reject state that an `[irq]`-reachable fn and normal code both touch.
+  ## This is TK-EF10. It raises at the FIRST offending access, with both sites
+  ## in the message: a developer should never have to hunt for the other half
+  ## of a race after being told only where one side is.
+  if not isrCheckError: return
+  for lm in prog:
+    let a = auditShared(semLayer, lm.m)
+    if a.unsafe.len == 0: continue
+    for s in a.unsafe:
+      let sites = a.access.filterIt(it.state == s)
+      var isrIdx = -1
+      for i, x in sites:
+        if x.isr: isrIdx = i; break
+      if isrIdx < 0: continue
+      let isrSite = sites[isrIdx]
+      var msg = s & " is shared between an interrupt and normal code: "
+      for x in sites:
+        let ctx = if x.isr: "ISR" else: "normal code"
+        msg.add ctx & " " & x.fnSig & " at " & lm.path & ":" &
+          $x.span.line & ":" & $x.span.col & "; "
+      msg.removeSuffix("; ")
+      msg.add(". Fix: make one context the sole writer (an ISR signals a task " &
+        "that writes it), or keep both accesses inside one critical section. " &
+        "Run `tuck audit " & lm.path & " --isr` for the full inventory.")
+      var err = newException(SemanticError, withCode(dcEfIsrShared, msg))
+      err.line = isrSite.span.line
+      err.col = isrSite.span.col
+      raise err
+
 proc narrowingEntries(): seq[string] =
   ## One line per narrowing cast the author wrote: where, the two types, and
   ## whether the compiler confirmed the value fits or the author accepted the
@@ -826,6 +934,10 @@ proc checkProgram(path: string, needBodies = false,
     for lm in result: loadedMods.add lm.m
     assertTreeIds("load", loadedMods)
   let shortcuts = checkOrDie(path, result, sigOnly, verifyStages)
+  try:
+    gateIsrShared(result)
+  except SemanticError as err:
+    dieSemanticError(path, err)
   # Non-fatal diagnostics, printed at the offending line exactly as an error
   # is — same file:line:col prefix — but the build carries on. Drained AFTER
   # checkOrDie so a program that fails to check reports its error and nothing
@@ -838,6 +950,9 @@ proc checkProgram(path: string, needBodies = false,
     updateIndex(parentDir(absolutePath(path)), result, moduleSigs)
   report("PENDING", "unimplemented", pendingEntries(result, sigOnly))
   report("SHORTCUTS", "routed to the global error handler", shortcuts)
+  # A partial library's own continue/exit block, inert because another
+  # module is the program (ruling 2026-11-22): said, never hidden.
+  report("POLICY", "inert library policy", semLayer.policyNotes)
   if reportNarrowing:
     report("NARROWING", "casts", narrowingEntries())
   else:
@@ -982,6 +1097,47 @@ when isMainModule:
           " (codes look like TK-TY05)")
     echo $dc, "  ", categoryName(dc), " ", severityOf(dc)
     echo "  ", explanationOf(dc)
+    quit(0)
+  # `decode-crash` takes an ELF and a record, not a .tuck file. All flag
+  # parsing lives here; the decoding rules live in compiler/crash_decode so
+  # a test can call the same code through this CLI with host binutils.
+  if cmd == "decode-crash":
+    if paramCount() < 3: usage()
+    var elf = paramStr(2)
+    var pcStr = ""
+    var rec = FaultRecord()
+    var logText = ""
+    var fmt = "text"
+    var nmExe = ""
+    var addrExe = ""
+    for i in 3 .. paramCount():
+      let a = paramStr(i)
+      if a.startsWith("--log:"): logText = readFile(a[6 .. ^1])
+      elif a.startsWith("--format:"): fmt = a[9 .. ^1]
+      elif a.startsWith("--nm:"): nmExe = a[5 .. ^1]
+      elif a.startsWith("--addr2line:"): addrExe = a[12 .. ^1]
+      elif a.startsWith("--pc:"): pcStr = a[5 .. ^1]
+      elif a.startsWith("--lr:"): rec.lr = hexVal(a[5 .. ^1])
+      elif a.startsWith("--cfsr:"): rec.cfsr = hexVal(a[7 .. ^1])
+      elif a.startsWith("--hfsr:"): rec.hfsr = hexVal(a[7 .. ^1])
+      elif a.startsWith("--bfar:"): rec.bfar = hexVal(a[7 .. ^1])
+      elif a.startsWith("--xpsr:"): rec.xpsr = hexVal(a[7 .. ^1])
+      elif not a.startsWith("--"):
+        if pcStr == "": pcStr = a
+        else: die("tuck decode-crash: unexpected extra argument: " & a)
+    if logText != "":
+      let fl = faultLine(logText)
+      if fl != "": rec = parseFaultLine(fl)
+      if elf == "-": elf = findElf(logText)
+    if pcStr != "": rec.pc = hexVal(pcStr)
+    if elf == "" or elf == "-":
+      die("tuck decode-crash: no ELF (pass one, or use --log with an ELF= line)")
+    let report = decodeFault(elf, rec, nmExe, addrExe)
+    case fmt
+    of "json": stdout.write renderJson(report)
+    of "sarif": stdout.write toSarif(report.toFindings())
+    of "text": stdout.write renderText(report)
+    else: die("tuck decode-crash: unknown --format:" & fmt)
     quit(0)
   let path = paramStr(2)
   if not fileExists(path) and not (cmd == "test" and dirExists(path)):
@@ -1153,6 +1309,13 @@ when isMainModule:
   # rather than in the build arm because the check runs before it.
   sizeIsError = "--release" in opts
   reportNarrowing = "--report-narrowing" in opts
+  for o in opts:
+    if not o.startsWith("--isr-check:"): continue
+    case o["--isr-check:".len .. ^1]
+    of "error": isrCheckError = true
+    of "warn": isrCheckError = false
+    else: die("tuck: --isr-check: no such mode: '" & o["--isr-check:".len .. ^1] &
+              "'\n  available: warn, error")
   # `-v` = level 1, `-vv` = level 2 (adds per-module sub-steps), `--verbose`
   # = level 1. Whichever flag asks loudest wins if more than one is given.
   for o in opts:
@@ -1207,6 +1370,114 @@ when isMainModule:
       for d in lm.m.decls:
         if d == nil or d.kind notin {dkFn, dkTask}: continue
         echo ssa_query.render(ssaOf(semLayer, d, ssChecked).fn)
+  of "audit":
+    if not opts.anyIt(it == "--isr"):
+      die("tuck audit: name a report (--isr). Try `tuck help audit`.")
+    let prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
+    let entry = prog[prog.high].m
+    let srcPath = prog[prog.high].path
+    let a = auditShared(semLayer, entry)
+    let wantJson = opts.anyIt(it == "--format:json")
+    let wantSarif = opts.anyIt(it == "--format:sarif")
+    if not wantJson and not wantSarif:
+      stdout.write render(a, srcPath)
+    else:
+      var findings: seq[Finding]
+      for s in a.unsafe:
+        let sites = a.access.filterIt(it.state == s and not it.protected)
+        if sites.len == 0: continue
+        var msg = s & " is shared between an interrupt and normal code: "
+        for x in sites:
+          msg.add (if x.isr: "ISR " else: "normal code ") & x.fnSig & " at " &
+            srcPath & ":" & $x.span.line & ":" & $x.span.col & "; "
+        msg.removeSuffix("; ")
+        findings.add Finding(code: "TK-EF10", msg: msg, path: srcPath,
+                             line: sites[0].span.line, col: sites[0].span.col)
+      stdout.write (if wantSarif: toSarif(findings) else: toJson(findings))
+  of "sim":
+    # `tuck sim`: one command from source to observed behaviour.
+    #   default  -> qemu-run.sh: ARM/Thumb ELF + QEMU, fault decoded.
+    #   --host   -> host-run.sh: host build against the shims, no toolchain.
+    # Both delegate to a proven loop script. A host run validates logic and the
+    # scheduler; only the QEMU run claims anything about metal.
+    let stage = path
+    let hostMode = opts.anyIt(it == "--host")
+    let loopName = if hostMode: "host-run.sh" else: "qemu-run.sh"
+    let script = getAppDir() / "tools" / "metal" / loopName
+    if not fileExists(script):
+      die("tuck sim: " & loopName & " not found (need the tools/metal/ dir)")
+    var env = ""
+    if not hostMode:
+      # Virtual time and fault injection are QEMU/runtime features. On the
+      # host they have no meaning, so --host ignores them rather than lying.
+      # `--time:fast` is the shift=10 preset; `--tick:N` overrides it.
+      var tickShift = 10
+      var tickGiven = false
+      for o in opts:
+        if o.startsWith("--tick:"):
+          let raw = o[7 .. ^1]
+          tickGiven = true
+          try:
+            tickShift = parseInt(raw)
+          except ValueError:
+            die("tuck sim: --tick needs 0..10, got " & raw)
+          if tickShift < 0 or tickShift > 10:
+            die("tuck sim: --tick needs 0..10, got " & raw)
+      if opts.anyIt(it == "--time:fast") or tickGiven:
+        env = "TUCK_VIRTUAL_TIME=1 TUCK_ICOUNT_SHIFT=" & $tickShift & " "
+      if opts.anyIt(it == "--fault:isr-drop"): env = env & "TUCK_FAULT_ISR_DROP=1 "
+    # `--backend:` picks one host compiler; absent means run all available
+    # ones. Not to be confused with the global `--target:`, which selects
+    # `when TARGET == ...` platform blocks, not a backend compiler.
+    var backend = "all"
+    if hostMode:
+      for o in opts:
+        if o.startsWith("--backend:"): backend = o[10 .. ^1]
+      if backend notin ["all", "nim", "odin", "d"]:
+        die("tuck sim: unknown --backend:" & backend & " (nim, odin, d, all)")
+    let backendArg = if hostMode: " " & quoteShell(backend) else: ""
+    let (simOut, rc) = execCmdEx(env & script & " " & quoteShell(stage) & backendArg)
+    stdout.write simOut
+    if hostMode:
+      # The program's own return value is the result. Host shims never emit a
+      # FAULT record, so there is nothing to decode here.
+      quit(rc)
+    # The loop exits with QEMU's status, which the board sets from main's
+    # return through semihosting. 124 is `timeout`: the program neither
+    # exited nor faulted in the window — a firmware main loop, or a hang.
+    # It is never read as success.
+    # A fault is the interesting outcome: decode it here rather than making
+    # the developer copy a hex line into a second command. `qemu-run`
+    # prints ELF=<path>, so the log is self-describing.
+    let fl = faultLine(simOut)
+    if fl != "" or simOut.contains("Lockup"):
+      if fl != "":
+        let elf = findElf(simOut)
+        if elf != "":
+          let rep = decodeFault(elf, parseFaultLine(fl))
+          stdout.write "\n=== decoded crash ===\n"
+          if opts.anyIt(it == "--format:json"): stdout.write renderJson(rep)
+          elif opts.anyIt(it == "--format:sarif"): stdout.write toSarif(rep.toFindings())
+          else: stdout.write renderText(rep)
+        else:
+          stdout.write "\n(tuck sim: fault recorded but no ELF= line in the log)\n"
+      quit(1)
+    if rc == 124:
+      stdout.write "\n(tuck sim: still running when the window closed: no exit, no fault." &
+        " A firmware main loop is expected to do this; a test program is not.)\n"
+    quit(rc)
+  of "timing":
+    # Static timing report: critical-section nesting + worst-case stack.
+    let prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
+    let entry = prog[prog.high].m
+    let srcPath = prog[prog.high].path
+    let rep = timingOf(semLayer, entry)
+    if opts.anyIt(it == "--format:json"):
+      stdout.write renderJson(rep, srcPath)
+    elif opts.anyIt(it == "--format:sarif"):
+      stdout.write toSarif(rep.toFindings(srcPath))
+    else:
+      stdout.write renderText(rep, srcPath)
   of "frames":
     # Stackless transform, phase 1 (#216): which fns would become frames and
     # where each can pause, for the whole import closure.
@@ -1402,6 +1673,11 @@ when isMainModule:
       let nimReal = nimTree.real
       block:
         let t0 = vBegin(psEmitting)
+        # `--debug-lines`: every statement carries a Tuck source pragma, and
+        # `nim c` gets `--lineDir:on` so the C compiler records it in DWARF.
+        # That is what makes `tuck decode-crash` name a Tuck line, not the
+        # generated Nim/C one. Off by default; output is unchanged without it.
+        let wantLines = opts.anyIt(it == "--debug-lines")
         # imported modules first (each its own Nim file), entry module last
         for lm in nimProg:
           let ts = epochTime()
@@ -1427,7 +1703,9 @@ when isMainModule:
           # says `seq`, but no file by that name exists anymore.
           let outName = if isEntry: nimEntryStem(base) else: lm.name
           let nimPath = outDir / (outName & ".nim")
-          writeFile(nimPath, emitNim(lm.m, semLayer, rtImport, nimReal, outName))
+          let srcPath = if wantLines: absolutePath(lm.path) else: ""
+          writeFile(nimPath, emitNim(lm.m, semLayer, rtImport, nimReal, outName,
+                                     wantLines, srcPath))
           echo "wrote ", nimPath
           vSub(lm.name, ts)
         vEnd(psEmitting, t0)
@@ -1627,7 +1905,8 @@ when isMainModule:
         if extraImports != "": writeFile(mainNim, extraImports & readFile(mainNim))
         var asyncInit = ""
         var asyncDrive = ""
-        if usesRuntime:
+        let freestandingMode = isFreestandingBuild(opts)
+        if usesRuntime and not freestandingMode:
           let asyncImp = relativePath(getAppDir() / "compiler" / "tuck_async", outDir).replace('\\', '/')
           writeFile(mainNim, "import " & asyncImp & "\n" & readFile(mainNim))
           asyncInit = "  tuckAsyncInit()\n"
@@ -1690,15 +1969,41 @@ when isMainModule:
         var guarded = ""
         for ln in mainBody.splitLines:
           guarded.add(if ln.len > 0: "  " & ln & "\n" else: "\n")
-        writeFile(mainNim, readFile(mainNim) &
-          "\nwhen isMainModule:\n  try:\n" & guarded &
-          "  except Exception as tuckErr:\n" &
-          "    stderr.writeLine(\"Error: unhandled exception: \" & tuckErr.msg & \" [\" & $tuckErr.name & \"]\")\n" &
-          "    quit(1)\n")
+        let freestanding = isFreestandingBuild(opts)
+        if freestanding:
+          # No libc exit(): on bare metal main simply returns to the reset
+          # handler's idle loop. Calling quit() drags in newlib's ARM-mode
+          # exit/_malloc_r, which cannot run on a Thumb-only Cortex-M.
+          # Drive any unawaited stackless frames before returning.
+          #
+          # The exit status still matters on metal: the board's
+          # `tuck_board_exit` (boards/startup_*.c) ends a QEMU run through
+          # semihosting with main's low byte, so `tuck sim` sees the same
+          # number a hosted build would. Without it every run, a hang
+          # included, ended in the idle loop and read as success.
+          let drive = if hasTasks and concurrencyMode == cmStackless:
+                        "\n  tuckSlRunAll()" else: ""
+          let rcBind = if mainReturns: "let tuckRc = " & tuckMain
+                     else: tuckMain & "\n  let tuckRc = 0"
+          writeFile(mainNim, readFile(mainNim) &
+            "\nwhen isMainModule:\n" &
+            "  proc tuckBoardExit(rc: cint) {.importc: \"tuck_board_exit\", noreturn.}\n" &
+            "  " & rcBind & drive & "\n" &
+            "  tuckBoardExit(cint(tuckRc and 0xFF))\n")
+        else:
+          writeFile(mainNim, readFile(mainNim) &
+            "\nwhen isMainModule:\n  try:\n" & guarded &
+            "  except Exception as tuckErr:\n" &
+            "    stderr.writeLine(\"Error: unhandled exception: \" & tuckErr.msg & \" [\" & $tuckErr.name & \"]\")\n" &
+            "    quit(1)\n")
         # nim flags passthrough for cross/bare-metal: --nim:"--os:standalone ..."
         var nimFlags = ""
         for o in opts:
           if o.startsWith("--nim:"): nimFlags = o[6 .. ^1]
+        # `--debug-lines` emitted Tuck positions into the Nim source; Nim
+        # only writes them into C (`#line`) when lineDir is on. Without this
+        # the pragma is dead text and DWARF still names the generated file.
+        if "--debug-lines" in opts: nimFlags.add " --lineDir:on"
         # `binNim` is the file nim c actually COMPILES — needs the same
         # collision check as mainNim (dashes already forced binBase through
         # a rewrite for exactly this "the name on disk isn't always the

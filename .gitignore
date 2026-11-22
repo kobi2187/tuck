@@ -77,3 +77,4 @@ stdlib-project/apps/*/tuckrt/
 stdlib-project/apps/diff-patch/diffpatch
 stdlib-project/apps/diff-patch/diffpatch_d
 stdlib-project/apps/diff-patch/diffpatch_odin
+build/

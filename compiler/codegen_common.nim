@@ -128,6 +128,19 @@ const SlabsReleaseProc* = "tuckSlabsRelease"
   ## TUCK_TRACK (codegen_odin_decl.genOdinSlabsRelease).
 
 const UnhandledHandlerName* = "tuck_unhandled"
+
+proc isPolicyEntry*(res: Resolution, m: Module): bool =
+  ## Is `m` the application, whose `on unhandled` handler the program uses?
+  ## True when no whole-program check recorded an entry, so a module emitted
+  ## on its own keeps its own handler, as before the 2026-11-22 ruling.
+  res.programErrPolicy == "" or m.id == res.entryModule
+
+proc unhandledCallee*(res: Resolution, m: Module, rtPrefix: string): string =
+  ## What a shortcut site calls. The application's own sites call its
+  ## handler directly; a partial library's go through the runtime's hook,
+  ## because a library cannot import the application that registered it.
+  result = if isPolicyEntry(res, m): UnhandledHandlerName
+           else: rtPrefix & "tuckRouteUnhandled"
   ## The generated proc every dropped fallible result reports through (spec
   ## 4.9), and the one each backend declares. A compiler-made name, so it
   ## lives outside the `tuckˑ` space user names are mangled into and cannot

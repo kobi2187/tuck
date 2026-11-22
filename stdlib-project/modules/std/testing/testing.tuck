@@ -9,6 +9,8 @@ import seq
 import str
 import console
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 type Outcome:
   | Passed
   | Failed

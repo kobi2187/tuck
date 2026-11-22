@@ -992,7 +992,9 @@ proc fieldByReceiverKind(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkRegisterRef:
     let prefix = registerAccessorPrefix(ctx.module, e.receiver.refName,
                                         e.fieldName)
-    if prefix == "": "" else: prefix & "_get()"
+    if prefix == "": ""
+    else: ctx.pkgQualifier(registerAccessorOrigin(ctx.module,
+            e.receiver.refName, e.fieldName)) & prefix & "_get()"
   else: ""
 
 proc assertedVariantField(ctx: var OdinCodegenCtx, e: Expr): string =
@@ -1251,11 +1253,12 @@ proc genDroppedResult(ctx: var OdinCodegenCtx, s: Expr, stmtCode, ind: string): 
   ## continue/exit policy: a dropped result routes to the global handler.
   let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
+  let handler = unhandledCallee(ctx.res, ctx.module, "rt.")
   let onErr = if ctx.errPolicy == "exit":
-                UnhandledHandlerName & "(" & tn & ".err, \"" & site &
+                handler & "(" & tn & ".err, \"" & site &
                   "\"); panic(\"unhandled error\")"
               else:
-                UnhandledHandlerName & "(" & tn & ".err, \"" & site & "\")"
+                handler & "(" & tn & ".err, \"" & site & "\")"
   ind & "\t" & tn & " := " & stmtCode & "\n" &
     ind & "\tif " & tn & ".status != .Ok { " & onErr & " }"
 
@@ -1274,11 +1277,12 @@ proc genRoutedStmt(ctx: var OdinCodegenCtx, s: Expr, stmtCode,
     return ctx.genDroppedResult(s, stmtCode, ind)
   let site = ctx.res.shortcut(s)
   let name = s.target.name
+  let handler = unhandledCallee(ctx.res, ctx.module, "rt.")
   let onErr = if ctx.errPolicy == "exit":
-                UnhandledHandlerName & "(" & name & ".err, \"" & site &
+                handler & "(" & name & ".err, \"" & site &
                   "\"); panic(\"unhandled error\")"
               else:
-                UnhandledHandlerName & "(" & name & ".err, \"" & site & "\")"
+                handler & "(" & name & ".err, \"" & site & "\")"
   ind & "\t" & stmtCode & "\n" &
     ind & "\tif " & name & ".status == .Err { " & onErr & " }"
 
@@ -1458,7 +1462,7 @@ proc genOdinTaskArgsSpawn(ctx: var OdinCodegenCtx, e: Expr, ind: string): string
 proc ownsItsLayout(ctx: var OdinCodegenCtx, s: Expr): bool =
   ## Constructs that emit their own indentation and terminator.
   if ctx.isTaskArgsBind(s) or ctx.isTaskArgsSpawn(s): return true
-  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkDefer}
+  s.kind in {exkIf, exkFor, exkWhile, exkBlock, exkDefer, exkCritical}
 
 proc genStmt*(ctx: var OdinCodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
@@ -1536,6 +1540,18 @@ proc genDefer(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
   let body = ctx.genBlock(e.deferBody, ind)
   if body.len == 0: return ""
   ind & "defer {\n" & body & "\n" & ind & "}"
+
+proc genOdinCritical(ctx: var OdinCodegenCtx, e: Expr, ind: string): string =
+  ## `critical:` — a braced scope whose `defer` restores the interrupt mask
+  ## that enter saved, on every exit (return, break, end of block). Restoring
+  ## the saved state rather than unmasking is what makes nesting safe.
+  if e.criticalBody == nil: return ""
+  let saved = "tuckCs" & $uint32(e.id)
+  let inner = ind & "  "
+  ind & "{\n" &
+    inner & saved & " := rt.tuckCriticalEnter()\n" &
+    inner & "defer rt.tuckCriticalExit(" & saved & ")\n" &
+    ctx.genBlock(e.criticalBody, ind) & "\n" & ind & "}"
 
 proc genTernary(ctx: var OdinCodegenCtx, e: Expr, condStr: string): string =
   ## R2: a value-position if becomes Odin's ternary. Odin has no
@@ -1691,7 +1707,10 @@ proc genReassign(ctx: var OdinCodegenCtx, e: Expr, valStr: string): string =
      e.target.receiver.kind == exkRegisterRef:
     let prefix = registerAccessorPrefix(ctx.module, e.target.receiver.refName,
                                         e.target.fieldName)
-    if prefix != "": return prefix & "_set(" & valStr & ")"
+    if prefix != "":
+      return ctx.pkgQualifier(registerAccessorOrigin(ctx.module,
+               e.target.receiver.refName, e.target.fieldName)) & prefix &
+             "_set(" & valStr & ")"
   let tgt = ctx.genOdinAssignTarget(e.target)
   # THE OLD VALUE DIES HERE. A `defer` cannot reach this: it fires once, and
   # a loop abandons one buffer per iteration. Step 5 of the ownership pass.
@@ -1863,6 +1882,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
       "lowering_chains rewrites every one into statements"
   of exkSend: ctx.genSend(e)
   of exkSelect: ctx.genOdinSelect(e, ind)
+  of exkCritical: ctx.genOdinCritical(e, ind)
   of exkDefer: ctx.genDefer(e, ind)
   of exkFinish:
     "rt.finishResource(&" & resourceTableName(e.finishKind) & ", " &

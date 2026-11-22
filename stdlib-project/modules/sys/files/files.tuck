@@ -17,6 +17,8 @@ import stream
 import encoding
 import mmap
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 # The lines of a file, without their line ends (`\n` or `\r\n`). A final line
 # end does not make a final empty line.
 fn textLines({text: str}) -> Seq[str]:

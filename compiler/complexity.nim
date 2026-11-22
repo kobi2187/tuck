@@ -181,7 +181,7 @@ proc walk(m: var Metrics, e: Expr) =
   # others.
   of exkUnary, exkCast, exkBlock, exkCall, exkCombinator, exkStruct, exkList, exkFill,
      exkBracket, exkBracketAssign, exkAssign, exkAppend, exkCopy, exkDrop, exkReset, exkField, exkReturn, exkRaise,
-     exkDiscard, exkTripleDot, exkSend, exkAcquire, exkFinish, exkDefer,
+     exkDiscard, exkTripleDot, exkSend, exkAcquire, exkFinish, exkCritical, exkDefer,
      exkOrdinal, exkValidate, exkIfaceCall, exkIfaceIs, exkIfacePayload,
      exkWrapOk, exkAbsent, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset, exkLit, exkVar,
      exkQualified, exkBreak, exkContinue, exkImport, exkActorRef,

@@ -228,6 +228,7 @@ proc effectMarkerFromName*(name: string, marker: var EffectMarker): bool =
   of "no_recursion": marker = emNoRecursion
   of "priority": marker = emPriority
   of "pure": marker = emPure
+  of "irq": marker = emIrq
   else: return false
   return true
 

@@ -1,0 +1,5 @@
+# main's return value is the QEMU exit status: the board ends the run through
+# semihosting SYS_EXIT_EXTENDED, so `tuck sim` exits 3 here, as a hosted build
+# would. Before, every run ended in the idle loop and timed out (124).
+fn main() -> int:
+  return 3

@@ -11,6 +11,8 @@
 # from the loop that proved liveness and uses this actor for the bookkeeping.
 import scheduler
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 type ResetCause:
   | rcPowerOn
   | rcWatchdog

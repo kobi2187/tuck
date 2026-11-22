@@ -9,6 +9,8 @@
 # particular order (a heap is not stable); sort with core.iter when that matters.
 import seq
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 # `items` holds the live heap in its first `used` slots; slots past that are
 # spare capacity left by earlier extractions (Seq has no way to shorten itself in
 # place, and rebuilding it on every extraction would be O(n)).

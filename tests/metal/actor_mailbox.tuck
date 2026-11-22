@@ -1,0 +1,31 @@
+# Stage 6 — actor with a mailbox + on_full: wait, under stackless.
+# Under --actors:single this runs as a frame (phase 5).
+
+actor LedCtrl [queue: 8, on_full: wait]:
+  led0: bool = false
+  led1: bool = false
+
+  on set({id: u8, lit: bool}):
+    if id == 0:
+      led0 = lit
+    else:
+      led1 = lit
+
+extern [impl: nim "./host_sim/hal_shim", odin "./host_sim", d "./host_sim/hal_shim"]:
+  fn applyState({l0: bool, l1: bool}) -> void [io]
+  fn delayMs({ms: int}) -> void [io]
+
+task driver({}) -> {ok: bool} [io]:
+  LedCtrl send set {id: 0, lit: true}
+  LedCtrl send set {id: 1, lit: true}
+  {l0: LedCtrl.led0, l1: LedCtrl.led1} applyState
+  {ms: 200} delayMs
+  LedCtrl send set {id: 0, lit: false}
+  {l0: LedCtrl.led0, l1: LedCtrl.led1} applyState
+  return {ok: true}
+
+fn main() -> int [io]:
+  let r = {} driver
+  if not r.ok:
+    return 1
+  return 0

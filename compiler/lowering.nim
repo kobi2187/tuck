@@ -323,7 +323,7 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
      exkWhile, exkBreak, exkContinue, exkAssign, exkReturn, exkRaise,
      exkDiscard, exkTripleDot, exkImport, exkSend, exkSelect, exkCombinator,
      exkActorRef,
-     exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef, exkDefer,
+     exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef, exkCritical, exkDefer,
      exkFinish, exkAcquire, exkOrdinal, exkValidate, exkIfaceCall,
      exkIfaceIs, exkIfacePayload, exkWrapOk, exkAbsent, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset,
      exkAppend, exkCopy, exkDrop, exkReset:

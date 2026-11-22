@@ -283,9 +283,20 @@ proc servedBySigs(m: Module): bool =
   ## a module declaring only a pool or a slab be served from the index, and
   ## its importer's `Ints.new` was undeclared on the second `tuck ch`.
   for d in m.decls:
-    if d != nil and d.kind notin {dkFn, dkImport, dkExpr, dkStaticAssert}:
+    if d == nil: continue
+    # `errors [policy: strict]` is what makes a module finished; importers
+    # never resolve it by name, so it does not stop the module being served.
+    if d.kind == dkErrors and d.policyName == "strict": continue
+    if d.kind notin {dkFn, dkImport, dkExpr, dkStaticAssert}:
       return false
   true
+
+proc isFinished(m: Module): bool =
+  ## `errors [policy: strict]` (ruling 2026-11-22). Mirrors
+  ## ast_query.isFinishedModule, which this file cannot import.
+  for d in m.decls:
+    if d != nil and d.kind == dkErrors: return d.policyName == "strict"
+  false
 
 proc slabReachers(mods: seq[LoadedModule]): HashSet[string] =
   ## The modules whose fns can reach a slab: those declaring one, and every
@@ -319,7 +330,12 @@ proc updateIndex*(dir: string, mods: seq[LoadedModule],
       let ipath = resolvedImportPath(lm.path.parentDir, imp)
       if ipath != "" and fileExists(ipath):
         deps.add((imp, srcHashOf(ipath)))
-    let byName = not servedBySigs(lm.m) or lm.name in reachesSlab
+    # A PARTIAL module always loads in full: whether its bodies check depends
+    # on the importing application's error policy (ruling 2026-11-22), so an
+    # entry written under one application says nothing about the next. Only
+    # a finished module's verdict is the same for every importer.
+    let byName = not servedBySigs(lm.m) or lm.name in reachesSlab or
+                 not isFinished(lm.m)
     idx.entries[lm.name] = IndexEntry(
       srcHash: srcHashOf(lm.path),
       cachedAt: getTime().toUnix,
@@ -471,6 +487,13 @@ proc importedShape(d: Decl, sp: Span): Decl =
          typeBody: d.typeBody, typeMembers: d.typeMembers, span: sp)
   of dkInterface:
     Decl(kind: dkInterface, name: d.name, ifaceMembers: d.ifaceMembers, span: sp)
+  of dkRegister:
+    # A generated SVD module is a provider of register decls: the importer
+    # needs the address and fields to type `PERIPH.REG.FIELD`, while the
+    # origin module alone emits the volatile accessors (see the codegen
+    # `origin != NoModule` guards in all three backends).
+    Decl(kind: dkRegister, name: d.name, regAddress: d.regAddress,
+         regFields: d.regFields, span: sp)
   of dkActor:
     # An actor's shape: its fields, its attributes (`queue`, `on_full`), and
     # each handler or member as a body-less signature. A singleton lives where
@@ -518,9 +541,10 @@ proc holdsType(m: Module, name: string): bool =
 
 proc injectable(m: Module): seq[Decl] =
   ## The declarations of `m` an importer sees: its own types, objects,
-  ## interfaces and (non-generic) actors, not the copies it holds of others'.
+  ## interfaces, registers and (non-generic) actors, not the copies it holds
+  ## of others'.
   for d in m.decls:
-    if d != nil and d.kind in {dkType, dkObject, dkInterface, dkActor} and
+    if d != nil and d.kind in {dkType, dkObject, dkInterface, dkActor, dkRegister} and
        not (d.kind == dkActor and d.actorGenerics.len > 0) and
        d.origin == NoModule:
       result.add d

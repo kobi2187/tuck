@@ -1,0 +1,19 @@
+# Stage 2 — volatile register access, saturating/trapping types, timing.
+# Proves the register lowering + volatile loads/stores work on target.
+
+extern [impl: nim "./host_sim/hal_shim", odin "./host_sim", d "./host_sim/hal_shim"]:
+  fn delayMs({ms: int}) -> void [io]
+  fn regWrite({a: u32, value: u32}) -> void [io]
+  fn regRead({a: u32}) -> u32 [io]
+
+fn spinCounter({iters: u32}) -> u32 [io]:
+  var n: u32 = 0
+  for i in 0 .. iters - 1:
+    n = n + 1
+  return n
+
+fn main() -> int [io]:
+  {a: 0x40021000, value: 1} regWrite   # RCC_CR HSION
+  let c = {iters: 70000} spinCounter
+  {ms: 10} delayMs
+  return 0

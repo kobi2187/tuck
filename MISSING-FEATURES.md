@@ -52,6 +52,10 @@ it in.
 - **A51 — the minimum of a signed type cannot be written.** `-128` for `i8` is
   "128 does not fit i8": the minus applies after the range check. `core.convert`
   notes the same for `i64` ("no literal spelling").
+  **Fixed (2026-11-21, this branch):** `known_bugs` carries `bugFixed` for
+  `let x: i8 = -128`; the assertion passes and the marker flipped during the
+  embedded work. Kept here as history — the open-bug count above tracks
+  `bugOpen` lines only, so this entry does not change it.
 
 - **A52 (issue #134) — a `_` arm over a payload sum fails the Odin build.** The
   emitted `switch v in j` ends in a bare `case:` and Odin reports "Unhandled

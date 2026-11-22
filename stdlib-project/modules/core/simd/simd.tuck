@@ -12,6 +12,8 @@
 # `LaneMask` is one yes/no per lane: what comparisons produce and `pick` takes.
 import seq
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 fn filled[N]({lanes: Array[N, f64], value: f64}) -> Array[N, f64]:
   var out = lanes
   for i in 0 .. out.len - 1:

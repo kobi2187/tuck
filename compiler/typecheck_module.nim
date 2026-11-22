@@ -278,8 +278,17 @@ proc reportUnhandled*(tc: TypeChecker, m: Module): seq[string] =
   ## Under `strict` a dropped fallible result is an error; the other policies
   ## hand the sites to codegen, which routes them to the handler.
   if tc.errPolicy == "strict" and tc.unhandledSites.len > 0:
+    # A partial library takes the application's level (ruling 2026-11-22):
+    # say so, or the reader looks for a `strict` the library never declared.
+    let why = if tc.policyFrom == "": "(policy: strict)"
+              else: "(policy: strict, set by the application '" & tc.policyFrom &
+                    "': this module is a partial library, with no `errors " &
+                    "[policy: strict]` of its own, so it follows the application's " &
+                    "level. Fix: handle these errors here and declare the library " &
+                    "finished with `errors [policy: strict]`, or relax the " &
+                    "application's policy while the library is in development)"
     fail("Type Error: " & $tc.unhandledSites.len & " unhandled error result(s)" &
-         " — bind and check `.ok`, pass it on, or return it (policy: strict):\n  " &
+         " — bind and check `.ok`, pass it on, or return it " & why & ":\n  " &
          tc.unhandledSites.join("\n  "), m.span)
   if tc.errPolicy in ["continue", "exit"]: tc.unhandledSites else: @[]
 

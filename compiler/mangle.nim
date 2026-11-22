@@ -338,7 +338,7 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
   # for those it matters WHICH children are visited and in what order.
   of exkField, exkStruct, exkList, exkFill, exkBracket, exkBracketAssign, exkCall,
      exkCombinator, exkChain, exkBinary, exkUnary, exkCast, exkBlock, exkIf, exkWhile,
-     exkReturn, exkRaise, exkDiscard, exkDefer, exkFinish, exkAcquire,
+     exkReturn, exkRaise, exkDiscard, exkCritical, exkDefer, exkFinish, exkAcquire,
      exkOrdinal, exkValidate, exkIfaceCall, exkIfaceIs, exkIfacePayload,
      exkWrapOk, exkAbsent, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset,
      exkAppend, exkCopy, exkDrop, exkReset:

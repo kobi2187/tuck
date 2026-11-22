@@ -61,8 +61,9 @@ proc dBitConsts*(bf: BitFieldInfo): string =
   if bf.isRange:
     result.add("enum " & bf.prefix & "_WIDTH = " & bf.hiBit & " - " &
                bf.loBit & " + 1;\n")
-    result.add("enum uint " & bf.prefix & "_MASK = (1u << " & bf.prefix &
-               "_WIDTH) - 1;\n")
+    # Full word shifted right, so a 32-bit field does not shift by 32.
+    result.add("enum uint " & bf.prefix & "_MASK = 0xffffffffu >> (32 - " &
+               bf.prefix & "_WIDTH);\n")
 
 proc dBitGetter*(bf: BitFieldInfo, regName: string): string =
   ## A range reads as a masked uint; a single bit reads as a bool. Every access
@@ -148,6 +149,9 @@ proc genDErrHandler*(ctx: var DCodegenCtx, d: Decl): string =
   ## here is the handler itself and the call to it.
   let handler = d.errHandler
   if handler == nil: return ""   # strict: no handler, and no drop sites
+  # The application's only (ruling 2026-11-22); a module constructor
+  # registers it so a partial library's sites (`rt.tuckRouteUnhandled`) reach it.
+  if not isPolicyEntry(ctx.res, ctx.module): return ""
   ctx.definedVars.incl("code")
   ctx.definedVars.incl("site")
   ctx.indent = 1
@@ -166,7 +170,9 @@ proc genDErrHandler*(ctx: var DCodegenCtx, d: Decl): string =
   # One shared name: the handler is emitted here but CALLED from every drop
   # site (genDDroppedResult), and the two must agree.
   "void " & UnhandledHandlerName & "(ushort code, string site) {\n    " &
-    body & "\n}\n"
+    body & "\n}\n" &
+    "shared static this() { rt.tuckUnhandledHook = &" & UnhandledHandlerName &
+    "; }\n"
 
 proc dRegistryEventStruct*(ctx: var DCodegenCtx, d: Decl): string =
   ## The event enum and the flat struct carrying every variant's fields,
@@ -1165,7 +1171,7 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   if d == nil: return ""
   # Imported type decls are injected for checking only; the origin module
   # emits them (mirrors codegen.nim:1756 / codegen_odin.nim:2234).
-  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.origin != NoModule:
+  if d.kind in {dkType, dkObject, dkInterface, dkActor, dkRegister} and d.origin != NoModule:
     return ""
   case d.kind
   of dkType: (if d.hoistedTo != "": "" else: ctx.genDTypeDecl(d))

@@ -305,6 +305,7 @@ proc lastUseSites(c: Ctx, e: Expr, liveOut: Live, stamp: bool): Live =
   of exkBreak: c.afterLoop
   of exkContinue: c.atLoopHead
   of exkReturn, exkRaise: exitLive(c, e, stamp)
+  of exkCritical: stmtLive(c, e, liveOut, stamp)
   of exkDefer:
     # Its reads were hoisted into `skip` for the whole body, so it neither
     # stamps nor kills here.

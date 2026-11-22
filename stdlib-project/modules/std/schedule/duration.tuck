@@ -10,6 +10,8 @@ import seq
 import str
 import text
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 fn byteInt({t: str, index: int}) -> int:
   let b = {t: t, index: index} byteAt
   return {value: b} int

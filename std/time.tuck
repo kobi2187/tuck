@@ -4,6 +4,9 @@
 # runtime, incompatible at compile time. `ms`/`us`/`s` are ordinary helper
 # fns, and `5.ms` is postfix application — no unit magic in the compiler.
 # Used by `on select`'s `timeout {5.ms}` arm.
+
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 distinct Milliseconds = u32
 distinct Microseconds = u32
 distinct Seconds = u32

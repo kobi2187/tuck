@@ -1,0 +1,19 @@
+# Step 1 of the ISR-discipline slice: [irq] parses, combination rules apply,
+# and the freestanding binary still boots and runs under QEMU.
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+register FLAG at 0x40000000:
+  VALUE: bits 0..7 [read, write]
+
+fn isr() [irq, irq_safe, no_alloc]:
+  FLAG.VALUE = 1
+  return
+
+fn main() -> int:
+  isr
+  if FLAG.VALUE == 1:
+    {text: "IRQ_MARKER_OK\n"} say
+  else:
+    {text: "IRQ_MARKER_BAD\n"} say
+  return 0

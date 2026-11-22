@@ -11,6 +11,8 @@
 import seq
 import map
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 type Held[V]:
   value: V
   stamp: int
