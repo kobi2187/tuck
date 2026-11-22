@@ -14,6 +14,7 @@
 ## coverage lives in each feature's own suite; this one answers "is the
 ## roadmap telling the truth" in a single run.
 
+import std/os
 import ../harness
 
 proc doneItems(t: var T) =
@@ -373,6 +374,86 @@ fn main() -> int:
   t.quietly: t.okCheck "Part 10: an actor handles a registry event"
   t.featureMissing "Part 10: an actor handles a registry event"
 
+proc metalItems(t: var T) =
+  ## docs/bare-metal/ROADMAP.md "Where it stands" and Phase 1, pinned where a
+  ## check or an emit can say it without QEMU (the QEMU half is in
+  ## metal_runtime, sim_tick and crash_decode). Items whose spelling waits on
+  ## the owner's design round (interrupt binding, w1c fields, priorities)
+  ## have no assertion yet: there is nothing to write until the syntax is.
+
+  # "`critical:` saves/restores PRIMASK and restores on every exit".
+  t.src """
+register FLAG at 0x20000100:
+  VALUE: bits 0..7 [read, write]
+
+fn early({x: int}) -> int:
+  critical:
+    if x > 0:
+      return 1
+    FLAG.VALUE = 3
+  return 0
+
+fn main() -> int:
+  return {x: 1} early
+"""
+  t.quietly: t.emits "Bare metal: critical: restores the mask on every exit",
+                     "finally:\\s+tuckCriticalExit\\(tuckCs"
+  t.featureDone "Bare metal: critical: restores the mask on every exit"
+  t.quietly: t.emits "Bare metal: a register field write is volatile",
+                     "tuckVolatileStore"
+  t.featureDone "Bare metal: a register field write is volatile"
+
+  # "interrupt code is strict and complete under any policy" (TK-PO04).
+  t.src """
+fn helper({n: int}) -> int [irq_safe, no_alloc]:
+  ...
+
+fn isr() [irq, irq_safe, no_alloc]:
+  let x = {n: 1} helper
+  return
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "Bare metal: interrupt code may not reach a stub",
+                        "TK-PO04"
+  t.featureDone "Bare metal: interrupt code may not reach a stub"
+
+  # "TK-EF11 (no I/O, waits or allocation inside critical:)".
+  t.src """
+extern [impl: nim "./host_sim/hal_shim", odin "./host_sim", d "./host_sim/hal_shim"]:
+  fn say({text: str}) -> void [io]
+
+fn main() -> int [io]:
+  critical:
+    {text: "hi"} say
+  return 0
+"""
+  t.quietly: t.badCheck "Bare metal: no I/O inside critical:", "TK-EF11"
+  t.featureDone "Bare metal: no I/O inside critical:"
+
+  # Roadmap 1.3: "stage10 compiles with no annotation (two spawn sites,
+  # count inferred)" under --frames:static. Refused today: each fire-and-
+  # forget spawn's frame comes from the heap.
+  t.src """
+task worker({id: int}) -> void [io]:
+  return
+
+fn main() -> int [io]:
+  {id: 1} worker
+  {id: 2} worker
+  return 0
+"""
+  let name13 = "Bare metal 1.3: two spawn sites build under --frames:static"
+  let idx = t.needCmd(@["./tuck", "c", t.curDir / "t.tuck", "--frames:static",
+                        "--concurrency:stackless", "-o:" & t.curDir,
+                        "--root:" & t.root], vEmit)
+  t.quietly:
+    if t.phase != pCollect:
+      let (rc, text) = t.resultOf(idx)
+      if rc == 0: t.ok name13 else: t.no name13, text
+  t.featureMissing name13
+
 proc run*(t: var T) =
   ## Registers every ROADMAP claim as an assertion of the built behaviour,
   ## marked `featureDone` (a guard) or `featureMissing` (expected to fail).
@@ -380,4 +461,5 @@ proc run*(t: var T) =
   t.crossModuleItems()
   t.missingItems()
   t.registryItems()
+  t.metalItems()
   t.finish()

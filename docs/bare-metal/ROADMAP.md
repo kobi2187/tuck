@@ -72,7 +72,7 @@ once). Merge early, behind a clear boundary.
 | 0.3 | ~~**D10**: picolibc as pinned tarball + SHA-256~~ **DONE 2026-11-22**: `boards/picolibc/build.sh` fetches the 1.8.12 release (byte-identical to the vendored tree, `diff -rq` empty) and checks its SHA-256 | the 4,193 vendored files are gone; QEMU suites green on the fetched build | qemu |
 | 0.4 | ~~CI job for the metal toolchain~~ **DONE 2026-11-22**: CI installs `qemu-system-arm gcc-arm-none-eabi gdb-multiarch meson ninja-build` and builds picolibc once (cached). On PR #226 the metal suites ran on GitHub, not SKIP: `metal_runtime` 10/10 (incl. the gdb breakpoint on the target), `sim_tick` 6/6, `crash_decode` 13/13 | green on a PR; metal suites never SKIP in CI | qemu |
 | 0.5 | ~~**D11**: move to `boards/`, `tools/metal/`, `tests/metal/` stages~~ **DONE 2026-11-22**: `testing_experiment/` is gone; docs in `docs/bare-metal/`, programs renamed by what they prove | `git grep testing_experiment` only in the archive | ch |
-| 0.6 | Merge to `main`; spec Part 8/9 and `LANGUAGE-OVERVIEW` get a "bare metal (experimental)" section listing what works; `roadmap.nim` pins each "works" claim above as `featureDone` and each Phase 2–4 item as `featureMissing` | `./tests/run` + `roadmap` green on main | ch |
+| 0.6 | ~~Merge to `main`; spec + overview sections; roadmap pins~~ **DONE 2026-11-22**: merged as #226; `tuck-spec.md` §8.4 and `LANGUAGE-OVERVIEW.md` §20 say what holds on metal and what does not; `tests/suites/roadmap.nim` (`metalItems`) pins four claims `featureDone` and 1.3 `featureMissing`. Items whose spelling waits on the design round (interrupt binding, w1c, priorities) have no pin: there is no assertion to write until there is syntax | `./tests/run` + `roadmap` green on main | ch |
 
 ## Phase 1 — Correct foundations (finish what exists)
 
@@ -93,7 +93,7 @@ spelling lands before the owner rules on them.
 | 1.6 | **D3** (after 1.0) w1c / write-only fields as chip-package facts; svd2tuck keeps `modifiedWriteValues`; codegen never RMWs such a register | a w1c status register write emits a single store of the mask (emits pin); STM32 USART SR fields generated as w1c | ch |
 | 1.7 | **D4** 32-bit host sim for metal boards | an `int` overflow at 2^31 traps in `tuck sim --host` as it does on QEMU | host |
 | 1.8 | Fault handler picks MSP/PSP from EXC_RETURN; decoder fixes: `--debug-lines` no longer attributes the entry wrapper to the `.tuck` file | gdb backtrace shows no `.tuck` line past the file's length | qemu |
-| 1.9 | ISR audit keys state by declaration id, not name; protection required on the preemptible side only | a local named like a register is not "shared"; an ISR's own access no longer needs `critical:` | ch |
+| 1.9 | ISR audit: protection required on the preemptible side only (a name-keyed collision between a local and a register was checked and cannot happen: the checker refuses the local) | an ISR's own access no longer needs `critical:` | ch |
 | 1.10 | Stage hygiene: scratch state in SRAM, never peripheral space; LED stages read back GPIO where the simulator models it | no stage writes `0x40000000` as scratch | qemu |
 | 1.11 | **D12** (after 1.0): register blocks as instance-generic types; svd2tuck maps `derivedFrom` onto one layout with several instances | one UART driver module drives USART1 and USART2 in one program, emitted code identical in cost to the hand-specialised version; existing `register NAME at ADDR` programs unchanged | ch + qemu |
 

@@ -1733,3 +1733,39 @@ are no longer on that list — both are run-gated on Odin and D as well.
 > **The gate lists ARE the coverage.** Anything off a list is unchecked — that
 > is how an Odin actor emitting undefined send procs, and a `24-stdlib` whose
 > file round-trip never actually ran, both survived for weeks.
+
+---
+
+## 20. Bare metal (experimental)
+
+`tuck sim FILE` builds a program freestanding for a Cortex-M and boots it under
+QEMU; `tuck sim FILE --host` runs it against host shims on all three backends.
+The programs that pin it are in `tests/metal/`, the plan in
+`docs/bare-metal/`. Nim is the only backend on metal so far.
+
+```tuck
+register FLAG at 0x20000100:
+  VALUE: bits 0..7 [read, write]
+
+fn isr() [irq, irq_safe, no_alloc]:
+  FLAG.VALUE = 1
+  return
+
+fn main() -> int:
+  critical:
+    FLAG.VALUE = 2
+  return 0
+```
+
+- **`critical:`** saves the interrupt mask and restores it on every exit, so it
+  nests and a `return` inside one is safe (`tests/suites/metal_runtime.nim`).
+- **`[irq]`** marks a handler. What it reaches is checked: no allocation, send
+  or wait; no error left to the `errors` policy and no stub, whatever the
+  policy (TK-PO04). `tuck audit --isr` lists state shared with normal code
+  (tasks included); `--isr-check:error` refuses it unprotected (TK-EF10).
+  A handler is **called** today, not bound to a vector: no interrupt is taken.
+- **Failures:** a failed check prints `PANIC: ...` and traps, `tuck sim`
+  decodes the fault to the Tuck line and exits 1; otherwise the exit status
+  is `main`'s return value, and 124 means still running, never a pass.
+- **Not yet:** real interrupts, a timed `sleep` that parks a task, w1c
+  register fields, `--frames:static` for spawned tasks, Odin and D on metal.
