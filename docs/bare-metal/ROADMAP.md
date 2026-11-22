@@ -81,16 +81,16 @@ binding, frame homes, register-block instances, priorities and deadlines
 are application-level choices a reusable driver must never make. No
 spelling lands before the owner rules on them.
 
-**D13 and D1 are ruled (2026-11-22):** interrupts are registry events, in
+**D13, D1, D3 and D12 are ruled (2026-11-22):** interrupts are registry events, in
 the shape of `DESIGN-interrupt-events.md` §5: the driver owns a registry per
 module, a `decision` table over the status bits, and one `[irq]` fn; the
 application writes `bind LINE -> module.fn [priority: N, queue: N]`;
-reactions are ordinary `on` handlers. D2, D8 and D12 are still open, and
+reactions are ordinary `on` handlers; a register layout is a type and a peripheral an instance of it. D2 and D8 are still open, and
 the reuse-test programs are written only in the ruled shape.
 
 | ID | Work | Exit | Rung |
 |---|---|---|---|
-| 1.0 | **Design round** for D13 (leading direction: interrupts as registry events, `DESIGN-interrupt-events.md`, questions E-Q1..E-Q7), then D1, D2, D8, D12: write the reuse-test programs (one unchanged UART driver; two applications on two boards with different instances, lines, priorities and load) in pseudo-Tuck under two or three competing designs; compare what the application must write in the common case and how the error reads when the compiler cannot infer | a short design note in `docs/` with the candidates side by side, and the owner's ruling recorded in the main `ROADMAP.md` rulings ledger. **D13 + D1 RULED 2026-11-22** (design note §5, ledger entry "interrupts are events"); D2, D8, D12 open | — |
+| 1.0 | **Design round** for D13 (leading direction: interrupts as registry events, `DESIGN-interrupt-events.md`, questions E-Q1..E-Q7), then D1, D2, D8, D12: write the reuse-test programs (one unchanged UART driver; two applications on two boards with different instances, lines, priorities and load) in pseudo-Tuck under two or three competing designs; compare what the application must write in the common case and how the error reads when the compiler cannot infer | a short design note in `docs/` with the candidates side by side, and the owner's ruling recorded in the main `ROADMAP.md` rulings ledger. **D13, D1, D3, D12 RULED 2026-11-22** (design note §5, ledger entry "interrupts are events"); D2, D8 open | — |
 | 1.0a | **Finish the event registry to its spec** (no ruling needed): more than one handler per event, in declaration order (E1); `latest` (E2); handlers inside an actor, delivered as messages once E-Q2's reading is confirmed (E3); behavioural tests on all three backends (E4) | the three `featureMissing` "Part 10" pins in `roadmap.nim` flip to `featureDone` | host |
 | 1.1 | `-Os -ffunction-sections -fdata-sections -Wl,--gc-sections` for metal builds | every metal program green at -Os; flash for `task_await` drops (record before/after) | qemu |
 | 1.2 | ~~Remove the TLS/GOT hack~~ **DONE 2026-11-22** (found while doing 0.1): Nim emitted thread-local storage because the driver appended the host's `--threads:on` after the metal `--threads:off`. With the board build owning its flags, `__aeabi_read_tp` has 0 callers; `aeabi_read_tp.s` and the 1 KB `tuck_tls` block are gone, and `.data` shrank (20 → 4 bytes for `task_await`) | `tuck_tls`, the asm `__aeabi_read_tp` deleted; both boards green | qemu |
@@ -102,7 +102,7 @@ the reuse-test programs are written only in the ruled shape.
 | 1.8 | Fault handler picks MSP/PSP from EXC_RETURN; decoder fixes: `--debug-lines` no longer attributes the entry wrapper to the `.tuck` file | gdb backtrace shows no `.tuck` line past the file's length | qemu |
 | 1.9 | ISR audit: protection required on the preemptible side only (a name-keyed collision between a local and a register was checked and cannot happen: the checker refuses the local) | an ISR's own access no longer needs `critical:` | ch |
 | 1.10 | ~~Stage hygiene~~ **DONE 2026-11-22**: each board's linker script reserves 64 bytes of scratch at the start of RAM, and every test program's scratch `register` lives there (it was in peripheral space, or inside `.bss`); every `_BAD` path exits 1. This caught `irq_marker` printing `IRQ_MARKER_BAD` with exit 0 on the STM32 board, and `fault_isr_drop` passing only because the LM3S watchdog register did not read back. LED stages still cannot observe GPIO (QEMU models none here): that waits for Renode | no test writes peripheral space as scratch; a failed program exits non-zero | qemu |
-| 1.11 | **D12** (after 1.0): register blocks as instance-generic types; svd2tuck maps `derivedFrom` onto one layout with several instances | one UART driver module drives USART1 and USART2 in one program, emitted code identical in cost to the hand-specialised version; existing `register NAME at ADDR` programs unchanged | ch + qemu |
+| 1.11 | **D12** (ruled 2026-11-22: `register Uart:` is the layout, `register USART1: Uart at ADDR [facts]` an instance, `bind` supplies it): register blocks as instance-generic types; svd2tuck maps `derivedFrom` onto one layout with several instances | one UART driver module drives USART1 and USART2 in one program, emitted code identical in cost to the hand-specialised version; existing `register NAME at ADDR` programs unchanged | ch + qemu |
 
 ## Phase 2 — Real interrupts
 

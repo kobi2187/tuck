@@ -1220,8 +1220,15 @@ E-Q3), and **how a flag clears is a field attribute** generated from SVD,
 `[w1c]` or `[clear: read SR then DR]` (D3).
 
 New words: `bind ... as`, `[stream]` / `[signal]` / `[latest]`,
-`overflow:`, `[budget, rate]`, `[w1c]`, `[clear: ...]`. Still open:
-instance-generic register blocks (D12).
+`overflow:`, `[budget, rate]`, `[w1c]`, `[clear: ...]`.
+
+Ruled the same day, D12: **a register layout is a type and a peripheral an
+instance of it.** `register Uart:` (no address) declares the layout;
+`register USART1: Uart at 0x40013800 [clock: ...]` an instance, with the
+facts where instances differ. A driver takes `{u: Uart}` and never names
+an instance; the hardware passes none, so `bind` supplies it and the
+compiler emits one specialised copy per binding. A port needing its own
+handler is bound by the application to a different fn.
 NOT BUILT: this is the design bare-metal Phase 2 builds
 (`docs/bare-metal/ROADMAP.md` 2.2, 2.7).
 

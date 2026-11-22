@@ -394,9 +394,37 @@ policy on the event; the application gives an explicit queue size in `bind`
   read sequence). The compiler checks every path of an `[irq]` fn clears
   what it handled.
 
-**Still open:** how a handler is generic over a peripheral instance
-(`{u: Uart}`, D12 / roadmap 1.11). Owner's direction: the `register`
-declaration states the type (`USART1` *is* a `Uart`).
+- **D12: a register layout is a type; a peripheral is an instance of it.**
+  A `register` block with no address is a layout; `register NAME: Layout at
+  ADDR [facts]` is one instance. A driver takes the type (`{u: Uart}`) and
+  never names an instance; the hardware passes no instance to a handler,
+  so `bind` supplies it, and the compiler generates one specialised copy
+  per binding with the address built in (no run-time cost against a
+  hand-written single-port handler). Where instances differ (clock enable,
+  DMA channel), the chip package states it as a fact on the instance and
+  the driver reads `u.clock`. A port that needs its own handler is bound to
+  a different fn by the application; the reusable driver never holds an
+  instance-specific one. svd2tuck maps `derivedFrom` onto one layout with
+  several instances; `register NAME at ADDR` keeps working.
+
+  ```text
+  # chip package, generated from SVD
+  register Uart:                      # no address: a layout (a type)
+    SR at +0x00:
+      RXNE: bit 5 [clear: read SR then DR]
+      ORE:  bit 3 [clear: read SR then DR]
+    DR at +0x04:
+      DATA: bits 0..8
+  register USART1: Uart at 0x40013800 [clock: RCC.APB2ENR.USART1EN]
+  register USART2: Uart at 0x40004400 [clock: RCC.APB1ENR.USART2EN]
+
+  # application: one port gets the driver, another its own handler
+  bind USART1 -> uart.onUart      as Console [priority: 2, queue: 16]
+  bind USART2 -> myapp.onModemUart as Modem  [priority: 1, queue: 64]
+  ```
+
+**Still open in this note:** nothing; D2 (frame homes) and D8 (deadlines)
+are separate design rounds (`ROADMAP.md` 1.3, 5.3).
 
 ## 6. What each world costs at run time
 
