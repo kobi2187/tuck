@@ -523,6 +523,22 @@ proc mangleProgram*(res: Resolution, mods: seq[Module]) =
   for e in res.calls.values:
     if cast[pointer](e) notin reachedCalls: mangleExpr(res, e, names, locals)
 
+proc numberEventHandlers(m: Module) =
+  ## Spec Part 10 permits several `on Registry.Event` handlers for one event,
+  ## and all of them are written under the same name. The second and later in
+  ## a module get `_2`, `_3`, ... so each backend emits distinct procs; the
+  ## raise proc reaches each one through its node, never its name. Rebuilt
+  ## from the written name every run, so the pass stays idempotent across the
+  ## per-backend deep copies.
+  var seen = initCountTable[string]()
+  for d in m.decls:
+    if d == nil or d.kind != dkFn or not d.isOnHandler or '.' notin writtenName(d):
+      continue
+    let key = writtenName(d)
+    seen.inc(key)
+    if seen[key] > 1:
+      d.name = mangleName(key, declKind(d)) & "_" & $seen[key]
+
 proc mangleModuleWith(res: Resolution, m: Module, names: MangleNames) =
   ## Rename every manglable declaration in this module and every reference to
   ## one, resolving against the PROGRAM-WIDE name set so cross-module
@@ -539,3 +555,4 @@ proc mangleModuleWith(res: Resolution, m: Module, names: MangleNames) =
     elif d != nil and d.kind in {dkMixin, dkExtern, dkPending}:
       for mem in d.mixinMembers:
         if isManglable(mem): renameDecl(mem)
+  numberEventHandlers(m)

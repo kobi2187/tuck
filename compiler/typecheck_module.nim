@@ -146,6 +146,12 @@ proc declaredName*(d: Decl): string =
      dkFnSig, dkInterface, dkGroup, dkRegister: d.name
   else: ""
 
+proc isEventHandler*(d: Decl): bool =
+  ## A top-level `on Registry.Event(...)`. Spec Part 10 permits several
+  ## handlers for one event, so their shared name is not a duplicate: each is
+  ## told apart by its node, and the mangler gives each its own identifier.
+  d.kind == dkFn and d.isOnHandler and '.' in d.name
+
 proc failIfDuplicateDecl*(m: Module) =
   ## A name may be declared once per module.
   ##
@@ -158,7 +164,7 @@ proc failIfDuplicateDecl*(m: Module) =
   for d in m.decls:
     if d == nil: continue
     let name = declaredName(d)
-    if name == "": continue
+    if name == "" or isEventHandler(d): continue
     if seen.hasKey(name):
       fail("Structure Error: '" & name & "' is declared twice in this module" &
            " (first at line " & $seen[name].line & ") — every top-level name " &

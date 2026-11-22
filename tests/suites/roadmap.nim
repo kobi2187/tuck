@@ -321,7 +321,7 @@ fn main() -> int [io]:
   t.featureDone "Part 10: raise runs the handler, on every backend"
 
   # Spec Part 10: "Multiple handlers for the same event are permitted and
-  # called in declaration order". Refused today as a duplicate top-level name.
+  # called in declaration order". Run-gated in event_registry.
   t.src """
 registry AppEvents:
   | Tick({n: int})
@@ -337,7 +337,7 @@ fn main() -> int:
   return 0
 """
   t.quietly: t.okCheck "Part 10: two handlers for one event"
-  t.featureMissing "Part 10: two handlers for one event"
+  t.featureDone "Part 10: two handlers for one event"
 
   # Spec Part 10, Query: `AppEvents.latest is LowMemory`. Not implemented.
   t.src """
