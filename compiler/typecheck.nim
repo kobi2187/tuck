@@ -6421,7 +6421,7 @@ proc typecheckModule*(m: Module,
                       externBounds = initTable[string, seq[seq[Type]]](),
                       externAmbiguous = initTable[string, seq[string]](),
                       externBareOwner = initTable[string, string](),
-                      policy = ""): seq[string] {.discardable.} =
+                      policy = "", policyFrom = ""): seq[string] {.discardable.} =
   ## Checks one module against what its imports export (the `extern*`
   ## tables): collect signatures, bind consts, check every declaration, then
   ## the module-level passes. Returns the dropped-result sites the `errors`
@@ -6459,6 +6459,7 @@ proc typecheckModule*(m: Module,
   # application's policy (partial). collectSigs has already validated the
   # module's own block, so an inert one is still well-formed.
   if policy != "": tc.errPolicy = policy
+  tc.policyFrom = policyFrom
   tc.resolveTypeNames(m)
   checkPointers(tc.typeDeclsByName, m)  # pointers stay at the extern boundary
   # Before checkDecl: a type with no finite size cannot be reasoned about, so
@@ -6829,10 +6830,13 @@ proc checkProgramOnce(mods: seq[tuple[name, path: string, m: Module]],
     let policy = if i == mods.high: ""
                  elif isFinishedModule(m): "strict"
                  else: entryPolicy
+    let policyFrom = if i == mods.high or isFinishedModule(m): ""
+                     else: mods[^1].name
     try:
       let sites = typecheckModule(m, scope.extern, scope.pending,
                                   scope.fnSigTypes, scope.groups, scope.bounds,
-                                  scope.ambiguous, scope.bareOwner, policy)
+                                  scope.ambiguous, scope.bareOwner, policy,
+                                  policyFrom)
       for s in sites:
         result.add(if i == mods.high: s else: name & "::" & s)
     except SemanticError as err:

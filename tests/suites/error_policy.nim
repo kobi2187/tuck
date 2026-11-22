@@ -53,7 +53,7 @@ fn main() -> int [io]:
 """
   t.addFile "plain.tuck", PlainLib
   t.badCheck "a strict application makes a partial library's drop an error",
-             "unhandled error result.*policy: strict"
+             "unhandled error result.*policy: strict, set by the application"
 
   # --- a partial library's own block is inert when imported -------------
   t.src """
@@ -91,7 +91,7 @@ fn main() -> int [io]:
 """
   t.addFile "fin.tuck", "errors [policy: strict]\n" & PlainLib
   t.badCheck "a finished library stays strict under a continue application",
-             "unhandled error result.*policy: strict"
+             "unhandled error result.*\\(policy: strict\\):"
 
   t.src """
 import fin
