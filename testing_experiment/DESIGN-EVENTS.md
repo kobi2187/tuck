@@ -169,7 +169,7 @@ it, and whether it can change a component its setter did not write:
 
 | Policy | Set by | Can change a finished component today? |
 |---|---|---|
-| `errors [policy: strict \| continue \| exit]` + `on unhandled` (spec §4.9) | the application, once | **yes**: an error a driver left unhandled runs the application's `unhandled` handler, then continues or exits. In a capture, that handler would run in interrupt context |
+| `errors [policy: strict \| continue \| exit]` + `on unhandled` (spec §4.9) | spec: the application, once. Built: each module, its own (measured 2026-11-22) | under POL-4, **only partial modules**: a finished library is strict whatever the application declares. In a capture the handler would run in interrupt context (POL-2) |
 | `resources:` `cap`, `policy: strict \| lazy \| exit`, `on_full`, `on_finish`, `sweep_batch` (§7.4) | library and application, the importer overriding the imported | **yes**: an application can shrink a library's cap, change its `on_full`, or switch it to `lazy`, whose sweep runs inline at a finish |
 | actor `queue`, `on_full: wait \| drop \| assert` (§9.1) | the actor's author | no (not overridable), but `wait` is impossible from an interrupt |
 | `pending` stub behaviour: trap / zero value / log and continue (§5.4) | a build flag (spec; today a stub only names itself when called) | **yes**, and "zero" or "log and continue" in a capture is an interrupt storm |
@@ -199,12 +199,34 @@ it, and whether it can change a component its setter did not write:
   naming the component's requirement. Interrupt bindings are always
   requirement-style (IRQ-5). The coherence check that already runs on a
   merged resource kind (TK-RS11) is where this check belongs.
-- **POL-4 Shortcuts stay in the application.** The error policy's
-  `continue` / `exit` shortcuts (the `SHORTCUTS (n)` report) may be relied on
-  by sites in the application module only. A library that relies on them is
-  not finished, and says so in its own report. Today's rule ("shipping
-  firmware builds with `[policy: strict]`") becomes something the compiler
-  checks per component, not a convention for the whole program.
+- **POL-4 One development stage per application; finished libraries opt
+  out** (owner's model, 2026-11-22; replaces "shortcuts stay in the
+  application", which misread the policy's purpose). The errors policy is the
+  walking skeleton's switch: the stage of development stated in one place
+  instead of TODOs and "not implemented" exceptions scattered through the
+  code. Logging and never crashing is a legitimate development choice. So:
+  - The **application's** `errors` policy governs every *partial* module:
+    the application's own code and every library not marked finished. A
+    partial library's unhandled sites go to the application's
+    `on unhandled` and are listed in the application's SHORTCUTS report,
+    under the library's name. **Nothing is hidden.**
+  - A library its **author** marks **finished** is error-complete: checked
+    as `strict` (every error handled at its site), with no `pending` or
+    `...` stubs, whatever the application chose. The application's policy
+    does not reach it, so its behaviour cannot change with the importer
+    (POL-1).
+  - Only the library's own author can mark it finished; an application can
+    neither finish someone else's library nor un-finish one.
+  - **Release needs no separate rule.** Shipping firmware builds with
+    `[policy: strict]` (spec §4.9), which now covers every partial library
+    too: a shortcut left anywhere becomes a compile error naming its site.
+
+  Today (measured): the policy is per module, not per application; a
+  library's own `continue` block runs its *own* handler; the application's
+  policy never reaches a library (a library checks `strict` without its own
+  block); and a library's shortcut sites never appear in any report, since
+  SHORTCUTS lists the entry module's only. The model above fixes the last one
+  and restores the spec's "one declaration per application".
 - **POL-5 The profile fixes the runtime model.** On a metal board,
   `--actors`, `--concurrency` and `--frames` are set by the board profile. A
   component may state what it requires (`--frames:static`), and a build that
@@ -333,7 +355,11 @@ allocation") stays true, plus one static queue per deferred binding.
 | E-Q7 | Is binding in the registry, the board package, or both? | (a) board default + application choice per knob, inside the driver's range; (b) application only | (a), with IRQ-5: the board may suggest, the driver bounds, the application chooses |
 | E-Q8 | Are the strict rules a separate kind of set, or inferred from "a line is bound to it"? | (a) a declared **interrupt** kind; (b) inferred from binding | (a): a driver's author must know, while writing it, that IRQ-1..9 apply; inferring it at the application would make a library's rules depend on who imports it, which is the problem being solved |
 | E-Q9 | How does a driver state "acknowledged by" and its required ranges? | a clause on the set; attributes on the capture; a register-field effect | open: needs w1c fields (D3) first, since most acknowledgements are a w1c write or a read with side effect |
-| E-Q11 | Do POL-1, POL-3, POL-4 and POL-6 apply to every library, or only to components with interrupt sets? | (a) every library; (b) interrupt components only | (a): a hosted library whose cap an application can silently halve has the same defect; bare metal only makes it visible sooner |
+| E-Q11 | Do POL-1, POL-3, POL-4 and POL-6 apply to every library, or only to components with interrupt sets? | (a) every library; (b) interrupt components only | **POL-4: every library (owner, 2026-11-22)**, in the finished/partial form above. POL-1, POL-3, POL-6: leaning (a) |
+| E-Q13 | How does a library's author mark it finished? | (a) a module-level marker (a new word); (b) a library's own `errors [policy: strict]` means "finished"; (c) a manifest/package field | open, syntax. (b) needs no new word, but "strict" says nothing about `pending`; (a) states the intent exactly |
+| E-Q14 | May a finished library import a partial one? | (a) no: finished requires finished dependencies; (b) yes | (a): otherwise the application's policy reaches the finished library through its dependency's continued-past error, which is what POL-1 forbids |
+| E-Q15 | What does a partial library's own `errors` block mean when it is imported? | (a) inert, with a line in the report saying the application's policy applies; (b) refused; (c) it wins (today) | (a): it stays useful when the library is checked alone (its own self-check `main`), and visible when it is not |
+| E-Q16 | Shortcut sites inside interrupt context | allowed only if the application's `on unhandled` is itself interrupt-safe (checked like any ISR callee); a `pending` capture may only trap | keeps the walking skeleton available for drivers without risking an interrupt storm |
 | E-Q12 | How does a component mark a knob as a requirement rather than a default? | a range form on the knob; a separate `requires:` clause; a component-level declaration | open: syntax for the design round |
 | E-Q10 | How is a latency requirement checked? | report the worst-case raise-to-capture time from higher-or-equal-priority captures' cycle bounds; gate only on opt-in | report first, as for timing (VISION §4.5) |
 
