@@ -11,10 +11,13 @@ Phase 0 of the roadmap moves it to `boards/`, `tools/metal/` and
    the pillars, and the decisions the owner needs to make (D1–D11).
 2. **`ROADMAP.md`**: where it stands, the phases with exit criteria, the
    critical path, and the traps. The only file that says what to do next.
-3. **`REVIEW-2026-11-22.md`**: the evidence. What a senior-embedded review
+3. **`DESIGN-EVENTS.md`**: the leading design for interrupts, as registry
+   events: one semantics, a hosted world and a metal world. Input to the
+   design round (roadmap 1.0).
+4. **`REVIEW-2026-11-22.md`**: the evidence. What a senior-embedded review
    found, what it fixed, and what is still open, each with how it was
    reproduced.
-4. `archive/`: the four earlier plans and the old README. Rationale and
+5. `archive/`: the four earlier plans and the old README. Rationale and
    experiment log only; do not plan from them.
 
 ## Run it

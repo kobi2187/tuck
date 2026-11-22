@@ -124,9 +124,12 @@ monomorphised), board packages handing out configured handles
 (`platform.hal`), the event registry (one application-wide declaration of
 the whole event surface, spec Part 10), `pool` (application-level static
 storage), and `when TARGET` (target selection without a preprocessor). A
-hardware interrupt is arguably an event in the application's event surface;
-whether binding reuses the registry, a new wiring declaration, or board
-packages is the first question of the design round.
+hardware interrupt is an event in the application's event surface, and
+that is now the **leading direction** (owner, 2026-11-22: "different worlds
+but similar semantics"): drivers declare event sets, the application's
+registry composes them and binds lines to them, and the same driver runs on
+a host where a test raises the event. Worked out, with what the compiler
+already does and the questions to rule, in **`DESIGN-EVENTS.md`**.
 
 **The reuse test**, the acceptance criterion for any syntax proposed for
 interrupts, instances, counts, priorities or deadlines: *one unchanged UART
@@ -224,6 +227,7 @@ board but shared by two. That is the right prototype and the wrong product.
 
 ### 4.3 Interrupts: declared needs, application bindings
 
+Leading design: interrupts enter as registry events (`DESIGN-EVENTS.md`).
 Three facts, three owners (§2a):
 
 1. **The chip package lists the interrupt lines** (generated from the SVD:
@@ -263,7 +267,8 @@ the epoll table or the timer wheel. On metal it is:
   monotonic clock and readies the frames whose deadline passed. `sleep`
   parks instead of spinning. Tick-less mode (program the next deadline) is a
   later optimisation, needed for low power.
-- **ISR queues.** A typed, fixed-capacity, single-producer queue an ISR posts
+- **ISR queues.** In the events design these are the deferred delivery of a
+  hardware-raised event: a typed, fixed-capacity, single-producer queue an ISR posts
   to and a task awaits; the generalisation of today's one-word
   `tuckIsrPost`/`Take` slot, with overruns counted, never hidden.
 - **`on select`** waits on several of the above, unchanged in meaning.
@@ -413,7 +418,7 @@ decisions** are technical and have a recommendation.
 | D8 | How are periods and deadlines stated? | by the application for the tasks it runs; a library may state a guarantee (a bound it meets), not a requirement |
 | D9 | Fixed-point (Q notation) | a numeric type surface consistent with the 2026-08-25 numeric rulings; independent lane |
 | D12 | How do register blocks become instance-generic? | one layout type per kind, instances at addresses, zero-cost monomorphised drivers; SVD `derivedFrom` maps onto it; today's `register NAME at ADDR` keeps working |
-| D13 | Is a hardware interrupt an event in the application's registry (Part 10), a new wiring declaration, or a board-package concern? | answered first: D1, D2 and D8 follow from it |
+| D13 | Is a hardware interrupt an event in the application's registry (Part 10), a new wiring declaration, or a board-package concern? | answered first: D1, D2 and D8 follow from it. **Leaning: events** — `DESIGN-EVENTS.md` §7 lists its seven sub-questions (E-Q1..E-Q7) |
 
 ### Plumbing decisions (recommendation given)
 

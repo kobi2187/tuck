@@ -292,10 +292,92 @@ fn main() -> int:
   t.quietly: t.checkSays "§7.4: an acquire never finished is reported", "TK-RS12"
   t.featureDone "§7.4: an acquire never finished is reported"
 
+proc registryItems(t: var T) =
+  ## "## Partial — Event registry" (2026-11-22). The registry is the planned
+  ## home of hardware interrupts on bare metal (testing_experiment/
+  ## DESIGN-EVENTS.md), so what it does today is pinned before it is extended.
+  ## Until this, it had no behavioural assertion at all (LANGUAGE-OVERVIEW §15).
+  t.src """
+import console
+
+registry AppEvents:
+  | Tick({n: int})
+  | Byte({b: u8})
+
+on AppEvents.Tick({n: int}) [io: console]:
+  {text: "tick"} console::printLine
+
+on AppEvents.Byte({b: u8}) [io: console]:
+  {text: "byte"} console::printLine
+
+fn main() -> int [io]:
+  AppEvents.raise Tick {n: 1}
+  AppEvents.raise Byte {b: 7}
+  return 3
+"""
+  t.quietly: t.hostRuns "Part 10: raise runs the handler, on every backend", 3,
+                        "tick\\s+byte"
+  t.featureDone "Part 10: raise runs the handler, on every backend"
+
+  # Spec Part 10: "Multiple handlers for the same event are permitted and
+  # called in declaration order". Refused today as a duplicate top-level name.
+  t.src """
+registry AppEvents:
+  | Tick({n: int})
+
+on AppEvents.Tick({n: int}):
+  let a = n
+
+on AppEvents.Tick({n: int}):
+  let b = n
+
+fn main() -> int:
+  AppEvents.raise Tick {n: 1}
+  return 0
+"""
+  t.quietly: t.okCheck "Part 10: two handlers for one event"
+  t.featureMissing "Part 10: two handlers for one event"
+
+  # Spec Part 10, Query: `AppEvents.latest is LowMemory`. Not implemented.
+  t.src """
+registry AppEvents:
+  | Tick({n: int})
+
+on AppEvents.Tick({n: int}):
+  let a = n
+
+fn main() -> int:
+  AppEvents.raise Tick {n: 1}
+  if AppEvents.latest is Tick:
+    return 1
+  return 0
+"""
+  t.quietly: t.okCheck "Part 10: latest queries the last raised event"
+  t.featureMissing "Part 10: latest queries the last raised event"
+
+  # Spec Part 10: a handler lives "in a manager or actor". An actor's
+  # `on AppEvents.X` is not counted as a handler today (TK-RG03).
+  t.src """
+registry AppEvents:
+  | Tick({n: int})
+
+actor Counter [queue: 8]:
+  total: int = 0
+  on AppEvents.Tick({n: int}):
+    total += n
+
+fn main() -> int:
+  AppEvents.raise Tick {n: 2}
+  return 0
+"""
+  t.quietly: t.okCheck "Part 10: an actor handles a registry event"
+  t.featureMissing "Part 10: an actor handles a registry event"
+
 proc run*(t: var T) =
   ## Registers every ROADMAP claim as an assertion of the built behaviour,
   ## marked `featureDone` (a guard) or `featureMissing` (expected to fail).
   t.doneItems()
   t.crossModuleItems()
   t.missingItems()
+  t.registryItems()
   t.finish()
