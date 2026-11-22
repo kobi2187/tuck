@@ -11,13 +11,16 @@ import std/[os, strutils]
 import ../harness
 
 proc metal(t: var T, name, stage, slot: string, wantRc: int,
-           wants: seq[string]) =
+           wants: seq[string], extra: seq[string] = @[], board = "") =
   ## Boot `tests/metal/<stage>.tuck` under QEMU via `tuck sim` and
-  ## assert the exit status and every text in `wants`.
+  ## assert the exit status and every text in `wants`. `extra` is passed to
+  ## `tuck sim`; `board` picks a board other than the default.
   let exe = t.root / "tuck"
   let src = t.root / "tests" / "metal" / (stage & ".tuck")
-  let argv = @["env", "TUCK_OUT_DIR=" & getTempDir() / ("tuck-metal-" & slot),
-               "TUCK_SKIP_TUCK_BUILD=1", exe, "sim", src, "--tick:4"]
+  var argv = @["env", "TUCK_OUT_DIR=" & getTempDir() / ("tuck-metal-" & slot),
+               "TUCK_SKIP_TUCK_BUILD=1"]
+  if board != "": argv.add "TUCK_BOARD=" & board
+  argv.add @[exe, "sim", src, "--tick:4"] & extra
   let idx = t.needCmd(argv, vRun)
   let metalReady = findExe("qemu-system-arm") != "" and
                    findExe("arm-none-eabi-gcc") != "" and
@@ -72,6 +75,33 @@ fn main() -> int:
           @["PANIC: tuck frame heap exhausted"]
   t.metal "main's return value is the QEMU exit status",
           "exit_code", "exit", 3, @["qemu exit: 3"]
+
+  # A program's failure is its exit status, and test state lives in the
+  # boards' reserved RAM scratch: on stm32vldiscovery 0x40000000 is TIM2,
+  # and irq_marker read back a value it never wrote (and still exited 0).
+  t.metal("irq_marker passes on the STM32 board (scratch in reserved RAM)",
+          "irq_marker", "irq-stm32", 0, @["IRQ_MARKER_OK"],
+          board = "stm32vldiscovery")
+  t.metal("a delivered interrupt sets the LED", "fault_isr_drop", "isr-plain",
+          0, @["FAULT_SAFE_OK"])
+  t.metal("a dropped interrupt leaves the safe state", "fault_isr_drop",
+          "isr-drop", 0, @["FAULT_SAFE_OK"], extra = @["--fault:isr-drop"])
+
+  # `--board:NAME` (roadmap 0.1) is judged before anything is built.
+  t.src "fn main() -> int:\n  return 0\n"
+  block:
+    let bad = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck", "--board:nope"])
+    let stackful = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck",
+                               "--board:lm3s6965evb", "--concurrency:stackful"])
+    if t.phase != pCollect:
+      let (rc1, out1) = t.resultOf(bad)
+      if rc1 != 0 and "available: lm3s6965evb, stm32vldiscovery" in out1:
+        t.ok "an unknown --board is refused, naming the boards"
+      else: t.no "an unknown --board is refused, naming the boards", out1
+      let (rc2, out2) = t.resultOf(stackful)
+      if rc2 != 0 and "bare metal is stackless" in out2:
+        t.ok "--board refuses --concurrency:stackful"
+      else: t.no "--board refuses --concurrency:stackful", out2
 
   # T16, metal half: gdb stops at a Tuck line on the ARM target. SKIPs
   # without an ARM-capable gdb, like the host-gdb case in crash_decode.

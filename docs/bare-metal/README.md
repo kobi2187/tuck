@@ -23,9 +23,10 @@ QEMU boards, no real hardware yet. What works and what is next is in
 
 | Path | What |
 |---|---|
-| `boards/` | Cortex-M startup (`startup_cortex_m.c`: vector table, fault recorder, `tuck_fatal`, `tuck_board_exit`), `semihost.s`, `stubs.c`, one linker script per QEMU board |
+| `boards/<board>/` | one directory per board: `board.ld` (memory map; defines `_estack`, the initial SP) and `board.conf` (QEMU machine, CPU, console) |
+| `boards/common/` | shared by every board: `startup_cortex_m.c` (vector table, reset, fault recorder, `tuck_fatal`), `semihosting.c` (the QEMU console and exit: `tuck_board_puts`, `tuck_board_exit`), `stubs.c` |
 | `boards/picolibc/` | `build.sh` fetches picolibc 1.8.12 (pinned SHA-256) and builds the Thumb `libc.a` into `build/picolibc/` |
-| `tools/metal/` | `qemu-run.sh` (what `tuck sim` runs), `host-run.sh` (`tuck sim --host`), `gdb-run.sh` (break on the target) |
+| `tools/metal/` | `qemu-run.sh` (what `tuck sim` runs: `tuck b --board` + QEMU), `host-run.sh` (`tuck sim --host`), `gdb-run.sh` (break on the target) |
 | `tools/svd2tuck/` | CMSIS-SVD → Tuck `register` module generator, with its own docs and generated STM32F103 modules |
 | `tests/metal/` | the metal programs; `host_sim/` holds their host shims, one twin per backend |
 | `tests/suites/metal_runtime.nim`, `sim_tick`, `sim_host`, `crash_decode`, `isr_discipline`, `svd_import`, `timing_report`, `error_policy` | the suites that pin it |
@@ -37,6 +38,7 @@ picolibc), optionally `gdb-multiarch`. Nim 2.2.4 (the CI pin).
 
 ```sh
 boards/picolibc/build.sh                          # once
+./tuck b tests/metal/task_await.tuck --board:lm3s6965evb   # just the ELF
 ./tuck sim tests/metal/task_await.tuck            # build + boot under QEMU
 ./tuck sim tests/metal/task_await.tuck --host     # Nim, Odin and D on the host
 tools/metal/gdb-run.sh task_await 10              # stop gdb at task_await.tuck:10

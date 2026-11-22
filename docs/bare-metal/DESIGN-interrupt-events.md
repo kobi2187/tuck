@@ -284,7 +284,7 @@ the rule for combining them is stricter.
 One UART driver, two applications, two boards. The driver names no line,
 priority, instance or capacity.
 
-```text
+``text
 # SKETCH — shape only.
 
 # uart.tuck — the driver library
@@ -316,7 +316,7 @@ registry AppEvents:
   bind USART2.rx -> uart.rxReady [priority: 1, queue: 64, on_full: drop]
   bind USART3.rx -> uart.rxReady [priority: 3, queue: 8,  on_full: drop]
   # queue: 2 here would be a compile error: "uart requires queue >= 4" (IRQ-5)
-```
+``
 
 What the checker proves for each application, with the driver unchanged:
 

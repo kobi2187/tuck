@@ -2199,6 +2199,34 @@ platform). v1 supports exactly the shape shown — `TARGET` compared against
 one string literal — not a general compile-time boolean expression; there is
 no `elif`/`else` form.
 
+### 8.4 Bare Metal (experimental)
+
+A program can be built freestanding for a Cortex-M microcontroller
+(`tuck build FILE --board:NAME`, a board under `boards/`) and run under QEMU
+(`tuck sim FILE`; `docs/bare-metal/`). What holds today, each
+pinned by a suite:
+
+- **The profile:** stackless tasks (§9's frames; no mmap, no threads, no
+  reactor), the Nim backend, picolibc for the C runtime. `--frames:static`
+  (§9) is the intended default once spawned tasks get static homes.
+- **`register`** declarations (§8.1) compile to volatile accesses and may be
+  generated from CMSIS-SVD (`tools/svd2tuck/`), across module boundaries.
+- **`critical:`** masks interrupts and restores the state it found on every
+  exit (nesting, `return`, `break`), on all three backends.
+- **`[irq]`** marks an interrupt handler. Code reachable from one may not
+  allocate, send or wait (TK-EF05/07/11), may not leave an error to the
+  `errors` policy or call a stub (TK-PO04, §4.9), and state it shares with
+  normal code is reported by `tuck audit --isr` and refused by
+  `--isr-check:error` (TK-EF10). Binding a handler to a vector is not
+  designed yet: today every `[irq]` fn is called, not taken.
+- **Failures are loud:** a failed runtime check prints `PANIC:` and traps; a
+  fault is decoded to the Tuck line (`tuck decode-crash`, TK-CR01); a run's
+  exit status is `main`'s return value.
+
+Not yet: real interrupts, a timed wait that parks a task (§9: waiting on
+hardware without a reactor is not designed), write-1-to-clear register
+fields, Odin and D on metal. The order is `docs/bare-metal/ROADMAP.md`.
+
 ---
 
 ## Part 9: Concurrency

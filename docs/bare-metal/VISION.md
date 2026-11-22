@@ -158,7 +158,7 @@ on how the error reads when the compiler cannot infer. Then rule.
 
 ## 3. The architecture
 
-```text
+``text
   ┌──────────────────────────────── source ──────────────────────────────────┐
   │ drivers (libraries)   chip package (SVD)     board package   application │
   │  generic over kinds,   layouts, lines,        instances,      bindings:  │
@@ -188,7 +188,7 @@ on how the error reads when the compiler cannot infer. Then rule.
   host sim          QEMU                   Renode          probe
   (logic, 3 BE)  (ISA, faults, IRQs)  (peripherals, CI)  (flash, RTT)
      └──── one log/trace stream, decoded by `tuck` from the ELF ────┘
-```
+``
 
 ## 4. The pillars
 

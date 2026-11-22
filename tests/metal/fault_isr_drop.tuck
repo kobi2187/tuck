@@ -4,7 +4,7 @@ extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/prin
 extern [impl: nim "./host_sim/fault_shim", odin "./host_sim", d "./host_sim/fault_shim"]:
   fn faultIsrDrop({}) -> bool [irq_safe, no_alloc]
 
-register LED at 0x40000000:
+register LED at 0x20000000:
   VALUE: bits 0..7 [read, write]
 
 fn safeState({}) -> void:
@@ -23,9 +23,13 @@ fn main() -> int:
   {} safeState
   # Simulate the ISR firing.
   {} handler
-  # If the interrupt was dropped, LED should still be 0 (safe state).
-  if LED.VALUE == 0:
+  # Dropped (built with --fault:isr-drop): the LED must still be in its safe
+  # state. Delivered: the handler must have set it. Each build checks its own
+  # case, so neither can pass by accident.
+  let dropped = {} faultIsrDrop
+  let expected: u32 = if dropped: 0 else: 1
+  if LED.VALUE == expected:
     {text: "FAULT_SAFE_OK\n"} say
-  else:
-    {text: "FAULT_SAFE_BAD\n"} say
-  return 0
+    return 0
+  {text: "FAULT_SAFE_BAD\n"} say
+  return 1

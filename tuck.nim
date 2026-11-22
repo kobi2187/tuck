@@ -413,6 +413,14 @@ options:
                   static  ALL of them embedded, or the build fails naming
                           each that is not. For targets with no heap.
                 See docs/stackless-concurrency.md.
+  --board:NAME  (build) bare metal: a Cortex-M ELF for boards/NAME/ (Nim
+                backend). Compiles the board's startup and console, links
+                picolibc (boards/picolibc/build.sh, once) and the board's
+                linker script, and implies the metal profile: stackless,
+                --actors:single, --debug-lines. `tuck sim` runs it under
+                QEMU. Boards: lm3s6965evb, stm32vldiscovery.
+  --freestanding  the metal profile without a board, for a build that
+                passes its own cross flags with --nim:.
   --batch-count:N     (--actors:batch) flush after N staged sends
   --batch-timeout:MS  (--actors:batch) ...or MS after the first, whichever
                 comes first. Both 0 is refused: nothing would ever flush.
@@ -421,13 +429,88 @@ options:
   build under --release."""
   quit(code)
 
+type BoardConf = object
+  ## A board under boards/<name>/ (docs/bare-metal/): board.ld is its memory
+  ## map, board.conf names the QEMU machine, the CPU and the console file in
+  ## boards/common/ that supplies tuck_board_puts / tuck_board_exit.
+  name, dir, qemu, cpu, console: string
+
+proc loadBoard(name: string): BoardConf =
+  ## `--board:NAME`: read boards/NAME/board.conf beside the compiler, or stop
+  ## naming the boards that exist.
+  let root = getAppDir() / "boards"
+  let conf = root / name / "board.conf"
+  if not fileExists(conf):
+    var have: seq[string]
+    for kind, d in walkDir(root):
+      if kind == pcDir and fileExists(d / "board.conf"): have.add d.extractFilename
+    have.sort
+    quit("tuck: no board '" & name & "' (no boards/" & name & "/board.conf)\n" &
+         "  available: " & have.join(", "), 1)
+  result = BoardConf(name: name, dir: root / name)
+  for raw in readFile(conf).splitLines:
+    let line = raw.strip
+    if line == "" or line.startsWith("#") or '=' notin line: continue
+    let key = line.split('=', 1)[0].strip
+    let val = line.split('=', 1)[1].strip
+    case key
+    of "qemu": result.qemu = val
+    of "cpu": result.cpu = val
+    of "console": result.console = val
+    else: discard   # unknown keys are for later tools; this reader needs three
+  if result.cpu == "" or result.console == "":
+    quit("tuck: " & conf & " needs `cpu = ...` and `console = ...`", 1)
+
+proc boardNimFlags(b: BoardConf, projectDir, outDir: string): string =
+  ## Everything a freestanding Nim build for `b` needs, which
+  ## tools/metal/qemu-run.sh used to assemble by hand: the board's objects
+  ## (shared Cortex-M startup, stubs, the console file),
+  ## picolibc, the linker script, and the panic override Nim's standalone
+  ## runtime includes from the project directory.
+  for tool in ["arm-none-eabi-gcc"]:
+    if findExe(tool) == "":
+      quit("tuck: --board:" & b.name & " needs " & tool & " on PATH " &
+           "(apt install gcc-arm-none-eabi)", 1)
+  let picolibc = getAppDir() / "build" / "picolibc" / "install"
+  if not fileExists(picolibc / "lib" / "libc.a"):
+    quit("tuck: --board:" & b.name & " needs picolibc: run boards/picolibc/build.sh once", 1)
+  let common = getAppDir() / "boards" / "common"
+  let objDir = outDir / "board-objs"
+  createDir(objDir)
+  var objs: seq[string]
+  for (src, obj, tool) in [
+      (common / "startup_cortex_m.c", "startup.o", "arm-none-eabi-gcc -c"),
+      (common / "stubs.c", "stubs.o", "arm-none-eabi-gcc -c"),
+      (common / (b.console & ".c"), "console.o", "arm-none-eabi-gcc -c")]:
+    if not fileExists(src): quit("tuck: board file missing: " & src, 1)
+    let cmd = tool & " -mcpu=" & b.cpu & " -mthumb " & quoteShell(src) &
+              " -o " & quoteShell(objDir / obj)
+    if execShellCmd(cmd) != 0: quit("tuck: board object failed: " & cmd, 1)
+    objs.add objDir / obj
+  # Nim's standalone runtime routes every failed check through `panic`. It
+  # goes to the board's tuck_fatal (PANIC line, then a trap the fault
+  # recorder reports); rawoutput goes to the board console.
+  writeFile(projectDir / "panicoverride.nim",
+    "proc tuckBoardPuts(s: cstring) {.importc: \"tuck_board_puts\".}\n" &
+    "proc tuckFatal(msg: cstring) {.importc: \"tuck_fatal\", noreturn.}\n" &
+    "proc rawoutput(msg: string) {.nimcall.} =\n  tuckBoardPuts(msg.cstring)\n" &
+    "proc panic*(s: string) {.noreturn.} =\n  tuckFatal(s.cstring)\n")
+  result = " --os:standalone --cpu:arm --mm:none -d:freestanding --exceptions:goto" &
+    " --cc:gcc --gcc.exe:arm-none-eabi-gcc --gcc.linkerexe:arm-none-eabi-gcc" &
+    " --threads:off --tlsEmulation:off --passC:-mthumb --passC:-mcpu=" & b.cpu &
+    " --passC:-g --passC:-I" & quoteShell(picolibc / "include") &
+    " --passL:-nostartfiles"
+  for o in objs: result.add " --passL:" & quoteShell(o)
+  result.add " --passL:" & quoteShell(picolibc / "lib" / "libc.a") &
+             " --passL:-T" & quoteShell(b.dir / "board.ld")
+
 proc isFreestandingBuild(opts: seq[string]): bool =
   ## A bare-metal build: `-d:freestanding` passed through to Nim (what
   ## qemu-run.sh does), or a bare `--freestanding`. It used to be
   ## "any argument containing the word", so `-o:build/freestanding-test` on a
   ## hosted build silently dropped the async runtime and the exit status.
   for o in opts:
-    if o == "--freestanding": return true
+    if o == "--freestanding" or o.startsWith("--board:"): return true
     if o.startsWith("--nim:") and o.contains("-d:freestanding"): return true
   false
 
@@ -1145,6 +1228,22 @@ when isMainModule:
   let source = if dirExists(path): "" else: readFile(path)
   var opts: seq[string]
   for i in 3 .. paramCount(): opts.add(paramStr(i))
+  # `--board:NAME` / `--freestanding`: the bare-metal profile in one flag
+  # (docs/bare-metal/ROADMAP.md 0.1). Stackless (a stackful task needs an
+  # mmap'd stack), actors on one thread (there are no threads), and Tuck line
+  # numbers in DWARF so a fault decodes to the line that caused it.
+  var board: BoardConf
+  for o in opts:
+    if o.startsWith("--board:"): board = loadBoard(o["--board:".len .. ^1])
+  if board.name != "" or "--freestanding" in opts:
+    if "--concurrency:stackful" in opts:
+      quit("tuck: bare metal is stackless: --concurrency:stackful needs mmap'd stacks", 1)
+    if opts.anyIt(it in ["--odin", "--dlang"]) and board.name != "":
+      quit("tuck: --board builds the Nim backend only so far " &
+           "(Odin and D on metal: docs/bare-metal/ROADMAP.md Phase 8)", 1)
+    opts.add "--concurrency:stackless"
+    if not opts.anyIt(it.startsWith("--actors:")): opts.add "--actors:single"
+    if board.name != "" and "--debug-lines" notin opts: opts.add "--debug-lines"
   # `--root:DIR` sets the import search base explicitly, so imports resolve
   # regardless of cwd or where the binary sits (see modules.resolveImport).
   for o in opts:
@@ -2011,6 +2110,13 @@ when isMainModule:
         # the unaliased `binBase`: the FINAL BINARY keeps the name a user
         # asked for regardless of what the intermediate source is called.
         let binNim = outDir / (nimEntryStem(binBase) & ".nim")
+        # A board build owns its compiler, target and threading flags; the
+        # host's fast-C-compiler choice below (clang, --threads:on) must not
+        # land after them. It used to: `--threads:on` overrode the
+        # hand-passed `--threads:off`, and that is what made Nim emit TLS.
+        if board.name != "":
+          nimFlags.add boardNimFlags(board, binNim.parentDir(), outDir)
+        let freestandingBuild = isFreestandingBuild(opts)
         if binNim != mainNim: copyFile(mainNim, binNim)
         let binPath = outDir / binBase
         # Async programs need Nim's stack-walker OFF (it corrupts the
@@ -2033,7 +2139,8 @@ when isMainModule:
           # clang when installed (TUCK_CC=gcc keeps gcc): the same emitted C ran
           # scheduler 6x and richards 3x faster under clang than gcc -O3
           # -flto, which leaves by-value aggregates in memory (SCORES.md).
-          if wantRelease: (if findExe("clang") != "" and getEnv("TUCK_CC") != "gcc": " --cc:clang " else: "") &
+          if freestandingBuild: " --opt:none -d:tuckFast "
+          elif wantRelease: (if findExe("clang") != "" and getEnv("TUCK_CC") != "gcc": " --cc:clang " else: "") &
                           " -d:release --passC:-flto --passL:-flto --passC:-U_FORTIFY_SOURCE --passC:-D_FORTIFY_SOURCE=0 --overflowChecks:off " &
                           (if "--native" in opts: " --passC:-march=native " else: "")
           else: " --opt:none -d:tuckFast " & pickFastCC()
