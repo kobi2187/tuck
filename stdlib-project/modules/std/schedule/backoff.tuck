@@ -13,6 +13,8 @@
 #             leaves the caller's bucket as it was.
 import seq
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 # attempt 0 waits base, 1 waits 2*base, ... never more than cap. A base or cap
 # below 1 is 0 (no waiting at all).
 fn backoffMs({attempt: int, baseMs: int, capMs: int}) -> int:

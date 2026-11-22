@@ -1253,11 +1253,12 @@ proc genDroppedResult(ctx: var OdinCodegenCtx, s: Expr, stmtCode, ind: string): 
   ## continue/exit policy: a dropped result routes to the global handler.
   let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
+  let handler = unhandledCallee(ctx.res, ctx.module, "rt.")
   let onErr = if ctx.errPolicy == "exit":
-                UnhandledHandlerName & "(" & tn & ".err, \"" & site &
+                handler & "(" & tn & ".err, \"" & site &
                   "\"); panic(\"unhandled error\")"
               else:
-                UnhandledHandlerName & "(" & tn & ".err, \"" & site & "\")"
+                handler & "(" & tn & ".err, \"" & site & "\")"
   ind & "\t" & tn & " := " & stmtCode & "\n" &
     ind & "\tif " & tn & ".status != .Ok { " & onErr & " }"
 
@@ -1276,11 +1277,12 @@ proc genRoutedStmt(ctx: var OdinCodegenCtx, s: Expr, stmtCode,
     return ctx.genDroppedResult(s, stmtCode, ind)
   let site = ctx.res.shortcut(s)
   let name = s.target.name
+  let handler = unhandledCallee(ctx.res, ctx.module, "rt.")
   let onErr = if ctx.errPolicy == "exit":
-                UnhandledHandlerName & "(" & name & ".err, \"" & site &
+                handler & "(" & name & ".err, \"" & site &
                   "\"); panic(\"unhandled error\")"
               else:
-                UnhandledHandlerName & "(" & name & ".err, \"" & site & "\")"
+                handler & "(" & name & ".err, \"" & site & "\")"
   ind & "\t" & stmtCode & "\n" &
     ind & "\tif " & name & ".status == .Err { " & onErr & " }"
 

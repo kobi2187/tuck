@@ -25,6 +25,8 @@ import seq
 import str
 import encoding
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 extern [impl: nim "./shim/compress_shim", odin "./shim", d "./shim/compress_shim"]:
   fn zCompress({format: int, level: int, data: Seq[u8]}) -> Seq[u8] [pure]
   fn zUncompress({format: int, data: Seq[u8], limit: int}) -> Seq[u8] [pure]

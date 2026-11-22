@@ -12,6 +12,8 @@ import seq
 import str
 import encoding
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 type Kind:
   | File
   | Dir

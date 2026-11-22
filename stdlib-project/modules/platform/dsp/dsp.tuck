@@ -10,6 +10,8 @@
 import seq
 import math
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 # Direct form II transposed. `z1`/`z2` are the two delay elements.
 type Biquad:
   b0: f32

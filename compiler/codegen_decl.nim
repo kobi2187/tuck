@@ -900,7 +900,11 @@ proc genErrHandlerBody*(ctx: var CodegenCtx, handler: Decl): string =
 
 proc genErrHandler*(ctx: var CodegenCtx, d: Decl): string =
   ## Global handler: rt logger first (errors are always visible), then the
-  ## user's handler body.
+  ## user's handler body. Emitted by the application only; a library's own
+  ## block is inert when it is imported (ruling 2026-11-22). The application
+  ## registers it with the runtime at module init, which is how a partial
+  ## library's shortcut sites reach it (`tuckRouteUnhandled`).
+  if not isPolicyEntry(ctx.res, ctx.module): return ""
   let errNames = ctx.declaredErrNames()
   if errNames.len > 0: result.add(genErrNameTable(errNames))
   result.add("proc " & UnhandledHandlerName & "*(code: uint16, site: string) =\n" &
@@ -910,6 +914,9 @@ proc genErrHandler*(ctx: var CodegenCtx, d: Decl): string =
   if d.errHandler != nil and d.errHandler.fnBody != nil:
     let body = ctx.genErrHandlerBody(d.errHandler)
     if body != "": result.add(body & "\n")
+  if d.errHandler != nil:
+    result.add("tuckUnhandledHook = cast[TuckUnhandledProc](" &
+               UnhandledHandlerName & ")\n")
 
 proc genImportcBinding*(m: Decl): string =
   ## A C-imported fn. [emit: "c_fn"] sets the importc name; else the Tuck name.

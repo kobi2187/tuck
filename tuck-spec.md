@@ -1077,6 +1077,29 @@ that relies on the global handler, so the shortcuts stay findable and can be
 retired one by one. Shipping firmware is expected to build with
 `[policy: strict]`.
 
+**Across modules (ruled 2026-11-22).** The policy states the stage of
+development of the whole program, so it belongs to the **application**, the
+module being checked or built:
+
+- A library that declares `errors [policy: strict]` is **finished**. Its
+  sites are strict whatever the application declares, it may hold no
+  `pending` stub (TK-PO02), and it may import only finished modules
+  (TK-PO03). The application's policy cannot change how it behaves.
+- Every other module is **partial** and follows the application's policy.
+  A partial library's unhandled sites run the application's
+  `on unhandled` and are listed in the application's SHORTCUTS report
+  under the library's name, so nothing a library leaves unhandled is hidden.
+- A partial library's own `continue` / `exit` block applies only when that
+  library is the program (checked or run on its own); imported, it is
+  inert, and the POLICY report says so.
+- In one line: **a site in a finished module is strict; every other site
+  follows the entry module's policy.** A strict application therefore makes
+  every partial library strict too, which is what a release build wants.
+- **Interrupt code is always strict and complete.** A fn reachable from an
+  `[irq]` handler may not leave an error to the policy (its handler would
+  run inside the interrupt) and may not be or call a stub, under any policy
+  (TK-PO04).
+
 The same rules cover `?T` absence. `?T` is a true option type: absence is a
 first-class state (`ok | absent`), not a reserved error code. At runtime all
 three wrappers share one tri-state representation — `ok | err(code) | absent`

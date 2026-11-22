@@ -950,6 +950,9 @@ proc checkProgram(path: string, needBodies = false,
     updateIndex(parentDir(absolutePath(path)), result, moduleSigs)
   report("PENDING", "unimplemented", pendingEntries(result, sigOnly))
   report("SHORTCUTS", "routed to the global error handler", shortcuts)
+  # A partial library's own continue/exit block, inert because another
+  # module is the program (ruling 2026-11-22): said, never hidden.
+  report("POLICY", "inert library policy", semLayer.policyNotes)
   if reportNarrowing:
     report("NARROWING", "casts", narrowingEntries())
   else:

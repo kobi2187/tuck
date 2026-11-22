@@ -26,6 +26,8 @@ import str
 import encoding
 import text
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 extern [impl: nim "./shim/crypto_shim", odin "./shim", d "./shim/crypto_shim"]:
   fn cryptoHash({kind: int, data: Seq[u8]}) -> Seq[u8] [pure]
   fn cryptoHmac({kind: int, key: Seq[u8], data: Seq[u8]}) -> Seq[u8] [pure]

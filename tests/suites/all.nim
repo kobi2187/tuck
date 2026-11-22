@@ -25,6 +25,7 @@ import doc_snippets
 import duplicates
 import effect_fix
 import end_to_end
+import error_policy
 import examples
 import extern_impl
 import fn_size
@@ -109,6 +110,7 @@ let registry: seq[Entry] = @[
   ("duplicates",          SuiteProc(duplicates.run),          true),
   ("effect_fix",          SuiteProc(effect_fix.run),          false),
   ("end_to_end",          SuiteProc(end_to_end.run),          false),
+  ("error_policy",        SuiteProc(error_policy.run),        false),
   ("examples",            SuiteProc(examples.run),            true),
   ("extern_impl",         SuiteProc(extern_impl.run),         false),
   ("fn_size",             SuiteProc(fn_size.run),             true),

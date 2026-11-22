@@ -367,7 +367,7 @@ allocation") stays true, plus one static queue per deferred binding.
 | E-Q13a | Does finished (strict) also forbid `pending` / `...` stubs? | (a) yes, a stub in a strict library is refused; (b) no, stubs stay a separate PENDING concern | **ruled 2026-11-22: (a)** |
 | E-Q14 | May a finished library import a partial one? | (a) no: finished requires finished dependencies; (b) yes | **ruled 2026-11-22: (a) no** |
 | E-Q15 | What does a partial library's own `errors` block mean when it is imported? | (a) inert, with a line in the report saying the application's policy applies; (b) refused; (c) it wins (today) | **ruled 2026-11-22: (a) inert** |
-| E-Q16 | Shortcut sites inside interrupt context | allowed only if the application's `on unhandled` is itself interrupt-safe (checked like any ISR callee); a `pending` capture may only trap | keeps the walking skeleton available for drivers without risking an interrupt storm |
+| E-Q16 | Shortcut sites inside interrupt context | allowed only if the application's `on unhandled` is itself interrupt-safe; or never | **ruled 2026-11-22: never.** Interrupt code is strict and stub-free under any policy ("the embedded part is rigid"); built as TK-PO04 |
 | E-Q12 | How does a component mark a knob as a requirement rather than a default? | a range form on the knob; a separate `requires:` clause; a component-level declaration | open: syntax for the design round |
 | E-Q10 | How is a latency requirement checked? | report the worst-case raise-to-capture time from higher-or-equal-priority captures' cycle bounds; gate only on opt-in | report first, as for timing (VISION §4.5) |
 

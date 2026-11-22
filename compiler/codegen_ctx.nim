@@ -157,6 +157,9 @@ proc newCodegenCtx*(m: Module, realModules: ModuleMap,
   for d in m.decls:
     if d != nil and d.kind == dkErrors:
       result.errPolicy = d.policyName
+  # One policy per application (ruling 2026-11-22): every shortcut site in
+  # the program follows the entry module's, whatever this module declares.
+  if res.programErrPolicy != "": result.errPolicy = res.programErrPolicy
 
 proc buildDeclIndex*(ctx: var CodegenCtx) =
   ## Build the module's index (decl_index) and this backend's two

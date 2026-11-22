@@ -1206,13 +1206,21 @@ proc genErrHandlerBody*(ctx: var OdinCodegenCtx, handler: Decl): string =
 
 proc genErrHandler*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## Global handler: rt logger first (errors are always visible), then the
-  ## user's handler body.
+  ## user's handler body. The application's only (ruling 2026-11-22),
+  ## registered with the runtime by an `@(init)` proc so a partial library's
+  ## sites (`rt.tuckRouteUnhandled`) reach it.
+  if not isPolicyEntry(ctx.res, ctx.module): return ""
   result = ind & UnhandledHandlerName & " :: proc(code: u16, site: string) {\n" &
            ind & "\trt.tuckReportUnhandled(code, site)\n"
   if d.errHandler != nil and d.errHandler.fnBody != nil:
     let body = ctx.genErrHandlerBody(d.errHandler)
     if body != "": result.add(body & "\n")
   result.add(ind & "}\n")
+  if d.errHandler != nil:
+    result.add(ind & "@(init)\n" & ind &
+               "tuck_register_unhandled :: proc \"contextless\" () {\n" &
+               ind & "\trt.tuckUnhandledHook = " & UnhandledHandlerName & "\n" &
+               ind & "}\n")
 
 proc genCBinding*(ctx: var OdinCodegenCtx, m: Decl): string =
   ## One `foreign` entry. `-> ret` is omitted entirely for void; "void" is

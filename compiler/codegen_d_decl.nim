@@ -149,6 +149,9 @@ proc genDErrHandler*(ctx: var DCodegenCtx, d: Decl): string =
   ## here is the handler itself and the call to it.
   let handler = d.errHandler
   if handler == nil: return ""   # strict: no handler, and no drop sites
+  # The application's only (ruling 2026-11-22); a module constructor
+  # registers it so a partial library's sites (`rt.tuckRouteUnhandled`) reach it.
+  if not isPolicyEntry(ctx.res, ctx.module): return ""
   ctx.definedVars.incl("code")
   ctx.definedVars.incl("site")
   ctx.indent = 1
@@ -167,7 +170,9 @@ proc genDErrHandler*(ctx: var DCodegenCtx, d: Decl): string =
   # One shared name: the handler is emitted here but CALLED from every drop
   # site (genDDroppedResult), and the two must agree.
   "void " & UnhandledHandlerName & "(ushort code, string site) {\n    " &
-    body & "\n}\n"
+    body & "\n}\n" &
+    "shared static this() { rt.tuckUnhandledHook = &" & UnhandledHandlerName &
+    "; }\n"
 
 proc dRegistryEventStruct*(ctx: var DCodegenCtx, d: Decl): string =
   ## The event enum and the flat struct carrying every variant's fields,

@@ -180,6 +180,9 @@ type
     dcEfIsrProtected = "TK-EF11"         ## isrShared state accessed outside a critical section
     dcPeClash = "TK-PE01"               ## `pending:` clashes with a real decl
     dcPoMalformed = "TK-PO01"           ## the errors policy block is malformed
+    dcPoFinishedStub = "TK-PO02"        ## a finished (strict) library holds a stub
+    dcPoFinishedImportsPartial = "TK-PO03"  ## a finished library imports a partial one
+    dcPoInterruptShortcut = "TK-PO04"   ## interrupt code leaves an error unhandled or calls a stub
     dcSeConstruction = "TK-SE01"        ## a sealed type built outside a transition
     dcCxComplexity = "TK-CX01"          ## a fn has too many independent paths
     dcCxLines = "TK-CX02"               ## a fn spans too many source lines
@@ -953,6 +956,30 @@ proc ruleExplanation(d: DiagCode): string =
     "interface or callback that does declare `[io]`."
   of dcPeClash: "A `pending:` declaration clashes with a real one."
   of dcPoMalformed: "The `errors [policy: ...]` block is malformed."
+  of dcPoFinishedStub:
+    "A library that declares `errors [policy: strict]` is FINISHED (owner " &
+    "ruling 2026-11-22), and a finished library holds no stubs: no " &
+    "`pending:` entry and no `...` body. Finished means the importing " &
+    "application's policy cannot change it, and a stub's behaviour (trap, " &
+    "zero, log) would. Fix: implement the stub, or remove the `strict` " &
+    "block so the library is partial and follows the application's policy " &
+    "while it is in development."
+  of dcPoFinishedImportsPartial:
+    "A finished library (`errors [policy: strict]`) imports a partial one. " &
+    "A partial module follows the importing application's error policy, so " &
+    "under `continue` it can carry on past an error and hand the finished " &
+    "library a result that depends on which application imported it. " &
+    "Finished must not depend on that. Fix: finish the imported module " &
+    "(handle its errors and declare `errors [policy: strict]`), or make this " &
+    "library partial too."
+  of dcPoInterruptShortcut:
+    "Interrupt code is always strict and complete, whatever the application's " &
+    "error policy (owner ruling 2026-11-22: the embedded part is rigid). A fn " &
+    "reachable from an `[irq]` handler may not leave an error to the policy's " &
+    "`on unhandled` handler, which would run inside the interrupt, and may not " &
+    "be or call a `pending` / `...` stub, whose run-time behaviour would leave " &
+    "the interrupt unserviced. Fix: handle the error at its site (bind and " &
+    "check `.ok`), and implement the stub."
   of dcSeConstruction:
     "A sealed type is constructed only through its declared transitions."
   of dcCxComplexity:

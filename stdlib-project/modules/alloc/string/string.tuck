@@ -27,6 +27,8 @@
 import seq
 import str
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 type Builder:
   chunks: Seq[str]
 

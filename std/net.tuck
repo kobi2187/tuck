@@ -8,6 +8,9 @@
 # A socket is a plain fd, so `on select | read fd | timeout {N.ms}` works on
 # one directly: that is the operation-timeout primitive (spec §9.3) applied to
 # real network I/O rather than to a fixture.
+
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 type NetError:
   | Refused        # nothing listening, or the peer rejected the connection
   | AddressInUse   # another process holds that port

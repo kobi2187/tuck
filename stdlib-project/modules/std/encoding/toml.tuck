@@ -20,6 +20,8 @@ import text
 import convert
 import encoding
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 type TomlKey:
   path: Seq[str]
   endAt: int

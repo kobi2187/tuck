@@ -810,10 +810,11 @@ proc genDroppedResult(ctx: var CodegenCtx, s: Expr, stmtCode: string): string =
   ## continue/exit policy: a dropped result routes to the global handler.
   let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
+  let handler = unhandledCallee(ctx.res, ctx.module, "")
   let onErr = if ctx.errPolicy == "exit":
-                "(" & UnhandledHandlerName & "(" & tn & ".err, \"" & site & "\"); quit(1))"
+                "(" & handler & "(" & tn & ".err, \"" & site & "\"); quit(1))"
               else:
-                UnhandledHandlerName & "(" & tn & ".err, \"" & site & "\")"
+                handler & "(" & tn & ".err, \"" & site & "\")"
   "(let " & tn & " = " & stmtCode & "; (if not " & tn & ".ok: " & onErr & "))"
 
 proc ownsItsLayout(res: Resolution, s: Expr): bool =
@@ -857,11 +858,12 @@ proc genBoundErrorRouted(ctx: var CodegenCtx, s: Expr, stmtCode,
   let name = if s.target != nil and s.target.kind == exkVar: s.target.name
              else: ""
   if name == "": return stmtCode
+  let handler = unhandledCallee(ctx.res, ctx.module, "")
   let onErr = if ctx.errPolicy == "exit":
-                "(" & UnhandledHandlerName & "(" & name & ".err, \"" & site &
+                "(" & handler & "(" & name & ".err, \"" & site &
                   "\"); quit(1))"
               else:
-                UnhandledHandlerName & "(" & name & ".err, \"" & site & "\")"
+                handler & "(" & name & ".err, \"" & site & "\")"
   stmtCode & "\n" & ind & "  if " & name & ".status == tsErr: " & onErr
 
 proc escapeNimStr(s: string): string =

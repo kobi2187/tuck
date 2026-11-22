@@ -19,6 +19,8 @@ import console
 import encoding
 import stream
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 # The RAM a heap may be carved from: [start, start + size).
 type HeapRegion:
   start: u64

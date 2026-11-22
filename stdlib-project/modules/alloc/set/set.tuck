@@ -10,6 +10,8 @@
 # which is what "set" means.
 import seq
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 type Set[T]:
   items: Seq[T]
 

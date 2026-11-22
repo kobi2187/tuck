@@ -6420,7 +6420,8 @@ proc typecheckModule*(m: Module,
                       externGroups = initTable[string, Decl](),
                       externBounds = initTable[string, seq[seq[Type]]](),
                       externAmbiguous = initTable[string, seq[string]](),
-                      externBareOwner = initTable[string, string]()): seq[string] {.discardable.} =
+                      externBareOwner = initTable[string, string](),
+                      policy = ""): seq[string] {.discardable.} =
   ## Checks one module against what its imports export (the `extern*`
   ## tables): collect signatures, bind consts, check every declaration, then
   ## the module-level passes. Returns the dropped-result sites the `errors`
@@ -6452,6 +6453,12 @@ proc typecheckModule*(m: Module,
     if d != nil and d.kind == dkGroup: tc.groupDecls[d.name] = d
   tc.desugarGroupBoundParams(m)
   tc.collectSigs(m.decls)
+  # The policy this module's sites follow, decided for the whole program
+  # (checkProgramOnce): "" keeps the module's own block (the entry module),
+  # otherwise the module is a library and takes "strict" (finished) or the
+  # application's policy (partial). collectSigs has already validated the
+  # module's own block, so an inert one is still well-formed.
+  if policy != "": tc.errPolicy = policy
   tc.resolveTypeNames(m)
   checkPointers(tc.typeDeclsByName, m)  # pointers stay at the extern boundary
   # Before checkDecl: a type with no finite size cannot be reasoned about, so
@@ -6686,6 +6693,113 @@ proc importScopeFor(sigs: ProgramSigs, preSigs: Table[string, seq[SigInfo]],
     if sigs.byMod.hasKey(imp): result.importChecked(sigs, imp)
     else: result.importPrebuilt(preSigs, imp)
 
+proc checkFinishedLibraries(mods: seq[tuple[name, path: string, m: Module]]) =
+  ## Owner ruling 2026-11-22: a library that declares `errors [policy:
+  ## strict]` is FINISHED. Finished forbids stubs (TK-PO02) and may import
+  ## only finished modules (TK-PO03). The entry module is the application,
+  ## not a library, and may do both while it is being written. An import
+  ## absent from `mods` was served from the signature index, which serves
+  ## finished modules only (modules.updateIndex), so it is finished.
+  var byName = initTable[string, Module]()
+  for (name, _, m) in mods: byName[name] = m
+  for i in 0 ..< mods.high:
+    let (name, path, m) = mods[i]
+    if not isFinishedModule(m): continue
+    let stubs = pendingReport(m)
+    if stubs.len > 0:
+      var err = newException(SemanticError, withCode(dcPoFinishedStub,
+        "library '" & name & "' is finished (`errors [policy: strict]`) but " &
+        "holds " & $stubs.len & " stub(s): " & stubs.join("; ") &
+        ". Fix: implement them, or remove the `strict` block while the " &
+        "library is in development"))
+      err.line = m.span.line
+      err.col = m.span.col
+      raise withModulePrefix(err, path)
+    for d in m.decls:
+      if d == nil or d.kind != dkImport: continue
+      if d.name in byName and not isFinishedModule(byName[d.name]):
+        var err = newException(SemanticError, withCode(dcPoFinishedImportsPartial,
+          "finished library '" & name & "' imports '" & d.name &
+          "', which is partial (no `errors [policy: strict]`), so its " &
+          "behaviour would depend on the application's error policy. Fix: " &
+          "finish '" & d.name & "', or remove this library's `strict` block"))
+        err.line = d.span.line
+        err.col = d.span.col
+        raise withModulePrefix(err, path)
+
+proc noteInertPolicies(mods: seq[tuple[name, path: string, m: Module]],
+                       entryPolicy: string) =
+  ## A partial library's own `continue` / `exit` block applies only when that
+  ## module is the program; imported, it is inert (ruling 2026-11-22). Said
+  ## in the POLICY report rather than as a warning, so a library keeping a
+  ## block for its own self-check `main` does not nag every application.
+  for i in 0 ..< mods.high:
+    let own = ownErrorPolicy(mods[i].m)
+    if own in ["continue", "exit"]:
+      semLayer.policyNotes.add(mods[i].name & ": its own `errors [policy: " &
+        own & "]` is inert here; the application's `" & entryPolicy &
+        "` governs it")
+
+proc firstShortcut(body: Expr): Expr =
+  ## The first site in `body` the checker handed to the error policy, or nil.
+  for n in body.nodes:
+    if semLayer.shortcut(n) != "": return n
+  nil
+
+proc fnCallees(m: Module, body: Expr): seq[Decl] =
+  ## The fns `body` calls, by their recorded call edges.
+  for n in body.nodes:
+    if n.kind != exkCall: continue
+    let c = semLayer.calleeDecl(m, n)
+    if c != nil and c.kind == dkFn: result.add c
+
+proc rejectInterrupt(path: string, span: Span, root: Decl, what: string) =
+  ## TK-PO04, at `span` in the module at `path`.
+  var err = newException(SemanticError, withCode(dcPoInterruptShortcut,
+    what & ", reachable from interrupt handler '" & root.name & "'. " &
+    "Interrupt code is always strict and complete, whatever the error " &
+    "policy. Fix: handle the error at its site, and implement any stub"))
+  err.line = span.line
+  err.col = span.col
+  raise withModulePrefix(err, path)
+
+proc walkFromInterrupt(mods: seq[tuple[name, path: string, m: Module]],
+                       owner: Table[NodeId, int], root: Decl) =
+  ## Every fn reachable from `root` over the recorded call edges: none may
+  ## be a stub or hold a site the error policy was handed.
+  var seen: HashSet[NodeId]
+  var work = @[root]
+  while work.len > 0:
+    let d = work.pop()
+    if d.id in seen: continue
+    seen.incl d.id
+    let i = owner.getOrDefault(d.id, -1)
+    let path = mods[max(i, 0)].path
+    if d.isPending: rejectInterrupt(path, d.span, root, "'" & d.name & "' is a stub")
+    if d.fnBody == nil or i < 0: continue
+    let bad = firstShortcut(d.fnBody)
+    if bad != nil:
+      rejectInterrupt(path, bad.span, root,
+                      "an error is left to the error policy in '" & d.name & "'")
+    for c in fnCallees(mods[i].m, d.fnBody):
+      if c.id notin seen: work.add c
+
+proc checkInterruptCodeStrict(mods: seq[tuple[name, path: string, m: Module]]) =
+  ## Owner ruling 2026-11-22: interrupt code is always strict and complete,
+  ## whatever the application's policy. A fn reachable from an `[irq]`
+  ## handler may hold no shortcut site (its error would reach `on unhandled`
+  ## inside the interrupt) and may not be, or call, a stub. Walked after
+  ## every module is checked, over the recorded call edges, by declaration
+  ## id: the reachable set crosses modules.
+  var owner = initTable[NodeId, int]()   # decl id -> index into mods
+  var roots: seq[Decl]
+  for i in 0 ..< mods.len:
+    for d in mods[i].m.allDecls:
+      if d == nil or d.kind != dkFn: continue
+      owner[d.id] = i
+      if emIrq in d.fnEffects: roots.add d
+  for root in roots: walkFromInterrupt(mods, owner, root)
+
 proc checkProgramOnce(mods: seq[tuple[name, path: string, m: Module]],
                       preSigs: Table[string, seq[SigInfo]]): seq[string] =
   ## Signatures are gathered across the whole program first, then each module
@@ -6694,18 +6808,36 @@ proc checkProgramOnce(mods: seq[tuple[name, path: string, m: Module]],
   checkErrCodeCollisions(mods)
   checkRegistry(mods)
   checkResources(mods)   # spec §7.4: kinds are program-wide, so this is too
+  # The error policy (owner ruling 2026-11-22): one per APPLICATION. A site
+  # in a finished module is strict; every other site follows the entry
+  # module's policy, and its shortcuts are listed in the entry's SHORTCUTS
+  # report under the module's name. Only the entry's list used to survive
+  # this loop, so a library's shortcuts appeared in no report at all.
+  let own = ownErrorPolicy(mods[^1].m)
+  let entryPolicy = if own == "": "strict" else: own
+  semLayer.programErrPolicy = entryPolicy
+  semLayer.entryModule = mods[^1].m.id
+  checkFinishedLibraries(mods)
+  noteInertPolicies(mods, entryPolicy)
   memberCalls = @[]
   ifaceMatches = @[]
   let sigs = collectProgramSigs(mods)
-  for (name, path, m) in mods:
+  for i in 0 ..< mods.len:
+    let (name, path, m) = mods[i]
     let scope = importScopeFor(sigs, preSigs, name)
     ifaceMatchModule = path
+    let policy = if i == mods.high: ""
+                 elif isFinishedModule(m): "strict"
+                 else: entryPolicy
     try:
-      result = typecheckModule(m, scope.extern, scope.pending,
-                               scope.fnSigTypes, scope.groups, scope.bounds,
-                               scope.ambiguous, scope.bareOwner)
+      let sites = typecheckModule(m, scope.extern, scope.pending,
+                                  scope.fnSigTypes, scope.groups, scope.bounds,
+                                  scope.ambiguous, scope.bareOwner, policy)
+      for s in sites:
+        result.add(if i == mods.high: s else: name & "::" & s)
     except SemanticError as err:
       raise withModulePrefix(err, path)
+  checkInterruptCodeStrict(mods)
 
 proc checkIfaceMatchesComplete(mods: seq[tuple[name, path: string, m: Module]]) =
   ## A match on an interface value covers every object that satisfies it,

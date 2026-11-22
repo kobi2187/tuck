@@ -14,6 +14,8 @@ import str
 import text
 import chrono
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 extern [impl: nim "./shim/zone_shim", odin "./shim", d "./shim/zone_shim"]:
   fn tzOffsetAt({zone: str, epochSec: int}) -> int [io: sys]
   fn tzIsDst({zone: str, epochSec: int}) -> int [io: sys]

@@ -90,6 +90,19 @@ iterator decls*(m: Module, kind: DeclKind): Decl =
   for d in m.decls:
     if d != nil and d.kind == kind: yield d
 
+proc ownErrorPolicy*(m: Module): string =
+  ## The policy `m`'s own `errors` block names, or "" when it has none.
+  for d in m.decls:
+    if d != nil and d.kind == dkErrors: return d.policyName
+  ""
+
+proc isFinishedModule*(m: Module): bool =
+  ## A FINISHED module declares `errors [policy: strict]` (owner ruling
+  ## 2026-11-22): it handles every error it raises, holds no stubs, and the
+  ## importing application's policy does not reach it. Everything else is
+  ## PARTIAL and follows the entry module's policy.
+  ownErrorPolicy(m) == "strict"
+
 proc findDecl*(m: Module, kind: DeclKind, name: string): Decl =
   ## The named top-level declaration, or nil.
   for d in m.decls(kind):

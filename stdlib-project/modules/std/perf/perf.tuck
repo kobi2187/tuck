@@ -11,6 +11,8 @@
 import seq
 import iter
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 # --- Stopwatch ----------------------------------------------------------------
 # Elapsed time accumulates across start/stop pairs; while running, the time
 # since the last start is added on read.

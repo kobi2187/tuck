@@ -57,6 +57,18 @@ type
     # the matching exkActorRef/exkRegisterRef/exkRegistryRef/exkPoolRef/
     # exkMixinRef. Not a general-purpose lookup for other passes to grow
     # dependent on — those should use declFor on the rewritten reference.
+    programErrPolicy*: string
+      ## The entry module's `errors` policy ("strict" when it declares none).
+      ## Every shortcut site in the program follows it: a finished module
+      ## has none, and a partial one takes the application's (ruling
+      ## 2026-11-22). The emitters read it instead of each module's own block.
+    entryModule*: ModuleId
+    policyNotes*: seq[string]
+      ## The POLICY report: a partial library whose own `continue`/`exit`
+      ## block is inert because another module is the program.
+      ## The application. Only it emits the `on unhandled` handler the
+      ## runtime calls; a partial library's sites reach it through the
+      ## runtime's hook, since a library cannot import the application.
     actorNames*: Table[string, Decl]
     # `Registry.Event` -> every handler for it, across the whole program. A
     # registry's raise proc is emitted in the registry's module, which does not

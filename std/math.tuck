@@ -1,4 +1,7 @@
 # std/math — elementary float functions. Implemented by tuck_rt.
+
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 extern:
   fn sqrt({value: f64}) -> f64 [pure, no_alloc]
   fn pow({base: f64, exp: f64}) -> f64 [pure, no_alloc]

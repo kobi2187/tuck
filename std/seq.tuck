@@ -1,6 +1,9 @@
 # std/seq — indexed access. Implemented by tuck_rt.
 # Bounds are a precondition: an out-of-range index is a program error
 # reported at the call site, not a result the caller matches on.
+
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 extern:
   # What each one does with what it is given is declared, since the
   # compiler cannot read a body-less fn: `at` hands back the element itself

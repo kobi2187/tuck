@@ -439,3 +439,5 @@ proc newDCtx*(m: Module, realModules: ModuleMap,
                        idx: buildDeclIndex(m), res: res, used: newModuleUse(), shapes: shapes)
   for d in m.decls:
     if d != nil and d.kind == dkErrors: result.errPolicy = d.policyName
+  # One policy per application (ruling 2026-11-22).
+  if res.programErrPolicy != "": result.errPolicy = res.programErrPolicy

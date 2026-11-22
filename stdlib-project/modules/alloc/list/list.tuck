@@ -24,6 +24,8 @@
 # removal O(1). `toSeq` is how you get order.
 import seq
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 # `next`/`prev` of -1 mean "no node there". A sum type would say that more
 # honestly, but every read would then cost a match, on a field that is
 # compared far more often than it is inspected.

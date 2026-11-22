@@ -9,6 +9,7 @@ struct TRec_value(T_value) {
 void tuck_unhandled(ushort code, string site) {
     rt.tuckReportUnhandled(code, site);
 }
+shared static this() { rt.tuckUnhandledHook = &tuck_unhandled; }
 
 rt.TuckResult!(TRec_value!(ushort)) tuckˑfnˑreadSensor(ubyte port) {
     if ((port > cast(ubyte)3)) {

@@ -497,6 +497,19 @@ proc tuckReportUnhandled*(code: uint16, site: string) =
   ## site on stderr and lets the program continue.
   stderr.writeLine("TUCK UNHANDLED: error " & $code & " at " & site)
 
+type TuckUnhandledProc* = proc (code: uint16, site: string) {.nimcall, gcsafe.}
+var tuckUnhandledHook*: TuckUnhandledProc
+  ## The application's `on unhandled`, registered at its module init. A
+  ## partial library's shortcut sites reach it through `tuckRouteUnhandled`:
+  ## the library cannot import the application (ruling 2026-11-22).
+
+proc tuckRouteUnhandled*(code: uint16, site: string) {.gcsafe.} =
+  ## A partial library's shortcut site: the application's handler, or the
+  ## default report when none is registered.
+  {.cast(gcsafe).}:
+    if tuckUnhandledHook != nil: tuckUnhandledHook(code, site)
+    else: tuckReportUnhandled(code, site)
+
 type TuckMemoTable*[K, V] = object
   ## The unbounded `fn memo` cache: every distinct argument list ever seen.
   t: stdtables.Table[K, V]

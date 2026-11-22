@@ -1164,15 +1164,24 @@ crash) and `exit` are legitimate choices while developing.
 - Release needs no separate rule: a `strict` application makes every partial
   library's remaining shortcuts compile errors.
 
-Built today (measured): the policy is per module; a library's own
-`continue` block runs its own handler; a library without a block checks
-strict whatever the application declares; a library's shortcut sites appear
-in no report. No module in `std/` (12) or `stdlib-project/modules/` (82)
-declares `strict` or contains a stub, and all already check strict, so
-marking them finished is mechanical. Still open: E-Q16, shortcuts in
-interrupt context (`testing_experiment/DESIGN-EVENTS.md` §7).
-Spec §4.9 ("one `errors` declaration per application") matches this ruling;
-the compiler does not yet.
+- **Interrupt code is always strict and complete** (E-Q16, ruled the same
+  day: "the embedded part is rigid"): a fn reachable from an `[irq]` handler
+  may not leave an error to the policy or be or call a stub, under any
+  policy.
+
+**BUILT 2026-11-22** (`tests/suites/error_policy.nim`, 11 assertions, the
+run-time ones on all three backends): the checker applies the one rule per
+site; a partial library's sites are listed as `lib::...` in SHORTCUTS and
+route to the application's handler through the runtime's
+`tuckRouteUnhandled` (registered by the application at init: a Nim
+top-level statement, an Odin `@(init)` proc, a D module constructor); an
+inert library block is listed in a new POLICY report; TK-PO02 (stub in a
+finished library), TK-PO03 (finished imports partial) and TK-PO04
+(interrupt code) are registered; every module in `std/` (12) and
+`stdlib-project/modules/` (82) declares `strict`. The signature index now
+serves only finished modules, since a partial module's verdict depends on
+the importing application. Spec §4.9 and LANGUAGE-OVERVIEW §4 say the
+same.
 
 ## Partial
 | Feature | Spec | Missing piece |

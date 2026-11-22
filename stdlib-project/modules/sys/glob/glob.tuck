@@ -16,6 +16,8 @@ import files
 import regex
 import fs
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 # `p` relative to `base`, "" when it is not under it.
 fn relativeOf({p: str, base: str}) -> str:
   let r = {p: p, base: base} relativeTo
