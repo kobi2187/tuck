@@ -27,7 +27,7 @@ ladder (VISION §4.9), never "code written".
 - Freestanding Nim build for Cortex-M3: picolibc (Thumb), startup, two QEMU
   boards (`lm3s6965evb`, `stm32vldiscovery`) [`sim_tick`, `metal_runtime`].
 - Stackless tasks interleave on metal; fire-and-forget tasks drain after
-  `main` [qemu, stage8/9/10].
+  `main` [qemu, two_tasks, task_await, task_fire_forget].
 - `register` access incl. SVD-generated modules across module boundaries, on
   three backends [`svd_import`].
 - `[irq]` marker, ISR reachability, `tuck audit --isr` (text/JSON/SARIF),
@@ -67,10 +67,10 @@ once). Merge early, behind a clear boundary.
 
 | ID | Work | Exit | Rung |
 |---|---|---|---|
-| 0.1 | `--freestanding` as a real flag implying stackless + `--frames:heap` (until 1.3) + `--actors:single` + the freestanding Nim flags; `tuck build --board:NAME` reads a board descriptor (machine, CPU, linker, SP, console) instead of `TUCK_BOARD` arms in a script | `tuck build --board:lm3s6965evb stage9` produces the same ELF as `qemu-run.sh`; the script becomes a thin wrapper | qemu |
+| 0.1 | `--freestanding` as a real flag implying stackless + `--frames:heap` (until 1.3) + `--actors:single` + the freestanding Nim flags; `tuck build --board:NAME` reads a board descriptor (machine, CPU, linker, SP, console) instead of `TUCK_BOARD` arms in a script | `tuck build --board:lm3s6965evb `task_await` produces the same ELF as `qemu-run.sh`; the script becomes a thin wrapper | qemu |
 | 0.2 | Board files split per board (today one `startup_cortex_m.c` serves both); `tuck_board_exit`/`tuck_fatal`/console in a per-board `board.c` | stm32vldiscovery has its own startup; both boards green | qemu |
 | 0.3 | ~~**D10**: picolibc as pinned tarball + SHA-256~~ **DONE 2026-11-22**: `boards/picolibc/build.sh` fetches the 1.8.12 release (byte-identical to the vendored tree, `diff -rq` empty) and checks its SHA-256 | the 4,193 vendored files are gone; QEMU suites green on the fetched build | qemu |
-| 0.4 | CI job: apt `qemu-system-arm gcc-arm-none-eabi gdb-multiarch`, cached picolibc, runs `metal_runtime sim_tick crash_decode` | green on a PR; metal suites never SKIP in CI | qemu |
+| 0.4 | ~~CI job for the metal toolchain~~ **DONE 2026-11-22**: CI installs `qemu-system-arm gcc-arm-none-eabi gdb-multiarch meson ninja-build` and builds picolibc once (cached). On PR #226 the metal suites ran on GitHub, not SKIP: `metal_runtime` 10/10 (incl. the gdb breakpoint on the target), `sim_tick` 6/6, `crash_decode` 13/13 | green on a PR; metal suites never SKIP in CI | qemu |
 | 0.5 | ~~**D11**: move to `boards/`, `tools/metal/`, `tests/metal/` stages~~ **DONE 2026-11-22**: `testing_experiment/` is gone; docs in `docs/bare-metal/`, programs renamed by what they prove | `git grep testing_experiment` only in the archive | ch |
 | 0.6 | Merge to `main`; spec Part 8/9 and `LANGUAGE-OVERVIEW` get a "bare metal (experimental)" section listing what works; `roadmap.nim` pins each "works" claim above as `featureDone` and each Phase 2–4 item as `featureMissing` | `./tests/run` + `roadmap` green on main | ch |
 
@@ -85,11 +85,11 @@ spelling lands before the owner rules on them.
 |---|---|---|---|
 | 1.0 | **Design round** for D13 (leading direction: interrupts as registry events, `DESIGN-interrupt-events.md`, questions E-Q1..E-Q7), then D1, D2, D8, D12: write the reuse-test programs (one unchanged UART driver; two applications on two boards with different instances, lines, priorities and load) in pseudo-Tuck under two or three competing designs; compare what the application must write in the common case and how the error reads when the compiler cannot infer | a short design note in `docs/` with the candidates side by side, and the owner's ruling recorded in the main `ROADMAP.md` rulings ledger | — |
 | 1.0a | **Finish the event registry to its spec** (no ruling needed): more than one handler per event, in declaration order (E1); `latest` (E2); handlers inside an actor, delivered as messages once E-Q2's reading is confirmed (E3); behavioural tests on all three backends (E4) | the three `featureMissing` "Part 10" pins in `roadmap.nim` flip to `featureDone` | host |
-| 1.1 | `-Os -ffunction-sections -fdata-sections -Wl,--gc-sections` for metal builds | every metal stage green at -Os; flash for stage9 drops (record before/after) | qemu |
+| 1.1 | `-Os -ffunction-sections -fdata-sections -Wl,--gc-sections` for metal builds | every metal program green at -Os; flash for `task_await` drops (record before/after) | qemu |
 | 1.2 | Remove the TLS/GOT hack: `-ftls-model=local-exec`, or emit Nim's threadvars as plain globals under freestanding | `tuck_tls`, asm `__aeabi_read_tp` and the stm32 `.got` copy deleted; both boards green | qemu |
-| 1.3 | **D2** (after 1.0): static frame homes, counts inferred from the whole program where knowable, an application-level bound where not; `--frames:static` becomes the metal default; the bump heap goes | stage10 compiles with no annotation (two spawn sites, count inferred); stage21's data-dependent spawn is refused with an error naming the site and asking the application for a bound; `freestandingHeap` gone | ch + qemu |
+| 1.3 | **D2** (after 1.0): static frame homes, counts inferred from the whole program where knowable, an application-level bound where not; `--frames:static` becomes the metal default; the bump heap goes | `task_fire_forget` compiles with no annotation (two spawn sites, count inferred); `panic_frame_heap`'s data-dependent spawn is refused with an error naming the site and asking the application for a bound; `freestandingHeap` gone | ch + qemu |
 | 1.4 | Generated linker script from board regions: reserved + checked stack, `ALIGN(4)` section ends, `.noinit` crash record, flip-link layout | a deliberate stack overflow faults instead of corrupting `.bss`; the crash record survives a reset | qemu |
-| 1.5 | RAM/flash budget printed by `tuck build`, error over budget | budget for stage9 matches `arm-none-eabi-size` within the stack reservation | qemu |
+| 1.5 | RAM/flash budget printed by `tuck build`, error over budget | budget for `task_await` matches `arm-none-eabi-size` within the stack reservation | qemu |
 | 1.6 | **D3** (after 1.0) w1c / write-only fields as chip-package facts; svd2tuck keeps `modifiedWriteValues`; codegen never RMWs such a register | a w1c status register write emits a single store of the mask (emits pin); STM32 USART SR fields generated as w1c | ch |
 | 1.7 | **D4** 32-bit host sim for metal boards | an `int` overflow at 2^31 traps in `tuck sim --host` as it does on QEMU | host |
 | 1.8 | Fault handler picks MSP/PSP from EXC_RETURN; decoder fixes: `--debug-lines` no longer attributes the entry wrapper to the `.tuck` file | gdb backtrace shows no `.tuck` line past the file's length | qemu |
@@ -108,7 +108,7 @@ Depends on Phase 1.4 (vector table lives in the generated layout).
 | 2.3 | UART RX interrupt (PL011 on lm3s, fed through QEMU's serial) | bytes typed on QEMU stdin reach a task via the handler | qemu |
 | 2.4 | Priorities from the application's bindings; ceiling analysis over the composed program; `critical:` lowers to a BASEPRI raise to the resource's ceiling (PRIMASK on M0) | a higher-priority handler runs inside a low ceiling's section; M0 build (QEMU `microbit`) still correct | qemu |
 | 2.5 | ISR audit uses priorities: two-handler sharing gated exactly when priorities differ | the "same priority" caveat is gone from the report | ch |
-| 2.6 | Fault injection from outside: an interrupt storm and a dropped interrupt driven by the harness (QEMU gdbstub / Renode), not by the program | stage15 rewritten without `faultIsrDrop()`; the injected run is reproducible | qemu |
+| 2.6 | Fault injection from outside: an interrupt storm and a dropped interrupt driven by the harness (QEMU gdbstub / Renode), not by the program | `fault_isr_drop` rewritten without `faultIsrDrop()`; the injected run is reproducible | qemu |
 | 2.7 | **The reuse test, for real:** the 1.0 programs as Tuck. One unchanged UART driver in two applications on the two QEMU boards, different instances, lines and priorities | both build and run; each gets its own correct ceilings; `git diff` of the driver between the two is empty | qemu |
 
 ## Phase 3 — Waiting on hardware (the metal reactor)
@@ -122,7 +122,7 @@ Depends on Phase 2.2. Closes spec §9's "not designed yet".
 | 3.3 | `WFI` idle with the race-free sequence | instruction count (`-icount`) during a 1 s sleep is near zero, not a busy loop | qemu |
 | 3.4 | Typed ISR queues (generalise the one-word slot); a task awaits one | UART echo through a queue, overruns counted | qemu |
 | 3.5 | `on select` over queues and timers | "echo UART, blink at 1 Hz, time out after 5 s idle" in one program | qemu |
-| 3.6 | Extern waits declared against a wait source; nothing on metal uses a helper stack | `--frames:static` accepts stage5/stage6 once their HAL waits are declared | ch + qemu |
+| 3.6 | Extern waits declared against a wait source; nothing on metal uses a helper stack | `--frames:static` accepts `two_blinkers` and `actor_mailbox` once their HAL waits are declared | ch + qemu |
 
 ## Phase 4 — Observability on real transports
 
@@ -169,7 +169,7 @@ lands on all three backends or with a pinned, tracked gap.
 
 | ID | Work | Exit | Rung |
 |---|---|---|---|
-| 8.1 | D via LDC `-betterC -mtriple=thumbv7m-none-eabi` against the contract | stage9, stage18, stage20 green on QEMU in D | qemu |
+| 8.1 | D via LDC `-betterC -mtriple=thumbv7m-none-eabi` against the contract | `task_await`, `critical_nest`, `panic_bounds` green on QEMU in D | qemu |
 | 8.2 | Odin `-target:freestanding_arm32` against the contract | same three stages in Odin | qemu |
 | 8.3 | `metal_runtime` runs every QEMU stage on every metal backend | three-backend metal parity, like `sim_host` | qemu |
 
@@ -193,7 +193,7 @@ lands on all three backends or with a pinned, tracked gap.
 
 ## Dependency graph
 
-```text
+``text
 Phase 0 (feature + merge) ──► Phase 1 (foundations)
                                  │
                  1.4 layout ─────┼──► Phase 2 (interrupts) ──► Phase 3 (reactor)
@@ -203,7 +203,7 @@ Phase 0 (feature + merge) ──► Phase 1 (foundations)
                                             └──► 2.4 priorities ──┘
 Phase 3.1 contract ──► Phase 8 (D, Odin on metal)        Phase 6 needs 1.6 + 2.2
 Phase 7 (hardware) needs 1.4 + 2.2 + 4.1                 Phase 9 needs 2.6 + 4.4
-```
+``
 
 Critical path to the flagship ("blink + UART echo, interrupt-driven, idle
 CPU, on hardware, with a reusable driver"): 0.1 → **1.0** + 1.0a → 1.4 → 2.1 → 2.2 →
@@ -239,13 +239,13 @@ D7 → Phase 8, D10 → 0.3, D11 → 0.5. Phase 0 needs only D10 and D11.
 
 ## How to work on this track
 
-```sh
+``sh
 nim c --hints:off -o:tuck tuck.nim
 ./tests/run metal_runtime sim_tick crash_decode isr_discipline   # metal gate
 TUCK_SKIP_TUCK_BUILD=1 ./tuck sim tests/metal/PROGRAM.tuck  # one program, QEMU
 ./tuck sim tests/metal/PROGRAM.tuck --host                  # three backends
 ./tools/metal/gdb-run.sh STAGE LINE                      # break on target
-```
+``
 
 Each item ends with: the named suite green, the stage's QEMU output pasted
 into the commit message or the review log with a what/why/fix line, and this
