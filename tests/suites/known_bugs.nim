@@ -5467,4 +5467,87 @@ type Cell[T]:
   t.quietly: t.emitsD "", "alias \\S+ = \\S+Cell;"
   t.bugFixed "A118: another module's generic type is deducible on D"
 
+  # A119-A122 were found writing the device programs (tests/metal/devices,
+  # docs/bare-metal/PROGRAMS-2026-11-22.md).
+
+  # A119: a bare record literal inside a list returned as Seq[T] passes the
+  # checker and then fails the Nim build (an anonymous tuple where a seq of T
+  # is expected). The same class as A49, so the same ruling applies: the
+  # constructor is written out, and the checker says so (TK-TY45).
+  t.src """
+type P:
+  a: int
+
+fn ps() -> Seq[P]:
+  return [{a: 1}, {a: 2}]
+
+fn main() -> int:
+  return ps.len
+"""
+  t.quietly: t.badCheck "", "TK-TY45"
+  t.bugOpen "A119: a bare record literal in a returned list is refused (TK-TY45)"
+
+  # A120: stating a local's type loses its variant, so a sealed transition
+  # out of it is refused: `var m = M.Idle` then `m = {n: 1} M.Run` inside the
+  # `Idle:` arm checks, but `var m: M = M.Idle` does not.
+  t.src """
+type M [sealed]:
+  | Idle
+  | Run({n: int})
+  transitions:
+    Idle -> Run
+    Run -> Idle
+
+fn main() -> int:
+  var m: M = M.Idle
+  match m:
+    Idle:
+      m = {n: 1} M.Run
+    Run: return 1
+  return 0
+"""
+  t.quietly: t.okCheck ""
+  t.bugOpen "A120: a typed local keeps its variant for a sealed transition"
+
+  # A121: a match whose arms are a void call and a `return` was refused as
+  # "void vs unit"; `if` already treated both as statements (#148).
+  t.src """
+type K:
+  | A
+  | B
+
+fn hello():
+  let z = 1
+
+fn h({k: K}):
+  match k:
+    A: hello
+    B: return
+
+fn main() -> int:
+  {k: K.A} h
+  return 3
+"""
+  t.quietly: t.hostRuns("", 3)
+  t.bugFixed "A121: a void-call arm and a return arm agree"
+
+  # A122: an empty list in a `with` update is refused for having no element
+  # type (TK-TY20), though the field it replaces gives it one. The same list
+  # in a constructor (`{values: [], n: 0} Fed`) checks.
+  t.src """
+type Fed:
+  values: Seq[int]
+  n: int
+
+fn reset({f: Fed}) -> Fed:
+  return f with {values: [], n: 0}
+
+fn main() -> int:
+  let f = {values: [1, 2], n: 4} Fed
+  let g = {f: f} reset
+  return g.values.len + 5
+"""
+  t.quietly: t.hostRuns("", 5)
+  t.bugOpen "A122: an empty list in a `with` update takes the field's type"
+
   t.finish()

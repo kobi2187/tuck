@@ -110,6 +110,8 @@ Depends on Phase 1.4 (vector table lives in the generated layout).
 
 | ID | Work | Exit | Rung |
 |---|---|---|---|
+| 2.0 | **Actors on metal** (found by the device programs, `PROGRAMS-2026-11-22.md`): the mailbox and its drain are hosted-only (`tuck_rt_stdlib_externs`), so every `actor` fails a board build with `Mailbox` undeclared; `actor_mailbox` had only run against host shims. Split the mailbox out of the hosted externs and drain it from the stackless scheduler | `tuck b tests/metal/actor_mailbox.tuck --board:lm3s6965evb` builds and runs under QEMU; the three device programs build for a board | qemu |
+| 2.0a | **DMA buffers** (needs an owner ruling): a statically placed buffer whose address a DMA stream can be given, without pointers in Tuck code. DShot, SD over SPI-DMA, I2S and ADC sampling all need it | the drone's `dshotWrite` extern becomes Tuck | ch + qemu |
 | 2.1 | svd2tuck emits the interrupt list (name → number); board build generates the full vector table; unbound vectors go to a default handler whose FAULT line names the vector | `nm` shows every vector; an unexpected IRQ reports its name | qemu |
 | 2.2 | **D1** (ruled 2026-11-22: `bind LINE -> module.fn [priority: N, queue: N]` in the application, DESIGN-interrupt-events §5): the application binds lines to driver handlers; the compiler places them and enables the lines | a **SysTick handler preempts a busy task** and both observe a shared counter correctly; an unbound or doubly-bound line is a compile error | qemu |
 | 2.3 | UART RX interrupt (PL011 on lm3s, fed through QEMU's serial) | bytes typed on QEMU stdin reach a task via the handler | qemu |

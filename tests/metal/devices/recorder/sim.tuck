@@ -1,0 +1,140 @@
+# The recorder on the host: one session against a simulated VS1063a and a
+# simulated microSD card. Record 3 s of 128 kbit/s MP3, turn the volume knob,
+# play it back, and check every byte that went to the card comes back out.
+#
+# The simulated encoder produces what the real one would: 16 000 bytes a
+# second (8 000 HDAT0 words), read in 10 ms polls, then after SM_CANCEL a
+# tail of words and an odd final byte reported through endFillByte (§11.6.2).
+#
+# Exit status: blocks written to the card.
+
+import console
+import seq
+import str
+import session
+
+type Card:
+  blocks: Seq[Seq[u8]]
+  filling: Seq[u8]           # the block being filled
+  bytes: int
+  sum: int                   # a running checksum of every byte stored
+
+fn fakeWord({n: int}) -> int:
+  ## The simulated encoder's n-th output word.
+  return (n * 7919 + 13) % 65536
+
+fn store({card: Card, b: u8}) -> Card:
+  ## One byte onto the card: a full 512-byte block is written out.
+  var c = card
+  c ..filling {{items: c.filling, value: b} push}
+  c ..bytes {c.bytes + 1}
+  c ..sum {(c.sum + (b ^int)) % 1000003}
+  if c.filling.len == blockBytes:
+    c ..blocks {{items: c.blocks, value: c.filling} push}
+    c ..filling {[]}
+  return c
+
+fn storeWord({card: Card, word: int}) -> Card:
+  ## An HDAT0 word: high byte first, as §11.6.3 requires.
+  let hi = {word: word} highByte
+  let lo = {word: word} lowByte
+  let c = {card: card, b: hi} store
+  return {card: c, b: lo} store
+
+fn finish({card: Card}) -> Card:
+  ## The last, partly filled block is written padded with zeros.
+  if card.filling.len == 0:
+    return card
+  var pad = card.filling
+  for pad.len < blockBytes:
+    pad = {items: pad, value: 0 ~u8} push
+  var c = card
+  c ..blocks {{items: c.blocks, value: pad} push}
+  c ..filling {[]}
+  return c
+
+fn record({card: Card, seconds: int}) -> Card:
+  ## SCI polls every 10 ms: HDAT1 says 80 words are waiting each time.
+  var c = card
+  var n = 0
+  for tick in 1 .. seconds * 100:
+    for w in 1 .. 80:
+      let w = {n: n} fakeWord
+      c = {card: c, word: w} storeWord
+      n = n + 1
+  return c
+
+fn drainAfterCancel({card: Card, words: int, endFill: int}) -> Card:
+  ## After SM_CANCEL: the words still buffered, then endFillByte. Bit 15 set
+  ## means the file has an odd length and bits 7:0 are its last byte.
+  var c = card
+  for i in 0 .. words - 1:
+    let w = {n: 300000 + i} fakeWord
+    c = {card: c, word: w} storeWord
+  if endFill >= 32768:
+    let last = (endFill % 256) ~u8
+    c = {card: c, b: last} store
+  return c
+
+fn playBack({card: Card, length: int}) -> int:
+  ## Read the blocks back and feed the decoder 32 bytes per DREQ, then the
+  ## 2052 fill bytes of §11.5.2. Returns the checksum of the file bytes sent.
+  var sent = 0
+  var sum = 0
+  for b in card.blocks:
+    for i in 0 .. blockBytes - 1:
+      if sent < length:
+        sum = (sum + (b[i] ^int)) % 1000003
+        sent = sent + 1
+  return sum
+
+fn main() -> int [io]:
+  var mode = Mode.Idle      # not `var mode: Mode = ...`: that loses the variant (found here)
+  var card = {blocks: [], filling: [], bytes: 0, sum: 0} Card
+
+  # Record pressed.
+  let first = {mode: mode, button: Button.Record} react
+  if first != Command.StartRecording:
+    return 1
+  let setup = mp3RecordingSetup
+  if setup[setup.len - 1].reg != sciAiAddr:
+    return 2                 # the patched encoder starts by AIADDR = 0x50
+  match mode:
+    Idle:
+      mode = {sectors: 0} Mode.Recording
+    Recording: return 3
+    Finishing: return 3
+    Playing: return 3
+  card = {card: card, seconds: 3} record
+
+  # Stop pressed: cancel, drain 37 words and an odd last byte.
+  let stop = {mode: mode, button: Button.Stop} react
+  if stop != Command.CancelEncoder:
+    return 4
+  match mode:
+    Recording:
+      mode = {sectors: card.blocks.len} Mode.Finishing
+    Idle: return 5
+    Finishing: return 5
+    Playing: return 5
+  card = {card: card, words: 37, endFill: 32768 + 85} drainAfterCancel
+  card = {card: card} finish
+  mode = Mode.Idle
+
+  # The knob: ten detents quieter, three back.
+  let att = {clicks: 10 - 3} attenuationFor
+  let vol = {attenuation: att} volumeWord
+  {text: "SCI_VOL " + vol.toStr + " (" + att.toStr + " half-dB steps)"} console::printLine
+
+  # Play pressed.
+  let play = {mode: mode, button: Button.Play} react
+  if play != Command.StartPlayback:
+    return 6
+  let back = {card: card, length: card.bytes} playBack
+  {text: "recorded " + card.bytes.toStr + " bytes in " + card.blocks.len.toStr +
+         " blocks"} console::printLine
+  if back != card.sum:
+    {text: "playback differs from the recording"} console::printLine
+    return 7
+  {text: "playback matches"} console::printLine
+  return card.blocks.len

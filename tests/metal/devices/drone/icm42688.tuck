@@ -1,0 +1,69 @@
+# TDK InvenSense ICM-42688-P on SPI1, bank 0 registers (addresses as in the
+# Linux inv_icm42600 and ChromiumOS icm426xx drivers): GYRO_DATA_X1 0x25
+# (six bytes, X/Y/Z high byte first, signed), PWR_MGMT0 0x4E, GYRO_CONFIG0
+# 0x4F, ACCEL_CONFIG0 0x50, WHO_AM_I 0x75 (reads 0x47). An SPI read sets bit 7
+# of the address byte. At +-2000 deg/s a count is 1/16.4 deg/s.
+
+import f405
+
+type ImuError:
+  | WrongChip
+
+type Gyro:
+  x: f32
+  y: f32
+  z: f32
+
+fn spi({tx: int}) -> int [irq_safe, no_alloc]:
+  for not SPI1_SR.TXE:
+    discard
+  SPI1_DR.DR = tx ~u32
+  for not SPI1_SR.RXNE:
+    discard
+  return SPI1_DR.DR ^int
+
+fn writeReg({reg: int, value: int}):
+  GPIOA_BSRR.BSRR = 1048576         # CS low (reset bit 4)
+  let a = {tx: reg} spi
+  let b = {tx: value} spi
+  GPIOA_BSRR.BSRR = 16
+
+fn readReg({reg: int}) -> int:
+  GPIOA_BSRR.BSRR = 1048576
+  let a = {tx: reg + 128} spi
+  let v = {tx: 0} spi
+  GPIOA_BSRR.BSRR = 16
+  return v
+
+fn start() -> !int [io, error: ImuError]:
+  ## Check the chip, then gyro and accelerometer in low-noise mode at
+  ## +-2000 deg/s, 1 kHz output data rate.
+  let who = {reg: 117} readReg      # 0x75
+  if who != 71:                      # 0x47
+    err ImuError.WrongChip
+  {reg: 79, value: 6} writeReg       # GYRO_CONFIG0: FS 000 (2000 dps), ODR 0110 (1 kHz)
+  {reg: 80, value: 6} writeReg       # ACCEL_CONFIG0: +-16 g, 1 kHz
+  {reg: 78, value: 15} writeReg      # PWR_MGMT0: gyro LN, accel LN
+  return who
+
+fn signed16({hi: int, lo: int}) -> int:
+  let v = hi * 256 + lo
+  if v >= 32768:
+    return v - 65536
+  return v
+
+fn readGyro() -> Gyro:
+  ## One burst of the six gyro bytes, in deg/s.
+  GPIOA_BSRR.BSRR = 1048576
+  let a = {tx: 37 + 128} spi        # 0x25 | read
+  let xh = {tx: 0} spi
+  let xl = {tx: 0} spi
+  let yh = {tx: 0} spi
+  let yl = {tx: 0} spi
+  let zh = {tx: 0} spi
+  let zl = {tx: 0} spi
+  GPIOA_BSRR.BSRR = 16
+  let x = {hi: xh, lo: xl} signed16
+  let y = {hi: yh, lo: yl} signed16
+  let z = {hi: zh, lo: zl} signed16
+  return {x: (x ~f32) /f 16.4, y: (y ~f32) /f 16.4, z: (z ~f32) /f 16.4} Gyro

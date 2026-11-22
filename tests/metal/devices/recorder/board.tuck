@@ -1,0 +1,195 @@
+# The STM32F103C8T6 ("Blue Pill") registers the recorder touches, from ST
+# RM0008. The chip runs on its reset clock, the 8 MHz HSI.
+#
+# Pins:
+#   SPI1  PA5 SCK, PA6 MISO, PA7 MOSI  -> VS1063a SCLK, SO, SI
+#         PA4 -> XCS (command chip select), PB0 -> XDCS (data chip select),
+#         PB1 <- DREQ (high: 32 bytes of room), PB10 -> XRESET
+#   SPI2  PB13 SCK, PB14 MISO, PB15 MOSI -> microSD; PB12 -> card CS
+#   TIM4  PB6, PB7 <- PEC11R A, B (encoder mode: counted in hardware)
+#   EXTI  PA0 Record, PA1 Play, PA2 Stop (buttons to ground, pull-ups)
+#
+# One register block per peripheral instance, since register layouts as
+# types (D12) are not built yet: SPI1 and SPI2 are the same layout written
+# out twice.
+
+register RCC_APB2ENR at 0x40021018:
+  AFIOEN: bit 0 [read, write]
+  IOPAEN: bit 2 [read, write]
+  IOPBEN: bit 3 [read, write]
+  SPI1EN: bit 12 [read, write]
+
+register RCC_APB1ENR at 0x4002101C:
+  TIM4EN: bit 2 [read, write]
+  SPI2EN: bit 14 [read, write]
+
+register GPIOA_CRL at 0x40010800:
+  PIN0: bits 0..3 [read, write]
+  PIN1: bits 4..7 [read, write]
+  PIN2: bits 8..11 [read, write]
+  PIN4: bits 16..19 [read, write]
+  PIN5: bits 20..23 [read, write]
+  PIN6: bits 24..27 [read, write]
+  PIN7: bits 28..31 [read, write]
+
+register GPIOA_ODR at 0x4001080C:
+  ODR: bits 0..15 [read, write]
+
+register GPIOA_BSRR at 0x40010810:
+  BSRR: bits 0..31 [write]
+
+register GPIOB_CRL at 0x40010C00:
+  PIN0: bits 0..3 [read, write]
+  PIN1: bits 4..7 [read, write]
+  PIN6: bits 24..27 [read, write]
+  PIN7: bits 28..31 [read, write]
+
+register GPIOB_CRH at 0x40010C04:
+  PIN10: bits 8..11 [read, write]
+  PIN12: bits 16..19 [read, write]
+  PIN13: bits 20..23 [read, write]
+  PIN14: bits 24..27 [read, write]
+  PIN15: bits 28..31 [read, write]
+
+register GPIOB_IDR at 0x40010C08:
+  IDR1: bit 1 [read]
+
+register GPIOB_BSRR at 0x40010C10:
+  BSRR: bits 0..31 [write]
+
+register AFIO_EXTICR1 at 0x40010008:
+  EXTI0: bits 0..3 [read, write]
+  EXTI1: bits 4..7 [read, write]
+  EXTI2: bits 8..11 [read, write]
+
+register EXTI_IMR at 0x40010400:
+  MR: bits 0..2 [read, write]
+
+register EXTI_FTSR at 0x4001040C:
+  TR: bits 0..2 [read, write]
+
+# Write 1 to clear: one full-width field so a write is a plain store
+# ([w1c] is ruled, not built: D3).
+register EXTI_PR at 0x40010414:
+  PR: bits 0..19 [read, write]
+
+register SPI1_CR1 at 0x40013000:
+  MSTR: bit 2 [read, write]
+  BR: bits 3..5 [read, write]
+  SPE: bit 6 [read, write]
+  SSI: bit 8 [read, write]
+  SSM: bit 9 [read, write]
+
+register SPI1_SR at 0x40013008:
+  RXNE: bit 0 [read]
+  TXE: bit 1 [read]
+
+register SPI1_DR at 0x4001300C:
+  DR: bits 0..7 [read, write]
+
+register SPI2_CR1 at 0x40003800:
+  MSTR: bit 2 [read, write]
+  BR: bits 3..5 [read, write]
+  SPE: bit 6 [read, write]
+  SSI: bit 8 [read, write]
+  SSM: bit 9 [read, write]
+
+register SPI2_SR at 0x40003808:
+  RXNE: bit 0 [read]
+  TXE: bit 1 [read]
+
+register SPI2_DR at 0x4000380C:
+  DR: bits 0..7 [read, write]
+
+register TIM4_CR1 at 0x40000800:
+  CEN: bit 0 [read, write]
+
+register TIM4_SMCR at 0x40000808:
+  SMS: bits 0..2 [read, write]
+
+register TIM4_CCMR1 at 0x40000818:
+  CC1S: bits 0..1 [read, write]
+  IC1F: bits 4..7 [read, write]
+  CC2S: bits 8..9 [read, write]
+  IC2F: bits 12..15 [read, write]
+
+register TIM4_CNT at 0x40000824:
+  CNT: bits 0..15 [read, write]
+
+register TIM4_ARR at 0x4000082C:
+  ARR: bits 0..15 [read, write]
+
+register NVIC_ISER0 at 0xE000E100:
+  SETENA: bits 0..31 [read, write]
+
+# GPIO pin modes (RM0008 §9.2.1): CNF in the high two bits, MODE in the low.
+const inputPullUp: u32 = 8        # CNF 10, MODE 00 (ODR selects up)
+const inputFloating: u32 = 4      # CNF 01, MODE 00
+const outPushPull: u32 = 2        # CNF 00, MODE 10 (2 MHz)
+const altPushPull: u32 = 11       # CNF 10, MODE 11 (50 MHz)
+
+fn setupPins():
+  RCC_APB2ENR.AFIOEN = true
+  RCC_APB2ENR.IOPAEN = true
+  RCC_APB2ENR.IOPBEN = true
+  RCC_APB2ENR.SPI1EN = true
+  RCC_APB1ENR.SPI2EN = true
+  RCC_APB1ENR.TIM4EN = true
+  GPIOA_CRL.PIN0 = inputPullUp       # Record
+  GPIOA_CRL.PIN1 = inputPullUp       # Play
+  GPIOA_CRL.PIN2 = inputPullUp       # Stop
+  GPIOA_ODR.ODR = 7                  # pull-ups on PA0..PA2
+  GPIOA_CRL.PIN4 = outPushPull       # XCS
+  GPIOA_CRL.PIN5 = altPushPull       # SCK1
+  GPIOA_CRL.PIN6 = inputFloating     # MISO1
+  GPIOA_CRL.PIN7 = altPushPull       # MOSI1
+  GPIOB_CRL.PIN0 = outPushPull       # XDCS
+  GPIOB_CRL.PIN1 = inputFloating     # DREQ
+  GPIOB_CRL.PIN6 = inputFloating     # encoder A (module has pull-ups)
+  GPIOB_CRL.PIN7 = inputFloating     # encoder B
+  GPIOB_CRH.PIN10 = outPushPull      # XRESET
+  GPIOB_CRH.PIN12 = outPushPull      # card CS
+  GPIOB_CRH.PIN13 = altPushPull      # SCK2
+  GPIOB_CRH.PIN14 = inputFloating    # MISO2
+  GPIOB_CRH.PIN15 = altPushPull      # MOSI2
+  GPIOA_BSRR.BSRR = 16               # XCS high (bit 4 set)
+  GPIOB_BSRR.BSRR = 1 + 4096         # XDCS and card CS high
+
+fn setupSpi():
+  ## Both buses mode 0, software chip select. SPI1 starts at 8 MHz / 32 =
+  ## 250 kHz: under CLKI/7 for the VS1063a's SCI reads at its 12.288 MHz
+  ## reset clock (§8.4). SPI2 also starts slow, as SD initialisation
+  ## requires (100-400 kHz).
+  SPI1_CR1.BR = 4
+  SPI1_CR1.SSM = true
+  SPI1_CR1.SSI = true
+  SPI1_CR1.MSTR = true
+  SPI1_CR1.SPE = true
+  SPI2_CR1.BR = 4
+  SPI2_CR1.SSM = true
+  SPI2_CR1.SSI = true
+  SPI2_CR1.MSTR = true
+  SPI2_CR1.SPE = true
+
+fn setupEncoder():
+  ## TIM4 encoder mode 3: counts every edge of A and B, 4 per detent on a
+  ## PEC11R-xxxxx-S0024 (24 pulses, 24 detents per turn).
+  TIM4_CCMR1.CC1S = 1
+  TIM4_CCMR1.CC2S = 1
+  TIM4_CCMR1.IC1F = 15               # strongest filter: mechanical bounce
+  TIM4_CCMR1.IC2F = 15
+  TIM4_SMCR.SMS = 3
+  TIM4_ARR.ARR = 65535
+  TIM4_CR1.CEN = true
+
+fn setupButtons():
+  ## PA0..PA2 falling edge -> EXTI0..2 (IRQ 6, 7, 8).
+  AFIO_EXTICR1.EXTI0 = 0
+  AFIO_EXTICR1.EXTI1 = 0
+  AFIO_EXTICR1.EXTI2 = 0
+  EXTI_FTSR.TR = 7
+  EXTI_IMR.MR = 7
+  NVIC_ISER0.SETENA = 64 + 128 + 256
+
+fn encoderClicks() -> int:
+  return (TIM4_CNT.CNT ^int) /i 4

@@ -1,0 +1,179 @@
+# The STM32F103C8T6 ("Blue Pill") registers this controller touches, from
+# ST RM0008. The chip runs on its reset clock, the 8 MHz HSI: APB1 = 8 MHz,
+# which every timer and the I2C bus below are set up against.
+#
+# Pins:
+#   PA0  TIM2_CH1_ETR  <- YF-S201 signal (open collector, 10k pull-up to 5 V;
+#                         PA0 is 5 V tolerant). TIM2 counts the pulses in
+#                         hardware (external clock mode 2), so a litre is 450
+#                         counts and no interrupt fires per pulse.
+#   PA6  TIM3_CH1      -> MG996R signal, 50 Hz PWM
+#   PB0  EXTI0         <- DS3231 INT/SQW (open drain, active low, pull-up)
+#   PB6  I2C1_SCL, PB7 I2C1_SDA -> DS3231 (ZS-042 module has 4.7k pull-ups)
+#
+# Each register is declared on its own: one block per peripheral INSTANCE,
+# since register layouts as types (D12) are not built yet.
+
+register RCC_APB2ENR at 0x40021018:
+  AFIOEN: bit 0 [read, write]
+  IOPAEN: bit 2 [read, write]
+  IOPBEN: bit 3 [read, write]
+
+register RCC_APB1ENR at 0x4002101C:
+  TIM2EN: bit 0 [read, write]
+  TIM3EN: bit 1 [read, write]
+  I2C1EN: bit 21 [read, write]
+
+register GPIOA_CRL at 0x40010800:
+  MODE0: bits 0..1 [read, write]
+  CNF0: bits 2..3 [read, write]
+  MODE6: bits 24..25 [read, write]
+  CNF6: bits 26..27 [read, write]
+
+register GPIOB_CRL at 0x40010C00:
+  MODE0: bits 0..1 [read, write]
+  CNF0: bits 2..3 [read, write]
+  MODE6: bits 24..25 [read, write]
+  CNF6: bits 26..27 [read, write]
+  MODE7: bits 28..29 [read, write]
+  CNF7: bits 30..31 [read, write]
+
+register GPIOB_ODR at 0x40010C0C:
+  ODR0: bit 0 [read, write]
+
+register AFIO_EXTICR1 at 0x40010008:
+  EXTI0: bits 0..3 [read, write]
+
+register EXTI_IMR at 0x40010400:
+  MR0: bit 0 [read, write]
+
+register EXTI_FTSR at 0x4001040C:
+  TR0: bit 0 [read, write]
+
+# Write 1 to clear. Declared as the full 20-bit field, so a write is a plain
+# store of exactly the bits given: a single-bit field would read-modify-write
+# and clear every other pending line too ([w1c] is ruled, not built: D3).
+register EXTI_PR at 0x40010414:
+  PR: bits 0..19 [read, write]
+
+register NVIC_ISER0 at 0xE000E100:
+  SETENA: bits 0..31 [read, write]
+
+register TIM2_CR1 at 0x40000000:
+  CEN: bit 0 [read, write]
+
+register TIM2_SMCR at 0x40000008:
+  ETF: bits 8..11 [read, write]
+  ECE: bit 14 [read, write]
+
+register TIM2_CNT at 0x40000024:
+  CNT: bits 0..15 [read, write]
+
+register TIM3_CR1 at 0x40000400:
+  CEN: bit 0 [read, write]
+  ARPE: bit 7 [read, write]
+
+register TIM3_EGR at 0x40000414:
+  UG: bit 0 [read, write]
+
+register TIM3_CCMR1 at 0x40000418:
+  OC1PE: bit 3 [read, write]
+  OC1M: bits 4..6 [read, write]
+
+register TIM3_CCER at 0x40000420:
+  CC1E: bit 0 [read, write]
+
+register TIM3_PSC at 0x40000428:
+  PSC: bits 0..15 [read, write]
+
+register TIM3_ARR at 0x4000042C:
+  ARR: bits 0..15 [read, write]
+
+register TIM3_CCR1 at 0x40000434:
+  CCR1: bits 0..15 [read, write]
+
+register I2C1_CR1 at 0x40005400:
+  PE: bit 0 [read, write]
+  START: bit 8 [read, write]
+  STOP: bit 9 [read, write]
+  ACK: bit 10 [read, write]
+
+register I2C1_CR2 at 0x40005404:
+  FREQ: bits 0..5 [read, write]
+
+register I2C1_DR at 0x40005410:
+  DR: bits 0..7 [read, write]
+
+register I2C1_SR1 at 0x40005414:
+  SB: bit 0 [read]
+  ADDR: bit 1 [read]
+  BTF: bit 2 [read]
+  RXNE: bit 6 [read]
+  TXE: bit 7 [read]
+
+register I2C1_SR2 at 0x40005418:
+  BUSY: bit 1 [read]
+
+register I2C1_CCR at 0x4000541C:
+  CCR: bits 0..11 [read, write]
+
+register I2C1_TRISE at 0x40005420:
+  TRISE: bits 0..5 [read, write]
+
+fn setupClocksAndPins():
+  RCC_APB2ENR.AFIOEN = true
+  RCC_APB2ENR.IOPAEN = true
+  RCC_APB2ENR.IOPBEN = true
+  RCC_APB1ENR.TIM2EN = true
+  RCC_APB1ENR.TIM3EN = true
+  RCC_APB1ENR.I2C1EN = true
+  GPIOA_CRL.CNF0 = 1          # PA0 floating input (the meter has its pull-up)
+  GPIOA_CRL.MODE0 = 0
+  GPIOA_CRL.CNF6 = 2          # PA6 alternate-function push-pull, 2 MHz
+  GPIOA_CRL.MODE6 = 2
+  GPIOB_CRL.CNF0 = 2          # PB0 input with pull-up...
+  GPIOB_CRL.MODE0 = 0
+  GPIOB_ODR.ODR0 = true          # ...selected by ODR = 1
+  GPIOB_CRL.CNF6 = 3          # PB6, PB7 alternate-function open drain
+  GPIOB_CRL.MODE6 = 2
+  GPIOB_CRL.CNF7 = 3
+  GPIOB_CRL.MODE7 = 2
+
+fn setupFlowCounter():
+  ## TIM2 clocked by the meter on ETR (PA0): CNT is litres x 450.
+  TIM2_SMCR.ETF = 3           # 8-sample filter against contact noise
+  TIM2_SMCR.ECE = true           # external clock mode 2
+  TIM2_CR1.CEN = true
+
+fn setupServoPwm({us: int}):
+  ## TIM3 at 1 MHz (8 MHz / 8), period 20 000 ticks = 50 Hz, CCR1 = pulse us.
+  TIM3_PSC.PSC = 7
+  TIM3_ARR.ARR = 19999
+  TIM3_CCR1.CCR1 = us ~u32
+  TIM3_CCMR1.OC1M = 6         # PWM mode 1
+  TIM3_CCMR1.OC1PE = true
+  TIM3_CCER.CC1E = true
+  TIM3_CR1.ARPE = true
+  TIM3_EGR.UG = true
+  TIM3_CR1.CEN = true
+
+fn setupI2c():
+  ## 100 kHz standard mode at APB1 = 8 MHz: CCR = 8 MHz / (2 x 100 kHz) = 40,
+  ## TRISE = 1000 ns x 8 MHz + 1 = 9.
+  I2C1_CR2.FREQ = 8
+  I2C1_CCR.CCR = 40
+  I2C1_TRISE.TRISE = 9
+  I2C1_CR1.PE = true
+
+fn setupAlarmLine():
+  ## PB0 falling edge -> EXTI0 (IRQ 6).
+  AFIO_EXTICR1.EXTI0 = 1      # port B
+  EXTI_FTSR.TR0 = true
+  EXTI_IMR.MR0 = true
+  NVIC_ISER0.SETENA = 64      # bit 6: EXTI0
+
+fn flowCount() -> int:
+  return TIM2_CNT.CNT ^int
+
+fn servoUs({us: int}):
+  TIM3_CCR1.CCR1 = us ~u32

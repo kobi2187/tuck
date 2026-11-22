@@ -1,0 +1,63 @@
+# A week of the irrigation controller on the host, minute by minute, with a
+# simulated garden: the valve passes 6 L/min when open (a YF-S201 then sees
+# 6 x 450 = 2700 pulses a minute). Wednesday the supply runs dry; Friday at
+# 03:00 the valve is stuck open and leaks for 5 minutes while "closed".
+#
+# The exit status is the litres delivered, so a change in the decisions shows.
+
+import console
+import str
+import schedule
+
+fn plan() -> Seq[Slot]:
+  # Each record names its type: a bare record literal in a list returned as
+  # Seq[Slot] is not given the element type (found by this program).
+  return [{day: Weekday.Mon, hour: 6, minute: 0, minutes: 20, litres: 100} Slot,
+          {day: Weekday.Wed, hour: 6, minute: 0, minutes: 20, litres: 100} Slot,
+          {day: Weekday.Fri, hour: 6, minute: 0, minutes: 30, litres: 60} Slot,
+          {day: Weekday.Sat, hour: 19, minute: 30, minutes: 10, litres: 200} Slot]
+
+fn dueSlot({slots: Seq[Slot], day: Weekday, hour: int, minute: int}) -> int:
+  ## The index of the slot this minute falls in, or -1.
+  for i in 0 .. slots.len - 1:
+    if {s: slots[i], day: day, hour: hour, minute: minute} inWindow:
+      return i
+  return -1
+
+fn flowFor({day: Weekday, hour: int, minute: int, open: bool}) -> int:
+  ## Pulses the meter counts this minute in the simulated garden.
+  if day == Weekday.Wed:
+    return 0                                   # the supply is dry
+  if day == Weekday.Fri and hour == 3 and minute < 5:
+    return 2 * pulsesPerLitre                  # leaking past a stuck valve
+  if open:
+    return 6 * pulsesPerLitre
+  return 0
+
+fn say({what: str, day: Weekday, hour: int, minute: int}) [io]:
+  let at = day.toStr + " " + hour.toStr + ":" + minute.toStr
+  {text: what + " " + at} console::printLine
+
+fn main() -> int [io]:
+  let slots = plan
+  var v = {open: false, faulted: false, slot: -1, slotStart: 0, lastCount: 0} Valve
+  var count = 0                                # the simulated TIM2_CNT, 16 bits
+  var delivered = 0
+  for d in 1 .. 7:
+    let day = {day: d} weekdayFromDs3231
+    for minute in 0 .. 24 * 60 - 1:
+      let hour = minute /i 60
+      let mm = minute % 60
+      let due = {slots: slots, day: day, hour: hour, minute: mm} dueSlot
+      let quota = if due >= 0: slots[due].litres else: 0
+      let s = {v: v, due: due, quota: quota, count: count} step
+      if s.action != Action.Keep:
+        {what: s.action.toStr, day: day, hour: hour, minute: mm} say
+      v = s.valve
+      let pulses = {day: day, hour: hour, minute: mm, open: v.open} flowFor
+      count = (count + pulses) % 65536
+      if v.open:
+        delivered = delivered + pulses
+  let litres = {pulses: delivered} litresFrom
+  {text: "delivered " + litres.toStr + " L"} console::printLine
+  return litres

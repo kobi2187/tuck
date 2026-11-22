@@ -1,0 +1,100 @@
+# Program 3: a small hovering quad, flown by radio.
+#
+#   SpeedyBee F405 Mini           STM32F405 + ICM-42688-P (f405.tuck, icm42688.tuck)
+#   SpeedyBee BLS 35A Mini V2     4-in-1 ESC, DShot600
+#   RadioMaster RP1 V2            ExpressLRS receiver, CRSF on USART1
+#   T-Motor F1404 3800KV x 4      3" props, 4S LiPo
+#
+# Two interrupts, two events. Every UART byte is a [stream] event stamped
+# with the time it arrived (the CRSF parser needs the gaps); the gyro's
+# 1 kHz data-ready is a [signal]. The flight loop runs on the signal: read
+# the gyro, decide arming, one PID step per axis, mix, send DShot.
+
+import seq
+import flight
+import f405
+import icm42688
+
+registry FcEvents:
+  | Byte({data: u8, at: int})  [stream, overflow: drop_newest]   # a lost byte fails the CRC
+  | GyroReady()                [signal]                           # a late loop runs once
+
+fn onUsart1() [irq, irq_safe, no_alloc]:
+  ## Reading DR clears RXNE (and, after the SR read, an overrun).
+  let b = USART1_DR.DR
+  let t = TIM2_CNT.CNT ^int
+  FcEvents.raise Byte {data: b ~u8, at: t}
+
+fn onImuReady() [irq, irq_safe, no_alloc]:
+  EXTI_PR.PR = 16                   # EXTI4, write 1 to clear
+  FcEvents.raise GyroReady
+
+const linkTimeoutUs = 250000        # no good frame for 250 ms: link lost
+
+actor Flight [queue: 64]:
+  crsf: Crsf = {frame: [0], want: 0, good: 0, bad: 0} Crsf
+  sticks: Seq[int] = [992, 992, 172, 992, 172]
+  lastByteAt: int = 0
+  lastFrameAt: int = 0
+  armed: bool = false
+  roll: Pid = {kp: 0.002, ki: 0.004, kd: 0.00002, integral: 0.0, lastError: 0.0} Pid
+  pitch: Pid = {kp: 0.002, ki: 0.004, kd: 0.00002, integral: 0.0, lastError: 0.0} Pid
+  yaw: Pid = {kp: 0.003, ki: 0.004, kd: 0.0, integral: 0.0, lastError: 0.0} Pid
+
+  on FcEvents.Byte({data: u8, at: int}):
+    let r = {p: crsf, b: data ^int, gapUs: at - lastByteAt} feed
+    crsf = r.crsf
+    lastByteAt = at
+    if r.channels.len == 16:
+      sticks = r.channels
+      lastFrameAt = at
+
+  on FcEvents.GyroReady() [io]:
+    let g = readGyro
+    let now = micros
+    let linkUp = now - lastFrameAt < linkTimeoutUs
+    let throttleStick = {raw: sticks[2]} stick
+    let act = {switchOn: sticks[4] > 1500, throttleLow: throttleStick <= -450,
+               linkUp: linkUp, armed: armed} arming
+    if act == ArmAction.Arm:
+      armed = true
+    if act == ArmAction.Disarm:
+      armed = false
+    let rs = {raw: sticks[0]} stick
+    let ps = {raw: sticks[1]} stick
+    let ys = {raw: sticks[3]} stick
+    let rw = {stickValue: rs} setpoint
+    let pw = {stickValue: ps} setpoint
+    let yw = {stickValue: ys} setpoint
+    let r = {pid: roll, want: rw, have: g.x} pidStep
+    let p = {pid: pitch, want: pw, have: g.y} pidStep
+    let y = {pid: yaw, want: yw, have: g.z} pidStep
+    roll = r.pid
+    pitch = p.pid
+    yaw = y.pid
+    let thr = ((throttleStick + 500) ~f64 /f 1000.0) ~f32
+    let m = {throttle: thr, roll: r.effort, pitch: p.effort, yaw: y.effort,
+             armed: armed} mix
+    let f1 = {value: m.m1, telemetry: false} dshotFrame
+    let f2 = {value: m.m2, telemetry: false} dshotFrame
+    let f3 = {value: m.m3, telemetry: false} dshotFrame
+    let f4 = {value: m.m4, telemetry: false} dshotFrame
+    let p1 = {frame: f1} dshotPulses
+    let p2 = {frame: f2} dshotPulses
+    let p3 = {frame: f3} dshotPulses
+    let p4 = {frame: f4} dshotPulses
+    {m1: p1, m2: p2, m3: p3, m4: p4} dshotWrite
+
+fn main() -> int [io]:
+  setupPeripherals
+  let imu = start
+  if not imu.ok:
+    return 1                         # no gyro: never arm
+  # Until `bind` (bare-metal roadmap 2.2) places the two handlers in the
+  # vector table, this loop polls their pending flags.
+  for true:
+    if USART1_SR.RXNE:
+      onUsart1
+    if (EXTI_PR.PR ^int /i 16) % 2 == 1:
+      onImuReady
+  return 0

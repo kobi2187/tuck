@@ -1,0 +1,125 @@
+# The voice recorder's logic: pure, no hardware. The device (recorder.tuck)
+# and the host simulation (sim.tuck) both run exactly this code.
+#
+# Parts it is written for:
+#   Codec   VLSI VS1063a (SparkFun VS1063 Breakout, BOB-11684), 12.288 MHz
+#           crystal. Encodes MP3 itself; the MCU only moves bytes.
+#   Store   a microSD card over SPI, written as raw 512-byte blocks
+#   Volume  Bourns PEC11R-4215F-S0024 rotary encoder, 24 detents per turn
+#   Buttons Record, Play, Stop (momentary, to ground)
+
+# --- what the VS1063a is told ---------------------------------------------
+# Register numbers and values from the VS1063a datasheet v1.33, §10.8 and
+# §11.6.1-11.6.3.
+
+const sciMode = 0
+const sciClockf = 3
+const sciWram = 6
+const sciWramAddr = 7
+const sciHdat0 = 8
+const sciHdat1 = 9
+const sciAiAddr = 10
+const sciVol = 11
+const sciAictrl0 = 12
+const sciAictrl1 = 13
+const sciAictrl2 = 14
+const sciAictrl3 = 15
+
+const smCancel = 8            # SCI_MODE bit 3
+const smSdiNew = 2048         # bit 11, set at reset
+const smEncode = 4096         # bit 12
+const endFillByteAddr = 7686  # parametric_x.endFillByte, X memory 0x1e06
+
+type SciWrite:
+  reg: int
+  value: int
+
+fn mp3RecordingSetup() -> Seq[SciWrite]:
+  ## 44.1 kHz mono MP3 at a constant 128 kbit/s from the microphone input,
+  ## automatic gain up to 4x. The VS1063a Patches package must already be
+  ## loaded (§11.6.2: required for conforming MP3), which is why the last
+  ## write is 0x50 to SCI_AIADDR and not SM_RESET.
+  return [{reg: sciClockf, value: 49152} SciWrite,      # 0xC000: CLKI = 4.5 x XTALI
+          {reg: sciAictrl0, value: 44100} SciWrite,     # sample rate
+          {reg: sciAictrl1, value: 0} SciWrite,         # 0 = automatic gain
+          {reg: sciAictrl2, value: 4096} SciWrite,      # AGC at most 4.0x
+          {reg: sciAictrl3, value: 100} SciWrite,       # 0x64: MP3 (6 << 4), mono downmix (4)
+          {reg: sciWramAddr, value: 57472} SciWrite,    # 0xE080: CBR, x1000, 128
+          {reg: sciMode, value: smSdiNew + smEncode} SciWrite,  # MIC input (SM_LINE1 = 0)
+          {reg: sciAiAddr, value: 80} SciWrite]         # 0x50: start the patched encoder
+
+# --- the session ------------------------------------------------------------
+
+type Button:
+  | Record
+  | Play
+  | Stop
+
+type Mode [sealed]:
+  | Idle
+  | Recording({sectors: int})
+  | Finishing({sectors: int})
+  | Playing({sector: int, total: int})
+  transitions:
+    Idle -> Recording
+    Recording -> Finishing
+    Finishing -> Idle
+    Idle -> Playing
+    Playing -> Idle
+
+type Command:
+  | StartRecording
+  | CancelEncoder       # set SM_CANCEL, then drain what is left
+  | StartPlayback
+  | StopPlayback
+  | Ignore
+
+fn react({mode: Mode, button: Button}) -> Command:
+  ## What a button press means in each mode. A press that means nothing
+  ## (Play while recording) is ignored, never queued.
+  match mode:
+    | Idle ->
+      match button:
+        | Record -> return Command.StartRecording
+        | Play -> return Command.StartPlayback
+        | Stop -> return Command.Ignore
+    | Recording ->
+      match button:
+        | Stop -> return Command.CancelEncoder
+        | Record -> return Command.CancelEncoder
+        | Play -> return Command.Ignore
+    | Finishing -> return Command.Ignore
+    | Playing ->
+      match button:
+        | Stop -> return Command.StopPlayback
+        | Play -> return Command.StopPlayback
+        | Record -> return Command.Ignore
+
+# --- volume -----------------------------------------------------------------
+
+const quietest = 120          # 60 dB down: steps of 0.5 dB, at most 0xFE
+
+fn attenuationFor({clicks: int}) -> int:
+  ## The encoder's position (clicks clockwise from full volume) as SCI_VOL
+  ## steps: one detent = 1 dB = two steps, clamped to [0, quietest].
+  let steps = clicks * 2
+  if steps < 0:
+    return 0
+  if steps > quietest:
+    return quietest
+  return steps
+
+fn volumeWord({attenuation: int}) -> int:
+  ## SCI_VOL: left attenuation in the high byte, right in the low (§10.8.11).
+  return attenuation * 256 + attenuation
+
+# --- encoded data into 512-byte blocks --------------------------------------
+
+const blockBytes = 512
+
+fn highByte({word: int}) -> u8:
+  ## §11.6.3: the HIGH byte of SCI_HDAT0 is written to the file first.
+  return (word /i 256) ~u8
+
+fn lowByte({word: int}) -> u8:
+  return (word % 256) ~u8

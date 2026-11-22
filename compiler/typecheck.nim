@@ -2170,7 +2170,11 @@ proc synthArm(tc: var TypeChecker, arm: var MatchArm, subjT: Type, trackedVar,
   tc.popScope()
 
 proc unifyArmType(tc: var TypeChecker, armT: var Type, t: Type, sp: Span) =
-  ## Every arm must produce the same type.
+  ## Every arm must produce the same type. A void call and a `return` or
+  ## assignment are both statements (isNoValue), as they already were for
+  ## `if` (#148): `| A -> f` beside `| B -> return` used to be refused as
+  ## "void vs unit" (found by tests/metal/devices/recorder, 2026-11-22).
+  if isNoValue(t) and isNoValue(armT): return
   if not isFlexible(t) and not isFlexible(armT) and
      not tc.compatible(t, armT) and not tc.compatible(armT, t):
     fail("Type Error: match arms produce different types: " &

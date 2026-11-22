@@ -1,0 +1,127 @@
+# The STM32F405 registers the flight controller touches, from ST RM0090.
+# Clocks as Betaflight sets them on this board: SYSCLK 168 MHz, APB2 84 MHz
+# (timers 168 MHz), APB1 42 MHz (timers 84 MHz). The PLL setup itself is
+# left out: it is the same few writes on every F4 board.
+#
+#   USART1 RX   <- RP1 receiver TX (CRSF, 420 000 baud)
+#   SPI1        <-> ICM-42688-P (CS on PA4, mode 3, up to 24 MHz)
+#   EXTI4       <- ICM-42688-P INT1 (data ready, 1 kHz) on PC4
+#   TIM2        a free-running microsecond clock for CRSF frame gaps
+#
+# The motor pads' timer and DMA mapping on the SpeedyBee F405 Mini could not
+# be confirmed from a published pinout, so DShot output is an extern below,
+# not register code: see the note on `dshotWrite`.
+
+register RCC_AHB1ENR at 0x40023830:
+  GPIOAEN: bit 0 [read, write]
+  GPIOCEN: bit 2 [read, write]
+
+register RCC_APB1ENR at 0x40023840:
+  TIM2EN: bit 0 [read, write]
+
+register RCC_APB2ENR at 0x40023844:
+  USART1EN: bit 4 [read, write]
+  SPI1EN: bit 12 [read, write]
+  SYSCFGEN: bit 14 [read, write]
+
+register GPIOA_BSRR at 0x40020018:
+  BSRR: bits 0..31 [write]
+
+register USART1_SR at 0x40011000:
+  ORE: bit 3 [read]
+  RXNE: bit 5 [read]
+
+register USART1_DR at 0x40011004:
+  DR: bits 0..8 [read, write]
+
+register USART1_BRR at 0x40011008:
+  BRR: bits 0..15 [read, write]
+
+register USART1_CR1 at 0x4001100C:
+  RE: bit 2 [read, write]
+  RXNEIE: bit 5 [read, write]
+  UE: bit 13 [read, write]
+
+register SPI1_CR1 at 0x40013000:
+  CPHA: bit 0 [read, write]
+  CPOL: bit 1 [read, write]
+  MSTR: bit 2 [read, write]
+  BR: bits 3..5 [read, write]
+  SPE: bit 6 [read, write]
+  SSI: bit 8 [read, write]
+  SSM: bit 9 [read, write]
+
+register SPI1_SR at 0x40013008:
+  RXNE: bit 0 [read]
+  TXE: bit 1 [read]
+
+register SPI1_DR at 0x4001300C:
+  DR: bits 0..7 [read, write]
+
+register SYSCFG_EXTICR2 at 0x4001380C:
+  EXTI4: bits 0..3 [read, write]
+
+register EXTI_IMR at 0x40013C00:
+  MR4: bit 4 [read, write]
+
+register EXTI_RTSR at 0x40013C08:
+  TR4: bit 4 [read, write]
+
+# Write 1 to clear, one full-width field ([w1c] is ruled, not built: D3).
+register EXTI_PR at 0x40013C14:
+  PR: bits 0..22 [read, write]
+
+register TIM2_CR1 at 0x40000000:
+  CEN: bit 0 [read, write]
+
+register TIM2_CNT at 0x40000024:
+  CNT: bits 0..31 [read, write]
+
+register TIM2_PSC at 0x40000028:
+  PSC: bits 0..15 [read, write]
+
+register NVIC_ISER0 at 0xE000E100:
+  SETENA: bits 0..31 [read, write]
+
+register NVIC_ISER1 at 0xE000E104:
+  SETENA: bits 0..31 [read, write]
+
+fn setupPeripherals():
+  RCC_AHB1ENR.GPIOAEN = true
+  RCC_AHB1ENR.GPIOCEN = true
+  RCC_APB1ENR.TIM2EN = true
+  RCC_APB2ENR.USART1EN = true
+  RCC_APB2ENR.SPI1EN = true
+  RCC_APB2ENR.SYSCFGEN = true
+  # (GPIO alternate-function setup for PA9/PA10, PA5..PA7 and PC4 elided:
+  # MODER/AFR writes, identical in shape to the F1 programs.)
+  TIM2_PSC.PSC = 83                 # 84 MHz / 84 = 1 MHz
+  TIM2_CR1.CEN = true
+  USART1_BRR.BRR = 200              # 84 MHz / (16 x 420 000) = 12.5 -> 12 + 8/16
+  USART1_CR1.RE = true
+  USART1_CR1.RXNEIE = true
+  USART1_CR1.UE = true
+  NVIC_ISER1.SETENA = 32            # USART1 is IRQ 37: ISER1 bit 5
+  SPI1_CR1.CPOL = true              # mode 3
+  SPI1_CR1.CPHA = true
+  SPI1_CR1.BR = 1                   # 84 MHz / 4 = 21 MHz, under the IMU's 24
+  SPI1_CR1.SSM = true
+  SPI1_CR1.SSI = true
+  SPI1_CR1.MSTR = true
+  SPI1_CR1.SPE = true
+  GPIOA_BSRR.BSRR = 16              # IMU CS (PA4) high
+  SYSCFG_EXTICR2.EXTI4 = 2          # port C
+  EXTI_RTSR.TR4 = true              # INT1 is push-pull, active high
+  EXTI_IMR.MR4 = true
+  NVIC_ISER0.SETENA = 1024          # EXTI4 is IRQ 10
+
+fn micros() -> int:
+  return TIM2_CNT.CNT ^int
+
+# DShot600 needs a timer compare register reloaded every 1.67 us from a
+# buffer, which is a DMA job: the DMA stream must be given the buffer's
+# ADDRESS. Tuck has no way to take the address of a buffer it owns (pointers
+# exist only at the extern boundary), so the 17 compare values computed by
+# flight.dshotPulses are handed to a C routine that owns the DMA buffer.
+extern [c]:
+  fn dshotWrite({m1: Seq[int], m2: Seq[int], m3: Seq[int], m4: Seq[int]}) -> void [io]

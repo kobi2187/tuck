@@ -22,12 +22,23 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (1)
+## A. Open bugs (4)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
 it in.
 
+- **A119 — a bare record literal in a returned list passes the checker.**
+  `return [{a: 1}] ` from `-> Seq[P]` checks clean and the Nim build fails (an
+  anonymous tuple where `seq[P]` is expected). Same class as A49, same ruling:
+  refuse with TK-TY45. Found by the irrigation program. Pin: `known_bugs` "A119".
+- **A120 — a typed local loses its variant.** `var m: M = M.Idle` then a sealed
+  transition inside the `Idle:` arm is refused as a direct construction; without
+  the `: M` it checks. Found by the recorder program. Pin: `known_bugs` "A120".
+- **A122 — an empty list in a `with` update ignores the field's type.**
+  `f with {values: [], n: 0}` with `values: Seq[int]` is TK-TY20 ("no element
+  type"); the same list in a constructor checks. Found by the drone program.
+  Pin: `known_bugs` "A122".
 - **A116 — an `int` argument into an `i64` parameter passes the checker.**
   `{n: i} wide` with `i` an `int` loop variable and `wide({n: i64})` checks clean;
   Nim converts it silently and Odin refuses the emitted call ("Cannot assign

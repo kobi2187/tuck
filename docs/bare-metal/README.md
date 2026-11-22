@@ -17,7 +17,10 @@ QEMU boards, no real hardware yet. What works and what is next is in
    with the owner's rulings recorded.
 4. **`REVIEW-2026-11-22.md`**: the senior-embedded review: what it found,
    what it fixed, what is still open.
-5. `archive/`: the plans these replaced. Rationale and experiment log only.
+5. **`PROGRAMS-2026-11-22.md`**: three programs on real parts (irrigation,
+   MP3 recorder, quad) in `tests/metal/devices/`: what read well, the
+   frictions, the blockers, the compiler bugs they found.
+6. `archive/`: the plans these replaced. Rationale and experiment log only.
 
 ## Where things live
 
