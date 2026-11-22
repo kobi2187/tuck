@@ -215,6 +215,9 @@ it, and whether it can change a component its setter did not write:
     `...` stubs, whatever the application chose. The application's policy
     does not reach it, so its behaviour cannot change with the importer
     (POL-1).
+  - **A library that declares `errors [policy: strict]` is finished
+    automatically** (owner, 2026-11-22). An explicit marker may come later;
+    strict already counts.
   - Only the library's own author can mark it finished; an application can
     neither finish someone else's library nor un-finish one.
   - **Release needs no separate rule.** Shipping firmware builds with
@@ -356,7 +359,8 @@ allocation") stays true, plus one static queue per deferred binding.
 | E-Q8 | Are the strict rules a separate kind of set, or inferred from "a line is bound to it"? | (a) a declared **interrupt** kind; (b) inferred from binding | (a): a driver's author must know, while writing it, that IRQ-1..9 apply; inferring it at the application would make a library's rules depend on who imports it, which is the problem being solved |
 | E-Q9 | How does a driver state "acknowledged by" and its required ranges? | a clause on the set; attributes on the capture; a register-field effect | open: needs w1c fields (D3) first, since most acknowledgements are a w1c write or a read with side effect |
 | E-Q11 | Do POL-1, POL-3, POL-4 and POL-6 apply to every library, or only to components with interrupt sets? | (a) every library; (b) interrupt components only | **POL-4: every library (owner, 2026-11-22)**, in the finished/partial form above. POL-1, POL-3, POL-6: leaning (a) |
-| E-Q13 | How does a library's author mark it finished? | (a) a module-level marker (a new word); (b) a library's own `errors [policy: strict]` means "finished"; (c) a manifest/package field | open, syntax. (b) needs no new word, but "strict" says nothing about `pending`; (a) states the intent exactly |
+| E-Q13 | How does a library's author mark it finished? | (a) a module-level marker (a new word); (b) a library's own `errors [policy: strict]` means "finished"; (c) a manifest/package field | **ruled 2026-11-22: (b), strict is finished automatically**; an explicit marker may follow |
+| E-Q13a | Does finished (strict) also forbid `pending` / `...` stubs? | (a) yes, a stub in a strict library is refused; (b) no, stubs stay a separate PENDING concern | open. (a) makes "finished" mean finished; (b) keeps strict about errors only |
 | E-Q14 | May a finished library import a partial one? | (a) no: finished requires finished dependencies; (b) yes | (a): otherwise the application's policy reaches the finished library through its dependency's continued-past error, which is what POL-1 forbids |
 | E-Q15 | What does a partial library's own `errors` block mean when it is imported? | (a) inert, with a line in the report saying the application's policy applies; (b) refused; (c) it wins (today) | (a): it stays useful when the library is checked alone (its own self-check `main`), and visible when it is not |
 | E-Q16 | Shortcut sites inside interrupt context | allowed only if the application's `on unhandled` is itself interrupt-safe (checked like any ISR callee); a `pending` capture may only trap | keeps the walking skeleton available for drivers without risking an interrupt storm |

@@ -1131,6 +1131,36 @@ and those must stay green.
 | overflow, author declared a policy | `[saturating]` / `[wrapping]` / `[trapping]` |
 | any cross-type numeric flow | always written (2026-08-24 ruling) |
 
+## User ruling (2026-11-22) — the error policy governs partial code; finished libraries opt out
+
+The `errors [policy: ...]` declaration is the walking skeleton's switch: the
+stage of development stated in ONE place, instead of TODOs and "not
+implemented" exceptions scattered through the code. `continue` (log and never
+crash) and `exit` are legitimate choices while developing.
+
+- **The application's policy governs every partial module**: the
+  application's own code and every library that is not finished. A partial
+  library's unhandled sites go to the application's `on unhandled` and are
+  listed in the application's SHORTCUTS report under the library's name.
+  Nothing a library leaves unhandled is hidden.
+- **A finished library is outside it**: checked as `strict`, its behaviour
+  cannot change with the application that imports it. **A library that
+  declares `errors [policy: strict]` is finished automatically.** An explicit
+  "finished" marker may come later; strict already counts.
+- Only a library's own author can make it finished.
+- Release needs no separate rule: a `strict` application makes every partial
+  library's remaining shortcuts compile errors.
+
+Built today (measured): the policy is per module; a library's own
+`continue` block runs its own handler; a library without a block checks
+strict whatever the application declares; a library's shortcut sites appear
+in no report. Open questions (E-Q14 a finished library importing a partial
+one, E-Q15 what a partial library's own non-strict block means when
+imported, E-Q16 shortcuts in interrupt context, and whether finished also
+forbids `pending` stubs) are in `testing_experiment/DESIGN-EVENTS.md` §3b, §7.
+Spec §4.9 ("one `errors` declaration per application") matches this ruling;
+the compiler does not yet.
+
 ## Partial
 | Feature | Spec | Missing piece |
 |---|---|---|
