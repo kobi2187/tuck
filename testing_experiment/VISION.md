@@ -131,6 +131,18 @@ registry composes them and binds lines to them, and the same driver runs on
 a host where a test raises the event. Worked out, with what the compiler
 already does and the questions to rule, in **`DESIGN-EVENTS.md`**.
 
+**Interrupts are a stricter kind of event, and policies may not reach a
+finished component's normal path.** Hosted events, the error policy, the
+resource registry's overrides, `pending:` stub flags and build flags all let
+a decision be made later or elsewhere; for an interrupt each of those is a
+defect (an unacknowledged source re-fires forever; a handler added by an
+importer runs in interrupt context; a shrunk queue drops bytes). The exact
+rules, IRQ-1..9 and POL-1..6, are in `DESIGN-EVENTS.md` §3a–§3b. The
+criterion: *a policy may decide what happens when something goes wrong, only
+within what the component declared it tolerates; it may never change what a
+correct component does on its normal path; and interrupt context is
+policy-free.*
+
 **The reuse test**, the acceptance criterion for any syntax proposed for
 interrupts, instances, counts, priorities or deadlines: *one unchanged UART
 driver module compiles into two applications on two boards, with different

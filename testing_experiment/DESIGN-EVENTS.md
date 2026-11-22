@@ -5,8 +5,12 @@ Nothing here is ruled. Code in `text` fences is a **sketch of shape**, every
 keyword a placeholder; only `tuck` fences are working Tuck.
 
 The owner's direction: *if we can use events with bare metal that would be
-super — different worlds but similar semantics.* This note works out what that
-means, what the compiler already does, and what has to be decided.
+super — different worlds but similar semantics.* And the owner's caution that
+followed it: *an irq is actually somewhat different from hosted events; the
+event policy part where a user can ignore and implement later is problematic
+if it can change a finished bare-metal component.* This note works out what
+both mean, what the compiler already does, and what has to be decided. §3a is
+the answer to the caution: **the exact rules**.
 
 ---
 
@@ -72,6 +76,149 @@ handler on the raiser's thread breaks the actor's ownership of its fields. So
 an actor-hosted handler is naturally *deferred*, delivered like a message,
 on a host and on metal alike. That is also exactly what an interrupt needs.
 
+## 3a. An interrupt is a stricter kind of event: the rules
+
+Hosted events are loosely coupled on purpose: a raiser need not know who
+listens, handlers are added by whoever imports the registry, a handler can be
+`pending:` (trap, return zero, or log and continue, chosen by a build flag),
+and a later deployment site overrides an earlier one. Each of those freedoms
+is a defect for an interrupt:
+
+| Freedom that is fine for a hosted event | What it does to an interrupt |
+|---|---|
+| "nobody handles it yet" / a `pending:` handler that returns zero or logs | the source is never acknowledged, so the interrupt re-fires forever: an interrupt storm, the board hangs |
+| another module adds a handler | new code runs in interrupt context: a finished driver's latency, stack and ceilings change without its source changing |
+| a later site overrides a knob (the resource-registry rule) | an application shrinks a queue or slows a priority below what the driver was verified at, and the driver drops bytes |
+| raise calls the handler directly | the "interrupt" runs without preemption, so a test proves nothing about the real interleaving |
+| a full queue waits (`on_full: wait`) | an interrupt cannot wait; it would deadlock the core |
+
+So the strictness attaches to the **kind of event**, not to the target. An
+event set is either an **ordinary** set (today's semantics, unchanged, on every
+target) or an **interrupt** set. The rules below hold for an interrupt set
+**on every target, the host sim included**, so a component behaves the same
+in simulation as on silicon. That is how "different worlds, similar
+semantics" survives the caution: the worlds differ in who raises, never in
+what is allowed.
+
+The rules (numbered so they can be cited by diagnostics and tests):
+
+- **IRQ-1 One capture, owned by the driver.** Each interrupt event has exactly
+  one immediate handler, the *capture*, declared in the module that declares
+  the set. No other module may add an immediate handler to it. Importers add
+  *deferred* handlers only. **Nothing an application or another library writes
+  can change what runs in interrupt context.**
+- **IRQ-2 No holes in interrupt context.** A capture can never be `pending:`
+  or `...`, in any build mode, on any target; the PENDING-report flags (trap /
+  zero / log) do not apply to it. A *deferred* handler may be pending: the
+  capture still runs, the event is still queued and counted, and the PENDING
+  report lists the handler. Implementing it later changes task-level
+  behaviour only, never the driver.
+- **IRQ-3 Acknowledged on every path.** The set states how its source is
+  cleared (which register read or write); the checker proves every path
+  through the capture performs it. Forgetting to clear a flag is the classic
+  cause of interrupt storms, and in C it is caught only by review.
+- **IRQ-4 A capture is small and closed.** It may read and write registers,
+  compute, and post deferred deliveries or `latest`. It may not wait,
+  allocate, `send`, loop without a constant bound, or raise an *ordinary*
+  event (that would run someone else's immediate handlers in interrupt
+  context). Its worst-case cycles and stack are part of its contract and are
+  reported. (TK-EF05/07/11 already cover part of this.)
+- **IRQ-5 Requirements, not overrides.** For interrupt bindings the
+  resource-registry rule (a later site overrides an earlier one) is replaced
+  by a constraint: the driver declares the range it was written for (queue
+  depth at least N, the overflow policies it tolerates, the latency it needs
+  between a raise and its capture). The application chooses values inside
+  that range; a value outside it is a compile error naming the driver's
+  requirement. Defaults come from the driver, not from the board.
+- **IRQ-6 Bound or off, enabled after init.** A line the application does not
+  bind stays disabled. A bound line is enabled by generated code after its
+  driver's initialisation has run, never at reset. A vector that fires
+  unbound reaches the default handler, whose FAULT line names it.
+- **IRQ-7 A software raise takes the hardware path.** Raising an interrupt
+  event from code (a test, the host harness, a self-test on the board) *pends*
+  the line through the interrupt controller (the NVIC's set-pending register
+  on Cortex-M, `platform.interrupt`'s controller on the host). It never calls
+  the capture directly, so the capture always runs in interrupt context, with
+  real masking and preemption.
+- **IRQ-8 Deferred delivery is fixed.** Raise order is kept per source; each
+  deferred handler sees each delivered event once; drops are counted per
+  binding and readable at run time; `wait` is never an overflow policy.
+- **IRQ-9 A component's interrupt contract is visible.** The set's variants,
+  capture, acknowledgement, cost bounds and declared ranges form the driver's
+  interrupt contract. `tuck audit` prints it per binding, so a change to a
+  finished driver shows up in review as a contract change, not as a timing
+  surprise on the bench.
+
+**What stays the application's choice, deliberately:** which instance and
+line, the priority, the queue depth and overflow policy (inside the driver's
+range), and every deferred handler. **What is sealed:** everything that runs
+in interrupt context. A priority chosen by the application does change when
+the driver's *deferred* work runs and what the ceilings are; that is fine,
+because the checker recomputes both for each application and the driver's
+declared latency requirement is checked against the result.
+
+**Ordinary events on a bare-metal target** keep their hosted rules, with one
+addition from IRQ-4: they are raised from task context, never from a capture.
+
+## 3b. Every policy, and what it may do to a finished component
+
+`pending:` is only one of several places where Tuck lets a decision be made
+later or somewhere else. The owner's caution applies to all of them. Here is
+every policy the compiler and spec have today (checked 2026-11-22), who sets
+it, and whether it can change a component its setter did not write:
+
+| Policy | Set by | Can change a finished component today? |
+|---|---|---|
+| `errors [policy: strict \| continue \| exit]` + `on unhandled` (spec §4.9) | the application, once | **yes**: an error a driver left unhandled runs the application's `unhandled` handler, then continues or exits. In a capture, that handler would run in interrupt context |
+| `resources:` `cap`, `policy: strict \| lazy \| exit`, `on_full`, `on_finish`, `sweep_batch` (§7.4) | library and application, the importer overriding the imported | **yes**: an application can shrink a library's cap, change its `on_full`, or switch it to `lazy`, whose sweep runs inline at a finish |
+| actor `queue`, `on_full: wait \| drop \| assert` (§9.1) | the actor's author | no (not overridable), but `wait` is impossible from an interrupt |
+| `pending` stub behaviour: trap / zero value / log and continue (§5.4) | a build flag (spec; today a stub only names itself when called) | **yes**, and "zero" or "log and continue" in a capture is an interrupt storm |
+| `--isr-check:warn \| error` | the build | **yes**: the race gate a driver was verified under can be turned into a warning |
+| `--no-invariants` | the build | only on a path where an invariant would fail, which is a bug path |
+| `--actors`, `--concurrency`, `--frames` | the build | **yes**: the runtime model; on metal the profile fixes them |
+| overflow `[saturating \| wrapping \| trapping]` (§7) | the author of the type | no |
+| the event registry itself | — | no policy of its own today (the parser takes a name and variants); the knobs this note adds (priority, queue, overflow) are new policies and fall under the rule below |
+
+**The rule that covers all of them** (POL, citable like IRQ):
+
+- **POL-1 A policy may decide what happens when something goes wrong,
+  only within what the component declared it tolerates. It may never change
+  what a correct component does on its normal path.** `--no-invariants`
+  passes (it only affects a path that is already a bug). An application
+  shrinking a library's cap below the library's stated need does not.
+- **POL-2 Interrupt context is policy-free.** No application-wide or build
+  policy reaches a capture. A capture is checked as `errors: strict` whatever
+  the application chose, so the `unhandled` handler can never run in
+  interrupt context. It holds no resource operations and no stubs. The ISR
+  gate is always `error` for interrupt sets: `--isr-check:warn` applies to
+  ordinary code only.
+- **POL-3 A component's knob is a default or a requirement, and says which.**
+  A *default* may be overridden, which is today's resource rule and stays as it
+  is for hosted code. A *requirement* is a range (cap at least N, `on_full` one
+  of a set, queue at least N). An override outside it is a compile error
+  naming the component's requirement. Interrupt bindings are always
+  requirement-style (IRQ-5). The coherence check that already runs on a
+  merged resource kind (TK-RS11) is where this check belongs.
+- **POL-4 Shortcuts stay in the application.** The error policy's
+  `continue` / `exit` shortcuts (the `SHORTCUTS (n)` report) may be relied on
+  by sites in the application module only. A library that relies on them is
+  not finished, and says so in its own report. Today's rule ("shipping
+  firmware builds with `[policy: strict]`") becomes something the compiler
+  checks per component, not a convention for the whole program.
+- **POL-5 The profile fixes the runtime model.** On a metal board,
+  `--actors`, `--concurrency` and `--frames` are set by the board profile. A
+  component may state what it requires (`--frames:static`), and a build that
+  contradicts it is refused.
+- **POL-6 Every effective value is visible.** `tuck audit` prints, per
+  component, each knob's merged value and who set it (component default,
+  board, application). A change to a finished component's effective
+  policies then shows up in review, not on the bench.
+
+POL-1 is the criterion; POL-2 to POL-6 apply it to each policy above. These
+rules are not specific to bare metal. POL-1, POL-3, POL-4 and POL-6 are
+worth having for any reusable library, hosted or not. Bare metal is where
+breaking them costs a hung board instead of a log line.
+
 ## 4. Reuse: the ruled precedent
 
 The owner already ruled this split once, for the **resource registry**
@@ -97,6 +244,12 @@ So the application's registry is still the one place the whole event surface
 reads from (the property TK-RG05 protects), but it is *composed*: it includes
 the event sets its libraries declare, and adds its own.
 
+**Where interrupts depart from the precedent (§3a, IRQ-5):** for a resource
+knob the importer overrides the imported. For an interrupt binding it may
+only choose inside the range the driver declares, and it can never add or
+replace the capture (IRQ-1). The split of *who declares what* is the same;
+the rule for combining them is stricter.
+
 ## 5. The reuse test, sketched
 
 One UART driver, two applications, two boards. The driver names no line,
@@ -106,12 +259,14 @@ priority, instance or capacity.
 # SKETCH — shape only.
 
 # uart.tuck — the driver library
-events UartEvents:                         # an event set the driver owns
+interrupt events UartEvents:               # an INTERRUPT set the driver owns (§3a)
   | Rx({port: UartId, byte: u8})           # the instance travels in the payload
   | Overrun({port: UartId})
+  acknowledged by: reading DR              # IRQ-3: checked on every path
+  requires: queue >= 4, on_full in {drop}  # IRQ-5: the range it was written for
 
-on interrupt rxReady({port: Uart}) -> UartEvents [irq_safe]:
-  # immediate, interrupt context: the capture, nothing else
+capture rxReady({port: Uart}) -> UartEvents:
+  # immediate, interrupt context: the ONE capture (IRQ-1), never pending (IRQ-2)
   if port.SR.ORE: return {port: port.id} Overrun
   return {port: port.id, byte: port.DR.DATA} Rx
 
@@ -130,13 +285,18 @@ registry AppEvents:
 registry AppEvents:
   include UartEvents
   bind USART2.rx -> uart.rxReady [priority: 1, queue: 64, on_full: drop]
-  bind USART3.rx -> uart.rxReady [priority: 3, queue: 8,  on_full: assert]
+  bind USART3.rx -> uart.rxReady [priority: 3, queue: 8,  on_full: drop]
+  # queue: 2 here would be a compile error: "uart requires queue >= 4" (IRQ-5)
 ```
 
 What the checker proves for each application, with the driver unchanged:
 
-- every bound line has exactly one capture; an unbound line goes to the
-  default handler; a line bound twice is an error;
+- every bound line has exactly one capture, from the driver; an unbound line
+  stays disabled; a line bound twice is an error; no other module added an
+  immediate handler (IRQ-1, IRQ-6);
+- the capture is not pending and acknowledges its source on every path
+  (IRQ-2, IRQ-3);
+- every chosen knob lies inside the driver's declared range (IRQ-5);
 - every event in the composed registry is handled (TK-RG03, as today);
 - the capture reaches only ISR-safe operations (TK-EF05/07/11, as today);
 - shared state touched by immediate handlers gets a ceiling from the bound
@@ -144,8 +304,8 @@ What the checker proves for each application, with the driver unchanged:
 - every deferred queue fits the RAM budget; `on_full: wait` is refused for a
   hardware-raised event (an interrupt cannot wait);
 - the same program built for a host replaces "line raises event" with
-  "harness raises event", so the driver's logic runs in `tuck sim --host`
-  on all three backends.
+  "harness pends the line on the simulated controller" (IRQ-7), so the driver
+  runs in `tuck sim --host` on all three backends under the same rules.
 
 ## 6. What each world costs at run time
 
@@ -170,7 +330,12 @@ allocation") stays true, plus one static queue per deferred binding.
 | E-Q4 | Where does the capture live? | (a) a driver-provided ISR-safe fn; (b) generated by the chip package | (a): the driver knows its peripheral kind; the chip package only lists lines |
 | E-Q5 | Overflow of a hardware-raised deferred event | `drop` (counted, visible), `assert`; never `wait` | `drop` + count as default |
 | E-Q6 | Order of several handlers across modules | declaration order within a module; across modules, dependency order (imported first), as resource knobs | same rule as resources |
-| E-Q7 | Is binding in the registry, the board package, or both? | (a) board default + application override per knob; (b) application only | (a): a board ships a working default; an application overrides one knob without restating the rest |
+| E-Q7 | Is binding in the registry, the board package, or both? | (a) board default + application choice per knob, inside the driver's range; (b) application only | (a), with IRQ-5: the board may suggest, the driver bounds, the application chooses |
+| E-Q8 | Are the strict rules a separate kind of set, or inferred from "a line is bound to it"? | (a) a declared **interrupt** kind; (b) inferred from binding | (a): a driver's author must know, while writing it, that IRQ-1..9 apply; inferring it at the application would make a library's rules depend on who imports it, which is the problem being solved |
+| E-Q9 | How does a driver state "acknowledged by" and its required ranges? | a clause on the set; attributes on the capture; a register-field effect | open: needs w1c fields (D3) first, since most acknowledgements are a w1c write or a read with side effect |
+| E-Q11 | Do POL-1, POL-3, POL-4 and POL-6 apply to every library, or only to components with interrupt sets? | (a) every library; (b) interrupt components only | (a): a hosted library whose cap an application can silently halve has the same defect; bare metal only makes it visible sooner |
+| E-Q12 | How does a component mark a knob as a requirement rather than a default? | a range form on the knob; a separate `requires:` clause; a component-level declaration | open: syntax for the design round |
+| E-Q10 | How is a latency requirement checked? | report the worst-case raise-to-capture time from higher-or-equal-priority captures' cycle bounds; gate only on opt-in | report first, as for timing (VISION §4.5) |
 
 ## 8. Build order
 
