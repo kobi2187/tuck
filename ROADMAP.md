@@ -1183,6 +1183,42 @@ serves only finished modules, since a partial module's verdict depends on
 the importing application. Spec §4.9 and LANGUAGE-OVERVIEW §4 say the
 same.
 
+## User ruling (2026-11-22) — interrupts are events; the driver declares, the application binds
+
+The bare-metal design round (D13, D1; `docs/bare-metal/DESIGN-interrupt-events.md`
+§5) settled how a hardware interrupt meets Tuck. Every classic interrupt bug
+is a skipped decision; the shape makes each one required and puts it with
+the party that owns it:
+
+- **The driver** owns its events: a `registry` **per module** (TK-RG05's
+  one-registry rule is relaxed; the whole event surface becomes a report,
+  `tuck audit --events`). Each event states how it is delivered:
+  `[stream]` (every occurrence, queued), `[signal]` (repeats merge into a
+  count) or `[latest]` (one slot, overwritten), and **the driver fixes the
+  overflow policy** on the event (`[stream, overflow: drop_newest]`).
+- The interrupt's code is **one top-level `fn ... [irq]`** in the driver,
+  optionally `[budget: N, rate: N]`. It picks the cause with a `decision`
+  table over the status bits (no gaps; row order is explicit) and `raise`s.
+  It is strict and stub-free (E-Q16), and the compiler checks that every path
+  clears the flags it handles, from facts the chip package generates out of
+  the SVD.
+- **The application** wires lines: `bind USART1 -> uart.onUart [priority:
+  2, queue: 16]`. **The queue size is explicit** (the compiler may warn when
+  the declared `rate` says it is too small). The driver names no line, no
+  priority and no size, so two applications on two boards reuse it
+  unchanged.
+- **Reactions are ordinary `on Events.X(...)` handlers**, declared anywhere
+  the events are visible (any importing module, an actor, a task's `on
+  select`). They run in task context after the interrupt returns, in raise
+  order, under the normal effect and error-policy rules.
+
+New words: `bind`, `[stream]` / `[signal]` / `[latest]`, `overflow:`, and
+`[budget, rate]`. Still open: the spelling of clear-on-read and
+write-1-to-clear facts (D3), instance-generic register blocks (D12), and
+whether an event carries the instance when two lines bind one fn (E-Q3).
+NOT BUILT: this is the design bare-metal Phase 2 builds
+(`docs/bare-metal/ROADMAP.md` 2.2, 2.7).
+
 ## Partial
 | Feature | Spec | Missing piece |
 |---|---|---|
@@ -1194,7 +1230,7 @@ same.
 | alias restructuring | 2.5 | DONE 2026-07-13 (typed renamed record, both backends; ex 18 green). Non-exkVar payload args still not exploded (double-eval; bind-to-temp later) |
 | pool / slab / arena | 7.2/7.3 | pool DONE (acquire/release, read/write/addr). Slab and arena DONE 2026-10-04 (slab proposal P0–P4): references by index with a tenancy per cell, chunked storage that never copies, ownership checks (TK-AC08/09), the arena as a lifetime over a slab per element type with a byte budget — run-gated on all three (examples 13, 48; `slabs` suite). Open: generic code over slabs (proposal §12); the arena's "cannot outlive" is a run-time check, a static one later |
 | Resource registry | 7.4 | 2026-09-14: `resources:` declaration (per-kind cap/policy/on_full/on_finish/sweep_batch, block-level policy default), `[resource: k]` marker validated (TK-RS01/02) and propagated through the effect machinery (TK-RS03, cross-module), the registry table in all three runtimes (strict/lazy/exit, inline ~75% watermark sweep, LIFO close-all, stale-handle generation catch — 19 rules pinned per runtime by `tests/suites/resources_rt.nim`), per-kind `<Kind>Handle` type, and the `OPEN RESOURCES` report + close-all at exit. `defer` landed with it as a GENERAL statement on all three backends. Release is `finish <handle>, <kind>` (ruled 2026-09-14): the kind is redundant against the handle's type and CHECKED (TK-RS04), so finishing into the wrong registry is a compile error. `on_full` and `on_finish` reach the table as closed vocabularies, the latter as real syscalls. The registry surface is a symmetric pair, `acquire <raw>, <kind>` / `finish <handle>, <kind>`, one parser building both (TK-RS04/05); the raw fd exists between the extern's return and the acquire and nowhere else, and the acquire site is filled from the span so the leak report can name it. A kind may also NAME a PROTOCOL — `db [cap: 4096, states: DbState]`, where DbState is a sealed sum type with `transitions:` (ruled 2026-09-14, decoupled: a `resources:` block is a deployment decision, the protocol of an OS service is the library's). The library writes only the states, never the handle; initial and terminal are DERIVED, and the machine is checked for what a resource needs (TK-RS06..10, including "the closing state is reachable from every state"). The registry is untouched: handle and table unchanged. Protocols are validated, NOT yet tracked — narrowing a handle through the machine needs a surface for a library op to name the edge it walks, a further ruling. A kind is declared ONCE by the library that owns it and apps import it — verified end-to-end, after fixing two bugs an import exposed: `main`'s blanket kind budget was its own module's kinds rather than the program's, and it REPLACED main's declared marker instead of unioning it, so the one workaround was a no-op too. A kind may be declared by MORE THAN ONE site, one knob each (ruled 2026-09-14): the library declares the protocol and on_finish, the app declares cap/policy/sweep_batch. Per knob, with a later site OVERRIDING an earlier one — a library ships a default, the app deploying it gets the last word. Not file order: modules are dep-first, so the importer overrides the imported. `states` is the exception and refuses a second setting (TK-RS02), since a protocol is what the service does rather than a default. Coherence moved out of the parser to the merged kind (TK-RS11) — a library's `on_full` is incoherent alone and correct once an app adds a cap. The table emits at the first site in dependency order, which is where a library's own acquire site can reach it; re-opens emit nothing, so no backend learns about re-opening. Also: `on_finish: none` now parses (it lexes as a keyword, so it was reserved even where only a name can appear). BUILT 2026-10-27 as a warning (TK-RS12, `resource_leaks.nim`): the conservative half of §7.4's acquire-must-finish check — a handle whose only use is `.ok`. Not path-sensitive. DEFERRED by ruling: single-owner handles (affine types), a language-wide feature rather than a resource one — and not a prerequisite for protocol tracking, which stays sound under copy because a stale `finish` is a missed error the generation check catches, not a false rejection |
-| Event registry | 10 | 2026-11-22: `registry` + `AppEvents.raise V {...}` + top-level `on AppEvents.V(...)` run on all three backends, synchronously, with the handler's declared effects checked (roadmap suite). MISSING against the spec: more than one handler per event (refused as a duplicate name), the `latest` query, handlers inside an actor (TK-RG03 does not count them). The one-registry rule (TK-RG05) also stops a library declaring the events it raises — the reuse question the bare-metal plan needs answered (`docs/bare-metal/DESIGN-interrupt-events.md`) |
+| Event registry | 10 | 2026-11-22: `registry` + `AppEvents.raise V {...}` + top-level `on AppEvents.V(...)` run on all three backends, synchronously, with the handler's declared effects checked (roadmap suite). MISSING against the spec: more than one handler per event (refused as a duplicate name), the `latest` query, handlers inside an actor (TK-RG03 does not count them). The one-registry rule (TK-RG05) also stops a library declaring the events it raises; ruled 2026-11-22 to become one registry per module (ledger: "interrupts are events"), not yet built |
 | Interfaces | 5.2/5.3 | DONE. `satisfies` is checked at compile time; an interface value is a TAGGED VARIANT THAT COPIES, not a fat pointer — dispatch is a switch on the tag calling the concrete member fn, so there is no table, no thunk, and no lifetime question (escape analysis was deleted with the pointer design). Both backends |
 | Type composition `+` | 4.5 | DONE: a field contributed twice is TK-TY05 (roadmap suite) |
 | match | — | exhaustiveness DONE: every match over a closed domain (sum type, bool, error enum) must cover all cases or end in `_`. Open domains (int/str) unchecked, as in Nim |

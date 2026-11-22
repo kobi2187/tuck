@@ -81,9 +81,16 @@ binding, frame homes, register-block instances, priorities and deadlines
 are application-level choices a reusable driver must never make. No
 spelling lands before the owner rules on them.
 
+**D13 and D1 are ruled (2026-11-22):** interrupts are registry events, in
+the shape of `DESIGN-interrupt-events.md` §5: the driver owns a registry per
+module, a `decision` table over the status bits, and one `[irq]` fn; the
+application writes `bind LINE -> module.fn [priority: N, queue: N]`;
+reactions are ordinary `on` handlers. D2, D8 and D12 are still open, and
+the reuse-test programs are written only in the ruled shape.
+
 | ID | Work | Exit | Rung |
 |---|---|---|---|
-| 1.0 | **Design round** for D13 (leading direction: interrupts as registry events, `DESIGN-interrupt-events.md`, questions E-Q1..E-Q7), then D1, D2, D8, D12: write the reuse-test programs (one unchanged UART driver; two applications on two boards with different instances, lines, priorities and load) in pseudo-Tuck under two or three competing designs; compare what the application must write in the common case and how the error reads when the compiler cannot infer | a short design note in `docs/` with the candidates side by side, and the owner's ruling recorded in the main `ROADMAP.md` rulings ledger | — |
+| 1.0 | **Design round** for D13 (leading direction: interrupts as registry events, `DESIGN-interrupt-events.md`, questions E-Q1..E-Q7), then D1, D2, D8, D12: write the reuse-test programs (one unchanged UART driver; two applications on two boards with different instances, lines, priorities and load) in pseudo-Tuck under two or three competing designs; compare what the application must write in the common case and how the error reads when the compiler cannot infer | a short design note in `docs/` with the candidates side by side, and the owner's ruling recorded in the main `ROADMAP.md` rulings ledger. **D13 + D1 RULED 2026-11-22** (design note §5, ledger entry "interrupts are events"); D2, D8, D12 open | — |
 | 1.0a | **Finish the event registry to its spec** (no ruling needed): more than one handler per event, in declaration order (E1); `latest` (E2); handlers inside an actor, delivered as messages once E-Q2's reading is confirmed (E3); behavioural tests on all three backends (E4) | the three `featureMissing` "Part 10" pins in `roadmap.nim` flip to `featureDone` | host |
 | 1.1 | `-Os -ffunction-sections -fdata-sections -Wl,--gc-sections` for metal builds | every metal program green at -Os; flash for `task_await` drops (record before/after) | qemu |
 | 1.2 | ~~Remove the TLS/GOT hack~~ **DONE 2026-11-22** (found while doing 0.1): Nim emitted thread-local storage because the driver appended the host's `--threads:on` after the metal `--threads:off`. With the board build owning its flags, `__aeabi_read_tp` has 0 callers; `aeabi_read_tp.s` and the 1 KB `tuck_tls` block are gone, and `.data` shrank (20 → 4 bytes for `task_await`) | `tuck_tls`, the asm `__aeabi_read_tp` deleted; both boards green | qemu |
@@ -104,7 +111,7 @@ Depends on Phase 1.4 (vector table lives in the generated layout).
 | ID | Work | Exit | Rung |
 |---|---|---|---|
 | 2.1 | svd2tuck emits the interrupt list (name → number); board build generates the full vector table; unbound vectors go to a default handler whose FAULT line names the vector | `nm` shows every vector; an unexpected IRQ reports its name | qemu |
-| 2.2 | **D1** (as ruled in 1.0; leaning: a line raises a registry event, DESIGN-EVENTS E6): the application binds lines to driver handlers; the compiler places them and enables the lines | a **SysTick handler preempts a busy task** and both observe a shared counter correctly; an unbound or doubly-bound line is a compile error | qemu |
+| 2.2 | **D1** (ruled 2026-11-22: `bind LINE -> module.fn [priority: N, queue: N]` in the application, DESIGN-interrupt-events §5): the application binds lines to driver handlers; the compiler places them and enables the lines | a **SysTick handler preempts a busy task** and both observe a shared counter correctly; an unbound or doubly-bound line is a compile error | qemu |
 | 2.3 | UART RX interrupt (PL011 on lm3s, fed through QEMU's serial) | bytes typed on QEMU stdin reach a task via the handler | qemu |
 | 2.4 | Priorities from the application's bindings; ceiling analysis over the composed program; `critical:` lowers to a BASEPRI raise to the resource's ceiling (PRIMASK on M0) | a higher-priority handler runs inside a low ceiling's section; M0 build (QEMU `microbit`) still correct | qemu |
 | 2.5 | ISR audit uses priorities: two-handler sharing gated exactly when priorities differ | the "same priority" caveat is gone from the report | ch |
