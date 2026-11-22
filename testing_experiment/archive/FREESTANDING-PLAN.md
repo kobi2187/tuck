@@ -1,3 +1,8 @@
+> **ARCHIVED 2026-11-22.** Superseded by `../VISION.md` (what and why) and
+> `../ROADMAP.md` (what next). Kept for its rationale, its recorded traps and
+> its observed QEMU results; do not plan from it. Where it disagrees with the
+> two new files, they win.
+
 # Plan: Tuck on bare metal (freestanding ARM Cortex-M)
 
 Status: planning. Board chosen for the first port: **STM32F103C8 "Blue Pill"**

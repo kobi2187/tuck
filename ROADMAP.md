@@ -13,6 +13,14 @@ modules under `stdlib-project/modules/`; their checks run on Nim and Odin in the
 `stdlib_project` suite. State, findings and the next steps are in
 `stdlib-project/ROADMAP.md`.
 
+**Bare metal (2026-11-22):** Cortex-M under QEMU, on branch
+`claude/tuck-baremetal-review-wm43kz` (not yet on `main`). What works,
+the phases and the owner decisions it needs are in
+`testing_experiment/VISION.md` and `testing_experiment/ROADMAP.md`; its
+Phase 0 merges it here and pins its claims in `tests/suites/roadmap.nim`.
+Item 14 below (#64, `[no_alloc]`/`[irq_safe]`) is part of that track's ISR
+discipline.
+
 Ordering rule, set by the user:
 
 > priority to finish features, and higher priority for the SSA fixing mem

@@ -1,3 +1,8 @@
+> **ARCHIVED 2026-11-22.** Superseded by `../VISION.md` (what and why) and
+> `../ROADMAP.md` (what next). Kept for its rationale, its recorded traps and
+> its observed QEMU results; do not plan from it. Where it disagrees with the
+> two new files, they win.
+
 # Execution plan — from this branch to fearless embedded Tuck
 
 Status: living plan (2026-11-21). Supersedes the ordering tables in
