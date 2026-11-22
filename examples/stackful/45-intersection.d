@@ -48,14 +48,17 @@ struct tuckˑregistryˑIntersection {
 }
 
 __gshared tuckˑregistryˑIntersection latesttuckˑregistryˑIntersection;
+__gshared bool latestRaisedtuckˑregistryˑIntersection;
 
 void raise_tuckˑregistryˑIntersection_PhaseChanged(ubyte to) {
     latesttuckˑregistryˑIntersection = tuckˑregistryˑIntersection(tuckˑregistryˑIntersectionKind.PhaseChanged, to: to);
+    latestRaisedtuckˑregistryˑIntersection = true;
     tuckˑfnˑIntersection_PhaseChanged(to);
 }
 
 void raise_tuckˑregistryˑIntersection_Preempted(ubyte source) {
     latesttuckˑregistryˑIntersection = tuckˑregistryˑIntersection(tuckˑregistryˑIntersectionKind.Preempted, source: source);
+    latestRaisedtuckˑregistryˑIntersection = true;
     tuckˑfnˑIntersection_Preempted(source);
 }
 

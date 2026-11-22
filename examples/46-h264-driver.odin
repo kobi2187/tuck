@@ -121,19 +121,23 @@ tuckˑregistryˑVideo :: struct {
 }
 
 latesttuckˑregistryˑVideo: tuckˑregistryˑVideo
+latestRaisedtuckˑregistryˑVideo: bool
 
 raise_tuckˑregistryˑVideo_FrameReady :: proc(bytes: int) {
 	latesttuckˑregistryˑVideo = tuckˑregistryˑVideo{tuckTag = .FrameReady, bytes = bytes}
+	latestRaisedtuckˑregistryˑVideo = true
 	tuckˑfnˑVideo_FrameReady(bytes)
 }
 
 raise_tuckˑregistryˑVideo_Overrun :: proc(dropped: int) {
 	latesttuckˑregistryˑVideo = tuckˑregistryˑVideo{tuckTag = .Overrun, dropped = dropped}
+	latestRaisedtuckˑregistryˑVideo = true
 	tuckˑfnˑVideo_Overrun(dropped)
 }
 
 raise_tuckˑregistryˑVideo_DecodeError :: proc(code: u8) {
 	latesttuckˑregistryˑVideo = tuckˑregistryˑVideo{tuckTag = .DecodeError, code = code}
+	latestRaisedtuckˑregistryˑVideo = true
 	tuckˑfnˑVideo_DecodeError(code)
 }
 

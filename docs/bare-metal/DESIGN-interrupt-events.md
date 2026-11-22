@@ -304,7 +304,7 @@ the spellings marked *new* are the only new words.
 ```text
 # --- driver: uart.tuck -------------------------------------------------
 registry UartEvents:
-  | Rx({byte: u8})  [stream, overflow: drop_newest]   # every byte; the driver fixes overflow
+  | Rx({data: u8})  [stream, overflow: drop_newest]   # every byte; the driver fixes overflow
   | Overrun         [signal]                          # repeats merge into a count
   | FrameError      [signal]
 
@@ -318,7 +318,7 @@ fn onUart({u: Uart}) [irq, budget: 30, rate: 11_520]:
   match {ore: u.SR.ORE, fe: u.SR.FE, rxne: u.SR.RXNE} uartCause:
     | Overrun  -> UartEvents.raise Overrun
     | Framing  -> UartEvents.raise FrameError
-    | Byte     -> UartEvents.raise Rx {byte: u.DR.DATA}
+    | Byte     -> UartEvents.raise Rx {data: u.DR.DATA}
     | Spurious -> return
   u.DR.DATA discard               # the compiler checks every path clears what is set
 
@@ -329,10 +329,10 @@ bind USART1 -> uart.onUart [priority: 2, queue: 16]
 bind USART2 -> uart.onUart [priority: 1, queue: 64]
 
 # --- anywhere: the reactions --------------------------------------------
-on UartEvents.Rx({byte: u8}):            # any module importing the driver
+on UartEvents.Rx({data: u8}):            # any module importing the driver
   ...
 actor Console:
-  on UartEvents.Rx({byte: u8}):          # or in an actor, in its own context
+  on UartEvents.Rx({data: u8}):          # or in an actor, in its own context
     ...
 ```
 
@@ -383,7 +383,7 @@ policy on the event; the application gives an explicit queue size in `bind`
   bind USART1 -> uart.onUart as Console [priority: 2, queue: 16]
   bind USART2 -> uart.onUart as Modem   [priority: 1, queue: 64]
 
-  on Console.Rx({byte: u8}):
+  on Console.Rx({data: u8}):
     ...
   ```
 
@@ -466,20 +466,28 @@ allocation") stays true, plus one static queue per deferred binding.
 **No ruling needed (finish the spec'd registry first; owner's rule: finish
 partial features):**
 
-- E1. More than one handler per event, in declaration order.
-- E2. `latest`.
-- E3. Handlers inside an actor, delivered as messages (needs E-Q2's reading
-  confirmed, since the spec says "synchronously").
-- E4. Behavioural tests on all three backends for each (started: roadmap
-  suite).
+- E1. More than one handler per event, in declaration order. **DONE
+  2026-11-22**, across modules too.
+- E2. `latest`. **DONE 2026-11-22**: `Reg.latest is V`, its own node
+  (exkLatestIs), false before the first raise.
+- E3. Handlers inside an actor, delivered as messages. **DONE 2026-11-22**:
+  rewrite lifts a top-level forwarder that sends to the actor's mailbox.
+- E4. Behavioural tests on all three backends for each: **DONE**,
+  `tests/suites/event_registry.nim`.
 
 **After the ruling (ruled 2026-11-22, §5):**
 
-- E5. A registry per module (TK-RG05 relaxed) and `tuck audit --events`,
-  the program-wide event report.
+- E5. A registry per module and `tuck audit --events`, the program-wide
+  event report. **DONE 2026-11-22**: TK-RG05 retired, TK-RG06 (one per
+  module), TK-RG07 (names unique). Raises in task bodies and select arms
+  are now checked, and so is a payload-less raise (it was matched by
+  neither the checker nor any report).
 - E5a. Delivery kinds on an event (`[stream]`, `[signal]`, `[latest]`) and
-  the driver's `overflow:`; on the host they are plain queues, so this is
-  testable before metal.
+  the driver's `overflow:`. **DONE 2026-11-22 as declarations and checks**:
+  TK-RG08 (a signal has no payload), TK-RG09 (overflow only on a stream,
+  `drop_newest` or `drop_oldest`), TK-RG10 (interrupt code raises only an
+  event with a delivery kind). The deferred delivery itself (queue, count,
+  slot, drained after the interrupt) needs `bind`'s `queue: N` and is E5b.
 - E5b. `bind LINE -> module.fn [priority: N, queue: N]`: an unbound `[irq]`
   fn is reported, an unbound or doubly-bound line is an error.
 - E6. Hardware raisers on metal: SysTick raising a `Tick` event under QEMU,

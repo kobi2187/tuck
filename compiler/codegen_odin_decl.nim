@@ -1007,7 +1007,8 @@ proc registryRaiseProc*(ctx: var OdinCodegenCtx, d: Decl, v: VariantDef,
   let assignStr = if assigns.len > 0: ", " & assigns.join(", ") else: ""
   ind & raiseProcName(d.name, v.name) & " :: proc(" & params.join(", ") &
     ") {\n" & ind & "\tlatest" & d.name & " = " & d.name & "{" & TagField & " = ." &
-    v.name & assignStr & "}\n" & ctx.registryHandlerCalls(d, v, ind) &
+    v.name & assignStr & "}\n" & ind & "\t" & latestRaisedName(d.name) &
+    " = true\n" & ctx.registryHandlerCalls(d, v, ind) &
     ind & "}\n\n"
 
 proc genRegistry*(ctx: var OdinCodegenCtx, d: Decl): string =
@@ -1018,7 +1019,8 @@ proc genRegistry*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## may call handlers declared after them — no forward decls needed.
   let ind = "  ".repeat(ctx.indent)
   result = ctx.registryEventStruct(d, ind) & "\n"
-  result.add(ind & "latest" & d.name & ": " & d.name & "\n\n")
+  result.add(ind & "latest" & d.name & ": " & d.name & "\n")
+  result.add(ind & latestRaisedName(d.name) & ": bool\n\n")
   result.add(ctx.foreignHandlerLists(d, ind))
   for v in d.variants:
     result.add(ctx.registryRaiseProc(d, v, ind))

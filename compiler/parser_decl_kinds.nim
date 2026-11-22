@@ -691,6 +691,35 @@ proc parseEffectList*(p: var Parser, tail: var SignatureTail, strict = true) =
     if p.current().kind == tkComma: discard p.advance()
   discard p.expect(tkRBracket)
 
+proc parseEventDelivery(p: var Parser, v: var VariantDef, what: string) =
+  ## `[stream]`, `[signal]`, `[latest]`, optionally `overflow: POLICY` — how a
+  ## registry event travels from an interrupt to its handlers (owner ruling
+  ## 2026-11-22). The words are checked here; whether they fit together
+  ## (overflow only on a stream, no payload on a signal) is the checker's,
+  ## TK-RG08/09.
+  if what != " in registry":
+    p.reportError("a bracket after a variant is a registry event's delivery " &
+                  "(`[stream]`, `[signal]`, `[latest]`); a sum type's " &
+                  "variants take none")
+  discard p.advance()                      # `[`
+  while p.current().kind != tkRBracket:
+    let w = p.expect(tkIdent, "Expected `stream`, `signal`, `latest` or " &
+                     "`overflow: POLICY`").value
+    case w
+    of "stream": v.delivery = edStream
+    of "signal": v.delivery = edSignal
+    of "latest": v.delivery = edLatest
+    of "overflow":
+      discard p.expect(tkColon)
+      v.overflow = p.expect(tkIdent, "Expected an overflow policy: " &
+                            "`drop_newest` or `drop_oldest`").value
+    else:
+      p.reportError("`" & w & "` is not an event delivery: write `stream`, " &
+                    "`signal` or `latest`, optionally with `overflow: " &
+                    "drop_newest` or `overflow: drop_oldest`")
+    if p.current().kind == tkComma: discard p.advance()
+  discard p.expect(tkRBracket)
+
 proc parseVariant*(p: var Parser, what: string): VariantDef =
   ## `| Name {field: Type}` — one variant of a sum type, or one event of a
   ## registry. Identical grammar either way; `what` only names the context in
@@ -703,8 +732,9 @@ proc parseVariant*(p: var Parser, what: string): VariantDef =
   var vFields: seq[FieldDef]
   if p.current().kind == tkLBrace: vFields = p.parseBraceFields()
   if hasParens: discard p.expect(tkRParen)
+  result = VariantDef(name: vName, fields: vFields, span: vSp)
+  if p.current().kind == tkLBracket: p.parseEventDelivery(result, what)
   if p.current().kind == tkNewline: discard p.advance()
-  VariantDef(name: vName, fields: vFields, span: vSp)
 
 proc parseFnSigDecl*(p: var Parser, sp: Span): Decl =
   ## fnsig NAME[T, ...] = {params} -> ret — a named function-signature type

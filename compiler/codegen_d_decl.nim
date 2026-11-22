@@ -608,7 +608,8 @@ proc dRegistryRaiseProc*(ctx: var DCodegenCtx, d: Decl,
   let assignStr = if assigns.len > 0: ", " & assigns.join(", ") else: ""
   "void " & raiseProcName(d.name, v.name) & "(" & params.join(", ") &
     ") {\n    latest" & d.name & " = " & d.name & "(" & d.name & "Kind." &
-    v.name & assignStr & ");\n" & ctx.dRegistryHandlerCalls(d, v) & "}\n\n"
+    v.name & assignStr & ");\n    " & latestRaisedName(d.name) &
+    " = true;\n" & ctx.dRegistryHandlerCalls(d, v) & "}\n\n"
 
 proc genDHandlerCase*(ctx: var DCodegenCtx, d: Decl,
                      h: ActorMsgHandler): string =
@@ -751,7 +752,8 @@ proc genDRegistry*(ctx: var DCodegenCtx, d: Decl): string =
   ## D resolves module-level declarations lazily like Odin, so a raise proc
   ## may call a handler declared after it — no forward declarations needed.
   result = ctx.dRegistryEventStruct(d) & "\n"
-  result.add("__gshared " & d.name & " latest" & d.name & ";\n\n")
+  result.add("__gshared " & d.name & " latest" & d.name & ";\n")
+  result.add("__gshared bool " & latestRaisedName(d.name) & ";\n\n")
   # Handlers in other modules are handed to this registry as references: one
   # list per event, which the raise proc walks after its own module's.
   for v in d.variants:

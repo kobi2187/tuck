@@ -577,6 +577,22 @@ proc isEffectAnnotation(p: Parser): bool =
   p.current().kind == tkLBracket and p.peek(1).kind == tkAttr and
     p.peek(2).kind == tkRBracket
 
+proc chainLatestIs(p: var Parser, expr: Expr, sp: Span): Expr =
+  ## `Registry.latest is Event` (spec Part 10's query). `is` is accepted only
+  ## there: a sum value is tested with `match`, and a bare `is` would
+  ## otherwise parse as a postfix call named `is`.
+  if expr.kind != exkField or expr.fieldName != "latest" or
+     expr.receiver == nil:
+    p.reportError("`is` tests a registry's most recent event: write " &
+                  "`Registry.latest is Event`. To test which variant a sum " &
+                  "value holds, use `match`.")
+  discard p.advance()
+  if p.current().kind != tkIdent:
+    p.reportError("`latest is` needs an event name, as in " &
+                  "`AppEvents.latest is LowMemory`")
+  let ev = p.advance().value
+  Expr(span: sp, kind: exkLatestIs, latestReg: expr.receiver, latestEvent: ev)
+
 proc chainStep(p: var Parser, expr: Expr, sp: Span, done: var bool): Expr =
   ## One postfix continuation. `done` is set when nothing continues the chain,
   ## which is what ends the loop.
@@ -606,6 +622,7 @@ proc chainStep(p: var Parser, expr: Expr, sp: Span, done: var bool): Expr =
     p.reportError("Function calls are postfix in Tuck: write {payload} " &
                   "fnName, not fnName(args)")
   of tkIdent:
+    if p.current().value == "is": return p.chainLatestIs(expr, sp)
     if p.isSendStep(expr): return p.chainSend(expr, sp)
     if p.isAliasStep(): return p.parseAliasStep(expr)
     if p.isWithStep(): return p.chainCombinator(expr, sp, ckWith)

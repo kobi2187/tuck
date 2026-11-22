@@ -40,7 +40,7 @@ auditing this compiler, who read a payload binding as a checker bug and nearly
 | 7 | Interfaces are pointers/vtables | **A copying tagged variant.** An interface value OWNS its data; dispatch is a switch on a tag. | §5 |
 | 8 | Actors are objects you construct | **Singletons.** One instance per declared type, no construction, no reference. | §10 |
 | 9 | `[io]` propagates automatically | **You declare it at every level.** An undeclared effect is an error, not an inference: the compiler works out what is required, names the call that needs it and says what to write (`TK-EF01`), and warns about a declared `[io]` nothing needs (`TK-EF02`). Guide to all the markers: `docs/safety-and-effects.md`. | §11 |
-| 10 | An unhandled event is fine | **Compile error.** Every registry event needs a handler (`TK-RG03`), and one registry per program. | §10, Part 10 |
+| 10 | An unhandled event is fine | **Compile error.** Every registry event needs a handler (`TK-RG03`). One registry per module, names unique program-wide; `tuck audit --events` is the whole surface. | §10, Part 10 |
 | 11 | `self ..field` is banned like any parameter | **Legal for object members and actor fields** — state the callee OWNS. A plain fn whose param is merely NAMED `self` gets no exemption. | §5.1, §7.1 |
 | 12 | Concurrency targets microcontrollers | **Hosted OS today** — stackful minicoro coroutines over `mmap`, epoll/kqueue reactor: a hosted-OS capability (spec §7.1). | §10 |
 | 13 | A line break inside brackets is a parse error | **Lines wrap, two ways.** Inside `(`/`{`/`[` indentation is not structure, so a wrapped payload may align under its opening brace, and a line break there reads as a comma — the last comma on a line is optional. Separately, a line ending in a **binary operator, comma or `=`** continues, inside brackets or not, because it cannot have ended. A trailing `:` still opens a block and `...` still ends its line. Ruled 2026-09-15, reversing the earlier ceiling. | §0 |
@@ -1352,9 +1352,17 @@ From `examples/25:3`, worth quoting:
 out means. Run-verified exhaustion cycle: acquire 2 of 2, third fails, release
 one, fourth succeeds, exit 42 (`tests/suites/cli_smoke.nim`).
 
-> **`registry` (`.raise`, `on Reg.Variant`) and MMIO `register` read-only
-> enforcement are compile-gated only — zero behavioural assertions.** (The
-> arena was too, until it was built over slabs; see below.)
+> **`registry` runs on all three backends** (`tests/suites/event_registry.nim`):
+> `Reg.raise V {...}` calls every `on Reg.V` handler synchronously, in
+> declaration order and across modules; an actor's `on Reg.V` receives it as a
+> message in its own context; `Reg.latest is V` asks for the most recent event.
+> A module declares at most one registry (TK-RG06), so a driver declares the
+> events it raises; `tuck audit FILE --events` lists every registry, raiser
+> and handler. An event raised from interrupt code needs a delivery kind,
+> `[stream]` (with the driver's `overflow:`), `[signal]` or `[latest]`
+> (TK-RG08..10); the deferred delivery itself comes with `bind`
+> (`docs/bare-metal/DESIGN-interrupt-events.md` §5). MMIO `register` read-only
+> enforcement is compile-gated only.
 
 ### Slabs — references, for what values cannot say
 

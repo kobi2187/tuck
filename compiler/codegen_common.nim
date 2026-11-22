@@ -638,6 +638,13 @@ const RegisterProc* = "tuckRegister"
   ## an interface another module declares (assigned to the function references
   ## that module dispatches through). Plain code in the emitted output.
 
+proc latestRaisedName*(registry: string): string =
+  ## The flag a registry sets on its first raise, so `latest is` is false
+  ## before anything was raised: the zeroed `latest` slot of a value-type
+  ## event (Odin, D) would otherwise read as the first event. Nim's slot is
+  ## a ref, nil until raised, so it needs none.
+  "latestRaised" & registry
+
 proc handlerListName*(registry, event: string): string =
   ## The list of function references a registry keeps, per event, for the
   ## handlers declared in OTHER modules. The raise proc calls its own module's

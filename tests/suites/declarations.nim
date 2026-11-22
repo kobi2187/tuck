@@ -229,7 +229,8 @@ on B.Y():
 fn main() -> int:
   return 0
 """
-  t.badCheck "a second registry is rejected", "TK-RG05"
+  # TK-RG05 (one registry per program) retired 2026-11-22: one per MODULE.
+  t.badCheck "a second registry in one module is rejected", "TK-RG06"
 
   # The whole surface, used correctly: declare, raise with the right payload,
   # handle every variant.
