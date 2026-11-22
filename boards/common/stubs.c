@@ -13,7 +13,7 @@ int _getpid(void) { return 1; }
 
 /* Thread-pointer storage used by Nim's threadvar TLS access.
  * Variant-I ARM TLS: leave 8 bytes of TCB headroom before the variables.
- * The accessor itself lives in semihost.s: the ARM EABI requires
+ * The accessor itself lives in aeabi_read_tp.s: the ARM EABI requires
  * __aeabi_read_tp to preserve r1-r3 and r12, and Nim's generated TLS access
  * keeps the GOT offset in r3 across the call. A C version clobbers r3. */
 char tuck_tls[1024];
@@ -21,4 +21,5 @@ char tuck_tls[1024];
 /* newlib fini array */
 void _fini(void) { }
 
-/* tuck_semihost_write is in semihost.s (pure asm, avoids register clobbers). */
+/* Console and exit: boards/common/semihosting.c (tuck_board_puts,
+   tuck_board_exit), or a real board's own file with the same two functions. */

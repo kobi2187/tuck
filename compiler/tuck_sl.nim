@@ -344,7 +344,7 @@ proc tuckEventCount*(): uint32 =
 proc tuckEventDump*() =
   ## Print `EVTS=<count>` (decimal) over semihosting. Per-event detail is
   ## decoded on the host by `tuck trace`, not printed from the hot path.
-  proc sh(s: cstring) {.importc: "tuck_semihost_write".}
+  proc sh(s: cstring) {.importc: "tuck_board_puts".}   # the board's console
   var buf: array[24, char]
   var digits: array[10, char]
   var n = eventRingHead

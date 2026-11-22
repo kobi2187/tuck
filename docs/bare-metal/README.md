@@ -23,7 +23,8 @@ QEMU boards, no real hardware yet. What works and what is next is in
 
 | Path | What |
 |---|---|
-| `boards/` | Cortex-M startup (`startup_cortex_m.c`: vector table, fault recorder, `tuck_fatal`, `tuck_board_exit`), `semihost.s`, `stubs.c`, one linker script per QEMU board |
+| `boards/<board>/` | one directory per board: `board.ld` (memory map; defines `_estack`, the initial SP) and `board.conf` (QEMU machine, CPU, console) |
+| `boards/common/` | shared by every board: `startup_cortex_m.c` (vector table, reset, fault recorder, `tuck_fatal`), `semihosting.c` (the QEMU console and exit: `tuck_board_puts`, `tuck_board_exit`), `aeabi_read_tp.s`, `stubs.c` |
 | `boards/picolibc/` | `build.sh` fetches picolibc 1.8.12 (pinned SHA-256) and builds the Thumb `libc.a` into `build/picolibc/` |
 | `tools/metal/` | `qemu-run.sh` (what `tuck sim` runs), `host-run.sh` (`tuck sim --host`), `gdb-run.sh` (break on the target) |
 | `tools/svd2tuck/` | CMSIS-SVD → Tuck `register` module generator, with its own docs and generated STM32F103 modules |

@@ -28,25 +28,18 @@ if [ -n "${TUCK_STDLIB:-}" ]; then
   TUCK_FLAGS="--stdlib:$TUCK_STDLIB"
 fi
 
-# Board profile: machine, CPU, linker script, and initial stack pointer.
-# Add a board by adding one arm here and a linker script under boards/.
+# Board: a directory under boards/ with board.ld (memory map, _estack) and
+# board.conf (machine, CPU, console). Add a board by adding a directory.
 BOARD="${TUCK_BOARD:-lm3s6965evb}"
-case "$BOARD" in
-  lm3s6965evb)
-    CPU=cortex-m3
-    LD=lm3s6965evb.ld
-    INITIAL_SP=0x20010000
-    ;;
-  stm32vldiscovery)
-    CPU=cortex-m3
-    LD=stm32vldiscovery.ld
-    INITIAL_SP=0x20002000
-    ;;
-  *)
-    echo "!!! unknown board '$BOARD' (lm3s6965evb, stm32vldiscovery)"
-    exit 1
-    ;;
-esac
+BOARD_DIR="$ROOT/boards/$BOARD"
+if [ ! -f "$BOARD_DIR/board.conf" ]; then
+  echo "!!! unknown board '$BOARD': no boards/$BOARD/board.conf (have: $(ls -d "$ROOT"/boards/*/board.conf 2>/dev/null | xargs -n1 dirname | xargs -n1 basename | tr '\n' ' '))"
+  exit 1
+fi
+conf() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" "$BOARD_DIR/board.conf" | head -1; }
+MACHINE="$(conf qemu)"
+CPU="$(conf cpu)"
+CONSOLE="$(conf console)"
 
 if [ "${TUCK_SKIP_TUCK_BUILD:-}" = "1" ]; then
   echo "=== build tuck (skipped: TUCK_SKIP_TUCK_BUILD=1) ==="
@@ -64,7 +57,7 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 # `PANIC: msg` and traps, so the fault recorder reports it. It used to loop
 # silently, which a QEMU run read as a clean finish.
 cat > "$OUT/panicoverride.nim" <<'EOF'
-proc tuckSemihostWrite(s: cstring) {.importc: "tuck_semihost_write".}
+proc tuckSemihostWrite(s: cstring) {.importc: "tuck_board_puts".}
 proc tuckFatal(msg: cstring) {.importc: "tuck_fatal", noreturn.}
 proc rawoutput(msg: string) {.nimcall.} =
   tuckSemihostWrite(msg.cstring)
@@ -78,14 +71,15 @@ if [ ! -f "$PICOLIBC/lib/libc.a" ]; then
   echo "!!! picolibc is not built: run boards/picolibc/build.sh once"
   exit 1
 fi
-arm-none-eabi-gcc -c -mcpu=$CPU -mthumb -DTUCK_INITIAL_SP=$INITIAL_SP "$BOARDS/startup_cortex_m.c" -o "$OUT/startup.o" 2>&1
-arm-none-eabi-gcc -c -mcpu=$CPU -mthumb "$BOARDS/stubs.c" -o "$OUT/stubs.o" 2>&1
-arm-none-eabi-as  -mcpu=$CPU -mthumb "$BOARDS/semihost.s" -o "$OUT/semihost.o" 2>&1
+arm-none-eabi-gcc -c -mcpu=$CPU -mthumb "$BOARDS/common/startup_cortex_m.c" -o "$OUT/startup.o" 2>&1
+arm-none-eabi-gcc -c -mcpu=$CPU -mthumb "$BOARDS/common/stubs.c" -o "$OUT/stubs.o" 2>&1
+arm-none-eabi-gcc -c -mcpu=$CPU -mthumb "$BOARDS/common/$CONSOLE.c" -o "$OUT/console.o" 2>&1
+arm-none-eabi-as  -mcpu=$CPU -mthumb "$BOARDS/common/aeabi_read_tp.s" -o "$OUT/tp.o" 2>&1
 
 echo "=== tuck check ==="
 ./tuck ch "$SRC" $TUCK_FLAGS 2>&1 | tail -3
 
-NIMFLAGS="--os:standalone --cpu:arm --mm:none -d:freestanding --exceptions:goto --cc:gcc --gcc.exe:arm-none-eabi-gcc --gcc.linkerexe:arm-none-eabi-gcc --threads:off --tlsEmulation:off --passC:-mthumb --passC:-mcpu=$CPU --passC:-g --passC:-I$PICOLIBC/include --passL:-nostartfiles --passL:$OUT/startup.o --passL:$OUT/stubs.o --passL:$OUT/semihost.o --passL:$PICOLIBC/lib/libc.a --passL:-T$BOARDS/$LD"
+NIMFLAGS="--os:standalone --cpu:arm --mm:none -d:freestanding --exceptions:goto --cc:gcc --gcc.exe:arm-none-eabi-gcc --gcc.linkerexe:arm-none-eabi-gcc --threads:off --tlsEmulation:off --passC:-mthumb --passC:-mcpu=$CPU --passC:-g --passC:-I$PICOLIBC/include --passL:-nostartfiles --passL:$OUT/startup.o --passL:$OUT/stubs.o --passL:$OUT/console.o --passL:$OUT/tp.o --passL:$PICOLIBC/lib/libc.a --passL:-T$BOARD_DIR/board.ld"
 if [ "${TUCK_FAULT_ISR_DROP:-}" = "1" ]; then
   NIMFLAGS="$NIMFLAGS -d:TuckFaultIsrDrop"
 fi
@@ -128,7 +122,7 @@ elif [ "${TUCK_VIRTUAL_TIME:-}" = "1" ]; then
 fi
 
 echo "=== qemu run (10s, board=$BOARD, ${QEMU_EXTRA:-realtime}) ==="
-timeout 10 qemu-system-arm -M "$BOARD" \
+timeout 10 qemu-system-arm -M "$MACHINE" \
   $QEMU_EXTRA \
   -semihosting-config enable=on,target=native \
   -nographic -kernel "$ELF" 2>&1 | head -40

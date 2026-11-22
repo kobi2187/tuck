@@ -4,6 +4,10 @@ MEMORY
   FLASH (rx) : ORIGIN = 0x00000000, LENGTH = 256K
   RAM (rwx)  : ORIGIN = 0x20000000, LENGTH = 64K
 }
+/* Top of RAM: the vector table's initial SP (boards/common/startup_cortex_m.c).
+   Derived from the MEMORY block, so it cannot disagree with the RAM size. */
+_estack = ORIGIN(RAM) + LENGTH(RAM);
+
 SECTIONS
 {
   .text : { KEEP(*(.isr_vector)) *(.text*) *(.rodata*) } > FLASH

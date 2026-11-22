@@ -1,19 +1,20 @@
-/* Cortex-M startup shared by every QEMU board in boards/: the vector table,
-   the reset handler, the default fault recorder, and the two board hooks the
-   Tuck runtime calls (tuck_fatal, tuck_board_exit). The recorder captures the
-   stacked PC/LR/xPSR and the fault status registers, prints a one-line FAULT
-   report over semihosting and ends the run; `tuck decode-crash` and
-   `tuck sim` read that line. Semihosting needs a debugger or QEMU: a board
-   for real silicon replaces the output and exit hooks. */
+/* Cortex-M startup shared by every board in boards/: the vector table, the
+   reset handler, the default fault recorder, and tuck_fatal (the runtime's
+   "a check failed" hook). The recorder captures the stacked PC/LR/xPSR and
+   the fault status registers, prints a one-line FAULT report and ends the
+   run; `tuck decode-crash` and `tuck sim` read that line.
+
+   Nothing here is specific to one board. What varies lives beside it:
+     boards/<board>/board.ld    the memory map; it defines _estack, the SP
+     boards/<board>/board.conf  machine, CPU and console for `tuck build`
+     boards/common/semihosting.c  tuck_board_puts / tuck_board_exit for QEMU;
+                                  a real board supplies its own over a UART */
 
 extern int main(void);
 void Reset_Handler(void);
-
-/* Shared Cortex-M3 startup. The board profile passes its SRAM top so the
-   vector table's initial SP matches the linked RAM size. */
-#ifndef TUCK_INITIAL_SP
-#define TUCK_INITIAL_SP 0x20010000
-#endif
+void tuck_board_puts(const char *s);
+void tuck_board_exit(int rc) __attribute__((noreturn));
+extern unsigned int _estack;   /* top of RAM, from the board's linker script */
 
 /* --- fault record (read by a debugger / post-mortem dumper) ---------- */
 typedef struct {
@@ -28,32 +29,6 @@ typedef struct {
 
 FaultRecord faultRecord = {0};
 
-/* Semihost SYS_WRITE0, so the report reaches the host without a UART. */
-static void sh(const char *s) {
-  register unsigned int r0 asm("r0") = 4;
-  register const char *r1 asm("r1") = s;
-  __asm volatile("bkpt 0xab" :: "r"(r0), "r"(r1) : "memory");
-}
-
-/* End the run with `rc` as the QEMU exit status: semihosting
-   SYS_EXIT_EXTENDED (0x20) with ADP_Stopped_ApplicationExit and a subcode.
-   This board file is for QEMU. On silicon with no debugger attached a BKPT
-   escalates to HardFault, so a real-board startup defines tuck_board_exit as
-   an idle loop (or a reset) instead and routes output to a UART. */
-void tuck_board_exit(int rc) {
-#ifdef TUCK_NO_SEMIHOST_EXIT
-  (void)rc;
-#else
-  static volatile unsigned int block[2];
-  block[0] = 0x20026u;           /* ADP_Stopped_ApplicationExit */
-  block[1] = (unsigned int)rc;
-  register unsigned int r0 asm("r0") = 0x20;
-  register volatile unsigned int *r1 asm("r1") = block;
-  __asm volatile("bkpt 0xab" :: "r"(r0), "r"(r1) : "memory");
-#endif
-  for (;;) {}
-}
-
 /* A runtime check failed (bounds, overflow, heap exhausted, a Nim panic).
    Say what, then trap: the undefined instruction is a UsageFault, so the
    recorder below prints the FAULT line and ends the run with status 1. */
@@ -63,9 +38,9 @@ void tuck_fatal(const char *msg) {
      instruction after the failing check's call, which DWARF built with
      --debug-lines maps to the Tuck line. */
   void *caller = __builtin_return_address(0);
-  sh("PANIC: ");
-  sh(msg);
-  sh("\n");
+  tuck_board_puts("PANIC: ");
+  tuck_board_puts(msg);
+  tuck_board_puts("\n");
   __asm volatile("mov lr, %0\n\tudf #0" :: "r"(caller) : "lr");
   for (;;) {}
 }
@@ -110,7 +85,7 @@ __attribute__((used)) static void recordFault(unsigned int *sp) {
   appendHex(hexbuf, &i, faultRecord.xpsr);
   hexbuf[i++] = '\n';
   hexbuf[i] = 0;
-  sh(hexbuf);
+  tuck_board_puts(hexbuf);
   /* The record stays in RAM for a debugger; under QEMU the run ends with
      status 1 instead of idling until the timeout. */
   tuck_board_exit(1);
@@ -135,7 +110,7 @@ __attribute__((naked)) static void defaultHandler(void) {
 /* --- vector table ------------------------------------------------------- */
 __attribute__((section(".isr_vector"), used))
 const unsigned int vectors[] = {
-  TUCK_INITIAL_SP,            /* 0:  initial stack pointer  */
+  (unsigned int)&_estack,     /* 0:  initial stack pointer: top of RAM */
   ((unsigned int)Reset_Handler + 1), /* 1: reset */
   ((unsigned int)defaultHandler + 1), /* 2: NMI */
   ((unsigned int)defaultHandler + 1), /* 3: HardFault */

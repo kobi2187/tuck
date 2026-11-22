@@ -20,7 +20,8 @@ TUCK_OUT_DIR="$OUT" "$ROOT/tools/metal/qemu-run.sh" "$STAGE" >"$OUT.build.log" 2
 ELF="$OUT/$BASE"
 if [ ! -f "$ELF" ]; then echo "!!! no ELF produced (see $OUT.build.log)"; exit 1; fi
 BOARD="${TUCK_BOARD:-lm3s6965evb}"
-qemu-system-arm -M "$BOARD" -semihosting-config enable=on,target=native \
+MACHINE="$(sed -n 's/^qemu[[:space:]]*=[[:space:]]*//p' "$ROOT/boards/$BOARD/board.conf" | head -1)"
+qemu-system-arm -M "$MACHINE" -semihosting-config enable=on,target=native \
   -nographic -kernel "$ELF" -gdb "tcp::$PORT" -S >"$OUT.qemu.log" 2>&1 &
 QPID=$!
 trap 'kill $QPID 2>/dev/null' EXIT
