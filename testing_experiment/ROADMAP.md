@@ -53,7 +53,9 @@ ladder (VISION §4.9), never "code written".
 no timed wait or `WFI` idle; register writes read-modify-write w1c registers;
 -O0 builds; ~4.6 KB hidden RAM; QEMU-grade linker scripts; semihosting-only
 output (faults on hardware without a debugger); metal is Nim-only; host sim
-is 64-bit only.
+is 64-bit only; and **nothing is reusable across applications yet**: each
+register instance is its own global (`USART1_SR`, `USART2_SR`) and `[irq]`
+is written on the handler, so a driver cannot be shared (VISION §2a).
 
 ---
 
@@ -74,18 +76,25 @@ once). Merge early, behind a clear boundary.
 
 ## Phase 1 — Correct foundations (finish what exists)
 
+**1.0 comes first and is design, not code.** Per VISION §2a, interrupt
+binding, frame homes, register-block instances, priorities and deadlines
+are application-level choices a reusable driver must never make. No
+spelling lands before the owner rules on them.
+
 | ID | Work | Exit | Rung |
 |---|---|---|---|
+| 1.0 | **Design round** for D13, then D1, D2, D8, D12: write the reuse-test programs (one unchanged UART driver; two applications on two boards with different instances, lines, priorities and load) in pseudo-Tuck under two or three competing designs; compare what the application must write in the common case and how the error reads when the compiler cannot infer | a short design note in `docs/` with the candidates side by side, and the owner's ruling recorded in the main `ROADMAP.md` rulings ledger | — |
 | 1.1 | `-Os -ffunction-sections -fdata-sections -Wl,--gc-sections` for metal builds | every metal stage green at -Os; flash for stage9 drops (record before/after) | qemu |
 | 1.2 | Remove the TLS/GOT hack: `-ftls-model=local-exec`, or emit Nim's threadvars as plain globals under freestanding | `tuck_tls`, asm `__aeabi_read_tp` and the stm32 `.got` copy deleted; both boards green | qemu |
-| 1.3 | **D2** task instances; `--frames:static` becomes the metal default; the bump heap goes | stage10/stage21 compile with declared instances; without them the error names the task and the fix; `freestandingHeap` gone | ch + qemu |
+| 1.3 | **D2** (after 1.0): static frame homes, counts inferred from the whole program where knowable, an application-level bound where not; `--frames:static` becomes the metal default; the bump heap goes | stage10 compiles with no annotation (two spawn sites, count inferred); stage21's data-dependent spawn is refused with an error naming the site and asking the application for a bound; `freestandingHeap` gone | ch + qemu |
 | 1.4 | Generated linker script from board regions: reserved + checked stack, `ALIGN(4)` section ends, `.noinit` crash record, flip-link layout | a deliberate stack overflow faults instead of corrupting `.bss`; the crash record survives a reset | qemu |
 | 1.5 | RAM/flash budget printed by `tuck build`, error over budget | budget for stage9 matches `arm-none-eabi-size` within the stack reservation | qemu |
-| 1.6 | **D3** w1c / write-only fields; svd2tuck keeps `modifiedWriteValues`; codegen never RMWs such a register | a w1c status register write emits a single store of the mask (emits pin); STM32 USART SR fields generated as w1c | ch |
+| 1.6 | **D3** (after 1.0) w1c / write-only fields as chip-package facts; svd2tuck keeps `modifiedWriteValues`; codegen never RMWs such a register | a w1c status register write emits a single store of the mask (emits pin); STM32 USART SR fields generated as w1c | ch |
 | 1.7 | **D4** 32-bit host sim for metal boards | an `int` overflow at 2^31 traps in `tuck sim --host` as it does on QEMU | host |
 | 1.8 | Fault handler picks MSP/PSP from EXC_RETURN; decoder fixes: `--debug-lines` no longer attributes the entry wrapper to the `.tuck` file | gdb backtrace shows no `.tuck` line past the file's length | qemu |
 | 1.9 | ISR audit keys state by declaration id, not name; protection required on the preemptible side only | a local named like a register is not "shared"; an ISR's own access no longer needs `critical:` | ch |
 | 1.10 | Stage hygiene: scratch state in SRAM, never peripheral space; LED stages read back GPIO where the simulator models it | no stage writes `0x40000000` as scratch | qemu |
+| 1.11 | **D12** (after 1.0): register blocks as instance-generic types; svd2tuck maps `derivedFrom` onto one layout with several instances | one UART driver module drives USART1 and USART2 in one program, emitted code identical in cost to the hand-specialised version; existing `register NAME at ADDR` programs unchanged | ch + qemu |
 
 ## Phase 2 — Real interrupts
 
@@ -94,11 +103,12 @@ Depends on Phase 1.4 (vector table lives in the generated layout).
 | ID | Work | Exit | Rung |
 |---|---|---|---|
 | 2.1 | svd2tuck emits the interrupt list (name → number); board build generates the full vector table; unbound vectors go to a default handler whose FAULT line names the vector | `nm` shows every vector; an unexpected IRQ reports its name | qemu |
-| 2.2 | **D1** `[irq: NAME]` binding; the compiler places the handler and enables the line | a **SysTick handler preempts a busy task** and both observe a shared counter correctly | qemu |
+| 2.2 | **D1** (as ruled in 1.0): the application binds lines to driver handlers; the compiler places them and enables the lines | a **SysTick handler preempts a busy task** and both observe a shared counter correctly; an unbound or doubly-bound line is a compile error | qemu |
 | 2.3 | UART RX interrupt (PL011 on lm3s, fed through QEMU's serial) | bytes typed on QEMU stdin reach a task via the handler | qemu |
-| 2.4 | `[priority: N]`; ceiling analysis; `critical:` lowers to a BASEPRI raise to the resource's ceiling (PRIMASK on M0) | a higher-priority handler runs inside a low ceiling's section; M0 build (QEMU `microbit`) still correct | qemu |
+| 2.4 | Priorities from the application's bindings; ceiling analysis over the composed program; `critical:` lowers to a BASEPRI raise to the resource's ceiling (PRIMASK on M0) | a higher-priority handler runs inside a low ceiling's section; M0 build (QEMU `microbit`) still correct | qemu |
 | 2.5 | ISR audit uses priorities: two-handler sharing gated exactly when priorities differ | the "same priority" caveat is gone from the report | ch |
 | 2.6 | Fault injection from outside: an interrupt storm and a dropped interrupt driven by the harness (QEMU gdbstub / Renode), not by the program | stage15 rewritten without `faultIsrDrop()`; the injected run is reproducible | qemu |
+| 2.7 | **The reuse test, for real:** the 1.0 programs as Tuck. One unchanged UART driver in two applications on the two QEMU boards, different instances, lines and priorities | both build and run; each gets its own correct ceilings; `git diff` of the driver between the two is empty | qemu |
 
 ## Phase 3 — Waiting on hardware (the metal reactor)
 
@@ -130,7 +140,7 @@ Depends on Phase 3.2 (timestamps) and 0.2 (per-board console).
 |---|---|---|---|
 | 5.1 | Stack from `-fstack-usage` joined to the call graph and ISR priority levels; `[stack: N]` a hard error | the reported worst case is ≥ the measured high-water mark (stack painting) on every stage | qemu |
 | 5.2 | Measured cycles per stage and handler (QEMU `-icount`; DWT on hardware) beside the static score | report shows both; the static score is calibrated or dropped | qemu |
-| 5.3 | **D8** `[period:, deadline:]`; utilisation and longest masked interval | a task set over 100% utilisation is flagged (old T11 exit) | ch |
+| 5.3 | **D8** (as ruled in 1.0): periods and deadlines stated by the application; a library may state guarantees; utilisation and longest masked interval | a task set over 100% utilisation is flagged (old T11 exit), with the driver unchanged between two applications | ch |
 
 ## Phase 6 — Peripherals as types
 
@@ -195,7 +205,9 @@ Phase 7 (hardware) needs 1.4 + 2.2 + 4.1                 Phase 9 needs 2.6 + 4.4
 ```
 
 Critical path to the flagship ("blink + UART echo, interrupt-driven, idle
-CPU, on hardware"): 0.1 → 1.4 → 2.1 → 2.2 → 3.2 → 3.3 → 3.4 → 4.1 → 7.1 → 7.2.
+CPU, on hardware, with a reusable driver"): 0.1 → **1.0** → 1.4 → 2.1 → 2.2 →
+2.7 → 3.2 → 3.3 → 3.4 → 4.1 → 7.1 → 7.2. Everything in Phase 0 and items
+1.1, 1.2, 1.4, 1.5, 1.7–1.10 can proceed while 1.0 is being decided.
 
 ## Old task IDs → new
 
@@ -205,7 +217,7 @@ CPU, on hardware"): 0.1 → 1.4 → 2.1 → 2.2 → 3.2 → 3.3 → 3.4 → 4.1 
 | T5 | event ring | ring done; egress + CTF → 4.3 |
 | T6 | crash decoder | done; 1.8 + 4.4 extend it |
 | T7 | virtual time + injection | clock done; real injection → 2.6; timed waits → 3.2 |
-| T8 | SVD → registers | registers done; interrupts → 2.1; w1c → 1.6; typestate → 6.1 |
+| T8 | SVD → registers | registers done; instance-generic blocks → 1.11; interrupts → 2.1; w1c → 1.6; typestate → 6.1 |
 | T9 / T10 | clock tree / board self-checks | 6.2 / 6.4 |
 | T11 | `tuck timing` | report done; real numbers → 5.1/5.2; deadlines → 5.3 |
 | T12 | MPU | 9.2 |
@@ -219,9 +231,10 @@ CPU, on hardware"): 0.1 → 1.4 → 2.1 → 2.2 → 3.2 → 3.3 → 3.4 → 4.1 
 
 ## Decisions (from VISION §7)
 
-D1 → 2.2, D2 → 1.3, D3 → 1.6, D4 → 1.7, D5 → 4.1, D6 → 4.1/6.x,
-D7 → Phase 8, D8 → 5.3, D9 → independent lane, D10 → 0.3, D11 → 0.5.
-Phase 0 needs D10 and D11 only; Phase 1 needs D2, D3, D4.
+Design questions (through 1.0, judged by the reuse test): D13 first, then
+D1 → 2.2, D2 → 1.3, D3 → 1.6, D8 → 5.3, D12 → 1.11; D9 → independent lane.
+Plumbing (recommendations in VISION §7): D4 → 1.7, D5 → 4.1, D6 → 4.1/6.x,
+D7 → Phase 8, D10 → 0.3, D11 → 0.5. Phase 0 needs only D10 and D11.
 
 ## How to work on this track
 
@@ -257,3 +270,5 @@ file's row marked done with the commit id.
    newer Nim hid a missing `findIt` and a doubled `panic` for 30 commits.
 8. **-O0 hides ordering bugs.** When 1.1 lands, expect volatile and barrier
    bugs to surface; they were always there.
+9. **A board fact in a driver** (an instance, a line, a priority, a count) is
+   a reuse bug even when it works. The reuse test (2.7) is the check.

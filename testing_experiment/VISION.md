@@ -7,8 +7,9 @@ for their rationale and their recorded traps). Evidence for every "today"
 claim below is in `REVIEW-2026-11-22.md`.
 
 Trust order, as for the rest of Tuck: the compiler beats `tuck-spec.md`
-beats this file. Where this file proposes syntax, it is a proposal (marked
-`text`, never `tuck`) until the owner rules on it.
+beats this file. **This file proposes no syntax** (owner, 2026-11-22: syntax
+needs its own design round, §2a). It states requirements, the layer each
+fact belongs to, and the options; the spellings come later.
 
 ---
 
@@ -29,8 +30,8 @@ toolchain can.** Concretely, five promises:
    `tuck build` prints the RAM and flash budget and fails when the board
    cannot hold it. (`--frames:static` already proves the frame half today.)
 3. **Interrupts are part of the language, and races are compile errors.**
-   An interrupt handler is a declared thing bound to a vector with a
-   priority. Shared state, critical sections and the ISR→task hand-off are
+   A driver provides handlers; the application binds them to interrupt
+   lines and priorities (§2a), so one driver serves many programs. Shared state, critical sections and the ISR→task hand-off are
    checked like ownership is checked: through the call graph, by declaration
    id, with both sides of a race named.
 4. **Waiting on hardware is just `[io]`.** A task that waits for a timer, a
@@ -73,14 +74,83 @@ Blue Pill and an RP2040, debugged with Tuck's own tools.
   host sim (logic) < QEMU (ISA, faults, exceptions) < Renode (peripheral
   models) < hardware. Each claim in the roadmap names its rung.
 
+## 2a. Reuse: libraries declare, applications bind
+
+The owner's objection to the first draft (2026-11-22): a handler written as
+"this fn is USART1's interrupt at priority 2", or a task written as "at most
+4 of me", cannot be reused. The next application has the UART on USART2, a
+different priority map and a different load. That is the C habit of baking
+the board into the driver, and Tuck is not meant to be another C.
+
+**The rule: a library states only what it needs, the application states
+only what it chooses, and the compiler infers everything it can see.**
+
+| Fact | Belongs to | Never in |
+|---|---|---|
+| "I handle a byte-received event", "I may run in interrupt context" | the driver (library) | — |
+| register layout of a UART; which interrupt lines it has | the chip package (generated from SVD) | the driver |
+| which instance (USART1 at `0x40013800`), which pins, which line number | the board package | the driver |
+| which instance *this* program's console uses; priorities; queue sizes; caps on concurrency; deadlines; budgets | the application, in one place | the driver, the board |
+| how many frames a spawn site needs; ceilings; stack depth; which vectors are used | the compiler, from the whole program | anyone's source, unless it cannot be inferred |
+
+Consequences for the pillars below:
+
+- **Interrupts.** A driver's handler is an ordinary fn that says it is safe
+  in interrupt context (today's `[irq_safe]` restriction already says
+  exactly this). *Which* vector it serves and at *what* priority is a
+  binding the application makes. Priority-ceiling analysis runs after
+  binding, over the whole program, so the driver stays priority-agnostic and
+  the checker still proves the composed system.
+- **Peripheral instances.** One layout type per peripheral kind, many
+  instances. A driver is generic over the instance (a group bound, as
+  `platform.hal` already does with `[B: I2cBus]`), and monomorphisation keeps
+  it zero-cost. Today's `register NAME at ADDR` makes each instance a
+  separate global (`USART1_SR`, `USART2_SR`), so a driver written against
+  one cannot drive the other: that is a reuse gap in the existing language,
+  not only in the plan. SVD already encodes the sharing (`derivedFrom`).
+- **Concurrency counts.** Tuck sees the whole program, so most frame counts
+  are inferable: N spawn sites, a spawn in a loop with a constant bound, a
+  handler that spawns at most once per event with a bounded queue. Only
+  where the count genuinely depends on run-time data does the compiler ask
+  for a bound, and it asks the *application* (the owner of the spawn site
+  or the wiring), never the task's declaration.
+- **Budgets and deadlines.** A task's deadline is a property of the system
+  it runs in, not of the task. `[stack: N]` likewise: a library may state a
+  bound it guarantees, but the budget it must fit is the application's.
+
+**Precedents Tuck already has**, so this extends the language rather than
+bolting a configuration system on: groups (compile-time bounds,
+monomorphised), board packages handing out configured handles
+(`platform.hal`), the event registry (one application-wide declaration of
+the whole event surface, spec Part 10), `pool` (application-level static
+storage), and `when TARGET` (target selection without a preprocessor). A
+hardware interrupt is arguably an event in the application's event surface;
+whether binding reuses the registry, a new wiring declaration, or board
+packages is the first question of the design round.
+
+**The reuse test**, the acceptance criterion for any syntax proposed for
+interrupts, instances, counts, priorities or deadlines: *one unchanged UART
+driver module compiles into two applications on two boards, with different
+instances, interrupt lines, priorities and load, and the checker proves both
+(ceilings, frame counts, budgets) without the driver naming any of it.* A
+proposal that needs the driver edited fails the test.
+
+**The design round** (roadmap item 1.0), before any of these spellings
+land: write the reuse-test programs in pseudo-Tuck under two or three
+competing designs, judge them on the test, on how much the application must
+write in the common case (target: nothing that the compiler can infer), and
+on how the error reads when the compiler cannot infer. Then rule.
+
 ## 3. The architecture
 
 ```text
-  ┌──────────────────────────── source ────────────────────────────┐
-  │ program.tuck        board module (generated + overlay)         │
-  │  tasks, actors,      chip: registers, interrupts (from SVD)    │
-  │  [irq: X] handlers   memory regions, clocks, console, pins     │
-  └───────────────┬───────────────────────────────┬────────────────┘
+  ┌──────────────────────────────── source ──────────────────────────────────┐
+  │ drivers (libraries)   chip package (SVD)     board package   application │
+  │  generic over kinds,   layouts, lines,        instances,      bindings:  │
+  │  handlers, tasks       w1c facts              pins, regions   lines,     │
+  │  (no instance, line,                          clocks, console priorities,│
+  │   priority or count)                                          bounds     │
+  └───────────────┬──────────────────────────────────────┬───────────────────┘
                   ▼                               ▼
         CHECK (shared, target-aware)       BOARD BUILD (shared)
         effects + ISR discipline +         vector table, linker
@@ -134,9 +204,12 @@ board but shared by two. That is the right prototype and the wrong product.
 
 - **Frames.** `--frames:static` is the metal default. It already refuses a
   spawned-not-awaited task with a file:line reason. The missing piece is a
-  home for those frames: **declared task instances**, a fixed count per task
-  (Embassy's `pool_size`). The frame heap and its runtime "exhausted" PANIC
-  then become a compile error.
+  static home for those frames, sized by **whole-program inference** where
+  the count is knowable and by an **application-level bound** where it is
+  not (§2a); never a count baked into the task, which would make it
+  unreusable (Embassy's per-task `pool_size` is the anti-pattern here). The
+  frame heap and its runtime "exhausted" PANIC then become a compile-time
+  answer: a number in the budget, or an error naming the spawn site.
 - **Budget at build.** Frames + pools + queues + the event ring + the stack
   (§4.5) are summed against the board's RAM, per region, and printed by
   `tuck build`. Over budget is an error naming the largest contributors.
@@ -145,36 +218,40 @@ board but shared by two. That is the right prototype and the wrong product.
   `flip-link` layout (stack below `.bss`, so overflow faults instead of
   corrupting data).
 - **No hidden RAM.** Today ~4.6 KB is spent before user code: a 2 KB heap
-  (goes with task instances), the 1 KB TLS block Nim's error flag drags in
+  (goes with static frame homes, §4.2), the 1 KB TLS block Nim's error flag drags in
   (goes with `-ftls-model=local-exec` or plain globals), and a 1.25 KB ring
   (stays, sized by the board).
 
-### 4.3 Interrupts as declarations
+### 4.3 Interrupts: declared needs, application bindings
 
-```text
-# PROPOSAL — not yet Tuck. Names come from the board's SVD interrupt list.
-fn onUartRx() [irq: USART1, priority: 2]:
-  let b = UART1_DR.DATA
-  {byte: b} rxQueue.post
-```
+Three facts, three owners (§2a):
 
-- `svd2tuck` emits the chip's interrupt names and numbers; `[irq: NAME]`
-  binds a fn to that vector; the board build generates the full table. An
-  unbound vector goes to a default handler whose FAULT line names it.
-- **Priorities make the race analysis exact.** With a priority per handler
-  and the call graph, Tuck can do what RTIC does with Rust macros, but in the
-  checker: compute each shared resource's **priority ceiling**, lower
-  `critical:` to "raise BASEPRI to the ceiling" (zero-cost, deadlock-free,
-  leaves higher-priority handlers running), and report a race only where
-  preemption is actually possible. The two-handler caveat in today's audit
-  disappears, and an ISR no longer needs a needless `critical:` around its
-  own access. On Cortex-M0 (no BASEPRI) the same lowering falls back to
-  PRIMASK, so it is portable.
-- **The FromISR rule is a type rule.** An `[irq]` fn may only reach
-  ISR-safe operations: posting to an ISR queue, reading/writing registers,
-  pure computation. `send` to an actor, allocation and waits are already
-  refused (TK-EF05/07/11); that stays, and the error names the ISR-safe
-  alternative.
+1. **The chip package lists the interrupt lines** (generated from the SVD:
+   name, number, which peripheral raises it).
+2. **A driver provides handlers** as ordinary fns marked safe for interrupt
+   context, written against a peripheral *kind*, not an instance.
+3. **The application binds** each line it uses to a handler instance and a
+   priority, once. The board build then generates the full vector table; an
+   unbound line goes to a default handler whose FAULT line names it.
+
+What the checker does with the composed program:
+
+- **Priority ceilings, after binding.** With every handler's priority known
+  and the call graph, Tuck can do what RTIC does with Rust macros, in the
+  checker: compute each shared resource's ceiling, lower `critical:` to "raise
+  BASEPRI to the ceiling" (zero-cost, deadlock-free, leaves higher-priority
+  handlers running), and report a race only where preemption is actually
+  possible. The same driver bound at different priorities gets different,
+  correct lowerings in each application. On Cortex-M0 (no BASEPRI) the
+  lowering falls back to PRIMASK.
+- **The FromISR rule is a reachability rule.** A bound handler may only reach
+  ISR-safe operations: posting to an ISR queue, register access, pure
+  computation. `send` to an actor, allocation and waits are already refused
+  (TK-EF05/07/11); the error names the ISR-safe alternative.
+- **Today's `[irq]` marker** (an ISR root, written on the fn) is the
+  single-application shortcut the stages use. It stays useful for small
+  programs; the design round decides whether it remains as sugar for
+  "bound here" or goes.
 
 ### 4.4 Waiting on hardware: the metal reactor
 
@@ -207,9 +284,10 @@ the epoll table or the timer wheel. On metal it is:
   from an AST guess. `[stack: N]` then becomes a hard error.
 - **Time.** Static cycle scores on unoptimised code are not useful. Measure:
   instruction counts under QEMU `-icount`, `DWT.CYCCNT` on hardware, per
-  stage and per handler, reported against the static score. Then
-  `[period:, deadline:]` (owner decision) give per-task utilisation and
-  the longest interval with interrupts masked. Report first; gate on opt-in.
+  stage and per handler, reported against the static score. Then periods and
+  deadlines, stated by the application for the tasks and handlers it runs
+  (not inside reusable code, §2a), give per-task utilisation and the longest
+  interval with interrupts masked. Report first; gate on opt-in.
 
 ### 4.6 The metal runtime contract
 
@@ -230,6 +308,9 @@ console, timer); the review pass already introduced the first two.
 
 ### 4.7 Peripherals as types
 
+- **Register blocks as types** (new, §2a): one layout per peripheral kind,
+  instances as values at addresses, drivers generic over the instance. Today
+  each instance is a separate global, which defeats reuse.
 - **Registers** (exist): typed fields, read/write permissions, volatile.
   Missing: **write-1-to-clear and write-only-mask fields**. Today a field
   write reads, modifies and writes the whole register, which clears every
@@ -318,18 +399,29 @@ Worth stating, because it decides what to build first:
 
 ## 7. Decisions the owner needs to make
 
-Each has a recommendation; none blocks Phase 0–1 of the roadmap.
+Two kinds. **Design questions** go through the design round (§2a) and are
+judged by the reuse test; no spelling is recommended here. **Plumbing
+decisions** are technical and have a recommendation.
+
+### Design questions (no syntax until the design round)
+
+| # | Question | Requirements it must meet |
+|---|---|---|
+| D1 | How does an application bind interrupt lines to handlers and priorities? | driver names no line or priority; one place per application; ceilings computed after binding; an unbound or doubly-bound line is a compile error |
+| D2 | Where do spawned tasks' frames live under `--frames:static`? | inferred when the count is knowable; when not, the bound is stated by the application at the spawn site's owner, never in the task; the error names the site |
+| D3 | How are write-1-to-clear and write-only-mask fields described? | a chip-package fact, generated from SVD `modifiedWriteValues`; codegen never read-modify-writes such a register |
+| D8 | How are periods and deadlines stated? | by the application for the tasks it runs; a library may state a guarantee (a bound it meets), not a requirement |
+| D9 | Fixed-point (Q notation) | a numeric type surface consistent with the 2026-08-25 numeric rulings; independent lane |
+| D12 | How do register blocks become instance-generic? | one layout type per kind, instances at addresses, zero-cost monomorphised drivers; SVD `derivedFrom` maps onto it; today's `register NAME at ADDR` keeps working |
+| D13 | Is a hardware interrupt an event in the application's registry (Part 10), a new wiring declaration, or a board-package concern? | answered first: D1, D2 and D8 follow from it |
+
+### Plumbing decisions (recommendation given)
 
 | # | Decision | Recommendation |
 |---|---|---|
-| D1 | Interrupt binding spelling | `[irq: NAME, priority: N]` on a fn; names from the board's SVD |
-| D2 | Static homes for spawned tasks | a per-task instance count, e.g. `task t(...) [instances: 4]` |
-| D3 | Write-1-to-clear / write-only fields | a field attribute (`[w1c]`, `[write_only]`) that forbids read-modify-write |
-| D4 | `int` width on 32-bit targets | native word (as ruled); host sim builds 32-bit for a metal board |
+| D4 | `int` width on 32-bit targets | native word (as ruled); the host sim builds 32-bit for a metal board |
 | D5 | Output transport + log format | console channel per board (semihosting/RTT/UART); deferred-format records decoded from the ELF |
 | D6 | Peripheral-level simulator | adopt Renode as rung 3, keep QEMU for ISA/faults |
 | D7 | Backends on metal | Nim first, then D (LDC betterC), then Odin (`freestanding_arm32`), each against the runtime contract; gaps tracked |
-| D8 | `[period:, deadline:]` spelling | effect-position attributes on `task` and `[irq]` fns, report-only first |
-| D9 | Fixed-point (Q notation) | a distinct type `Q[i, f]` with range checks at construction; independent lane |
 | D10 | picolibc in the repo | replace the 4,193 vendored files with a pinned tarball URL + SHA-256, fetched and cached by `build-picolibc.sh` |
 | D11 | Where the code lives after merge | `boards/`, `tools/metal/`, `tests/metal/` at top level; `testing_experiment/` retires |
