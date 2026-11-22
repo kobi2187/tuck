@@ -14,7 +14,7 @@ import ../harness
 
 proc rejection(t: var T, name, flag, want: string) =
   let exe = t.root / "tuck"
-  let stage = t.root / "testing_experiment" / "stage17_clock.tuck"
+  let stage = t.root / "tests" / "metal" / "clock_advances.tuck"
   let idx = t.needCmd(@[exe, "sim", stage, flag], vCheck)
   if t.phase == pCollect: return
   if t.skippedCmd(idx): t.skip name; return
@@ -26,20 +26,19 @@ proc rejection(t: var T, name, flag, want: string) =
 
 proc scenario(t: var T, name, board, tick, slot, want: string) =
   let exe = t.root / "tuck"
-  let stage = t.root / "testing_experiment" / "stage17_clock.tuck"
+  let stage = t.root / "tests" / "metal" / "clock_advances.tuck"
   # `tuck sim --tick:N` sets TUCK_ICOUNT_SHIFT itself. The harness passes the
   # board plus a private scratch dir (so parallel scenarios cannot clobber
   # each other's ELF) and skips the loop's redundant tuck rebuild — stage 1 of
   # the runner already produced the binary under test.
   let argv = @["env", "TUCK_BOARD=" & board,
-               "TUCK_OUT_DIR=/tmp/scratchpad/tuck-sim-tick-" & slot,
+               "TUCK_OUT_DIR=" & getTempDir() / ("tuck-sim-tick-" & slot),
                "TUCK_SKIP_TUCK_BUILD=1",
                exe, "sim", stage, "--tick:" & tick]
   let idx = t.needCmd(argv, vRun)
   let metalReady = findExe("qemu-system-arm") != "" and
                    findExe("arm-none-eabi-gcc") != "" and
-                   dirExists(t.root / "testing_experiment" / "build" /
-                             "picolibc" / "install")
+                   dirExists(t.root / "build" / "picolibc" / "install")
   if t.phase == pCollect:
     # Retire the work item up front when the metal tools are missing, so a
     # machine without QEMU pays neither a pointless tuck rebuild nor a timeout.

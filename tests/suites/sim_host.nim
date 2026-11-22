@@ -65,8 +65,8 @@ proc sameOutput(t: var T, name: string, got: Table[string, string]) =
 
 proc run*(t: var T) =
   let exe = t.root / "tuck"
-  let stage9 = t.root / "testing_experiment" / "stage9_minimal_task.tuck"
-  let stage5 = t.root / "testing_experiment" / "stage5_stackless_blink.tuck"
+  let stage9 = t.root / "tests" / "metal" / "task_await.tuck"
+  let stage5 = t.root / "tests" / "metal" / "two_blinkers.tuck"
   let backends = @["nim", "odin", "d"]
 
   # --- stage 9: a task and the print shim ---------------------------------

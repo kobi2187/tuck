@@ -252,7 +252,7 @@ Two loops, one command:
                  output. A clean run prints the program's output and exits 0;
                  a fault is decoded into a what/why/fix note naming the .tuck
                  line, and exits 1.
-  --host         build against testing_experiment/host_sim and run locally,
+  --host         build against tests/metal/host_sim and run locally,
                  no cross-toolchain. Nim, Odin and D all run by default, so
                  their stdout sits side by side for byte-level comparison; a
                  backend whose compiler is absent is reported SKIP.
@@ -423,7 +423,7 @@ options:
 
 proc isFreestandingBuild(opts: seq[string]): bool =
   ## A bare-metal build: `-d:freestanding` passed through to Nim (what
-  ## freestanding-loop.sh does), or a bare `--freestanding`. It used to be
+  ## qemu-run.sh does), or a bare `--freestanding`. It used to be
   ## "any argument containing the word", so `-o:build/freestanding-test` on a
   ## hosted build silently dropped the async runtime and the exit status.
   for o in opts:
@@ -1396,16 +1396,16 @@ when isMainModule:
       stdout.write (if wantSarif: toSarif(findings) else: toJson(findings))
   of "sim":
     # `tuck sim`: one command from source to observed behaviour.
-    #   default  -> freestanding-loop.sh: ARM/Thumb ELF + QEMU, fault decoded.
-    #   --host   -> host-loop.sh: host build against the shims, no toolchain.
+    #   default  -> qemu-run.sh: ARM/Thumb ELF + QEMU, fault decoded.
+    #   --host   -> host-run.sh: host build against the shims, no toolchain.
     # Both delegate to a proven loop script. A host run validates logic and the
     # scheduler; only the QEMU run claims anything about metal.
     let stage = path
     let hostMode = opts.anyIt(it == "--host")
-    let loopName = if hostMode: "host-loop.sh" else: "freestanding-loop.sh"
-    let script = getAppDir() / "testing_experiment" / loopName
+    let loopName = if hostMode: "host-run.sh" else: "qemu-run.sh"
+    let script = getAppDir() / "tools" / "metal" / loopName
     if not fileExists(script):
-      die("tuck sim: " & loopName & " not found (need the testing_experiment/ dir)")
+      die("tuck sim: " & loopName & " not found (need the tools/metal/ dir)")
     var env = ""
     if not hostMode:
       # Virtual time and fault injection are QEMU/runtime features. On the
@@ -1447,7 +1447,7 @@ when isMainModule:
     # exited nor faulted in the window — a firmware main loop, or a hang.
     # It is never read as success.
     # A fault is the interesting outcome: decode it here rather than making
-    # the developer copy a hex line into a second command. `freestanding-loop`
+    # the developer copy a hex line into a second command. `qemu-run`
     # prints ELF=<path>, so the log is self-describing.
     let fl = faultLine(simOut)
     if fl != "" or simOut.contains("Lockup"):

@@ -12,17 +12,16 @@ import ../harness
 
 proc metal(t: var T, name, stage, slot: string, wantRc: int,
            wants: seq[string]) =
-  ## Boot `testing_experiment/<stage>.tuck` under QEMU via `tuck sim` and
+  ## Boot `tests/metal/<stage>.tuck` under QEMU via `tuck sim` and
   ## assert the exit status and every text in `wants`.
   let exe = t.root / "tuck"
-  let src = t.root / "testing_experiment" / (stage & ".tuck")
-  let argv = @["env", "TUCK_OUT_DIR=/tmp/scratchpad/tuck-metal-" & slot,
+  let src = t.root / "tests" / "metal" / (stage & ".tuck")
+  let argv = @["env", "TUCK_OUT_DIR=" & getTempDir() / ("tuck-metal-" & slot),
                "TUCK_SKIP_TUCK_BUILD=1", exe, "sim", src, "--tick:4"]
   let idx = t.needCmd(argv, vRun)
   let metalReady = findExe("qemu-system-arm") != "" and
                    findExe("arm-none-eabi-gcc") != "" and
-                   dirExists(t.root / "testing_experiment" / "build" /
-                             "picolibc" / "install")
+                   dirExists(t.root / "build" / "picolibc" / "install")
   if t.phase == pCollect:
     if not metalReady: t.work[idx].skipped = true
     return
@@ -61,27 +60,27 @@ fn main() -> int:
 
   # --- under QEMU --------------------------------------------------------
   t.metal "nested critical: keeps interrupts masked; an early return unmasks",
-          "stage18_critical_nest", "nest", 0, @["NEST_OK"]
+          "critical_nest", "nest", 0, @["NEST_OK"]
   t.metal "a second ISR post to a full slot is dropped and counted",
-          "stage19_isr_overrun", "overrun", 0, @["OVERRUN_OK"]
+          "isr_overrun", "overrun", 0, @["OVERRUN_OK"]
   t.metal "an out-of-bounds index panics and names the Tuck line",
-          "stage20_bounds_panic", "bounds", 1,
-          @["PANIC: index out of bounds", "stage20_bounds_panic.tuck:9",
+          "panic_bounds", "bounds", 1,
+          @["PANIC: index out of bounds", "panic_bounds.tuck:9",
             "A runtime check failed"]
   t.metal "an exhausted frame heap panics instead of losing tasks",
-          "stage21_heap_exhausted", "heap", 1,
+          "panic_frame_heap", "heap", 1,
           @["PANIC: tuck frame heap exhausted"]
   t.metal "main's return value is the QEMU exit status",
-          "stage22_exit_code", "exit", 3, @["qemu exit: 3"]
+          "exit_code", "exit", 3, @["qemu exit: 3"]
 
   # T16, metal half: gdb stops at a Tuck line on the ARM target. SKIPs
   # without an ARM-capable gdb, like the host-gdb case in crash_decode.
   block:
     let name = "gdb breaks at a .tuck line on the QEMU target"
-    let script = t.root / "testing_experiment" / "gdb-loop.sh"
+    let script = t.root / "tools" / "metal" / "gdb-run.sh"
     let idx = t.needCmd(@["env", "TUCK_SKIP_TUCK_BUILD=1",
-                          "TUCK_OUT_DIR=/tmp/scratchpad/tuck-metal-gdb",
-                          script, "stage9_minimal_task", "10", "3411"], vRun)
+                          "TUCK_OUT_DIR=" & getTempDir() / "tuck-metal-gdb",
+                          script, "task_await", "10", "3411"], vRun)
     let ready = findExe("qemu-system-arm") != "" and
                 findExe("arm-none-eabi-gcc") != "" and
                 (findExe("gdb-multiarch") != "" or findExe("arm-none-eabi-gdb") != "")
@@ -90,7 +89,7 @@ fn main() -> int:
     elif t.skippedCmd(idx): t.skip name
     else:
       let (rc, text) = t.resultOf(idx)
-      if rc == 0 and text.contains("stage9_minimal_task.tuck:10"): t.ok name
+      if rc == 0 and text.contains("task_await.tuck:10"): t.ok name
       else: t.no name, "rc=" & $rc & ": " & text
 
   t.finish()

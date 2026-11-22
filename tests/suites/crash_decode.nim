@@ -155,7 +155,7 @@ fn main() -> int:
 
   # --- 4. DWARF names the Tuck file, not the generated Nim ----------------
   # A host build is enough for the tool chain; the ARM build is the QEMU gate
-  # in testing_experiment/. The line number can be offset by Nim's #line
+  # in tests/metal/. The line number can be offset by Nim's #line
   # directives, so assert the *file suffix* — the developer-facing promise.
   t.src """
 fn helper({x: int}) -> int:

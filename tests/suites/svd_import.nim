@@ -6,7 +6,7 @@
 ## hid the defect; Odin and D both rejected it. This suite pins the qualified
 ## accessor on all three.
 ##
-## The second half is T8's zero-register-diff claim. `bare_metal_led.tuck`
+## The second half is T8's zero-register-diff claim. `boot_led.tuck`
 ## declares five registers by hand; `stm32f103_bluepill.tuck` is generated from
 ## the Apache-2.0 STM32F103 SVD. Their addresses and fields must agree exactly
 ## or the generated module is not a drop-in replacement.
@@ -71,8 +71,8 @@ fn main() -> int:
   t.hostBuilds "the imported read/write program builds on every backend"
 
   # --- zero register diff against the hand-written board fixture ----------
-  let hand = t.root / "testing_experiment" / "bare_metal_led.tuck"
-  let genDir = t.root / "testing_experiment" / "tools" / "svd2tuck" /
+  let hand = t.root / "tests" / "metal" / "boot_led.tuck"
+  let genDir = t.root / "tools" / "svd2tuck" /
                "generated"
   let gen = genDir / "stm32f103_bluepill.tuck"
   let check = t.needCmd(@[t.root / "tuck", "ch", gen, "--root:" & t.root])

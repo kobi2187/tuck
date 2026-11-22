@@ -1,9 +1,0 @@
-{
-    "name": "sigval",
-    "union": "true",
-    "headers": ["asm/siginfo.h"],
-    "members": [
-	{ "name": "sival_int" },
-	{ "name": "sival_ptr", "pointer": "true" }
-    ]
-}

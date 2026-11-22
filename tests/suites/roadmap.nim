@@ -294,8 +294,8 @@ fn main() -> int:
 
 proc registryItems(t: var T) =
   ## "## Partial — Event registry" (2026-11-22). The registry is the planned
-  ## home of hardware interrupts on bare metal (testing_experiment/
-  ## DESIGN-EVENTS.md), so what it does today is pinned before it is extended.
+  ## home of hardware interrupts on bare metal (docs/bare-metal/
+  ## DESIGN-interrupt-events.md), so what it does today is pinned before it is extended.
   ## Until this, it had no behavioural assertion at all (LANGUAGE-OVERVIEW §15).
   t.src """
 import console

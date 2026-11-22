@@ -94,8 +94,27 @@ jobs:
       - name: clang (the Nim backend's release C compiler)
         run: sudo apt-get install -y --no-install-recommends clang libsqlite3-dev libssl-dev openssl libasound2-dev libbluetooth-dev libx11-dev xvfb zlib1g-dev libzstd-dev
 
+      # Bare metal (docs/bare-metal/): QEMU, the Arm cross compiler and gdb,
+      # plus picolibc built once from its pinned, SHA-256-checked release and
+      # cached. Without these the metal suites (metal_runtime, sim_tick, the
+      # QEMU half of crash_decode) only SKIP, and a metal regression would
+      # land unseen.
+      - name: Bare-metal toolchain
+        run: sudo apt-get install -y -q --no-install-recommends qemu-system-arm gcc-arm-none-eabi libnewlib-arm-none-eabi gdb-multiarch meson ninja-build
+
+      - name: Cache picolibc
+        uses: actions/cache@v4
+        with:
+          path: build/picolibc
+          key: picolibc-1.8.12-${{ runner.os }}-${{ hashFiles('boards/picolibc/**') }}
+
+      - name: picolibc (Thumb libc for the Cortex-M builds)
+        run: test -f build/picolibc/install/lib/libc.a || boards/picolibc/build.sh
+
       - name: Toolchain versions
         run: |
+          qemu-system-arm --version | head -1
+          arm-none-eabi-gcc --version | head -1
           nim --version | head -1
           odin version
           dmd --version | head -1
