@@ -1148,16 +1148,29 @@ crash) and `exit` are legitimate choices while developing.
   declares `errors [policy: strict]` is finished automatically.** An explicit
   "finished" marker may come later; strict already counts.
 - Only a library's own author can make it finished.
+- **Finished forbids stubs**: a `pending:` entry or `...` body in a finished
+  library is refused. Finished means finished.
+- **A finished library may import only finished libraries.** A partial
+  dependency that continues past an error would otherwise change the
+  finished library's results, so the application's policy would reach it
+  indirectly.
+- **A partial library's own `continue` / `exit` block is inert when
+  imported.** It applies only when that module is the program (checked or run
+  on its own, e.g. its self-check `main`); the report notes it otherwise.
+- So a module's `errors` block has two meanings only: `strict` = "finished",
+  honoured everywhere; `continue` / `exit` = "the policy when I am the
+  program". **The rule for any site: in a finished module, strict; anywhere
+  else, the entry module's policy.**
 - Release needs no separate rule: a `strict` application makes every partial
   library's remaining shortcuts compile errors.
 
 Built today (measured): the policy is per module; a library's own
 `continue` block runs its own handler; a library without a block checks
 strict whatever the application declares; a library's shortcut sites appear
-in no report. Open questions (E-Q14 a finished library importing a partial
-one, E-Q15 what a partial library's own non-strict block means when
-imported, E-Q16 shortcuts in interrupt context, and whether finished also
-forbids `pending` stubs) are in `testing_experiment/DESIGN-EVENTS.md` §3b, §7.
+in no report. No module in `std/` (12) or `stdlib-project/modules/` (82)
+declares `strict` or contains a stub, and all already check strict, so
+marking them finished is mechanical. Still open: E-Q16, shortcuts in
+interrupt context (`testing_experiment/DESIGN-EVENTS.md` §7).
 Spec §4.9 ("one `errors` declaration per application") matches this ruling;
 the compiler does not yet.
 
