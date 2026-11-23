@@ -456,6 +456,9 @@ proc genReturn(ctx: var CodegenCtx, e: Expr): string =
   ## the hop to whoever resumes next.
   result = ctx.genPlainReturn(e)
   if ctx.frameVar == "": return
+  # `return err X`: genRaise already finished the frame with the error, so
+  # wrapping it again returned a hop as the frame's value (audit C8).
+  if e.returnVal != nil and e.returnVal.kind == exkRaise: return
   if result == "return": return "return tuckSlRetVoid(" & ctx.frameVar & ", tuckSlExit)"
   result = "return tuckSlRet(" & ctx.frameVar & ", " & result["return ".len .. ^1] &
            ", tuckSlExit)"

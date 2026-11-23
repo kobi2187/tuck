@@ -284,6 +284,7 @@ proc odinType*(ctx: var OdinCodegenCtx, t: Type): string =
     let builtin = odinNamedBuiltin(ctx, t.name)
     if builtin != "": return builtin
     if slabOfRefType(t.name) != nil: return "rt.SlabRef"
+    if poolOfHandleType(t.name) != nil: return "rt.PoolHandle"
     ctx.odinNamedFallback(t)
   of tkTuple: ctx.odinTupleType(t)
   of tkApp:

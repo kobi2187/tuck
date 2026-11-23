@@ -638,6 +638,15 @@ proc slabOfRefType*(name: string): Decl =
   if name.len > 3 and name.endsWith("Ref"):
     result = semLayer.slabNames.getOrDefault(name[0 ..< name.len - 3], nil)
 
+proc poolOfHandleType*(name: string): Decl =
+  ## The pool whose handle type is `name` (`ReadingsHandle` -> Readings), or
+  ## nil. Keyed by the name as WRITTEN, whole-program, like slabOfRefType: a
+  ## handle type is the checker's, every backend prints the runtime's one
+  ## `PoolHandle` for it. Only D's mapper asked, so a handle type the user
+  ## WROTE (a param, a field) reached Nim and Odin undeclared (audit C10).
+  if name.len > 6 and name.endsWith("Handle"):
+    result = semLayer.poolNames.getOrDefault(name[0 ..< name.len - 6], nil)
+
 proc setStepCall*(r: Resolution, s: ChainStep, call: Expr) =
   ## Records the call a chain step resolved to, keyed by the step's own id.
   ## A step without an id cannot carry one and is skipped.

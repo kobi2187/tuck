@@ -8331,4 +8331,70 @@ fn main() -> int:
   t.quietly: t.hostRuns "A185: a task awaited from an actor handler builds", 0
   t.bugFixed "A185: a task awaited from an actor handler builds"
 
+  # A186 (class G, C8/C10/C17). Each built on two backends and failed on the
+  # third. C8: `return err X` in a stackless frame on Nim wrapped the frame's
+  # finish twice. C10: a pool handle type the user WROTE (`h: ReadingsHandle`)
+  # reached Nim and Odin undeclared; only D's type mapper knew it was the
+  # runtime's PoolHandle. C17: an actor with fields and no handlers had no
+  # singleton on Nim, so reading `Grow.items` did not build.
+  t.src """
+import console
+
+type Boom:
+  | Bad
+
+fn say({text: str}) [io]:
+  {text: text} console::printLine
+
+fn mayFail({n: int}) -> !{v: int} [io, error: Boom]:
+  {text: "mayFail"} say
+  if n > 1:
+    return err Boom.Bad
+  return {v: n}
+
+task t1({k: int}) -> {r: int} [io]:
+  let r = {n: k} mayFail
+  if not r.ok:
+    return {r: 99}
+  return {r: r.value.v}
+
+fn main() -> int [io]:
+  let r = {k: 1} t1
+  return r.r
+"""
+  t.quietly: t.hostRuns "A186: return err X from a stackless frame", 1, "mayFail"
+  t.bugFixed "A186: return err X from a stackless frame"
+  t.src """
+type Reading:
+  value: int
+
+pool Readings = Reading [count: 2]
+
+type Holder = {h: ReadingsHandle}
+
+fn rel({h: ReadingsHandle}):
+  Readings.release {h: h}
+
+fn main() -> int:
+  let h = Readings.acquire
+  if not h.ok:
+    return 100
+  {h: h.value} rel
+  return 0
+"""
+  t.quietly: t.hostRuns "A186: a written pool handle type is the runtime's", 0
+  t.bugFixed "A186: a written pool handle type is the runtime's"
+  t.src """
+actor Grow [queue: 8]:
+  name: str = "hello"
+  items: Seq[int] = [1, 2, 3]
+
+fn main() -> int:
+  let a = Grow.name
+  let c = Grow.items
+  return a.len + c.len
+"""
+  t.quietly: t.hostRuns "A186: an actor with fields and no handlers", 8
+  t.bugFixed "A186: an actor with fields and no handlers"
+
   t.finish()
