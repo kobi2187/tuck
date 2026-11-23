@@ -93,6 +93,7 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | Merge with main's registry rulings (2026-11-22): a synchronous raise is charged its handlers' effects (E5, confirmed 2026-11-23) only for handlers its own module sees; a queued event (`[stream]`/`[signal]`/`[latest]`) carries none; registries are no longer told apart per module (names are unique, TK-RG07); my shared-state rule moved to TK-EF12 (main took EF10/EF11); my A119-A122 pins renumbered A178-A181 (main's own A119-A122 kept) | A182 | the call-edge invariant skips a queued raise |
 | C6/C7 stackless: a frame call on a path that may not run (value-`if` branch, `match` arm, right of `and`/`or`) is cut inside that path, not hoisted before the test; an operand left of a pause is pinned into a temp before it (`count + {ms: 20} nap`) | A183 | `stages.conditionalToTemp`, `hoistChildren`/`pin` |
 | T15 (H) the SSA mirror walks a value that is control flow (`let z = match s:`, `return if ...`) by its blocks, not as one read; Odin's value `match` over a payload sum tests the variant through generated `S_is_V` procs | A184 | `ssa_build.walkValue` |
+| C15 a task awaited from an actor handler builds on Nim stackless: the stage passes its frame's `tuckSlExit` to `tuckSlRet` instead of the runtime finding it by `mixin`, which `codeReordering` cannot see | A185 | |
 
 **Still open in class B.** M14's refusal for a private or un-imported callee is a restriction, not the end
 state: the clone should be checked in the library's scope.

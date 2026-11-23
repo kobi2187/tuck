@@ -456,8 +456,9 @@ proc genReturn(ctx: var CodegenCtx, e: Expr): string =
   ## the hop to whoever resumes next.
   result = ctx.genPlainReturn(e)
   if ctx.frameVar == "": return
-  if result == "return": return "return tuckSlRetVoid(" & ctx.frameVar & ")"
-  result = "return tuckSlRet(" & ctx.frameVar & ", " & result["return ".len .. ^1] & ")"
+  if result == "return": return "return tuckSlRetVoid(" & ctx.frameVar & ", tuckSlExit)"
+  result = "return tuckSlRet(" & ctx.frameVar & ", " & result["return ".len .. ^1] &
+           ", tuckSlExit)"
 
 proc genIndented(ctx: var CodegenCtx, e: Expr): string =
   ## Emit a nested body one level deeper, restoring the indent afterwards.
@@ -1073,7 +1074,7 @@ proc genRaise(ctx: var CodegenCtx, e: Expr): string =
   ## finishes the frame with it (#216).
   let v = ctx.genRaiseValue(e)
   if ctx.frameVar == "": "return " & v
-  else: "return tuckSlRet(" & ctx.frameVar & ", " & v & ")"
+  else: "return tuckSlRet(" & ctx.frameVar & ", " & v & ", tuckSlExit)"
 
 proc genCopy(ctx: var CodegenCtx, e: Expr): string =
   ## A value that shares nothing with its source (rule S; rule G chose which

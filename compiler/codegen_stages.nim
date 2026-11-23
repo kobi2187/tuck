@@ -87,7 +87,7 @@ proc jump(d: Decl, k: int): string = "return " & stageName(d.name, k) & "(env)"
 
 proc genFall(d: Decl): string =
   if resultType(d) == "bool" and (d.fnReturnType == nil or genType(d.fnReturnType) == "void"):
-    "  return tuckSlRetVoid(tuckF)\n"
+    "  return tuckSlRetVoid(tuckF, tuckSlExit)\n"
   else:
     "  quit \"tuck: stackless " & d.name & " ended without a return\"\n"
 

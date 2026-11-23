@@ -59,7 +59,7 @@ proc TuckSˑtuckˑtaskˑfireˑ0*(env: pointer): TuckHop {.nimcall.} =
 
 proc TuckSˑtuckˑtaskˑfireˑ1*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑfire](env)
-  return tuckSlRetVoid(tuckF)
+  return tuckSlRetVoid(tuckF, tuckSlExit)
 
 proc TuckIOˑtuckˑtaskˑfireˑ0*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑfire](env)

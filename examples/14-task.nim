@@ -55,8 +55,8 @@ proc TuckSˑtuckˑtaskˑfetchFeedˑ2*(env: pointer): TuckHop {.nimcall.} =
   tuckF.tuckDefer1 = true
   if tuckˑvˑresp.ok:
     if true:
-      return tuckSlRet(tuckF, tok(tuckˑfnˑparse(tuckˑvˑresp.value.body)))
-  return tuckSlRet(tuckF, terr[tuple[feed: tuckˑtypeˑFeed]](uint16(tuckˑvˑresp.err)))
+      return tuckSlRet(tuckF, tok(tuckˑfnˑparse(tuckˑvˑresp.value.body)), tuckSlExit)
+  return tuckSlRet(tuckF, terr[tuple[feed: tuckˑtypeˑFeed]](uint16(tuckˑvˑresp.err)), tuckSlExit)
 
 proc TuckIOˑtuckˑtaskˑfetchFeedˑ0*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑfetchFeed](env)

@@ -156,7 +156,7 @@ proc TuckSˑtuckˑtaskˑstreamReaderˑ0*(env: pointer): TuckHop {.nimcall.} =
       var tuckˑvˑbuf = tuckPoolAcquire(tuckˑpoolˑBufferPool)
       if not tuckˑvˑbuf.ok:
         if true:
-          return tuckSlRet(tuckF, tokVoid())
+          return tuckSlRet(tuckF, tokVoid(), tuckSlExit)
       tuckˑregisterˑDMA1_CH3_EN_set(true)
       tuckPoolRelease(tuckˑpoolˑBufferPool, tuckˑvˑbuf.value)
   quit "tuck: stackless tuckˑtaskˑstreamReader ended without a return"

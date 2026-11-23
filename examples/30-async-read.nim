@@ -38,7 +38,7 @@ proc TuckSˑtuckˑtaskˑreadOrGiveUpˑ1*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑreadOrGiveUp](env)
   template fd: untyped = tuckF.fd
   template tuckˑvˑcode: untyped = tuckF.tuckˑvˑcode
-  return tuckSlRet(tuckF, (code: tuckˑvˑcode))
+  return tuckSlRet(tuckF, (code: tuckˑvˑcode), tuckSlExit)
 
 proc TuckIOˑtuckˑtaskˑreadOrGiveUpˑ0*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑreadOrGiveUp](env)

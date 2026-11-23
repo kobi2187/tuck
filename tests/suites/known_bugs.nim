@@ -8303,4 +8303,32 @@ fn main() -> int [io]:
   t.quietly: t.okCheck "A184: a write inside a value's own control flow is not a read"
   t.bugFixed "A184: a write inside a value's own control flow is not a read"
 
+  # A185 (class G, C15): a task awaited from an actor handler did not build
+  # on Nim under stackless: "undeclared identifier: tuckSlExit". The emitted
+  # module is `codeReordering`, and `tuckSlRet` found the frame's exit proc
+  # by `mixin`, a dependency the reordering cannot see, so the stages landed
+  # above it. The stage now passes `tuckSlExit` explicitly.
+  t.src """
+actor A [queue: 4]:
+  n: int = 0
+  on go():
+    n += 1
+
+task worker({k: int}) -> {r: int} [io]:
+  A send go {}
+  return {r: 1}
+
+actor B [queue: 4]:
+  m: int = 0
+  on go():
+    let r = {k: 1} worker
+    m += r.r
+
+fn main() -> int:
+  B send go {}
+  return 0
+"""
+  t.quietly: t.hostRuns "A185: a task awaited from an actor handler builds", 0
+  t.bugFixed "A185: a task awaited from an actor handler builds"
+
   t.finish()

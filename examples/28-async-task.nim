@@ -51,7 +51,7 @@ proc TuckSˑtuckˑtaskˑcomputeˑ2*(env: pointer): TuckHop {.nimcall.} =
   template tuckˑvˑa: untyped = tuckF.tuckˑvˑa
   template tuckˑvˑb: untyped = tuckF.tuckˑvˑb
   tuckˑvˑb = tuckˑfnˑstepIo(base)
-  return tuckSlRet(tuckF, (r: (tuckˑvˑa.v + tuckˑvˑb.v)))
+  return tuckSlRet(tuckF, (r: (tuckˑvˑa.v + tuckˑvˑb.v)), tuckSlExit)
 
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑcompute) =
   template base: untyped = tuckF.base
