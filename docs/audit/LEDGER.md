@@ -96,13 +96,16 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | C15 a task awaited from an actor handler builds on Nim stackless: the stage passes its frame's `tuckSlExit` to `tuckSlRet` instead of the runtime finding it by `mixin`, which `codeReordering` cannot see | A185 | |
 | C8 `return err X` in a Nim stackless frame finishes the frame once (genRaise already did); C10 a written `<Pool>Handle` maps to the runtime's PoolHandle in every backend's type mapper (`resolution.poolOfHandleType`); C17 an actor with no handlers still has its singleton and member fns on Nim | A186 | |
 | c_member/b a fn reference to an actor's member (`:bump`) is refused: it built on no backend, inside the actor or out (a bound method; recorded as a missing feature) | A187 | `failIfMemberRef` |
+| C9 a stackless frame local takes its STATED type (`let o: Runner = o0`); a call through an interface whose member may wait runs on a helper stack (`stages.dispatchMayWait`) | A188 | |
 
 **Still open in class B.** M14's refusal for a private or un-imported callee is a restriction, not the end
 state: the clone should be checked in the library's scope.
 
 **Waiting on a ruling.** E4 (does binding a task's result, an await, need `[io]` in the
 caller?), E16 (`on select` arm budgets, F2), C18's second half (a predicate reading only its
-own actor's fields), the concurrency items C2/C4/C5, Y1 (int/i64 overflow policy), Y11 (generic
+own actor's fields; c_pred/a, b, d hang on Odin and D where Nim re-tests), the concurrency
+items C2/C4/C5 (c_seqrace/r reads a torn `str` from another actor; c_poolrace/p and
+r_res/race race a pool and a resource table), Y1 (int/i64 overflow policy), Y11 (generic
 bodies: rigid type parameters, or re-checked per instantiation?), T13 (may a type parameter
 bind a `T?`, so that `len` takes a `Seq[int]?` unguarded?), Y18 (`int` and `i64`: the
 2026-08-25 ruling says they never need a cast, open bug A116 says the checker should refuse

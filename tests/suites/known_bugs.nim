@@ -8441,4 +8441,85 @@ fn main() -> int:
 """
   t.okCheck "A187: ...but a free fn of the same name is referenced"
 
+  # A188 (class G, C9). Under stackless, a frame local stated as an interface
+  # (`let o: Runner = o0`) became a frame field of the VALUE's type (R1), and
+  # wrapping into the interface no longer fit (no backend built it). And a
+  # call through an interface whose member waits (`o.run`, [io]) ran on the
+  # frame's own stack and the runtime stopped: no call edge reaches a
+  # satisfier, so none was a frame. A stated type now wins for the field,
+  # and such a dispatch runs on a helper stack.
+  t.src """
+import console
+
+interface Runner:
+  fn run({self: Self}) -> int
+
+object R1:
+  satisfies Runner
+  k: int
+  fn run({self: R1}) -> int:
+    return self.k
+
+fn say({text: str}) [io]:
+  {text: text} console::printLine
+
+task t1({k: int}) -> {r: int} [io]:
+  let o0 = {k: 4} R1
+  let o: Runner = o0
+  {text: "mid"} say
+  let c = o.run
+  return {r: c}
+
+fn main() -> int [io]:
+  let r = {k: 1} t1
+  return r.r
+"""
+  t.quietly: t.hostRuns "A188: a frame local stated as an interface", 4, "mid"
+  t.bugFixed "A188: a frame local stated as an interface"
+  t.src """
+import console
+import time
+
+fn say({text: str}) [io]:
+  {text: text} console::printLine
+
+fn pausing({tag: str}) -> int [io]:
+  {text: "pausing " + tag} say
+  {ms: 3} time::sleepMs
+  return 1
+
+fnsig Op = {tag: str} -> int [io]
+type Box = {op: Op}
+
+interface Runner:
+  fn run({self: Self}) -> int [io]
+
+object R1:
+  satisfies Runner
+  k: int
+  fn run({self: R1}) -> int [io]:
+    let x = {tag: "iface"} pausing
+    return x + self.k
+
+fn generic[T]({x: T}) -> int [io]:
+  let y = {tag: "generic"} pausing
+  return y
+
+task t1({k: int}) -> {r: int} [io]:
+  let b = {op: :pausing} Box
+  let a = {tag: "fnsig"} b.op
+  let o0 = {k: 1} R1
+  let o: Runner = o0
+  let c = o.run
+  let g = {x: 5} generic
+  {text: "done"} say
+  return {r: a + c + g}
+
+fn main() -> int [io]:
+  let r = {k: 1} t1
+  return r.r
+"""
+  t.quietly: t.hostRuns "A188: an interface call that waits, in a task", 4, "pausing iface\\s+pausing generic\\s+done"
+  t.bugFixed "A188: an interface call that waits, in a task"
+
   t.finish()
