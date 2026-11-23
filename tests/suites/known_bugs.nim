@@ -8257,4 +8257,50 @@ fn main() -> int [io]:
   t.quietly: t.hostRuns "A183: an operand left of a pause is read before it", 1
   t.bugFixed "A183: an operand left of a pause is read before it"
 
+  # A184 (class H). A `match` used as a value over a PAYLOAD sum built on Nim
+  # and D but not Odin: its ternary compared the union against `SessKind`, an
+  # enum only payload-free sums have. The union's variant is tested through
+  # the sum's generated `_is_` procs now.
+  t.src """
+type Sess:
+  | Idle
+  | Open({id: int})
+  | Done({code: int})
+
+fn score({s: Sess}) -> int:
+  let v = match s:
+    Idle: 1
+    Open: s.id
+    Done: s.code
+  return v
+
+fn main() -> int:
+  let a = {s: Sess.Open {id: 4}} score
+  let b = {s: Sess.Idle} score
+  return a + b
+"""
+  t.quietly: t.hostRuns "A184: a value match over a payload sum builds on Odin", 5
+  t.bugFixed "A184: a value match over a payload sum builds on Odin"
+  # A value whose own control flow writes a name — the subject reassigned in
+  # an arm of `let z = match s:` — was read whole by the SSA mirror, the write
+  # counted as a read, and the checker stopped: "the SSA mirror is malformed".
+  # (Whether a value-match arm may be a block at all is waiting on a ruling:
+  # no backend builds one yet.)
+  t.src """
+type D:
+  | A({n: int})
+  | B
+
+fn main() -> int [io]:
+  var s = D.A {n: 1}
+  let z = match s:
+    A:
+      s = D.B
+      0
+    _: 1
+  return z
+"""
+  t.quietly: t.okCheck "A184: a write inside a value's own control flow is not a read"
+  t.bugFixed "A184: a write inside a value's own control flow is not a read"
+
   t.finish()

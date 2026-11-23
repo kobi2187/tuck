@@ -92,6 +92,7 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | An invariant violation reports the predicate as written and the type's Tuck name, one text on all three (it was each host's emitted code) | invariants suite | |
 | Merge with main's registry rulings (2026-11-22): a synchronous raise is charged its handlers' effects (E5, confirmed 2026-11-23) only for handlers its own module sees; a queued event (`[stream]`/`[signal]`/`[latest]`) carries none; registries are no longer told apart per module (names are unique, TK-RG07); my shared-state rule moved to TK-EF12 (main took EF10/EF11); my A119-A122 pins renumbered A178-A181 (main's own A119-A122 kept) | A182 | the call-edge invariant skips a queued raise |
 | C6/C7 stackless: a frame call on a path that may not run (value-`if` branch, `match` arm, right of `and`/`or`) is cut inside that path, not hoisted before the test; an operand left of a pause is pinned into a temp before it (`count + {ms: 20} nap`) | A183 | `stages.conditionalToTemp`, `hoistChildren`/`pin` |
+| T15 (H) the SSA mirror walks a value that is control flow (`let z = match s:`, `return if ...`) by its blocks, not as one read; Odin's value `match` over a payload sum tests the variant through generated `S_is_V` procs | A184 | `ssa_build.walkValue` |
 
 **Still open in class B.** M14's refusal for a private or un-imported callee is a restriction, not the end
 state: the clone should be checked in the library's scope.
@@ -109,7 +110,7 @@ minimum; and a constant one Nim and Odin refuse to build), Y8's other half (a `[
 chain that is compared, passed or returned rather than stored still wraps; spec 4.1 names only
 stores), the precedence of `-128 Temp` (it is `-(128 Temp)`, so -127 on a saturating `i8`),
 a Nim backend gap found while fixing C7 (`x + f()` where `f` changes `x`: Nim leaves operand order to C, so
-stackful Nim read `x` after the call; Odin and D read it first) — not yet fixed, and two TK-TY16 holes the checker cannot follow: a partial record put in a
+stackful Nim read `x` after the call; Odin and D read it first) — not yet fixed, a value `match` whose arm is a multi-line block (the checker accepts it, no backend builds it: is the block's last line the arm's value, or is it the statement form, as a block-bodied value `if` is by R2/R3?), and two TK-TY16 holes the checker cannot follow: a partial record put in a
 sum payload (un/c11) and a slab `new` that omits a field (sl2) — refuse the store, or track?
 
 ---

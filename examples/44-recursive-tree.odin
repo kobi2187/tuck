@@ -54,6 +54,21 @@ tuckˑtypeˑExpr_eq :: proc(a, b: tuckˑtypeˑExpr) -> bool {
   return false
 }
 
+tuckˑtypeˑExpr_is_Num :: proc(x: tuckˑtypeˑExpr) -> bool {
+  _, ok := x.(tuckˑtypeˑExpr_Num)
+  return ok
+}
+
+tuckˑtypeˑExpr_is_Neg :: proc(x: tuckˑtypeˑExpr) -> bool {
+  _, ok := x.(tuckˑtypeˑExpr_Neg)
+  return ok
+}
+
+tuckˑtypeˑExpr_is_Add :: proc(x: tuckˑtypeˑExpr) -> bool {
+  _, ok := x.(tuckˑtypeˑExpr_Add)
+  return ok
+}
+
 tuckˑtypeˑExpr_drop :: proc(x: tuckˑtypeˑExpr) {
   #partial switch v in x {
   case tuckˑtypeˑExpr_Neg:
