@@ -202,6 +202,7 @@ proc lowerNested(res: Resolution, m: Module, e: Expr) =
     for arm in e.arms.mitems: arm.body = asBody(arm.body)
   of exkWhile: e.whileBody = asBody(e.whileBody)
   of exkFor: e.body = asBody(e.body)
+  of exkCritical: e.criticalBody = asBody(e.criticalBody)
   of exkDefer: e.deferBody = asBody(e.deferBody)
   else: discard
   for ch in e.children: lowerNested(res, m, ch)

@@ -40,7 +40,7 @@ auditing this compiler, who read a payload binding as a checker bug and nearly
 | 7 | Interfaces are pointers/vtables | **A copying tagged variant.** An interface value OWNS its data; dispatch is a switch on a tag. | §5 |
 | 8 | Actors are objects you construct | **Singletons.** One instance per declared type, no construction, no reference. | §10 |
 | 9 | `[io]` propagates automatically | **You declare it at every level.** An undeclared effect is an error, not an inference: the compiler works out what is required, names the call that needs it and says what to write (`TK-EF01`), and warns about a declared `[io]` nothing needs (`TK-EF02`). Guide to all the markers: `docs/safety-and-effects.md`. | §11 |
-| 10 | An unhandled event is fine | **Compile error.** Every registry event needs a handler (`TK-RG03`), and one registry per program. | §10, Part 10 |
+| 10 | An unhandled event is fine | **Compile error.** Every registry event needs a handler (`TK-RG03`). One registry per module, names unique program-wide; `tuck audit --events` is the whole surface. | §10, Part 10 |
 | 11 | `self ..field` is banned like any parameter | **Legal for object members and actor fields** — state the callee OWNS. A plain fn whose param is merely NAMED `self` gets no exemption. | §5.1, §7.1 |
 | 12 | Concurrency targets microcontrollers | **Hosted OS today** — stackful minicoro coroutines over `mmap`, epoll/kqueue reactor: a hosted-OS capability (spec §7.1). | §10 |
 | 13 | A line break inside brackets is a parse error | **Lines wrap, two ways.** Inside `(`/`{`/`[` indentation is not structure, so a wrapped payload may align under its opening brace, and a line break there reads as a comma — the last comma on a line is optional. Separately, a line ending in a **binary operator, comma or `=`** continues, inside brackets or not, because it cannot have ended. A trailing `:` still opens a block and `...` still ends its line. Ruled 2026-09-15, reversing the earlier ceiling. | §0 |
@@ -500,8 +500,20 @@ sites), `continue` (handler runs, execution continues, no value fabricated),
 (`tests/suites/typecheck.nim`). Declaring a policy with no handler → `needs an 'on
 unhandled'`.
 
-> **Test coverage caveat:** only `continue` is tested. `strict` is exercised
-> implicitly as the default; **`exit` is untested.**
+**One policy per application; `strict` libraries are finished** (ruled
+2026-11-22, `tests/suites/error_policy.nim`). A site in a module that declares
+`errors [policy: strict]` is strict; every other site follows the ENTRY
+module's policy. So a library without a block, or with its own `continue`, is
+*partial*: imported, its drops go to the application's `on unhandled` (on all
+three backends, through the runtime's `tuckRouteUnhandled`) and appear in the
+application's SHORTCUTS report as `lib::...`, and its own block is inert (the
+POLICY report says so). A finished library may hold no stub (TK-PO02) and may
+import only finished ones (TK-PO03); every module in `std/` and
+`stdlib-project/modules/` is finished. Code reachable from an `[irq]` handler
+is strict and stub-free under any policy (TK-PO04).
+
+> **Test coverage caveat:** `continue` and the cross-module rules are tested;
+> `strict` is exercised as the default; **`exit` is untested.**
 
 ---
 
@@ -1363,9 +1375,17 @@ From `examples/25:3`, worth quoting:
 out means. Run-verified exhaustion cycle: acquire 2 of 2, third fails, release
 one, fourth succeeds, exit 42 (`tests/suites/cli_smoke.nim`).
 
-> **`registry` (`.raise`, `on Reg.Variant`) and MMIO `register` read-only
-> enforcement are compile-gated only — zero behavioural assertions.** (The
-> arena was too, until it was built over slabs; see below.)
+> **`registry` runs on all three backends** (`tests/suites/event_registry.nim`):
+> `Reg.raise V {...}` calls every `on Reg.V` handler synchronously, in
+> declaration order and across modules; an actor's `on Reg.V` receives it as a
+> message in its own context; `Reg.latest is V` asks for the most recent event.
+> A module declares at most one registry (TK-RG06), so a driver declares the
+> events it raises; `tuck audit FILE --events` lists every registry, raiser
+> and handler. An event raised from interrupt code needs a delivery kind,
+> `[stream]` (with the driver's `overflow:`), `[signal]` or `[latest]`
+> (TK-RG08..10); the deferred delivery itself comes with `bind`
+> (`docs/bare-metal/DESIGN-interrupt-events.md` §5). MMIO `register` read-only
+> enforcement is compile-gated only.
 
 ### Slabs — references, for what values cannot say
 
@@ -1744,3 +1764,39 @@ are no longer on that list — both are run-gated on Odin and D as well.
 > **The gate lists ARE the coverage.** Anything off a list is unchecked — that
 > is how an Odin actor emitting undefined send procs, and a `24-stdlib` whose
 > file round-trip never actually ran, both survived for weeks.
+
+---
+
+## 20. Bare metal (experimental)
+
+`tuck build FILE --board:NAME` builds a program freestanding for a Cortex-M
+board under `boards/`; `tuck sim FILE` builds it and boots it under QEMU; `tuck sim FILE --host` runs it against host shims on all three backends.
+The programs that pin it are in `tests/metal/`, the plan in
+`docs/bare-metal/`. Nim is the only backend on metal so far.
+
+```tuck
+register FLAG at 0x20000100:
+  VALUE: bits 0..7 [read, write]
+
+fn isr() [irq, irq_safe, no_alloc]:
+  FLAG.VALUE = 1
+  return
+
+fn main() -> int:
+  critical:
+    FLAG.VALUE = 2
+  return 0
+```
+
+- **`critical:`** saves the interrupt mask and restores it on every exit, so it
+  nests and a `return` inside one is safe (`tests/suites/metal_runtime.nim`).
+- **`[irq]`** marks a handler. What it reaches is checked: no allocation, send
+  or wait; no error left to the `errors` policy and no stub, whatever the
+  policy (TK-PO04). `tuck audit --isr` lists state shared with normal code
+  (tasks included); `--isr-check:error` refuses it unprotected (TK-EF10).
+  A handler is **called** today, not bound to a vector: no interrupt is taken.
+- **Failures:** a failed check prints `PANIC: ...` and traps, `tuck sim`
+  decodes the fault to the Tuck line and exits 1; otherwise the exit status
+  is `main`'s return value, and 124 means still running, never a pass.
+- **Not yet:** real interrupts, a timed `sleep` that parks a task, w1c
+  register fields, `--frames:static` for spawned tasks, Odin and D on metal.

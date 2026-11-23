@@ -9,6 +9,9 @@
 # The predicate the scheduler polls. Spelling it out is what lets the checker
 # reject a mis-shaped callback and the backends emit a typed callable — a bare
 # `fn` matches anything and lowers to a GUESSED `proc() -> bool`.
+
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 fnsig Predicate = {} -> bool
 
 extern:

@@ -22,6 +22,8 @@ import bits
 import hash
 import seq
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 type Entry[K, V]:
   key: K
   value: V

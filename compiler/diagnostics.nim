@@ -26,6 +26,8 @@
 #   IV  invariant    an `invariant:` predicate that cannot mean anything (4.7)
 #   RG  registry     the event registry's rules (Part 10)
 #   RE  register     a memory-mapped register's layout or access mode (8.1)
+#   TM  timing       a static timing/space budget report, not a rejection
+#   CR  crash        a decoded post-mortem fault report, not a rejection
 #
 # NUMBERS ARE PERMANENT. Once a code appears in a release it names that
 # diagnostic forever. A diagnostic that is deleted RETIRES its number — the
@@ -176,9 +178,14 @@ type
     dcEfIsrSend = "TK-EF07"             ## a send from an [irq_safe] fn (the mailbox takes a lock)
     dcEfMemo = "TK-EF08"                ## `fn memo` on a fn that cannot be memoized
     dcEfMemoUnbounded = "TK-EF09"       ## `fn memo` with no size: the cache grows without bound
-    dcEfSharedState = "TK-EF10"         ## a [pure] fn touching shared state, or an [irq_safe] one waiting
+    dcEfIsrShared = "TK-EF10"            ## state touched by both an ISR and normal code
+    dcEfIsrProtected = "TK-EF11"         ## isrShared state accessed outside a critical section
+    dcEfSharedState = "TK-EF12"         ## a [pure] fn touching shared state, or an [irq_safe] one waiting
     dcPeClash = "TK-PE01"               ## `pending:` clashes with a real decl
     dcPoMalformed = "TK-PO01"           ## the errors policy block is malformed
+    dcPoFinishedStub = "TK-PO02"        ## a finished (strict) library holds a stub
+    dcPoFinishedImportsPartial = "TK-PO03"  ## a finished library imports a partial one
+    dcPoInterruptShortcut = "TK-PO04"   ## interrupt code leaves an error unhandled or calls a stub
     dcSeConstruction = "TK-SE01"        ## a sealed type built outside a transition
     dcCxComplexity = "TK-CX01"          ## a fn has too many independent paths
     dcCxLines = "TK-CX02"               ## a fn spans too many source lines
@@ -213,7 +220,13 @@ type
     dcRgPayload = "TK-RG02"             ## an event payload does not match its variant
     dcRgNoHandler = "TK-RG03"           ## a declared event nothing handles
     dcRgSelfRaise = "TK-RG04"           ## a handler raises the event it handles
-    dcRgDuplicate = "TK-RG05"           ## more than one registry in a program
+    dcRgDuplicate = "TK-RG05"           ## RETIRED 2026-11-22: one registry per
+                                        ## program became one per module
+    dcRgPerModule = "TK-RG06"           ## a module declares more than one registry
+    dcRgNameClash = "TK-RG07"           ## two modules' registries share a name
+    dcRgSignalPayload = "TK-RG08"       ## a `[signal]` event carries a payload
+    dcRgOverflow = "TK-RG09"            ## `overflow:` off a stream, or an unknown policy
+    dcRgIrqDelivery = "TK-RG10"         ## interrupt code raises an event with no delivery
     dcReReadOnly = "TK-RE01"            ## writing a field declared [read]
     dcReWriteOnly = "TK-RE02"           ## reading a field declared [write]
     dcReBitRange = "TK-RE03"            ## a bit index outside the register's width
@@ -230,6 +243,9 @@ type
     dcRsBadStatesType = "TK-RS10"       ## `states:` names no sum type, or one with no edges
     dcRsIncoherent = "TK-RS11"          ## two knobs on one kind that cannot both mean anything
     dcRsUnfinished = "TK-RS12"          ## a handle whose only use is `.ok`: never finished or handed on
+    dcTmCriticalNest = "TK-TM01"        ## `critical:` blocks nested inside each other
+    dcTmStackDepth = "TK-TM02"          ## approximate worst-case stack, reported not rejected
+    dcCrDecoded = "TK-CR01"             ## a decoded crash fault, reported post-mortem
 
 const UncodedNote* = """
 UNCODED DIAGNOSTICS. `dcNone` exists because codes are being adopted site by
@@ -267,9 +283,13 @@ proc categoryName*(d: DiagCode): string =
   of "IV": "Invariant"
   of "RG": "Registry"
   of "RE": "Register"
+  of "TM": "Timing"
+  of "CR": "Crash"
   else: "Semantic"   # SM, and a category added without a word here
 
-const WarningCodes* = {dcTyMemberShadowsFn, dcMeArenaInert}  # ME02 retired
+const WarningCodes* = {dcTyMemberShadowsFn, dcMeArenaInert,  # ME02 retired
+                       dcTmCriticalNest, dcTmStackDepth,     # reports, never gates
+                       dcCrDecoded}
   ## Codes that REPORT without stopping the build. Kept beside the registry
   ## rather than inferred from the category letters, because severity is a
   ## property of the individual diagnostic and not of its category — TY holds
@@ -941,6 +961,21 @@ proc ruleExplanation(d: DiagCode): string =
     "long-running or embedded program that is a slow memory leak. Fix: give " &
     "it a size, `fn memo(256) name(...)`: a fixed table that forgets old " &
     "entries instead of growing. A forgotten entry only costs a recompute."
+  of dcEfIsrShared:
+    "A piece of hardware state (a register, pool, slab, arena, actor or " &
+    "registry) is touched by a function reachable from an `[irq]` handler " &
+    "AND by normal code. An interrupt can preempt the other access at any " &
+    "instruction: a read can see a half-updated value and two writes can " &
+    "overwrite each other. `tuck audit FILE --isr` names every site. Fix: " &
+    "make one context the sole writer (an ISR signals a task that writes it), " &
+    "or keep both accesses inside one critical section."
+  of dcEfIsrProtected:
+    "A `critical:` block disables interrupts for the duration of its body. " &
+    "It must therefore contain no I/O, no blocking wait and no allocation: " &
+    "any of those would leave interrupts off for an unbounded time, which " &
+    "is worse than the shared access the block was written to prevent. " &
+    "Fix: move the I/O or allocation out of `critical:` and leave only the " &
+    "short shared-state access inside it."
   of dcEfUnused:
     "A fn declares `[io]` but nothing in its body performs I/O, suspends or " &
     "spawns, so the marker promises a suspend point there is not. Declared " &
@@ -951,6 +986,30 @@ proc ruleExplanation(d: DiagCode): string =
     "interface or callback that does declare `[io]`."
   of dcPeClash: "A `pending:` declaration clashes with a real one."
   of dcPoMalformed: "The `errors [policy: ...]` block is malformed."
+  of dcPoFinishedStub:
+    "A library that declares `errors [policy: strict]` is FINISHED (owner " &
+    "ruling 2026-11-22), and a finished library holds no stubs: no " &
+    "`pending:` entry and no `...` body. Finished means the importing " &
+    "application's policy cannot change it, and a stub's behaviour (trap, " &
+    "zero, log) would. Fix: implement the stub, or remove the `strict` " &
+    "block so the library is partial and follows the application's policy " &
+    "while it is in development."
+  of dcPoFinishedImportsPartial:
+    "A finished library (`errors [policy: strict]`) imports a partial one. " &
+    "A partial module follows the importing application's error policy, so " &
+    "under `continue` it can carry on past an error and hand the finished " &
+    "library a result that depends on which application imported it. " &
+    "Finished must not depend on that. Fix: finish the imported module " &
+    "(handle its errors and declare `errors [policy: strict]`), or make this " &
+    "library partial too."
+  of dcPoInterruptShortcut:
+    "Interrupt code is always strict and complete, whatever the application's " &
+    "error policy (owner ruling 2026-11-22: the embedded part is rigid). A fn " &
+    "reachable from an `[irq]` handler may not leave an error to the policy's " &
+    "`on unhandled` handler, which would run inside the interrupt, and may not " &
+    "be or call a `pending` / `...` stub, whose run-time behaviour would leave " &
+    "the interrupt unserviced. Fix: handle the error at its site (bind and " &
+    "check `.ok`), and implement the stub."
   of dcSeConstruction:
     "A sealed type is constructed only through its declared transitions."
   of dcCxComplexity:
@@ -1125,9 +1184,34 @@ proc ruleExplanation(d: DiagCode): string =
     "loop, and raising is synchronous, so it is an immediate one. Fix: raise " &
     "a different event, or do the work directly."
   of dcRgDuplicate:
-    "One `registry` per program (spec Part 10). The point is that the entire " &
-    "event surface is readable in one place; two registries means two places " &
-    "and no guarantee they agree. Fix: merge them into one."
+    "Retired 2026-11-22. It refused a second `registry` in a program, which " &
+    "stopped a library declaring the events it raises. The owner's ruling " &
+    "(interrupts are events) made it one registry per MODULE (TK-RG06) with " &
+    "program-unique names (TK-RG07); the whole event surface is now a report, " &
+    "`tuck audit --events`. The number stays reserved."
+  of dcRgPerModule:
+    "A module declares at most one `registry`: a driver owns its events, and " &
+    "all of them read in one place in that module. Fix: merge them into one " &
+    "registry, or move one to its own module."
+  of dcRgSignalPayload:
+    "A `[signal]` event merges repeats into a count, so there is no single " &
+    "payload to deliver. Fix: drop the payload, or make it `[stream]` (every " &
+    "occurrence, queued) or `[latest]` (the most recent value)."
+  of dcRgOverflow:
+    "Only a `[stream]` queues, so only a stream can overflow, and its driver " &
+    "says what happens then: `overflow: drop_newest` (keep what is queued) or " &
+    "`overflow: drop_oldest` (keep the newest). An interrupt can never wait. " &
+    "Fix: remove `overflow:` from a signal or latest event, or name one of " &
+    "the two policies."
+  of dcRgIrqDelivery:
+    "Code reachable from an `[irq]` handler raised an event with no delivery " &
+    "kind. Its handlers would run inside the interrupt, with I/O and the " &
+    "error policy. Fix: mark the event `[stream]`, `[signal]` or `[latest]`, " &
+    "so the handlers run after the interrupt returns."
+  of dcRgNameClash:
+    "Registry names are unique across the program, because a handler names " &
+    "its registry (`on UartEvents.Rx`) and must reach exactly one. Fix: " &
+    "rename one, e.g. after its driver (`UartEvents`, `SpiEvents`)."
   of dcReReadOnly:
     "This register field is declared `[read]`, so writing it is a compile " &
     "error — on real hardware the write is either ignored or has a side " &
@@ -1215,6 +1299,25 @@ proc ruleExplanation(d: DiagCode): string =
     "it must declare an effect it reaches (spec §3.7 — explicit, not " &
     "inferred). Fix: add `[resource: k]` to this fn's own bracket, or " &
     "finish the handle here so it does not escape."
+  of dcTmCriticalNest:
+    "A `critical:` block already disables interrupts for everything inside " &
+    "it, so a `critical:` inside another adds nothing and hides the real " &
+    "bound: a reader counting nesting cannot tell which section actually " &
+    "runs. Fix: keep one block, or split the outer one so each section is " &
+    "flat. Reported by `tuck timing`, never rejected."
+  of dcTmStackDepth:
+    "A static estimate, not a measurement: `tuck timing` sums a rough frame " &
+    "size (header, parameters, locals) along the deepest resolved call path " &
+    "from each fn. Use it to spot order-of-magnitude budget problems on a " &
+    "small-SRAM target — never to size a real stack. The runtime's own " &
+    "high-water mark is the authoritative number."
+  of dcCrDecoded:
+    "A post-mortem report from `tuck decode-crash`: the fault status bits, " &
+    "the nearest symbol, and (with DWARF from `--debug-lines`) the Tuck " &
+    "source line are decoded into a what/why/fix note for the developer. " &
+    "It never rejects a build — the program already stopped. A stacked PC is " &
+    "only trustworthy when the fault is precise; IMPRECISERR is reported as " &
+    "such instead of being given a fake source line."
   else: ""
 
 proc explanationOf*(d: DiagCode): string =

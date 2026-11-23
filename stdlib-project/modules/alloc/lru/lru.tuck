@@ -1,0 +1,143 @@
+# alloc.lru — a cache that keeps the most recently used `capacity` entries.
+#
+# `get` and `put` are O(1) on average (the table is alloc.map); when a `put`
+# of a new key finds the cache full, the least recently used entry goes, found by
+# a scan: O(n) per eviction, which is the honest cost until a measurement wants a
+# linked order. A read counts as a use, so `get` answers the value AND the cache
+# to keep: `r = {c: c, key: k} get`, `c = r.c`.
+#
+# The calls to alloc.map's verbs are qualified (`map::get`); do the same
+# when importing both.
+import seq
+import map
+
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
+type Held[V]:
+  value: V
+  stamp: int
+
+type Lru[K, V]:
+  table: Table[K, Held[V]]
+  clock: int
+  capacity: int
+
+type Fetched[K, V]:
+  c: Lru[K, V]
+  found: V?
+
+# A cache over an empty table, holding at most `capacity` entries (at least 1).
+# There is no nullary constructor (nothing could infer K and V), so give it
+# a table of the stated type:
+#   var t: Table[str, Held[int]] = {entries: [], slots: []} Table
+#   var c: Lru[str, int] = {table: t, capacity: 100} lru
+fn lru[K, V]({table: Table[K, Held[V]], capacity: int}) -> Lru[K, V]:
+  var cap = capacity
+  if cap < 1:
+    cap = 1
+  return {table: table, clock: 0, capacity: cap} Lru
+
+fn count[K, V]({c: Lru[K, V]}) -> int:
+  return {t: c.table} map::count
+
+fn has[K, V]({c: Lru[K, V], key: K}) -> bool:
+  return {t: c.table, key: key} map::has
+
+# Reads without counting as a use.
+fn peek[K, V]({c: Lru[K, V], key: K}) -> V?:
+  let h = {t: c.table, key: key} map::get
+  if not h.ok:
+    return
+  return h.value.value
+
+# The value (if cached) and the cache with that key marked most recently used.
+fn get[K, V]({c: Lru[K, V], key: K}) -> Fetched[K, V]:
+  let h = {t: c.table, key: key} map::get
+  if not h.ok:
+    return {c: c, found: none} Fetched
+  let clock = c.clock + 1
+  let held = {value: h.value.value, stamp: clock} Held
+  let table = {t: c.table, key: key, value: held} map::set
+  let next = {table: table, clock: clock, capacity: c.capacity} Lru
+  return {c: next, found: h.value.value} Fetched
+
+# The key whose entry is least recently used.
+fn oldest[K, V]({c: Lru[K, V]}) -> K?:
+  let es = {t: c.table} pairs
+  if es.len == 0:
+    return
+  var best = es[0].key
+  var bestStamp = es[0].value.stamp
+  for i in 1 .. es.len - 1:
+    if es[i].value.stamp < bestStamp:
+      best = es[i].key
+      bestStamp = es[i].value.stamp
+  return best
+
+fn put[K, V]({c: Lru[K, V], key: K, value: V}) -> Lru[K, V]:
+  var table = c.table
+  if not ({t: table, key: key} map::has):
+    if {t: table} map::count >= c.capacity:
+      let victim = {c: c} oldest
+      if victim.ok:
+        table = {t: table, key: victim.value} map::remove
+  let clock = c.clock + 1
+  let held = {value: value, stamp: clock} Held
+  table = {t: table, key: key, value: held} map::set
+  return {table: table, clock: clock, capacity: c.capacity} Lru
+
+# --- self-check --------------------------------------------------------------
+
+fn main() -> int:
+  var t: Table[str, Held[int]] = {entries: [], slots: []} Table
+  var c: Lru[str, int] = {table: t, capacity: 2} lru
+  c = {c: c, key: "a", value: 1} put
+  c = {c: c, key: "b", value: 2} put
+  if {c: c} count != 2:
+    return 1
+  # reading "a" makes "b" the oldest
+  let r = {c: c, key: "a"} get
+  c = r.c
+  if not r.found.ok:
+    return 2
+  if r.found.value != 1:
+    return 2
+  c = {c: c, key: "c", value: 3} put
+  if {c: c} count != 2:
+    return 3
+  if {c: c, key: "b"} has:
+    return 4
+  if not ({c: c, key: "a"} has):
+    return 5
+  if not ({c: c, key: "c"} has):
+    return 6
+  # updating an existing key never evicts
+  c = {c: c, key: "a", value: 10} put
+  if {c: c} count != 2:
+    return 7
+  let p = {c: c, key: "a"} peek
+  if not p.ok:
+    return 8
+  if p.value != 10:
+    return 8
+  let miss = {c: c, key: "zzz"} get
+  if miss.found.ok:
+    return 9
+  # a capacity of 0 still holds one
+  var tt: Table[int, Held[int]] = {entries: [], slots: []} Table
+  var tiny: Lru[int, int] = {table: tt, capacity: 0} lru
+  tiny = {c: tiny, key: 1, value: 1} put
+  tiny = {c: tiny, key: 2, value: 2} put
+  if {c: tiny} count != 1:
+    return 10
+  var bt: Table[int, Held[int]] = {entries: [], slots: []} Table
+  var big: Lru[int, int] = {table: bt, capacity: 100} lru
+  for i in 0 .. 999:
+    big = {c: big, key: i, value: i} put
+  if {c: big} count != 100:
+    return 11
+  if not ({c: big, key: 999} has):
+    return 12
+  if {c: big, key: 0} has:
+    return 13
+  return 0

@@ -148,11 +148,13 @@ pool UartBuffer = Array[64, u8] [count: 8]   # 512 bytes, statically, period
 
 Overflow behaviour is part of the type. Register bits know whether they're writable. Pools move allocation decisions to compile time, and `acquire` returns `?T`, so running out is a case you handle, not a crash. Interfaces dispatch through a tag switch with no vtables or heap objects. And the value-only model means no dangling pointers, because there are no pointers to dangle.
 
+Programs already boot on Cortex-M under QEMU: stackless tasks, `critical:` sections, ISR discipline checked at compile time, and faults decoded back to the Tuck line. `./tuck sim tests/metal/task_await.tuck` builds and boots one. Where that work stands and where it is going is in [docs/bare-metal/](docs/bare-metal/README.md).
+
 ## Good to know before you dive in
 
 Tuck is opinionated on purpose, and some of it will feel different:
 
-- **It's young.** It's a work-in-progress compiler with a strong test suite and a small, tracked list of open bugs. Some embedded features (like `[irq_safe]` and `[stack: N]` budgets) are designed and parsed but not fully enforced yet, and concurrency currently runs on a hosted OS while microcontroller support is on the way.
+- **It's young.** It's a work-in-progress compiler with a strong test suite and a small, tracked list of open bugs. Some embedded features (like `[irq_safe]` and `[stack: N]` budgets) are designed and parsed but not fully enforced yet, and on microcontrollers interrupts are checked but not yet taken, and there is no timed wait yet ([docs/bare-metal/ROADMAP.md](docs/bare-metal/ROADMAP.md)).
 - **A few things look familiar but aren't.** `/` isn't an operator (use `/i` or `/f`). A bare function name is a call, and `:name` is the reference. A payload field can bind to a parameter by type when the names differ. §0 of [LANGUAGE-OVERVIEW.md](LANGUAGE-OVERVIEW.md) collects all of these in one table, so give it a minute before deciding something's broken.
 - **Effects are declared everywhere.** `[io]` isn't inferred. It's a bit of extra typing in exchange for signatures that never lie.
 - **Interfaces see the whole program.** That's what lets them compile down to plain data, and it also means they aren't meant for runtime plugins.

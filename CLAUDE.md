@@ -79,7 +79,17 @@ reason the modes exist.
 ./tuck explain TK-TY15     # what a diagnostic means, and how to fix it
 ./tuck frames file.tuck    # stackless colouring (#216): frame fns, pause sites
 ./tuck b f.tuck --stdlib:stdlib-project   # build against stdlib-project's modules instead of std/
+./tuck b f.tuck --board:lm3s6965evb        # bare metal: a Cortex-M ELF for boards/NAME/
+./tuck sim tests/metal/task_await.tuck     # bare metal: build freestanding, boot under QEMU
+./tuck sim tests/metal/task_await.tuck --host   # ...or against host shims, on Nim, Odin and D
 ```
+
+Bare metal (Cortex-M, QEMU) has its own docs and queue in `docs/bare-metal/`
+(`README.md` first, then `ROADMAP.md`). It needs `qemu-system-arm`,
+`arm-none-eabi-gcc` and a one-time `boards/picolibc/build.sh`; its suites
+(`metal_runtime`, `sim_tick`, ...) SKIP when those are absent. A metal run's
+exit status is main's return value; 124 means it was still running, never a
+pass.
 
 When a construct behaves oddly, `./tuck p --ast` **first**. Gradual typing means
 sketch code and a destroyed parse tree both read as `Unknown` — the dump tells
@@ -209,6 +219,10 @@ compiler/          parser -> rewrite -> typecheck -> semantics -> lowering -> co
   tuckrt_d/        the D runtime (the Nim one is compiler/tuck_*.nim)
 std/               the standard library, in Tuck
 tests/suites/      one .nim per suite; harness.nim holds the assertions
-tools/             cc.nim (complexity), emit_examples.sh
+tools/             cyc.nim (complexity), emit_examples.sh, svd2tuck/ (SVD -> registers)
+tools/metal/       qemu-run.sh / host-run.sh / gdb-run.sh: what `tuck sim` drives
+boards/            Cortex-M startup, linker scripts, picolibc build (bare metal)
+tests/metal/       the bare-metal programs, with their host shims
+docs/bare-metal/   the bare-metal vision, roadmap, design notes and review
 benches/           measurements, with SCORES.md as the ledger
 ```

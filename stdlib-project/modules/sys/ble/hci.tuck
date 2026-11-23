@@ -16,6 +16,8 @@ import text
 import advertise
 import ble
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 extern [impl: nim "./shim/hci_shim", odin "./shim", d "./shim/hci_shim"]:
   fn hciOpen({adapter: int}) -> int [io: sys]
   fn hciRead({h: int, timeoutMs: int}) -> Seq[u8] [io: sys]

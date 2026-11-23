@@ -1,0 +1,21 @@
+# Stage 7 — use the embedded platform layer from stdlib-project.
+# Builds against --stdlib:stdlib-project. Exercises platform.hal (OutputPin
+# group) on the simulated SimPin, which is the host-side stand-in for a real
+# board's pin.
+
+import hal
+import seq
+
+fn blinkPin({p: SimPin, times: int}) -> SimPin:
+  var pin = p
+  for i in 0 .. times - 1:
+    pin = {self: pin, level: High} drive
+    pin = {self: pin, level: Low} drive
+  return pin
+
+fn main() -> int:
+  let p = simPin
+  let after = {p: p, times: 4} blinkPin
+  if after.trace.len != 8:
+    return 1
+  return 0

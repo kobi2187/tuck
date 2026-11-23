@@ -5,6 +5,9 @@
 # detail. Not a security primitive: no collision resistance guarantee
 # against a hostile input. See stdlib-project/modules/core/hash/API.tuck.md
 # for the fuller Hashable design this is a first slice of.
+
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 extern:
   fn hash({data: str}) -> u64 [pure, no_alloc]
   # Any key a table can hold: a str by its bytes (as `hash`), an integer, bool

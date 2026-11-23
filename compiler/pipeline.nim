@@ -301,6 +301,8 @@ proc missingSlotRecord(res: Resolution, m: Module, n: Expr,
   ## without the record nothing charges what it does (audit E1).
   if n.kind != exkCall or n.callee == nil or res.isSlotCall(n): return ""
   if raisedEvent(n) != "":
+    # a queued event runs no handler here, so it carries no record
+    if res.raisesDeferred(raisedEvent(n)): return ""
     return "raise of '" & raisedEvent(n) & "' at " & nameOf(m.id) & ":" &
            $n.span.line & ":" & $n.span.col & " has no handler effect record"
   if res.declFor(n) != nil: return ""

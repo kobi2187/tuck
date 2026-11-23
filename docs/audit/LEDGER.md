@@ -23,8 +23,8 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 
 | Fixed | Pin | Invariant |
 |---|---|---|
-| E7 `main` privilege | A119 | `assertMainBudgetOnce` |
-| T6 open-domain match, T7 match on a wrapper, T8a sealed bare variant | A120-A122 | |
+| E7 `main` privilege | A178 | `assertMainBudgetOnce` |
+| T6 open-domain match, T7 match on a wrapper, T8a sealed bare variant | A179-A181 | |
 | E3a restriction subset in conformance | A123 | one rule, `ast_ops.effectFitProblem` |
 | Y9/Y10 operand kinds | A124 | |
 | M9 two `fnsig Op`: each is its module's own (`type_identity`) | A125 | |
@@ -36,7 +36,7 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | E13 `..` step calls | A131 | `callSites`; edges checked for step calls |
 | E10 invariants, E15 actor field initialisers effect-free | A132, A133 | |
 | E12, E14 task restrictions; task calls get edges | A134 | `assertCallEdges` covers tasks |
-| E6 `[pure]` touches no shared state; `[irq_safe]` does not wait (TK-EF10) | A135 | |
+| E6 `[pure]` touches no shared state; `[irq_safe]` does not wait (TK-EF12) | A135 | |
 | E9 pending `[io]` members | A136 | |
 | O1b `[writes: p]` on externs (`setAt`) | A137 | |
 | O1c self-writes through an extern; views across them | A138 | |
@@ -90,6 +90,7 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | Y7 a float literal the checker typed `f32` is `'f32` on Nim; D float arithmetic on a literal no longer folds in 80-bit `real` (`0.1 + 0.2`) | A177 | |
 | Y5 a const that divides by zero, or whose narrow-integer `+ - *` overflows, is a Const Error (it built on Odin only, stopping at start) | A177 | `int`/`i64` const overflow is Y1, untouched |
 | An invariant violation reports the predicate as written and the type's Tuck name, one text on all three (it was each host's emitted code) | invariants suite | |
+| Merge with main's registry rulings (2026-11-22): a synchronous raise is charged its handlers' effects (E5, confirmed 2026-11-23) only for handlers its own module sees; a queued event (`[stream]`/`[signal]`/`[latest]`) carries none; registries are no longer told apart per module (names are unique, TK-RG07); my shared-state rule moved to TK-EF12 (main took EF10/EF11); my A119-A122 pins renumbered A178-A181 (main's own A119-A122 kept) | A182 | the call-edge invariant skips a queued raise |
 
 **Still open in class B.** M14's refusal for a private or un-imported callee is a restriction, not the end
 state: the clone should be checked in the library's scope.

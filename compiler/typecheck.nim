@@ -232,15 +232,16 @@ proc markIfPlainIntoOptional(tc: TypeChecker, v: Expr, got, place: Type) =
   ## A plain `T` accepted into a `?T` place is WRAPPED there — noted for
   ## lowering_optional, which prints the wrap. Only a place that names its own
   ## type counts (a field or parameter), never a context merely passed down.
-  # A generic fn's own `T` is flexible but still a VALUE of T, never a `T?`:
-  # `{v: x} Box` with `v: T?` wraps it like any plain value (audit Y13 —
-  # every backend refused the unwrapped `x`).
-  let typeParam = got != nil and got.kind == tkNamed and
-                  got.name.startsWith(NamedTypeParamPrefix)
-  if place == nil or got == nil or (isFlexible(got) and not typeParam) or
-     isWrappedType(got): return
+  if place == nil or got == nil or isWrappedType(got): return
   if not absenceIsDeclared(place): return
-  if tc.compatible(got, place.args[0]): semLayer.markOptWrap(v, place)
+  # Inside a generic fn a value of type `V` going into a `V?` field is plain too
+  # (A117): a named type parameter reads as "flexible", so it is matched by name.
+  let sameParam = got.kind == tkNamed and got.name.startsWith(NamedTypeParamPrefix) and
+                  place.args[0] != nil and place.args[0].kind == tkNamed and
+                  (place.args[0].name == got.name or
+                   NamedTypeParamPrefix & place.args[0].name & ">" == got.name)
+  if isFlexible(got) and not sameParam: return
+  if sameParam or tc.compatible(got, place.args[0]): semLayer.markOptWrap(v, place)
 
 proc synthFieldValue(tc: var TypeChecker, f: FieldInit): Type =
   ## One field of a payload or record literal, synthesized under the DECLARED
@@ -1734,6 +1735,11 @@ proc checkRegisterDecl(d: Decl) =
   ## Neither was checked. `bit 99` emitted a mask no hardware has, and two
   ## fields overlapping meant writing one silently corrupted the other, which
   ## is exactly the datasheet-transcription slip a compiler should catch.
+  ##
+  ## An imported copy is checked in its origin module, so there are no bits
+  ## left to validate here. Keeping the guard in this proc (rather than in
+  ## checkDecl's flat dispatch) leaves that dispatch name every DeclKind.
+  if isImportedCopy(d): return
   var owner: array[RegisterWidth, string]
   for f in d.regFields:
     let (lo, hi, ok) = regBits(f)
@@ -2328,7 +2334,11 @@ proc synthArm(tc: var TypeChecker, arm: var MatchArm, subjT: Type, trackedVar,
   tc.popScope()
 
 proc unifyArmType(tc: var TypeChecker, armT: var Type, t: Type, sp: Span) =
-  ## Every arm must produce the same type.
+  ## Every arm must produce the same type. A void call and a `return` or
+  ## assignment are both statements (isNoValue), as they already were for
+  ## `if` (#148): `| A -> f` beside `| B -> return` used to be refused as
+  ## "void vs unit" (found by tests/metal/devices/recorder, 2026-11-22).
+  if isNoValue(t) and isNoValue(armT): return
   if not isFlexible(t) and not isFlexible(armT) and
      not tc.compatible(t, armT) and not tc.compatible(armT, t):
     fail("Type Error: match arms produce different types: " &
@@ -4534,20 +4544,36 @@ proc asBuiltinOrEchoCall(tc: var TypeChecker, e: Expr, calleeName: string): Type
     return Type(span: e.span, kind: tkNamed, name: "unit")
   nil
 
+proc seesHandler(tc: TypeChecker, h: Decl): bool =
+  ## Is handler `h` declared in this module or one it imports? A raise is
+  ## charged only those (audit E5 meets the 2026-11-22 ruling): a driver
+  ## declares and raises its events, its IMPORTERS handle them, and a module
+  ## cannot answer for code that imports it.
+  let hm = semLayer.handlerModule.getOrDefault(h.id, NoModule)
+  if hm == NoModule or hm == tc.module.id: return true
+  for d in tc.module.decls:
+    if d != nil and d.kind == dkImport and d.importTarget == hm: return true
+  false
+
+proc noteRaiseContract(tc: TypeChecker, e: Expr) =
+  # `Ev.raise Ping` runs every `on Ev.Ping` handler, here and now: it has no
+  # single callee, so it carries their joint contract like a call through a
+  # slot (audit E5). It had none, and an [io] handler laundered its I/O. An
+  # event with a delivery kind only queues, so it carries nothing.
+  let raised = raisedEvent(e)
+  if raised != "" and not semLayer.raisesDeferred(raised):
+    var each: seq[seq[EffectMarker]]
+    for h in semLayer.handlerDecls.getOrDefault(raised):
+      if tc.seesHandler(h): each.add h.fnEffects
+    semLayer.markSlotCall(e, jointContract(each))
+
 proc synthCall(tc: var TypeChecker, e: Expr): Type =
   ## What `{payload} name` means, in priority order: a group requirement on a
   ## bounded type param, then a name (distinct / construction / declared fn),
   ## then a callee that is not a bare name at all. Nothing claims it is an
   ## error. The record combinators are NOT here — they are exkCombinator
   ## nodes the parser already decided on.
-  # `Ev.raise Ping` runs every `on Ev.Ping` handler, here and now: it has no
-  # single callee, so it carries their joint contract like a call through a
-  # slot (audit E5). It had none, and an [io] handler laundered its I/O.
-  let raised = raisedEvent(e)
-  if raised != "":
-    var each: seq[seq[EffectMarker]]
-    for h in semLayer.handlerDecls.getOrDefault(raised): each.add h.fnEffects
-    semLayer.markSlotCall(e, jointContract(each))
+  tc.noteRaiseContract(e)
   let calleeName = tc.calleeNameOf(e)
   tc.checkActorCall(e, calleeName)
   # Group dispatch BEFORE the ambiguity check: a requirement on a bounded type
@@ -5824,6 +5850,15 @@ proc synthFinish(tc: var TypeChecker, e: Expr): Type =
          e.span)
   unitType(e.span)
 
+proc synthCritical(tc: var TypeChecker, e: Expr): Type =
+  ## `critical:` — the body is checked where it is written. It is a statement,
+  ## so its value is unit; its EFFECTS still propagate to the enclosing fn.
+  ## TK-EF11 (no I/O/block/alloc inside a critical section) is checked in the
+  ## semantic pass, where resolved call edges and Demands are available.
+  if e.criticalBody != nil:
+    discard tc.synthesize(e.criticalBody)
+  unitType(e.span)
+
 proc synthDefer(tc: var TypeChecker, e: Expr): Type =
   ## `defer:` (spec §7.4) — the body is checked exactly as if it sat where the
   ## block is written; only WHEN it runs moves, not what it means. The
@@ -5871,6 +5906,28 @@ proc checkQualifiedErr(tc: var TypeChecker, e, rv: Expr) =
   for v in tc.typeDecls[en].variants:
     if v.name == rv.fieldName: return
   fail("Type Error: '" & rv.fieldName & "' is not a variant of " & en, e.span)
+
+proc synthLatestIs(tc: var TypeChecker, e: Expr): Type =
+  ## `Registry.latest is Event` (spec Part 10's query): a bool. The receiver
+  ## must name a registry and the event one of its variants, so a typo is a
+  ## compile error here rather than a backend's unknown identifier.
+  let r = e.latestReg
+  if r == nil or r.kind != exkRegistryRef:
+    fail(dcRgUnknownEvent,
+         "`.latest is` asks a registry for its most recent event: write " &
+         "`Registry.latest is Event`, where Registry names a `registry`",
+         e.span)
+  let reg = semLayer.registryNames.getOrDefault(r.refName)
+  var known = false
+  if reg != nil:
+    for v in reg.variants:
+      if v.name == e.latestEvent: known = true
+  if not known:
+    fail(dcRgUnknownEvent,
+         "registry '" & r.refName & "' declares no event '" & e.latestEvent &
+         "' — `latest is` may only name variants the registry declares",
+         e.span)
+  tc.namedType("bool", e.span)
 
 proc synthRaise(tc: var TypeChecker, e: Expr): Type =
   ## `err X` — an error value of the current fn's fallible result type.
@@ -6122,6 +6179,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkChain: tc.synthChain(e)
   of exkSend: tc.synthSend(e)
   of exkSelect: tc.synthSelect(e)
+  of exkCritical: tc.synthCritical(e)
   of exkDefer: tc.synthDefer(e)
   of exkAcquire: tc.synthAcquire(e)
   of exkFinish: tc.synthFinish(e)
@@ -6145,6 +6203,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # Built by lowering from a `| Flac f ->` arm, typed as it is built.
     discard tc.synthesize(e.tagSubject)
     semLayer.typeFor(e)
+  of exkLatestIs: tc.synthLatestIs(e)
   of exkAbsent:
     if e.optInner == nil: tc.synthNone(e)   # written `none`
     else: semLayer.typeFor(e)                # built by lowering_optional
@@ -7043,7 +7102,8 @@ proc typecheckModule*(m: Module,
                       externGroups = initTable[string, Decl](),
                       externBounds = initTable[string, seq[seq[Type]]](),
                       externAmbiguous = initTable[string, seq[string]](),
-                      externBareOwner = initTable[string, string]()): seq[string] {.discardable.} =
+                      externBareOwner = initTable[string, string](),
+                      policy = "", policyFrom = ""): seq[string] {.discardable.} =
   ## Checks one module against what its imports export (the `extern*`
   ## tables): collect signatures, bind consts, check every declaration, then
   ## the module-level passes. Returns the dropped-result sites the `errors`
@@ -7075,6 +7135,13 @@ proc typecheckModule*(m: Module,
     if d != nil and d.kind == dkGroup: tc.groupDecls[d.name] = d
   tc.desugarGroupBoundParams(m)
   tc.collectSigs(m.decls)
+  # The policy this module's sites follow, decided for the whole program
+  # (checkProgramOnce): "" keeps the module's own block (the entry module),
+  # otherwise the module is a library and takes "strict" (finished) or the
+  # application's policy (partial). collectSigs has already validated the
+  # module's own block, so an inert one is still well-formed.
+  if policy != "": tc.errPolicy = policy
+  tc.policyFrom = policyFrom
   tc.resolveTypeNames(m)
   checkPointers(tc.typeDeclsByName, m)  # pointers stay at the extern boundary
   # Before checkDecl: a type with no finite size cannot be reasoned about, so
@@ -7342,6 +7409,134 @@ type ModuleScope* = object
 var moduleScopes*: Table[string, ModuleScope]
   ## This check round's scopes, by module name; reset by checkProgramOnce.
 
+proc checkFinishedLibraries(mods: seq[tuple[name, path: string, m: Module]]) =
+  ## Owner ruling 2026-11-22: a library that declares `errors [policy:
+  ## strict]` is FINISHED. Finished forbids stubs (TK-PO02) and may import
+  ## only finished modules (TK-PO03). The entry module is the application,
+  ## not a library, and may do both while it is being written. An import
+  ## absent from `mods` was served from the signature index, which serves
+  ## finished modules only (modules.updateIndex), so it is finished.
+  var byName = initTable[string, Module]()
+  for (name, _, m) in mods: byName[name] = m
+  for i in 0 ..< mods.high:
+    let (name, path, m) = mods[i]
+    if not isFinishedModule(m): continue
+    let stubs = pendingReport(m)
+    if stubs.len > 0:
+      var err = newException(SemanticError, withCode(dcPoFinishedStub,
+        "library '" & name & "' is finished (`errors [policy: strict]`) but " &
+        "holds " & $stubs.len & " stub(s): " & stubs.join("; ") &
+        ". Fix: implement them, or remove the `strict` block while the " &
+        "library is in development"))
+      err.line = m.span.line
+      err.col = m.span.col
+      raise withModulePrefix(err, path)
+    for d in m.decls:
+      if d == nil or d.kind != dkImport: continue
+      if d.name in byName and not isFinishedModule(byName[d.name]):
+        var err = newException(SemanticError, withCode(dcPoFinishedImportsPartial,
+          "finished library '" & name & "' imports '" & d.name &
+          "', which is partial (no `errors [policy: strict]`), so its " &
+          "behaviour would depend on the application's error policy. Fix: " &
+          "finish '" & d.name & "', or remove this library's `strict` block"))
+        err.line = d.span.line
+        err.col = d.span.col
+        raise withModulePrefix(err, path)
+
+proc noteInertPolicies(mods: seq[tuple[name, path: string, m: Module]],
+                       entryPolicy: string) =
+  ## A partial library's own `continue` / `exit` block applies only when that
+  ## module is the program; imported, it is inert (ruling 2026-11-22). Said
+  ## in the POLICY report rather than as a warning, so a library keeping a
+  ## block for its own self-check `main` does not nag every application.
+  for i in 0 ..< mods.high:
+    let own = ownErrorPolicy(mods[i].m)
+    if own in ["continue", "exit"]:
+      semLayer.policyNotes.add(mods[i].name & ": its own `errors [policy: " &
+        own & "]` is inert here; the application's `" & entryPolicy &
+        "` governs it")
+
+proc firstShortcut(body: Expr): Expr =
+  ## The first site in `body` the checker handed to the error policy, or nil.
+  for n in body.nodes:
+    if semLayer.shortcut(n) != "": return n
+  nil
+
+proc fnCallees(m: Module, body: Expr): seq[Decl] =
+  ## The fns `body` calls, by their recorded call edges.
+  for n in body.nodes:
+    if n.kind != exkCall: continue
+    let c = semLayer.calleeDecl(m, n)
+    if c != nil and c.kind == dkFn: result.add c
+
+proc rejectInterrupt(path: string, span: Span, root: Decl, what: string) =
+  ## TK-PO04, at `span` in the module at `path`.
+  var err = newException(SemanticError, withCode(dcPoInterruptShortcut,
+    what & ", reachable from interrupt handler '" & root.name & "'. " &
+    "Interrupt code is always strict and complete, whatever the error " &
+    "policy. Fix: handle the error at its site, and implement any stub"))
+  err.line = span.line
+  err.col = span.col
+  raise withModulePrefix(err, path)
+
+proc failIfUndeliveredRaise(path: string, d: Decl, root: Decl) =
+  ## TK-RG10: a raise in interrupt code names an event with a delivery kind,
+  ## so its handlers run after the interrupt returns, never inside it.
+  var raises: seq[tuple[reg, ev: string, sp: Span, payload: Expr]]
+  raisedEventsIn(d.fnBody, raises)
+  for r in raises:
+    let reg = semLayer.registryNames.getOrDefault(r.reg)
+    if reg == nil: continue
+    for v in reg.variants:
+      if v.name != r.ev or v.delivery != edNone: continue
+      var err = newException(SemanticError, withCode(dcRgIrqDelivery,
+        "event '" & r.reg & "." & r.ev & "' is raised in '" & d.name &
+        "', reachable from interrupt handler '" & root.name & "', but has " &
+        "no delivery kind: its handlers would run inside the interrupt. " &
+        "Fix: mark it `[stream]`, `[signal]` or `[latest]` in registry '" &
+        r.reg & "'"))
+      err.line = r.sp.line
+      err.col = r.sp.col
+      raise withModulePrefix(err, path)
+
+proc walkFromInterrupt(mods: seq[tuple[name, path: string, m: Module]],
+                       owner: Table[NodeId, int], root: Decl) =
+  ## Every fn reachable from `root` over the recorded call edges: none may
+  ## be a stub or hold a site the error policy was handed.
+  var seen: HashSet[NodeId]
+  var work = @[root]
+  while work.len > 0:
+    let d = work.pop()
+    if d.id in seen: continue
+    seen.incl d.id
+    let i = owner.getOrDefault(d.id, -1)
+    let path = mods[max(i, 0)].path
+    if d.isPending: rejectInterrupt(path, d.span, root, "'" & d.name & "' is a stub")
+    if d.fnBody == nil or i < 0: continue
+    let bad = firstShortcut(d.fnBody)
+    if bad != nil:
+      rejectInterrupt(path, bad.span, root,
+                      "an error is left to the error policy in '" & d.name & "'")
+    failIfUndeliveredRaise(path, d, root)
+    for c in fnCallees(mods[i].m, d.fnBody):
+      if c.id notin seen: work.add c
+
+proc checkInterruptCodeStrict(mods: seq[tuple[name, path: string, m: Module]]) =
+  ## Owner ruling 2026-11-22: interrupt code is always strict and complete,
+  ## whatever the application's policy. A fn reachable from an `[irq]`
+  ## handler may hold no shortcut site (its error would reach `on unhandled`
+  ## inside the interrupt) and may not be, or call, a stub. Walked after
+  ## every module is checked, over the recorded call edges, by declaration
+  ## id: the reachable set crosses modules.
+  var owner = initTable[NodeId, int]()   # decl id -> index into mods
+  var roots: seq[Decl]
+  for i in 0 ..< mods.len:
+    for d in mods[i].m.allDecls:
+      if d == nil or d.kind != dkFn: continue
+      owner[d.id] = i
+      if emIrq in d.fnEffects: roots.add d
+  for root in roots: walkFromInterrupt(mods, owner, root)
+
 proc checkProgramOnce(mods: seq[tuple[name, path: string, m: Module]],
                       preSigs: Table[string, seq[SigInfo]]): seq[string] =
   ## Signatures are gathered across the whole program first, then each module
@@ -7350,21 +7545,42 @@ proc checkProgramOnce(mods: seq[tuple[name, path: string, m: Module]],
   checkErrCodeCollisions(mods)
   checkRegistry(mods)
   checkResources(mods)   # spec §7.4: kinds are program-wide, so this is too
+  # The error policy (owner ruling 2026-11-22): one per APPLICATION. A site
+  # in a finished module is strict; every other site follows the entry
+  # module's policy, and its shortcuts are listed in the entry's SHORTCUTS
+  # report under the module's name. Only the entry's list used to survive
+  # this loop, so a library's shortcuts appeared in no report at all.
+  let own = ownErrorPolicy(mods[^1].m)
+  let entryPolicy = if own == "": "strict" else: own
+  semLayer.programErrPolicy = entryPolicy
+  semLayer.entryModule = mods[^1].m.id
+  checkFinishedLibraries(mods)
+  noteInertPolicies(mods, entryPolicy)
   memberCalls = @[]
   ifaceMatches = @[]
   let sigs = collectProgramSigs(mods)
   moduleScopes.clear()
-  for (name, path, m) in mods:
+  for i in 0 ..< mods.len:
+    let (name, path, m) = mods[i]
     let scope = importScopeFor(sigs, preSigs, name)
     moduleScopes[name] = ModuleScope(imports: sigs.importsByMod[name],
                                      bareOwner: scope.bareOwner)
     ifaceMatchModule = path
+    let policy = if i == mods.high: ""
+                 elif isFinishedModule(m): "strict"
+                 else: entryPolicy
+    let policyFrom = if i == mods.high or isFinishedModule(m): ""
+                     else: mods[^1].name
     try:
-      result = typecheckModule(m, scope.extern, scope.pending,
-                               scope.fnSigTypes, scope.groups, scope.bounds,
-                               scope.ambiguous, scope.bareOwner)
+      let sites = typecheckModule(m, scope.extern, scope.pending,
+                                  scope.fnSigTypes, scope.groups, scope.bounds,
+                                  scope.ambiguous, scope.bareOwner, policy,
+                                  policyFrom)
+      for s in sites:
+        result.add(if i == mods.high: s else: name & "::" & s)
     except SemanticError as err:
       raise withModulePrefix(err, path)
+  checkInterruptCodeStrict(mods)
 
 proc checkIfaceMatchesComplete(mods: seq[tuple[name, path: string, m: Module]]) =
   ## A match on an interface value covers every object that satisfies it,

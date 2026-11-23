@@ -49,14 +49,17 @@ tuckˑregistryˑIntersection :: struct {
 }
 
 latesttuckˑregistryˑIntersection: tuckˑregistryˑIntersection
+latestRaisedtuckˑregistryˑIntersection: bool
 
 raise_tuckˑregistryˑIntersection_PhaseChanged :: proc(to: u8) {
 	latesttuckˑregistryˑIntersection = tuckˑregistryˑIntersection{tuckTag = .PhaseChanged, to = to}
+	latestRaisedtuckˑregistryˑIntersection = true
 	tuckˑfnˑIntersection_PhaseChanged(to)
 }
 
 raise_tuckˑregistryˑIntersection_Preempted :: proc(source: u8) {
 	latesttuckˑregistryˑIntersection = tuckˑregistryˑIntersection{tuckTag = .Preempted, source = source}
+	latestRaisedtuckˑregistryˑIntersection = true
 	tuckˑfnˑIntersection_Preempted(source)
 }
 

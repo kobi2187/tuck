@@ -1,0 +1,21 @@
+# A PRECISE fault from Tuck-generated code, for `tuck decode-crash`.
+#
+# fault_null_call.tuck calls a null function pointer indirectly. Cortex-M then
+# reports IMPRECISERR with an unreliable stacked PC (before the fault handler
+# was made naked, that PC was really R2 from the handler's prologue).
+#
+# Here the fault is an unaligned 32-bit store in a directly called shim. The
+# board startup sets CCR.UNALIGN_TRP, so Cortex-M raises a precise UsageFault:
+# CFSR.UNALIGNED is set, the stacked PC names the faulting instruction, and
+# LR names the Tuck call site — which `--debug-lines` maps to a Tuck line.
+
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+extern [impl: nim "./host_sim/fault_shim", odin "./host_sim", d "./host_sim/fault_shim"]:
+  fn preciseFaultStore({}) -> void
+
+fn main() -> int:
+  {text: "BEFORE_PRECISE_FAULT\n"} say
+  {} preciseFaultStore
+  {text: "AFTER_PRECISE_FAULT (should not print)\n"} say
+  return 0

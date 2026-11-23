@@ -13,6 +13,8 @@ import bits
 import seq
 import math
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 extern:
   # Eight bytes of the operating system's entropy (the runtime's one shim).
   fn osSeed() -> {seed: u64} [io: sys]

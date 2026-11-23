@@ -26,6 +26,8 @@
 #   not been asked to say yet.
 import str
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 # --- the bounds, as values -------------------------------------------------
 # i64's minimum has no literal spelling (`-9223372036854775808` lexes as the
 # positive value first, which is past i64's max), so it is derived.

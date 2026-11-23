@@ -1,0 +1,124 @@
+# A microSD card in SPI mode on SPI2 (SD Physical Layer Simplified Spec,
+# §7). Raw 512-byte blocks, no file system: block 0 holds the recording's
+# length, the MP3 data starts at block 1. Written for SDHC/SDXC cards (block
+# addressing, OCR bit 30 set), which is every card sold for years.
+
+import board
+import seq
+
+type CardError:
+  | NoCard          # CMD0 never answered: no card in the slot
+  | OldCard         # not version 2.00+ / not high capacity
+  | Timeout
+  | Rejected        # a data response other than "accepted"
+
+const spins = 50000
+
+fn spi2({tx: int}) -> int:
+  for not SPI2_SR.TXE:
+    discard
+  SPI2_DR.DR = tx ~u32
+  for not SPI2_SR.RXNE:
+    discard
+  return SPI2_DR.DR ^int
+
+fn chipSelect({active: bool}):
+  if active:
+    GPIOB_BSRR.BSRR = 268435456     # PB12 low (reset bit 12: bit 28)
+  else:
+    GPIOB_BSRR.BSRR = 4096          # PB12 high
+  let gap = {tx: 255} spi2          # one byte of clocks between commands
+
+fn command({index: int, arg: int, crc: int}) -> int:
+  ## Six bytes out, then up to eight bytes for an R1 (MSB clear).
+  let a = {tx: 64 + index} spi2
+  let b = {tx: arg /i 16777216 % 256} spi2
+  let c = {tx: arg /i 65536 % 256} spi2
+  let d = {tx: arg /i 256 % 256} spi2
+  let e = {tx: arg % 256} spi2
+  let f = {tx: crc} spi2
+  for i in 1 .. 8:
+    let r = {tx: 255} spi2
+    if r < 128:
+      return r
+  return 255
+
+fn init() -> !int [io, error: CardError]:
+  ## CMD0 -> idle, CMD8 checks voltage (v2 cards echo 0x1AA), ACMD41 with
+  ## HCS until the card leaves idle, CMD58 confirms block addressing.
+  {active: false} chipSelect
+  for i in 1 .. 10:
+    let clocks = {tx: 255} spi2      # >= 74 clocks with CS high
+  {active: true} chipSelect
+  if ({index: 0, arg: 0, crc: 149} command) != 1:        # 0x95
+    err CardError.NoCard
+  if ({index: 8, arg: 426, crc: 135} command) != 1:      # 0x1AA, 0x87
+    err CardError.OldCard
+  var echo = 0
+  for i in 1 .. 4:
+    echo = echo * 256 + ({tx: 255} spi2)
+  if echo % 4096 != 426:
+    err CardError.OldCard
+  var tries = 0
+  var r = 1
+  for r != 0:
+    let app = {index: 55, arg: 0, crc: 1} command
+    r = {index: 41, arg: 1073741824, crc: 1} command    # HCS
+    tries = tries + 1
+    if tries > spins:
+      err CardError.Timeout
+  if ({index: 58, arg: 0, crc: 1} command) != 0:
+    err CardError.OldCard
+  let ocr = {tx: 255} spi2
+  for i in 1 .. 3:
+    let rest = {tx: 255} spi2
+  {active: false} chipSelect
+  if (ocr /i 64) % 2 == 0:          # CCS: high capacity, block addressed
+    err CardError.OldCard
+  return tries
+
+fn writeBlock({lba: int, data: Seq[u8]}) -> !int [io, error: CardError]:
+  ## CMD24, start token 0xFE, 512 bytes, a dummy CRC, then the data
+  ## response (xxx0 0101 = accepted) and the busy wait while it programs.
+  {active: true} chipSelect
+  if ({index: 24, arg: lba, crc: 1} command) != 0:
+    {active: false} chipSelect
+    err CardError.Rejected
+  let token = {tx: 254} spi2
+  for b in data:
+    let x = {tx: b ^int} spi2
+  let crc1 = {tx: 255} spi2
+  let crc2 = {tx: 255} spi2
+  let response = {tx: 255} spi2
+  if response % 32 != 5:
+    {active: false} chipSelect
+    err CardError.Rejected
+  var n = 0
+  for ({tx: 255} spi2) == 0:
+    n = n + 1
+    if n > spins:
+      {active: false} chipSelect
+      err CardError.Timeout
+  {active: false} chipSelect
+  return lba
+
+fn readBlock({lba: int}) -> !Seq[u8] [io, error: CardError]:
+  ## CMD17, wait for the 0xFE start token, 512 bytes, two CRC bytes.
+  {active: true} chipSelect
+  if ({index: 17, arg: lba, crc: 1} command) != 0:
+    {active: false} chipSelect
+    err CardError.Rejected
+  var n = 0
+  for ({tx: 255} spi2) != 254:
+    n = n + 1
+    if n > spins:
+      {active: false} chipSelect
+      err CardError.Timeout
+  var data: Seq[u8] = []
+  for i in 1 .. 512:
+    let b = {tx: 255} spi2
+    data = {items: data, value: b ~u8} push
+  let crc1 = {tx: 255} spi2
+  let crc2 = {tx: 255} spi2
+  {active: false} chipSelect
+  return data

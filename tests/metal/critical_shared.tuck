@@ -1,0 +1,17 @@
+# `critical:` on bare metal: both accesses protected, gate-clean.
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+register FLAG at 0x20000000:
+  VALUE: bits 0..7 [read, write]
+
+fn isr() [irq, irq_safe, no_alloc]:
+  critical:
+    FLAG.VALUE = 1
+  return
+
+fn main() -> int:
+  critical:
+    FLAG.VALUE = 2
+  {text: "CRITICAL_OK\n"} say
+  return 0

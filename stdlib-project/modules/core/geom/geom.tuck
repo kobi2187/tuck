@@ -12,6 +12,8 @@
 # fallible return needs [io]); `tryNormalized` is the form that says no.
 import math
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 type Vec2:
   x: f64
   y: f64

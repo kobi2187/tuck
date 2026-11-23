@@ -1,0 +1,44 @@
+# A high-resolution guest clock for Cortex-M, backed by SysTick.
+#
+# QEMU 8.2 does NOT emulate the DWT cycle counter (0xE0001004 reads as zero),
+# so `clock_now` uses SysTick's 24-bit down-counter instead. On real Cortex-M
+# this is the same register; on QEMU it is the only guest-visible cycle source.
+# One tick is one CPU cycle (24 MHz on stm32vldiscovery). No interrupt is
+# enabled: this is a polled clock, safe to call from an ISR.
+#
+# QEMU's ptimer applies PTIMER_POLICY_NO_IMMEDIATE_RELOAD: writing CVR clears
+# it to zero and the first reload happens on the next clock edge. `clock_init`
+# therefore warms the counter for a fixed 1000 reads before it is sampled.
+# `clock_elapsed` is wrap-safe for intervals shorter than one reload period.
+
+register SYSTICK_CSR at 0xE000E010:
+  ENABLE: bit 0 [read, write]
+  TICKINT: bit 1 [read, write]
+  COUNTFLAG: bit 16 [read]
+
+register SYSTICK_RVR at 0xE000E014:
+  RELOAD: bits 0..23 [read, write]
+
+register SYSTICK_CVR at 0xE000E018:
+  CURRENT: bits 0..23 [read, write]
+
+fn clock_init({reload: u32}) -> void:
+  SYSTICK_RVR.RELOAD = reload
+  SYSTICK_CVR.CURRENT = 0
+  SYSTICK_CSR.TICKINT = false
+  SYSTICK_CSR.ENABLE = true
+  for i in 0 .. 999:
+    let warm = SYSTICK_CVR.CURRENT
+    if warm == 0:
+      i discard
+    else:
+      i discard
+  return
+
+fn clock_now() -> u32:
+  return SYSTICK_RVR.RELOAD - SYSTICK_CVR.CURRENT
+
+fn clock_elapsed({start: u32, stop: u32}) -> u32:
+  if stop >= start:
+    return stop - start
+  return stop + (0x1000000 - start)

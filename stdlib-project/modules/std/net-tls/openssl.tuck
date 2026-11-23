@@ -15,6 +15,8 @@ import str
 import text
 import tls
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 type TlsFault:
   | NoTcp
   | HandshakeRefused

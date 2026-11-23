@@ -15,19 +15,23 @@ struct tuckˑregistryˑSystemEvents {
 }
 
 __gshared tuckˑregistryˑSystemEvents latesttuckˑregistryˑSystemEvents;
+__gshared bool latestRaisedtuckˑregistryˑSystemEvents;
 
 void raise_tuckˑregistryˑSystemEvents_PlaybackStarted() {
     latesttuckˑregistryˑSystemEvents = tuckˑregistryˑSystemEvents(tuckˑregistryˑSystemEventsKind.PlaybackStarted);
+    latestRaisedtuckˑregistryˑSystemEvents = true;
     tuckˑfnˑSystemEvents_PlaybackStarted();
 }
 
 void raise_tuckˑregistryˑSystemEvents_PlaybackStopped() {
     latesttuckˑregistryˑSystemEvents = tuckˑregistryˑSystemEvents(tuckˑregistryˑSystemEventsKind.PlaybackStopped);
+    latestRaisedtuckˑregistryˑSystemEvents = true;
     tuckˑfnˑSystemEvents_PlaybackStopped();
 }
 
 void raise_tuckˑregistryˑSystemEvents_HardwareError(ubyte code) {
     latesttuckˑregistryˑSystemEvents = tuckˑregistryˑSystemEvents(tuckˑregistryˑSystemEventsKind.HardwareError, code: code);
+    latestRaisedtuckˑregistryˑSystemEvents = true;
     tuckˑfnˑSystemEvents_HardwareError(code);
 }
 

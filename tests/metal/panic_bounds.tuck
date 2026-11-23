@@ -1,0 +1,17 @@
+# An out-of-bounds index on metal stops with a PANIC line and a decoded fault
+# naming the Tuck line (`a[i]` below), and `tuck sim` exits 1. It used to spin
+# silently in the runtime, which the QEMU loop read as a clean run.
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+fn pick({i: int}) -> int:
+  let a: Array[4, int] = [1, 2, 3, 4]
+  return a[i]
+
+fn main() -> int:
+  {text: "BEFORE\n"} say
+  let v = {i: 7} pick
+  if v == 0:
+    {text: "ZERO\n"} say
+  {text: "AFTER\n"} say
+  return 0

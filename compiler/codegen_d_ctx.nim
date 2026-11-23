@@ -221,7 +221,15 @@ proc dGenericApp(ctx: var DCodegenCtx, t: Type, baseName: string,
         return dUnsupported("type application " & baseName & "[...]")
       return ""
     args.add(one)
-  ctx.importedTypeQualifierD(baseName) & "!(" & args.join(", ") & ")"
+  let owner = moduleDeclaringType(ctx.module, baseName)
+  if owner == NoModule:
+    return baseName & "!(" & args.join(", ") & ")"
+  # Another module's template goes through a file-level alias: parameter
+  # deduction fails through the renamed import itself (A118).
+  let target = ctx.pkgQualifierD(owner) & baseName
+  let alias = moduleAlias(owner) & "ˑapply" & "ˑ" & baseName
+  ctx.used.templateAliases[alias] = target
+  alias & "!(" & args.join(", ") & ")"
 
 proc dAppType*(ctx: var DCodegenCtx, t: Type, mode: TypeMode): string =
   ## The two type applications this backend maps: `Seq[T]` and the `!T`/`?T`
@@ -434,3 +442,5 @@ proc newDCtx*(m: Module, realModules: ModuleMap,
                        idx: buildDeclIndex(m), res: res, used: newModuleUse(), shapes: shapes)
   for d in m.decls:
     if d != nil and d.kind == dkErrors: result.errPolicy = d.policyName
+  # One policy per application (ruling 2026-11-22).
+  if res.programErrPolicy != "": result.errPolicy = res.programErrPolicy

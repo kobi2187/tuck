@@ -1008,7 +1008,8 @@ proc registryRaiseProc*(ctx: var OdinCodegenCtx, d: Decl, v: VariantDef,
   let assignStr = if assigns.len > 0: ", " & assigns.join(", ") else: ""
   ind & raiseProcName(d.name, v.name) & " :: proc(" & params.join(", ") &
     ") {\n" & ind & "\tlatest" & d.name & " = " & d.name & "{" & TagField & " = ." &
-    v.name & assignStr & "}\n" & ctx.registryHandlerCalls(d, v, ind) &
+    v.name & assignStr & "}\n" & ind & "\t" & latestRaisedName(d.name) &
+    " = true\n" & ctx.registryHandlerCalls(d, v, ind) &
     ind & "}\n\n"
 
 proc genRegistry*(ctx: var OdinCodegenCtx, d: Decl): string =
@@ -1019,7 +1020,8 @@ proc genRegistry*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## may call handlers declared after them — no forward decls needed.
   let ind = "  ".repeat(ctx.indent)
   result = ctx.registryEventStruct(d, ind) & "\n"
-  result.add(ind & "latest" & d.name & ": " & d.name & "\n\n")
+  result.add(ind & "latest" & d.name & ": " & d.name & "\n")
+  result.add(ind & latestRaisedName(d.name) & ": bool\n\n")
   result.add(ctx.foreignHandlerLists(d, ind))
   for v in d.variants:
     result.add(ctx.registryRaiseProc(d, v, ind))
@@ -1207,13 +1209,21 @@ proc genErrHandlerBody*(ctx: var OdinCodegenCtx, handler: Decl): string =
 
 proc genErrHandler*(ctx: var OdinCodegenCtx, d: Decl, ind: string): string =
   ## Global handler: rt logger first (errors are always visible), then the
-  ## user's handler body.
+  ## user's handler body. The application's only (ruling 2026-11-22),
+  ## registered with the runtime by an `@(init)` proc so a partial library's
+  ## sites (`rt.tuckRouteUnhandled`) reach it.
+  if not isPolicyEntry(ctx.res, ctx.module): return ""
   result = ind & UnhandledHandlerName & " :: proc(code: u16, site: string) {\n" &
            ind & "\trt.tuckReportUnhandled(code, site)\n"
   if d.errHandler != nil and d.errHandler.fnBody != nil:
     let body = ctx.genErrHandlerBody(d.errHandler)
     if body != "": result.add(body & "\n")
   result.add(ind & "}\n")
+  if d.errHandler != nil:
+    result.add(ind & "@(init)\n" & ind &
+               "tuck_register_unhandled :: proc \"contextless\" () {\n" &
+               ind & "\trt.tuckUnhandledHook = " & UnhandledHandlerName & "\n" &
+               ind & "}\n")
 
 proc genCBinding*(ctx: var OdinCodegenCtx, m: Decl): string =
   ## One `foreign` entry. `-> ret` is omitted entirely for void; "void" is
@@ -1316,8 +1326,9 @@ proc bitConsts*(bf: BitFieldInfo, ind: string): seq[string] =
   if bf.isRange:
     result.add(ind & bf.prefix & "_WIDTH :: " & bf.hiBit & " - " & bf.loBit &
                " + 1")
-    result.add(ind & bf.prefix & "_MASK :: u32(1 << u32(" & bf.prefix &
-               "_WIDTH)) - 1")
+    # Full word shifted right, so a 32-bit field does not shift by 32.
+    result.add(ind & bf.prefix & "_MASK :: u32(0xffffffff) >> u32(32 - " &
+               bf.prefix & "_WIDTH)")
 
 proc bitGetter*(bf: BitFieldInfo, regName, ind: string): string =
   ## A range reads as a masked u32; a single bit reads as a bool. Every access
@@ -1533,7 +1544,7 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   ## One top-level declaration. Every DeclKind is named, so a new one fails
   ## to compile here until it is decided (CLAUDE.md).
   if d == nil: return ""
-  if d.kind in {dkType, dkObject, dkInterface, dkActor} and d.origin != NoModule:
+  if d.kind in {dkType, dkObject, dkInterface, dkActor, dkRegister} and d.origin != NoModule:
     return ""  # defined in its own module; that module's Odin file has it
   let ind = "  ".repeat(ctx.indent)
   case d.kind

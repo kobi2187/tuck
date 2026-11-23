@@ -1,0 +1,49 @@
+# Stage 8 — the actual goal: two stackless tasks on bare metal.
+# Each task writes its LED pattern to an MMIO word and loops `times` times.
+# No OS, no heap, no mmap, no stack switching.
+# main prints one line at the end reporting whether both tasks completed.
+
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void [io]
+
+register LED_A at 0x20000000:
+  VALUE: bits 0..7 [read, write]
+
+register LED_B at 0x20000004:
+  VALUE: bits 0..7 [read, write]
+
+fn delay({n: int}) -> void:
+  for i in 0 .. n - 1:
+    i discard
+  return
+
+task blinkA({times: int}) -> {done: bool} [io]:
+  for i in 0 .. times - 1:
+    LED_A.VALUE = 1
+    {n: 2000} delay
+    LED_A.VALUE = 0
+    {n: 2000} delay
+  return {done: true}
+
+task blinkB({times: int}) -> {done: bool} [io]:
+  for i in 0 .. times - 1:
+    LED_B.VALUE = 1
+    {n: 2000} delay
+    LED_B.VALUE = 0
+    {n: 2000} delay
+  return {done: true}
+
+task runner({}) -> {ok: bool} [io]:
+  # fire-and-forget one, await the other: both must run to completion
+  {times: 3} blinkA
+  let b = {times: 3} blinkB
+  return {ok: b.done}
+
+fn main() -> int [io]:
+  let r = {} runner
+  if r.ok:
+    {text: "STACKLESS_OK\n"} say
+  else:
+    {text: "STACKLESS_FAIL\n"} say
+    return 1
+  return 0

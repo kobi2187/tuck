@@ -62,6 +62,18 @@ type
     # the matching exkActorRef/exkRegisterRef/exkRegistryRef/exkPoolRef/
     # exkMixinRef. Not a general-purpose lookup for other passes to grow
     # dependent on — those should use declFor on the rewritten reference.
+    programErrPolicy*: string
+      ## The entry module's `errors` policy ("strict" when it declares none).
+      ## Every shortcut site in the program follows it: a finished module
+      ## has none, and a partial one takes the application's (ruling
+      ## 2026-11-22). The emitters read it instead of each module's own block.
+    entryModule*: ModuleId
+    policyNotes*: seq[string]
+      ## The POLICY report: a partial library whose own `continue`/`exit`
+      ## block is inert because another module is the program.
+      ## The application. Only it emits the `on unhandled` handler the
+      ## runtime calls; a partial library's sites reach it through the
+      ## runtime's hook, since a library cannot import the application.
     actorNames*: Table[string, Decl]
     # `Registry.Event` -> every handler for it, across the whole program. A
     # registry's raise proc is emitted in the registry's module, which does not
@@ -72,6 +84,8 @@ type
     # ...and the handler declarations themselves: a raise calls every one of
     # them synchronously (spec Part 10), so what it may do is theirs (audit E5).
     handlerDecls*: Table[string, seq[Decl]]
+    handlerModule*: Table[NodeId, ModuleId]
+      ## The module that declares each `on Registry.Event` handler, by its id.
     registerNames*: Table[string, Decl]
     registryNames*: Table[string, Decl]
     poolNames*: Table[string, Decl]
@@ -398,6 +412,19 @@ proc markAsync*(r: Resolution, e: Expr) =
   ensureId(e)
   r.asyncCalls.incl(e.id)
 
+proc raisesDeferred*(r: Resolution, raised: string): bool =
+  ## Does raising `Registry.Event` only QUEUE it? An event with a delivery
+  ## kind (`[stream]`, `[signal]`, `[latest]`, ruled 2026-11-22) runs its
+  ## handlers later on their own task, never at the raise, so the raise
+  ## carries none of their effects: interrupt code raises exactly these.
+  let dot = raised.rfind('.')
+  if dot < 0: return false
+  let reg = r.registryNames.getOrDefault(raised[0 ..< dot])
+  if reg == nil: return false
+  for v in reg.variants:
+    if v.name == raised[dot + 1 .. ^1]: return v.delivery != edNone
+  false
+
 proc markSlotCall*(r: Resolution, e: Expr, effects: seq[EffectMarker]) =
   ## `e` calls through a slot whose type promises `effects`.
   if e == nil: return
@@ -532,9 +559,11 @@ proc resetResolution*() =
   let constsByModule = semLayer.constsByModule
   let handlerSites = semLayer.handlerSites
   let handlerDecls = semLayer.handlerDecls
+  let handlerModule = semLayer.handlerModule
   semLayer = newResolution()
   semLayer.handlerSites = handlerSites
   semLayer.handlerDecls = handlerDecls
+  semLayer.handlerModule = handlerModule
   semLayer.actorNames = actorNames
   semLayer.registerNames = registerNames
   semLayer.registryNames = registryNames

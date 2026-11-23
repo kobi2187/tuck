@@ -872,17 +872,18 @@ proc genDroppedResult(ctx: var CodegenCtx, s: Expr, stmtCode: string): string =
   ## continue/exit policy: a dropped result routes to the global handler.
   let tn = ctx.freshName("tuckDrop")
   let site = ctx.res.shortcut(s)
+  let handler = unhandledCallee(ctx.res, ctx.module, "")
   let onErr = if ctx.errPolicy == "exit":
-                "(" & UnhandledHandlerName & "(" & tn & ".err, \"" & site & "\"); quit(1))"
+                "(" & handler & "(" & tn & ".err, \"" & site & "\"); quit(1))"
               else:
-                UnhandledHandlerName & "(" & tn & ".err, \"" & site & "\")"
+                handler & "(" & tn & ".err, \"" & site & "\")"
   "(let " & tn & " = " & stmtCode & "; (if not " & tn & ".ok: " & onErr & "))"
 
 proc ownsItsLayout(res: Resolution, s: Expr): bool =
   ## Nodes that carry their own indentation. (A `..` chain was one, and a
   ## call or binding fed by one; lowering_chains rewrites every chain into
   ## plain statements before any emitter runs.)
-  s.kind in {exkIf, exkBlock, exkFor, exkWhile, exkDefer}
+  s.kind in {exkIf, exkBlock, exkFor, exkWhile, exkCritical, exkDefer}
 
 proc stmtValueDropped(ctx: var CodegenCtx, s: Expr): bool =
   ## A call in STATEMENT position whose value nothing consumes. Nim rejects
@@ -918,12 +919,36 @@ proc genBoundErrorRouted(ctx: var CodegenCtx, s: Expr, stmtCode,
   let name = if s.target != nil and s.target.kind == exkVar: s.target.name
              else: ""
   if name == "": return stmtCode
+  let handler = unhandledCallee(ctx.res, ctx.module, "")
   let onErr = if ctx.errPolicy == "exit":
-                "(" & UnhandledHandlerName & "(" & name & ".err, \"" & site &
+                "(" & handler & "(" & name & ".err, \"" & site &
                   "\"); quit(1))"
               else:
-                UnhandledHandlerName & "(" & name & ".err, \"" & site & "\")"
+                handler & "(" & name & ".err, \"" & site & "\")"
   stmtCode & "\n" & ind & "  if " & name & ".status == tsErr: " & onErr
+
+proc escapeNimStr(s: string): string =
+  ## A Tuck path inside the emitted `{.line: ("...", N).}` pragma.
+  result = s.replace("\\", "\\\\").replace("\"", "\\\"")
+
+proc genLineWrapped(ctx: CodegenCtx; s: Expr; code, ind: string;
+                    layout: bool): string =
+  ## One statement wrapped in `{.line: ("file.tuck", N).}:`, which is what
+  ## makes DWARF name the TUCK line instead of the generated Nim one. Only
+  ## emitted under `--debug-lines`; without it the output is byte-identical.
+  ##
+  ## The pragma is a block pragma, so the statement moves one level deeper.
+  ## Every line loses the statement's own base indent and gains the wrapper's,
+  ## which keeps relative layout (case arms, multi-line sends) intact.
+  let base = if layout: ind else: ind & "  "
+  result = ind & "  {.line: (\"" & escapeNimStr(ctx.srcPath) & "\", " &
+           $s.span.line & ").}:\n"
+  for ln in code.splitLines:
+    if ln.len == 0:
+      result.add "\n"
+    else:
+      let stripped = if ln.startsWith(base): ln[base.len .. ^1] else: ln
+      result.add ind & "    " & stripped & "\n"
 
 proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
@@ -934,7 +959,10 @@ proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =
   elif code != "" and ctx.stmtValueDropped(s):
     code = "discard " & code
   if code == "": return ""
-  if ownsItsLayout(ctx.res, s): code else: ind & "  " & code
+  let layout = ownsItsLayout(ctx.res, s)
+  if ctx.lineInfo and ctx.srcPath != "" and s.span.line > 0:
+    return ctx.genLineWrapped(s, code, ind, layout)
+  if layout: code else: ind & "  " & code
 
 proc genStmts*(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## The statements of a block, indented one level, with no scope around them.
@@ -966,6 +994,28 @@ proc genBlock(ctx: var CodegenCtx, e: Expr, ind: string): string =
   let body = ctx.genStmts(e, ind)
   if body.len == 0: return ind & "discard"
   ind & "if true:\n" & body
+
+proc genCritical(ctx: var CodegenCtx, e: Expr, ind: string): string =
+  ## `critical:` — interrupts off on entry, restored on EVERY exit. Enter
+  ## returns the mask state it found and exit puts that state back, so a
+  ## nested block (or a block entered with interrupts already off) never turns
+  ## them on early. `try/finally` makes a `return`, `break` or `?` inside the
+  ## body restore the mask too; an unconditional exit at the end of the text
+  ## left interrupts off for good on any early way out. The outer `if true:`
+  ## is genBlock's scope (a `break` still reaches the enclosing loop); the
+  ## saved state is named by node id so nested blocks never shadow it.
+  if e.criticalBody == nil: return ind & "discard"
+  let saved = "tuckCs" & $uint32(e.id)
+  let inner = ind & "  "
+  ctx.indent += 1
+  var body = ctx.genStmts(e.criticalBody, inner)
+  ctx.indent -= 1
+  if body.len == 0: body = inner & "  discard"
+  ind & "if true:\n" &
+    inner & "let " & saved & " = tuckCriticalEnter()\n" &
+    inner & "try:\n" & body & "\n" &
+    inner & "finally:\n" &
+    inner & "  tuckCriticalExit(" & saved & ")"
 
 proc genDefer(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## `defer:` (spec §7.4) — Nim spells it identically, scope-exit-ordered and
@@ -1051,6 +1101,11 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkVar: (if e.movedOut: "tuckMove(" & ctx.genVar(e) & ")" else: ctx.genVar(e))
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     e.refName
+  of exkLatestIs:
+    # The slot is a ref, nil until the first raise (spec Part 10's query).
+    let slot = "latest" & e.latestReg.refName
+    "(" & slot & " != nil and " & slot & "." & TagField & " == " &
+      e.latestEvent & ")"
   of exkField:
     let read = ctx.genFieldAccess(e, ind)
     if e.movedOut and not ctx.res.hasCall(e): "tuckMove(" & read & ")" else: read
@@ -1088,6 +1143,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
       "rewrites every one into statements"
   of exkSend: ctx.genExprSend(e)
   of exkSelect: ctx.genExprSelect(e)
+  of exkCritical: ctx.genCritical(e, ind)
   of exkDefer: ctx.genDefer(e, ind)
   of exkFinish:
     # The kind names the table directly, so there is no dispatch and no

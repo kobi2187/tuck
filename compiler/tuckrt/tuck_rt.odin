@@ -71,6 +71,19 @@ tuckReportUnhandled :: proc(code: u16, site: string) {
 	fmt.eprintfln("TUCK UNHANDLED: error %d at %s", code, site)
 }
 
+// The application's `on unhandled`, registered by its @(init) proc. A partial
+// library's shortcut sites reach it through tuckRouteUnhandled: the library cannot
+// import the application (ruling 2026-11-22).
+tuckUnhandledHook: proc(code: u16, site: string)
+
+tuckRouteUnhandled :: proc(code: u16, site: string) {
+	if tuckUnhandledHook != nil {
+		tuckUnhandledHook(code, site)
+	} else {
+		tuckReportUnhandled(code, site)
+	}
+}
+
 // Same FNV-1a fold as tuck_rt.nim's errCode and the emitter's odinErrCode:
 // stable across builds and backends, no tables.
 errCode :: proc(name: string) -> u16 {

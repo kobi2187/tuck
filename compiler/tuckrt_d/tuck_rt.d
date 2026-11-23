@@ -590,6 +590,17 @@ void tuckReportUnhandled(ushort code, string site)
     stderr.writeln("TUCK UNHANDLED: error ", code, " at ", site);
 }
 
+/// The application's `on unhandled`, registered by its module constructor. A
+/// partial library's shortcut sites reach it through tuckRouteUnhandled: the
+/// library cannot import the application (ruling 2026-11-22).
+__gshared void function(ushort, string) tuckUnhandledHook;
+
+void tuckRouteUnhandled(ushort code, string site)
+{
+    if (tuckUnhandledHook !is null) tuckUnhandledHook(code, site);
+    else tuckReportUnhandled(code, site);
+}
+
 /// Same FNV-1a fold as tuck_rt.nim's errCode, tuck_rt.odin's, and the
 /// emitter's odinErrCode: stable across builds AND across backends.
 ushort errCode(string name)

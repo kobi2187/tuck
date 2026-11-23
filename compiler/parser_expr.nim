@@ -591,6 +591,22 @@ proc isEffectAnnotation(p: Parser): bool =
   p.current().kind == tkLBracket and p.peek(1).kind == tkAttr and
     p.peek(2).kind == tkRBracket
 
+proc chainLatestIs(p: var Parser, expr: Expr, sp: Span): Expr =
+  ## `Registry.latest is Event` (spec Part 10's query). `is` is accepted only
+  ## there: a sum value is tested with `match`, and a bare `is` would
+  ## otherwise parse as a postfix call named `is`.
+  if expr.kind != exkField or expr.fieldName != "latest" or
+     expr.receiver == nil:
+    p.reportError("`is` tests a registry's most recent event: write " &
+                  "`Registry.latest is Event`. To test which variant a sum " &
+                  "value holds, use `match`.")
+  discard p.advance()
+  if p.current().kind != tkIdent:
+    p.reportError("`latest is` needs an event name, as in " &
+                  "`AppEvents.latest is LowMemory`")
+  let ev = p.advance().value
+  Expr(span: sp, kind: exkLatestIs, latestReg: expr.receiver, latestEvent: ev)
+
 proc chainStep(p: var Parser, expr: Expr, sp: Span, done: var bool): Expr =
   ## One postfix continuation. `done` is set when nothing continues the chain,
   ## which is what ends the loop.
@@ -620,6 +636,7 @@ proc chainStep(p: var Parser, expr: Expr, sp: Span, done: var bool): Expr =
     p.reportError("Function calls are postfix in Tuck: write {payload} " &
                   "fnName, not fnName(args)")
   of tkIdent:
+    if p.current().value == "is": return p.chainLatestIs(expr, sp)
     if p.isSendStep(expr): return p.chainSend(expr, sp)
     if p.isAliasStep(): return p.parseAliasStep(expr)
     if p.isWithStep(): return p.chainCombinator(expr, sp, ckWith)
@@ -974,6 +991,21 @@ proc parseDeferExpr(p: var Parser, sp: Span): Expr =
                   "a line of its own.", line = sp.line, col = sp.col)
   Expr(span: sp, kind: exkDefer, deferBody: p.parseBlock())
 
+proc parseCriticalExpr(p: var Parser, sp: Span): Expr =
+  ## `critical:` then an indented block: a section where interrupts are
+  ## disabled, so shared ISR state can be touched without a torn access.
+  ## Recognised contextually (like `defer`), so `critical` stays usable as an
+  ## ordinary name everywhere else. One line is refused for the same reason
+  ## `defer`'s is: a section whose boundaries are invisible risks being
+  ## extended by accident.
+  discard p.advance()          # eat `critical`
+  discard p.expect(tkColon)
+  if p.current().kind notin {tkNewline, tkEOF}:
+    p.reportError("`critical` takes an indented block, not a single line. " &
+                  "Interrupt masking is a boundary worth seeing at a glance.",
+                  line = sp.line, col = sp.col)
+  Expr(span: sp, kind: exkCritical, criticalBody: p.parseBlock())
+
 proc contextualStmt(p: var Parser, sp: Span): Expr =
   ## The statement forms whose opening word the LEXER does not tokenize —
   ## `defer:`, `acquire`, `finish`. The expression-level twin of
@@ -995,6 +1027,8 @@ proc contextualStmt(p: var Parser, sp: Span): Expr =
   case p.current().value
   of "defer":
     if p.peek().kind == tkColon: return p.parseDeferExpr(sp)
+  of "critical":
+    if p.peek().kind == tkColon: return p.parseCriticalExpr(sp)
   of "finish":
     if p.peek().kind in {tkIdent, tkLBrace}:
       return p.parseResourceOp(sp, exkFinish)

@@ -9,6 +9,8 @@
 # its seed from the operating system's entropy source (the one extern here).
 import bits
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 extern:
   fn osSeed() -> {seed: u64} [io: sys]
 

@@ -105,11 +105,16 @@ proc genLinkFlags*(m: Module): string =
 proc emitNim*(m: Module, res: Resolution,
               rtImport = "../compiler/tuck_rt",
               realModules = initTable[ModuleId, Module](),
-              moduleName = "main"): string =
+              moduleName = "main",
+              lineInfo = false, srcPath = ""): string =
   ## `res` is the semantic layer typechecking produced. Taking it as an
   ## argument is the point: this stage cannot run before the one that fills
   ## it, and now the signature says so instead of a comment on checkOrDie.
-  var ctx = newCodegenCtx(m, realModules, moduleName, res)
+  ##
+  ## `lineInfo` + `srcPath` are `--debug-lines`: every statement gets a
+  ## `{.line: (srcPath, N).}` pragma so DWARF names the Tuck file, not the
+  ## generated Nim. Off by default — emitted output stays byte-identical.
+  var ctx = newCodegenCtx(m, realModules, moduleName, res, lineInfo, srcPath)
   let body = ctx.genOrderedDecls(m)
   # Nim resolves mutual type references only within ONE `type` block, and each
   # emit site writes its own — so `type A = {b: Seq[B]}` + `type B = {a: Seq[A]}`

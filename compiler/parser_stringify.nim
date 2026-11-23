@@ -149,6 +149,8 @@ proc toString*(e: Expr): string =
            optToString(e.sendPayload, " ")
   of exkSelect:
     return "on select (" & $e.selArms.len & " arms)"
+  of exkCritical:
+    return "critical: " & optToString(e.criticalBody)
   of exkDefer:
     return "defer: " & optToString(e.deferBody)
   of exkOrdinal:
@@ -189,6 +191,8 @@ proc toString*(e: Expr): string =
     return e.tagSubject.toString() & " is " & e.tagObject
   of exkIfacePayload:
     return e.tagSubject.toString() & " as " & e.tagObject
+  of exkLatestIs:
+    return e.latestReg.toString() & ".latest is " & e.latestEvent
   of exkWrapOk:
     # Lowering-built: a plain value stored into a `?T` place.
     return "some(" & e.optValue.toString() & ")"

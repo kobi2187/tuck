@@ -9,6 +9,8 @@ import bits
 import seq
 import str
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 # Reflected polynomial 0xEDB88320, one table entry at a time.
 fn crcEntry({n: int}) -> u64:
   var c = {value: n} u64

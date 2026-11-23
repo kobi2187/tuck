@@ -1,0 +1,128 @@
+# The irrigation controller's decisions: pure, no hardware. The device
+# (irrigation.tuck) and the week-long host simulation (sim.tuck) both run
+# exactly this code.
+#
+# Parts it is written for:
+#   Flow meter  YF-S201 Hall-effect sensor: F[Hz] = 7.5 x Q[L/min],
+#               i.e. 450 pulses per litre (+-10%, calibrate per unit)
+#   Valve       TowerPro MG996R servo turning a 1/2" quarter-turn ball valve:
+#               50 Hz, 1000 us = 0 deg (closed), 1500 us = 90 deg (open)
+#   Clock       Maxim DS3231 RTC: day register 1..7, BCD time registers
+
+type Weekday:
+  | Sun
+  | Mon
+  | Tue
+  | Wed
+  | Thu
+  | Fri
+  | Sat
+
+# One watering window: start on `day` at hh:mm, run `minutes`, and stop early
+# once `litres` have gone through the meter.
+type Slot:
+  day: Weekday
+  hour: int
+  minute: int
+  minutes: int
+  litres: int
+
+type Action:
+  | Open
+  | Close
+  | Keep
+  | Alarm
+
+const pulsesPerLitre = 450
+const servoClosedUs = 1000
+const servoOpenUs = 1500
+
+# What the valve should do this minute. Every combination is a row, so a
+# missing case is a compile error, and the row order is the policy: a leak
+# outranks everything, an alarm latches until the next window (without it the
+# week-long simulation showed the valve flapping open/closed every minute on
+# a dry supply), and a delivered quota closes a window early.
+decision valveAction({due: bool, open: bool, quotaMet: bool, flowing: bool,
+                      faulted: bool}) -> Action:
+  | _     false _     true  _     -> Alarm   # closed, yet water moves: stuck valve or leak
+  | _     false _     false true  -> Keep    # latched fault: stay shut until the next window
+  | true  false false false false -> Open
+  | true  false true  false false -> Keep    # this window's water was already delivered
+  | false false _     false false -> Keep
+  | true  true  false true  _     -> Keep
+  | true  true  false false _     -> Alarm   # open, but nothing flows: dry supply or blocked pipe
+  | _     true  true  _     _     -> Close
+  | false true  false _     _     -> Close
+
+fn weekdayFromDs3231({day: int}) -> Weekday:
+  ## The DS3231 day register counts 1..7; this program takes 1 = Sunday.
+  match day:
+    | 1 -> return Weekday.Sun
+    | 2 -> return Weekday.Mon
+    | 3 -> return Weekday.Tue
+    | 4 -> return Weekday.Wed
+    | 5 -> return Weekday.Thu
+    | 6 -> return Weekday.Fri
+    | _ -> return Weekday.Sat
+
+fn bcd({raw: int}) -> int:
+  ## A DS3231 time register: tens in the high nibble, units in the low one.
+  return (raw /i 16) * 10 + raw % 16
+
+fn litresFrom({pulses: int}) -> int:
+  return pulses /i pulsesPerLitre
+
+fn inWindow({s: Slot, day: Weekday, hour: int, minute: int}) -> bool:
+  ## Is hh:mm on `day` inside the slot? Windows do not cross midnight.
+  if s.day != day:
+    return false
+  let start = s.hour * 60 + s.minute
+  let now = hour * 60 + minute
+  return now >= start and now < start + s.minutes
+
+fn servoPulseUs({action: Action, wasOpen: bool}) -> int:
+  ## The pulse width that holds the valve where `action` leaves it. An
+  ## alarm closes the valve: shutting water off is the safe failure.
+  match action:
+    | Open -> return servoOpenUs
+    | Close -> return servoClosedUs
+    | Alarm -> return servoClosedUs
+    | Keep ->
+      if wasOpen:
+        return servoOpenUs
+      return servoClosedUs
+
+# The controller's memory between minutes, and one minute's work. The device
+# (irrigation.tuck) and the simulation (sim.tuck) both call `step`, so the
+# simulation runs exactly the device's decisions.
+type Valve:
+  open: bool
+  faulted: bool
+  slot: int          # the window in force, or -1
+  slotStart: int     # the meter count when that window began
+  lastCount: int     # the meter count a minute ago
+
+type Step:
+  valve: Valve
+  action: Action
+  pulseUs: int       # what to drive the servo with
+
+fn since({count: int, before: int}) -> int:
+  ## Pulses between two readings of a 16-bit hardware counter.
+  return (count - before + 65536) % 65536
+
+fn step({v: Valve, due: int, quota: int, count: int}) -> Step:
+  ## One minute: `due` is the window this minute falls in (or -1), `quota`
+  ## its litres, `count` the meter's counter now.
+  var next = v
+  if due != v.slot:
+    next = v with {slot: due, slotStart: count, faulted: false}
+  let flowed = {count: count, before: v.lastCount} since
+  let inSlot = {count: count, before: next.slotStart} since
+  let delivered = {pulses: inSlot} litresFrom
+  let act = {due: due >= 0, open: v.open, quotaMet: due >= 0 and delivered >= quota,
+             flowing: flowed > 0, faulted: next.faulted} valveAction
+  let us = {action: act, wasOpen: v.open} servoPulseUs
+  let faulted = next.faulted or act == Action.Alarm
+  let after = next with {open: us == servoOpenUs, faulted: faulted, lastCount: count}
+  return {valve: after, action: act, pulseUs: us} Step

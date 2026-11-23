@@ -110,6 +110,11 @@ type
     pendingFns*: Table[string, Span]
     implementedFns*: HashSet[string]
     errPolicy*: string            # strict (default) | continue | exit
+    policyFrom*: string
+      ## Who set errPolicy when it is not this module's own: the application
+      ## a partial library follows ("" when the module's own block applies).
+      ## Named in the strict refusal, so the reader sees the level came from
+      ## the importing program, not from the library.
     wrapperFieldRead*: bool
     ownerFieldScope*: int
       ## 1 + the index in `scopes` where the enclosing owner bound its fields

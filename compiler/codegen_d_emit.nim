@@ -94,6 +94,12 @@ proc moduleImports(ctx: DCodegenCtx): seq[string] =
   for id in ctx.used.byName:
     result.add("import " & moduleAlias(id) & " = mod_" & moduleSlug(id) & ";")
 
+proc templateAliasLines(ctx: DCodegenCtx): seq[string] =
+  ## `alias X = mod.Template;` for each generic type of another module the file
+  ## applied (A118: D deduces through an alias, not through the renamed import).
+  for alias, target in ctx.used.templateAliases:
+    result.add("alias " & alias & " = " & target & ";")
+
 proc dImports*(ctx: DCodegenCtx, body, mains: string,
               inModuleDir = false): seq[string] =
   ## Only import what the emitted code references — same policy as the Odin
@@ -119,6 +125,7 @@ proc dImports*(ctx: DCodegenCtx, body, mains: string,
   if stdioSyms.len > 0:
     result.add("import std.stdio : " & stdioSyms.join(", ") & ";")
   result.add(ctx.moduleImports())
+  result.add(ctx.templateAliasLines())
   # `impl: d "..."` modules — a bare module name, unlike Nim's/Odin's own
   # relative-path imports, so tuck.nim's build step resolves it with an
   # extra dmd `-I` rather than anything rebased or copied here.

@@ -6,6 +6,8 @@
 # for. "Ask first, then choose" — there is no silent downgrade.
 import seq
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 type SleepDepth:
   | Light
   | Deep

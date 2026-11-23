@@ -17,6 +17,8 @@ import text
 import convert
 import chrono
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 distinct Timestamp = u64
 
 fn timestamp({epochMs: u64}) -> Timestamp:

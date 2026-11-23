@@ -1,0 +1,154 @@
+# The flight controller on the host: the radio link and three seconds of
+# flight at the 1 kHz loop rate, against a simple model of the quad.
+#
+# Link: CRSF frames as an RP1 sends them, with line noise between frames and
+# one frame whose CRC is broken; the parser must decode the good ones and
+# count the bad one.
+#
+# Flight: arm with the throttle down, lift to 45% throttle, command a
+# 335 deg/s roll for a second, centre the stick, then lose the radio. The
+# model per axis is rate' = 2000 x effort - 2 x rate (deg/s^2), crude but
+# enough to show the loop holds a rate and the failsafe stops the motors.
+#
+# Exit status: 0 when every check holds; the first failing check's number
+# otherwise.
+
+import console
+import seq
+import str
+import bits
+import flight
+
+fn rawFor({stickValue: int}) -> int:
+  return 992 + stickValue * 819 /i 500
+
+fn packFrame({channels: Seq[int]}) -> Seq[int]:
+  ## The inverse of channelsOf: 16 x 11 bits LSB first, framed and CRC'd.
+  var payload: Seq[int] = []
+  for i in 1 .. 22:
+    payload = {items: payload, value: 0} push
+  for ch in 0 .. 15:
+    var v = channels[ch]
+    var bitPos = ch * 11
+    for k in 1 .. 11:
+      let at = bitPos /i 8
+      var weight = 1
+      for w in 1 .. bitPos % 8:
+        weight = weight * 2
+      let bit = v % 2
+      let old = payload[at]
+      let updated = old + bit * weight
+      payload[at] = updated
+      v = v /i 2
+      bitPos = bitPos + 1
+  var frame: Seq[int] = [crsfSync, 24, crsfRcChannels]
+  for b in payload:
+    frame = {items: frame, value: b} push
+  var crc = 0
+  for i in 2 .. frame.len - 1:
+    crc = {crc: crc, b: frame[i]} crc8
+  return {items: frame, value: crc} push
+
+fn sticks({roll: int, pitch: int, throttle: int, yaw: int, arm: bool}) -> Seq[int]:
+  ## AETR, then AUX1 = arm switch; the rest centred.
+  let a = {stickValue: roll} rawFor
+  let e = {stickValue: pitch} rawFor
+  let t = {stickValue: throttle} rawFor
+  let r = {stickValue: yaw} rawFor
+  let aux = if arm: 1811 else: 172
+  var chans: Seq[int] = [a, e, t, r, aux]
+  for i in 6 .. 16:
+    chans = {items: chans, value: 992} push
+  return chans
+
+fn main() -> int [io]:
+  # --- the link --------------------------------------------------------
+  let sent = {roll: 250, pitch: -40, throttle: -100, yaw: 0, arm: true} sticks
+  let good = {channels: sent} packFrame
+  var broken = good
+  broken[10] = (broken[10] + 1) % 256
+  # Noise with a false sync in it, then three frames 2 ms apart (500 Hz),
+  # their bytes 24 us apart (420 kbaud): the second frame's CRC is broken.
+  var stream: Seq[int] = [7, 200, 3]
+  var gaps: Seq[int] = [5000, 24, 24]
+  for f in [good, broken, good]:
+    for i in 0 .. f.len - 1:
+      stream = {items: stream, value: f[i]} push
+      let gap = if i == 0: 2000 else: 24
+      gaps = {items: gaps, value: gap} push
+  let emptyFrame: Seq[int] = []
+  var crsf = {frame: emptyFrame, want: 0, good: 0, bad: 0} Crsf
+  var decoded: Seq[int] = []
+  for i in 0 .. stream.len - 1:
+    let r = {p: crsf, b: stream[i], gapUs: gaps[i]} feed
+    crsf = r.crsf
+    if r.channels.len == 16:
+      decoded = r.channels
+  {text: "crsf: " + crsf.good.toStr + " good, " + crsf.bad.toStr + " bad"} console::printLine
+  if decoded.len != 16:
+    return 1
+  for i in 0 .. 15:
+    if decoded[i] != sent[i]:
+      return 2
+  let rollBack = {raw: decoded[0]} stick
+  if rollBack < 249 or rollBack > 250:          # 819/500 does not divide evenly
+    return 3
+  if crsf.good != 2 or crsf.bad != 1:
+    return 7
+
+  # --- three seconds of flight -----------------------------------------
+  let gains = {kp: 0.002, ki: 0.004, kd: 0.00002,
+               integral: 0.0, lastError: 0.0} Pid
+  var rollPid = gains
+  var pitchPid = gains
+  var yawPid = gains
+  var rates: Seq[f32] = [0.0, 0.0, 0.0]
+  var armed = false
+  var motors = {m1: 0, m2: 0, m3: 0, m4: 0} Motors
+  var rollAt1400 = 0
+  for ms in 0 .. 2999:
+    let arm = ms >= 200
+    let linkUp = ms < 2000
+    let throttle = if ms < 500: -500 else: -50       # -500 = bottom
+    let roll = if ms >= 500 and ms < 1500: 250 else: 0
+    let act = {switchOn: arm, throttleLow: throttle <= -450, linkUp: linkUp,
+               armed: armed} arming
+    if act == ArmAction.Arm:
+      armed = true
+      {text: "armed at " + ms.toStr + " ms"} console::printLine
+    if act == ArmAction.Disarm:
+      armed = false
+      {text: "disarmed at " + ms.toStr + " ms"} console::printLine
+    let rollWant = {stickValue: roll} setpoint
+    let r = {pid: rollPid, want: rollWant, have: rates[0]} pidStep
+    let p = {pid: pitchPid, want: 0.0, have: rates[1]} pidStep
+    let y = {pid: yawPid, want: 0.0, have: rates[2]} pidStep
+    rollPid = r.pid
+    pitchPid = p.pid
+    yawPid = y.pid
+    let thr = ((throttle + 500) ~f64 /f 1000.0) ~f32
+    motors = {throttle: thr, roll: r.effort, pitch: p.effort, yaw: y.effort,
+              armed: armed} mix
+    # the quad: torque from the motor difference, a little drag
+    let dt: f32 = 0.001
+    let still: f32 = 0.0
+    let efforts = [r.effort, p.effort, y.effort]
+    for axis in 0 .. 2:
+      let torque = if armed: efforts[axis] else: still
+      rates[axis] = rates[axis] + dt * (2000.0 * torque - 2.0 * rates[axis])
+    if ms == 1400:
+      rollAt1400 = (rates[0] ^f64) ~int
+  {text: "roll rate at 1.4 s: " + rollAt1400.toStr + " deg/s (commanded 335)"} console::printLine
+  if rollAt1400 < 300 or rollAt1400 > 370:
+    return 4
+  if motors.m1 != 0 or motors.m2 != 0 or motors.m3 != 0 or motors.m4 != 0:
+    return 5                                       # failsafe must stop them
+
+  # --- one DShot frame --------------------------------------------------
+  let frame = {value: 1046, telemetry: false} dshotFrame
+  let pulses = {frame: frame} dshotPulses
+  {text: "dshot 1046 -> frame " + frame.toStr + ", first pulses " +
+         pulses[0].toStr + " " + pulses[1].toStr} console::printLine
+  if pulses.len != 17 or pulses[16] != 0:
+    return 6
+  return 0

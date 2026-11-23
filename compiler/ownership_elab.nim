@@ -516,6 +516,7 @@ proc walkExpr(w: var DropWalk, e: Expr, use: Use) =
   of exkReturn, exkRaise: w.walkExit(e, 0)
   of exkBreak, exkContinue:
     w.walkExit(e, if w.loops.len > 0: w.loops[^1] else: w.scopes.len)
+  of exkCritical: discard      # a scope, not a move site
   of exkDefer: discard          # runs at the scope's end, reading only
   else: w.applyMoves(e, use)
 

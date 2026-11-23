@@ -1,0 +1,217 @@
+# Program 2: a voice recorder that records MP3, plays it back, and has a
+# volume knob.
+#
+#   STM32F103C8T6 "Blue Pill"         the controller (board.tuck)
+#   VLSI VS1063a (SparkFun BOB-11684)  MP3 encoder and decoder (vs1063.tuck)
+#   microSD card on SPI                raw blocks (sdcard.tuck)
+#   Bourns PEC11R-4215F-S0024          volume, counted by TIM4
+#   three buttons                      Record, Play, Stop on EXTI0..2
+#
+# The VS1063a does all the audio work. The controller moves bytes: from the
+# encoder's HDAT0 into 512-byte blocks on the card while recording, and from
+# the card into SDI, 32 bytes per DREQ, while playing.
+
+import seq
+import session
+import board
+import vs1063
+import sdcard
+
+registry ButtonEvents:
+  | Pressed({button: Button})  [stream, overflow: drop_newest]   # a press is never merged
+
+fn onRecordButton() [irq, irq_safe, no_alloc]:
+  EXTI_PR.PR = 1
+  ButtonEvents.raise Pressed {button: Button.Record}
+
+fn onPlayButton() [irq, irq_safe, no_alloc]:
+  EXTI_PR.PR = 2
+  ButtonEvents.raise Pressed {button: Button.Play}
+
+fn onStopButton() [irq, irq_safe, no_alloc]:
+  EXTI_PR.PR = 4
+  ButtonEvents.raise Pressed {button: Button.Stop}
+
+actor Recorder [queue: 8]:
+  mode: Mode = Mode.Idle
+  filling: Seq[u8] = []         # the block being filled while recording
+  nextBlock: int = 1            # block 0 holds the length
+  length: int = 0               # bytes in the recording
+  sent: int = 0                 # bytes sent to the decoder while playing
+  playBlock: Seq[u8] = []
+  clicks: int = 0
+  faults: int = 0
+
+  fn keep({b: u8}) [io]:
+    ## One encoded byte into the block; a full block goes to the card.
+    filling = {items: filling, value: b} push
+    length = length + 1
+    if filling.len == blockBytes:
+      let w = {lba: nextBlock, data: filling} writeBlock
+      if not w.ok:
+        faults = faults + 1
+      nextBlock = nextBlock + 1
+      filling = []
+
+  fn drain() [io]:
+    ## Whatever the encoder has waiting, high byte first (§11.6.3).
+    let n = wordsWaiting
+    if not n.ok:
+      faults = faults + 1
+      return
+    for i in 1 .. n.value:
+      let word = nextWord
+      if not word.ok:
+        faults = faults + 1
+        return
+      let hi = {word: word.value} highByte
+      let lo = {word: word.value} lowByte
+      keep {b: hi}
+      keep {b: lo}
+
+  on ButtonEvents.Pressed({button: Button}) [io]:
+    let cmd = {mode: mode, button: button} react
+    match cmd:
+      StartRecording:
+        begin
+      CancelEncoder:
+        stopEncoder
+      StartPlayback:
+        beginPlayback
+      StopPlayback:
+        endPlayback
+      Ignore:
+        return
+
+  fn begin() [io]:
+    let r = startRecording
+    if not r.ok:
+      faults = faults + 1
+      return
+    match mode:
+      Idle:
+        mode = {sectors: 0} Mode.Recording
+      Recording: return
+      Finishing: return
+      Playing: return
+    nextBlock = 1
+    length = 0
+
+  fn stopEncoder() [io]:
+    let c = cancelEncoding
+    if not c.ok:
+      faults = faults + 1
+    match mode:
+      Recording:
+        mode = {sectors: nextBlock} Mode.Finishing
+      Idle: return
+      Finishing: return
+      Playing: return
+
+  fn beginPlayback() [io]:
+    match mode:
+      Idle:
+        mode = {sector: 1, total: nextBlock} Mode.Playing
+      Recording: return
+      Finishing: return
+      Playing: return
+    sent = 0
+
+  fn endPlayback() [io]:
+    ## Only playback ends here: the transitions table refused the first
+    ## version, a bare `mode = Mode.Idle`, because Recording -> Idle is not
+    ## an edge (stopping that way would abandon an unfinished file).
+    match mode:
+      Playing:
+        mode = Mode.Idle
+      Idle: return
+      Recording: return
+      Finishing: return
+
+  on tick() [io]:
+    ## One slice of work for the mode we are in.
+    match mode:
+      Recording:
+        drain
+      Finishing:
+        drain
+        let done = encoderStopped
+        if done.ok:
+          if done.value:
+            finishFile
+      Playing:
+        feed
+      Idle: return
+
+  fn finishFile() [io]:
+    ## §11.6.2 step 4: bit 15 of endFillByte flags an odd last byte.
+    let fill = endFillByte
+    if fill.ok:
+      if fill.value >= 32768:
+        let last = (fill.value % 256) ~u8
+        keep {b: last}
+    for filling.len > 0 and filling.len < blockBytes:
+      filling = {items: filling, value: 0 ~u8} push
+    if filling.len == blockBytes:
+      let w = {lba: nextBlock, data: filling} writeBlock
+      if not w.ok:
+        faults = faults + 1
+      nextBlock = nextBlock + 1
+    filling = []
+    match mode:
+      Finishing:
+        mode = Mode.Idle
+      Idle: return
+      Recording: return
+      Playing: return
+
+  fn feed() [io]:
+    ## 32 bytes per DREQ from the current block; the next block when one is
+    ## spent; the end of the file stops playback.
+    if sent >= length:
+      endPlayback
+      return
+    if sent % blockBytes == 0:
+      let b = {lba: 1 + sent /i blockBytes} readBlock
+      if not b.ok:
+        faults = faults + 1
+        endPlayback
+        return
+      playBlock = b.value
+    let start = sent % blockBytes
+    let count = if length - sent < 32: length - sent else: 32
+    let s = {data: playBlock, start: start, count: count} sendAudio
+    if s.ok:
+      sent = sent + count
+
+  on volume({clicks: int}) [io]:
+    let att = {clicks: clicks} attenuationFor
+    let v = {attenuation: att} setVolume
+    if not v.ok:
+      faults = faults + 1
+
+fn main() -> int [io]:
+  setupPins
+  setupSpi
+  setupEncoder
+  let card = init
+  if not card.ok:
+    return 1
+  setupButtons
+  var lastClicks = encoderClicks
+  # Until `bind` places the button handlers in the vector table (bare-metal
+  # roadmap 2.2), pending lines are polled and their handlers called here.
+  for true:
+    let lines = EXTI_PR.PR ^int
+    if lines % 2 == 1:
+      onRecordButton
+    if (lines /i 2) % 2 == 1:
+      onPlayButton
+    if (lines /i 4) % 2 == 1:
+      onStopButton
+    let clicks = encoderClicks
+    if clicks != lastClicks:
+      Recorder send volume {clicks: clicks}
+      lastClicks = clicks
+    Recorder send tick {}
+  return 0

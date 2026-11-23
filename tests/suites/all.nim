@@ -15,15 +15,19 @@ import bare_variant
 import cli_smoke
 import complexity
 import containers_bench
+import crash_decode
 import cross_module
 import d_backend
 import decision_tables
 import declarations
+import device_programs
 import diagnostics
 import doc_snippets
 import duplicates
 import effect_fix
 import end_to_end
+import error_policy
+import event_registry
 import examples
 import extern_impl
 import fn_size
@@ -38,6 +42,7 @@ import interface_seq
 import interface_wrap
 import interfaces
 import invariants
+import isr_discipline
 import known_bugs
 import loop_var_type
 import mailbox_full
@@ -45,6 +50,7 @@ import mangle
 import member_names
 import memory
 import memory_rules
+import metal_runtime
 import numeric_cast
 import object_composition
 import odin_backend
@@ -59,6 +65,8 @@ import recursive_types
 import resources
 import resources_rt
 import roadmap
+import sim_host
+import sim_tick
 import slabs
 import ssa
 import ssa_golden
@@ -67,8 +75,10 @@ import std_text
 import stdlib_layers
 import stdlib_project
 import stdlib_surface
+import svd_import
 import syntax_ceilings
 import task_select
+import timing_report
 import typecheck
 import uninit
 import validate
@@ -92,15 +102,19 @@ let registry: seq[Entry] = @[
   ("cli_smoke",           SuiteProc(cli_smoke.run),           false),
   ("complexity",          SuiteProc(complexity.run),          true),
   ("containers_bench",    SuiteProc(containers_bench.run),    false),
+  ("crash_decode",        SuiteProc(crash_decode.run),        true),
   ("cross_module",        SuiteProc(cross_module.run),        false),
   ("d_backend",           SuiteProc(d_backend.run),           false),
   ("decision_tables",     SuiteProc(decision_tables.run),     false),
   ("declarations",        SuiteProc(declarations.run),        false),
+  ("device_programs",     SuiteProc(device_programs.run),     false),
   ("diagnostics",         SuiteProc(diagnostics.run),         false),
   ("doc_snippets",        SuiteProc(doc_snippets.run),        false),
   ("duplicates",          SuiteProc(duplicates.run),          true),
   ("effect_fix",          SuiteProc(effect_fix.run),          false),
   ("end_to_end",          SuiteProc(end_to_end.run),          false),
+  ("error_policy",        SuiteProc(error_policy.run),        false),
+  ("event_registry",      SuiteProc(event_registry.run),      false),
   ("examples",            SuiteProc(examples.run),            true),
   ("extern_impl",         SuiteProc(extern_impl.run),         false),
   ("fn_size",             SuiteProc(fn_size.run),             true),
@@ -115,6 +129,7 @@ let registry: seq[Entry] = @[
   ("interface_wrap",      SuiteProc(interface_wrap.run),      true),
   ("interfaces",          SuiteProc(interfaces.run),          true),
   ("invariants",          SuiteProc(invariants.run),          false),
+  ("isr_discipline",      SuiteProc(isr_discipline.run),      true),
   ("known_bugs",          SuiteProc(known_bugs.run),          false),
   ("loop_var_type",       SuiteProc(loop_var_type.run),       false),
   ("mailbox_full",        SuiteProc(mailbox_full.run),        false),
@@ -122,6 +137,7 @@ let registry: seq[Entry] = @[
   ("member_names",        SuiteProc(member_names.run),        true),
   ("memory",              SuiteProc(memory.run),              false),
   ("memory_rules",        SuiteProc(memory_rules.run),        false),
+  ("metal_runtime",       SuiteProc(metal_runtime.run),       false),
   ("numeric_cast",        SuiteProc(numeric_cast.run),        false),
   ("object_composition",  SuiteProc(object_composition.run),  false),
   ("odin_backend",        SuiteProc(odin_backend.run),        false),
@@ -136,6 +152,8 @@ let registry: seq[Entry] = @[
   ("resources",           SuiteProc(resources.run),           false),
   ("resources_rt",        SuiteProc(resources_rt.run),        false),
   ("roadmap",             SuiteProc(roadmap.run),             false),
+  ("sim_host",            SuiteProc(sim_host.run),            false),
+  ("sim_tick",            SuiteProc(sim_tick.run),            false),
   ("slabs",               SuiteProc(slabs.run),               false),
   ("ssa",                 SuiteProc(ssa.run),                 false),
   ("ssa_golden",          SuiteProc(ssa_golden.run),          false),
@@ -144,8 +162,10 @@ let registry: seq[Entry] = @[
   ("stdlib_layers",       SuiteProc(stdlib_layers.run),       false),
   ("stdlib_project",      SuiteProc(stdlib_project.run),      false),
   ("stdlib_surface",      SuiteProc(stdlib_surface.run),      false),
+  ("svd_import",          SuiteProc(svd_import.run),          false),
   ("syntax_ceilings",     SuiteProc(syntax_ceilings.run),     true),
   ("task_select",         SuiteProc(task_select.run),         false),
+  ("timing_report",       SuiteProc(timing_report.run),       true),
   ("typecheck",           SuiteProc(typecheck.run),           true),
   ("uninit",              SuiteProc(uninit.run),              false),
   ("validate",            SuiteProc(validate.run),            false),

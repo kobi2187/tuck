@@ -23,7 +23,7 @@ import tables, sets, strutils
 import ast, ast_ops, ast_query, modules, typecheck_util, diagnostics, semantics
 
 const Nominal = {dkType, dkObject, dkFnSig, dkGroup, dkInterface, dkActor,
-                 dkMixin, dkPool, dkSlab, dkArena, dkRegister, dkRegistry}
+                 dkMixin, dkPool, dkSlab, dkArena, dkRegister}
   ## The declarations that NAME A TYPE and are told apart by this pass: a
   ## record or sum (`type`), an object, a named signature (`fnsig`) and a
   ## `group` (named where a type parameter is bounded). It knew `type` only,
@@ -34,7 +34,9 @@ const Nominal = {dkType, dkObject, dkFnSig, dkGroup, dkInterface, dkActor,
   ## contract, so a value of b's was checked against a's (audit M2, M9, M8).
   ## Two `actor Logger` were refused outright, with nothing to write instead,
   ## and so were two modules' private `mixin Tag` or `pool Nodes` — each a
-  ## singleton of its own module (M20).
+  ## singleton of its own module (M20). A `registry` is NOT here: its name is
+  ## unique across the program (ruled 2026-11-22, TK-RG07), so two of one
+  ## name are refused rather than told apart.
 
 type View = object
   ## What a bare type name means in one module.

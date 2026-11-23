@@ -1,0 +1,24 @@
+# The ISR slot never overwrites a value the task has not taken: a second post
+# to a full slot is dropped and counted, so a lost interrupt is visible.
+extern [impl: nim "./host_sim/isr_shim", odin "./host_sim", d "./host_sim/isr_shim"]:
+  fn isrPost({slot: int, value: int}) -> void [irq_safe, no_alloc]
+  fn isrTake({slot: int}) -> int [irq_safe, no_alloc]
+  fn isrOverruns({slot: int}) -> int [irq_safe, no_alloc]
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+fn burst() [irq, irq_safe, no_alloc]:
+  {slot: 1, value: 7} isrPost
+  {slot: 1, value: 9} isrPost
+  return
+
+fn main() -> int:
+  {} burst
+  let first = {slot: 1} isrTake
+  let lost = {slot: 1} isrOverruns
+  let empty = {slot: 1} isrTake
+  if first == 7 and lost == 1 and empty == 0:
+    {text: "OVERRUN_OK\n"} say
+    return 0
+  {text: "OVERRUN_BAD\n"} say
+  return 1

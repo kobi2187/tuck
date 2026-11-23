@@ -16,6 +16,8 @@ import text
 import convert
 import chrono
 
+errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
+
 type Cron:
   minutes: Seq[bool]
   hours: Seq[bool]

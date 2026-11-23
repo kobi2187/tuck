@@ -5,13 +5,26 @@
 # typecheck, over raw pre-lowering AST shapes — never during expression
 # synthesis, so it has no dependency on synthesizeKind's recursive dispatch.
 import ast, tables, sets, sequtils, strutils
-import ast_query
+import ast_query, ast_ops
 import typecheck_util
 
 type RegistryEvents* = tuple[regs: Table[string, Decl],
                             variants: Table[string, VariantDef]]
   ## Every registry in the program by name, and every event (variant) by
   ## `Registry.Event` name — what the raiser/handler pairing checks against.
+
+proc isRaiseOf(e: Expr): string =
+  ## The registry `e` raises on, when `e` is `Event(Registry.raise)` (how
+  ## `Registry.raise Event` parses), else "".
+  if e == nil or e.kind != exkCall or e.callee == nil or
+     e.callee.kind != exkVar or e.args.len != 1 or e.args[0] == nil or
+     e.args[0].kind != exkField:
+    return ""
+  let f = e.args[0]
+  if f.fieldName == "raise" and f.receiver != nil and
+     f.receiver.kind == exkRegistryRef:
+    return f.receiver.refName
+  ""
 
 proc raisedEventsIn*(e: Expr, into: var seq[tuple[reg, ev: string, sp: Span,
                                                   payload: Expr]]) =
@@ -28,21 +41,25 @@ proc raisedEventsIn*(e: Expr, into: var seq[tuple[reg, ev: string, sp: Span,
   ## `send` payload, a select arm or either side of a binary was not found,
   ## and an unfound raise is an UNCHECKED one.
   ##
-  ## KNOWN GAP, not this proc's: checkRaiseSites feeds it from `allFns`, which
-  ## yields dkFn only — so a raise in a TASK body is never scanned no matter
-  ## how thorough the walk is. Verified 2026-08-14: a typo'd event inside an
-  ## `on select` arm of a task passes `tuck ch` clean. Fixing it means
-  ## widening allFns (ast_query.nim:152), whose own comment already warns that
-  ## per-site kind lists are how dkActor came to be silently skipped.
+  ## checkRaiseSites feeds it every expression every declaration owns
+  ## (allDecls + ownExprs), so a raise in a task body or a select arm is
+  ## checked too; until 2026-11-22 it fed it `allFns`, and a typo'd event in
+  ## a task's `on select` arm passed `tuck ch` clean.
   if e == nil: return
   if e.kind == exkCall and e.callee != nil and e.callee.kind == exkCall and
-     e.callee.callee != nil and e.callee.callee.kind == exkVar and
-     e.callee.args.len == 1 and e.callee.args[0].kind == exkField:
-    let f = e.callee.args[0]
-    if f.fieldName == "raise" and f.receiver != nil and
-       f.receiver.kind == exkRegistryRef:
-      into.add((f.receiver.refName, e.callee.callee.name, e.span,
-                if e.args.len == 1: e.args[0] else: nil))
+     isRaiseOf(e.callee) != "":
+    # `Registry.raise Event {payload}`: the inner call is the raise without
+    # its payload, so it is recorded here and not walked again below.
+    into.add((isRaiseOf(e.callee), e.callee.callee.name, e.span,
+              if e.args.len == 1: e.args[0] else: nil))
+    for a in e.args: raisedEventsIn(a, into)
+    return
+  if isRaiseOf(e) != "":
+    # `Registry.raise Event`, no payload. Until 2026-11-22 only the payload
+    # shape was matched, so a payload-less raise was in no report and a
+    # typo in one was an unknown-callable error rather than TK-RG01.
+    into.add((isRaiseOf(e), e.callee.name, e.span, nil))
+    return
   for c in e.children: raisedEventsIn(c, into)
 
 proc checkRaisePayload*(key: string, want: seq[FieldDef], payload: Expr,
@@ -70,23 +87,46 @@ proc checkRaisePayload*(key: string, want: seq[FieldDef], payload: Expr,
            (if want.len == 0: "no payload"
             else: want.mapIt(it.name).join(", ")), sp)
 
+proc checkDelivery(key: string, v: VariantDef) =
+  ## A delivery kind's words must fit together (owner ruling 2026-11-22):
+  ## a signal is a count, so it has no payload; only a stream queues, so
+  ## only a stream overflows, and its policy is one of two.
+  if v.delivery == edSignal and v.fields.len > 0:
+    fail(dcRgSignalPayload,
+         "event '" & key & "' is a `[signal]` but carries a payload: repeats " &
+         "merge into a count, so there is no one payload to deliver", v.span)
+  if v.overflow != "" and v.delivery != edStream:
+    fail(dcRgOverflow,
+         "event '" & key & "' names `overflow: " & v.overflow & "` but is " &
+         "not a `[stream]` — only a stream queues, so only a stream overflows",
+         v.span)
+  if v.overflow notin ["", "drop_newest", "drop_oldest"]:
+    fail(dcRgOverflow,
+         "event '" & key & "': no overflow policy '" & v.overflow &
+         "' — write `drop_newest` or `drop_oldest`; an interrupt never waits",
+         v.span)
+
 proc collectRegistries*(mods: seq[tuple[name, path: string, m: Module]]):
                        RegistryEvents =
-  ## RULE 1 — a program declares ONE registry, so the whole event surface
-  ## reads in one place.
-  var firstReg = ""
-  for (_, _, m) in mods:
+  ## RULE 1 (ruled 2026-11-22) — a registry per MODULE, so a driver declares
+  ## the events it raises, and registry names are unique program-wide, so
+  ## `on Registry.Event` reaches exactly one. The whole surface is a report
+  ## (`tuck audit --events`) rather than one declaration.
+  # Name uniqueness (TK-RG07) is resolve_refs' collect, which runs first.
+  for (modName, _, m) in mods:
+    var mine = ""
     for d in m.decls:
-      if d == nil or d.kind != dkRegistry: continue
-      if firstReg != "" and d.name != firstReg:
-        fail(dcRgDuplicate,
-             "registry '" & d.name & "': a program declares ONE registry " &
-             "(spec Part 10) and '" & firstReg & "' is already declared — " &
-             "the point is that the whole event surface reads in one place",
+      if d == nil or d.kind != dkRegistry or isImportedCopy(d): continue
+      if mine != "" and d.name != mine:
+        fail(dcRgPerModule,
+             "registry '" & d.name & "': module '" & modName & "' already " &
+             "declares registry '" & mine & "' — a module declares at most one",
              d.span)
-      firstReg = d.name
+      mine = d.name
       result.regs[d.name] = d
-      for v in d.variants: result.variants[d.name & "." & v.name] = v
+      for v in d.variants:
+        checkDelivery(d.name & "." & v.name, v)
+        result.variants[d.name & "." & v.name] = v
 
 proc collectHandlers*(mods: seq[tuple[name, path: string, m: Module]],
                      ev: RegistryEvents): HashSet[string] =
@@ -137,9 +177,12 @@ proc checkRaiseSites*(mods: seq[tuple[name, path: string, m: Module]],
   ## not come from the handler of that same event (raising is synchronous, so
   ## that is an immediate infinite loop).
   for (_, _, m) in mods:
-    for d in m.allFns():
+    # allDecls + ownExprs, not allFns: a raise in a TASK body, or a select
+    # arm, was never checked (the KNOWN GAP raisedEventsIn's comment names).
+    for d in m.allDecls:
+      if d == nil or isImportedCopy(d): continue
       var raises: seq[tuple[reg, ev: string, sp: Span, payload: Expr]]
-      raisedEventsIn(d.fnBody, raises)
+      for e in d.ownExprs: raisedEventsIn(e, raises)
       for r in raises:
         if r.reg notin ev.regs: continue        # not a registry raise at all
         let key = r.reg & "." & r.ev

@@ -1082,6 +1082,29 @@ that relies on the global handler, so the shortcuts stay findable and can be
 retired one by one. Shipping firmware is expected to build with
 `[policy: strict]`.
 
+**Across modules (ruled 2026-11-22).** The policy states the stage of
+development of the whole program, so it belongs to the **application**, the
+module being checked or built:
+
+- A library that declares `errors [policy: strict]` is **finished**. Its
+  sites are strict whatever the application declares, it may hold no
+  `pending` stub (TK-PO02), and it may import only finished modules
+  (TK-PO03). The application's policy cannot change how it behaves.
+- Every other module is **partial** and follows the application's policy.
+  A partial library's unhandled sites run the application's
+  `on unhandled` and are listed in the application's SHORTCUTS report
+  under the library's name, so nothing a library leaves unhandled is hidden.
+- A partial library's own `continue` / `exit` block applies only when that
+  library is the program (checked or run on its own); imported, it is
+  inert, and the POLICY report says so.
+- In one line: **a site in a finished module is strict; every other site
+  follows the entry module's policy.** A strict application therefore makes
+  every partial library strict too, which is what a release build wants.
+- **Interrupt code is always strict and complete.** A fn reachable from an
+  `[irq]` handler may not leave an error to the policy (its handler would
+  run inside the interrupt) and may not be or call a stub, under any policy
+  (TK-PO04).
+
 The same rules cover `?T` absence. `?T` is a true option type: absence is a
 first-class state (`ok | absent`), not a reserved error code. At runtime all
 three wrappers share one tri-state representation — `ok | err(code) | absent`
@@ -2181,6 +2204,34 @@ platform). v1 supports exactly the shape shown — `TARGET` compared against
 one string literal — not a general compile-time boolean expression; there is
 no `elif`/`else` form.
 
+### 8.4 Bare Metal (experimental)
+
+A program can be built freestanding for a Cortex-M microcontroller
+(`tuck build FILE --board:NAME`, a board under `boards/`) and run under QEMU
+(`tuck sim FILE`; `docs/bare-metal/`). What holds today, each
+pinned by a suite:
+
+- **The profile:** stackless tasks (§9's frames; no mmap, no threads, no
+  reactor), the Nim backend, picolibc for the C runtime. `--frames:static`
+  (§9) is the intended default once spawned tasks get static homes.
+- **`register`** declarations (§8.1) compile to volatile accesses and may be
+  generated from CMSIS-SVD (`tools/svd2tuck/`), across module boundaries.
+- **`critical:`** masks interrupts and restores the state it found on every
+  exit (nesting, `return`, `break`), on all three backends.
+- **`[irq]`** marks an interrupt handler. Code reachable from one may not
+  allocate, send or wait (TK-EF05/07/11), may not leave an error to the
+  `errors` policy or call a stub (TK-PO04, §4.9), and state it shares with
+  normal code is reported by `tuck audit --isr` and refused by
+  `--isr-check:error` (TK-EF10). Binding a handler to a vector is not
+  designed yet: today every `[irq]` fn is called, not taken.
+- **Failures are loud:** a failed runtime check prints `PANIC:` and traps; a
+  fault is decoded to the Tuck line (`tuck decode-crash`, TK-CR01); a run's
+  exit status is `main`'s return value.
+
+Not yet: real interrupts, a timed wait that parks a task (§9: waiting on
+hardware without a reactor is not designed), write-1-to-clear register
+fields, Odin and D on metal. The order is `docs/bare-metal/ROADMAP.md`.
+
 ---
 
 ## Part 9: Concurrency
@@ -2565,8 +2616,11 @@ bare-metal story, and a stackless bare-metal path remains separate future work.
 
 ## Part 10: The Event Registry
 
-One global per application. The entire event surface of the system is declared in
-one place. No dynamic subscriptions, no cascading, no invisible control flow:
+One per module, at most (ruled 2026-11-22: a driver declares the events it
+raises), with names unique across the program. The entire event surface is
+read in one place, `tuck audit FILE --events`: every registry, each event,
+every raiser and handler. No dynamic subscriptions, no cascading, no invisible
+control flow:
 
 ```tuck
 registry AppEvents:
@@ -2601,7 +2655,28 @@ if AppEvents.latest is LowMemory:
   detected as a cycle at compile time
 - `raise` only accepts variants declared in the registry — typos are compile errors
 - The entire event surface is visible by reading two things: the `registry`
-  declaration and the `on AppEvents.X` handlers
+  declarations and the `on AppEvents.X` handlers, listed together by
+  `tuck audit --events`
+- An actor's `on AppEvents.X` receives the event as a message, in the actor's
+  own context; raising never runs actor code on the raiser's stack
+- `AppEvents.latest is X` is false until the first raise
+
+**Delivery from an interrupt** (owner ruling 2026-11-22,
+`docs/bare-metal/DESIGN-interrupt-events.md` §5). An event a driver raises from
+interrupt code states how it travels to its handlers, which run after the
+interrupt returns:
+
+```tuck
+registry UartEvents:
+  | Rx({data: u8})  [stream, overflow: drop_newest]   # every one, queued
+  | Overrun()       [signal]                          # repeats merge into a count
+  | Level({v: u16}) [latest]                          # one slot, overwritten
+```
+
+A `[signal]` carries no payload (TK-RG08); only a `[stream]` names an overflow
+policy, `drop_newest` or `drop_oldest`, because an interrupt never waits
+(TK-RG09); code reachable from an `[irq]` handler may raise only an event with
+a delivery kind (TK-RG10). The queue size is the application's, in `bind`.
 
 At runtime the registry is a small static array of slots, one per variant, holding
 the last payload. `raise` writes the slot and calls all registered handlers in

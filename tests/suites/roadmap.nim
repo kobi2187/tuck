@@ -14,6 +14,7 @@
 ## coverage lives in each feature's own suite; this one answers "is the
 ## roadmap telling the truth" in a single run.
 
+import std/os
 import ../harness
 
 proc doneItems(t: var T) =
@@ -292,10 +293,174 @@ fn main() -> int:
   t.quietly: t.checkSays "§7.4: an acquire never finished is reported", "TK-RS12"
   t.featureDone "§7.4: an acquire never finished is reported"
 
+proc registryItems(t: var T) =
+  ## "## Partial — Event registry" (2026-11-22). The registry is the planned
+  ## home of hardware interrupts on bare metal (docs/bare-metal/
+  ## DESIGN-interrupt-events.md), so what it does today is pinned before it is extended.
+  ## Until this, it had no behavioural assertion at all (LANGUAGE-OVERVIEW §15).
+  t.src """
+import console
+
+registry AppEvents:
+  | Tick({n: int})
+  | Byte({b: u8})
+
+on AppEvents.Tick({n: int}) [io: console]:
+  {text: "tick"} console::printLine
+
+on AppEvents.Byte({b: u8}) [io: console]:
+  {text: "byte"} console::printLine
+
+fn main() -> int [io]:
+  AppEvents.raise Tick {n: 1}
+  AppEvents.raise Byte {b: 7}
+  return 3
+"""
+  t.quietly: t.hostRuns "Part 10: raise runs the handler, on every backend", 3,
+                        "tick\\s+byte"
+  t.featureDone "Part 10: raise runs the handler, on every backend"
+
+  # Spec Part 10: "Multiple handlers for the same event are permitted and
+  # called in declaration order". Run-gated in event_registry.
+  t.src """
+registry AppEvents:
+  | Tick({n: int})
+
+on AppEvents.Tick({n: int}):
+  let a = n
+
+on AppEvents.Tick({n: int}):
+  let b = n
+
+fn main() -> int:
+  AppEvents.raise Tick {n: 1}
+  return 0
+"""
+  t.quietly: t.okCheck "Part 10: two handlers for one event"
+  t.featureDone "Part 10: two handlers for one event"
+
+  # Spec Part 10, Query: `AppEvents.latest is LowMemory`. Run-gated in
+  # event_registry.
+  t.src """
+registry AppEvents:
+  | Tick({n: int})
+
+on AppEvents.Tick({n: int}):
+  let a = n
+
+fn main() -> int:
+  AppEvents.raise Tick {n: 1}
+  if AppEvents.latest is Tick:
+    return 1
+  return 0
+"""
+  t.quietly: t.okCheck "Part 10: latest queries the last raised event"
+  t.featureDone "Part 10: latest queries the last raised event"
+
+  # Spec Part 10: a handler lives "in a manager or actor". Run-gated in
+  # event_registry.
+  t.src """
+registry AppEvents:
+  | Tick({n: int})
+
+actor Counter [queue: 8]:
+  total: int = 0
+  on AppEvents.Tick({n: int}):
+    total += n
+
+fn main() -> int:
+  AppEvents.raise Tick {n: 2}
+  return 0
+"""
+  t.quietly: t.okCheck "Part 10: an actor handles a registry event"
+  t.featureDone "Part 10: an actor handles a registry event"
+
+proc metalItems(t: var T) =
+  ## docs/bare-metal/ROADMAP.md "Where it stands" and Phase 1, pinned where a
+  ## check or an emit can say it without QEMU (the QEMU half is in
+  ## metal_runtime, sim_tick and crash_decode). Items whose spelling waits on
+  ## the owner's design round (interrupt binding, w1c fields, priorities)
+  ## have no assertion yet: there is nothing to write until the syntax is.
+
+  # "`critical:` saves/restores PRIMASK and restores on every exit".
+  t.src """
+register FLAG at 0x20000100:
+  VALUE: bits 0..7 [read, write]
+
+fn early({x: int}) -> int:
+  critical:
+    if x > 0:
+      return 1
+    FLAG.VALUE = 3
+  return 0
+
+fn main() -> int:
+  return {x: 1} early
+"""
+  t.quietly: t.emits "Bare metal: critical: restores the mask on every exit",
+                     "finally:\\s+tuckCriticalExit\\(tuckCs"
+  t.featureDone "Bare metal: critical: restores the mask on every exit"
+  t.quietly: t.emits "Bare metal: a register field write is volatile",
+                     "tuckVolatileStore"
+  t.featureDone "Bare metal: a register field write is volatile"
+
+  # "interrupt code is strict and complete under any policy" (TK-PO04).
+  t.src """
+fn helper({n: int}) -> int [irq_safe, no_alloc]:
+  ...
+
+fn isr() [irq, irq_safe, no_alloc]:
+  let x = {n: 1} helper
+  return
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "Bare metal: interrupt code may not reach a stub",
+                        "TK-PO04"
+  t.featureDone "Bare metal: interrupt code may not reach a stub"
+
+  # "TK-EF11 (no I/O, waits or allocation inside critical:)".
+  t.src """
+extern [impl: nim "./host_sim/hal_shim", odin "./host_sim", d "./host_sim/hal_shim"]:
+  fn say({text: str}) -> void [io]
+
+fn main() -> int [io]:
+  critical:
+    {text: "hi"} say
+  return 0
+"""
+  t.quietly: t.badCheck "Bare metal: no I/O inside critical:", "TK-EF11"
+  t.featureDone "Bare metal: no I/O inside critical:"
+
+  # Roadmap 1.3: "stage10 compiles with no annotation (two spawn sites,
+  # count inferred)" under --frames:static. Refused today: each fire-and-
+  # forget spawn's frame comes from the heap.
+  t.src """
+task worker({id: int}) -> void [io]:
+  return
+
+fn main() -> int [io]:
+  {id: 1} worker
+  {id: 2} worker
+  return 0
+"""
+  let name13 = "Bare metal 1.3: two spawn sites build under --frames:static"
+  let idx = t.needCmd(@["./tuck", "c", t.curDir / "t.tuck", "--frames:static",
+                        "--concurrency:stackless", "-o:" & t.curDir,
+                        "--root:" & t.root], vEmit)
+  t.quietly:
+    if t.phase != pCollect:
+      let (rc, text) = t.resultOf(idx)
+      if rc == 0: t.ok name13 else: t.no name13, text
+  t.featureMissing name13
+
 proc run*(t: var T) =
   ## Registers every ROADMAP claim as an assertion of the built behaviour,
   ## marked `featureDone` (a guard) or `featureMissing` (expected to fail).
   t.doneItems()
   t.crossModuleItems()
   t.missingItems()
+  t.registryItems()
+  t.metalItems()
   t.finish()

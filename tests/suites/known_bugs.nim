@@ -5414,7 +5414,7 @@ fn main() -> int:
   t.quietly: t.badCheck "A116: an int is not an i64 argument without a conversion", "\\^i64|i64"
   t.bugOpen "A116: an int is not an i64 argument without a conversion"
 
-  # A119 (audit E7): a fn named `main` in ANY module got the entry's all-effects
+  # A178 (audit E7): a fn named `main` in ANY module got the entry's all-effects
   # budget, so `lib::main` could print through a caller that declared nothing.
   # Only the entry module's top-level `main` has that budget, and the pipeline
   # asserts it was granted exactly once (assertMainBudgetOnce).
@@ -5432,10 +5432,10 @@ fn main() -> int:
   {text: "lib main io"} printLine
   return 1
 """)
-  t.quietly: t.badCheck "A119: only the entry module's main has the full effect budget", "TK-EF01"
-  t.bugFixed "A119: only the entry module's main has the full effect budget"
+  t.quietly: t.badCheck "A178: only the entry module's main has the full effect budget", "TK-EF01"
+  t.bugFixed "A178: only the entry module's main has the full effect budget"
 
-  # A120 (audit T6): a match over an int or str with no catch-all was accepted;
+  # A179 (audit T6): a match over an int or str with no catch-all was accepted;
   # a value outside the arms had no arm (Nim refused the build, Odin took the
   # last arm, D threw). Open domains end in `_`.
   t.src """
@@ -5448,10 +5448,10 @@ fn pick({n: int}) -> int:
 fn main() -> int:
   return {n: 1} pick
 """
-  t.quietly: t.badCheck "A120: a match over an int needs a catch-all", "catch-all"
-  t.bugFixed "A120: a match over an int needs a catch-all"
+  t.quietly: t.badCheck "A179: a match over an int needs a catch-all", "catch-all"
+  t.bugFixed "A179: a match over an int needs a catch-all"
 
-  # A121 (audit T7): a match on a result/optional discarded the error silently
+  # A180 (audit T7): a match on a result/optional discarded the error silently
   # while `discard r` was refused. Test `.ok` or `match r.err`.
   t.src """
 fn mi({n: int}) -> int?:
@@ -5465,10 +5465,10 @@ fn main() -> int:
     | _ -> return 1
   return 0
 """
-  t.quietly: t.badCheck "A121: a match cannot take a result or optional as its subject", "cannot take a result or optional"
-  t.bugFixed "A121: a match cannot take a result or optional as its subject"
+  t.quietly: t.badCheck "A180: a match cannot take a result or optional as its subject", "cannot take a result or optional"
+  t.bugFixed "A180: a match cannot take a result or optional as its subject"
 
-  # A122 (audit T8a): `Door.Locked` was refused for a sealed type, but the bare
+  # A181 (audit T8a): `Door.Locked` was refused for a sealed type, but the bare
   # spelling `Locked` reached the same value unchecked.
   t.src """
 type Door [sealed]:
@@ -5488,8 +5488,8 @@ fn main() -> int:
   let d = mk
   return 0
 """
-  t.quietly: t.badCheck "A122: a bare variant of a sealed type is not constructible directly", "Sealed Error"
-  t.bugFixed "A122: a bare variant of a sealed type is not constructible directly"
+  t.quietly: t.badCheck "A181: a bare variant of a sealed type is not constructible directly", "Sealed Error"
+  t.bugFixed "A181: a bare variant of a sealed type is not constructible directly"
 
   # A123 (audit E3a): an interface member could allocate under a
   # `[pure, no_alloc]` contract. A capability (`io`) is a permission an
@@ -5802,7 +5802,7 @@ task slow() -> {v: int} [io]:
 
   # A135 (audit E6): `[pure]` held calls only, so a pure fn could send to an
   # actor, read another thread's actor fields, or take from a pool; and an
-  # `[irq_safe]` fn could block in `waitUntil`. TK-EF10 holds the constructs.
+  # `[irq_safe]` fn could block in `waitUntil`. TK-EF12 holds the constructs.
   for (name, body) in [("sending", "Worker send job {n: 1}\n  return 0"),
                        ("reading an actor's field", "return Worker.processed"),
                        ("taking from a pool", "let h = Readings.acquire\n  if not h.ok:\n    return 0\n  Readings.release {h: h.value}\n  return 1")]:
@@ -5823,7 +5823,7 @@ fn p() -> int [pure]:
 fn main() -> int:
   return {} p
 """
-    t.quietly: t.badCheck "A135: a [pure] fn may not touch shared state: " & name, "TK-EF10"
+    t.quietly: t.badCheck "A135: a [pure] fn may not touch shared state: " & name, "TK-EF12"
     t.bugFixed "A135: a [pure] fn may not touch shared state: " & name
   t.src """
 actor Worker [queue: 4]:
@@ -5840,7 +5840,7 @@ fn isr() -> void [irq_safe, no_alloc]:
 fn main() -> int:
   return 0
 """
-  t.quietly: t.badCheck "A135: an [irq_safe] fn may not wait on an actor", "TK-EF10"
+  t.quietly: t.badCheck "A135: an [irq_safe] fn may not wait on an actor", "TK-EF12"
   t.bugFixed "A135: an [irq_safe] fn may not wait on an actor"
 
   # A136 (audit E9): a `pending:` member of an object is a contract to come;
@@ -7988,5 +7988,201 @@ fn main() -> int:
   return 0
 """
   t.okCheck "A177: ...and a const that fits, or divides by non-zero, is not"
+
+  # A117 (found building alloc.lru): inside a generic fn, a value of type `V` going
+  # into a `V?` field of a generic construction was not wrapped as present, so
+  # no backend could print it (Nim: "got 'int' for ... expected TuckResult[int]").
+  # A named type parameter reads as "flexible" to the checker, which skipped the
+  # wrap; it is matched by name now.
+  t.src """
+type Box[V]:
+  tag: int
+  found: V?
+
+fn wrap[V]({x: V}) -> Box[V]:
+  return {tag: 1, found: x} Box
+
+fn main() -> int:
+  let b = {x: 5} wrap
+  if not b.found.ok:
+    return 1
+  if b.found.value != 5:
+    return 2
+  return 0
+"""
+  t.quietly: t.runs "A117: a V into a V? field of a generic construction is present", 0
+  t.bugFixed "A117: a V into a V? field of a generic construction is present"
+  t.quietly: t.runsOdin "A117: a V into a V? field of a generic construction is present on Odin", 0
+  t.bugFixed "A117: a V into a V? field of a generic construction is present on Odin"
+
+  # A118 (found building alloc.lru): on D, a generic fn whose parameter is another
+  # module's generic type (`fn f[V]({c: Cell[V]})`) could not be called: dmd and ldc
+  # fail to deduce V through a renamed-import qualifier (`mod.Cell!(V)`), reporting
+  # "undefined identifier V". Another module's template is applied through a
+  # file-level alias now, which deduces.
+  t.src """
+import cell
+
+type Wrap[V]:
+  c: Cell[V]
+  n: int
+
+fn wrapIt[V]({c: Cell[V], n: int}) -> Wrap[V]:
+  return {c: c, n: n} Wrap
+
+fn main() -> int:
+  let c: Cell[int] = {v: 4} Cell
+  let w = {c: c, n: 2} wrapIt
+  return w.n + w.c.v
+"""
+  t.addFile "cell.tuck", """
+type Cell[T]:
+  v: T
+"""
+  t.quietly: t.emitsD "", "alias \\S+ = \\S+Cell;"
+  t.bugFixed "A118: another module's generic type is deducible on D"
+
+  # A119-A122 were found writing the device programs (tests/metal/devices,
+  # docs/bare-metal/PROGRAMS-2026-11-22.md).
+
+  # A119: a bare record literal inside a list returned as Seq[T] passes the
+  # checker and then fails the Nim build (an anonymous tuple where a seq of T
+  # is expected). The same class as A49, so the same ruling applies: the
+  # constructor is written out, and the checker says so (TK-TY45).
+  t.src """
+type P:
+  a: int
+
+fn ps() -> Seq[P]:
+  return [{a: 1}, {a: 2}]
+
+fn main() -> int:
+  return ps.len
+"""
+  t.quietly: t.badCheck "", "TK-TY45"
+  t.bugOpen "A119: a bare record literal in a returned list is refused (TK-TY45)"
+
+  # A120: stating a local's type loses its variant, so a sealed transition
+  # out of it is refused: `var m = M.Idle` then `m = {n: 1} M.Run` inside the
+  # `Idle:` arm checks, but `var m: M = M.Idle` does not.
+  t.src """
+type M [sealed]:
+  | Idle
+  | Run({n: int})
+  transitions:
+    Idle -> Run
+    Run -> Idle
+
+fn main() -> int:
+  var m: M = M.Idle
+  match m:
+    Idle:
+      m = {n: 1} M.Run
+    Run: return 1
+  return 0
+"""
+  t.quietly: t.okCheck ""
+  t.bugOpen "A120: a typed local keeps its variant for a sealed transition"
+
+  # A121: a match whose arms are a void call and a `return` was refused as
+  # "void vs unit"; `if` already treated both as statements (#148).
+  t.src """
+type K:
+  | A
+  | B
+
+fn hello():
+  let z = 1
+
+fn h({k: K}):
+  match k:
+    A: hello
+    B: return
+
+fn main() -> int:
+  {k: K.A} h
+  return 3
+"""
+  t.quietly: t.hostRuns("", 3)
+  t.bugFixed "A121: a void-call arm and a return arm agree"
+
+  # A122: an empty list in a `with` update is refused for having no element
+  # type (TK-TY20), though the field it replaces gives it one. The same list
+  # in a constructor (`{values: [], n: 0} Fed`) checks.
+  t.src """
+type Fed:
+  values: Seq[int]
+  n: int
+
+fn reset({f: Fed}) -> Fed:
+  return f with {values: [], n: 0}
+
+fn main() -> int:
+  let f = {values: [1, 2], n: 4} Fed
+  let g = {f: f} reset
+  return g.values.len + 5
+"""
+  t.quietly: t.hostRuns("", 5)
+  t.bugOpen "A122: an empty list in a `with` update takes the field's type"
+
+  # A182 (the audit meets the 2026-11-22 registry rulings). A synchronous
+  # raise runs its handlers here, so the raiser declares their effects (E5,
+  # confirmed 2026-11-23) — but only the handlers its own module can see: a
+  # driver's importers handle its events, and it cannot answer for them. An
+  # event with a delivery kind only queues, so it carries nothing, and
+  # interrupt code raises exactly those.
+  t.src """
+import console
+
+registry Ev:
+  | Ping()
+
+on Ev.Ping() [io: console]:
+  {text: "ping"} console::printLine
+
+fn poke():
+  Ev.raise Ping
+
+fn main() -> int [io]:
+  poke
+  return 0
+"""
+  t.quietly: t.badCheck "A182: a raise declares what its own module's handlers do", "TK-EF01"
+  t.bugFixed "A182: a raise declares what its own module's handlers do"
+  t.src """
+import console
+import drv
+
+on DrvEvents.Rx({b: int}) [io: console]:
+  {text: "app"} console::printLine
+
+fn main() -> int [io]:
+  poke
+  return 0
+"""
+  t.addFile "drv.tuck", """
+registry DrvEvents:
+  | Rx({b: int})
+
+fn poke():
+  DrvEvents.raise Rx {b: 7}
+"""
+  t.okCheck "A182: ...but not what an importer's handlers do"
+  t.src """
+import console
+
+registry Ev:
+  | Tick() [signal]
+
+on Ev.Tick() [io: console]:
+  {text: "tick"} console::printLine
+
+fn onTimer() [irq_safe, no_alloc]:
+  Ev.raise Tick
+
+fn main() -> int [io]:
+  return 0
+"""
+  t.okCheck "A182: ...and a queued event carries nothing, even from interrupt code"
 
   t.finish()
