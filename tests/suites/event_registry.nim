@@ -66,7 +66,10 @@ registry DrvEvents:
 on DrvEvents.Rx({b: int}) [io: console]:
   {text: "lib"} console::printLine
 
-fn poke():
+# A synchronous raise runs its handlers here, so it declares what they do
+# (audit E5, ruled 2026-11-23) — the ones this module can see; its
+# importers' handlers are theirs to answer for.
+fn poke() [io: console]:
   DrvEvents.raise Rx {b: 7}
 """
   t.hostRuns "handlers in two modules all run, the declaring module's first",
@@ -371,10 +374,59 @@ fn main() -> int:
   t.badCheck "a sum type's variant takes no delivery bracket",
              "a sum type's variants take none"
 
+const BindBase = """
+registry Ev:
+  | Tick({n: int})  [stream, overflow: drop_newest]
+
+on Ev.Tick({n: int}):
+  let a = n
+
+fn onLine() [irq, irq_safe, no_alloc]:
+  Ev.raise Tick {n: 1}
+
+fn notIrq():
+  let z = 1
+
+bind EXTI0 -> onLine [priority: 2, queue: 4]
+
+fn main() -> int:
+  return 0
+"""
+
+proc binds(t: var T) =
+  ## `bind LINE -> module.fn [priority: N, queue: N]` (ruled 2026-11-22,
+  ## built 2026-11-23): the application wires a line to a driver's `[irq]`
+  ## fn. On a board build the fn becomes the line's vector entry; a
+  ## kinded event's raise posts, and the handlers run from a delivery frame.
+  t.src BindBase
+  t.okCheck "a bind wires a line to an [irq] fn"
+  t.emits "the bound fn is the line's vector symbol",
+          "exportc: \"tuck_irq_EXTI0\""
+  t.emits "on metal a [stream] raise posts and wakes the delivery frame",
+          "when defined\\(freestanding\\):[\\s\\S]*tuckDeliveryPost"
+  t.emits "the stream is sized by the bind's queue", "array\\[4, tuple\\[n: int\\]\\]"
+
+  t.src BindBase.replace("bind EXTI0 -> onLine", "bind EXTI0 -> notIrq")
+  t.badCheck "a bind names an [irq] fn", "TK-BD01.*'notIrq' is not declared `\\[irq\\]`"
+
+  t.src BindBase & "\nbind EXTI0 -> onLine\n"
+  t.badCheck "a line is bound once", "TK-BD02.*line EXTI0 is already bound"
+
+  t.src BindBase & "\nbind EXTI1 -> onLine\n"
+  t.badCheck "an [irq] fn is bound once (channels are not built)",
+             "TK-BD03.*'onLine' is already bound to EXTI0"
+
+  t.src BindBase.replace("bind EXTI0 -> onLine", "bind EXTI0 -> onLine as Console")
+  t.badCheck "`as Name` is refused until channels are built", "TK-BD04"
+
+  t.src BindBase.replace("queue: 4", "queue: 0")
+  t.badCheck "a queue holds at least one message", "TK-BD05"
+
 proc run*(t: var T) =
   t.multipleHandlers()
   t.latestQuery()
   t.actorHandlers()
   t.registryPerModule()
   t.deliveryKinds()
+  t.binds()
   t.finish()

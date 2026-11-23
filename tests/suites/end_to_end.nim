@@ -73,7 +73,7 @@ fn main() -> int:
   t.emits "an invariant check survives -d:release (tuckNoInvariants, not release)",
           r"when not defined\(tuckNoInvariants\):"
   t.emits "...and calls tuckInvariantFailed, not Nim's own release-stripped assert",
-          r"tuckInvariantFailed\(""\(self\.celsius"
+          r"tuckInvariantFailed\(""celsius"
 
   # The AST serializer has to survive every one of those node kinds. A decision
   # table is a dkFn carrying isDecision, not a kind of its own — checking the

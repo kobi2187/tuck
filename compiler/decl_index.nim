@@ -16,7 +16,7 @@
 # over an index in its own ctx, D had this one, and Odin scanned — three
 # answers to the same questions. Each backend now reaches this index through
 # its ctx's `index` accessor, and asks it by the same names `ast_query`
-# answers by scanning (`hasInvariants`, `isTaskName`, ...): the index is a
+# answers by scanning (`hasInvariants`, `isRecordType`, ...): the index is a
 # cache of those answers, not a second definition of them.
 import tables, sets
 import ast, ast_query
@@ -27,7 +27,6 @@ type DeclIndex* = object
   ## instead of scanning the decl list each time.
   recordNames: HashSet[string]   ## records AND objects — both construct with
                                  ## named fields, so both answer isRecordType
-  taskNames: HashSet[string]
   invariantTypes: HashSet[string]
   saturating: Table[string, Type]
   externInvRets: Table[string, string]  ## extern fn -> invariant return type
@@ -62,9 +61,8 @@ proc buildDeclIndex*(m: Module): DeclIndex =
       if declHasInvariants(d): result.invariantTypes.incl(d.name)
       let sat = declSaturatingType(d)
       if sat != nil: result.saturating[d.name] = sat
-    of dkTask: result.taskNames.incl(d.name)
-    of dkFn, dkActor, dkMixin, dkExtern, dkPending, dkPool, dkSlab, dkArena, dkFnSig, dkRegistry,
-       dkRegister, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
+    of dkFn, dkTask, dkActor, dkMixin, dkExtern, dkPending, dkPool, dkSlab, dkArena, dkFnSig, dkRegistry,
+       dkRegister, dkBind, dkExpr, dkConst, dkStaticAssert, dkErrors, dkImport,
        dkSelect, dkSatisfies, dkInterface, dkGroup, dkWhen,
        dkPublic, dkResources: discard
   result.indexExterns(m)
@@ -77,10 +75,6 @@ proc isRecordType*(idx: DeclIndex, name: string): bool =
   ## Does `name` construct with named fields — a record type or an object?
   ## The O(1) twin of `ast_query.isRecordType`.
   name in idx.recordNames
-
-proc isTaskName*(idx: DeclIndex, name: string): bool =
-  ## Is `name` a declared task? Calls to a task emit as spawns, not calls.
-  name in idx.taskNames
 
 proc hasInvariants*(idx: DeclIndex, name: string): bool =
   ## Does the type `name` declare invariants, so a value of it must be

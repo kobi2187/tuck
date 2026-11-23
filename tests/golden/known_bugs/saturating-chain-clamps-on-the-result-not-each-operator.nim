@@ -17,7 +17,7 @@ proc tuckˑfnˑmain*(): int =
   var tuckˑvˑa = tuckˑtypeˑSafeRPM(tuckSat[uint16](uint64(60000)))
   var tuckˑvˑb = tuckˑtypeˑSafeRPM(tuckSat[uint16](uint64(60000)))
   var tuckˑvˑc = tuckˑtypeˑSafeRPM(tuckSat[uint16](uint64(60000)))
-  var tuckˑvˑr = ((tuckˑvˑa + tuckˑvˑb) - tuckˑvˑc)
+  var tuckˑvˑr = tuckˑtypeˑSafeRPM(tuckSatI[uint16](tuckArith(tuckArith(int64(tuckˑvˑa), int64(tuckˑvˑb), ovAdd, ovSat, "i64"), int64(tuckˑvˑc), ovSub, ovSat, "i64")))
   if (tuckˑvˑr == tuckˑtypeˑSafeRPM(tuckSat[uint16](uint64(60000)))):
     if true:
       return 1

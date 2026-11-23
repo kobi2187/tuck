@@ -545,14 +545,14 @@ proc parseSatisfyTargets*(p: var Parser,
 
 const TopLevelKeywords = "fn, type, object, actor, task, interface, group, " &
   "mixin, fnsig, registry, decision, pending, distinct, const, import, " &
-  "extern, errors, resources, register, pool, slab, arena, satisfies, " &
+  "extern, errors, resources, register, bind, pool, slab, arena, satisfies, " &
   "static_assert, when, and `on Registry.Event` for a registry handler"
   ## Everything parseDecl accepts to OPEN a declaration — the tokenized
   ## keywords plus the contextual ones recognised in parser.nim's
   ## contextualDecl.
 
 const ContextualOpeners = ["extern", "errors", "resources", "register",
-                           "pool", "slab", "arena", "satisfies"]
+                           "pool", "slab", "arena", "satisfies", "bind"]
   ## Declaration openers the lexer does not tokenize — recognised by NAME in
   ## parser.nim's contextualDecl. Kept beside opensDeclaration below (which
   ## contextualDecl calls first): a new one added to contextualDecl must be
@@ -618,7 +618,8 @@ proc parseDistinctDecl*(p: var Parser, sp: Span): Decl =
 
 proc parseBindingAttr(p: var Parser, tail: var SignatureTail, name: string): bool =
   ## The valued attributes that name something rather than mark an effect:
-  ## `emit:`, `resource:`, `keeps:`, `view:`. False when `name` is not one.
+  ## `emit:`, `resource:`, `keeps:`, `view:`, `writes:`. False when `name`
+  ## is not one.
   case name
   of "emit":
     discard p.expect(tkColon)
@@ -635,6 +636,10 @@ proc parseBindingAttr(p: var Parser, tail: var SignatureTail, name: string): boo
     discard p.expect(tkColon)
     tail.view = p.expectName(
       "Expected the parameter an extern's result is a view into after 'view:'").value
+  of "writes":
+    discard p.expect(tkColon)
+    tail.writes.add(p.expectName(
+      "Expected the parameter an extern changes in place after 'writes:'").value)
   else: return false
   true
 
@@ -756,10 +761,14 @@ proc parseFnSigDecl*(p: var Parser, sp: Span): Decl =
     p.reportError("fnsig params must be a `{name: type, ...}` record")
   discard p.expect(tkArrow)
   let ret = p.parseType()
+  # `[io]`, `[pure]`...: the slot's effect contract, read as a fn's is.
+  var tail: SignatureTail
+  harvestEffects(ret, tail)
+  p.parseEffectList(tail)
   if p.current().kind == tkNewline:
     discard p.advance()
   return Decl(span: sp, kind: dkFnSig, name: name, sigGenerics: generics,
-              sigParams: params, sigReturn: ret)
+              sigParams: params, sigReturn: ret, sigEffects: tail.effects)
 
 proc parseTransitionsBlock*(p: var Parser, transitions: var seq[Transition]) =
   ## A sum type's `transitions:` block: one `From -> To` edge per line.
@@ -928,6 +937,12 @@ proc parseResourceAttrs(p: var Parser, attrs: var seq[TypeAttr]) =
       discard p.advance()
       val = if p.current().kind in {tkIntLit, tkNone}: p.advance().value
             else: p.expectVocabWord("Expected a value after '" & name & ":'").value
+      # `states: a::DbState` — a type two imports declare, named through its
+      # module (M18). Kept as the one string `a::DbState`; type_identity
+      # reads it as a type reference.
+      while p.current().kind == tkColonColon:
+        discard p.advance()
+        val.add "::" & p.expectVocabWord("Expected a name after '::'").value
     attrs.add(TypeAttr(name: name, value: val, span: sp))
     if p.current().kind == tkComma: discard p.advance()
   discard p.expect(tkRBracket)
@@ -1193,6 +1208,43 @@ proc parseRegisterDecl*(p: var Parser, sp: Span): Decl =
   Decl(span: sp, kind: dkRegister, name: name, regAddress: address,
        regFields: fields)
 
+proc parseBindAttrs(p: var Parser, d: Decl) =
+  ## `[priority: N, queue: N]`, both optional, in either order.
+  if p.current().kind != tkLBracket: return
+  discard p.advance()
+  while p.current().kind notin {tkRBracket, tkEOF}:
+    let key = p.advance().value     # `priority` lexes as an attribute word
+    discard p.expect(tkColon)
+    let n = parseInt(p.expect(tkIntLit, "Expected a number").value)
+    case key
+    of "priority": d.bindPriority = n
+    of "queue": d.bindQueue = n
+    else:
+      p.reportError("`" & key & "` is not a bind setting: write " &
+                    "`[priority: N, queue: N]`")
+    if p.current().kind == tkComma: discard p.advance()
+  discard p.expect(tkRBracket)
+
+proc parseBindDecl*(p: var Parser, sp: Span): Decl =
+  ## `bind LINE -> module.fn [as Name] [priority: N, queue: N]`
+  discard p.advance()                  # `bind`
+  let line = p.expect(tkIdent, "Expected the interrupt line's name").value
+  discard p.expect(tkArrow)
+  var first = p.expect(tkIdent, "Expected the `[irq]` fn: `module.fn` or `fn`").value
+  var module = ""
+  if p.current().kind in {tkDot, tkColonColon}:
+    discard p.advance()
+    module = first
+    first = p.expect(tkIdent, "Expected the fn's name after `" & module & ".`").value
+  result = Decl(span: sp, kind: dkBind, name: "bind " & line, bindLine: line,
+                bindModule: module, bindFn: first, bindPriority: -1,
+                bindQueue: -1)
+  if p.current().kind == tkIdent and p.current().value == "as":
+    discard p.advance()
+    result.bindAs = p.expect(tkIdent, "Expected the channel name after `as`").value
+  p.parseBindAttrs(result)
+  if p.current().kind == tkNewline: discard p.advance()
+
 proc parseExternBinding*(p: var Parser): ExternBinding =
   ## The optional `[c, header: "x.h", lib: "z", ...]` bracket after `extern`:
   ## how the block's fns bind. No bracket means runtime-implemented.
@@ -1248,7 +1300,7 @@ proc parseSigFn*(p: var Parser, what: string): Decl =
   let sig = p.parseSignatureTail(retType, strict = false)
   # `[keeps: x]` and `[view: x]` name a parameter: a misspelt one would
   # silently say nothing, so it is refused.
-  for named in sig.keeps & @[sig.view]:
+  for named in sig.keeps & sig.writes & @[sig.view]:
     if named.len > 0 and not params.anyIt(it.name == named):
       p.reportError("'" & named & "' names no parameter of " & name,
                     spDecl.line, spDecl.col)
@@ -1258,7 +1310,7 @@ proc parseSigFn*(p: var Parser, what: string): Decl =
        fnReturnType: retType, fnEffects: sig.effects, fnDepth: sig.depth,
        fnBody: nil, fnErrorTypes: sig.errTypes, externEmit: sig.emit,
        fnResourceKinds: sig.resources, externKeeps: sig.keeps,
-       externView: sig.view)
+       externView: sig.view, externWrites: sig.writes)
 
 proc parseTaskDecl*(p: var Parser, sp: Span): Decl =
   ## task name({params}) -> ret [effects]: body (spec 9.2)

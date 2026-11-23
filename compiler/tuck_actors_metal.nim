@@ -87,11 +87,15 @@ proc tuckCheckWaiters*() = discard
   ## A waiter here is main itself, re-testing between scheduler passes.
 
 proc actorFrameStage(env: pointer): TuckHop {.nimcall.} =
-  ## One pass: drain until empty, then leave the ready list. A send made
-  ## during the pass finds the actor queued and only enqueues.
+  ## One pass: mark the actor un-queued FIRST, then drain until empty. A
+  ## send that lands mid-drain (from a handler, or an interrupt) re-queues
+  ## the frame, so nothing waits for a later send to be noticed; clearing the
+  ## flag after the drain instead would lose a message sent in between.
   let slot = cast[ptr ActorSlot](env)
-  while slot.drain(): discard
+  let saved = tuckCriticalEnter()
   slot.queued = false
+  tuckCriticalExit(saved)
+  while slot.drain(): discard
   tuckNoStep
 
 proc tuckStartActorFrame*(drain: DrainProc): pointer {.discardable.} =
@@ -139,11 +143,61 @@ proc tuckDrainActors*() =
   ## After main: let every actor finish what was sent to it.
   tuckSlRunAll()
 
+# --- event delivery for `bind` (bare-metal roadmap 2.2) ---------------------
+# A `[stream]`, `[signal]` or `[latest]` event raised on metal is posted to its
+# store (a ring, a counter, a slot: emitted beside the registry) and its
+# registry's delivery frame is readied; the frame runs the handlers outside
+# the interrupt, in raise order per event. One frame per registry.
+
+type TuckDelivery* = object
+  frame: TuckFrameHdr     ## first: the scheduler runs this header
+  drain: DrainProc
+  queued: bool
+
+proc deliveryStage(env: pointer): TuckHop {.nimcall.} =
+  let d = cast[ptr TuckDelivery](env)
+  let saved = tuckCriticalEnter()
+  d.queued = false
+  tuckCriticalExit(saved)
+  while d.drain(): discard
+  tuckNoStep
+
+proc tuckDeliveryPost*(d: var TuckDelivery, drain: DrainProc) =
+  ## After a post: ready the registry's delivery frame unless it already is.
+  ## Safe from an interrupt.
+  let saved = tuckCriticalEnter()
+  if not d.queued:
+    d.queued = true
+    d.drain = drain
+    d.frame.stage = deliveryStage
+    tuckSlReady(addr d.frame)
+  tuckCriticalExit(saved)
+
+var tuckBindCount* {.importc: "tuck_bind_count".}: cint
+  ## Lines the program binds (vectors.c, generated per board build).
+
+proc tuckIdle*() =
+  ## Nothing is ready: sleep until an interrupt (WFI). Only meaningful with a
+  ## bound line; without one nothing could ever wake us.
+  {.emit: "__asm volatile(\"wfi\" ::: \"memory\");".}
+
 proc tuckWaitOn*(handle: pointer, pred: proc (): bool {.nimcall.}) =
-  ## `Actor.waitUntil {pred: :p}`: main runs the scheduler until `p` holds. A
-  ## condition still false with nothing left to run never will be: stop loudly
-  ## rather than spin.
+  ## `Actor.waitUntil {pred: :p}`: main runs the scheduler until `p` holds.
+  ## With nothing ready, a program that binds interrupt lines sleeps until
+  ## one fires (WFI); one that binds none can never become ready again, so a
+  ## false condition stops loudly rather than spinning.
   discard handle
   while not pred():
     if not tuckSlRunOne():
-      tuckFatal("waitUntil: nothing left to run and the condition is still false")
+      if tuckBindCount == 0:
+        tuckFatal("waitUntil: nothing left to run and the condition is still false")
+      tuckIdle()
+
+proc runTasksUntil*(pred: proc (): bool {.nimcall.}) =
+  ## std/scheduler's `runTasksUntil` on metal: the event loop. Run whatever
+  ## is ready, sleep (WFI) until an interrupt when nothing is, until `pred`
+  ## holds. A device that runs forever passes a predicate that never holds.
+  tuckWaitOn(nil, pred)
+
+proc stop*() = discard
+  ## Nothing parks on a file descriptor on metal, so there is nothing to stop.

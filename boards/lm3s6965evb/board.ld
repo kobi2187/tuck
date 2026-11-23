@@ -16,7 +16,7 @@ SECTIONS
      .text ends word-aligned: .data's load image starts right after it and
      Reset_Handler copies it in whole words, which trap when unaligned. */
   .text : {
-    KEEP(*(.isr_vector)) *(.text*) *(.rodata*)
+    KEEP(*(.isr_vector)) KEEP(*(.isr_vector_irqs)) *(.text*) *(.rodata*)
     *(.ARM.extab* .gnu.linkonce.armextab.*) *(.ARM.exidx* .gnu.linkonce.armexidx.*)
     . = ALIGN(4);
   } > FLASH

@@ -3,19 +3,13 @@
 # taking one, and the phi has exactly one operand per arm.
 #
 #   - `pick`: phi(acc.1, acc.2, acc.3), and NOT the pre-match acc.0
-#   - `partial` has no wildcard over an int, so the subject block is a
-#     predecessor too and acc.0 is an operand
+#   - a match with no wildcard over an open domain (int, str) is refused by
+#     the checker (audit T6), so there is no fall-past edge to test here: every
+#     checked match is exhaustive, and the join has only the arms
 fn pick({n: int}) -> int:
   var acc = 0
   match n:
     | 0 -> acc = 1
     | 1 -> acc = 2
     | _ -> acc = 3
-  return acc
-
-fn partial({n: int}) -> int:
-  var acc = 0
-  match n:
-    | 0 -> acc = 1
-    | 1 -> acc = 2
   return acc

@@ -96,7 +96,7 @@ __attribute__((used)) static void recordFault(unsigned int *sp) {
    words. The old handler printed R1/R2/R3 as LR/PC/xPSR (stage14's "PC in
    RAM" was really R2). Here SP at entry IS the stacked frame, so recordFault
    can index R0/R1/R2/R3/R12/LR/PC/xPSR at sp[0..7]. */
-__attribute__((naked)) static void defaultHandler(void) {
+__attribute__((naked)) void tuck_default_handler(void) {
   /* EXC_RETURN bit 2 says which stack the exception frame went to: MSP for
      handler/startup code, PSP once anything runs threads on the process
      stack. Reading `sp` alone is right only while nothing uses PSP. */
@@ -107,25 +107,35 @@ __attribute__((naked)) static void defaultHandler(void) {
                  "b recordFault\n");
 }
 
+/* SysTick is a core exception, not an NVIC line, so its vector is here; a
+   `bind SysTick -> fn` defines the strong symbol, as for any line. */
+__attribute__((weak, naked)) void tuck_irq_SysTick(void) {
+  __asm volatile("b tuck_default_handler");
+}
+
 /* --- vector table ------------------------------------------------------- */
+/* The 16 core vectors. The interrupt lines follow them in `.isr_vector_irqs`,
+   which `tuck build --board` generates from boards/<board>/interrupts.conf:
+   one weak `tuck_irq_<LINE>` per line, aliased to tuck_default_handler, and
+   the strong one wherever the program `bind`s the line. */
 __attribute__((section(".isr_vector"), used))
 const unsigned int vectors[] = {
   (unsigned int)&_estack,     /* 0:  initial stack pointer: top of RAM */
   ((unsigned int)Reset_Handler + 1), /* 1: reset */
-  ((unsigned int)defaultHandler + 1), /* 2: NMI */
-  ((unsigned int)defaultHandler + 1), /* 3: HardFault */
-  ((unsigned int)defaultHandler + 1), /* 4: MemManage */
-  ((unsigned int)defaultHandler + 1), /* 5: BusFault */
-  ((unsigned int)defaultHandler + 1), /* 6: UsageFault */
+  ((unsigned int)tuck_default_handler + 1), /* 2: NMI */
+  ((unsigned int)tuck_default_handler + 1), /* 3: HardFault */
+  ((unsigned int)tuck_default_handler + 1), /* 4: MemManage */
+  ((unsigned int)tuck_default_handler + 1), /* 5: BusFault */
+  ((unsigned int)tuck_default_handler + 1), /* 6: UsageFault */
   0,                            /* 7: reserved */
   0,                            /* 8: reserved */
   0,                            /* 9: reserved */
   0,                            /* 10: reserved */
-  ((unsigned int)defaultHandler + 1), /* 11: SVCall */
-  ((unsigned int)defaultHandler + 1), /* 12: DebugMon */
+  ((unsigned int)tuck_default_handler + 1), /* 11: SVCall */
+  ((unsigned int)tuck_default_handler + 1), /* 12: DebugMon */
   0,                            /* 13: reserved */
-  ((unsigned int)defaultHandler + 1), /* 14: PendSV */
-  ((unsigned int)defaultHandler + 1), /* 15: SysTick */
+  ((unsigned int)tuck_default_handler + 1), /* 14: PendSV */
+  ((unsigned int)tuck_irq_SysTick + 1), /* 15: SysTick: `bind SysTick -> fn` */
 };
 
 void Reset_Handler(void) {

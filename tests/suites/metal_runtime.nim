@@ -96,6 +96,18 @@ fn main() -> int:
             @["STATE l0=true l1=true", "STATE l0=false l1=true"], board = board)
     t.metal("a full ring waits, and an actor sends to another, on " & board,
             "actor_ring", "ring-" & board, 0, @["ACTOR_RING_OK"], board = board)
+  # `bind` (bare-metal roadmap 2.2): a pended NVIC line taken through the
+  # generated vector table, its events delivered after the interrupt; a
+  # SysTick event loop that sleeps (WFI) between ticks, on both boards.
+  t.metal("a bound line: 5 interrupts, a stream of 2 drops 3, a signal merges 5",
+          "bind_irq", "bind-irq", 0, @["BIND_OK"], board = "stm32vldiscovery")
+  for board in ["lm3s6965evb", "stm32vldiscovery"]:
+    t.metal("SysTick drives an event loop that sleeps between ticks on " & board,
+            "bind_systick", "systick-" & board, 0, @["BEAT_OK"], board = board)
+  t.metal("a line the board does not have is refused with its list (TK-BD06)",
+          "bind_irq", "bind-unknown", 1,
+          @["TK-BD06", "has no interrupt line 'EXTI0'", "GPIOA"],
+          board = "lm3s6965evb")
   # The device programs build for a board and fail CLEANLY with no device on
   # the bus: QEMU models no DS3231 or SD card, so each bounded wait times out
   # and main returns 1, rather than hanging (124) or faulting.

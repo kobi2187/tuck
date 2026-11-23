@@ -17,7 +17,7 @@
 # AST-cache-persisted per file — means an unchanged, cache-hit file's names
 # still get registered every run.
 
-import tables, sets
+import tables, sets, strutils
 import ast
 import ast_query
 import resolution
@@ -54,6 +54,12 @@ proc collectNames(prog: seq[LoadedModule]) =
       # `on Registry.Event(...)`: the only top-level fn whose name has a dot.
       if '.' in d.name and not isImportedCopy(d):
         semLayer.handlerSites.mgetOrPut(d.name, @[]).add(d.id)
+        semLayer.handlerDecls.mgetOrPut(d.name, @[]).add(d)
+        semLayer.handlerModule[d.id] = lm.m.id
+  for lm in prog:
+    for g in lm.m.decls(dkGroup):
+      for mem in g.groupMembers:
+        if mem != nil and mem.kind == dkFn: semLayer.groupRequirements.incl mem.name
   collect(dkActor, actorNames, "an actor")
   collect(dkRegister, registerNames, "a register")
   collect(dkRegistry, registryNames, "a registry")
@@ -69,6 +75,7 @@ proc collectNames(prog: seq[LoadedModule]) =
   # ast_query.constIntOf scans the local module before consulting the table.
   for lm in prog:
     for d in lm.m.decls(dkConst):
+      semLayer.constsByModule.mgetOrPut(lm.m.id, initTable[string, Decl]())[d.name] = d
       if semLayer.constNames.hasKey(d.name) and
          semLayer.constNames[d.name] != d:
         semLayer.ambiguousConsts.incl(d.name)
@@ -120,7 +127,10 @@ proc resolveVarSlot(e: Expr): Expr =
   ## shadowing question to ask here: this pass runs before typecheck even
   ## builds a scope, and does not need one.
   if e == nil: return e
-  if e.kind == exkVar and e.name.len > 0 and e.name[0] in {'A'..'Z'}:
+  # The NAME is Capitalized, after any module type_identity put in front of
+  # it (`a::Logger`, an actor two modules declare).
+  let bare = if e.kind == exkVar: e.name.rsplit("::", 1)[^1] else: ""
+  if bare.len > 0 and bare[0] in {'A'..'Z'}:
     let r = declRefFor(e.name)
     if r != nil:
       r.span = e.span

@@ -50,7 +50,7 @@ proc linesOf(module, owner: string, d: Decl, inExtern: bool,
     let inner = if d.kind in {dkPending, dkWhen}: owner else: writtenName(d)
     for m in d.childDecls: linesOf(module, inner, m, inExtern, into)
   of dkConst, dkExpr, dkStaticAssert, dkSelect, dkRegistry, dkPool, dkSlab,
-     dkArena, dkRegister, dkImport, dkFnSig, dkSatisfies, dkResources,
+     dkArena, dkRegister, dkBind, dkImport, dkFnSig, dkSatisfies, dkResources,
      dkErrors, dkPublic:
     discard
 

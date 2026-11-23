@@ -76,19 +76,19 @@ tuckˑtypeˑFrame :: struct {
 validate_tuckˑtypeˑFrame :: proc(self: tuckˑtypeˑFrame) {
 	when !#config(tuckNoInvariants, false) {
 		if !((self.width > 0)) {
-			rt.tuckInvariantFailed("(self.width > 0)", "tuckˑtypeˑFrame")
+			rt.tuckInvariantFailed("width > 0", "Frame")
 		}
 		if !((self.height > 0)) {
-			rt.tuckInvariantFailed("(self.height > 0)", "tuckˑtypeˑFrame")
+			rt.tuckInvariantFailed("height > 0", "Frame")
 		}
 		if !((self.width <= 1920)) {
-			rt.tuckInvariantFailed("(self.width <= 1920)", "tuckˑtypeˑFrame")
+			rt.tuckInvariantFailed("width <= 1920", "Frame")
 		}
 		if !((self.height <= 1080)) {
-			rt.tuckInvariantFailed("(self.height <= 1080)", "tuckˑtypeˑFrame")
+			rt.tuckInvariantFailed("height <= 1080", "Frame")
 		}
 		if !((self.bytes <= 4096)) {
-			rt.tuckInvariantFailed("(self.bytes <= 4096)", "tuckˑtypeˑFrame")
+			rt.tuckInvariantFailed("bytes <= 4096", "Frame")
 		}
 	}
 }

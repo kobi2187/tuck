@@ -16,6 +16,9 @@ const dPrims = {
   # exists to flush out.
   "int": "long", "i8": "byte", "i16": "short", "i32": "int", "i64": "long",
   "u8": "ubyte", "u16": "ushort", "u32": "uint", "u64": "ulong",
+  # `usize` is the platform word, as Nim's `uint` and Odin's `uint` (audit Y15:
+  # D printed the bare Tuck name and did not build).
+  "usize": "size_t",
   "f32": "float", "f64": "double", "float": "double",
   "bool": "bool", "str": "string", "void": "void", "unit": "void",
   # The builtin FFI pointers (typecheck_pointers): C's `uint8_t*` and

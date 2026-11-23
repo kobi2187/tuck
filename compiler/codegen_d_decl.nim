@@ -463,7 +463,8 @@ proc genDValidate*(ctx: var DCodegenCtx, d: Decl): string =
       # implement (verified — an assert-based version passed in release).
       checks.add("        if (!(" & cond & "))\n" &
                  "            rt.tuckInvariantFailed(" &
-                 invariantCondLit(cond) & ", \"" & d.name & "\");")
+                 invariantCondLit(member.expr) & ", " &
+                 invariantTypeLit(d.name) & ");")
   if checks.len == 0: return ""
   "\nvoid validate_" & d.name & "(" & d.name & " self)\n{\n" &
     "    version (tuckNoInvariants) {} else\n    {\n" &
@@ -1217,6 +1218,7 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   of dkExpr: ""   # top-level statements are collected by emitBody
   of dkConst: ctx.genDConst(d)
   of dkRegister: ctx.genDRegister(d)
+  of dkBind: ""     # interrupts are a bare-metal build, which is Nim only
   of dkStaticAssert:
     # D checks this at COMPILE time, natively — the identical construct.
     # (The Odin backend collects these into a runtime `assert` in its entry

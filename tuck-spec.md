@@ -560,6 +560,11 @@ version that compiles):
   fixed value; `applyOperation` receives it. What narrows is the argument list
   at the call site, not the record.
 
+A `fnsig` takes an effect bracket like a fn (`fnsig Say = {text: str} -> void
+[io]`). It is the slot's contract: a stored fn may use no capability it does not
+grant and must make every restriction it names, and a call through the slot is
+charged with it. No bracket means no I/O.
+
 `bake` unifies partial application, dependency injection, and the strategy
 pattern into one operation. It is not currently a zero-cost one: a `fnsig`
 field emits as a Nim `{.closure.}` proc value passed at runtime, so a baked
@@ -2671,7 +2676,21 @@ registry UartEvents:
 A `[signal]` carries no payload (TK-RG08); only a `[stream]` names an overflow
 policy, `drop_newest` or `drop_oldest`, because an interrupt never waits
 (TK-RG09); code reachable from an `[irq]` handler may raise only an event with
-a delivery kind (TK-RG10). The queue size is the application's, in `bind`.
+a delivery kind (TK-RG10). The queue size is the application's, in `bind`:
+
+```text
+bind EXTI0 -> onRtcAlarm [priority: 3]
+bind USART1 -> uart.onUart [priority: 2, queue: 64]
+```
+
+`bind LINE -> module.fn [priority: N, queue: N]` makes the driver's `[irq]` fn
+that line's vector entry, sets its priority and enables it before `main`
+(TK-BD01..06: an `[irq]` fn, each line and each fn bound once, settings in
+range, a line the board has). The driver names no line, priority or size. On
+metal a kinded raise posts (a ring of `queue`, a counter, a slot) and the
+handlers run after the interrupt returns, from the scheduler; a hosted build
+has no interrupts and delivers at once. `scheduler::runTasksUntil` is the
+metal event loop: it runs what is ready and sleeps (WFI) until an interrupt.
 
 At runtime the registry is a small static array of slots, one per variant, holding
 the last payload. `raise` writes the slot and calls all registered handlers in

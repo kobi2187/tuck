@@ -120,7 +120,7 @@ void validate_tuckˑtypeˑVolume(tuckˑtypeˑVolume self)
     version (tuckNoInvariants) {} else
     {
         if (!((self.level <= cast(ubyte)100)))
-            rt.tuckInvariantFailed("(self.level <= cast(ubyte)100)", "tuckˑtypeˑVolume");
+            rt.tuckInvariantFailed("level <= 100", "Volume");
     }
 }
 
@@ -131,6 +131,7 @@ tuckˑtypeˑVolume __validated_tuckˑtypeˑVolume(tuckˑtypeˑVolume v)
 }
 
 rt.TuckResult!(rt.TuckUnit) tuckˑtaskˑstreamReader(ubyte streamId, uint[] chunks) {
+    scope(exit) rt.tuckDrop(chunks);
     foreach (tuckˑvˑi; chunks) {
         rt.TuckResult!(rt.PoolHandle) tuckˑvˑbuf = rt.tuckPoolAcquire(tuckˑpoolˑBufferPool);
         if (!(tuckˑvˑbuf.status == rt.TuckStatus.Ok)) {

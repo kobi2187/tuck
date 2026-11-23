@@ -68,7 +68,7 @@ type tuckˑtypeˑVolume* = object
 
 proc validate*(self: tuckˑtypeˑVolume) =
   when not defined(tuckNoInvariants):
-    if not ((self.level <= 100'u8)): tuckInvariantFailed("(self.level <= 100'u8)", "tuckˑtypeˑVolume")
+    if not ((self.level <= 100'u8)): tuckInvariantFailed("level <= 100", "Volume")
 
 type tuckˑregistryˑSystemEventsKind* = enum PlaybackStarted, PlaybackStopped, HardwareError
 type tuckˑregistryˑSystemEvents* = ref object
@@ -129,9 +129,11 @@ type TuckFˑtuckˑtaskˑstreamReader* = object
     tuckDest*: ptr TuckResult[tuple[]]
     streamId: uint8
     chunks: seq[uint32]
+    tuckDefer0: bool
 
 proc TuckSˑtuckˑtaskˑstreamReaderˑ0*(env: pointer): TuckHop {.nimcall.}
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑstreamReader)
+proc TuckXˑtuckˑtaskˑstreamReaderˑ0(tuckF: ptr TuckFˑtuckˑtaskˑstreamReader)
 proc TuckNewˑtuckˑtaskˑstreamReader*(tuckAt: ptr TuckFˑtuckˑtaskˑstreamReader, tuckRes: ptr TuckSlot[TuckResult[tuple[]]], tuckDest: ptr TuckResult[tuple[]], streamId: uint8, chunks: seq[uint32]): ptr TuckFˑtuckˑtaskˑstreamReader =
   if tuckAt == nil: result = tuckSlAlloc(TuckFˑtuckˑtaskˑstreamReader)
   else:
@@ -148,6 +150,7 @@ proc TuckSˑtuckˑtaskˑstreamReaderˑ0*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑstreamReader](env)
   template streamId: untyped = tuckF.streamId
   template chunks: untyped = tuckF.chunks
+  tuckF.tuckDefer0 = true
   for tuckˑvˑi in chunks:
     if true:
       var tuckˑvˑbuf = tuckPoolAcquire(tuckˑpoolˑBufferPool)
@@ -161,7 +164,17 @@ proc TuckSˑtuckˑtaskˑstreamReaderˑ0*(env: pointer): TuckHop {.nimcall.} =
 proc tuckSlExit(tuckF: ptr TuckFˑtuckˑtaskˑstreamReader) =
   template streamId: untyped = tuckF.streamId
   template chunks: untyped = tuckF.chunks
+  if tuckF.tuckDefer0:
+    tuckDrop(chunks)
+    tuckF.tuckDefer0 = false
   discard
+
+proc TuckXˑtuckˑtaskˑstreamReaderˑ0(tuckF: ptr TuckFˑtuckˑtaskˑstreamReader) =
+  template streamId: untyped = tuckF.streamId
+  template chunks: untyped = tuckF.chunks
+  if tuckF.tuckDefer0:
+    tuckDrop(chunks)
+    tuckF.tuckDefer0 = false
 
 
 type tuckˑactorˑDecoderMsgKind* = enum msgPlay, msgPause, msgStop

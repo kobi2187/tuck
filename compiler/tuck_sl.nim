@@ -59,9 +59,16 @@ else:
 
 proc tuckSlReady*(f: ptr TuckFrameHdr) {.inline.} =
   ## Queue `f` to run its `stage` when the frames ahead of it have had theirs.
+  ## On metal an interrupt may ready a frame (a `bind`'s event delivery), so
+  ## the list is changed with interrupts masked (PRIMASK saved and restored).
+  when defined(freestanding):
+    var saved: uint32
+    {.emit: "__asm volatile(\"mrs %0, primask\\n\\tcpsid i\" : \"=r\"(`saved`) :: \"memory\");".}
   f.next = nil
   if slTail == nil: slHead = f else: slTail.next = f
   slTail = f
+  when defined(freestanding):
+    {.emit: "__asm volatile(\"msr primask, %0\" :: \"r\"(`saved`) : \"memory\");".}
   tuckEventPost(1'u8, cast[uint32](cast[int](f)))
 
 when defined(freestanding):
@@ -86,10 +93,16 @@ proc tuckSlHasReady*(): bool {.inline.} = slHead != nil
 
 proc tuckSlRunOne*(): bool =
   ## Run the first ready frame until it pauses or finishes. False: none ready.
+  when defined(freestanding):
+    var saved: uint32
+    {.emit: "__asm volatile(\"mrs %0, primask\\n\\tcpsid i\" : \"=r\"(`saved`) :: \"memory\");".}
   let f = slHead
+  if f != nil:
+    slHead = f.next
+    if slHead == nil: slTail = nil
+  when defined(freestanding):
+    {.emit: "__asm volatile(\"msr primask, %0\" :: \"r\"(`saved`) : \"memory\");".}
   if f == nil: return false
-  slHead = f.next
-  if slHead == nil: slTail = nil
   tuckEventPost(2'u8, cast[uint32](cast[int](f)))
   tuckSlDrive(TuckHop(fn: f.stage, env: f))
   true

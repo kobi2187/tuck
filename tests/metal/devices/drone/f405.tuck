@@ -101,7 +101,6 @@ fn setupPeripherals():
   USART1_CR1.RE = true
   USART1_CR1.RXNEIE = true
   USART1_CR1.UE = true
-  NVIC_ISER1.SETENA = 32            # USART1 is IRQ 37: ISER1 bit 5
   SPI1_CR1.CPOL = true              # mode 3
   SPI1_CR1.CPHA = true
   SPI1_CR1.BR = 1                   # 84 MHz / 4 = 21 MHz, under the IMU's 24
@@ -113,7 +112,6 @@ fn setupPeripherals():
   SYSCFG_EXTICR2.EXTI4 = 2          # port C
   EXTI_RTSR.TR4 = true              # INT1 is push-pull, active high
   EXTI_IMR.MR4 = true
-  NVIC_ISER0.SETENA = 1024          # EXTI4 is IRQ 10
 
 fn micros() -> int:
   return TIM2_CNT.CNT ^int

@@ -137,7 +137,7 @@ task clientSide({port: int}) -> void [io, io: net]:
 
 # A free port from the clock, a few tries: three backends may run this check at
 # once, and a fixed port would make them fight for it.
-fn serveSomewhere() -> !Listener [io, io: net, io: clock]:
+fn serveSomewhere() -> !Listener [io, io: net, io: clock, error: NetError]:
   let now = nowMs
   let base = {value: now.epochMs} int
   for attempt in 0 .. 6:

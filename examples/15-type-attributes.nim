@@ -11,7 +11,7 @@ type tuckˑtypeˑTemperature* = object
 
 proc validate*(self: tuckˑtypeˑTemperature) =
   when not defined(tuckNoInvariants):
-    if not ((self.celsius >= -273.15)): tuckInvariantFailed("(self.celsius >= -273.15)", "tuckˑtypeˑTemperature")
+    if not ((self.celsius >= -273.15'f32)): tuckInvariantFailed("celsius >= -273.15", "Temperature")
 
 type tuckˑactorˑUartDriver* = ref object
   discard

@@ -182,7 +182,7 @@ struct tuckˑtypeˑInterval {
 }
 
 long tuckˑfnˑseconds(tuckˑtypeˑInterval self) {
-    return (self.ticks / 10L);
+    return rt.tuckDivI!(long)(self.ticks, 10L, "int");
 }
 
 bool tuckˑfnˑlongEnough(T, alias tuckˑfnˑseconds)(T span, long atLeast) {

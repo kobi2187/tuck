@@ -33,8 +33,8 @@ proc irrigation(t: var T) =
     t.addFile f, readFile(Dev / "irrigation" / f)
   t.okCheck "irrigation: the device program checks"
   t.eventsSay "irrigation: the RTC alarm is a signal the Garden actor handles",
-    @["Minute  [signal]", "raised by:  t.tuck:25 (onRtcAlarm)",
-      "handled by: t.tuck:48 (actor Garden)"]
+    @["Minute  [signal]", "raised by:  t.tuck:26 (onRtcAlarm, on EXTI0)",
+      "handled by: t.tuck:57 (actor Garden)"]
 
 proc recorder(t: var T) =
   t.src readFile(Dev / "recorder" / "sim.tuck")
@@ -45,9 +45,11 @@ proc recorder(t: var T) =
   for f in ["session.tuck", "board.tuck", "vs1063.tuck", "sdcard.tuck"]:
     t.addFile f, readFile(Dev / "recorder" / f)
   t.okCheck "recorder: the device program checks, transitions included"
-  t.eventsSay "recorder: three buttons raise one stream event",
+  t.eventsSay "recorder: three buttons raise one stream event, a timer paces the work",
     @["Pressed{button: Button}  [stream, overflow: drop_newest]",
-      "(onRecordButton)", "(onPlayButton)", "(onStopButton)", "(actor Recorder)"]
+      "(onRecordButton, on EXTI0)", "(onPlayButton, on EXTI1)",
+      "(onStopButton, on EXTI2)", "Tick  [signal]", "(onTimer, on TIM2)",
+      "(actor Recorder)"]
 
 proc drone(t: var T) =
   t.src readFile(Dev / "drone" / "sim.tuck")
@@ -61,7 +63,8 @@ proc drone(t: var T) =
   t.okCheck "drone: the flight controller checks"
   t.eventsSay "drone: UART bytes stream, the gyro signals, one actor handles both",
     @["Byte{data: u8, at: int}  [stream, overflow: drop_newest]",
-      "GyroReady  [signal]", "(onUsart1)", "(onImuReady)", "(actor Flight)"]
+      "GyroReady  [signal]", "(onUsart1, on USART1)", "(onImuReady, on EXTI4)",
+      "(actor Flight)"]
 
 proc run*(t: var T) =
   t.irrigation()

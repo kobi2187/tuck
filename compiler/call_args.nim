@@ -70,6 +70,22 @@ proc calleeText(e: Expr): string =
   of exkQualified: e.callee.qualName
   else: "a " & $e.callee.kind
 
+proc writtenArg*(res: Resolution, call: Expr, callee: Decl, param: string): Expr =
+  ## The argument expression that feeds `callee`'s param `param` at `call`:
+  ## a payload literal's field (`{items: xs} setAt`), or, once exploded or in
+  ## the method form (`xs.setAt {..}`), the argument in that param's position.
+  if call == nil or callee == nil: return nil
+  var i = -1
+  for k, p in callee.fnParams:
+    if p.name == param: i = k
+  if i < 0: return nil
+  if isPayloadCall(call):
+    let want = fieldFor(res, call, i, param)
+    for f in call.args[0].fields:
+      if f.name == want: return f.value
+    return nil
+  if i < call.args.len: call.args[i] else: nil
+
 proc missingParam(res: Resolution, m: Module, e: Expr): string =
   ## The first param this payload call has no value for, or "".
   let known = knownParams(res, m, e)

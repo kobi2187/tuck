@@ -139,7 +139,7 @@ tuckˑtypeˑVolume :: struct {
 validate_tuckˑtypeˑVolume :: proc(self: tuckˑtypeˑVolume) {
 	when !#config(tuckNoInvariants, false) {
 		if !((self.level <= u8(100))) {
-			rt.tuckInvariantFailed("(self.level <= u8(100))", "tuckˑtypeˑVolume")
+			rt.tuckInvariantFailed("level <= 100", "Volume")
 		}
 	}
 }
@@ -154,6 +154,7 @@ TuckFˑtuckˑtaskˑstreamReader :: struct {
 	tuckDest: ^rt.TuckResult(rt.TuckUnit),
 	streamId: u8,
 	chunks: [dynamic]u32,
+	tuckDefer0: bool,
 }
 
 TuckNewˑtuckˑtaskˑstreamReader :: proc(tuckAt: ^TuckFˑtuckˑtaskˑstreamReader, tuckRes: ^rt.TuckSlot(rt.TuckResult(rt.TuckUnit)), tuckDest: ^rt.TuckResult(rt.TuckUnit), streamId: u8, chunks: [dynamic]u32) -> ^TuckFˑtuckˑtaskˑstreamReader {
@@ -178,6 +179,7 @@ TuckRetˑtuckˑtaskˑstreamReader :: proc(tuckF: ^TuckFˑtuckˑtaskˑstreamReade
 TuckSˑtuckˑtaskˑstreamReaderˑ0 :: proc(env: rawptr) -> rt.TuckHop {
   tuckF := (^TuckFˑtuckˑtaskˑstreamReader)(env)
   using tuckF
+  tuckDefer0 = true
   for tuckˑvˑi in chunks {
       tuckˑvˑbuf := rt.tuckPoolAcquire(&tuckˑpoolˑBufferPool)
       if !(tuckˑvˑbuf.status == .Ok) {
@@ -191,6 +193,17 @@ TuckSˑtuckˑtaskˑstreamReaderˑ0 :: proc(env: rawptr) -> rt.TuckHop {
 
 TuckExitˑtuckˑtaskˑstreamReader :: proc(tuckF: ^TuckFˑtuckˑtaskˑstreamReader) {
   using tuckF
+  if tuckDefer0 {
+    delete(chunks)
+    tuckDefer0 = false
+  }
+}
+TuckXˑtuckˑtaskˑstreamReaderˑ0 :: proc(tuckF: ^TuckFˑtuckˑtaskˑstreamReader) {
+  using tuckF
+  if tuckDefer0 {
+    delete(chunks)
+    tuckDefer0 = false
+  }
 }
 
 tuckˑactorˑDecoderMsgKind :: enum { msgPlay, msgPause, msgStop }

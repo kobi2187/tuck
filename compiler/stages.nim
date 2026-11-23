@@ -310,22 +310,138 @@ proc hoisted(sp: var Splitter, cur: var int, e: Expr, t: Type): Expr =
   sp.onStack(cur, built(Expr(kind: exkAssign, target: v, assignVal: e, span: e.span)))
   sp.temp(name, t, e.span)
 
+proc splitStmt(sp: var Splitter, cur: var int, s: Expr)
+
+proc newTemp(sp: var Splitter, n: Expr, t: Type): string =
+  ## A fresh frame temp of type `t`, for the value of `n`.
+  result = "tuckTmp" & $sp.temps
+  inc sp.temps
+  sp.addField(n, result, t)
+
+proc setTo(sp: var Splitter, name: string, t: Type, v: Expr): Expr =
+  ## `name = v`, a statement writing frame temp `name`.
+  built(Expr(kind: exkAssign, target: sp.temp(name, t, v.span), assignVal: v,
+             span: v.span))
+
+proc settingBlock(sp: var Splitter, name: string, t: Type, v: Expr): Expr =
+  ## A branch or arm whose value `v` goes into temp `name`: a block whose
+  ## last statement (its value) is the assignment.
+  if v.kind == exkBlock and v.stmts.len > 0:
+    var stmts = v.stmts
+    stmts[^1] = sp.setTo(name, t, stmts[^1])
+    return built(Expr(kind: exkBlock, stmts: stmts, span: v.span))
+  built(Expr(kind: exkBlock, stmts: @[sp.setTo(name, t, v)], span: v.span))
+
+proc pausesConditionally(sp: Splitter, e: Expr): bool =
+  ## Does `e` hold a frame call on a path that may not run: a value-`if`
+  ## branch, a `match` arm, the right side of `and`/`or`?
+  case e.kind
+  of exkIf: isValueIf(e) and (sp.framePausesIn(e.thenBranch) or
+                              sp.framePausesIn(e.elseBranch))
+  of exkMatch:
+    for arm in e.arms:
+      if sp.framePausesIn(arm.body): return true
+    false
+  of exkBinary: e.binOp in {boAnd, boOr} and sp.framePausesIn(e.right)
+  else: false
+
+proc conditionalStmts(sp: var Splitter, e: Expr, name: string, t: Type): seq[Expr] =
+  ## `e`, a conditional value, as the statements that compute it into temp
+  ## `name`: the statement `if`/`match` with each path assigning, or for
+  ## `a and b` the left side first and the right only when it decides.
+  case e.kind
+  of exkIf:
+    @[built(Expr(kind: exkIf, cond: e.cond, span: e.span,
+                 thenBranch: sp.settingBlock(name, t, e.thenBranch),
+                 elseBranch: sp.settingBlock(name, t, e.elseBranch)))]
+  of exkMatch:
+    var arms: seq[MatchArm]
+    for arm in e.arms:
+      arms.add MatchArm(pattern: arm.pattern, span: arm.span,
+                        body: sp.settingBlock(name, t, arm.body))
+    let m = built(Expr(kind: exkMatch, subject: e.subject, arms: arms, span: e.span))
+    @[m]
+  else:
+    var test = sp.temp(name, t, e.span)
+    if e.binOp == boOr:
+      test = built(Expr(kind: exkUnary, unaryOp: uoNot, operand: test, span: e.span))
+      sp.res.setType(test, t)
+    @[sp.setTo(name, t, e.left),
+      built(Expr(kind: exkIf, cond: test, span: e.span,
+                 thenBranch: sp.settingBlock(name, t, e.right)))]
+
+proc conditionalToTemp(sp: var Splitter, cur: var int, slot: var Expr): bool =
+  ## A frame call on a path that may not run is never hoisted in front of
+  ## the test that decides it (audit C7: `let v = if c: f x else: 0` called
+  ## `f` whatever `c` was, and every arm of a value `match` ran). The
+  ## conditional becomes its statement form computing a temp, which the
+  ## splitter cuts like any other `if`/`match`; the slot reads the temp.
+  if not sp.pausesConditionally(slot): return false
+  var t = sp.res.typeFor(slot)
+  if slot.kind == exkBinary: t = boolType()
+  let name = sp.newTemp(slot, t)
+  for st in sp.conditionalStmts(slot, name, t): sp.splitStmt(cur, st)
+  slot = sp.temp(name, t, slot.span)
+  true
+
+const SharedRefs = {exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef,
+                    exkPoolOp, exkSlabRef, exkSlabOp, exkSend}
+  ## What reads state another task or the hardware can change across a pause.
+
+proc stable(sp: Splitter, e: Expr): bool =
+  ## Does `e` read the same before and after a pause? Literals and the
+  ## frame's own locals do; a call, or anything shared, may not.
+  for n in e.nodes:
+    if n.kind in SharedRefs or n.kind == exkCall or sp.res.hasCall(n): return false
+  true
+
+proc pin(sp: var Splitter, cur: int, slot: var Expr) =
+  ## `slot` evaluated NOW, into a temp, so a pause cut out of a later operand
+  ## cannot move it after that pause.
+  let t = sp.res.typeFor(slot)
+  if t == nil or sp.stable(slot): return
+  let name = sp.newTemp(slot, t)
+  sp.plan.stages[cur].stmts.add sp.setTo(name, t, slot)
+  slot = sp.temp(name, t, slot.span)
+
+proc hoistCuts(sp: var Splitter, cur: var int, slot: var Expr)
+
+proc lastCutChild(sp: Splitter, e: Expr): int =
+  ## The index of the last child of `e` holding a frame call, or -1.
+  result = -1
+  var i = 0
+  for c in e.children:
+    if sp.framePausesIn(c): result = i
+    inc i
+
+proc hoistChildren(sp: var Splitter, cur: var int, e: Expr) =
+  ## Each child of `e`, left to right as they evaluate. A child BEFORE the
+  ## last one holding a frame call is pinned into a temp once its own cuts
+  ## are out (audit C7: `Nodes.count + {ms: 20} nap` read the count after
+  ## the nap, where stackful read it first).
+  let last = sp.lastCutChild(e)
+  var i = 0
+  for child in e.childSlots:
+    if child != nil:
+      sp.hoistCuts(cur, child)
+      if i < last: sp.pin(cur, child)
+    inc i
+
 proc hoistCuts(sp: var Splitter, cur: var int, slot: var Expr) =
   ## Every frame call nested in `slot`, cut out and run FIRST into a frame
   ## temp (`tuckTmpN`), the slot then reading the temp: `({n: 1} f).v + 1`
   ## becomes a frame call into tuckTmp0, then `tuckTmp0.v + 1`. Inner calls
   ## before outer, left to right, as they would evaluate.
   if slot == nil: return
-  for child in slot.childSlots: sp.hoistCuts(cur, child)
+  if sp.conditionalToTemp(cur, slot): return
+  sp.hoistChildren(cur, slot)
   let c = sp.callOf(slot)
   if c == nil: return
   let callee = sp.frameCallee(c)
   if callee == nil or callee.kind == dkTask: return   # a nested task call only spawns
   var t = sp.res.typeFor(slot)
   if t == nil: t = sp.res.typeFor(c)
-  let name = "tuckTmp" & $sp.temps
-  inc sp.temps
-  sp.addField(slot, name, t)
+  let name = sp.newTemp(slot, t)
   cur = sp.endWith(cur, sp.callTerm(slot, c, callee, sp.temp(name, t, slot.span)))
   slot = sp.temp(name, t, slot.span)
 
@@ -338,7 +454,7 @@ proc hoistNested(sp: var Splitter, cur: var int, s: Expr) =
     if s.kind == exkAssign and child == s.target: continue
     let top = sp.callOf(child)
     if top != nil and sp.frameCallee(top) != nil and s.kind in {exkAssign, exkDiscard}:
-      for arg in child.childSlots: sp.hoistCuts(cur, arg)   # its arguments
+      sp.hoistChildren(cur, child)   # its arguments
     else: sp.hoistCuts(cur, child)
 
 proc simpleStmt(sp: var Splitter, cur: var int, s: Expr) =
@@ -347,8 +463,7 @@ proc simpleStmt(sp: var Splitter, cur: var int, s: Expr) =
   ## deeper is hoisted out into a temp first; a `return` whose value waits
   ## computes it on a helper stack first.
   sp.emitYields(cur, sp.yieldCount(s))
-  if s.kind == exkCall:
-    for arg in s.childSlots: sp.hoistCuts(cur, arg)
+  if s.kind == exkCall: sp.hoistChildren(cur, s)
   else: sp.hoistNested(cur, s)
   let (v, target) = valueCall(s)
   let c = if v != nil: sp.callOf(v) else: nil

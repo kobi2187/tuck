@@ -196,6 +196,35 @@ fn main() -> int:
       if rc2 == 0: t.ok "...and still resolves once the index is warm"
       else: t.no "...and still resolves once the index is warm", out2
 
+  # M10b: a module that renames at an import was checked against an index
+  # entry on the warm run, which holds no declarations, and the second
+  # `tuck ch` said kv "exports no fn 'put'" where the first had passed.
+  t.src """
+import kv {put -> putEntry}
+import files
+
+fn main() -> int:
+  let a = {k: 1, v: 2} putEntry
+  let b = {p: "x"} files::put
+  return a + b
+"""
+  t.addFile("kv.tuck", "fn put({k: int, v: int}) -> int:\n  return k + v\n")
+  t.addFile("files.tuck", "fn put({p: str}) -> int:\n  return 1\n")
+  let coldR = t.needCmd @[tuckExe, "ch", t.cur / "t.tuck", "--root:" & t.root]
+  let warmR = t.needCmdAfter(@[tuckExe, "ch", t.cur / "t.tuck",
+                               "--root:" & t.root],
+                             coldR, proc (dir: string) = discard, t.cur, vCheck)
+  if t.phase == pReport:
+    let (rc1, out1) = t.resultOf(coldR)
+    if rc1 == 0: t.ok "an import rename checks on a cold index"
+    else: t.no "an import rename checks on a cold index", out1
+    if t.skippedCmd(warmR):
+      t.ok "...and on a warm one (skipped)"
+    else:
+      let (rc2, out2) = t.resultOf(warmR)
+      if rc2 == 0: t.ok "...and still checks once the index is warm (M10b)"
+      else: t.no "...and still checks once the index is warm (M10b)", out2
+
   # --- `public:` — the module's export list --------------------------------
   # Bare names, whitespace-separated. Tuck has no overloading, so a name IS
   # the signature: an export list repeating parameters would be a second copy

@@ -23,6 +23,7 @@ struct TuckFˑtuckˑtaskˑfetchFeed
     string url;
     rt.TuckResult!(tuckˑmodˑshapes_14_task.TRec_body!(string)) tuckˑvˑresp;
     bool tuckDefer0;
+    bool tuckDefer1;
 }
 
 TuckFˑtuckˑtaskˑfetchFeed* TuckNewˑtuckˑtaskˑfetchFeed(TuckFˑtuckˑtaskˑfetchFeed* tuckAt, rt.TuckSlot!(rt.TuckResult!(tuckˑmodˑshapes_14_task.TRec_feed!(tuckˑtypeˑFeed)))* tuckRes, rt.TuckResult!(tuckˑmodˑshapes_14_task.TRec_feed!(tuckˑtypeˑFeed))* tuckDest, string url)
@@ -49,6 +50,7 @@ rt.TuckHop TuckSˑtuckˑtaskˑfetchFeedˑ0(void* env)
     auto tuckF = cast(TuckFˑtuckˑtaskˑfetchFeed*) env;
     with (*tuckF)
     {
+        tuckDefer0 = true;
         return rt.tuckSlYield(&tuckF.tuckHdr, &TuckSˑtuckˑtaskˑfetchFeedˑ1);
     }
 }
@@ -76,7 +78,7 @@ rt.TuckHop TuckSˑtuckˑtaskˑfetchFeedˑ2(void* env)
     auto tuckF = cast(TuckFˑtuckˑtaskˑfetchFeed*) env;
     with (*tuckF)
     {
-        tuckDefer0 = true;
+        tuckDefer1 = true;
         if ((tuckˑvˑresp.status == rt.TuckStatus.Ok)) {
             return TuckRetˑtuckˑtaskˑfetchFeed(tuckF, rt.tok(tuckˑfnˑparse(tuckˑvˑresp.value.body)));
         }
@@ -88,9 +90,14 @@ void TuckExitˑtuckˑtaskˑfetchFeed(TuckFˑtuckˑtaskˑfetchFeed* tuckF)
 {
     with (*tuckF)
     {
-        if (tuckDefer0)
+        if (tuckDefer1)
         {
             rt.tuckDrop(tuckˑvˑresp);
+            tuckDefer1 = false;
+        }
+        if (tuckDefer0)
+        {
+            rt.tuckDrop(url);
             tuckDefer0 = false;
         }
     }
@@ -99,9 +106,14 @@ void TuckXˑtuckˑtaskˑfetchFeedˑ0(TuckFˑtuckˑtaskˑfetchFeed* tuckF)
 {
     with (*tuckF)
     {
-        if (tuckDefer0)
+        if (tuckDefer1)
         {
             rt.tuckDrop(tuckˑvˑresp);
+            tuckDefer1 = false;
+        }
+        if (tuckDefer0)
+        {
+            rt.tuckDrop(url);
             tuckDefer0 = false;
         }
     }

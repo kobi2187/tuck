@@ -25,6 +25,7 @@ import resolution
 import ast, lowering, ast_query, ast_ops, strutils, sets, tables, options, algorithm
 import ./ast_query
 import twin_shape
+import parser_stringify   # an invariant message prints the predicate as written
 import call_args
 export call_args
 import name_prefix
@@ -85,11 +86,18 @@ proc sumPayloadField*(variantName: string): string =
   ## union member directly.
   prefixed(variantName.toLowerAscii(), nkVariant)
 
-proc invariantCondLit*(cond: string): string =
+proc invariantCondLit*(cond: Expr): string =
   ## A violated invariant's condition, as the string literal every backend's
-  ## `tuckInvariantFailed` reports it by: `"` shown as `'` (the message
-  ## quotes nothing), anything else escaped for the host.
-  "\"" & escapeStringLit(cond.replace("\"", "'")) & "\""
+  ## `tuckInvariantFailed` reports it by: the predicate as WRITTEN, so the
+  ## message is one text on every backend (it was each host's emitted code:
+  ## `-f32(273.15)` on Odin, `-273.15'f32` on Nim). `"` shown as `'` (the
+  ## message quotes nothing), anything else escaped for the host.
+  let text = writtenSpelling(cond.toString)
+  "\"" & escapeStringLit(text.replace("\"", "'")) & "\""
+
+proc invariantTypeLit*(name: string): string =
+  ## The type a violated invariant belongs to, by its Tuck name.
+  "\"" & writtenSpelling(name) & "\""
 
 proc poolOpProc*(op: PoolOpKind): string =
   ## The runtime proc a pool operation calls — one name in all three
@@ -702,6 +710,9 @@ type ProviderNeed* = object
   member*: Decl      # the group's signature for it
   param*: string     # the bounded type parameter, `T` in `[T: Sized]`
   paramIdx*: int     # a fn parameter whose type is exactly `param`
+  groupArgs*: Table[string, Type]  # a generic group's parameters as the bound
+                                   # names them: `Keyed[K]` maps the group's
+                                   # own K to the fn's K
 
 proc findGroup(m: Module, real: ModuleMap, name: string): Decl =
   result = m.findDecl(dkGroup, name)
@@ -727,11 +738,39 @@ proc ownProvidersConcrete(home: Module, req: string): bool =
     if t.kind != tkNamed or t.name in d.fnGenerics: return false
   true
 
+proc hasGenericProvider(home: Module, real: ModuleMap, grp: Decl): bool =
+  ## Is some requirement of `grp` met by a GENERIC fn (`get[V]` for a
+  ## `Table[V]`)? A call site hands a provider over by value, and only a
+  ## concrete fn has one; such a group keeps being resolved by name.
+  for mem in grp.groupMembers:
+    if mem == nil or mem.kind != dkFn: continue
+    let req = prefixed(mem.name, nkFn)
+    var mods = @[home]
+    for other in real.values: mods.add other
+    for m in mods:
+      for d in m.decls(dkFn):
+        if d.name == req and d.fnGenerics.len > 0: return true
+
+proc boundGroup(home: Module, real: ModuleMap, bound: Type): Decl =
+  ## The group a bound names, plain (`Sized`) or applied (`Keyed[K]`, every
+  ## parameter given), or nil.
+  if bound == nil: return nil
+  if bound.kind == tkNamed:
+    result = findGroup(home, real, bound.name)
+    if result != nil and result.groupGenerics.len != 0: result = nil
+  elif bound.kind == tkApp and bound.base != nil and bound.base.kind == tkNamed:
+    result = findGroup(home, real, bound.base.name)
+    if result != nil and (result.groupGenerics.len != bound.args.len or
+                          hasGenericProvider(home, real, result)):
+      result = nil
+
+
 proc isPlainBound(home: Module, real: ModuleMap, bound: Type): bool =
-  ## A bound naming a group that takes no type parameters of its own.
-  if bound == nil or bound.kind != tkNamed: return false
-  let grp = findGroup(home, real, bound.name)
-  grp != nil and grp.groupGenerics.len == 0
+  ## A bound whose providers can be handed over: a group, plain or with its
+  ## parameters given. A generic group was left out, so its providers were
+  ## found by NAME where the generic is written, and of several modules'
+  ## `keyOf`s Odin and D called the first (audit M7).
+  boundGroup(home, real, bound) != nil
 
 proc needsOfBound(home: Module, real: ModuleMap, bound: Type,
                   param: string, idx: int, always: bool): seq[ProviderNeed] =
@@ -739,13 +778,17 @@ proc needsOfBound(home: Module, real: ModuleMap, bound: Type,
   ## fn: each requirement of a plain group that module does not itself declare
   ## - or, when `always`, every one, since a provider `home` declares serves
   ## only its own type and a caller's type brings its own (A74).
-  if not isPlainBound(home, real, bound): return
-  let grp = findGroup(home, real, bound.name)
+  let grp = boundGroup(home, real, bound)
+  if grp == nil: return
+  var args = initTable[string, Type]()
+  if bound.kind == tkApp:
+    for i, g in grp.groupGenerics: args[g] = bound.args[i]
   for mem in grp.groupMembers:
     if mem == nil or mem.kind != dkFn: continue
     let req = prefixed(mem.name, nkFn)
     if (always and ownProvidersConcrete(home, req)) or not home.declaresFn(req):
-      result.add ProviderNeed(req: req, member: mem, param: param, paramIdx: idx)
+      result.add ProviderNeed(req: req, member: mem, param: param, paramIdx: idx,
+                              groupArgs: args)
 
 proc providerNeeds*(home: Module, real: ModuleMap, f: Decl): seq[ProviderNeed] =
   ## The providers `f` (declared in `home`) is passed. Only a plain bound on a
@@ -834,6 +877,45 @@ proc overflowPlan*(m: Module, real: ModuleMap, t: Type): OverflowPlan =
   if attr == "" and wide: return
   OverflowPlan(active: true, policy: (if attr == "": "Trap" else: attr),
                base: base, named: t.name)
+
+const IntegerNames* = ["int", "i8", "i16", "i32", "i64",
+                       "u8", "u16", "u32", "u64", "usize"]
+
+proc checkedDivision*(e: Expr, t: Type): bool =
+  ## Is `e` an integer `/i` or `%` on a primitive integer type `t`? Those go
+  ## through the runtime's `tuckDivI`/`tuckModI`, which stop with exit 1 on a
+  ## zero divisor where each host faulted its own way (audit Y2: Nim 1, Odin
+  ## 132, D 136), and answer the minimum mod -1 the host's divide faults on.
+  ## A named type over an integer keeps the plain operator: its helpers would
+  ## need the host's distinct-type arithmetic, which each backend spells
+  ## differently.
+  e.binOp in {boDivInt, boMod} and t != nil and t.kind == tkNamed and
+    t.name in IntegerNames
+
+const SignedMinMagnitude = {
+  "i8": "128", "i16": "32768", "i32": "2147483648",
+  "i64": "9223372036854775808", "int": "9223372036854775808",
+}.toTable
+
+proc isMinimumLiteral*(e: Expr, t: Type): bool =
+  ## Is `e` a negated literal that is exactly the minimum of `t` (`-128` on an
+  ## `i8`)? Its magnitude does not fit the type it negates in, so Nim refused
+  ## `-9223372036854775808` and D `-cast(byte)128` (audit Y4); the emitters
+  ## print the type's own minimum instead.
+  e != nil and e.kind == exkUnary and e.unaryOp == uoNeg and
+    e.operand.kind == exkLit and e.operand.litKind == lkInt and
+    t != nil and t.kind == tkNamed and
+    SignedMinMagnitude.getOrDefault(t.name, "") == e.operand.litValue
+
+proc quoteTypeName*(name: string): string =
+  ## A Tuck type's name as a string literal for the runtime's traps, which
+  ## report the TUCK type: each host names it its own way (`int8`, `i8`,
+  ## `byte`), and D cannot tell `int` from `i64` (both `long`).
+  "\"" & name & "\""
+
+proc divHelper*(op: BinOp): string =
+  ## The runtime helper for a checked integer division.
+  if op == boMod: "tuckModI" else: "tuckDivI"
 
 proc ovOpName*(op: BinOp): string =
   ## The checked-arithmetic helper's operator enum member (OvOp.Add ...).
@@ -973,3 +1055,9 @@ proc memoIndexExpr*(d: Decl,
     let dom = memoTypeDomain(p.typ.name)
     let term = offset(p.name, p.typ.name == "bool", dom.half)
     result = if i == 0: term else: "(" & result & ") * " & $dom.size & " + " & term
+
+proc declaredCalleeName*(e: Expr, emitted: string): string =
+  ## A call's callee as declared — the bare name of an exkVar callee — when
+  ## the emitted spelling may carry an imported type's package (M10); else
+  ## the emitted one.
+  if e.callee != nil and e.callee.kind == exkVar: e.callee.name else: emitted

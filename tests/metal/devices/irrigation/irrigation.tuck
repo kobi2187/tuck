@@ -10,6 +10,7 @@
 # let the decision table (schedule.tuck) open, keep, close, or raise an alarm,
 # from what the flow meter says happened in the minute before.
 
+import scheduler
 import schedule
 import bluepill
 import ds3231
@@ -23,6 +24,14 @@ fn onRtcAlarm() [irq, irq_safe, no_alloc]:
   ## is cleared there: an I2C transfer is far too slow for an interrupt.
   EXTI_PR.PR = 1
   ClockEvents.raise Minute
+
+# The application wires the RTC's alarm line to the driver's handler: the
+# vector, its NVIC priority, and enabling it are this line, not driver code.
+bind EXTI0 -> onRtcAlarm [priority: 3]
+
+fn forever() -> bool:
+  ## The event loop's exit condition: a garden controller never stops.
+  return false
 
 fn plan() -> Seq[Slot]:
   return [{day: Weekday.Mon, hour: 6, minute: 0, minutes: 20, litres: 100} Slot,
@@ -72,9 +81,7 @@ fn main() -> int [io]:
   if not armed.ok:
     return 1
   setupAlarmLine
-  # Until `bind` places onRtcAlarm in the vector table (bare-metal roadmap
-  # 2.2), the pending bit is polled and the handler called by hand.
-  for true:
-    if EXTI_PR.PR != 0:
-      onRtcAlarm
+  # From here the controller is interrupt-driven: sleep until the RTC's
+  # minute alarm, let Garden handle it, sleep again. Forever.
+  {pred: :forever} runTasksUntil
   return 0

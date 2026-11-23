@@ -51,7 +51,7 @@
 # and anything needing the user-facing name reads it back with `writtenName`.
 # Keep the fact rather than reconstructing it — stripping a prefix off a
 # mangled name is a guess, and it breaks as soon as anything else adds one.
-import ast, sets, tables, std/options
+import ast, sets, tables, std/options, strutils
 import resolution
 import name_prefix
 export name_prefix
@@ -109,6 +109,10 @@ proc isManglable(d: Decl): bool =
   of dkType: d.typeExternHeader == ""
   of dkObject, dkActor, dkTask, dkConst, dkPool, dkSlab, dkArena, dkRegistry,
      dkRegister, dkFnSig: true
+  # An interface keeps the name it was written with (its tag enum and its
+  # wrap procs are spelled from it), unless type_identity qualified it
+  # because two modules declare one: `a::Shape` is no identifier anywhere.
+  of dkInterface: d.name.contains("::")
   else: false
 
 proc manglableNames*(m: Module): MangleNames =
@@ -436,11 +440,22 @@ proc mangleMember(res: Resolution, mem: Decl, names: MangleNames,
   # of these holds code a member walk reaches: a top-level one is walked by
   # mangleDeclRefs, and `ownExprs` reaches its expressions.
   of dkActor, dkTask, dkConst, dkStaticAssert, dkRegistry, dkPool, dkSlab, dkArena,
-     dkRegister, dkErrors, dkResources, dkImport, dkFnSig, dkSatisfies,
+     dkRegister, dkBind, dkErrors, dkResources, dkImport, dkFnSig, dkSatisfies,
      dkInterface, dkGroup, dkPublic, dkWhen:
     discard
 
 proc mangleModuleWith(res: Resolution, m: Module, names: MangleNames)
+
+proc mangleSatisfied(d: Decl, names: MangleNames) =
+  ## The interfaces an object promises, kept as names: renamed with the
+  ## interface (a qualified one, `a::Shape`, is renamed), or `satisfiersOf`
+  ## matches the object against a name that no longer exists.
+  if d.kind == dkObject:
+    for n in d.satisfies.mitems:
+      if names.getOrDefault(n) == nkInterface: n = mangleName(n, nkInterface)
+  elif d.kind == dkSatisfies:
+    for n in d.satisfyTargets.mitems:
+      if names.getOrDefault(n) == nkInterface: n = mangleName(n, nkInterface)
 
 proc mangleDeclRefs(res: Resolution, d: Decl, names: MangleNames) =
   ## Rename every reference INSIDE a declaration, before the declaration
@@ -451,6 +466,7 @@ proc mangleDeclRefs(res: Resolution, d: Decl, names: MangleNames) =
   ## three, so a new DeclKind is reached here automatically once it is listed
   ## in those iterators — which is the point of having them.
   for t in d.ownTypes: mangleType(t, names)
+  mangleSatisfied(d, names)
 
   # A fn's body needs its params in scope as locals; mangleFnBody knows that.
   # A task's is the same shape, spelled with fnParams. Both also re-mangle

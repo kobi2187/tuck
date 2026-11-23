@@ -185,7 +185,7 @@ tuckˑtypeˑInterval :: struct {
 }
 
 tuckˑfnˑseconds :: proc (self: tuckˑtypeˑInterval) -> int {
-  return (self.ticks / 10)
+  return rt.tuckDivI(int(self.ticks), int(10), "int")
 }
 
 tuckˑfnˑlongEnough :: proc (span: $T, atLeast: int, $tuckˑfnˑseconds: proc(self: T) -> int) -> bool {

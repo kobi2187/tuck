@@ -239,6 +239,11 @@ proc contextualDecl(p: var Parser, sp: Span, handled: var bool): Decl =
   of "resources":
     if p.peek().kind in {tkColon, tkLBracket}: return p.parseResourcesDecl(sp)
   of "register": return p.parseRegisterDecl(sp)
+  # `bind LINE -> fn`: gated on a line name and `->` following, so a
+  # variable named `bind` still parses as an expression.
+  of "bind":
+    if p.peek().kind == tkIdent and p.peek(2).kind == tkArrow:
+      return p.parseBindDecl(sp)
   of "pool": return p.parsePoolDecl(sp)
   of "slab": return p.parseSlabDecl(sp)
   of "arena": return p.parseArenaDecl(sp)

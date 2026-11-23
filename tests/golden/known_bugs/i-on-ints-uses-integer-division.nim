@@ -4,6 +4,6 @@ proc tuckˑfnˑmain*(): int
 
 proc tuckˑfnˑmain*(): int =
   var tuckˑvˑa = 10
-  tuckˑvˑa = (tuckˑvˑa div 4)
+  tuckˑvˑa = tuckDivI[int](tuckˑvˑa, 4, "int")
   return tuckˑvˑa
 

@@ -153,6 +153,8 @@ type
     dcTyAmbiguousType = "TK-TY47"       ## a bare type name two imports both declare
     dcTyArithOnSeq = "TK-TY48"          ## `+ - * %` on a Seq or Array: no concatenation exists
     dcTyNotOnOptional = "TK-TY49"       ## `not` applied to a `T?`/`!T`: presence is tested with `.ok`
+    dcTyFoldedName = "TK-TY50"          ## two names in one scope Nim folds to one (`my_val`, `myVal`)
+    dcTyGeneratedName = "TK-TY51"       ## a type named like one the compiler makes (`<Pool>Handle`)
 
     # --- CO / DE / ST / TR / CN / EF / PE / PO / SE / SM -------------------
     dcCoNotImplemented = "TK-CO01"      ## a `satisfies` member is missing
@@ -178,6 +180,7 @@ type
     dcEfMemoUnbounded = "TK-EF09"       ## `fn memo` with no size: the cache grows without bound
     dcEfIsrShared = "TK-EF10"            ## state touched by both an ISR and normal code
     dcEfIsrProtected = "TK-EF11"         ## isrShared state accessed outside a critical section
+    dcEfSharedState = "TK-EF12"         ## a [pure] fn touching shared state, or an [irq_safe] one waiting
     dcPeClash = "TK-PE01"               ## `pending:` clashes with a real decl
     dcPoMalformed = "TK-PO01"           ## the errors policy block is malformed
     dcPoFinishedStub = "TK-PO02"        ## a finished (strict) library holds a stub
@@ -224,6 +227,12 @@ type
     dcRgSignalPayload = "TK-RG08"       ## a `[signal]` event carries a payload
     dcRgOverflow = "TK-RG09"            ## `overflow:` off a stream, or an unknown policy
     dcRgIrqDelivery = "TK-RG10"         ## interrupt code raises an event with no delivery
+    dcBdNotIrq = "TK-BD01"              ## `bind` names no `[irq]` fn
+    dcBdLineTwice = "TK-BD02"           ## one interrupt line bound twice
+    dcBdFnTwice = "TK-BD03"             ## one `[irq]` fn bound to two lines
+    dcBdChannelUnbuilt = "TK-BD04"      ## `bind ... as Name`: ruled, not built yet
+    dcBdSetting = "TK-BD05"             ## a priority or queue size out of range
+    dcBdUnknownLine = "TK-BD06"         ## the board has no interrupt line by that name
     dcReReadOnly = "TK-RE01"            ## writing a field declared [read]
     dcReWriteOnly = "TK-RE02"           ## reading a field declared [write]
     dcReBitRange = "TK-RE03"            ## a bit index outside the register's width
@@ -279,6 +288,7 @@ proc categoryName*(d: DiagCode): string =
   of "ME": "Memory"
   of "IV": "Invariant"
   of "RG": "Registry"
+  of "BD": "Bind"
   of "RE": "Register"
   of "TM": "Timing"
   of "CR": "Crash"
@@ -580,6 +590,19 @@ proc parseExplanation(d: DiagCode): string =
     "\"is absent\" but is a type error on every backend (A107). Presence " &
     "is tested with `.ok`, as for a bare `let`. Fix: `not x.ok`, or bind " &
     "the result first (`let m = ...`) and guard it."
+  of dcTyFoldedName:
+    "Nim compares names by their first character exactly and the rest " &
+    "ignoring case and `_`, so `my_val` and `myVal` are one name to it. Two " &
+    "such spellings in one scope — top-level declarations of one kind, the " &
+    "fields of one record, the params of one fn, the locals of one body — " &
+    "built on Odin and D and failed on Nim (M17). A program is Tuck on " &
+    "every backend or on none, so both are refused. Fix: rename one."
+  of dcTyGeneratedName:
+    "A `pool P` makes the type `PHandle`, a `slab S` and an `arena A` make " &
+    "`SRef` and `ARef`, and a resource kind `udp` makes `UdpHandle`. A type " &
+    "declared under one of those names where the pool (or slab, arena, kind) " &
+    "is visible was silently replaced by the generated type (M23), so a " &
+    "construction of it built the handle. Fix: rename the type."
   of dcTyGuardNotAlone:
     "A condition that tests `.ok` of a `T?` or `!T` is that test alone: " &
     "`if r.ok:` or `if not r.ok:` (an `elif` and a conditional `for` the " &
@@ -922,6 +945,14 @@ proc ruleExplanation(d: DiagCode): string =
     "fn may not send. Fix: have the interrupt set a flag or write a ring " &
     "buffer that a task or actor drains; a lock-free single-producer mailbox " &
     "for ISR-only senders is a possible later addition."
+  of dcEfSharedState:
+    "A `[pure]` fn's answer depends on its arguments alone, which is what lets " &
+    "it be memoized, run at compile time or reordered. State another thread " &
+    "or the hardware owns breaks that: an actor's fields and `alive` (its " &
+    "thread changes them), a send or a `waitUntil`, a pool's or slab's cells, " &
+    "a register, the registry's `latest`. So a `[pure]` fn touches none of " &
+    "them. Separately, an `[irq_safe]` fn may not `waitUntil`: an interrupt " &
+    "cannot block. Fix: pass the value in as an argument, or drop the marker."
   of dcEfMemo:
     "`fn memo` caches a fn's result by its arguments, which is only correct " &
     "when the same arguments always give the same result. So the fn must be " &
@@ -1184,6 +1215,31 @@ proc ruleExplanation(d: DiagCode): string =
     "kind. Its handlers would run inside the interrupt, with I/O and the " &
     "error policy. Fix: mark the event `[stream]`, `[signal]` or `[latest]`, " &
     "so the handlers run after the interrupt returns."
+  of dcBdNotIrq:
+    "A `bind` wires an interrupt line to a fn the line runs when it fires, " &
+    "so that fn must be declared `[irq]`: interrupt code is held to stricter " &
+    "rules (strict errors, no allocation, delivery kinds). Fix: name the " &
+    "driver's `[irq]` fn, as `module.fn` when another module declares it."
+  of dcBdLineTwice:
+    "An interrupt line has one vector, so it runs one fn. Fix: remove one " &
+    "of the binds, or bind the other fn to a different line."
+  of dcBdFnTwice:
+    "One `[irq]` fn bound to two lines needs a channel per binding " &
+    "(`bind USART1 -> uart.onUart as Console`), so each line's events stay " &
+    "apart. That is ruled but not built yet (TK-BD04). Fix: bind it once."
+  of dcBdChannelUnbuilt:
+    "`bind ... as Name` (a channel per binding, owner ruling 2026-11-22) is " &
+    "ruled but not built yet. Fix: drop `as Name` and handle the driver's " &
+    "own registry events."
+  of dcBdSetting:
+    "A bind's `priority` is the NVIC priority, 0 (most urgent) to 255; the " &
+    "board keeps only its top bits. Its `queue` is how many messages each " &
+    "`[stream]` event the fn raises can hold, at least 1. Fix: use a value " &
+    "in range."
+  of dcBdUnknownLine:
+    "The board has no interrupt line by that name. Its lines are listed in " &
+    "`boards/<board>/interrupts.conf`, taken from the chip's SVD or " &
+    "reference manual. Fix: use one of the names the error lists."
   of dcRgNameClash:
     "Registry names are unique across the program, because a handler names " &
     "its registry (`on UartEvents.Rx`) and must reach exactly one. Fix: " &

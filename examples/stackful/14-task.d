@@ -16,6 +16,7 @@ tuckˑmodˑshapes_14_task.TRec_feed!(tuckˑtypeˑFeed) tuckˑfnˑparse(T0)(T0 p0
 
 
 rt.TuckResult!(tuckˑmodˑshapes_14_task.TRec_feed!(tuckˑtypeˑFeed)) tuckˑtaskˑfetchFeed(string url) {
+    scope(exit) rt.tuckDrop(url);
     rt.TuckResult!(tuckˑmodˑshapes_14_task.TRec_body!(string)) tuckˑvˑresp = tuckˑmodˑhttp.tuckˑfnˑget(url);
     scope(exit) rt.tuckDrop(tuckˑvˑresp);
     if ((tuckˑvˑresp.status == rt.TuckStatus.Ok)) {
