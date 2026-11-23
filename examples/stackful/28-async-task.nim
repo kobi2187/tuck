@@ -8,8 +8,10 @@ proc tuckˑfnˑstepIo*(n: int): tuple[v: int] =
   return (v: n)
 
 proc tuckˑtaskˑcompute*(base: int): tuple[r: int] =
-  var tuckˑvˑa = (tuckYield(); tuckˑfnˑstepIo(base))
-  var tuckˑvˑb = (tuckYield(); tuckˑfnˑstepIo(base))
+  tuckYield()
+  var tuckˑvˑa = tuckˑfnˑstepIo(base)
+  tuckYield()
+  var tuckˑvˑb = tuckˑfnˑstepIo(base)
   return (r: (tuckˑvˑa.v + tuckˑvˑb.v))
 
 proc tuckˑfnˑmain*(): int =

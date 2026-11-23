@@ -104,14 +104,14 @@ proc tuckˑfnˑlapFrom*(at: SlabRef, start: SlabRef): int =
   if not tuckˑvˑnext.ok:
     if true:
       return tuckSlabCell(tuckˑslabˑStops, at).value.minutes
-  return (tuckSlabCell(tuckˑslabˑStops, at).value.minutes + tuckˑfnˑlapFrom(tuckˑvˑnext.value, start))
+  return (let tuckLeft1 = tuckSlabCell(tuckˑslabˑStops, at).value.minutes; (tuckLeft1 + tuckˑfnˑlapFrom(tuckˑvˑnext.value, start)))
 
 proc tuckˑfnˑlapMinutes*(start: SlabRef): int =
   var tuckˑvˑnext = tuckSlabCell(tuckˑslabˑStops, start).value.next
   if not tuckˑvˑnext.ok:
     if true:
       return tuckSlabCell(tuckˑslabˑStops, start).value.minutes
-  return (tuckSlabCell(tuckˑslabˑStops, start).value.minutes + tuckˑfnˑlapFrom(tuckˑvˑnext.value, start))
+  return (let tuckLeft2 = tuckSlabCell(tuckˑslabˑStops, start).value.minutes; (tuckLeft2 + tuckˑfnˑlapFrom(tuckˑvˑnext.value, start)))
 
 proc tuckˑfnˑmain*(): int =
   var tuckˑvˑlist = tuckˑfnˑemptyList()
