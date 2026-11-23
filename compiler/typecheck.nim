@@ -2215,6 +2215,15 @@ proc isNoValue(t: Type): bool =
   ## assignment are both statements, so an `if` may have one of each (#148).
   t != nil and t.kind == tkNamed and t.name in ["void", "unit"]
 
+proc noValueSide(what, side: string, valueT: Type): string =
+  ## A value `if`/`match` where one side yields no value — it returns, or it
+  ## is a statement — and another yields `valueT`. It was reported as
+  ## "int vs unit", which names no mistake (audit Y19).
+  "Type Error: this " & what & " is used as a value, but " & side &
+    " produces no value (it returns, or is a statement) where the others " &
+    "produce " & typeName(valueT) & ". Fix: give it a value, or use the " &
+    "statement " & what & " and assign in each branch"
+
 proc synthIf(tc: var TypeChecker, e: Expr): Type =
   ## Branches that produce values must agree on the type.
   tc.checkCondition(e.cond, e.span)
@@ -2223,6 +2232,9 @@ proc synthIf(tc: var TypeChecker, e: Expr): Type =
   if e.elseBranch != nil and not isFlexible(thenT) and not isFlexible(elseT) and
      not (isNoValue(thenT) and isNoValue(elseT)) and
      not tc.compatible(thenT, elseT) and not tc.compatible(elseT, thenT):
+    if isNoValue(thenT) != isNoValue(elseT):
+      fail(noValueSide("if", "the " & (if isNoValue(thenT): "then" else: "else") &
+                       " branch", if isNoValue(thenT): elseT else: thenT), e.span)
     fail("Type Error: if branches produce different types: " &
          typeName(thenT) & " vs " & typeName(elseT), e.span)
   if isFlexible(thenT): elseT else: thenT
@@ -2341,6 +2353,8 @@ proc unifyArmType(tc: var TypeChecker, armT: var Type, t: Type, sp: Span) =
   if isNoValue(t) and isNoValue(armT): return
   if not isFlexible(t) and not isFlexible(armT) and
      not tc.compatible(t, armT) and not tc.compatible(armT, t):
+    if isNoValue(t) != isNoValue(armT):
+      fail(noValueSide("match", "an arm", if isNoValue(t): armT else: t), sp)
     fail("Type Error: match arms produce different types: " &
          typeName(armT) & " vs " & typeName(t), sp)
   if isFlexible(armT): armT = t
@@ -4711,7 +4725,7 @@ proc synthLit(tc: var TypeChecker, e: Expr): Type =
     let known = evalConstExpr(tc.module, e)
     let value = if known.isSome and tc.negatedLit: -known.get else: known.get(0)
     if e.litKind == lkInt and known.isSome and not fitsIn(want.name, value):
-      fail(dcTyCastOutOfRange, e.litValue & " does not fit " & want.name &
+      fail(dcTyCastOutOfRange, (if tc.negatedLit: "-" else: "") & e.litValue & " does not fit " & want.name &
            "; write a type it fits, or a smaller value", e.span)
     return tc.namedType(want.name, e.span)
   tc.namedType(base, e.span)
@@ -5678,8 +5692,21 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
     tc.noteVarGiven(e, targetT, valT)
   tc.forgetGuardsUnder(e, valT)
 
+proc failIfStatementIfAsValue(v: Expr) =
+  ## A value `if` is one line, `if c: a else: b` (rulings R2/R3); one whose
+  ## branches are BLOCKS is the statement form, which has no value. Taken as
+  ## one, it checked (or reported a confusing "nothing receives" on a call
+  ## branch) and built to a wrong value on Odin and D (audit Y19).
+  if v == nil or v.kind != exkIf or v.elseBranch == nil or isValueIf(v): return
+  if v.thenBranch.kind != exkBlock and v.elseBranch.kind != exkBlock: return
+  fail("Type Error: an `if` whose branches are indented blocks is the " &
+       "statement form and has no value (R2). Fix: write the value `if` on " &
+       "one line, `if c: a else: b`, or declare the binding first and " &
+       "assign it in each branch", v.span)
+
 proc synthAssign(tc: var TypeChecker, e: Expr): Type =
   ## An assignment is a statement: it yields unit.
+  failIfStatementIfAsValue(e.assignVal)
   if e.isDecl and e.target != nil and e.target.kind == exkVar:
     tc.synthDeclAssign(e)
   else:
@@ -5775,6 +5802,7 @@ proc failValueWithoutReturnType(tc: TypeChecker, e: Expr) =
 proc synthReturn(tc: var TypeChecker, e: Expr): Type =
   ## A return checks its value against the fn's declared return type; a body
   ## that declares none takes no value at all.
+  failIfStatementIfAsValue(e.returnVal)
   if e.returnVal != nil and tc.currentRet != nil:
     tc.checkReturnValue(e)
     if isWrapper(tc.currentRet):

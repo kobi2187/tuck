@@ -1020,8 +1020,9 @@ proc checkProgram(path: string, needBodies = false,
     let t0 = vBegin(psResolveDeclRefs)
     try:
       resolveDeclRefs(result)
-      for lm in result: checkNameFolding(lm.m)   # M17: one name to Nim
-      checkModuleFolding(result.mapIt(it.m))
+      for lm in result:
+        inModule(lm.path): checkNameFolding(lm.m)   # M17: one name to Nim
+      checkModuleFolding(result)
       checkGeneratedNames(result)                # M23: `<Pool>Handle` and kin
     except SemanticError as err:
       dieSemanticError(path, err)

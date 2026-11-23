@@ -25,6 +25,7 @@ import tables, strutils
 import ast, ast_ops, ast_query
 import name_prefix
 import diagnostics
+import semantics   # inModule: an error names its own module's file
 import typecheck_util
 import resolution   # the generated names: poolHandleName, slabRefName, ...
 import modules      # LoadedModule, importsOf
@@ -112,23 +113,24 @@ proc checkNameFolding*(m: Module) =
     of dkType: checkTypeFields(d.typeBody)
     else: discard
 
-proc checkModuleFolding*(mods: openArray[Module]) =
+proc checkModuleFolding*(mods: openArray[LoadedModule]) =
   ## The program's module names are one scope: each is a Nim module and an
   ## import alias (`tuckˑmodˑa_b`), so `a_b` and `ab` — or `a-b`, whose
   ## hyphen becomes `_` — were one ambiguous alias to Nim (M17). Reported at
   ## the import that brings the second spelling in.
   var seen: Table[string, string]
-  for m in mods:
-    for imp in m.decls(dkImport):
-      let key = nimFolded(imp.name.replace("-", "_"))
-      let prior = seen.getOrDefault(key)
-      if prior == "":
-        seen[key] = imp.name
-      elif prior != imp.name:
-        fail(dcTyFoldedName, "modules '" & imp.name & "' and '" & prior &
-             "' are one name to Nim (it ignores case and `_` after the first " &
-             "character, and a module's `-` is spelled `_`). Fix: rename one " &
-             "module's file", imp.span)
+  for lm in mods:
+    inModule(lm.path):
+      for imp in lm.m.decls(dkImport):
+        let key = nimFolded(imp.name.replace("-", "_"))
+        let prior = seen.getOrDefault(key)
+        if prior == "":
+          seen[key] = imp.name
+        elif prior != imp.name:
+          fail(dcTyFoldedName, "modules '" & imp.name & "' and '" & prior &
+               "' are one name to Nim (it ignores case and `_` after the first " &
+               "character, and a module's `-` is spelled `_`). Fix: rename one " &
+               "module's file", imp.span)
 
 proc generatedTypeNames(m: Module): Table[string, string] =
   ## The type names the compiler makes for `m`'s own declarations, each with
@@ -152,14 +154,15 @@ proc checkGeneratedNames*(prog: openArray[LoadedModule]) =
   var made: Table[string, Table[string, string]]
   for lm in prog: made[lm.name] = generatedTypeNames(lm.m)
   for lm in prog:
-    var visible = made[lm.name]
-    for imp in importsOf(lm.m):
-      for k, v in made.getOrDefault(imp): visible[k] = v
-    if visible.len == 0: continue
-    for d in lm.m.decls:
-      if d == nil or isImportedCopy(d) or
-         d.kind notin {dkType, dkObject, dkInterface, dkFnSig, dkActor}: continue
-      if d.name in visible:
-        fail(dcTyGeneratedName, "'" & d.name & "' is the type the compiler " &
-             "makes for " & visible[d.name] & ", so this declaration and that " &
-             "type would be one name. Fix: rename this one", d.span)
+    inModule(lm.path):
+      var visible = made[lm.name]
+      for imp in importsOf(lm.m):
+        for k, v in made.getOrDefault(imp): visible[k] = v
+      if visible.len == 0: continue
+      for d in lm.m.decls:
+        if d == nil or isImportedCopy(d) or
+           d.kind notin {dkType, dkObject, dkInterface, dkFnSig, dkActor}: continue
+        if d.name in visible:
+          fail(dcTyGeneratedName, "'" & d.name & "' is the type the compiler " &
+               "makes for " & visible[d.name] & ", so this declaration and that " &
+               "type would be one name. Fix: rename this one", d.span)

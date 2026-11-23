@@ -8546,4 +8546,69 @@ fn main() -> int [io]:
   t.quietly: t.hostRuns "A189: an await of a task awaiting a sleeping child", 3
   t.bugFixed "A189: an await of a task awaiting a sleeping child"
 
+  # A190 (class I). An error inside an imported module named the ENTRY file
+  # at the module's line (E18/M11): the whole-program name and registry
+  # checks reported against the entry; each module's check now names its
+  # own file. TK-TY41 dropped the sign (`-200` read "200"), a value `if` or
+  # `match` with a returning branch said "int vs unit", and TK-EF02 fired for
+  # a bare unused `[io]` only (Y19, EF02). A block-bodied `if` taken as a
+  # value — the statement form by R2 — checked and built to a wrong value on
+  # Odin and D; it is refused, saying so.
+  t.src """
+import drv
+
+fn main() -> int:
+  return 0
+"""
+  t.addFile "drv.tuck", """
+fn my_val() -> int:
+  return 1
+
+fn myVal() -> int:
+  return 2
+"""
+  t.quietly: t.badCheck "A190: an error in an import names the import's file", "drv\\.tuck:4:1.*TK-TY50"
+  t.bugFixed "A190: an error in an import names the import's file"
+  t.src """
+fn main() -> int:
+  let a: i8 = -200
+  return 0
+"""
+  t.quietly: t.badCheck "A190: TK-TY41 keeps the sign", "-200 does not fit i8"
+  t.bugFixed "A190: TK-TY41 keeps the sign"
+  t.src """
+fn f({c: bool}) -> int:
+  let x = if c: 5 else: return 0
+  return x
+
+fn main() -> int:
+  return {c: true} f
+"""
+  t.quietly: t.badCheck "A190: a returning branch in a value if says so", "else branch produces no value"
+  t.bugFixed "A190: a returning branch in a value if says so"
+  t.src """
+fn main() -> int:
+  let k = 3
+  let v = if k > 5:
+    1
+  else:
+    2
+  return v
+"""
+  t.quietly: t.badCheck "A190: a block-bodied if is not a value", "statement form and has no value"
+  t.bugFixed "A190: a block-bodied if is not a value"
+  t.src """
+fn main() -> int:
+  let k = 3
+  let v = if k > 5: 1 else: 2
+  var w = 0
+  if k > 5:
+    w = 1
+  else:
+    w = 2
+  return v + w
+"""
+  t.quietly: t.runs "A190: ...the value if and the statement if still work", 4
+  t.bugFixed "A190: ...the value if and the statement if still work"
+
   t.finish()

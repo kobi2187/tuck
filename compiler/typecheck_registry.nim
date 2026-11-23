@@ -7,9 +7,11 @@
 import ast, tables, sets, sequtils, strutils
 import ast_query, ast_ops
 import typecheck_util
+import semantics   # inModule: an error names its own module's file
 
 type RegistryEvents* = tuple[regs: Table[string, Decl],
-                            variants: Table[string, VariantDef]]
+                            variants: Table[string, VariantDef],
+                            regPath: Table[string, string]]
   ## Every registry in the program by name, and every event (variant) by
   ## `Registry.Event` name — what the raiser/handler pairing checks against.
 
@@ -113,45 +115,49 @@ proc collectRegistries*(mods: seq[tuple[name, path: string, m: Module]]):
   ## `on Registry.Event` reaches exactly one. The whole surface is a report
   ## (`tuck audit --events`) rather than one declaration.
   # Name uniqueness (TK-RG07) is resolve_refs' collect, which runs first.
-  for (modName, _, m) in mods:
-    var mine = ""
-    for d in m.decls:
-      if d == nil or d.kind != dkRegistry or isImportedCopy(d): continue
-      if mine != "" and d.name != mine:
-        fail(dcRgPerModule,
-             "registry '" & d.name & "': module '" & modName & "' already " &
-             "declares registry '" & mine & "' — a module declares at most one",
-             d.span)
-      mine = d.name
-      result.regs[d.name] = d
-      for v in d.variants:
-        checkDelivery(d.name & "." & v.name, v)
-        result.variants[d.name & "." & v.name] = v
+  for (modName, path, m) in mods:
+    inModule(path):
+      var mine = ""
+      for d in m.decls:
+        if d == nil or d.kind != dkRegistry or isImportedCopy(d): continue
+        if mine != "" and d.name != mine:
+          fail(dcRgPerModule,
+               "registry '" & d.name & "': module '" & modName & "' already " &
+               "declares registry '" & mine & "' — a module declares at most one",
+               d.span)
+        mine = d.name
+        result.regs[d.name] = d
+        for v in d.variants:
+          checkDelivery(d.name & "." & v.name, v)
+          result.variants[d.name & "." & v.name] = v
+        result.regPath[d.name] = path
 
 proc collectHandlers*(mods: seq[tuple[name, path: string, m: Module]],
                      ev: RegistryEvents): HashSet[string] =
   ## RULE 2 — an `on Registry.Event` handler may only name a declared event.
   ## Handlers are parsed as fns named `Registry.Event`.
-  for (_, _, m) in mods:
-    for d in m.decls:
-      if d == nil or d.kind != dkFn or "." notin d.name: continue
-      let parts = d.name.split('.')
-      if parts.len != 2 or parts[0] notin ev.regs: continue
-      if d.name notin ev.variants:
-        fail(dcRgUnknownEvent,
-             "no event '" & parts[1] & "' in registry '" & parts[0] &
-             "' — `on` may only handle variants the registry declares",
-             d.span)
-      result.incl(d.name)
+  for (_, path, m) in mods:
+    inModule(path):
+      for d in m.decls:
+        if d == nil or d.kind != dkFn or "." notin d.name: continue
+        let parts = d.name.split('.')
+        if parts.len != 2 or parts[0] notin ev.regs: continue
+        if d.name notin ev.variants:
+          fail(dcRgUnknownEvent,
+               "no event '" & parts[1] & "' in registry '" & parts[0] &
+               "' — `on` may only handle variants the registry declares",
+               d.span)
+        result.incl(d.name)
 
 proc failIfUnhandledEvent*(ev: RegistryEvents, handled: HashSet[string]) =
   ## RULE 3 — an event nobody handles is a signal that goes nowhere.
   for key, v in ev.variants:
     if key notin handled:
-      fail(dcRgNoHandler,
-           "event '" & key & "' has no handler — every declared event needs " &
-           "at least one `on " & key & "(...)`, or remove the variant",
-           v.span)
+      inModule(ev.regPath.getOrDefault(key.split('.')[0])):
+        fail(dcRgNoHandler,
+             "event '" & key & "' has no handler — every declared event needs " &
+             "at least one `on " & key & "(...)`, or remove the variant",
+             v.span)
 
 proc checkErrCodeCollisions*(mods: seq[tuple[name, path: string, m: Module]]) =
   ## Every declared error id ("module/Enum.Variant") must hash uniquely
@@ -159,44 +165,46 @@ proc checkErrCodeCollisions*(mods: seq[tuple[name, path: string, m: Module]]) =
   ## is a compile error with a rename pointer.
   var seen = initTable[uint16, string]()
   for (name, path, m) in mods:
-    for d in m.sumTypes():
-      if d.origin != NoModule: continue  # origin owns it
-      for v in d.typeBody.variants:
-        if v.fields.len > 0: continue  # error enums are fieldless
-        let full = name & "/" & d.name & "." & v.name
-        let code = errIdCode(full)
-        if seen.hasKey(code) and seen[code] != full:
-          fail("Error Id Collision: '" & full & "' and '" & seen[code] &
-               "' hash to the same 16-bit code (0x" & $code &
-               ") — rename one variant", d.span)
-        seen[code] = full
+    inModule(path):
+      for d in m.sumTypes():
+        if d.origin != NoModule: continue  # origin owns it
+        for v in d.typeBody.variants:
+          if v.fields.len > 0: continue  # error enums are fieldless
+          let full = name & "/" & d.name & "." & v.name
+          let code = errIdCode(full)
+          if seen.hasKey(code) and seen[code] != full:
+            fail("Error Id Collision: '" & full & "' and '" & seen[code] &
+                 "' hash to the same 16-bit code (0x" & $code &
+                 ") — rename one variant", d.span)
+          seen[code] = full
 
 proc checkRaiseSites*(mods: seq[tuple[name, path: string, m: Module]],
                      ev: RegistryEvents) =
   ## RULE 4 — a raise must name a declared event, carry the right payload, and
   ## not come from the handler of that same event (raising is synchronous, so
   ## that is an immediate infinite loop).
-  for (_, _, m) in mods:
-    # allDecls + ownExprs, not allFns: a raise in a TASK body, or a select
-    # arm, was never checked (the KNOWN GAP raisedEventsIn's comment names).
-    for d in m.allDecls:
-      if d == nil or isImportedCopy(d): continue
-      var raises: seq[tuple[reg, ev: string, sp: Span, payload: Expr]]
-      for e in d.ownExprs: raisedEventsIn(e, raises)
-      for r in raises:
-        if r.reg notin ev.regs: continue        # not a registry raise at all
-        let key = r.reg & "." & r.ev
-        if key notin ev.variants:
-          fail(dcRgUnknownEvent,
-               "registry '" & r.reg & "' declares no event '" & r.ev &
-               "' — `raise` may only name variants the registry declares",
-               r.sp)
-        if d.name == key:
-          fail(dcRgSelfRaise,
-               "handler for '" & key & "' raises the event it handles — " &
-               "raising is synchronous, so this is an immediate infinite " &
-               "loop", r.sp)
-        checkRaisePayload(key, ev.variants[key].fields, r.payload, r.sp)
+  for (_, path, m) in mods:
+    inModule(path):
+      # allDecls + ownExprs, not allFns: a raise in a TASK body, or a select
+      # arm, was never checked (the KNOWN GAP raisedEventsIn's comment names).
+      for d in m.allDecls:
+        if d == nil or isImportedCopy(d): continue
+        var raises: seq[tuple[reg, ev: string, sp: Span, payload: Expr]]
+        for e in d.ownExprs: raisedEventsIn(e, raises)
+        for r in raises:
+          if r.reg notin ev.regs: continue        # not a registry raise at all
+          let key = r.reg & "." & r.ev
+          if key notin ev.variants:
+            fail(dcRgUnknownEvent,
+                 "registry '" & r.reg & "' declares no event '" & r.ev &
+                 "' — `raise` may only name variants the registry declares",
+                 r.sp)
+          if d.name == key:
+            fail(dcRgSelfRaise,
+                 "handler for '" & key & "' raises the event it handles — " &
+                 "raising is synchronous, so this is an immediate infinite " &
+                 "loop", r.sp)
+          checkRaisePayload(key, ev.variants[key].fields, r.payload, r.sp)
 
 proc checkRegistry*(mods: seq[tuple[name, path: string, m: Module]]) =
   ## spec Part 10: the whole event surface is readable from the `registry`
