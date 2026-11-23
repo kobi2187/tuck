@@ -12,14 +12,17 @@ struct tuckˑregistryˑAppEvents {
 }
 
 __gshared tuckˑregistryˑAppEvents latesttuckˑregistryˑAppEvents;
+__gshared bool latestRaisedtuckˑregistryˑAppEvents;
 
 void raise_tuckˑregistryˑAppEvents_SensorFailure(ubyte port, string reason) {
     latesttuckˑregistryˑAppEvents = tuckˑregistryˑAppEvents(tuckˑregistryˑAppEventsKind.SensorFailure, port: port, reason: reason);
+    latestRaisedtuckˑregistryˑAppEvents = true;
     tuckˑfnˑAppEvents_SensorFailure(port, reason);
 }
 
 void raise_tuckˑregistryˑAppEvents_LowMemory(uint remaining) {
     latesttuckˑregistryˑAppEvents = tuckˑregistryˑAppEvents(tuckˑregistryˑAppEventsKind.LowMemory, remaining: remaining);
+    latestRaisedtuckˑregistryˑAppEvents = true;
     tuckˑfnˑAppEvents_LowMemory(remaining);
 }
 

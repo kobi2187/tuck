@@ -349,6 +349,7 @@ iterator childSlots*(e: Expr): var Expr =
       yield e.dispatchRecv
       for arm in e.dispatchArms.mitems: yield arm.call
     of exkIfaceIs, exkIfacePayload: yield e.tagSubject
+    of exkLatestIs: yield e.latestReg
     of exkWrapOk, exkAbsent: yield e.optValue
     of exkPoolOp:
       yield e.poolRef

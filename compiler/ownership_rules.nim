@@ -171,6 +171,7 @@ proc kindUses(res: Resolution, e: Expr): seq[ChildUse] =
   of exkValidate: @[(e.validated, uBorrow)]
   of exkIfaceCall: dispatchUses(e)
   of exkIfaceIs: @[(e.tagSubject, uBorrow)]
+  of exkLatestIs: @[]   # reads the registry's own slot, no local value
   of exkIfacePayload: @[(e.tagSubject, uProject)]
   of exkWrapOk, exkAbsent: @[(e.optValue, uThrough)]
   of exkPoolOp:

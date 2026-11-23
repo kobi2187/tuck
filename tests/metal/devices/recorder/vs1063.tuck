@@ -1,0 +1,102 @@
+# VLSI VS1063a over SPI1 (datasheet v1.33). Two chip selects: XCS frames an
+# SCI command (opcode 0x02 write / 0x03 read, register, 16-bit word, MSB
+# first, §8.4); XDCS frames SDI audio data. DREQ high means the chip can take
+# an SCI command or 32 more SDI bytes. Every wait is bounded: a chip that
+# stops answering is an error, never a hang.
+
+import board
+import session
+
+type CodecError:
+  | NotReady
+
+const spins = 20000
+
+fn spi({tx: int}) -> int:
+  ## One byte each way on SPI1.
+  for not SPI1_SR.TXE:
+    discard
+  SPI1_DR.DR = tx ~u32
+  for not SPI1_SR.RXNE:
+    discard
+  return SPI1_DR.DR ^int
+
+fn waitDreq() -> !int [io, error: CodecError]:
+  var n = 0
+  for not GPIOB_IDR.IDR1:
+    n = n + 1
+    if n > spins:
+      err CodecError.NotReady
+  return n
+
+fn sciWrite({reg: int, value: int}) -> !int [io, error: CodecError]:
+  let ready = waitDreq
+  if not ready.ok:
+    err ready.err
+  GPIOA_BSRR.BSRR = 1048576            # XCS low (reset bit 4: bit 20)
+  let a = {tx: 2} spi
+  let b = {tx: reg} spi
+  let c = {tx: value /i 256} spi
+  let d = {tx: value % 256} spi
+  GPIOA_BSRR.BSRR = 16                 # XCS high
+  return value
+
+fn sciRead({reg: int}) -> !int [io, error: CodecError]:
+  let ready = waitDreq
+  if not ready.ok:
+    err ready.err
+  GPIOA_BSRR.BSRR = 1048576
+  let a = {tx: 3} spi
+  let b = {tx: reg} spi
+  let hi = {tx: 0} spi
+  let lo = {tx: 0} spi
+  GPIOA_BSRR.BSRR = 16
+  return hi * 256 + lo
+
+fn startRecording() -> !int [io, error: CodecError]:
+  ## The writes of session.mp3RecordingSetup, in order.
+  for w in mp3RecordingSetup:
+    let r = {reg: w.reg, value: w.value} sciWrite
+    if not r.ok:
+      err r.err
+  return 0
+
+fn wordsWaiting() -> !int [io, error: CodecError]:
+  ## §11.6.3: SCI_HDAT1 is how many 16-bit words SCI_HDAT0 holds for us.
+  return {reg: sciHdat1} sciRead
+
+fn nextWord() -> !int [io, error: CodecError]:
+  return {reg: sciHdat0} sciRead
+
+fn cancelEncoding() -> !int [io, error: CodecError]:
+  ## §11.6.2 step 4: SM_CANCEL; the chip clears it within ~100 ms.
+  return {reg: sciMode, value: smSdiNew + smEncode + smCancel} sciWrite
+
+fn encoderStopped() -> !bool [io, error: CodecError]:
+  ## Recording is over when the chip clears SM_ENCODE itself.
+  let mode = {reg: sciMode} sciRead
+  if not mode.ok:
+    err mode.err
+  return (mode.value /i smEncode) % 2 == 0
+
+fn endFillByte() -> !int [io, error: CodecError]:
+  ## parametric_x.endFillByte, through SCI_WRAMADDR / SCI_WRAM (§11.10).
+  let point = {reg: sciWramAddr, value: endFillByteAddr} sciWrite
+  if not point.ok:
+    err point.err
+  return {reg: sciWram} sciRead
+
+fn setVolume({attenuation: int}) -> !int [io, error: CodecError]:
+  let word = {attenuation: attenuation} volumeWord
+  return {reg: sciVol, value: word} sciWrite
+
+fn sendAudio({data: Seq[u8], start: int, count: int}) -> !int [io, error: CodecError]:
+  ## Up to 32 bytes on SDI, after DREQ says there is room (§8.5).
+  let ready = waitDreq
+  if not ready.ok:
+    err ready.err
+  GPIOB_BSRR.BSRR = 65536              # XDCS low (reset bit 0: bit 16)
+  for i in start .. start + count - 1:
+    let x = {tx: data[i] ^int} spi
+  GPIOB_BSRR.BSRR = 1                  # XDCS high
+  return count

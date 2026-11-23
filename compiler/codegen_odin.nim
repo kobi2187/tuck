@@ -1845,6 +1845,13 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
      exkMixinRef:
     e.refName
+  of exkLatestIs:
+    # The slot is a value, zeroed until the first raise, hence the flag.
+    let reg = e.latestReg.refName
+    let pre = ctx.pkgQualifier(declOrigin(ctx.module, ctx.realModules, reg,
+                                          {dkRegistry}))
+    "(" & pre & latestRaisedName(reg) & " && " & pre & "latest" & reg & "." &
+      TagField & " == ." & e.latestEvent & ")"
   of exkField: ctx.genFieldAccess(e, ind)
   of exkQualified: genQualified(ctx, e)
   of exkCall: ctx.genOdinCall(e)

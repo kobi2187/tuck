@@ -217,7 +217,13 @@ type
     dcRgPayload = "TK-RG02"             ## an event payload does not match its variant
     dcRgNoHandler = "TK-RG03"           ## a declared event nothing handles
     dcRgSelfRaise = "TK-RG04"           ## a handler raises the event it handles
-    dcRgDuplicate = "TK-RG05"           ## more than one registry in a program
+    dcRgDuplicate = "TK-RG05"           ## RETIRED 2026-11-22: one registry per
+                                        ## program became one per module
+    dcRgPerModule = "TK-RG06"           ## a module declares more than one registry
+    dcRgNameClash = "TK-RG07"           ## two modules' registries share a name
+    dcRgSignalPayload = "TK-RG08"       ## a `[signal]` event carries a payload
+    dcRgOverflow = "TK-RG09"            ## `overflow:` off a stream, or an unknown policy
+    dcRgIrqDelivery = "TK-RG10"         ## interrupt code raises an event with no delivery
     dcReReadOnly = "TK-RE01"            ## writing a field declared [read]
     dcReWriteOnly = "TK-RE02"           ## reading a field declared [write]
     dcReBitRange = "TK-RE03"            ## a bit index outside the register's width
@@ -1154,9 +1160,34 @@ proc ruleExplanation(d: DiagCode): string =
     "loop, and raising is synchronous, so it is an immediate one. Fix: raise " &
     "a different event, or do the work directly."
   of dcRgDuplicate:
-    "One `registry` per program (spec Part 10). The point is that the entire " &
-    "event surface is readable in one place; two registries means two places " &
-    "and no guarantee they agree. Fix: merge them into one."
+    "Retired 2026-11-22. It refused a second `registry` in a program, which " &
+    "stopped a library declaring the events it raises. The owner's ruling " &
+    "(interrupts are events) made it one registry per MODULE (TK-RG06) with " &
+    "program-unique names (TK-RG07); the whole event surface is now a report, " &
+    "`tuck audit --events`. The number stays reserved."
+  of dcRgPerModule:
+    "A module declares at most one `registry`: a driver owns its events, and " &
+    "all of them read in one place in that module. Fix: merge them into one " &
+    "registry, or move one to its own module."
+  of dcRgSignalPayload:
+    "A `[signal]` event merges repeats into a count, so there is no single " &
+    "payload to deliver. Fix: drop the payload, or make it `[stream]` (every " &
+    "occurrence, queued) or `[latest]` (the most recent value)."
+  of dcRgOverflow:
+    "Only a `[stream]` queues, so only a stream can overflow, and its driver " &
+    "says what happens then: `overflow: drop_newest` (keep what is queued) or " &
+    "`overflow: drop_oldest` (keep the newest). An interrupt can never wait. " &
+    "Fix: remove `overflow:` from a signal or latest event, or name one of " &
+    "the two policies."
+  of dcRgIrqDelivery:
+    "Code reachable from an `[irq]` handler raised an event with no delivery " &
+    "kind. Its handlers would run inside the interrupt, with I/O and the " &
+    "error policy. Fix: mark the event `[stream]`, `[signal]` or `[latest]`, " &
+    "so the handlers run after the interrupt returns."
+  of dcRgNameClash:
+    "Registry names are unique across the program, because a handler names " &
+    "its registry (`on UartEvents.Rx`) and must reach exactly one. Fix: " &
+    "rename one, e.g. after its driver (`UartEvents`, `SpiEvents`)."
   of dcReReadOnly:
     "This register field is declared `[read]`, so writing it is a compile " &
     "error — on real hardware the write is either ignored or has a side " &

@@ -39,8 +39,15 @@ proc collectNames(prog: seq[LoadedModule]) =
       for d in lm.m.decls(kind):
         if isImportedCopy(d): continue   # the importer's shape; its origin is the name
         if semLayer.table.hasKey(d.name):
-          fail("Type Error: '" & d.name & "' is declared as " & what &
-               " more than once in this program", d.span)
+          when kind == dkRegistry:
+            # TK-RG07 (ruled 2026-11-22): a registry per module, names unique
+            # program-wide, so `on Registry.Event` reaches exactly one.
+            fail(dcRgNameClash, "registry '" & d.name & "' is also declared " &
+                 "by another module — registry names are unique across the " &
+                 "program, so a handler reaches exactly one", d.span)
+          else:
+            fail("Type Error: '" & d.name & "' is declared as " & what &
+                 " more than once in this program", d.span)
         semLayer.table[d.name] = d
   for lm in prog:
     for d in lm.m.decls(dkFn):

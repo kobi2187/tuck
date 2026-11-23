@@ -170,6 +170,16 @@ type
     ## Structurally identical to the anonymous pair it replaced, so
     ## positional construction `(name, expr)` still compiles.
 
+  EventDelivery* = enum
+    ## How a registry event travels from an interrupt to its handlers (owner
+    ## ruling 2026-11-22, DESIGN-interrupt-events §5). Only a registry event
+    ## carries one; `edNone` is an ordinary, synchronous event, which code
+    ## reachable from an `[irq]` handler may not raise (TK-RG10).
+    edNone      ## no bracket: raised synchronously, never from an interrupt
+    edStream    ## `[stream]`: every occurrence, queued (`queue: N` in `bind`)
+    edSignal    ## `[signal]`: repeats merge into a count; no payload
+    edLatest    ## `[latest]`: one slot, overwritten, read without tearing
+
   VariantDef* = object
     ## One variant of a sum type: its name and payload fields, plus an explicit
     ## ordinal when it mirrors a C enum.
@@ -178,6 +188,9 @@ type
     value*: string  # `A = 10` — explicit ordinal, needed to match a C enum;
                     # empty = sequential from 0, Tuck's and C's default
     span*: Span
+    delivery*: EventDelivery  # a registry event only: `[stream]` etc.
+    overflow*: string         # `[stream, overflow: drop_newest]`, as written;
+                              # the DRIVER fixes it (ruled 2026-11-22)
 
   Transition* = object
     ## One `From -> To` edge of a sum type's `transitions:` table.
@@ -518,6 +531,12 @@ type
     exkReset        # prepared only (ownership_write): the place `resetPlace`
                     # is empty after a move on some paths (rule M), so its
                     # drop frees nothing. Printed where drops are.
+    exkLatestIs     # `Registry.latest is Event` — spec Part 10's query: was
+                    # the most recently raised event of this registry `Event`?
+                    # False before anything is raised. Its own node, not an
+                    # interface `is` (exkIfaceIs) nor a call: the checker
+                    # validates the event name against the registry and each
+                    # backend prints it against the registry's latest slot.
 
   CopyKind* = enum
     ## What an `exkCopy` copies (rule S: a sink copies when it is not the
@@ -775,6 +794,9 @@ type
       comb*: CombKind
       combRecv*: Expr   # the receiver; for ckMerge, the struct OF members
       combArg*: Expr    # the payload struct; nil for ckMerge
+    of exkLatestIs:
+      latestReg*: Expr       # the registry (exkRegistryRef once resolved)
+      latestEvent*: string   # the event name, as written
     of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
        exkSlabRef, exkArenaRef:
       refName*: string  # the resolved name; the Decl itself is one

@@ -12,14 +12,17 @@ tuckˑregistryˑAppEvents :: struct {
 }
 
 latesttuckˑregistryˑAppEvents: tuckˑregistryˑAppEvents
+latestRaisedtuckˑregistryˑAppEvents: bool
 
 raise_tuckˑregistryˑAppEvents_SensorFailure :: proc(port: u8, reason: string) {
 	latesttuckˑregistryˑAppEvents = tuckˑregistryˑAppEvents{tuckTag = .SensorFailure, port = port, reason = reason}
+	latestRaisedtuckˑregistryˑAppEvents = true
 	tuckˑfnˑAppEvents_SensorFailure(port, reason)
 }
 
 raise_tuckˑregistryˑAppEvents_LowMemory :: proc(remaining: u32) {
 	latesttuckˑregistryˑAppEvents = tuckˑregistryˑAppEvents{tuckTag = .LowMemory, remaining = remaining}
+	latestRaisedtuckˑregistryˑAppEvents = true
 	tuckˑfnˑAppEvents_LowMemory(remaining)
 }
 

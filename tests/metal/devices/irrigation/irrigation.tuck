@@ -1,0 +1,80 @@
+# Program 1: a garden irrigation controller.
+#
+#   STM32F103C8T6 "Blue Pill"   the controller (bluepill.tuck)
+#   Maxim DS3231 RTC (ZS-042)    keeps the weekday and time; its minute alarm
+#                                pulls PB0 low once a minute (ds3231.tuck)
+#   YF-S201 flow meter           counted by TIM2 in hardware, 450 per litre
+#   TowerPro MG996R servo        turns a 1/2" quarter-turn brass ball valve
+#
+# Once a minute: read the clock, find the watering window it falls in, and
+# let the decision table (schedule.tuck) open, keep, close, or raise an alarm,
+# from what the flow meter says happened in the minute before.
+
+import schedule
+import bluepill
+import ds3231
+
+registry ClockEvents:
+  | Minute()  [signal]          # the RTC's minute alarm; repeats merge
+
+fn onRtcAlarm() [irq, irq_safe, no_alloc]:
+  ## EXTI0: the DS3231 pulled INT/SQW low. Acknowledge the line (write 1 to
+  ## clear) and hand the rest to the minute handler. The RTC's own A2F flag
+  ## is cleared there: an I2C transfer is far too slow for an interrupt.
+  EXTI_PR.PR = 1
+  ClockEvents.raise Minute
+
+fn plan() -> Seq[Slot]:
+  return [{day: Weekday.Mon, hour: 6, minute: 0, minutes: 20, litres: 100} Slot,
+          {day: Weekday.Thu, hour: 6, minute: 0, minutes: 20, litres: 100} Slot,
+          {day: Weekday.Sat, hour: 19, minute: 30, minutes: 15, litres: 120} Slot]
+
+fn dueSlot({slots: Seq[Slot], c: Clock}) -> int:
+  for i in 0 .. slots.len - 1:
+    if {s: slots[i], day: c.day, hour: c.hour, minute: c.minute} inWindow:
+      return i
+  return -1
+
+actor Garden [queue: 4]:
+  valve: Valve = {open: false, faulted: false, slot: -1, slotStart: 0, lastCount: 0} Valve
+  alarms: int = 0
+
+  fn failSafe():
+    ## No clock, no schedule: shut the water and count it, every minute.
+    servoUs {us: servoClosedUs}
+    valve = valve with {open: false}
+    alarms = alarms + 1
+
+  on ClockEvents.Minute() [io]:
+    let ack = acknowledgeAlarm
+    if not ack.ok:
+      failSafe
+      return
+    let c = readClock
+    if not c.ok:
+      failSafe
+      return
+    let slots = plan
+    let due = {slots: slots, c: c.value} dueSlot
+    let quota = if due >= 0: slots[due].litres else: 0
+    let s = {v: valve, due: due, quota: quota, count: flowCount} step
+    servoUs {us: s.pulseUs}
+    valve = s.valve
+    if s.action == Action.Alarm:
+      alarms = alarms + 1
+
+fn main() -> int [io]:
+  setupClocksAndPins
+  setupFlowCounter
+  setupServoPwm {us: servoClosedUs}       # power up with the valve shut
+  setupI2c
+  let armed = armMinuteAlarm
+  if not armed.ok:
+    return 1
+  setupAlarmLine
+  # Until `bind` places onRtcAlarm in the vector table (bare-metal roadmap
+  # 2.2), the pending bit is polled and the handler called by hand.
+  for true:
+    if EXTI_PR.PR != 0:
+      onRtcAlarm
+  return 0

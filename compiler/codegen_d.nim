@@ -1577,6 +1577,13 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
      exkMixinRef:
     e.refName
+  of exkLatestIs:
+    # The slot is a value, zeroed until the first raise, hence the flag.
+    let reg = e.latestReg.refName
+    let pre = ctx.pkgQualifierD(declOrigin(ctx.module, ctx.realModules, reg,
+                                           {dkRegistry}))
+    "(" & pre & latestRaisedName(reg) & " && " & pre & "latest" & reg & "." &
+      TagField & " == " & pre & reg & "Kind." & e.latestEvent & ")"
   of exkField: ctx.genDField(e)
   of exkQualified: ctx.genDQualified(e)
   of exkStruct: ctx.genDStructLit(e)

@@ -15,19 +15,23 @@ tuckˑregistryˑSystemEvents :: struct {
 }
 
 latesttuckˑregistryˑSystemEvents: tuckˑregistryˑSystemEvents
+latestRaisedtuckˑregistryˑSystemEvents: bool
 
 raise_tuckˑregistryˑSystemEvents_PlaybackStarted :: proc() {
 	latesttuckˑregistryˑSystemEvents = tuckˑregistryˑSystemEvents{tuckTag = .PlaybackStarted}
+	latestRaisedtuckˑregistryˑSystemEvents = true
 	tuckˑfnˑSystemEvents_PlaybackStarted()
 }
 
 raise_tuckˑregistryˑSystemEvents_PlaybackStopped :: proc() {
 	latesttuckˑregistryˑSystemEvents = tuckˑregistryˑSystemEvents{tuckTag = .PlaybackStopped}
+	latestRaisedtuckˑregistryˑSystemEvents = true
 	tuckˑfnˑSystemEvents_PlaybackStopped()
 }
 
 raise_tuckˑregistryˑSystemEvents_HardwareError :: proc(code: u8) {
 	latesttuckˑregistryˑSystemEvents = tuckˑregistryˑSystemEvents{tuckTag = .HardwareError, code = code}
+	latestRaisedtuckˑregistryˑSystemEvents = true
 	tuckˑfnˑSystemEvents_HardwareError(code)
 }
 

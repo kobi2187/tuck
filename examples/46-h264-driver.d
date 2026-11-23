@@ -110,19 +110,23 @@ struct tuckˑregistryˑVideo {
 }
 
 __gshared tuckˑregistryˑVideo latesttuckˑregistryˑVideo;
+__gshared bool latestRaisedtuckˑregistryˑVideo;
 
 void raise_tuckˑregistryˑVideo_FrameReady(long bytes) {
     latesttuckˑregistryˑVideo = tuckˑregistryˑVideo(tuckˑregistryˑVideoKind.FrameReady, bytes: bytes);
+    latestRaisedtuckˑregistryˑVideo = true;
     tuckˑfnˑVideo_FrameReady(bytes);
 }
 
 void raise_tuckˑregistryˑVideo_Overrun(long dropped) {
     latesttuckˑregistryˑVideo = tuckˑregistryˑVideo(tuckˑregistryˑVideoKind.Overrun, dropped: dropped);
+    latestRaisedtuckˑregistryˑVideo = true;
     tuckˑfnˑVideo_Overrun(dropped);
 }
 
 void raise_tuckˑregistryˑVideo_DecodeError(ubyte code) {
     latesttuckˑregistryˑVideo = tuckˑregistryˑVideo(tuckˑregistryˑVideoKind.DecodeError, code: code);
+    latestRaisedtuckˑregistryˑVideo = true;
     tuckˑfnˑVideo_DecodeError(code);
 }
 

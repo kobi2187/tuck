@@ -1,0 +1,131 @@
+# Maxim DS3231 real-time clock over I2C1, polled (RM0008 §26.3.3 master
+# sequence). Address 0x68; time registers 0x00..0x03 are BCD seconds,
+# minutes, hours (bit 6 clear = 24-hour mode) and day 1..7. Alarm 2
+# (0x0B..0x0D) with A2M2..A2M4 set fires once a minute, at seconds = 00;
+# INTCN + A2IE (control 0x0E) route it to INT/SQW, and the A2F flag (status
+# 0x0F, bit 1) holds the line low until software clears it.
+#
+# Every wait has a bound: a stuck bus (SDA held low by a half-finished
+# transfer after a brown-out) is a real failure on this part, and it must
+# surface as an error rather than a hung controller.
+
+import bluepill
+import schedule
+
+type RtcError:
+  | BusTimeout
+
+type Clock:
+  day: Weekday
+  hour: int
+  minute: int
+
+const writeAddr = 208      # 0x68 << 1
+const readAddr = 209       # 0x68 << 1 | 1
+const spins = 10000        # ~10 ms at 8 MHz: far beyond one 100 kHz byte
+
+fn start() -> !int [io, error: RtcError]:
+  I2C1_CR1.START = true
+  var n = 0
+  for not I2C1_SR1.SB:
+    n = n + 1
+    if n > spins:
+      err RtcError.BusTimeout
+  return n
+
+fn sendAddress({address: int}) -> !int [io, error: RtcError]:
+  I2C1_DR.DR = address ~u32
+  var n = 0
+  for not I2C1_SR1.ADDR:
+    n = n + 1
+    if n > spins:
+      err RtcError.BusTimeout
+  let busy = I2C1_SR2.BUSY        # reading SR1 then SR2 clears ADDR
+  return n
+
+fn sendByte({b: int}) -> !int [io, error: RtcError]:
+  I2C1_DR.DR = b ~u32
+  var n = 0
+  for not I2C1_SR1.BTF:
+    n = n + 1
+    if n > spins:
+      err RtcError.BusTimeout
+  return n
+
+fn receiveByte({last: bool}) -> !int [io, error: RtcError]:
+  ## NACK and STOP are set before the last byte arrives, so the RTC
+  ## releases the bus after it.
+  if last:
+    I2C1_CR1.ACK = false
+    I2C1_CR1.STOP = true
+  var n = 0
+  for not I2C1_SR1.RXNE:
+    n = n + 1
+    if n > spins:
+      err RtcError.BusTimeout
+  return I2C1_DR.DR ^int
+
+fn pointAt({reg: int}) -> !int [io, error: RtcError]:
+  ## START, the write address, and the register pointer.
+  let s = start
+  if not s.ok:
+    err s.err
+  let a = {address: writeAddr} sendAddress
+  if not a.ok:
+    err a.err
+  return {b: reg} sendByte
+
+fn writeRegister({reg: int, value: int}) -> !int [io, error: RtcError]:
+  let p = {reg: reg} pointAt
+  if not p.ok:
+    err p.err
+  let w = {b: value} sendByte
+  if not w.ok:
+    err w.err
+  I2C1_CR1.STOP = true
+  return value
+
+fn readBurst() -> !Clock [io, error: RtcError]:
+  ## Minutes, hours and day, register 0x01 onwards, after a repeated START.
+  let s = start
+  if not s.ok:
+    err s.err
+  I2C1_CR1.ACK = true
+  let a = {address: readAddr} sendAddress
+  if not a.ok:
+    err a.err
+  let minutes = {last: false} receiveByte
+  if not minutes.ok:
+    err minutes.err
+  let hours = {last: false} receiveByte
+  if not hours.ok:
+    err hours.err
+  let day = {last: true} receiveByte
+  if not day.ok:
+    err day.err
+  let wd = {day: day.value} weekdayFromDs3231
+  let hh = {raw: hours.value % 64} bcd
+  let mm = {raw: minutes.value % 128} bcd
+  return {day: wd, hour: hh, minute: mm} Clock
+
+fn readClock() -> !Clock [io, error: RtcError]:
+  let p = {reg: 1} pointAt
+  if not p.ok:
+    err p.err
+  return readBurst
+
+fn armMinuteAlarm() -> !int [io, error: RtcError]:
+  ## Alarm 2 every minute: A2M2, A2M3, A2M4 (bit 7 of 0x0B..0x0D) all set,
+  ## INTCN | A2IE in control, flags cleared.
+  for reg in 11 .. 13:
+    let m = {reg: reg, value: 128} writeRegister
+    if not m.ok:
+      err m.err
+  let c = {reg: 14, value: 6} writeRegister
+  if not c.ok:
+    err c.err
+  return {reg: 15, value: 0} writeRegister
+
+fn acknowledgeAlarm() -> !int [io, error: RtcError]:
+  ## Clears A2F, which releases INT/SQW.
+  return {reg: 15, value: 0} writeRegister

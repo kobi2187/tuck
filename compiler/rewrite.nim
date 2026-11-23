@@ -48,6 +48,7 @@
 # must move to the load path instead.
 import tables
 import ast
+import std/strutils
 import ../lexer
 from diagnostics import DiagCode, dcCoUnknownRename, dcMeSlabInValue, code
 from ast_query import isCompositionEntry, compositionTargetName
@@ -283,11 +284,50 @@ proc hoistSlabs(m: var Module) =
     decls.add d
   m.decls = decls
 
+proc actorEventMessage*(event: string): string =
+  ## The message name an actor's `on Registry.Event` handler is renamed to:
+  ## a message name cannot hold a dot.
+  "event_" & event.replace(".", "_")
+
+proc eventForwarder(actor: Decl, h: Decl, msg: string): Decl =
+  ## `on Registry.Event({fields}): Actor send <msg> {fields}` — the
+  ## top-level handler that hands the event to the actor's mailbox.
+  var payload = Expr(span: h.span, kind: exkStruct)
+  for p in h.fnParams:
+    payload.fields.add((name: p.name,
+                        value: Expr(span: h.span, kind: exkVar, name: p.name)))
+  let send = Expr(span: h.span, kind: exkSend, sendActor: actor.name,
+                  sendHandler: msg, sendPayload: payload)
+  Decl(span: h.span, kind: dkFn, name: h.name, fnParams: deepCopy(h.fnParams),
+       fnBody: Expr(span: h.span, kind: exkBlock, stmts: @[send]),
+       isOnHandler: true)
+
+proc liftActorEventHandlers(m: var Module) =
+  ## Spec Part 10: a registry handler may live "in a manager or actor". An
+  ## actor's `on Registry.Event(...)` runs in the ACTOR's context, as a
+  ## message: raising never runs actor code on the raiser's stack. So the
+  ## handler becomes an ordinary message handler (`event_Registry_Event`),
+  ## and a top-level `on Registry.Event` beside the actor forwards each
+  ## raise to its mailbox. Everything downstream then sees what it already
+  ## handles: a top-level registry handler (counted by TK-RG03, reached
+  ## across modules through the registry's handler list) and a send.
+  var lifted: seq[Decl]
+  for a in m.decls:
+    if a == nil or a.kind != dkActor: continue
+    for h in a.handlers:
+      if h == nil or h.kind != dkFn or not h.isOnHandler or '.' notin h.name:
+        continue
+      let msg = actorEventMessage(h.name)
+      lifted.add eventForwarder(a, h, msg)
+      h.name = msg
+  for d in lifted: m.decls.add d
+
 proc rewriteModule*(m: var Module) =
   ## Normalize a module in place, over EVERY body (`ast_ops.bodies`) — a
   ## hand-rolled walk over decl kinds is how dkActor, and later task bodies,
   ## came to be silently skipped. Mixins compose first, so the bodies they
   ## copy into objects are walked like any other.
   hoistSlabs(m)
+  liftActorEventHandlers(m)
   composeMixins(m)
   for e in m.bodies: rewriteExpr(e)

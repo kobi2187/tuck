@@ -47,7 +47,7 @@ proc baseCycles(e: Expr): int =
      exkDiscard, exkTripleDot, exkImport, exkActorRef, exkRegisterRef,
      exkRegistryRef, exkPoolRef, exkMixinRef: 1
   of exkField, exkQualified, exkCast, exkBinary, exkUnary, exkAssign,
-     exkReturn, exkCombinator, exkValidate, exkIfaceIs, exkIfacePayload,
+     exkReturn, exkCombinator, exkValidate, exkIfaceIs, exkLatestIs, exkIfacePayload,
      exkBlock, exkCritical, exkDefer: 2
   of exkStruct, exkList, exkFill, exkBracket, exkBracketAssign, exkChain,
      exkSend, exkAcquire, exkFinish, exkIfaceCall, exkRaise, exkSelect,

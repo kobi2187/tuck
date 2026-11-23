@@ -2611,8 +2611,11 @@ bare-metal story, and a stackless bare-metal path remains separate future work.
 
 ## Part 10: The Event Registry
 
-One global per application. The entire event surface of the system is declared in
-one place. No dynamic subscriptions, no cascading, no invisible control flow:
+One per module, at most (ruled 2026-11-22: a driver declares the events it
+raises), with names unique across the program. The entire event surface is
+read in one place, `tuck audit FILE --events`: every registry, each event,
+every raiser and handler. No dynamic subscriptions, no cascading, no invisible
+control flow:
 
 ```tuck
 registry AppEvents:
@@ -2647,7 +2650,28 @@ if AppEvents.latest is LowMemory:
   detected as a cycle at compile time
 - `raise` only accepts variants declared in the registry — typos are compile errors
 - The entire event surface is visible by reading two things: the `registry`
-  declaration and the `on AppEvents.X` handlers
+  declarations and the `on AppEvents.X` handlers, listed together by
+  `tuck audit --events`
+- An actor's `on AppEvents.X` receives the event as a message, in the actor's
+  own context; raising never runs actor code on the raiser's stack
+- `AppEvents.latest is X` is false until the first raise
+
+**Delivery from an interrupt** (owner ruling 2026-11-22,
+`docs/bare-metal/DESIGN-interrupt-events.md` §5). An event a driver raises from
+interrupt code states how it travels to its handlers, which run after the
+interrupt returns:
+
+```tuck
+registry UartEvents:
+  | Rx({data: u8})  [stream, overflow: drop_newest]   # every one, queued
+  | Overrun()       [signal]                          # repeats merge into a count
+  | Level({v: u16}) [latest]                          # one slot, overwritten
+```
+
+A `[signal]` carries no payload (TK-RG08); only a `[stream]` names an overflow
+policy, `drop_newest` or `drop_oldest`, because an interrupt never waits
+(TK-RG09); code reachable from an `[irq]` handler may raise only an event with
+a delivery kind (TK-RG10). The queue size is the application's, in `bind`.
 
 At runtime the registry is a small static array of slots, one per variant, holding
 the last payload. `raise` writes the slot and calls all registered handlers in

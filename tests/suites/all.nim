@@ -20,12 +20,14 @@ import cross_module
 import d_backend
 import decision_tables
 import declarations
+import device_programs
 import diagnostics
 import doc_snippets
 import duplicates
 import effect_fix
 import end_to_end
 import error_policy
+import event_registry
 import examples
 import extern_impl
 import fn_size
@@ -105,12 +107,14 @@ let registry: seq[Entry] = @[
   ("d_backend",           SuiteProc(d_backend.run),           false),
   ("decision_tables",     SuiteProc(decision_tables.run),     false),
   ("declarations",        SuiteProc(declarations.run),        false),
+  ("device_programs",     SuiteProc(device_programs.run),     false),
   ("diagnostics",         SuiteProc(diagnostics.run),         false),
   ("doc_snippets",        SuiteProc(doc_snippets.run),        false),
   ("duplicates",          SuiteProc(duplicates.run),          true),
   ("effect_fix",          SuiteProc(effect_fix.run),          false),
   ("end_to_end",          SuiteProc(end_to_end.run),          false),
   ("error_policy",        SuiteProc(error_policy.run),        false),
+  ("event_registry",      SuiteProc(event_registry.run),      false),
   ("examples",            SuiteProc(examples.run),            true),
   ("extern_impl",         SuiteProc(extern_impl.run),         false),
   ("fn_size",             SuiteProc(fn_size.run),             true),

@@ -1040,6 +1040,11 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   of exkVar: (if e.movedOut: "tuckMove(" & ctx.genVar(e) & ")" else: ctx.genVar(e))
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     e.refName
+  of exkLatestIs:
+    # The slot is a ref, nil until the first raise (spec Part 10's query).
+    let slot = "latest" & e.latestReg.refName
+    "(" & slot & " != nil and " & slot & "." & TagField & " == " &
+      e.latestEvent & ")"
   of exkField:
     let read = ctx.genFieldAccess(e, ind)
     if e.movedOut and not ctx.res.hasCall(e): "tuckMove(" & read & ")" else: read

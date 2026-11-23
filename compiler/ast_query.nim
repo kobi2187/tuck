@@ -595,7 +595,7 @@ proc implicitTailValue*(body: Expr): Expr =
      exkChain, exkBinary, exkUnary, exkCast, exkBracket, exkBracketAssign, exkImport,
      exkCombinator, exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
      exkMixinRef, exkCritical, exkDefer, exkFinish, exkAcquire, exkOrdinal, exkValidate,
-     exkIfaceCall, exkIfaceIs, exkIfacePayload, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset, exkWrapOk,
+     exkIfaceCall, exkIfaceIs, exkLatestIs, exkIfacePayload, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset, exkWrapOk,
      exkAbsent, exkCopy:
     lastS
 

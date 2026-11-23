@@ -2170,7 +2170,11 @@ proc synthArm(tc: var TypeChecker, arm: var MatchArm, subjT: Type, trackedVar,
   tc.popScope()
 
 proc unifyArmType(tc: var TypeChecker, armT: var Type, t: Type, sp: Span) =
-  ## Every arm must produce the same type.
+  ## Every arm must produce the same type. A void call and a `return` or
+  ## assignment are both statements (isNoValue), as they already were for
+  ## `if` (#148): `| A -> f` beside `| B -> return` used to be refused as
+  ## "void vs unit" (found by tests/metal/devices/recorder, 2026-11-22).
+  if isNoValue(t) and isNoValue(armT): return
   if not isFlexible(t) and not isFlexible(armT) and
      not tc.compatible(t, armT) and not tc.compatible(armT, t):
     fail("Type Error: match arms produce different types: " &
@@ -5327,6 +5331,28 @@ proc checkQualifiedErr(tc: var TypeChecker, e, rv: Expr) =
     if v.name == rv.fieldName: return
   fail("Type Error: '" & rv.fieldName & "' is not a variant of " & en, e.span)
 
+proc synthLatestIs(tc: var TypeChecker, e: Expr): Type =
+  ## `Registry.latest is Event` (spec Part 10's query): a bool. The receiver
+  ## must name a registry and the event one of its variants, so a typo is a
+  ## compile error here rather than a backend's unknown identifier.
+  let r = e.latestReg
+  if r == nil or r.kind != exkRegistryRef:
+    fail(dcRgUnknownEvent,
+         "`.latest is` asks a registry for its most recent event: write " &
+         "`Registry.latest is Event`, where Registry names a `registry`",
+         e.span)
+  let reg = semLayer.registryNames.getOrDefault(r.refName)
+  var known = false
+  if reg != nil:
+    for v in reg.variants:
+      if v.name == e.latestEvent: known = true
+  if not known:
+    fail(dcRgUnknownEvent,
+         "registry '" & r.refName & "' declares no event '" & e.latestEvent &
+         "' — `latest is` may only name variants the registry declares",
+         e.span)
+  tc.namedType("bool", e.span)
+
 proc synthRaise(tc: var TypeChecker, e: Expr): Type =
   ## `err X` — an error value of the current fn's fallible result type.
   ## X is a variant of a declared [error: E] enum (qualified E.V or bare V),
@@ -5564,6 +5590,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     # Built by lowering from a `| Flac f ->` arm, typed as it is built.
     discard tc.synthesize(e.tagSubject)
     semLayer.typeFor(e)
+  of exkLatestIs: tc.synthLatestIs(e)
   of exkAbsent:
     if e.optInner == nil: tc.synthNone(e)   # written `none`
     else: semLayer.typeFor(e)                # built by lowering_optional
@@ -6764,6 +6791,26 @@ proc rejectInterrupt(path: string, span: Span, root: Decl, what: string) =
   err.col = span.col
   raise withModulePrefix(err, path)
 
+proc failIfUndeliveredRaise(path: string, d: Decl, root: Decl) =
+  ## TK-RG10: a raise in interrupt code names an event with a delivery kind,
+  ## so its handlers run after the interrupt returns, never inside it.
+  var raises: seq[tuple[reg, ev: string, sp: Span, payload: Expr]]
+  raisedEventsIn(d.fnBody, raises)
+  for r in raises:
+    let reg = semLayer.registryNames.getOrDefault(r.reg)
+    if reg == nil: continue
+    for v in reg.variants:
+      if v.name != r.ev or v.delivery != edNone: continue
+      var err = newException(SemanticError, withCode(dcRgIrqDelivery,
+        "event '" & r.reg & "." & r.ev & "' is raised in '" & d.name &
+        "', reachable from interrupt handler '" & root.name & "', but has " &
+        "no delivery kind: its handlers would run inside the interrupt. " &
+        "Fix: mark it `[stream]`, `[signal]` or `[latest]` in registry '" &
+        r.reg & "'"))
+      err.line = r.sp.line
+      err.col = r.sp.col
+      raise withModulePrefix(err, path)
+
 proc walkFromInterrupt(mods: seq[tuple[name, path: string, m: Module]],
                        owner: Table[NodeId, int], root: Decl) =
   ## Every fn reachable from `root` over the recorded call edges: none may
@@ -6782,6 +6829,7 @@ proc walkFromInterrupt(mods: seq[tuple[name, path: string, m: Module]],
     if bad != nil:
       rejectInterrupt(path, bad.span, root,
                       "an error is left to the error policy in '" & d.name & "'")
+    failIfUndeliveredRaise(path, d, root)
     for c in fnCallees(mods[i].m, d.fnBody):
       if c.id notin seen: work.add c
 

@@ -279,62 +279,152 @@ only choose inside the range the driver declares, and it can never add or
 replace the capture (IRQ-1). The split of *who declares what* is the same;
 the rule for combining them is stricter.
 
-## 5. The reuse test, sketched
+## 5. The ruled shape (owner, 2026-11-22)
 
-One UART driver, two applications, two boards. The driver names no line,
-priority, instance or capacity.
+Built up in a design conversation from one question: what must an embedded
+engineer decide for every interrupt, and how does the language make each
+decision required and visible? Every classic interrupt bug is a decision that
+was *skipped* (a cause nobody handled, a flag never cleared, a buffer with no
+overflow plan, an `if` order that hides an error, a priority nobody thought
+about). The shape below reuses existing constructs for almost all of it and
+adds one keyword (`bind`) and a few attributes. Code is a sketch of shape;
+the spellings marked *new* are the only new words.
 
-``text
-# SKETCH — shape only.
+**Who writes what:**
 
-# uart.tuck — the driver library
-interrupt events UartEvents:               # an INTERRUPT set the driver owns (§3a)
-  | Rx({port: UartId, byte: u8})           # the instance travels in the payload
-  | Overrun({port: UartId})
-  acknowledged by: reading DR              # IRQ-3: checked on every path
-  requires: queue >= 4, on_full in {drop}  # IRQ-5: the range it was written for
+| Piece | Written by | Spelling |
+|---|---|---|
+| how each status flag clears (read SR then DR, write-1-to-clear, ...) | nobody: generated from SVD into the chip package | a fact on the `register` field (spelling open, with D3) |
+| what can happen | the driver | its own `registry`, each event marked `[stream]`, `[signal]` or `[latest]` (*new*) |
+| which cause fired | the driver | a `decision` table over the status bits: no gaps, row order explicit |
+| what runs inside the interrupt | the driver | one `fn ... [irq]`, optionally `[budget: N, rate: N]` (*new*) |
+| which line, priority, queue size | the application | `bind LINE -> module.fn [priority: N, queue: N]` (*new*) |
+| reacting afterwards | anyone | ordinary `on Events.X(...)` handlers |
 
-capture rxReady({port: Uart}) -> UartEvents:
-  # immediate, interrupt context: the ONE capture (IRQ-1), never pending (IRQ-2)
-  if port.SR.ORE: return {port: port.id} Overrun
-  return {port: port.id, byte: port.DR.DATA} Rx
+```text
+# --- driver: uart.tuck -------------------------------------------------
+registry UartEvents:
+  | Rx({data: u8})  [stream, overflow: drop_newest]   # every byte; the driver fixes overflow
+  | Overrun         [signal]                          # repeats merge into a count
+  | FrameError      [signal]
 
-# console.tuck — another library, uses the driver
-actor Console:                             # deferred: runs in the actor
-  line: Array[80, u8] = ...
-  on UartEvents.Rx({port, byte}):
+decision uartCause({ore: bool, fe: bool, rxne: bool}) -> UartCause:
+  | true  _     _     -> Overrun     # row order is the fix: errors before data
+  | false true  _     -> Framing
+  | false false true  -> Byte
+  | false false false -> Spurious    # stated, never silent; no gaps allowed
+
+fn onUart({u: Uart}) [irq, budget: 30, rate: 11_520]:
+  match {ore: u.SR.ORE, fe: u.SR.FE, rxne: u.SR.RXNE} uartCause:
+    | Overrun  -> UartEvents.raise Overrun
+    | Framing  -> UartEvents.raise FrameError
+    | Byte     -> UartEvents.raise Rx {data: u.DR.DATA}
+    | Spurious -> return
+  u.DR.DATA discard               # the compiler checks every path clears what is set
+
+# --- application A, board 1 ---------------------------------------------
+bind USART1 -> uart.onUart [priority: 2, queue: 16]
+
+# --- application B, board 2: the same driver, untouched ------------------
+bind USART2 -> uart.onUart [priority: 1, queue: 64]
+
+# --- anywhere: the reactions --------------------------------------------
+on UartEvents.Rx({data: u8}):            # any module importing the driver
+  ...
+actor Console:
+  on UartEvents.Rx({data: u8}):          # or in an actor, in its own context
     ...
+```
 
-# app_a.tuck — board A: console on USART1
-registry AppEvents:
-  include UartEvents
-  bind USART1.rx -> uart.rxReady [priority: 2, queue: 16, on_full: drop]
+**Where code runs, exactly:**
 
-# app_b.tuck — board B: console on USART2, a GPS on USART3
-registry AppEvents:
-  include UartEvents
-  bind USART2.rx -> uart.rxReady [priority: 1, queue: 64, on_full: drop]
-  bind USART3.rx -> uart.rxReady [priority: 3, queue: 8,  on_full: drop]
-  # queue: 2 here would be a compile error: "uart requires queue >= 4" (IRQ-5)
-``
+- **Inside the interrupt (top half):** only the body of the one `[irq]` fn the
+  application bound to that line. It is a top-level fn of the driver's module
+  (a vector needs a fixed target); its actions are ordinary statements (read
+  registers, compute, `raise`); it is strict, bounded and stub-free
+  (IRQ-1..9, TK-PO04), and no other module can add code to it.
+- **After the interrupt (bottom half):** every `on Events.X` handler wherever
+  it is declared. `on` is simply how an event handler is written: usually at
+  the top level of any module that imports the events (sub-modules
+  included). No task or actor is needed to handle an event; an actor or a
+  task's `on select` is just one more place the same `on` may appear. The
+  runtime calls the handlers after the interrupt returns, outside interrupt
+  context, in raise order, under the normal rules (I/O, the error policy).
+  The compiler collects them program-wide, as it collects registry handlers
+  today.
+- **In between:** the event's kind. `stream`: a queue of the bound `queue: N`
+  with the driver's overflow policy; `signal`: a counter; `latest`: one slot,
+  overwritten, read without tearing. `raise` is the same verb on a host: only
+  the world differs.
 
-What the checker proves for each application, with the driver unchanged:
+**What the compiler can promise from it:** no interrupt storm (every path
+clears what it handles, from the register facts); no forgotten cause (the
+decision table has no gaps); bounded time in the interrupt (`budget` against
+the static score); statically sized RAM (every queue is an explicit number);
+no silent overflow (the driver's policy, counted); priorities and ceilings
+from `bind`; an event nobody handles is a compile error (TK-RG03); an `[irq]`
+fn nobody binds is reported. Each decision-table row is also a test vector:
+the host simulation can raise every flag combination, so a driver is exercised
+before any hardware exists.
 
-- every bound line has exactly one capture, from the driver; an unbound line
-  stays disabled; a line bound twice is an error; no other module added an
-  immediate handler (IRQ-1, IRQ-6);
-- the capture is not pending and acknowledges its source on every path
-  (IRQ-2, IRQ-3);
-- every chosen knob lies inside the driver's declared range (IRQ-5);
-- every event in the composed registry is handled (TK-RG03, as today);
-- the capture reaches only ISR-safe operations (TK-EF05/07/11, as today);
-- shared state touched by immediate handlers gets a ceiling from the bound
-  priorities, and `critical:` lowers to that ceiling;
-- every deferred queue fits the RAM budget; `on_full: wait` is refused for a
-  hardware-raised event (an interrupt cannot wait);
-- the same program built for a host replaces "line raises event" with
-  "harness pends the line on the simulated controller" (IRQ-7), so the driver
-  runs in `tuck sim --host` on all three backends under the same rules.
+**Ruled:** a registry per module (a driver owns its events; TK-RG05 becomes
+one registry per module, and the whole surface is a *report*,
+`tuck audit --events`, not one declaration); the driver fixes the overflow
+policy on the event; the application gives an explicit queue size in `bind`
+(the compiler may warn when `rate` says it is too small).
+
+**Ruled the same day:**
+
+- **E-Q3: each `bind` names its own channel.** Two lines bound to one
+  driver fn get separate events, queues and overflow counts; the handler
+  reads like the wiring, and the driver is unchanged:
+
+  ```text
+  bind USART1 -> uart.onUart as Console [priority: 2, queue: 16]
+  bind USART2 -> uart.onUart as Modem   [priority: 1, queue: 64]
+
+  on Console.Rx({data: u8}):
+    ...
+  ```
+
+- **D3: how a flag clears is written on the register field**, generated
+  from SVD (`modifiedWriteValues`, `readAction`):
+  `UIF: bit 0 [w1c]` (write 1 to clear; codegen never read-modify-writes
+  such a register) and `ORE: bit 3 [clear: read SR then DR]` (cleared by a
+  read sequence). The compiler checks every path of an `[irq]` fn clears
+  what it handled.
+
+- **D12: a register layout is a type; a peripheral is an instance of it.**
+  A `register` block with no address is a layout; `register NAME: Layout at
+  ADDR [facts]` is one instance. A driver takes the type (`{u: Uart}`) and
+  never names an instance; the hardware passes no instance to a handler,
+  so `bind` supplies it, and the compiler generates one specialised copy
+  per binding with the address built in (no run-time cost against a
+  hand-written single-port handler). Where instances differ (clock enable,
+  DMA channel), the chip package states it as a fact on the instance and
+  the driver reads `u.clock`. A port that needs its own handler is bound to
+  a different fn by the application; the reusable driver never holds an
+  instance-specific one. svd2tuck maps `derivedFrom` onto one layout with
+  several instances; `register NAME at ADDR` keeps working.
+
+  ```text
+  # chip package, generated from SVD
+  register Uart:                      # no address: a layout (a type)
+    SR at +0x00:
+      RXNE: bit 5 [clear: read SR then DR]
+      ORE:  bit 3 [clear: read SR then DR]
+    DR at +0x04:
+      DATA: bits 0..8
+  register USART1: Uart at 0x40013800 [clock: RCC.APB2ENR.USART1EN]
+  register USART2: Uart at 0x40004400 [clock: RCC.APB1ENR.USART2EN]
+
+  # application: one port gets the driver, another its own handler
+  bind USART1 -> uart.onUart      as Console [priority: 2, queue: 16]
+  bind USART2 -> myapp.onModemUart as Modem  [priority: 1, queue: 64]
+  ```
+
+**Still open in this note:** nothing; D2 (frame homes) and D8 (deadlines)
+are separate design rounds (`ROADMAP.md` 1.3, 5.3).
 
 ## 6. What each world costs at run time
 
@@ -353,14 +443,14 @@ allocation") stays true, plus one static queue per deferred binding.
 
 | # | Question | Options | Leaning, and why |
 |---|---|---|---|
-| E-Q1 | How does a library contribute events? | (a) an event **set** the application's registry includes; (b) independent registries | (a): keeps "the whole surface in one place", mirrors resource kinds |
-| E-Q2 | What makes a handler deferred? | (a) **placement**: top-level `on` immediate, an actor's or task's `on` deferred; (b) an explicit marker | (a): no new word, and it is the only sound reading of an actor handler anyway (§3); the checker reports which kind each handler is |
-| E-Q3 | Two instances of one driver | (a) the **instance in the payload**, one set; (b) a set instantiated per binding | (a): simplest, one handler serves both; (b) only if per-instance types are needed |
-| E-Q4 | Where does the capture live? | (a) a driver-provided ISR-safe fn; (b) generated by the chip package | (a): the driver knows its peripheral kind; the chip package only lists lines |
-| E-Q5 | Overflow of a hardware-raised deferred event | `drop` (counted, visible), `assert`; never `wait` | `drop` + count as default |
+| E-Q1 | How does a library contribute events? | (a) an event **set** the application's registry includes; (b) independent registries | **ruled 2026-11-22: (b), a registry per module**; the whole surface is a report (§5) |
+| E-Q2 | What makes a handler deferred? | (a) placement; (b) an explicit marker | **ruled 2026-11-22 (§5):** the immediate code is the body of the bound `[irq]` fn; every `on Events.X` handler is deferred, wherever it is declared |
+| E-Q3 | Two instances of one driver | (a) the **instance in the payload**, one set; (b) a set instantiated per binding | **ruled 2026-11-22: (b)**, `bind ... as Name`: each binding is its own channel (§5) |
+| E-Q4 | Where does the capture live? | (a) a driver-provided ISR-safe fn; (b) generated by the chip package | **ruled (§5): (a)**, an `[irq]` fn in the driver; the chip package supplies lines and how flags clear |
+| E-Q5 | Overflow of a hardware-raised deferred event | `drop` (counted, visible), `assert`; never `wait` | **ruled 2026-11-22: fixed by the driver on the event** (`[stream, overflow: ...]`), not by the application |
 | E-Q6 | Order of several handlers across modules | declaration order within a module; across modules, dependency order (imported first), as resource knobs | same rule as resources |
-| E-Q7 | Is binding in the registry, the board package, or both? | (a) board default + application choice per knob, inside the driver's range; (b) application only | (a), with IRQ-5: the board may suggest, the driver bounds, the application chooses |
-| E-Q8 | Are the strict rules a separate kind of set, or inferred from "a line is bound to it"? | (a) a declared **interrupt** kind; (b) inferred from binding | (a): a driver's author must know, while writing it, that IRQ-1..9 apply; inferring it at the application would make a library's rules depend on who imports it, which is the problem being solved |
+| E-Q7 | Is binding in the registry, the board package, or both? | (a) board defaults + application; (b) application only | **ruled (§5): `bind` in the application**, with an explicit `queue: N` and `priority: N` |
+| E-Q8 | Are the strict rules a separate kind of set, or inferred from "a line is bound to it"? | (a) a declared interrupt kind; (b) inferred | **settled by §5:** the driver declares `[irq]` on the fn and a delivery kind on each event it raises from there, so the strict rules are known where the driver is written |
 | E-Q9 | How does a driver state "acknowledged by" and its required ranges? | a clause on the set; attributes on the capture; a register-field effect | open: needs w1c fields (D3) first, since most acknowledgements are a w1c write or a read with side effect |
 | E-Q11 | Do POL-1, POL-3, POL-4 and POL-6 apply to every library, or only to components with interrupt sets? | (a) every library; (b) interrupt components only | **POL-4: every library (owner, 2026-11-22)**, in the finished/partial form above. POL-1, POL-3, POL-6: leaning (a) |
 | E-Q13 | How does a library's author mark it finished? | (a) a module-level marker (a new word); (b) a library's own `errors [policy: strict]` means "finished"; (c) a manifest/package field | **ruled 2026-11-22: (b), strict is finished automatically**; an explicit marker may follow |
@@ -376,17 +466,34 @@ allocation") stays true, plus one static queue per deferred binding.
 **No ruling needed (finish the spec'd registry first; owner's rule: finish
 partial features):**
 
-- E1. More than one handler per event, in declaration order.
-- E2. `latest`.
-- E3. Handlers inside an actor, delivered as messages (needs E-Q2's reading
-  confirmed, since the spec says "synchronously").
-- E4. Behavioural tests on all three backends for each (started: roadmap
-  suite).
+- E1. More than one handler per event, in declaration order. **DONE
+  2026-11-22**, across modules too.
+- E2. `latest`. **DONE 2026-11-22**: `Reg.latest is V`, its own node
+  (exkLatestIs), false before the first raise.
+- E3. Handlers inside an actor, delivered as messages. **DONE 2026-11-22**:
+  rewrite lifts a top-level forwarder that sends to the actor's mailbox.
+- E4. Behavioural tests on all three backends for each: **DONE**,
+  `tests/suites/event_registry.nim`.
 
-**After the ruling:**
+**After the ruling (ruled 2026-11-22, §5):**
 
-- E5. Event sets in libraries, composed by the application's registry.
-- E6. Hardware raisers on metal: SysTick raising a `Tick` event under QEMU, then a
-  UART line (roadmap 2.2, 2.3).
-- E7. The host harness raising the same events (`tuck sim --host`).
+- E5. A registry per module and `tuck audit --events`, the program-wide
+  event report. **DONE 2026-11-22**: TK-RG05 retired, TK-RG06 (one per
+  module), TK-RG07 (names unique). Raises in task bodies and select arms
+  are now checked, and so is a payload-less raise (it was matched by
+  neither the checker nor any report).
+- E5a. Delivery kinds on an event (`[stream]`, `[signal]`, `[latest]`) and
+  the driver's `overflow:`. **DONE 2026-11-22 as declarations and checks**:
+  TK-RG08 (a signal has no payload), TK-RG09 (overflow only on a stream,
+  `drop_newest` or `drop_oldest`), TK-RG10 (interrupt code raises only an
+  event with a delivery kind). The deferred delivery itself (queue, count,
+  slot, drained after the interrupt) needs `bind`'s `queue: N` and is E5b.
+- E5b. `bind LINE -> module.fn [priority: N, queue: N]`: an unbound `[irq]`
+  fn is reported, an unbound or doubly-bound line is an error.
+- E6. Hardware raisers on metal: SysTick raising a `Tick` event under QEMU,
+  then a UART line (roadmap 2.2, 2.3).
+- E6a. Register clear facts from SVD (with D3) and the "every path clears"
+  check; `[budget, rate]` against the static score.
+- E7. The host harness raising the same events (`tuck sim --host`), one
+  vector per decision-table row.
 - E8. The reuse test (roadmap 2.7) on two QEMU boards.

@@ -80,6 +80,7 @@ import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
 import compiler/frames   # `tuck frames`: the stackless colouring (#216)
 import compiler/isr_access  # `tuck audit --isr`: shared-state inventory
+import compiler/event_audit # `tuck audit --events`: the event surface
 import compiler/timing_report  # `tuck timing`: stack + critical-section reports
 import compiler/report_format  # JSON + SARIF emitters for reports
 import compiler/concurrency   # --concurrency:stackful|stackless
@@ -221,7 +222,7 @@ called with generated arguments (default 200 cases, seeded and
 repeatable); the invariant is the property. Every failing call is
 printed and written to FILE (default property-failures.txt) as a Tuck
 call with its literals. A folder is scanned file by file.""",
-  "audit": """tuck audit file.tuck --isr
+  "audit": """tuck audit file.tuck --isr | --events
 
 Inventory what an interrupt handler can touch (embedded debugging vision,
 §7a). Every fn declared [irq] is a root; fns it reaches become ISR-reachable.
@@ -229,7 +230,10 @@ The report lists those fns and every piece of shared state a register, pool,
 slab, arena, actor or registry declares that ISR and non-ISR code both touch,
 with the file/line of each access.
 
-  --isr           the ISR shared-access report (the only report today)
+  --isr           the ISR shared-access report
+  --events        the event surface: every registry (one per module at
+                  most), each event, every site that raises it and every
+                  handler, actors included
   --format:json   emit machine-readable findings (jq-friendly)
   --format:sarif  emit SARIF 2.1.0 (GitHub/GitLab code-scanning UIs)
 
@@ -1470,9 +1474,14 @@ when isMainModule:
         if d == nil or d.kind notin {dkFn, dkTask}: continue
         echo ssa_query.render(ssaOf(semLayer, d, ssChecked).fn)
   of "audit":
-    if not opts.anyIt(it == "--isr"):
-      die("tuck audit: name a report (--isr). Try `tuck help audit`.")
+    if not opts.anyIt(it in ["--isr", "--events"]):
+      die("tuck audit: name a report (--isr or --events). Try `tuck help audit`.")
     let prog = checkProgram(path, needBodies = true, verifyStages = verifyStages)
+    if opts.anyIt(it == "--events"):
+      var mods: seq[tuple[name, path: string, m: Module]]
+      for lm in prog: mods.add (lm.name, lm.path, lm.m)
+      stdout.write renderEvents(eventSurface(mods))
+      quit(0)
     let entry = prog[prog.high].m
     let srcPath = prog[prog.high].path
     let a = auditShared(semLayer, entry)

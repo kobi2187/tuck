@@ -1,0 +1,217 @@
+# The drone's flight logic: pure, no hardware. The flight controller
+# (drone.tuck) and the host simulation (sim.tuck) both run exactly this code.
+#
+# Parts it is written for:
+#   FC        SpeedyBee F405 Mini: STM32F405 at 168 MHz, ICM-42688-P IMU
+#   ESC       SpeedyBee BLS 35A Mini V2 4-in-1 (BLHeli_S/Bluejay), DShot600
+#   Receiver  RadioMaster RP1 V2, ExpressLRS 2.4 GHz, CRSF at 420 000 baud
+#   Motors    T-Motor F1404 3800KV on 3" props, 4S LiPo
+#
+# A rate ("acro") controller: the sticks command rotation rates, the gyro
+# measures them, a PID per axis closes the loop, and a quad-X mixer turns
+# throttle + three corrections into four motor commands.
+
+import bits
+import seq
+
+# --- CRSF: the receiver's serial frames -------------------------------------
+# [sync 0xC8][len][type][payload...][crc8], len counting type..crc. CRC-8
+# poly 0xD5 over type and payload. RC_CHANNELS_PACKED (type 0x16) carries 16
+# channels of 11 bits, LSB first, in 22 bytes. 172 = full low, 992 = centre,
+# 1811 = full high.
+
+const crsfSync = 200          # 0xC8
+const crsfRcChannels = 22     # 0x16
+const crsfMaxFrame = 64
+const crsfFrameUs = 1100      # a 64-byte frame takes ~1393 us at 420 kbaud;
+                              # bytes of one frame arrive back to back, so a
+                              # gap this long means a new frame (Betaflight's
+                              # rule): a false sync in noise costs nothing
+
+fn crc8({crc: int, b: int}) -> int:
+  ## One byte into a CRC-8/DVB-S2 (polynomial 0xD5).
+  var c = {a: crc, b: b} xorInt
+  for i in 1 .. 8:
+    if c >= 128:
+      let shifted = (c * 2) % 256
+      c = {a: shifted, b: 213} xorInt
+    else:
+      c = (c * 2) % 256
+  return c
+
+type Crsf:
+  frame: Seq[int]       # sync, len, type, payload, crc as they arrive
+  want: int             # total bytes this frame will have, 0 = hunting for sync
+  good: int             # frames accepted
+  bad: int              # frames whose CRC failed
+
+type Fed:
+  crsf: Crsf
+  channels: Seq[int]    # 16 values when a good RC frame just completed, else empty
+
+fn channelsOf({frame: Seq[int]}) -> Seq[int]:
+  ## Unpack 16 x 11 bits, LSB first, from the payload at frame[3..24]. Each
+  ## channel spans at most three bytes, so it is a slice of a 24-bit word:
+  ## shifts and masks written as `* 256`, `/i 2^k` and `% 2048`.
+  var out: Seq[int] = []
+  for ch in 0 .. 15:
+    let bitPos = ch * 11
+    let at = 3 + bitPos /i 8
+    let third = if at + 2 < frame.len - 1: frame[at + 2] else: 0
+    let word = frame[at] + frame[at + 1] * 256 + third * 65536
+    var shift = 1
+    for k in 1 .. bitPos % 8:
+      shift = shift * 2
+    out = {items: out, value: (word /i shift) % 2048} push
+  return out
+
+fn feed({p: Crsf, b: int, gapUs: int}) -> Fed:
+  ## One byte from the UART, `gapUs` after the one before. Resynchronises on
+  ## a bad length or CRC, and on a gap that no frame has inside it.
+  # A bare `[]` in the `channels:` field is not given Seq[int] from the
+  # field's type (TK-TY20), so the empty value is named once.
+  let noChannels: Seq[int] = []
+  let empty: Seq[int] = []
+  var c = p
+  if gapUs > crsfFrameUs and c.want != 0:
+    c = c with {frame: empty, want: 0}
+  if c.want == 0:
+    if b == crsfSync:
+      let started = {items: empty, value: b} push
+      c = c with {frame: started, want: 0}
+      c = c with {want: -1}             # -1: the length byte is next
+    return {crsf: c, channels: noChannels} Fed
+  if c.want == -1:
+    if b < 2 or b > crsfMaxFrame - 2:
+      return {crsf: c with {frame: empty, want: 0}, channels: noChannels} Fed
+    let grown = {items: c.frame, value: b} push
+    return {crsf: c with {frame: grown, want: b + 2}, channels: noChannels} Fed
+  let grown = {items: c.frame, value: b} push
+  c = c with {frame: grown}
+  if grown.len < c.want:
+    return {crsf: c, channels: noChannels} Fed
+  var crc = 0
+  for i in 2 .. grown.len - 2:
+    crc = {crc: crc, b: grown[i]} crc8
+  if crc != grown[grown.len - 1]:
+    return {crsf: c with {frame: empty, want: 0, bad: c.bad + 1}, channels: noChannels} Fed
+  let done = c with {frame: empty, want: 0, good: c.good + 1}
+  if grown[2] != crsfRcChannels:
+    return {crsf: done, channels: noChannels} Fed
+  let chans = {frame: grown} channelsOf
+  return {crsf: done, channels: chans} Fed
+
+fn stick({raw: int}) -> int:
+  ## 172..1811 -> -500..500, centre 992.
+  let s = (raw - 992) * 500 /i 819
+  if s < -500:
+    return -500
+  if s > 500:
+    return 500
+  return s
+
+# --- arming -----------------------------------------------------------------
+
+type ArmAction:
+  | Arm
+  | Disarm
+  | Stay
+  | Refuse
+
+# Every combination decided, in priority order: losing the link or dropping
+# the switch disarms at once; arming needs the throttle at the bottom.
+decision arming({switchOn: bool, throttleLow: bool, linkUp: bool, armed: bool}) -> ArmAction:
+  | _     _     false true  -> Disarm    # failsafe: no link, motors off
+  | false _     _     true  -> Disarm
+  | true  _     true  true  -> Stay
+  | true  true  true  false -> Arm
+  | true  false true  false -> Refuse    # never spin up with the throttle raised
+  | true  _     false false -> Refuse
+  | false _     _     false -> Stay
+
+# --- rate PID, per axis -----------------------------------------------------
+
+type Pid:
+  kp: f32
+  ki: f32
+  kd: f32
+  integral: f32
+  lastError: f32
+
+type PidOut:
+  pid: Pid
+  effort: f32
+
+const maxRateDps = 670.0      # full stick = 670 deg/s
+const loopHz = 1000.0
+const iLimit = 0.3            # anti-windup: the I term never commands > 30%
+
+fn setpoint({stickValue: int}) -> f32:
+  let scaled = (stickValue ~f64) * maxRateDps /f 500.0
+  return scaled ~f32
+
+fn pidStep({pid: Pid, want: f32, have: f32}) -> PidOut:
+  ## Output in motor fractions (0.1 = 10% of the throttle range).
+  let gap = want - have        # `error` is reserved
+  let hz = loopHz ~f32
+  var integral = pid.integral + gap * pid.ki /f hz
+  if integral > (iLimit ~f32):
+    integral = iLimit ~f32
+  if integral < -(iLimit ~f32):
+    integral = -(iLimit ~f32)
+  let derivative = (gap - pid.lastError) * hz
+  let effort = pid.kp * gap + integral + pid.kd * derivative
+  return {pid: pid with {integral: integral, lastError: gap}, effort: effort} PidOut
+
+# --- the quad-X mixer and DShot ---------------------------------------------
+# Betaflight's QUADX order: 1 rear right, 2 front right, 3 rear left,
+# 4 front left; props out. DShot throttle runs 48..2047; 0 is "stop".
+
+type Motors:
+  m1: int
+  m2: int
+  m3: int
+  m4: int
+
+fn dshotThrottle({fraction: f32}) -> int:
+  var f = fraction
+  if f < 0.0:
+    f = 0.0
+  if f > 1.0:
+    f = 1.0
+  let span = 1999.0 ~f32
+  let wide = (f * span) ^f64
+  return 48 + (wide ~int)
+
+fn mix({throttle: f32, roll: f32, pitch: f32, yaw: f32, armed: bool}) -> Motors:
+  if not armed:
+    return {m1: 0, m2: 0, m3: 0, m4: 0} Motors
+  let a = {fraction: throttle - roll + pitch - yaw} dshotThrottle
+  let b = {fraction: throttle - roll - pitch + yaw} dshotThrottle
+  let c = {fraction: throttle + roll + pitch + yaw} dshotThrottle
+  let d = {fraction: throttle + roll - pitch - yaw} dshotThrottle
+  return {m1: a, m2: b, m3: c, m4: d} Motors
+
+fn dshotFrame({value: int, telemetry: bool}) -> int:
+  ## 11-bit value, telemetry bit, 4-bit checksum: the XOR of the three
+  ## nibbles of the first 12 bits.
+  let v = value * 2 + (if telemetry: 1 else: 0)
+  let n1 = {a: v, b: v /i 16} xorInt
+  let n2 = {a: n1, b: v /i 256} xorInt
+  return v * 16 + n2 % 16
+
+# DShot600 on a 168 MHz timer: 280 ticks a bit; a 1 is high for 3/4 of it
+# (1.25 us), a 0 for 3/8 (0.625 us).
+const dshotPeriod = 280
+const dshotOne = 210
+const dshotZero = 105
+
+fn dshotPulses({frame: int}) -> Seq[int]:
+  ## The 16 compare values a DMA burst writes, MSB first, and a 0 to end low.
+  var out: Seq[int] = []
+  var weight = 32768
+  for i in 1 .. 16:
+    let bit = (frame /i weight) % 2
+    out = {items: out, value: if bit == 1: dshotOne else: dshotZero} push
+    weight = weight /i 2
+  return {items: out, value: 0} push

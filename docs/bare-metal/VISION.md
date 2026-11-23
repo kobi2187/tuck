@@ -424,13 +424,13 @@ decisions** are technical and have a recommendation.
 
 | # | Question | Requirements it must meet |
 |---|---|---|
-| D1 | How does an application bind interrupt lines to handlers and priorities? | driver names no line or priority; one place per application; ceilings computed after binding; an unbound or doubly-bound line is a compile error |
+| D1 | How does an application bind interrupt lines to handlers and priorities? | driver names no line or priority; one place per application; ceilings computed after binding; an unbound or doubly-bound line is a compile error. **RULED 2026-11-22:** `bind LINE -> module.fn [priority: N, queue: N]` in the application (`DESIGN-interrupt-events.md` §5) |
 | D2 | Where do spawned tasks' frames live under `--frames:static`? | inferred when the count is knowable; when not, the bound is stated by the application at the spawn site's owner, never in the task; the error names the site |
-| D3 | How are write-1-to-clear and write-only-mask fields described? | a chip-package fact, generated from SVD `modifiedWriteValues`; codegen never read-modify-writes such a register |
+| D3 | How are write-1-to-clear and write-only-mask fields described? | a chip-package fact, generated from SVD `modifiedWriteValues`; codegen never read-modify-writes such a register. **RULED 2026-11-22:** `[w1c]` and `[clear: read SR then DR]` on the field (`DESIGN-interrupt-events.md` §5) |
 | D8 | How are periods and deadlines stated? | by the application for the tasks it runs; a library may state a guarantee (a bound it meets), not a requirement |
 | D9 | Fixed-point (Q notation) | a numeric type surface consistent with the 2026-08-25 numeric rulings; independent lane |
-| D12 | How do register blocks become instance-generic? | one layout type per kind, instances at addresses, zero-cost monomorphised drivers; SVD `derivedFrom` maps onto it; today's `register NAME at ADDR` keeps working |
-| D13 | Is a hardware interrupt an event in the application's registry (Part 10), a new wiring declaration, or a board-package concern? | answered first: D1, D2 and D8 follow from it. **Leaning: events** — `DESIGN-interrupt-events.md` §7 lists its seven sub-questions (E-Q1..E-Q7) |
+| D12 | How do register blocks become instance-generic? | one layout type per kind, instances at addresses, zero-cost monomorphised drivers; SVD `derivedFrom` maps onto it; today's `register NAME at ADDR` keeps working. **RULED 2026-11-22:** `register Uart:` (no address) is the layout, `register USART1: Uart at ADDR [facts]` an instance; `bind` supplies the instance, one specialised copy per binding (`DESIGN-interrupt-events.md` §5) |
+| D13 | Is a hardware interrupt an event in the application's registry (Part 10), a new wiring declaration, or a board-package concern? | answered first: D1, D2 and D8 follow from it. **RULED 2026-11-22: events.** A driver owns a registry per module, marks each event `[stream]`, `[signal]` or `[latest]` and fixes its overflow; one `[irq]` fn decides the cause with a `decision` table and raises; reactions are ordinary `on` handlers, called by the runtime after the interrupt returns, no task needed (`DESIGN-interrupt-events.md` §5, §7) |
 
 ### Plumbing decisions (recommendation given)
 
