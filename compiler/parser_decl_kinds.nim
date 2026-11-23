@@ -545,14 +545,15 @@ proc parseSatisfyTargets*(p: var Parser,
 
 const TopLevelKeywords = "fn, type, object, actor, task, interface, group, " &
   "mixin, fnsig, registry, decision, pending, distinct, const, import, " &
-  "extern, errors, resources, register, bind, pool, slab, arena, satisfies, " &
+  "extern, errors, resources, register, buffer, bind, pool, slab, arena, satisfies, " &
   "static_assert, when, and `on Registry.Event` for a registry handler"
   ## Everything parseDecl accepts to OPEN a declaration — the tokenized
   ## keywords plus the contextual ones recognised in parser.nim's
   ## contextualDecl.
 
 const ContextualOpeners = ["extern", "errors", "resources", "register",
-                           "pool", "slab", "arena", "satisfies", "bind"]
+                           "pool", "slab", "arena", "satisfies", "bind",
+                           "buffer"]
   ## Declaration openers the lexer does not tokenize — recognised by NAME in
   ## parser.nim's contextualDecl. Kept beside opensDeclaration below (which
   ## contextualDecl calls first): a new one added to contextualDecl must be
@@ -1207,6 +1208,24 @@ proc parseRegisterDecl*(p: var Parser, sp: Span): Decl =
     fields.add(p.parseRegisterField())
   Decl(span: sp, kind: dkRegister, name: name, regAddress: address,
        regFields: fields)
+
+proc parseBufferDecl*(p: var Parser, sp: Span): Decl =
+  ## `buffer NAME: Array[N, T] [at 0xADDR]` (owner ruling 2026-11-23).
+  discard p.advance()                  # `buffer`
+  let name = p.expect(tkIdent, "Expected the buffer's name").value
+  discard p.expect(tkColon)
+  let t = parseTypeHook(p)
+  result = Decl(span: sp, kind: dkBuffer, name: name, bufType: t)
+  if t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+     t.base.name == "Array" and t.args.len == 2 and t.args[0].kind == tkNamed:
+    result.bufCount = try: parseInt(t.args[0].name) except ValueError: 0
+    result.bufElem = t.args[1]
+  else:
+    p.reportError("a buffer is `Array[N, T]`: a fixed number of u8, u16 or u32")
+  if p.current().kind == tkIdent and p.current().value == "at":
+    discard p.advance()
+    result.bufAt = p.expect(tkIntLit, "Expected the buffer's address, e.g. 0x2000F000").value
+  if p.current().kind == tkNewline: discard p.advance()
 
 proc parseBindAttrs(p: var Parser, d: Decl) =
   ## `[priority: N, queue: N]`, both optional, in either order.

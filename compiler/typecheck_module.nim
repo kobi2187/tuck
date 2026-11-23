@@ -278,7 +278,7 @@ proc failIfDuplicateMembers*(m: Module) =
       # program-wide table instead (typecheck_collect.collectResourceKinds).
       discard
     of dkRegistry, dkPool, dkSlab, dkArena, dkMixin, dkExtern, dkPending, dkExpr, dkConst,
-       dkRegister, dkBind, dkStaticAssert, dkErrors, dkImport, dkInterface,
+       dkRegister, dkBuffer, dkBind, dkStaticAssert, dkErrors, dkImport, dkInterface,
        dkGroup, dkSelect, dkFnSig, dkSatisfies:
       discard  # no field/param set of their own to check
     of dkWhen:

@@ -2692,6 +2692,27 @@ handlers run after the interrupt returns, from the scheduler; a hosted build
 has no interrupts and delivers at once. `scheduler::runTasksUntil` is the
 metal event loop: it runs what is ready and sleeps (WFI) until an interrupt.
 
+**DMA buffers.** A DMA stream must be given an ADDRESS, and Tuck has no
+address-of. A `buffer` is the one object whose address is a value:
+
+```text
+buffer DshotBurst: Array[34, u32]            # the linker places it
+buffer AdcRing: Array[64, u16] at 0x2001F000  # or the application does
+DMA1_S6M0AR.M0A = DshotBurst.address          # a u32, never a pointer
+```
+
+It is indexed like an array (`b[i]`, `b.len`). Its element is `u8`, `u16` or
+`u32`, what a transfer moves (TK-BF01); an `at` address is aligned to the
+element (TK-BF02), no two `at` buffers share a byte (TK-BF03), and it holds
+at least one element (TK-BF04). On a board build an `at` buffer IS the memory
+at that address; the build hands the span to the linker, which ends the heap
+below it and fails the link if it overlaps `.data`/`.bss` or the stack
+reserve. `.address` issues a data memory barrier first, so the stores that
+filled the buffer are complete before a stream is started. A hosted build
+makes every buffer an ordinary global. Nothing stops code from writing a
+buffer while a transfer reads it: that is roadmap 6.3 (transfers as owned
+values).
+
 At runtime the registry is a small static array of slots, one per variant, holding
 the last payload. `raise` writes the slot and calls all registered handlers in
 declaration order, synchronously. No queues, no dynamic allocation, no cascading

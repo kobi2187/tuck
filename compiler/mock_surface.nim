@@ -46,7 +46,7 @@ proc collect(g: var Graph, module: string, d: Decl, inExtern: bool) =
   of dkObject, dkActor, dkMixin, dkPending, dkWhen, dkInterface, dkGroup, dkType:
     for m in d.childDecls: g.collect(module, m, inExtern)
   of dkConst, dkExpr, dkStaticAssert, dkSelect, dkRegistry, dkPool, dkSlab,
-     dkArena, dkRegister, dkBind, dkImport, dkFnSig, dkSatisfies, dkResources,
+     dkArena, dkRegister, dkBuffer, dkBind, dkImport, dkFnSig, dkSatisfies, dkResources,
      dkErrors, dkPublic:
     discard
 

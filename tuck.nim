@@ -530,6 +530,26 @@ proc vectorSource(b: BoardConf, binds: seq[Decl], paths: seq[string]): string =
                $(n mod 32) & ";   /* enable " & d.bindLine & " */\n"
   result.add "}\n"
 
+proc atBufferLinkFlags(bufs: seq[Decl]): string =
+  ## `buffer ... at ADDR`: the lowest start and highest end of them all, for
+  ## board.ld to end the heap below them and to check them against the
+  ## program's data and the stack reserve.
+  if bufs.len == 0: return ""
+  var lo = high(uint64)
+  var hi = 0'u64
+  for d in bufs:
+    let t = d.bufAt.replace("_", "")
+    let start = if t.startsWith("0x") or t.startsWith("0X"): uint64(parseHexInt(t))
+                else: parseBiggestUInt(t)
+    let size = case d.bufElem.name
+               of "u8": 1'u64
+               of "u16": 2'u64
+               else: 4'u64
+    lo = min(lo, start)
+    hi = max(hi, start + size * uint64(d.bufCount))
+  " --passL:-Wl,--defsym=__tuck_at_low=0x" & toHex(lo).strip(trailing = false, chars = {'0'}) &
+    " --passL:-Wl,--defsym=__tuck_at_high=0x" & toHex(hi).strip(trailing = false, chars = {'0'})
+
 proc boardNimFlags(b: BoardConf, projectDir, outDir: string,
                    binds: seq[Decl] = @[], bindPaths: seq[string] = @[]): string =
   ## Everything a freestanding Nim build for `b` needs, which
@@ -2041,6 +2061,7 @@ when isMainModule:
       var handlerMods: seq[ModuleId]   # other modules handling a registry that is not theirs
       var binds: seq[Decl]             # `bind LINE -> fn`, program-wide
       var bindPaths: seq[string]       # ...and the file each is written in
+      var atBuffers: seq[Decl]         # `buffer ... at ADDR`, program-wide
       for lm in prog:
         if lm.m.id != m.id and registersAnything(lm.m): handlerMods.add(lm.id)
         for d in lm.m.decls:
@@ -2053,6 +2074,7 @@ when isMainModule:
           if d.kind == dkBind:
             binds.add d
             bindPaths.add lm.path
+          if d.kind == dkBuffer and d.bufAt != "": atBuffers.add d
       for d in m.decls:
         # `m` was mangled above, so `fn main` is now tuck_main here.
         if d != nil and d.kind == dkFn and d.name == mangleName("main", nkFn):
@@ -2237,6 +2259,7 @@ when isMainModule:
         if board.name != "":
           nimFlags.add boardNimFlags(board, binNim.parentDir(), outDir, binds,
                                      bindPaths)
+          nimFlags.add atBufferLinkFlags(atBuffers)
         let freestandingBuild = isFreestandingBuild(opts)
         if binNim != mainNim: copyFile(mainNim, binNim)
         let binPath = outDir / binBase

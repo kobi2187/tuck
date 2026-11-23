@@ -455,6 +455,7 @@ type
     exkCombinator   # bake / with / alias / merge — see CombKind below
     exkActorRef     # a bare actor singleton name (`Sink` in `Sink.seen`)
     exkRegisterRef  # a bare memory-mapped register name (`CTRL` in `CTRL.EN`)
+    exkBufferRef    # a bare `buffer` name (`Pulses` in `Pulses[3]`, `Pulses.address`)
     exkRegistryRef  # a bare registry name (`AppEvents` in `AppEvents.raise X`)
     exkPoolRef      # a bare pool name (`Bufs` in `Bufs.acquire`)
     exkMixinRef     # a bare mixin name (`Helpers` in `+ Helpers`)
@@ -804,8 +805,8 @@ type
     of exkLatestIs:
       latestReg*: Expr       # the registry (exkRegistryRef once resolved)
       latestEvent*: string   # the event name, as written
-    of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
-       exkSlabRef, exkArenaRef:
+    of exkActorRef, exkRegisterRef, exkBufferRef, exkRegistryRef, exkPoolRef,
+       exkMixinRef, exkSlabRef, exkArenaRef:
       refName*: string  # the resolved name; the Decl itself is one
                         # declFor(semLayer, e) away (resolution.nim) once
                         # resolveDeclRefs links it — not stored here, so
@@ -911,6 +912,10 @@ type
     dkExpr
     dkConst   # compile-time data declaration: const name = <literal data>
     dkRegister
+    dkBuffer    # `buffer NAME: Array[N, T] [at 0xADDR]` — a static block of
+                # memory whose ADDRESS hardware can be given (a DMA stream),
+                # as a number: `NAME.address` is a u32, never a pointer
+                # (owner ruling 2026-11-23, bare-metal roadmap 2.0a).
     dkBind      # `bind LINE -> module.fn [priority: N, queue: N]` — the
                 # APPLICATION wires an interrupt line to a driver's `[irq]` fn
                 # (owner ruling 2026-11-22, DESIGN-interrupt-events §5). The
@@ -1184,6 +1189,11 @@ type
     of dkRegister:
       regAddress*: string
       regFields*: seq[FieldDef]
+    of dkBuffer:
+      bufType*: Type         # `Array[N, T]` as written: what the name types as
+      bufElem*: Type         # u8, u16 or u32: what a DMA stream moves
+      bufCount*: int         # N
+      bufAt*: string         # the address as written, "" = the linker places it
     of dkBind:
       bindLine*: string      # the interrupt line, as the board names it
       bindModule*: string    # `uart` in `uart.onUart`, "" for a local fn

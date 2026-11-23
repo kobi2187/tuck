@@ -202,6 +202,6 @@ proc toString*(e: Expr): string =
     return "acquire " & optToString(e.acquireRef) & ", " & e.acquireKind
   of exkFinish:
     return "finish " & optToString(e.finishHandle) & ", " & e.finishKind
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
+  of exkActorRef, exkRegisterRef, exkBufferRef, exkRegistryRef, exkPoolRef, exkMixinRef,
      exkSlabRef, exkArenaRef:
     return e.refName

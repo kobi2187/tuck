@@ -108,6 +108,15 @@ fn main() -> int:
           "bind_irq", "bind-unknown", 1,
           @["TK-BD06", "has no interrupt line 'EXTI0'", "GPIOA"],
           board = "lm3s6965evb")
+  # DMA buffers (bare-metal roadmap 2.0a): an `at` buffer IS the memory at
+  # its address (a `register` at the same address reads what was stored), a
+  # placed one lands word-aligned in RAM, and the heap is carved around them.
+  t.metal("a buffer's .address is its memory; a register there reads it",
+          "buffer_dma", "buffer-dma", 0, @["BUFFER_OK"], board = "lm3s6965evb")
+  t.metal("an `at` buffer in the stack reserve fails the link, saying so",
+          "buffer_stack", "buffer-stack", 1,
+          @["a `buffer ... at` address overlaps the stack reserve"],
+          board = "lm3s6965evb")
   # The device programs build for a board and fail CLEANLY with no device on
   # the bus: QEMU models no DS3231 or SD card, so each bounded wait times out
   # and main returns 1, rather than hanging (124) or faulting.

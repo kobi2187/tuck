@@ -2,7 +2,7 @@
 #
 #   SpeedyBee F405 Mini           STM32F405 + ICM-42688-P (f405.tuck, icm42688.tuck)
 #   SpeedyBee BLS 35A Mini V2     4-in-1 ESC, DShot600
-#   RadioMaster RP1 V2            ExpressLRS receiver, CRSF on USART1
+#   RadioMaster RP1 V2            ExpressLRS receiver, CRSF on USART2 (PA3)
 #   T-Motor F1404 3800KV x 4      3" props, 4S LiPo
 #
 # Two interrupts, two events. Every UART byte is a [stream] event stamped
@@ -20,9 +20,9 @@ registry FcEvents:
   | Byte({data: u8, at: int})  [stream, overflow: drop_newest]   # a lost byte fails the CRC
   | GyroReady()                [signal]                           # a late loop runs once
 
-fn onUsart1() [irq, irq_safe, no_alloc]:
+fn onUsart2() [irq, irq_safe, no_alloc]:
   ## Reading DR clears RXNE (and, after the SR read, an overrun).
-  let b = USART1_DR.DR
+  let b = USART2_DR.DR
   let t = TIM2_CNT.CNT ^int
   FcEvents.raise Byte {data: b ~u8, at: t}
 
@@ -33,7 +33,7 @@ fn onImuReady() [irq, irq_safe, no_alloc]:
 # The application's wiring. The gyro outranks the radio: a late control loop
 # is a wobble, a late byte only waits in its queue (64 bytes: two CRSF frames
 # and some, at 420 kbaud between 1 kHz loops).
-bind USART1 -> onUsart1 [priority: 2, queue: 64]
+bind USART2 -> onUsart2 [priority: 2, queue: 64]
 bind EXTI4 -> onImuReady [priority: 1]
 
 fn forever() -> bool:
@@ -59,7 +59,7 @@ actor Flight [queue: 64]:
       sticks = r.channels
       lastFrameAt = at
 
-  on FcEvents.GyroReady() [io]:
+  on FcEvents.GyroReady():
     let g = readGyro
     let now = micros
     let linkUp = now - lastFrameAt < linkTimeoutUs

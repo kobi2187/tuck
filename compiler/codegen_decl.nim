@@ -980,6 +980,19 @@ proc genResourceTables(d: Decl): string =
   for i in countdown(d.resKinds.len - 1, 0):
     result.add("  shutdownResources(" & resourceTableName(d.resKinds[i].name) & ")\n")
 
+proc genBuffer*(d: Decl): string =
+  ## `buffer NAME: Array[N, T] [at ADDR]` (owner ruling 2026-11-23). Without
+  ## `at`, an aligned global the linker places. With `at`, on metal, the
+  ## memory AT that address (the board build keeps the linker and the heap
+  ## out of it); a hosted build has no such address, so it is a global there.
+  let ty = "array[" & $d.bufCount & ", " & genType(d.bufElem) & "]"
+  let global = "var " & d.name & "* {.align: 4.}: " & ty & "\n"
+  if d.bufAt == "": return global
+  "when defined(freestanding):\n" &
+    "  template " & d.name & "*: untyped = cast[ptr " & ty & "](" &
+    d.bufAt.replace("_", "") & "'u)[]\n" &
+    "else:\n  " & global
+
 proc bindVectorSymbol*(line: string): string =
   ## The C symbol an interrupt line's vector entry calls. The board build
   ## generates the vector table with one weak `tuck_irq_<LINE>` per line,
@@ -1245,6 +1258,7 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     "const " & d.name & (if isExportedDecl(ctx.module, d): "*" else: "") &
       " = static:\n  " & ctx.genExpr(d.constVal)
   of dkRegister: genRegister(d)
+  of dkBuffer: genBuffer(d)
   of dkBind: genBind(d)
   of dkRegistry: ctx.genRegistry(d)
   of dkPool: genPoolDecl(d)

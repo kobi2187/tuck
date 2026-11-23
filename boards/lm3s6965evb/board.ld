@@ -49,6 +49,17 @@ SECTIONS
      strings on metal. It runs from the end of .bss up to a fixed reserve
      below the initial SP; the stack grows down into that reserve. */
   __heap_start = _end;
-  __heap_end = _estack - _stack_reserve;
+  /* `buffer NAME: ... at ADDR` (tuck build passes the lowest start and the
+     highest end of every such buffer as __tuck_at_low / __tuck_at_high;
+     without one, the defaults below satisfy both checks): the
+     heap ends below them, and a buffer may not overlap the program's data
+     and bss or the stack reserve. */
+  PROVIDE(__tuck_at_low = 0xFFFFFFFF);
+  PROVIDE(__tuck_at_high = 0);
+  __heap_end = MIN(_estack - _stack_reserve, __tuck_at_low);
+  ASSERT(__tuck_at_low >= _end,
+         "a `buffer ... at` address overlaps the program's data and bss")
+  ASSERT(__tuck_at_high <= _estack - _stack_reserve,
+         "a `buffer ... at` address overlaps the stack reserve")
   ASSERT(__heap_end > __heap_start, "no room left for a heap and the stack reserve")
 }

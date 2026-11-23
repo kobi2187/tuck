@@ -1232,6 +1232,17 @@ handler is bound by the application to a different fn.
 NOT BUILT: this is the design bare-metal Phase 2 builds
 (`docs/bare-metal/ROADMAP.md` 2.2, 2.7).
 
+## User ruling (2026-11-23) — a DMA buffer is a declared object whose address is a number
+
+Asked "can't we pass 0x... ?": a DMA stream needs the address of memory the
+program fills, and Tuck has no address-of. Ruled spelling:
+`buffer NAME: Array[N, T] [at ADDR]`, indexed like an array, with
+`NAME.address` a `u32` that only a register can take. No pointer enters
+Tuck; with `at` the application owns the placement and the build keeps the
+heap and stack out of it. BUILT the same day (bare-metal ROADMAP 2.0a;
+TK-BF01..04; `buffer_dma` under QEMU). Using a buffer while a transfer reads
+it stays unchecked until 6.3.
+
 ## Partial
 | Feature | Spec | Missing piece |
 |---|---|---|

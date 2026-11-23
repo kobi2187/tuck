@@ -428,7 +428,7 @@ proc walkExpr(c: var Check, e: Expr, use: Use) =
   of exkLit, exkVar, exkField, exkQualified, exkStruct, exkList, exkFill,
      exkBracket, exkBracketAssign, exkCall, exkChain, exkBinary, exkUnary, exkCast,
      exkDiscard, exkTripleDot, exkImport, exkSend, exkAcquire, exkFinish,
-     exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
+     exkActorRef, exkRegisterRef, exkBufferRef, exkRegistryRef, exkPoolRef, exkMixinRef,
      exkSlabRef, exkArenaRef, exkCombinator, exkOrdinal, exkValidate,
      exkIfaceCall, exkIfaceIs, exkLatestIs, exkIfacePayload, exkWrapOk, exkAbsent,
      exkPoolOp, exkSlabOp, exkSlabCell, exkArenaReset, exkAppend, exkCopy,

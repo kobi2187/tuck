@@ -108,7 +108,7 @@ proc isManglable(d: Decl): bool =
   # emits it as the importc name, which must match the header.
   of dkType: d.typeExternHeader == ""
   of dkObject, dkActor, dkTask, dkConst, dkPool, dkSlab, dkArena, dkRegistry,
-     dkRegister, dkFnSig: true
+     dkRegister, dkBuffer, dkFnSig: true
   # An interface keeps the name it was written with (its tag enum and its
   # wrap procs are spelled from it), unless type_identity qualified it
   # because two modules declare one: `a::Shape` is no identifier anywhere.
@@ -358,7 +358,7 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
     for arm in e.selArms:
       mangleExpr(res, arm.arg, names, locals, fields)
       mangleExpr(res, arm.body, names, locals, fields)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
+  of exkActorRef, exkRegisterRef, exkBufferRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     mangleRefName(e, names)
   # Nothing to rename, and spelled out rather than left to `else: discard`.
   # The `else` that used to close this case swallowed exkCombinator when it
@@ -440,7 +440,7 @@ proc mangleMember(res: Resolution, mem: Decl, names: MangleNames,
   # of these holds code a member walk reaches: a top-level one is walked by
   # mangleDeclRefs, and `ownExprs` reaches its expressions.
   of dkActor, dkTask, dkConst, dkStaticAssert, dkRegistry, dkPool, dkSlab, dkArena,
-     dkRegister, dkBind, dkErrors, dkResources, dkImport, dkFnSig, dkSatisfies,
+     dkRegister, dkBuffer, dkBind, dkErrors, dkResources, dkImport, dkFnSig, dkSatisfies,
      dkInterface, dkGroup, dkPublic, dkWhen:
     discard
 

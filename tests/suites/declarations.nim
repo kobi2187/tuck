@@ -1011,4 +1011,44 @@ fn main() -> int:
           "TUCK PENDING"
   t.hostRuns "...and still builds", 5
 
+  # --- DMA buffers, bare-metal roadmap 2.0a (spelling ruled 2026-11-23) ----
+  #
+  # Memory whose ADDRESS hardware can be given: `.address` is a u32, never a
+  # pointer, so nothing in Tuck can dereference it. On a host build an `at`
+  # buffer is an ordinary global; on a board it IS the memory at ADDR.
+  const BufferBase = """
+buffer Pulses: Array[17, u32] at 0x2000F000
+buffer Scratch: Array[8, u16]
+
+fn main() -> int:
+  for i in 0 .. Pulses.len - 1:
+    Pulses[i] = 105 ~u32
+  Pulses[3] = 210 ~u32
+  Scratch[1] = 7 ~u16
+  let a = Scratch.address
+  if a % 2 != 0:
+    return 9
+  if Pulses[3] != 210 ~u32 or Scratch[1] != 7 ~u16:
+    return 8
+  return Pulses.len
+"""
+  t.src BufferBase
+  t.okCheck "a buffer is indexed like an array; .address is a u32"
+  t.emits "Nim: on a board an `at` buffer is the memory at its address",
+          "cast\\[ptr array\\[17, uint32\\]\\]\\(0x2000F000'u\\)\\[\\]"
+  t.emits "Nim: .address goes through the runtime's barrier",
+          "tuckBufferAddress\\(\\S*Scratch\\)"
+  t.hostRuns "a buffer program runs the same on every backend", 17
+
+  t.src BufferBase.replace("Array[8, u16]", "Array[3, f32]")
+  t.badCheck "a buffer holds what DMA moves: u8, u16 or u32", "TK-BF01"
+  t.src BufferBase.replace("0x2000F000", "0x2000F002")
+  t.badCheck "an `at` address is aligned to the element", "TK-BF02.*not 4-byte aligned"
+  t.src BufferBase.replace("buffer Scratch: Array[8, u16]",
+                           "buffer Scratch: Array[8, u16] at 0x2000F040")
+  t.badCheck "two `at` buffers may not share a byte",
+             "TK-BF03.*'Scratch' at 0x2000F040 overlaps buffer 'Pulses'"
+  t.src BufferBase.replace("Array[8, u16]", "Array[0, u16]")
+  t.badCheck "a buffer holds at least one element", "TK-BF04"
+
   t.finish()

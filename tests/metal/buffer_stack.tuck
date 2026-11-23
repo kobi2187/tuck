@@ -1,0 +1,9 @@
+# An `at` buffer inside the stack reserve must fail the LINK, naming the
+# buffer region, rather than boot and have the stack overwrite DMA data.
+# (lm3s6965evb: RAM ends at 0x20010000; the top 0x800 bytes are the stack.)
+
+buffer Rx: Array[16, u32] at 0x2000FF00
+
+fn main() -> int:
+  Rx[0] = 1 ~u32
+  return 0

@@ -1388,7 +1388,14 @@ one, fourth succeeds, exit 42 (`tests/suites/cli_smoke.nim`).
 > posts and its handlers run after the interrupt returns, from the scheduler
 > (`tests/metal/bind_irq.tuck`, `bind_systick.tuck` under QEMU;
 > `docs/bare-metal/DESIGN-interrupt-events.md` §5). MMIO `register` read-only
-> enforcement is compile-gated only.
+> enforcement is compile-gated only. `buffer NAME: Array[N, T] [at ADDR]`
+> is memory a DMA stream can be handed: indexed like an array, and
+> `NAME.address` is a `u32` (a number for a register, never a pointer; there
+> is still no address-of in Tuck). `T` is `u8`, `u16` or `u32` (TK-BF01..04:
+> element, alignment, overlap, count). With `at`, a board build places it at
+> ADDR and keeps the heap and the stack out of it, or fails the link saying
+> which; without, the linker places it word-aligned. A hosted build makes it
+> an ordinary global (`tests/metal/buffer_dma.tuck` under QEMU).
 
 ### Slabs — references, for what values cannot say
 

@@ -638,6 +638,11 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
     let regPrefix = registerAccessorPrefix(ctx.module, e.receiver.refName,
                                            e.fieldName)
     if regPrefix != "": return regPrefix & "_get()"
+  if e.receiver != nil and e.receiver.kind == exkBufferRef:
+    # `.address` publishes the buffer (a barrier) and is its address as a
+    # number; `.len` is N.
+    if e.fieldName == "address": return "tuckBufferAddress(" & e.receiver.refName & ")"
+    return e.receiver.refName & ".len"
   let sumField = ctx.genPayloadSumField(e)
   if sumField != "": return sumField
   ctx.genExpr(e.receiver) & "." & e.fieldName
@@ -1099,7 +1104,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   # A read the ownership rules move (rule M at an owned place's final use)
   # says so: the value, and the place left empty.
   of exkVar: (if e.movedOut: "tuckMove(" & ctx.genVar(e) & ")" else: ctx.genVar(e))
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
+  of exkActorRef, exkRegisterRef, exkBufferRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     e.refName
   of exkLatestIs:
     # The slot is a ref, nil until the first raise (spec Part 10's query).

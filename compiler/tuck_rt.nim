@@ -395,6 +395,17 @@ proc tuckOverflowTrap*(ty, op: string) {.noreturn.} =
     discard op
     tuckFatal("arithmetic overflow on a [trapping] integer")
 
+proc tuckBufferAddress*[T](b: var T): uint32 =
+  ## `NAME.address` (owner ruling 2026-11-23): the buffer's address as a
+  ## NUMBER for a peripheral register, never a pointer Tuck code can follow.
+  ## It is also a barrier: every write to the buffer before it has reached
+  ## memory, so a DMA stream started with this address reads what was
+  ## written. On a hosted build the address is only for show (64-bit hosts
+  ## truncate it).
+  when defined(freestanding):
+    {.emit: "__asm volatile(\"dmb\" ::: \"memory\");".}
+  cast[uint32](cast[uint](addr b))
+
 proc tuckDivTrap*(ty, op: string) {.noreturn.} =
   ## Integer `/i` or `%` by zero: stops at the site with exit 1, as an
   ## overflow trap does, on every backend (audit Y2 — Nim raised a defect

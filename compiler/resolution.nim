@@ -91,6 +91,7 @@ type
     handlerModule*: Table[NodeId, ModuleId]
       ## The module that declares each `on Registry.Event` handler, by its id.
     registerNames*: Table[string, Decl]
+    bufferNames*: Table[string, Decl]   ## `buffer NAME: Array[N, T]`
     registryNames*: Table[string, Decl]
     poolNames*: Table[string, Decl]
     slabNames*: Table[string, Decl]
@@ -556,6 +557,7 @@ proc resetResolution*() =
   ## this proc does not have — resolveDeclRefs already did that scan once.
   let actorNames = semLayer.actorNames
   let registerNames = semLayer.registerNames
+  let bufferNames = semLayer.bufferNames
   let registryNames = semLayer.registryNames
   let poolNames = semLayer.poolNames
   let slabNames = semLayer.slabNames
@@ -574,6 +576,7 @@ proc resetResolution*() =
   semLayer.handlerModule = handlerModule
   semLayer.actorNames = actorNames
   semLayer.registerNames = registerNames
+  semLayer.bufferNames = bufferNames
   semLayer.registryNames = registryNames
   semLayer.poolNames = poolNames
   semLayer.slabNames = slabNames

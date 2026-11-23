@@ -1727,6 +1727,38 @@ proc regBits(f: FieldDef): tuple[lo, hi: int, ok: bool] =
   except ValueError:
     return (0, 0, false)
 
+proc parseBufferAddr(text: string): uint64 =
+  ## `0x2000_F000` or a decimal address, as written.
+  let t = text.replace("_", "")
+  if t.len > 2 and t[0] == '0' and t[1] in {'x', 'X'}:
+    uint64(parseHexInt(t))
+  else:
+    parseBiggestUInt(t)
+
+proc bufferElemSize(d: Decl): int =
+  ## Bytes per element of a buffer: 1, 2 or 4; 0 for anything else.
+  if d.bufElem == nil or d.bufElem.kind != tkNamed: return 0
+  case d.bufElem.name
+  of "u8": 1
+  of "u16": 2
+  of "u32": 4
+  else: 0
+
+proc checkBufferDecl(d: Decl) =
+  ## `buffer NAME: Array[N, T] [at ADDR]` (owner ruling 2026-11-23): what a
+  ## DMA stream moves, at least one of it, and an address it can use.
+  let size = bufferElemSize(d)
+  if size == 0:
+    fail(dcBfElem, "buffer '" & d.name & "': its elements must be u8, u16 or u32 " &
+         "(what a DMA transfer moves)", d.span)
+  if d.bufCount < 1:
+    fail(dcBfCount, "buffer '" & d.name & "' holds no elements", d.span)
+  if d.bufAt != "":
+    let at = parseBufferAddr(d.bufAt)
+    if at mod uint64(max(size, 4)) != 0:
+      fail(dcBfAlign, "buffer '" & d.name & "' at " & d.bufAt & " is not " &
+           $max(size, 4) & "-byte aligned", d.span)
+
 proc checkRegisterDecl(d: Decl) =
   ## spec 8.1: a register's fields describe real hardware, so the layout has
   ## to be one the hardware could have — bits inside the register, and no two
@@ -1840,18 +1872,29 @@ proc checkRegisterFieldRead(tc: var TypeChecker, e: Expr) =
          "' is declared [write] — reading it is a compile error (spec " &
          "§8.1); a write-only field reads back undefined", e.span)
 
+proc bufferFieldType(tc: var TypeChecker, e: Expr): Type =
+  ## `.address` is a NUMBER for a register to take, never a pointer (owner
+  ## ruling 2026-11-23); `.len` is N.
+  if e.fieldName == "address": return tc.namedType("u32", e.span)
+  if e.fieldName == "len": return tc.namedType("int", e.span)
+  fail("Type Error: a buffer has `.address` and `.len`, and its elements " &
+       "by index; no field '" & e.fieldName & "'", e.span)
+
 proc asSpecialFieldAccess(tc: var TypeChecker, e: Expr): Type =
   ## Check for special field access cases: register, actor, registry.raise, Error namespace.
-  if e.receiver != nil and e.receiver.kind == exkRegisterRef:
+  if e.receiver == nil: return nil
+  if e.receiver.kind == exkRegisterRef:
     let regT = registerFieldType(tc.module, e.receiver.refName, e.fieldName, e.span)
     if regT != nil: return regT
-  if e.receiver != nil and e.receiver.kind == exkActorRef:
+  if e.receiver.kind == exkActorRef:
     let actT = actorFieldType(tc.module, e.receiver.refName, e.fieldName)
     if actT != nil: return actT
-  if e.receiver != nil and e.receiver.kind == exkRegistryRef and
+  if e.receiver.kind == exkBufferRef:
+    return tc.bufferFieldType(e)
+  if e.receiver.kind == exkRegistryRef and
      e.fieldName == "raise":
     return Type(span: e.span, kind: tkNamed, name: "unit")
-  if e.receiver != nil and e.receiver.kind == exkVar and e.receiver.name == "Error":
+  if e.receiver.kind == exkVar and e.receiver.name == "Error":
     return Type(span: e.span, kind: tkNamed, name: "u16")
   nil
 
@@ -6229,6 +6272,10 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkDrop, exkReset:
     # Built after the checker (ownership_nodes, _write): a statement.
     tc.namedType("void", e.span)
+  of exkBufferRef:
+    # A buffer is its `Array[N, T]`: indexing reads and writes its elements.
+    let b = semLayer.bufferNames.getOrDefault(e.refName)
+    if b != nil and b.bufType != nil: b.bufType else: tc.namedType(e.refName, e.span)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum
     # variant (synthBareVariant), named after the declaration itself. Field
@@ -6950,6 +6997,7 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     checkTransitions(d)
     tc.checkInvariants(d)
   of dkRegister: checkRegisterDecl(d)
+  of dkBuffer: checkBufferDecl(d)
   of dkBind: discard    # whole-program: checkBinds, once every module is checked
   of dkPool: tc.checkPoolDecl(d)
   of dkSlab: tc.checkSlabDecl(d)
@@ -7603,6 +7651,24 @@ proc checkBinds(mods: seq[tuple[name, path: string, m: Module]]) =
     for b in mods[i].m.decls:
       if b != nil and b.kind == dkBind: checkOneBind(mods, i, b, lines, fns)
 
+proc checkBufferOverlap(mods: seq[tuple[name, path: string, m: Module]]) =
+  ## TK-BF03: no two `at` buffers share a byte, program-wide.
+  var placed: seq[tuple[lo, hi: uint64, name: string]]
+  for (_, path, m) in mods:
+    for d in m.decls:
+      if d == nil or d.kind != dkBuffer or d.bufAt == "": continue
+      let lo = parseBufferAddr(d.bufAt)
+      let hi = lo + uint64(d.bufCount * max(bufferElemSize(d), 1))
+      for p in placed:
+        if lo < p.hi and p.lo < hi:
+          var err = newException(SemanticError, withCode(dcBfOverlap,
+            "buffer '" & d.name & "' at " & d.bufAt & " overlaps buffer '" &
+            p.name & "'"))
+          err.line = d.span.line
+          err.col = d.span.col
+          raise withModulePrefix(err, path)
+      placed.add (lo, hi, d.name)
+
 proc checkProgramOnce(mods: seq[tuple[name, path: string, m: Module]],
                       preSigs: Table[string, seq[SigInfo]]): seq[string] =
   ## Signatures are gathered across the whole program first, then each module
@@ -7648,6 +7714,7 @@ proc checkProgramOnce(mods: seq[tuple[name, path: string, m: Module]],
       raise withModulePrefix(err, path)
   checkInterruptCodeStrict(mods)
   checkBinds(mods)
+  checkBufferOverlap(mods)
 
 proc checkIfaceMatchesComplete(mods: seq[tuple[name, path: string, m: Module]]) =
   ## A match on an interface value covers every object that satisfies it,

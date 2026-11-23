@@ -146,7 +146,7 @@ proc declKind*(d: Decl): NameKind =
   of dkPool: nkPool
   of dkSlab: nkSlab
   of dkArena: nkArena
-  of dkRegister: nkRegister
+  of dkRegister, dkBuffer: nkRegister
   of dkBind: nkFn       # never mangled: a bind declares no name
   of dkRegistry: nkRegistry
   of dkMixin, dkExtern, dkPending, dkExpr, dkStaticAssert, dkErrors,

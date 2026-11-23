@@ -233,6 +233,10 @@ type
     dcBdChannelUnbuilt = "TK-BD04"      ## `bind ... as Name`: ruled, not built yet
     dcBdSetting = "TK-BD05"             ## a priority or queue size out of range
     dcBdUnknownLine = "TK-BD06"         ## the board has no interrupt line by that name
+    dcBfElem = "TK-BF01"                ## a buffer's element is not u8, u16 or u32
+    dcBfAlign = "TK-BF02"               ## a buffer's address is not aligned to its element
+    dcBfOverlap = "TK-BF03"             ## two `at` buffers overlap
+    dcBfCount = "TK-BF04"               ## a buffer holds no elements
     dcReReadOnly = "TK-RE01"            ## writing a field declared [read]
     dcReWriteOnly = "TK-RE02"           ## reading a field declared [write]
     dcReBitRange = "TK-RE03"            ## a bit index outside the register's width
@@ -289,6 +293,7 @@ proc categoryName*(d: DiagCode): string =
   of "IV": "Invariant"
   of "RG": "Registry"
   of "BD": "Bind"
+  of "BF": "Buffer"
   of "RE": "Register"
   of "TM": "Timing"
   of "CR": "Crash"
@@ -1240,6 +1245,20 @@ proc ruleExplanation(d: DiagCode): string =
     "The board has no interrupt line by that name. Its lines are listed in " &
     "`boards/<board>/interrupts.conf`, taken from the chip's SVD or " &
     "reference manual. Fix: use one of the names the error lists."
+  of dcBfElem:
+    "A `buffer` is memory a DMA stream reads or writes by itself, so its " &
+    "elements are the units a transfer moves: u8, u16 or u32. Fix: declare " &
+    "`Array[N, u8]`, `Array[N, u16]` or `Array[N, u32]`."
+  of dcBfAlign:
+    "A buffer at a fixed address must start on a multiple of its element " &
+    "size (4 for u32): a DMA stream, and the CPU with CCR.UNALIGN_TRP set, " &
+    "faults on a misaligned one. Fix: round the address."
+  of dcBfOverlap:
+    "Two buffers declared `at` overlapping addresses would write into each " &
+    "other. Fix: move one, or let the linker place it (drop `at`)."
+  of dcBfCount:
+    "A buffer of no elements has nothing for a DMA stream to move. Fix: " &
+    "give `Array[N, T]` an N of at least 1."
   of dcRgNameClash:
     "Registry names are unique across the program, because a handler names " &
     "its registry (`on UartEvents.Rx`) and must reach exactly one. Fix: " &

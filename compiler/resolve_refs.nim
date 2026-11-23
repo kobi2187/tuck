@@ -62,6 +62,7 @@ proc collectNames(prog: seq[LoadedModule]) =
         if mem != nil and mem.kind == dkFn: semLayer.groupRequirements.incl mem.name
   collect(dkActor, actorNames, "an actor")
   collect(dkRegister, registerNames, "a register")
+  collect(dkBuffer, bufferNames, "a buffer")
   collect(dkRegistry, registryNames, "a registry")
   collect(dkPool, poolNames, "a pool")
   collect(dkSlab, slabNames, "a slab")
@@ -91,6 +92,8 @@ proc declRefFor(name: string): Expr =
     result = Expr(kind: exkActorRef, refName: name)
   elif semLayer.registerNames.hasKey(name):
     result = Expr(kind: exkRegisterRef, refName: name)
+  elif semLayer.bufferNames.hasKey(name):
+    result = Expr(kind: exkBufferRef, refName: name)
   elif semLayer.registryNames.hasKey(name):
     result = Expr(kind: exkRegistryRef, refName: name)
   elif semLayer.poolNames.hasKey(name):
@@ -106,6 +109,7 @@ proc declRefFor(name: string): Expr =
   let d = case result.kind
     of exkActorRef: semLayer.actorNames[name]
     of exkRegisterRef: semLayer.registerNames[name]
+    of exkBufferRef: semLayer.bufferNames[name]
     of exkRegistryRef: semLayer.registryNames[name]
     of exkPoolRef: semLayer.poolNames[name]
     of exkSlabRef: semLayer.slabNames[name]

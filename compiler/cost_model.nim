@@ -44,7 +44,7 @@ proc baseCycles(e: Expr): int =
   ## node kind must be placed here instead of silently inheriting a default.
   result = case e.kind
   of exkLit, exkVar, exkAbsent, exkWrapOk, exkOrdinal, exkBreak, exkContinue,
-     exkDiscard, exkTripleDot, exkImport, exkActorRef, exkRegisterRef,
+     exkDiscard, exkTripleDot, exkImport, exkActorRef, exkRegisterRef, exkBufferRef,
      exkRegistryRef, exkPoolRef, exkMixinRef: 1
   of exkField, exkQualified, exkCast, exkBinary, exkUnary, exkAssign,
      exkReturn, exkCombinator, exkValidate, exkIfaceIs, exkLatestIs, exkIfacePayload,

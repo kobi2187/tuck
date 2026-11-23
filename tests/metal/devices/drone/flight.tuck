@@ -200,11 +200,12 @@ fn dshotFrame({value: int, telemetry: bool}) -> int:
   let n2 = {a: n1, b: v /i 256} xorInt
   return v * 16 + n2 % 16
 
-# DShot600 on a 168 MHz timer: 280 ticks a bit; a 1 is high for 3/4 of it
-# (1.25 us), a 0 for 3/8 (0.625 us).
-const dshotPeriod = 280
-const dshotOne = 210
-const dshotZero = 105
+# DShot600 on an 84 MHz timer (the board's motor pads are on TIM3 and TIM4,
+# clocked from APB1 x 2): 140 ticks a bit; a 1 is high for 3/4 of it
+# (1.25 us), a 0 for 3/8 (0.625 us, 52.5 ticks, rounded up).
+const dshotPeriod = 140
+const dshotOne = 105
+const dshotZero = 53
 
 fn dshotPulses({frame: int}) -> Seq[int]:
   ## The 16 compare values a DMA burst writes, MSB first, and a 0 to end low.
