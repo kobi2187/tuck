@@ -10,12 +10,14 @@ type tuckˑactorˑAccumulatorMsg* = object
   tuckTag*: tuckˑactorˑAccumulatorMsgKind
   n*: int
 
-type tuckˑactorˑAccumulator* = ref object
+type tuckˑactorˑAccumulator* = ptr tuckˑactorˑAccumulatorState
+type tuckˑactorˑAccumulatorState* = object
   total*: int
   done*: bool
   mailbox*: Mailbox[tuckˑactorˑAccumulatorMsg, 64]
 
-let tuckˑactorˑAccumulatorSingleton* = tuckˑactorˑAccumulator(total: 0, done: false)
+var tuckˑactorˑAccumulatorStorage* = tuckˑactorˑAccumulatorState(total: 0, done: false)
+let tuckˑactorˑAccumulatorSingleton* = addr tuckˑactorˑAccumulatorStorage
 
 proc handleMsg*(self: tuckˑactorˑAccumulator, msg: tuckˑactorˑAccumulatorMsg) =
   case msg.tuckTag

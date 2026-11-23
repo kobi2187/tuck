@@ -138,12 +138,14 @@ type tuckˑactorˑDecoderMsg* = object
   tuckTag*: tuckˑactorˑDecoderMsgKind
   rate*: tuckˑtypeˑHz
 
-type tuckˑactorˑDecoder* = ref object
+type tuckˑactorˑDecoder* = ptr tuckˑactorˑDecoderState
+type tuckˑactorˑDecoderState* = object
   state*: tuckˑtypeˑPlayerState
   vol*: tuckˑtypeˑVolume
   mailbox*: Mailbox[tuckˑactorˑDecoderMsg, 8]
 
-let tuckˑactorˑDecoderSingleton* = tuckˑactorˑDecoder(state: tuckˑtypeˑPlayerState(kind: Idle), vol: (let tuckInv1 = tuckˑtypeˑVolume(level: 80'u8); validate(tuckInv1); tuckInv1))
+var tuckˑactorˑDecoderStorage* = tuckˑactorˑDecoderState(state: tuckˑtypeˑPlayerState(kind: Idle), vol: (let tuckInv1 = tuckˑtypeˑVolume(level: 80'u8); validate(tuckInv1); tuckInv1))
+let tuckˑactorˑDecoderSingleton* = addr tuckˑactorˑDecoderStorage
 
 proc handleMsg*(self: tuckˑactorˑDecoder, msg: tuckˑactorˑDecoderMsg) =
   case msg.tuckTag

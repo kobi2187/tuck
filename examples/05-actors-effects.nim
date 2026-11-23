@@ -13,11 +13,13 @@ type tuckˑactorˑCounterMsg* = object
   tuckTag*: tuckˑactorˑCounterMsgKind
   n*: int
 
-type tuckˑactorˑCounter* = ref object
+type tuckˑactorˑCounter* = ptr tuckˑactorˑCounterState
+type tuckˑactorˑCounterState* = object
   count*: int
   mailbox*: Mailbox[tuckˑactorˑCounterMsg, 8]
 
-let tuckˑactorˑCounterSingleton* = tuckˑactorˑCounter(count: 0)
+var tuckˑactorˑCounterStorage* = tuckˑactorˑCounterState(count: 0)
+let tuckˑactorˑCounterSingleton* = addr tuckˑactorˑCounterStorage
 
 proc handleMsg*(self: tuckˑactorˑCounter, msg: tuckˑactorˑCounterMsg) =
   case msg.tuckTag

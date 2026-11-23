@@ -1,0 +1,39 @@
+# Actors on metal (bare-metal roadmap 2.0): a two-message ring under load,
+# and one actor sending to another from inside a handler.
+#
+# main sends ten messages into Counter's [queue: 2] mailbox, so most sends
+# find it full and `on_full: wait` (the default) runs the scheduler until the
+# actor has made room. Each `add` sends a `note` on to Tally: the scheduler
+# must queue a second actor while the first is mid-drain. main waits until
+# Tally has all ten notes, then checks Counter added 1+2+...+10 = 55.
+
+import scheduler
+
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+actor Tally [queue: 16]:
+  notes: int = 0
+
+  on note():
+    notes += 1
+
+actor Counter [queue: 2]:
+  total: int = 0
+
+  on add({n: int}):
+    total += n
+    Tally send note {}
+
+fn finished() -> bool:
+  return Tally.notes == 10
+
+fn main() -> int:
+  for i in 1 .. 10:
+    Counter send add {n: i}
+  Tally.waitUntil {pred: :finished}
+  if Counter.total != 55:
+    {text: "ACTOR_RING_BAD\n"} say
+    return 1
+  {text: "ACTOR_RING_OK\n"} say
+  return 0

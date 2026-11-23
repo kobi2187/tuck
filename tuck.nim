@@ -499,9 +499,19 @@ proc boardNimFlags(b: BoardConf, projectDir, outDir: string): string =
     "proc tuckFatal(msg: cstring) {.importc: \"tuck_fatal\", noreturn.}\n" &
     "proc rawoutput(msg: string) {.nimcall.} =\n  tuckBoardPuts(msg.cstring)\n" &
     "proc panic*(s: string) {.noreturn.} =\n  tuckFatal(s.cstring)\n")
-  result = " --os:standalone --cpu:arm --mm:none -d:freestanding --exceptions:goto" &
+  # --os:any, not --os:standalone: standalone Nim has no seq or string
+  # support at all (`system module needs: newSeq`), and Tuck code uses `Seq`.
+  # Under --os:any with -d:useMalloc they live on picolibc's malloc, over the
+  # heap each board.ld defines (__heap_start..__heap_end). Found building the
+  # device programs (bare-metal roadmap 2.0).
+  result = " --os:any -d:noSignalHandler --cpu:arm --mm:none -d:freestanding --exceptions:goto" &
     " --cc:gcc --gcc.exe:arm-none-eabi-gcc --gcc.linkerexe:arm-none-eabi-gcc" &
     " --threads:off --tlsEmulation:off --passC:-mthumb --passC:-mcpu=" & b.cpu &
+    # The startup code sets CCR.UNALIGN_TRP so a misaligned access is a fault,
+    # not a silent slow path. GCC assumes ARMv7-M allows unaligned words and
+    # copied a 3-byte actor message with one (found by actor_mailbox, 2.0);
+    # -mno-unaligned-access makes the compiler agree with the trap.
+    " --passC:-mno-unaligned-access" &
     " --passC:-g --passC:-I" & quoteShell(picolibc / "include") &
     " --passL:-nostartfiles"
   for o in objs: result.add " --passL:" & quoteShell(o)
@@ -2014,6 +2024,15 @@ when isMainModule:
         var asyncInit = ""
         var asyncDrive = ""
         let freestandingMode = isFreestandingBuild(opts)
+        if usesRuntime and freestandingMode:
+          # Actors on metal (bare-metal roadmap 2.0): the same registration
+          # as hosted, minus tuck_async; each actor is a stackless frame.
+          var viaMid = ""
+          for am in actorModules:
+            if not importedDirectly(am):
+              viaMid.add("import " & nameOf(am) & " as " & moduleAlias(am) & "\n")
+          if viaMid != "": writeFile(mainNim, viaMid & readFile(mainNim))
+          for a in actorNames: boot.add("  registerActor" & a & "()\n")
         if usesRuntime and not freestandingMode:
           let asyncImp = relativePath(getAppDir() / "compiler" / "tuck_async", outDir).replace('\\', '/')
           writeFile(mainNim, "import " & asyncImp & "\n" & readFile(mainNim))
@@ -2089,13 +2108,15 @@ when isMainModule:
           # semihosting with main's low byte, so `tuck sim` sees the same
           # number a hosted build would. Without it every run, a hang
           # included, ended in the idle loop and read as success.
-          let drive = if hasTasks and concurrencyMode == cmStackless:
+          let drive = if (hasTasks and concurrencyMode == cmStackless) or
+                         actorNames.len > 0:
                         "\n  tuckSlRunAll()" else: ""
           let rcBind = if mainReturns: "let tuckRc = " & tuckMain
                      else: tuckMain & "\n  let tuckRc = 0"
           writeFile(mainNim, readFile(mainNim) &
             "\nwhen isMainModule:\n" &
             "  proc tuckBoardExit(rc: cint) {.importc: \"tuck_board_exit\", noreturn.}\n" &
+            registerCalls & boot &
             "  " & rcBind & drive & "\n" &
             "  tuckBoardExit(cint(tuckRc and 0xFF))\n")
         else:
@@ -2112,6 +2133,10 @@ when isMainModule:
         # only writes them into C (`#line`) when lineDir is on. Without this
         # the pragma is dead text and DWARF still names the generated file.
         if "--debug-lines" in opts: nimFlags.add " --lineDir:on"
+        # The metal actor slot table holds exactly the program's actors (24 B
+        # each), not the runtime's default 16.
+        if freestanding and actorNames.len > 0:
+          nimFlags.add " -d:tuckMaxActors=" & $actorNames.len
         # `binNim` is the file nim c actually COMPILES — needs the same
         # collision check as mainNim (dashes already forced binBase through
         # a rewrite for exactly this "the name on disk isn't always the

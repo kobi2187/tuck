@@ -7,11 +7,13 @@ type tuckˑactorˑTrafficLightMsgKind* = enum msgNext
 type tuckˑactorˑTrafficLightMsg* = object
   tuckTag*: tuckˑactorˑTrafficLightMsgKind
 
-type tuckˑactorˑTrafficLight* = ref object
+type tuckˑactorˑTrafficLight* = ptr tuckˑactorˑTrafficLightState
+type tuckˑactorˑTrafficLightState* = object
   state*: tuckˑactorˑTrafficLightStateKind
   mailbox*: Mailbox[tuckˑactorˑTrafficLightMsg, 4]
 
-let tuckˑactorˑTrafficLightSingleton* = tuckˑactorˑTrafficLight(state: Red)
+var tuckˑactorˑTrafficLightStorage* = tuckˑactorˑTrafficLightState(state: Red)
+let tuckˑactorˑTrafficLightSingleton* = addr tuckˑactorˑTrafficLightStorage
 
 proc handleMsg*(self: tuckˑactorˑTrafficLight, msg: tuckˑactorˑTrafficLightMsg) =
   case msg.tuckTag

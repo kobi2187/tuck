@@ -324,6 +324,10 @@ proc copyMeaning(r: Resolution, src, dst: NodeId) =
   if src in r.callTypeArgs: r.callTypeArgs[dst] = r.callTypeArgs[src]
   if src in r.wraps: r.wraps[dst] = r.wraps[src]
   if src in r.ifaceCalls: r.ifaceCalls[dst] = r.ifaceCalls[src]
+  # An actor field read stays one through a copy: `v with {a: 0}` in a
+  # member fn copies `v` into every field it keeps, and the copies printed
+  # as a bare `v` (A123).
+  if src in r.ownerFields: r.ownerFields.incl dst
 
 proc renumber(r: Resolution, orig, copy: Expr) =
   ## Walk an original and its deepCopy in step, giving each copied node a

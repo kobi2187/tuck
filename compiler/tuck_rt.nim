@@ -1196,3 +1196,5 @@ const
 
 when not defined(freestanding):
   include "tuck_rt_stdlib_externs"
+else:
+  include "tuck_actors_metal"   # actors on metal: a ring per actor (roadmap 2.0)

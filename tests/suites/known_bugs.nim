@@ -5570,6 +5570,6 @@ fn main() -> int:
   return 6
 """
   t.quietly: t.hostRuns("", 6)
-  t.bugOpen "A123: `with` on an actor field inside a member fn builds"
+  t.bugFixed "A123: `with` on an actor field inside a member fn builds"
 
   t.finish()

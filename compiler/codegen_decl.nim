@@ -508,9 +508,21 @@ proc genMsgTypes*(handlers: seq[ActorMsgHandler],
                     (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "")
   enumStr & envelopeStr
 
+proc actorStateName*(actorType: string): string =
+  ## The object an actor's state lives in; the actor type itself is a
+  ## pointer to its one static instance.
+  actorType & "State"
+
+proc actorStorageName*(actorType: string): string =
+  actorType & "Storage"
+
 proc genActorState*(ctx: var CodegenCtx, d: Decl, msgTypeName,
                    queueSize: string): string =
-  ## The actor's ref-object state: declared fields + mailbox.
+  ## The actor's state: declared fields + mailbox, in a plain object. The
+  ## actor type is a POINTER to the one static instance (spec §9: an actor is
+  ## a singleton), not a `ref`: a ref needs Nim's heap to allocate, which a
+  ## freestanding build does not have (`system module needs: newObj`), and
+  ## a singleton never needed a heap in the first place.
   var fieldsStr: seq[string]
   for f in d.actorFields:
     fieldsStr.add("  " & f.name & "*: " & ctx.fieldType(d.name, f))
@@ -518,7 +530,8 @@ proc genActorState*(ctx: var CodegenCtx, d: Decl, msgTypeName,
   if actorHasUrgent(d):
     fieldsStr.add("  " & UrgentMailbox & "*: Mailbox[" & msgTypeName & ", " &
                   queueSize & "]")
-  "type " & d.name & "* = ref object\n" & fieldsStr.join("\n") & "\n"
+  "type " & d.name & "* = ptr " & actorStateName(d.name) & "\n" &
+    "type " & actorStateName(d.name) & "* = object\n" & fieldsStr.join("\n") & "\n"
 
 proc genActorDispatch*(ctx: CodegenCtx, d: Decl, msgTypeName: string,
                       handlers: seq[ActorMsgHandler]): string =
@@ -608,8 +621,10 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
   var inits: seq[string]
   for f in d.actorFields:
     if f.default != nil: inits.add(f.name & ": " & ctx.genExpr(f.default))
-  let singletonStr = "let " & singleton & "* = " & d.name & "(" &
-                     inits.join(", ") & ")\n"
+  let storage = actorStorageName(d.name)
+  let singletonStr = "var " & storage & "* = " & actorStateName(d.name) & "(" &
+                     inits.join(", ") & ")\n" &
+                     "let " & singleton & "* = addr " & storage & "\n"
   let drainStr = genActorDrain(drainName, singleton, actorHasUrgent(d))
   var memberStr = ""
   for m in actorMemberFns(d): memberStr.add ctx.genActorMemberFn(m, d.name) & "\n"

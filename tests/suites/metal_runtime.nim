@@ -87,6 +87,25 @@ fn main() -> int:
   t.metal("a dropped interrupt leaves the safe state", "fault_isr_drop",
           "isr-drop", 0, @["FAULT_SAFE_OK"], extra = @["--fault:isr-drop"])
 
+  # Actors on metal (bare-metal roadmap 2.0): a ring mailbox per actor and a
+  # frame on the stackless scheduler; until 2026-11-23 no actor built for a
+  # board at all (`Mailbox` undeclared, then `newObj`, `newSeq`).
+  for board in ["lm3s6965evb", "stm32vldiscovery"]:
+    t.metal("an actor receives its messages on " & board, "actor_mailbox",
+            "actor-" & board, 0,
+            @["STATE l0=true l1=true", "STATE l0=false l1=true"], board = board)
+    t.metal("a full ring waits, and an actor sends to another, on " & board,
+            "actor_ring", "ring-" & board, 0, @["ACTOR_RING_OK"], board = board)
+  # The device programs build for a board and fail CLEANLY with no device on
+  # the bus: QEMU models no DS3231 or SD card, so each bounded wait times out
+  # and main returns 1, rather than hanging (124) or faulting.
+  t.metal("the irrigation controller boots; no RTC on the bus is exit 1",
+          "devices/irrigation/irrigation", "irrigation", 1, @["qemu exit: 1"],
+          board = "stm32vldiscovery")
+  t.metal("the MP3 recorder boots; no SD card is exit 1",
+          "devices/recorder/recorder", "recorder", 1, @["qemu exit: 1"],
+          board = "stm32vldiscovery")
+
   # `--board:NAME` (roadmap 0.1) is judged before anything is built.
   t.src "fn main() -> int:\n  return 0\n"
   block:

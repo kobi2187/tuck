@@ -65,7 +65,9 @@ window closed**, which is never a pass.
 | Program | Proves | Where |
 |---|---|---|
 | `boot_nop`, `boot_led`, `boot_led_svd` | boot; register writes; SVD-generated registers identical to hand-written | QEMU (GPIO not modelled) |
-| `hal_led`, `hal_counter`, `hal_button`, `hal_uart_echo`, `two_blinkers`, `actor_mailbox`, `platform_hal` | logic and scheduler against host shims | host |
+| `hal_led`, `hal_counter`, `hal_button`, `hal_uart_echo`, `two_blinkers`, `platform_hal` | logic and scheduler against host shims | host |
+| `actor_mailbox`, `actor_ring` | actors on metal: a ring mailbox per actor, a full ring that waits, one actor sending to another | QEMU and host |
+| `devices/irrigation`, `devices/recorder`, `devices/drone` | three programs on real parts (`PROGRAMS-2026-11-22.md`); the first two boot and exit 1 with no device on the bus | QEMU (build) and host (simulations) |
 | `two_tasks`, `task_await`, `task_fire_forget` | stackless tasks on metal: interleave, await, fire-and-forget | QEMU |
 | `irq_marker`, `critical_shared`, `isr_handoff` | `[irq]`, `critical:`, the one-word ISR hand-off (handlers are called, not yet taken) | QEMU |
 | `critical_nest` | nested `critical:` keeps interrupts masked; an early `return` unmasks | QEMU |
