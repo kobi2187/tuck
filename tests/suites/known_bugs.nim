@@ -8185,4 +8185,76 @@ fn main() -> int [io]:
 """
   t.okCheck "A182: ...and a queued event carries nothing, even from interrupt code"
 
+  # A183 (class G, C6/C7): stackless hoisted every frame call out of its
+  # statement, so a call on a path that may not run RAN: the untaken branch
+  # of a value `if`, every arm of a value `match`, the right side of a false
+  # `and` or a true `or`. And an operand left of a pause was read after it:
+  # `count + {ms: 20} nap` saw the count the nap let change. Stackful was
+  # right throughout, and all three backends were wrong the same way.
+  t.src """
+import console
+
+fn say({text: str}) [io]:
+  {text: text} console::printLine
+
+fn tick({tag: str, v: int}) -> int [io]:
+  {text: "tick " + tag} say
+  return v
+
+fn yes({tag: str}) -> bool [io]:
+  {text: "yes " + tag} say
+  return true
+
+fn no({tag: str}) -> bool [io]:
+  {text: "no " + tag} say
+  return false
+
+task t1({k: int}) -> {r: int} [io]:
+  let v = if k > 5: {tag: "then", v: 1} tick else: 0
+  let w = match k:
+    1: {tag: "arm1", v: 1} tick
+    2: {tag: "arm2", v: 2} tick
+    _: 9
+  if {tag: "L1"} no and {tag: "R1"} yes:
+    {text: "bad"} say
+  if {tag: "L2"} yes or {tag: "R2"} yes:
+    {text: "ok"} say
+  return {r: v + w}
+
+fn main() -> int [io]:
+  let r = {k: 1} t1
+  return r.r
+"""
+  t.quietly: t.hostRuns "A183: a pause on a path not taken does not run", 1,
+             "^tick arm1\\s+no L1\\s+yes L2\\s+ok\\s*$"
+  t.bugFixed "A183: a pause on a path not taken does not run"
+  t.src """
+import time
+
+actor Counter [queue: 8]:
+  n: int = 0
+  on bump():
+    n = n + 1
+
+fn nap({ms: u32}) -> int [io]:
+  {ms: ms} time::sleepMs
+  return 1
+
+task bumper({k: int}) -> {r: int} [io]:
+  let w = {ms: 5} nap
+  Counter send bump {}
+  return {r: 0}
+
+task reader({k: int}) -> {r: int} [io]:
+  let s = Counter.n + {ms: 50} nap
+  return {r: s}
+
+fn main() -> int [io]:
+  {k: 7} bumper
+  let a = {k: 0} reader
+  return a.r
+"""
+  t.quietly: t.hostRuns "A183: an operand left of a pause is read before it", 1
+  t.bugFixed "A183: an operand left of a pause is read before it"
+
   t.finish()

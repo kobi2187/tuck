@@ -91,6 +91,7 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | Y5 a const that divides by zero, or whose narrow-integer `+ - *` overflows, is a Const Error (it built on Odin only, stopping at start) | A177 | `int`/`i64` const overflow is Y1, untouched |
 | An invariant violation reports the predicate as written and the type's Tuck name, one text on all three (it was each host's emitted code) | invariants suite | |
 | Merge with main's registry rulings (2026-11-22): a synchronous raise is charged its handlers' effects (E5, confirmed 2026-11-23) only for handlers its own module sees; a queued event (`[stream]`/`[signal]`/`[latest]`) carries none; registries are no longer told apart per module (names are unique, TK-RG07); my shared-state rule moved to TK-EF12 (main took EF10/EF11); my A119-A122 pins renumbered A178-A181 (main's own A119-A122 kept) | A182 | the call-edge invariant skips a queued raise |
+| C6/C7 stackless: a frame call on a path that may not run (value-`if` branch, `match` arm, right of `and`/`or`) is cut inside that path, not hoisted before the test; an operand left of a pause is pinned into a temp before it (`count + {ms: 20} nap`) | A183 | `stages.conditionalToTemp`, `hoistChildren`/`pin` |
 
 **Still open in class B.** M14's refusal for a private or un-imported callee is a restriction, not the end
 state: the clone should be checked in the library's scope.
@@ -107,7 +108,8 @@ not on 2 passes), Y6 (what an out-of-range or NaN float `~int` gives: Odin 0, Ni
 minimum; and a constant one Nim and Odin refuse to build), Y8's other half (a `[saturating]`
 chain that is compared, passed or returned rather than stored still wraps; spec 4.1 names only
 stores), the precedence of `-128 Temp` (it is `-(128 Temp)`, so -127 on a saturating `i8`),
-and two TK-TY16 holes the checker cannot follow: a partial record put in a
+a Nim backend gap found while fixing C7 (`x + f()` where `f` changes `x`: Nim leaves operand order to C, so
+stackful Nim read `x` after the call; Odin and D read it first) — not yet fixed, and two TK-TY16 holes the checker cannot follow: a partial record put in a
 sum payload (un/c11) and a slab `new` that omits a field (sl2) — refuse the store, or track?
 
 ---
