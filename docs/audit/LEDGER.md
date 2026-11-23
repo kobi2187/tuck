@@ -98,6 +98,7 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | c_member/b a fn reference to an actor's member (`:bump`) is refused: it built on no backend, inside the actor or out (a bound method; recorded as a missing feature) | A187 | `failIfMemberRef` |
 | C9 a stackless frame local takes its STATED type (`let o: Runner = o0`); a call through an interface whose member may wait runs on a helper stack (`stages.dispatchMayWait`) | A188 | |
 | C14 main's `awaitResult` polls the reactor on every step on all three runtimes, so a task awaiting a sleeping child no longer hangs under stackful | A189 | |
+| C13 `[queue: N]` holds per message under Nim's `--actors:batch` (room reserved per run against waiting + reserved messages, as Odin's batch mode): `on_full: drop` and `assert` now act | actor_mode suite | |
 
 **Still open in class B.** M14's refusal for a private or un-imported callee is a restriction, not the end
 state: the clone should be checked in the library's scope.

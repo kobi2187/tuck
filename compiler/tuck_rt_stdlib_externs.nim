@@ -56,6 +56,12 @@ type
                             ptr Batch[T, TuckBatchCount]]]
       qfill*: array[2, int]
       qcur*: int
+      waiting*: int          ## messages handed over, not yet taken by a swap
+      reserved*: int         ## room the senders' open runs hold back
+        ## `[queue: N]` is enforced on these, per MESSAGE, as in message mode
+        ## and in Odin's batch mode. The pool is counted in whole batches, so
+        ## alone it let `queue: 2` take a full batch or more, and `on_full:
+        ## drop` / `assert` never saw a full mailbox (audit C13).
     else:
       buf*: array[2, array[Cap, T]]
       pad*: array[CacheLine, byte]
@@ -88,6 +94,7 @@ type
     ## an atomic per message, and measured at parity with single mode, which
     ## has no locks at all.
     cur*: ptr Batch[T, TuckBatchCount]  ## the borrowed batch, or nil
+    room*: int               ## messages this run may still take (reserved)
     sends*: int              ## counts down to the next deadline check
     opened*: MonoTime        ## when the current batch took its first message
     mb*: ptr Mailbox[T, Cap] ## where to hand over
@@ -143,8 +150,11 @@ when TuckActorsBatch:
     # it came out of that pool.
     mb.qbuf[c][mb.qfill[c]] = st.cur
     inc mb.qfill[c]
+    mb.waiting += st.cur.n
+    mb.reserved -= st.room
     release(mb.lock)
     st.cur = nil
+    st.room = 0
     true
 
   proc flushHook[T; Cap: static int](p: pointer): bool {.nimcall, gcsafe.} =
@@ -190,6 +200,28 @@ when TuckActorsBatch:
 
 
 
+when TuckActorsBatch:
+  proc openRun[T; Cap: static int](mb: var Mailbox[T, Cap],
+                                   st: var Staging[T, Cap]): bool =
+    ## Open a run: reserve up to a batch of the mailbox's ROOM in messages
+    ## (`Cap` less what waits and what other runs hold), then borrow a batch
+    ## to stage it in. False when there is no room, or no batch to lend.
+    acquire(mb.lock)
+    let room = min(TuckBatchCount, Cap - mb.waiting - mb.reserved)
+    if room <= 0:
+      release(mb.lock)
+      return false
+    mb.reserved += room
+    release(mb.lock)
+    st.cur = takeFree(mb)
+    if st.cur == nil:
+      acquire(mb.lock)
+      mb.reserved -= room
+      release(mb.lock)
+      return false
+    st.room = room
+    true
+
 proc flushNow*[T; Cap: static int](mb: var Mailbox[T, Cap]) =
   ## Hand over what this thread has staged for `mb` at once: an `[urgent]`
   ## send does not wait for its batch to fill. A no-op outside batch mode,
@@ -205,15 +237,14 @@ proc enqueue*[T; Cap: static int](mb: var Mailbox[T, Cap], msg: T): bool =
   when TuckActorsBatch:
     let st = stagingFor(mb)
     if st.cur == nil:
-      st.cur = takeFree(mb)
-      if st.cur == nil:
-        return false          # the pool is out: full, as a full ring is
+      if not openRun(mb, st[]):
+        return false          # full: `[queue: N]` messages already wait
       st.opened = getMonoTime()
     let b = st.cur
     b.msgs[b.n] = msg
     inc b.n
     inc st.sends
-    if b.n >= TuckBatchCount:
+    if b.n >= st.room:
       handOver(st[])
     elif st.sends >= TuckBatchCheckEvery:
       # Sweep THIS THREAD'S batches, not just this one. The deadline used to
@@ -267,6 +298,7 @@ iterator messages*[T; Cap: static int](mb: var Mailbox[T, Cap]): var T =
     if n > 0:
       mb.qcur = 1 - c
       mb.qfill[c] = 0
+      for i in 0 ..< n: mb.waiting -= mb.qbuf[c][i].n   # taken: no longer waiting
     release(mb.lock)
     for i in 0 ..< n:
       let b = mb.qbuf[c][i]
@@ -299,10 +331,10 @@ proc hasRoom*[T; Cap: static int](mb: var Mailbox[T, Cap]): bool =
     # Room means "this thread holds a batch, or the pool can lend it one" —
     # the two ways the next send can succeed.
     let st = stagingFor(mb)
-    if st.cur != nil: return true
+    if st.cur != nil and st.cur.n < st.room: return true
     acquire(mb.lock)
     seedFree(mb)
-    result = mb.freeTop > 0
+    result = mb.freeTop > 0 and Cap - mb.waiting - mb.reserved > 0
     release(mb.lock)
   else:
     acquire(mb.lock)
