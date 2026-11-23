@@ -6202,8 +6202,57 @@ fn run[T: Src]({x: T}) -> int:
   let b = {self: x} v
   return a + b
 """)
-  t.quietly: t.badCheck "A146: a clone needing a name the caller cannot reach says which", "its body calls 'secret' of module 'lib'"
-  t.bugFixed "A146: a clone needing a name the caller cannot reach says which"
+  # The end state (ledger: "a restriction, not the end state"): the clone was
+  # written in the library's scope, so it calls the library's private
+  # `secret`; it was refused, asking the library to publish it. 1002 & 0xFF.
+  t.quietly: t.hostRuns "A146: a clone calls the library's private fn", 234
+  t.bugFixed "A146: a clone calls the library's private fn"
+  t.src """
+import lib
+
+fn main() -> int:
+  return {n: 1} lib::secret
+"""
+  t.addFile("lib.tuck", """public:
+  Src run
+
+interface Src:
+  fn v({self: Self}) -> int
+fn secret({n: int}) -> int:
+  return n + 1000
+fn run[T: Src]({x: T}) -> int:
+  let a = {n: 1} secret
+  let b = {self: x} v
+  return a + b
+""")
+  t.quietly: t.badCheck "A146: ...but the caller itself still cannot name it", "secret"
+  t.bugFixed "A146: ...but the caller itself still cannot name it"
+  t.src """
+import lib
+
+object Foo:
+  satisfies Src
+  k: int
+  fn v({self: Foo}) -> int:
+    return self.k
+
+fn main() -> int:
+  let f = {k: 1} Foo
+  return {x: f} run
+"""
+  t.addFile("util.tuck", """fn plus1000({n: int}) -> int:
+  return n + 1000
+""")
+  t.addFile("lib.tuck", """import util
+interface Src:
+  fn v({self: Self}) -> int
+fn run[T: Src]({x: T}) -> int:
+  let a = {n: 1} plus1000
+  let b = {self: x} v
+  return a + b
+""")
+  t.quietly: t.hostRuns "A146: a clone calls a fn of the library's own import", 234
+  t.bugFixed "A146: a clone calls a fn of the library's own import"
 
   # A147 (audit M13): `ea::conv` on an extern with `[emit: "toUpperAscii"]`
   # went out as `ea.conv`: the Nim emitter looked the emit name up by the
@@ -8610,5 +8659,25 @@ fn main() -> int:
 """
   t.quietly: t.runs "A190: ...the value if and the statement if still work", 4
   t.bugFixed "A190: ...the value if and the statement if still work"
+
+  # A191 (found with M14): a library declaring an interface-bounded generic
+  # whose body calls a requirement in payload form (`{self: x} v`) did not
+  # check at all when nothing in the program satisfied the interface yet:
+  # the call fell to the flat signature table, which held a `v` only while
+  # some satisfier existed. It is typed from the contract now.
+  t.src """
+import lib
+
+fn main() -> int:
+  return 0
+"""
+  t.addFile("lib.tuck", """interface Src:
+  fn v({self: Self}) -> int
+fn run[T: Src]({x: T}) -> int:
+  let b = {self: x} v
+  return b + 1
+""")
+  t.quietly: t.okCheck "A191: an uninstantiated generic's requirement call checks"
+  t.bugFixed "A191: an uninstantiated generic's requirement call checks"
 
   t.finish()

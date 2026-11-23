@@ -5,7 +5,7 @@
 # entry point into one Nim source file. The public entry point
 # (`emitNim`) — imported by tuck.nim, not codegen.nim, since genDecl (and
 # transitively genExpr) has to sit BELOW this in the import order.
-import ast, strutils, tables
+import ast, strutils, tables, sets
 import resolution
 import ast_query
 import codegen_common
@@ -72,10 +72,22 @@ proc genModuleImports*(m: Module, realModules: ModuleMap): string =
   ## seq` used to make the next `seq[...]` in the file "cannot instantiate the
   ## 'seq' module". Nim still merges the module's names into this scope; the
   ## alias is what a `module::fn` call is spelled through.
+  var imported: seq[ModuleId]
   for d in m.decls:
     if d != nil and d.kind == dkImport and d.importTarget in realModules:
+      imported.add d.importTarget
       result.add("import " & nameOf(d.importTarget) & " as " &
                  moduleAlias(d.importTarget) & "\n")
+  # A module only a CLONE of another module's generic reaches (its body calls
+  # `owner::name`, iface_generics.cloneReach): reachable qualified, with
+  # none of its names merged into this module's scope (audit M14). Odin and
+  # D import whatever a qualified name reaches already.
+  for key in cloneReach.getOrDefault(nameOf(m.id)):
+    let owner = knownModule(key[0 ..< key.find("::")])
+    if owner notin realModules or owner in imported: continue
+    imported.add owner
+    result.add("from " & nameOf(owner) & " as " & moduleAlias(owner) &
+               " import nil\n")
 
 proc genOrderedDecls*(ctx: var CodegenCtx, m: Module): string =
   ## Nim needs decl-before-use; Tuck is order-independent. So: type

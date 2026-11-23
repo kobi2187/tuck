@@ -4539,6 +4539,26 @@ proc asGroupRequirement(tc: var TypeChecker, e: Expr, calleeName: string): Type 
         return substituteGroup(want.fnReturnType, selfT, groupBindings(g, bound))
   nil
 
+proc asBoundIfaceRequirement(tc: var TypeChecker, e: Expr, calleeName: string): Type =
+  ## `{self: x} v` inside `fn run[T: Src]`, with `x: T`: the CONTRACT's `v`,
+  ## as `x.v` already was (asBoundIfaceCall) and as a group's requirement is
+  ## (asGroupRequirement). It fell to the flat signature table, which held a
+  ## `v` only while some object satisfying Src happened to exist — so the
+  ## body was checked against that one object, and a library whose interface
+  ## nobody satisfied yet did not check at all ("'v' is not a declared
+  ## callable", found with audit M14).
+  if calleeName == "" or tc.currentBounds.len == 0: return nil
+  for tp, _ in tc.currentBounds:
+    let iname = tc.ifaceBoundOf(tp)
+    if iname == "": continue
+    let mem = tc.contractMember(iname, calleeName)
+    if mem == nil or not tc.payloadCarriesTypeParam(e, tp): continue
+    for a in e.args: discard tc.synthesize(a)
+    let subs = boundSubst(mem, tc.namedType(tp, e.span), tc.namedType(iname, e.span))
+    let ret = substType(mem.fnReturnType, subs)   # no `->` is `-> void` (R5)
+    return (if ret == nil: Type(span: e.span, kind: tkNamed, name: "void") else: ret)
+  nil
+
 proc checkAmbiguousImports(tc: var TypeChecker, e: Expr, calleeName: string) =
   ## Check if the callee name is ambiguously imported.
   if calleeName == "" or not tc.ambiguousImports.hasKey(calleeName) or
@@ -4595,6 +4615,8 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
   # imports exporting its name is the situation a group exists for (A14).
   let viaGroup = tc.asGroupRequirement(e, calleeName)
   if viaGroup != nil: return viaGroup
+  let viaIface = tc.asBoundIfaceRequirement(e, calleeName)
+  if viaIface != nil: return viaIface
   tc.checkAmbiguousImports(e, calleeName)
   result = tc.asBuiltinOrEchoCall(e, calleeName)
   if result != nil: return
@@ -7279,6 +7301,9 @@ type
     ## What every module exports, gathered before any module is checked, so an
     ## import can be resolved regardless of declaration order.
     byMod: Table[string, Table[string, seq[FnSig]]]
+    allByMod: Table[string, Table[string, seq[FnSig]]]
+                              ## the same, `public:` or not: what a clone of a
+                              ## module's generic may call (iface_generics.cloneReach)
     pendByMod: Table[string, Table[string, Span]]
     importsByMod: Table[string, seq[string]]
     boundsByMod: Table[string, Table[string, seq[seq[Type]]]]
@@ -7360,10 +7385,13 @@ proc collectProgramSigs(mods: seq[tuple[name, path: string, m: Module]]): Progra
       ## Does `n` leave this module: everything when there is no `public:` list,
       ## else only the listed names (and anything already qualified).
       not restricted or n in allowed or "::" in n
-    var sigs: Table[string, seq[FnSig]]
+    var sigs, all: Table[string, seq[FnSig]]
     for n, sg in tc.fnSigs:
-      if visible(n) and not tc.onlyMembersNamed(m, n): sigs[n] = sg
+      if tc.onlyMembersNamed(m, n): continue
+      all[n] = sg
+      if visible(n): sigs[n] = sg
     result.byMod[name] = sigs
+    result.allByMod[name] = all
     result.pendByMod[name] = tc.pendingFns
     result.importsByMod[name] = moduleImports(m)
     var groups: Table[string, Decl]
@@ -7451,6 +7479,14 @@ proc importScopeFor(sigs: ProgramSigs, preSigs: Table[string, seq[SigInfo]],
   for imp in sigs.importsByMod[name]:
     if sigs.byMod.hasKey(imp): result.importChecked(sigs, imp)
     else: result.importPrebuilt(preSigs, imp)
+  # What this module's clones of another module's generics call, though this
+  # module cannot name it itself: qualified only, for the clone (audit M14).
+  for key in cloneReach.getOrDefault(name):
+    let sep = key.find("::")
+    let owner = key[0 ..< sep]
+    let fname = key[sep + 2 .. ^1]
+    if sigs.allByMod.hasKey(owner) and sigs.allByMod[owner].hasKey(fname):
+      result.extern[key] = sigs.allByMod[owner][fname]
 
 type ModuleScope* = object
   ## What one module's imports put in its scope, as the checker decided it:
@@ -7891,6 +7927,7 @@ proc typecheckExpanding*(mods: var seq[tuple[name, path: string, m: Module]],
   ##
   ## `var`: expansion adds and drops declarations, and `Module` is a value —
   ## the caller must see the module lists this leaves.
+  cloneReach.clear()
   result = checkProgramOnce(mods, preSigs)
   var rounds = 0
   while true:

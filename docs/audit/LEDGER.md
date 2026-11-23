@@ -101,9 +101,7 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | C13 `[queue: N]` holds per message under Nim's `--actors:batch` (room reserved per run against waiting + reserved messages, as Odin's batch mode): `on_full: drop` and `assert` now act | actor_mode suite | |
 | C7 (Nim) a task's yield goes before the statement holding the [io] call, not inline (a statement-list expression Nim hoists ahead of the whole expression); a read of shared state left of a call is pinned first (`Counter.n + f()`, which C left unordered) | stackless suite: tests/stackless/paths.tuck | `genPinnedLeft`, `yieldsBefore` |
 | I: E18/M11 an error raised in an imported module by a whole-program check (name folding, generated names, registries) names that module's file (`semantics.inModule`); Y19 TK-TY41 keeps the sign, a value `if`/`match` with a returning branch says so; TK-EF02 fires for any declared I/O marker on a body that does none; a block-bodied `if` taken as a value (statement form by R2) is refused, where it built to a wrong value on Odin and D | A190 | |
-
-**Still open in class B.** M14's refusal for a private or un-imported callee is a restriction, not the end
-state: the clone should be checked in the library's scope.
+| M14 (end state) a clone of a library's interface-bounded generic calls the library's private fns and its own imports' fns, as written in the library's scope (`resolution.cloneReach`: named for the clone only, emitted exported, Nim imports the module `import nil`); the caller's own code still cannot name them. A requirement call in payload form inside a bounded generic is typed from the contract (A191) | A146, A191 | |
 
 **Waiting on a ruling.** E4 (does binding a task's result, an await, need `[io]` in the
 caller?), E16 (`on select` arm budgets, F2), C18's second half (a predicate reading only its

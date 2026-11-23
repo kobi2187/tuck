@@ -638,6 +638,22 @@ proc slabOfRefType*(name: string): Decl =
   if name.len > 3 and name.endsWith("Ref"):
     result = semLayer.slabNames.getOrDefault(name[0 ..< name.len - 3], nil)
 
+var cloneReach*: Table[string, HashSet[string]]
+  ## Caller module -> the `owner::name` fns its clones call that the caller
+  ## itself cannot name: a library's private helper, or a fn of the library's
+  ## own import. A clone's body was written and checked in the LIBRARY'S
+  ## scope, so it may call them (audit M14); the caller's own code may not.
+  ## The checker adds exactly these to the caller's scope. Program-wide,
+  ## kept across expansion rounds; reset by typecheckExpanding.
+
+proc cloneReached*(key: string): bool =
+  ## Does some clone call `owner::name` across a module boundary? Such a fn is
+  ## EMITTED exported, whatever its module's `public:` says: the clone sits in
+  ## the caller's module and calls it there. Its Tuck visibility is unchanged.
+  for _, keys in cloneReach:
+    if key in keys: return true
+  false
+
 proc poolOfHandleType*(name: string): Decl =
   ## The pool whose handle type is `name` (`ReadingsHandle` -> Readings), or
   ## nil. Keyed by the name as WRITTEN, whole-program, like slabOfRefType: a
