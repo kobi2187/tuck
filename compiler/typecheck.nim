@@ -6114,6 +6114,33 @@ proc asQualifiedValue(tc: var TypeChecker, e: Expr, key: string): Type =
     return tc.synthesize(e)
   nil
 
+proc isActorMemberDecl(tc: TypeChecker, d: Decl, owners: seq[string]): bool =
+  ## Is `d` a member fn of one of the actors `owners` names?
+  for a in owners:
+    let ad = tc.module.findDecl(dkActor, a)
+    if ad == nil: continue
+    for h in ad.handlers:
+      if h == d: return true
+  false
+
+proc failIfMemberRef(tc: TypeChecker, e: Expr, key: string) =
+  ## `:bump` naming an actor's member fn is refused. A member runs on its
+  ## actor's `self`, so a reference to it is a BOUND method, which no backend
+  ## builds: outside the actor it checked clean and named nothing (and would
+  ## have touched the actor's state from main's thread); inside it, every
+  ## backend still emitted a bare `bump` it could not resolve (audit
+  ## c_member/b). A program is Tuck on every backend or none.
+  if e.modulePath.len != 0 or key notin tc.actorMemberOwner: return
+  let owners = tc.actorMemberOwner[key]
+  # A free fn of the same name is what a bare reference means. Actor members
+  # are collected beside top-level fns, so "top level" is asked of the decl.
+  let d = tc.topLevelFnDecl.getOrDefault(key)
+  if d != nil and not tc.isActorMemberDecl(d, owners): return
+  fail(dcTyUndeclared, "'" & key & "' is a member of actor '" & owners[0] &
+       "', and a reference to an actor's member is not supported (it would " &
+       "need the actor's state). Fix: call it inside the actor, or declare " &
+       "the fn at top level", e.span)
+
 proc synthQualified(tc: var TypeChecker, e: Expr): Type =
   ## `:name` is a FUNCTION REFERENCE (`{add: :plus}`, `waitUntil {pred:
   ## :ready}`). Resolving it to a real tkFunc keeps the signature — params and
@@ -6137,6 +6164,7 @@ proc synthQualified(tc: var TypeChecker, e: Expr): Type =
   if not tc.fnSigs.hasKey(key):
     fail(dcTyUndeclared, "'" & key & "' is not a declared function" &
          spellingHint(e.qualName), e.span)
+  tc.failIfMemberRef(e, key)
   let sig = tc.sigOf(key)
   var ps: seq[Type]
   var names: seq[string]

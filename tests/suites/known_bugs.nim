@@ -8397,4 +8397,48 @@ fn main() -> int:
   t.quietly: t.hostRuns "A186: an actor with fields and no handlers", 8
   t.bugFixed "A186: an actor with fields and no handlers"
 
+  # A187 (class G, c_member/b): `:bump` naming an actor's member fn checked
+  # clean and built on no backend, inside the actor or out (a member needs
+  # its actor's state: a reference to it is a bound method). Refused; a free
+  # fn of the same name is still what a bare reference means.
+  t.src """
+fnsig Op = {} -> int
+type Box = {op: Op}
+
+actor A [queue: 8]:
+  n: int = 0
+  fn bump() -> int:
+    n += 1
+    return n
+  on go():
+    n += 1
+
+fn main() -> int:
+  A send go {}
+  let c = {op: :bump} Box
+  return {} c.op
+"""
+  t.quietly: t.badCheck "A187: a reference to an actor's member is refused", "member of actor 'A'"
+  t.bugFixed "A187: a reference to an actor's member is refused"
+  t.src """
+fnsig Op = {} -> int
+type Box = {op: Op}
+
+actor A [queue: 8]:
+  n: int = 0
+  fn bump() -> int:
+    n += 1
+    return n
+  on go():
+    n += 1
+
+fn bump() -> int:
+  return 7
+
+fn main() -> int:
+  let c = {op: :bump} Box
+  return {} c.op
+"""
+  t.okCheck "A187: ...but a free fn of the same name is referenced"
+
   t.finish()

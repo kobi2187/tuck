@@ -95,6 +95,7 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | T15 (H) the SSA mirror walks a value that is control flow (`let z = match s:`, `return if ...`) by its blocks, not as one read; Odin's value `match` over a payload sum tests the variant through generated `S_is_V` procs | A184 | `ssa_build.walkValue` |
 | C15 a task awaited from an actor handler builds on Nim stackless: the stage passes its frame's `tuckSlExit` to `tuckSlRet` instead of the runtime finding it by `mixin`, which `codeReordering` cannot see | A185 | |
 | C8 `return err X` in a Nim stackless frame finishes the frame once (genRaise already did); C10 a written `<Pool>Handle` maps to the runtime's PoolHandle in every backend's type mapper (`resolution.poolOfHandleType`); C17 an actor with no handlers still has its singleton and member fns on Nim | A186 | |
+| c_member/b a fn reference to an actor's member (`:bump`) is refused: it built on no backend, inside the actor or out (a bound method; recorded as a missing feature) | A187 | `failIfMemberRef` |
 
 **Still open in class B.** M14's refusal for a private or un-imported callee is a restriction, not the end
 state: the clone should be checked in the library's scope.
