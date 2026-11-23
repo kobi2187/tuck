@@ -8522,4 +8522,28 @@ fn main() -> int [io]:
   t.quietly: t.hostRuns "A188: an interface call that waits, in a task", 4, "pausing iface\\s+pausing generic\\s+done"
   t.bugFixed "A188: an interface call that waits, in a task"
 
+  # A189 (class G, C14): under stackful, main awaiting a task that awaits a
+  # child which SLEEPS hung on every backend. The parent's await yields in a
+  # loop, so something was always ready, and main's await loop polled the
+  # reactor only when nothing was: the child's timer never fired. The
+  # reactor is polled on every step now. (Stackless parks the frame, and
+  # was right.)
+  t.src """
+import time
+
+task child({n: u32}) -> {r: int} [io]:
+  {ms: n} time::sleepMs
+  return {r: 1}
+
+task parent({k: int}) -> {r: int} [io]:
+  let a = {n: 5} child
+  return {r: a.r + 2}
+
+fn main() -> int [io]:
+  let p = {k: 0} parent
+  return p.r
+"""
+  t.quietly: t.hostRuns "A189: an await of a task awaiting a sleeping child", 3
+  t.bugFixed "A189: an await of a task awaiting a sleeping child"
+
   t.finish()

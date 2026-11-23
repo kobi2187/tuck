@@ -364,9 +364,13 @@ proc awaitResult*[T](slot: TuckAsyncResult[T]): T =
   if running() != nil:
     while not slot.done: tuckYield()
   else:
+    # The reactor is polled on EVERY step, not only when nothing is ready: a
+    # task awaiting its own child yields in a loop, so something was always
+    # ready, the timers never ran, and a child that slept was never woken
+    # (audit C14: stackful hung; stackless parks the frame instead).
     while not slot.done:
-      if not runNext():
-        discard gLoop.runOnce(1)   # let I/O + timers make progress
+      let ran = runNext()
+      discard gLoop.runOnce(if ran: 0 else: 1)
   result = tuckMove(slot.value)
   dealloc(cast[pointer](slot))
 

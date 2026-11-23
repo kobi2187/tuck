@@ -769,10 +769,14 @@ T awaitResult(T)(TuckAsyncResult!T slot)
     {
         if (inCoroutine())
             tuckYield();
-        else if (readyCount > 0)
-            stepOne();
         else
-            runOnce(1);
+        {
+            // the reactor on every step: a task awaiting its child yields in
+            // a loop, so something is always ready (audit C14)
+            const ran = readyCount > 0;
+            if (ran) stepOne();
+            runOnce(ran ? 0 : 1);
+        }
     }
     auto v = slot.value;
     tuckFreeBlock(cast(void*) slot);     // the slot was this await's alone
