@@ -5550,4 +5550,26 @@ fn main() -> int:
   t.quietly: t.hostRuns("", 5)
   t.bugOpen "A122: an empty list in a `with` update takes the field's type"
 
+  # A123: `field with {...}` on an actor field inside the actor's own member
+  # fn checks clean, then every backend fails: the fields it copies are
+  # printed as the bare name (`v.b`), not through the actor (`self.v.b`).
+  # Found measuring the irrigation program's Garden actor.
+  t.src """
+type V:
+  a: int
+  b: int
+
+actor Box [queue: 2]:
+  v: V = {a: 1, b: 2} V
+  fn zero():
+    v = v with {a: 0}
+  on go():
+    zero
+
+fn main() -> int:
+  return 6
+"""
+  t.quietly: t.hostRuns("", 6)
+  t.bugOpen "A123: `with` on an actor field inside a member fn builds"
+
   t.finish()

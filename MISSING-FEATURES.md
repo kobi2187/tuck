@@ -22,7 +22,7 @@ open bugs and the measured async/concurrency gaps.
 
 ---
 
-## A. Open bugs (4)
+## A. Open bugs (5)
 
 A bug here has a regression test written as the CORRECT behaviour, marked
 `bug_open`. Fixing one means flipping the marker to `bug_fixed`, which locks
@@ -35,6 +35,10 @@ it in.
 - **A120 — a typed local loses its variant.** `var m: M = M.Idle` then a sealed
   transition inside the `Idle:` arm is refused as a direct construction; without
   the `: M` it checks. Found by the recorder program. Pin: `known_bugs` "A120".
+- **A123 — `with` on an actor field inside a member fn does not build.**
+  `v = v with {a: 0}` in an actor's `fn` checks clean; Nim, Odin and D all fail
+  on `v`: the copied fields are printed as `v.b`, not `self.v.b`. The
+  irrigation program's `failSafe` hits it. Pin: `known_bugs` "A123".
 - **A122 — an empty list in a `with` update ignores the field's type.**
   `f with {values: [], n: 0}` with `values: Seq[int]` is TK-TY20 ("no element
   type"); the same list in a constructor checks. Found by the drone program.
