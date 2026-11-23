@@ -22,7 +22,7 @@
 #           D#10c) states the shape instead, and fnRefCompatible checks a
 #           `:name` reference against it. The two sites that used bare `fn`
 #           are std/scheduler's `Predicate` and examples/03's `BinOp`.
-import ast, sets, tables
+import ast, ast_ops, sets, tables
 import typecheck_state
 import ast_query
 import typecheck_util
@@ -86,6 +86,10 @@ proc fnRefCompatible*(tc: TypeChecker, a, e: Type): bool =
   if a.params.len != sig.params.len: return false
   for i, p in sig.params:
     if not tc.compatible(a.params[i], p.typ): return false
+  # The slot's effect contract is part of its type (audit E1): an `[io]` fn
+  # stored where the fnsig declares none laundered its I/O through every
+  # call of the slot.
+  if effectFitProblem(a.funcEffects, sig.effects) != "": return false
   a.result == nil or sig.ret == nil or tc.compatible(a.result, sig.ret)
 
 proc recordCompatible*(tc: TypeChecker, a: Type, eFields: seq[FieldDef]): bool =
@@ -146,7 +150,7 @@ proc importedFnSigInstance(tc: TypeChecker, t: Type): Type =
     ps.add(substType(prm.typ, binds))
     names.add(prm.name)
   Type(span: t.span, kind: tkFunc, params: ps, paramNames: names,
-       result: substType(sig.ret, binds))
+       result: substType(sig.ret, binds), funcEffects: sig.effects)
 
 proc fnSigSlotInstance(tc: TypeChecker, t: Type): Type =
   ## The tkFunc a generic fnsig slot stands for, wherever the fnsig was
@@ -160,6 +164,16 @@ type FnRefVerdict = enum
   ## checking), or a definite yes/no.
   vUndecided,   ## not a fn-ref question at all — fall through to the rest
   vYes, vNo
+
+proc funcShapeVerdict(tc: TypeChecker, a, e: Type): FnRefVerdict =
+  ## Two fn types: same arity, compatible params and result, and `a`'s
+  ## effects fit `e`'s contract (audit E1).
+  if a.params.len != e.params.len: return vNo
+  if effectFitProblem(a.funcEffects, e.funcEffects) != "": return vNo
+  for i, p in e.params:
+    if not tc.compatible(a.params[i], p): return vNo
+  if a.result == nil or e.result == nil: return vYes
+  if tc.compatible(a.result, e.result): vYes else: vNo
 
 proc fnRefVerdict(tc: TypeChecker, a, e: Type): FnRefVerdict =
   ## Everything a bare `:fnRef` (always a tkFunc) can be asked to satisfy.
@@ -183,11 +197,7 @@ proc fnRefVerdict(tc: TypeChecker, a, e: Type): FnRefVerdict =
     if inst == nil: return vUndecided
     return if tc.compatible(a, inst): vYes else: vNo
   if e.kind != tkFunc: return vUndecided
-  if a.params.len != e.params.len: return vNo
-  for i, p in e.params:
-    if not tc.compatible(a.params[i], p): return vNo
-  if a.result == nil or e.result == nil: return vYes
-  if tc.compatible(a.result, e.result): vYes else: vNo
+  tc.funcShapeVerdict(a, e)
 
 proc refVerdict(tc: TypeChecker, a, e: Type): FnRefVerdict =
   ## The two values that stand for something else: an arena reference

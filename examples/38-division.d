@@ -4,10 +4,10 @@ import rt = tuck_rt;
 import tuckˑmodˑsys = mod_sys;
 
 void tuckˑfnˑmain() {
-    long tuckˑvˑq = (7L / 2L);
-    double tuckˑvˑr = (7.0 / 2.0);
+    long tuckˑvˑq = rt.tuckDivI!(long)(7L, 2L, "int");
+    double tuckˑvˑr = (rt.tuckFlt!(double)(7.0) / rt.tuckFlt!(double)(2.0));
     long tuckˑvˑbudget = 100L;
-    tuckˑvˑbudget = (tuckˑvˑbudget / 8L);
+    tuckˑvˑbudget = rt.tuckDivI!(long)(tuckˑvˑbudget, 8L, "int");
     if ((tuckˑvˑq == 3L)) {
         if ((tuckˑvˑbudget == 12L)) {
             if ((tuckˑvˑr > 3.4)) {

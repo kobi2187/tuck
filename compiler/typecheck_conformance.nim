@@ -129,14 +129,25 @@ proc checkParamMatch(want, got: Decl, objName, iname: string) =
          else: ""))
 
 proc checkEffectSubset(want, got: Decl, objName, iname: string) =
-  ## Effects may be a SUBSET: an implementation may do less than the contract
-  ## permits, never more. Same direction as the caller/callee effect budget.
+  ## Two directions, by marker family (ast_ops.familyOf). A CAPABILITY (`io`,
+  ## `may_block`) is a permission: the implementation may do LESS than the
+  ## contract allows, never more. A RESTRICTION (`pure`, `no_alloc`,
+  ## `irq_safe`) is a promise the caller relies on: the implementation must
+  ## make it too. The one rule was applied to both, so an implementation could
+  ## allocate under a `[pure, no_alloc]` contract (audit E3a).
   for e in got.fnEffects:
+    if familyOf(e) == mfRestriction: continue
     if not admits(want.fnEffects, e):
       failConformance(objName, iname, want, got,
         "declares effect [" & effectName(e) &
         "], which the contract does not permit (an implementation may do " &
         "LESS than the contract allows, never more)")
+  for e in want.fnEffects:
+    if familyOf(e) == mfRestriction and e notin got.fnEffects:
+      failConformance(objName, iname, want, got,
+        "the contract promises [" & effectName(e) & "], which the " &
+        "implementation does not declare (a restriction is a promise callers " &
+        "rely on: write it on the member and the compiler will check the body)")
 
 proc checkSigMatch(want, got: Decl, objName, iname: string) =
   ## One required signature against the member that implements it.

@@ -167,7 +167,7 @@ proc tuckˑfnˑIntersection_Preempted*(source: uint8): void =
   tuckˑregisterˑSIGNAL_OUT_NS_GREEN_set(false)
 
 proc tuckˑfnˑseconds*(self: tuckˑtypeˑInterval): int =
-  return (self.ticks div 10)
+  return tuckDivI[int](self.ticks, 10, "int")
 
 proc tuckˑfnˑlongEnough*[T](span: T, atLeast: int): bool =
   mixin tuckˑfnˑseconds

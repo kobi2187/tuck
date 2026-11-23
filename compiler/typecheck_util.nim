@@ -3,7 +3,7 @@
 # Stateless type-checker helpers: pure functions over Type that need no
 # TypeChecker context. Factored out so the checker's synthesis, flow, and
 # validation modules can all share them without threading state.
-import ast, semantics, tables, strutils, sets
+import ast, ast_ops, semantics, tables, strutils, sets, sequtils
 import diagnostics
 export diagnostics   # every fail() caller needs the codes
 
@@ -239,7 +239,10 @@ proc typeName*(t: Type): string =
   of tkSum: "sum type"
   of tkUnion: "union type"
   of tkTuple: "(" & typeNames(t.elems) & ")"
-  of tkFunc: "(" & typeNames(t.params) & ") -> " & typeName(t.result)
+  of tkFunc:
+    "(" & typeNames(t.params) & ") -> " & typeName(t.result) &
+      (if t.funcEffects.len == 0: ""
+       else: " [" & t.funcEffects.mapIt(effectName(it)).join(", ") & "]")
   of tkEffect:
     var effs: seq[string]
     for e in t.effects: effs.add(effectName(e))

@@ -1152,6 +1152,13 @@ by the same separator (`tuckˑobjectˑOrderˑbook`), so it cannot meet an object
 params stay bare** (namespaced by their record, and a param is a contract); **externs are never mangled** — they bind foreign symbols by
 name. Idempotent, since each backend lowers its own deep copy.
 
+What the prefix cannot separate is two names of ONE kind that Nim folds
+together: `my_val` and `myVal`, `Foo_bar` and `FooBar`. In one scope — the
+top-level declarations of a kind, one record's fields, one fn's params, one
+body's locals — the checker refuses the pair (TK-TY50,
+`compiler/name_fold.nim`), on every backend, so a program does not build on
+Odin and D and fail on Nim.
+
 ---
 
 ## 13. Externs and C FFI
@@ -1238,17 +1245,28 @@ let r = {a: 40, b: 2} c.add
 
 Run-gated 42 on every backend.
 
-> ⚠️ **OPEN — storing into a `fnsig` slot is not signature-checked.** A
-> plainly mismatched fn reference is accepted: with
-> `fnsig Predicate = {x: int} -> bool`,
-> `type Query = {items: Seq[int], test: Predicate}` and
-> `fn wrongShape({a: str}) -> str`, both `{items: [1,2,3], test: :wrongShape} Query`
-> and `{items: [1,2,3]} bake {test: :wrongShape}` typecheck clean.
-> `tests/suites/typecheck.nim:1805` covers the other direction — a *call
-> through* a fnsig slot checks arity — so the gap is specifically on the
-> store, not on use. `bake`'s intended semantics is that it matches the
-> signature declared on the record's slot, which makes this the check that
-> makes the feature safe.
+A fn stored in a `fnsig` slot is checked against the signature (shape, and
+effects). The **effect bracket is part of the signature**: a slot declares what a
+call through it may do, the same way a fn does.
+
+```tuck
+fnsig Say = {text: str} -> void [io]     # a call through it may do I/O
+fnsig Rule = {x: int} -> bool [pure]     # only pure fns may be stored
+```
+
+- A fn may be stored when it does **no more** than the bracket permits (`[io]`
+  capabilities are a ceiling) and makes **every promise** in it (`[pure]`,
+  `[no_alloc]`, `[irq_safe]` are a floor). A `fnsig` with no bracket holds only
+  fns that do no I/O. The same rule applies to an interface member against its
+  contract, and to an inline fn type `(int) -> int`, which takes no bracket and
+  so holds only fns that do no I/O: name a `fnsig` to store an `[io]` one. An
+  actor's `waitUntil` predicate is such a type, so it may not do I/O.
+- A call through the slot is charged with the bracket: calling a `Say` slot
+  needs `[io]` in the caller, and is a suspend point in a task. Without this an
+  `[io]` fn stored in a plain slot did I/O from a fn that declared none (audit
+  E1, pinned in `known_bugs.nim`).
+- Every call through a slot is recorded with its contract, and the build fails
+  (`assertCallEdges`) if one is not.
 
 ---
 
@@ -1258,23 +1276,28 @@ The compiler cannot read an extern's body, so an extern says on its own
 declaration what it does with what it is given. By default it follows the C
 convention: it only **reads** every argument, and an owning **result** (a
 `Seq`, a `str`, a record holding one) is **fresh**, the caller's to drop.
-Two attributes, in the signature's trailing brackets, say otherwise:
+Three attributes, in the signature's trailing brackets, say otherwise:
 
 - `[keeps: p]`: it **takes** parameter `p`, storing it or freeing it. The
   caller hands it over: it moves a value it no longer needs and copies one
   it still reads.
 - `[view: p]`: the result is **part of** parameter `p`, not a new value. The
   caller copies it wherever it keeps it, and never drops it.
+- `[writes: p]`: it **changes** parameter `p` in place. The argument must be
+  a place rooted at a `var` (a `let` or a parameter is refused, as an
+  assignment to it is); an object member that passes `self` there changes its
+  object; and a view of that place does not outlive the call.
 
 ```tuck
 extern:
   fn at[T]({items: Seq[T], index: int}) -> T [view: items]
-  fn setAt[T]({items: Seq[T], index: int, value: T}) -> void [keeps: value]
+  fn setAt[T]({items: Seq[T], index: int, value: T}) -> void [writes: items, keeps: value]
   fn push[T]({items: Seq[T], value: T}) -> Seq[T] [keeps: value]
 ```
 
 So `push` reads `items` (it returns a new Seq) and takes `value`; `setAt`
-takes the value it stores; `at` returns a view of the element. A name that
+changes `items` and takes the value it stores; `at` returns a view of the
+element. Before `[writes:]`, `setAt` on a `let` checked clean (audit O1b). A name that
 is not one of the extern's parameters is a parse error. Nothing in the
 compiler names a runtime function: a new extern, in the runtime or in a
 program, states its contract or keeps the default.

@@ -463,7 +463,8 @@ proc genDValidate*(ctx: var DCodegenCtx, d: Decl): string =
       # implement (verified — an assert-based version passed in release).
       checks.add("        if (!(" & cond & "))\n" &
                  "            rt.tuckInvariantFailed(" &
-                 invariantCondLit(cond) & ", \"" & d.name & "\");")
+                 invariantCondLit(member.expr) & ", " &
+                 invariantTypeLit(d.name) & ");")
   if checks.len == 0: return ""
   "\nvoid validate_" & d.name & "(" & d.name & " self)\n{\n" &
     "    version (tuckNoInvariants) {} else\n    {\n" &

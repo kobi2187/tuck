@@ -65,6 +65,11 @@ type
     moduleOf: Table[int, int]        ## decl address -> index into mods
     actorOf: Table[int, Decl]        ## a decl inside an actor -> the actor
     facts: Table[int, Facts]
+    fnValues: seq[Decl]              ## every fn the program names as a VALUE
+                                     ## (`:touch`): what a call through a
+                                     ## slot may run (audit C3)
+    predicates: Table[string, seq[Decl]]  ## actor -> the fns handed to its
+                                     ## `waitUntil`, which run on its thread
 
 proc key(d: Decl): int = cast[int](d)
 
@@ -199,6 +204,60 @@ proc reachedAt(s: Scan, home: int, actor: Decl, n: Expr): Decl =
   if n.kind == exkVar and isFnValue(n): return s.fnNamed(home, n.name)
   nil
 
+proc fnValueAt(s: Scan, home: int, n: Expr): Decl =
+  ## The fn `n` names as a value (`:touch`, or a fn-valued name), or nil.
+  if n.kind == exkQualified: return s.qualifiedFn(home, n)
+  if n.kind == exkVar and isFnValue(n): return s.fnNamed(home, n.name)
+  nil
+
+proc predicateOf(s: Scan, home: int, n: Expr): (string, Decl) =
+  ## `A.waitUntil {pred: :p}`: the actor and the fn handed to it.
+  if n.kind != exkField or n.fieldName != "waitUntil" or n.receiver == nil or
+     n.receiver.kind != exkActorRef or n.dotArg == nil or
+     n.dotArg.kind != exkStruct: return ("", nil)
+  for f in n.dotArg.fields:
+    if f.value == nil: continue
+    let p = s.fnValueAt(home, f.value)
+    if p != nil: return (n.receiver.refName, p)
+  ("", nil)
+
+proc indexIndirect(s: var Scan) =
+  ## The fns a slot call may run, and the predicates each actor runs. Taken
+  ## before any walk: an edge to them is added wherever they may be called.
+  for i, lm in s.mods:
+    for d in lm.m.allDecls:
+      if d == nil or isImportedCopy(d): continue
+      for body in d.ownExprs:
+        if body == nil: continue
+        for n in nodes(body):
+          let v = s.fnValueAt(i, n)
+          if v != nil and v.fnBody != nil and v notin s.fnValues: s.fnValues.add v
+          let (actor, p) = s.predicateOf(i, n)
+          if actor != "" and p.fnBody != nil:
+            s.predicates.mgetOrPut(actor, @[]).add p
+
+proc membersNamed(s: Scan, name: string): seq[Decl] =
+  ## Every object member with a body called `name`: what an interface
+  ## dispatch of `name` may run.
+  for lm in s.mods:
+    for o in lm.m.decls(dkObject):
+      if isImportedCopy(o): continue
+      for mem in o.objMembers:
+        if mem != nil and mem.kind == dkFn and mem.fnBody != nil and
+           mem.name == name: result.add mem
+
+proc indirectEdges(s: Scan, home: int, n: Expr): seq[Decl] =
+  ## What a call with no single callee may run. A call through a slot: any fn
+  ## the program names as a value. An interface dispatch: every member of its
+  ## name. Neither had an edge, so a slab reached through a callback or a
+  ## dispatch was invisible to this pass (audit C3).
+  let c = if n.kind == exkCall: n else: semLayer.call(n)
+  if c == nil or c.kind != exkCall: return
+  if semLayer.isSlotCall(c) and raisedEvent(c) == "": return s.fnValues
+  if ifaceMemberDecl(semLayer, s.mods[home].m, c) != nil and
+     c.callee != nil and c.callee.kind == exkVar:
+    return s.membersNamed(c.callee.name)
+
 proc factsOf(s: var Scan, d: Decl): Facts =
   ## What one declaration's own bodies touch and call. Memoised.
   if key(d) in s.facts: return s.facts[key(d)]
@@ -211,6 +270,8 @@ proc factsOf(s: var Scan, d: Decl): Facts =
       touchesAt(n, f)
       let c = s.reachedAt(home, actor, n)
       if c != nil and c != d: f.edges.add Edge(callee: c, site: n)
+      for other in s.indirectEdges(home, n):
+        if other != d: f.edges.add Edge(callee: other, site: n)
   s.facts[key(d)] = f
   f
 
@@ -264,13 +325,19 @@ proc walkEntry(s: var Scan, entry: Decl, owner: string) =
       parent[key(e.callee)] = d
       queue.add e.callee
 
+proc walkActor(s: var Scan, a: Decl) =
+  ## An actor's entries: its handlers, members and select arms, and every
+  ## `waitUntil` predicate handed to it, which runs on its thread after each
+  ## message, whoever handed it over (audit C3).
+  for h in a.handlers:
+    if h != nil and h.kind in {dkFn, dkSelect}: s.walkEntry(h, a.name)
+  for p in s.predicates.getOrDefault(a.name): s.walkEntry(p, a.name)
+
 proc checkReach(s: var Scan) =
   ## Each owner's entries, in source order.
   for i, lm in s.mods:
     for a in lm.m.decls(dkActor):
-      if isImportedCopy(a): continue
-      for h in a.handlers:
-        if h != nil and h.kind in {dkFn, dkSelect}: s.walkEntry(h, a.name)
+      if not isImportedCopy(a): s.walkActor(a)
     for d in lm.m.decls:
       if d == nil: continue
       if d.kind == dkTask or (d.kind == dkFn and d.name == "main") or
@@ -383,5 +450,6 @@ proc checkSlabOwnership*(mods: seq[LoadedModule]) =
   if semLayer.slabNames.len == 0 and semLayer.arenaNames.len == 0: return
   var s = Scan(mods: mods)
   s.index()
+  s.indexIndirect()
   s.checkCrossing()
   s.checkReach()

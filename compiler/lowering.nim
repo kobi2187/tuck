@@ -39,6 +39,7 @@ import lowering_chains      # a `..` chain becomes statements
 import lowering_iface       # a call through an interface becomes a dispatch
 import lowering_alias       # an argument aliasing a by-reference receiver is copied
 import lowering_optional    # a plain T into a ?T place is wrapped; T? fields start absent
+import lowering_saturating  # a chain stored into a [saturating] type is clamped once
 import lowering_match_binds # a binding match arm becomes a catch-all
 import call_args           # which payload field feeds which param
 import options
@@ -508,6 +509,10 @@ proc lowerModule*(res: Resolution, m: Module, real: ModuleMap) =
   # with no initialiser starts absent (lowering_optional, R8). After the
   # chains above, whose steps become assignments.
   lowerOptionals(res, m)
+  # A `+ - *` chain stored into a `[saturating]` type is marked for the
+  # emitters to clamp (lowering_saturating, spec 4.1). After the chains and
+  # `+=` above have become plain assignments.
+  lowerSaturatingStores(res, m, real)
   # Every call through an interface value becomes a dispatch over the
   # objects that satisfy it (lowering_iface). An interface call may sit in a
   # chain step's payload, and a chain's steps are copied above.

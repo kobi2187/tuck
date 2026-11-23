@@ -26,9 +26,12 @@
 # conservative side. The refusals are cheap to add to and expensive to get wrong.
 #
 # Not asked of the author: no annotation, no new word. The same program.
+import tables
 import ast, ast_ops, ast_query
 import resolution
 import ownership_rules, ownership_elab
+import call_args  # writtenArg: the argument an extern changes in place
+import twin_calls  # markBuilt: a node made after `prepare`
 from ssa_ir import rootOf
 
 proc rootName(e: Expr): string =
@@ -65,9 +68,29 @@ proc mutatesViaExtern(res: Resolution, m: Module, pu: PlaceUse): bool =
     (d.fnReturnType == nil or
      (d.fnReturnType.kind == tkNamed and d.fnReturnType.name == "void"))
 
+proc callWrites(res: Resolution, m: Module, stmt: Expr, root: string): bool =
+  ## Does a CALL in `stmt` change `root` in place: a member that writes its
+  ## `self` called on it (`s.replace`), or an extern that `[writes:]` the
+  ## argument it is given (`s.recs.setAt {..}`)? Neither is an assignment, so
+  ## the walk below missed both, and a view of `s.recs[0]` outlived the
+  ## member that freed it (audit O1c, Odin and D read freed memory).
+  for c in callSites(res, stmt):
+    # A call of the actor's own member may write any of its fields (audit
+    # O2: `replace` wrote `recs` and a view of `recs[0]` was read after it).
+    if c.id.isSet and res.actorMemberCalls.hasKey(c.id): return true
+    let mem = memberCallDecl(res, m, c)
+    if mem != nil and res.writesSelf(mem) and c.args.len > 0 and
+       rootName(c.args[0]) == root: return true
+    let callee = res.calleeOf(m, c)
+    if callee == nil: continue
+    for param in callee.externWrites:
+      if rootName(writtenArg(res, c, callee, param)) == root: return true
+  false
+
 proc writes(res: Resolution, m: Module, memo: var ConsumeMemo, stmt: Expr,
             root: string): bool =
   ## Does `stmt` write, append to, hand away or consume the local `root`?
+  if res.callWrites(m, stmt, root): return true
   for n in stmt.nodes:
     case n.kind
     of exkAssign:
@@ -122,10 +145,52 @@ proc isView(res: Resolution, m: Module, ps: Places, memo: var ConsumeMemo,
     if res.writes(m, memo, b.stmts[j], root): return false
   true
 
+var walkCount = 0
+
+proc walkCopy(res: Resolution, iterable: Expr): Expr =
+  ## `let tuckWalkN = <iterable>`, with the loop now walking `tuckWalkN`. The
+  ## value keeps its node, so its type and every fact recorded on it follow.
+  inc walkCount
+  let name = "tuckWalk" & $walkCount
+  let t = res.typeFor(iterable)
+  let val = Expr()
+  val[] = iterable[]
+  iterable[] = Expr(span: val.span, kind: exkVar, name: name)[]
+  res.setType(iterable, t)
+  let target = res.typed(Expr(span: val.span, kind: exkVar, name: name), t)
+  result = Expr(span: val.span, kind: exkAssign, target: target,
+                assignVal: val, isDecl: true)
+  fillIdsIn(result)
+  fillIdsIn(iterable)
+  markBuilt(result)
+  markBuilt(iterable)
+
+proc walkCopies(res: Resolution, m: Module, d: Decl, memo: var ConsumeMemo) =
+  ## A `for` binds each element as a VIEW of the collection it walks. When
+  ## the body changes that collection (`xs.setAt {index: 0, ..}`), the
+  ## element under the binding is freed or replaced while it is read: Nim
+  ## read the new element, Odin and D freed memory (audit O3). By value
+  ## semantics the loop walks the collection as it was, so it walks a copy:
+  ## `let tuckWalkN = xs` ahead of the loop — which the rule above keeps a
+  ## real copy, since the loop writes `xs`.
+  for blk in d.fnBody.nodes:
+    if blk.kind != exkBlock: continue
+    var i = 0
+    while i < blk.stmts.len:
+      let s = blk.stmts[i]
+      if s.kind == exkFor and s.iterable != nil and res.readsPlainly(s.iterable) and
+         res.owning(m, res.typeFor(s.iterable)):
+        let root = rootName(s.iterable)
+        if root.len > 0 and res.writes(m, memo, s.body, root):
+          blk.stmts.insert(res.walkCopy(s.iterable), i)
+          inc i
+      inc i
+
 proc markViews*(res: Resolution, m: Module, d: Decl, memo: var ConsumeMemo) =
   ## Mark every `let` of `d`'s body that can look instead of copy. Run before
   ## anything asks which places the body owns.
   if d.fnBody == nil: return
+  res.walkCopies(m, d, memo)
   let ps = res.placesOf(m, d, memo)
   for blk in d.fnBody.nodes:
     if blk.kind != exkBlock: continue

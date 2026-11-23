@@ -363,9 +363,13 @@ proc tuckSat*[T: SomeUnsignedInt](v: uint64): T {.inline.} =
   ## itself wraps before this sees it. Exact for u8/u16/u32. See known_bugs.
   if v > uint64(T.high): T.high else: T(v)
 
-proc tuckSatI*[T: SomeSignedInt](v: int64): T {.inline.} =
+proc tuckSatI*[T: SomeInteger](v: int64): T {.inline.} =
   ## The signed twin of `tuckSat`: clamps a wide intermediate to `T`'s range
-  ## at both ends.
+  ## at both ends. Any `T` narrower than 64 bits, unsigned too: a stored
+  ## `[saturating]` chain (lowering_saturating) is computed signed, so that
+  ## `0 - 5` on a u16 clamps to 0 rather than wrapping to a huge value.
+  when T is SomeUnsignedInt:
+    static: doAssert sizeof(T) < 8, "u64 has no wider intermediate"
   if v > int64(T.high): T.high
   elif v < int64(T.low): T.low
   else: T(v)
@@ -390,6 +394,29 @@ proc tuckOverflowTrap*(ty, op: string) {.noreturn.} =
     discard ty
     discard op
     tuckFatal("arithmetic overflow on a [trapping] integer")
+
+proc tuckDivTrap*(ty, op: string) {.noreturn.} =
+  ## Integer `/i` or `%` by zero: stops at the site with exit 1, as an
+  ## overflow trap does, on every backend (audit Y2 — Nim raised a defect
+  ## (1), Odin died on SIGILL (132), D on SIGFPE (136)).
+  stderr.writeLine("Division by zero on " & ty & ": " & op)
+  quit(1)
+
+proc tuckDivI*[T: SomeInteger](a, b: T, tn: string): T {.inline.} =
+  ## `a /i b`, truncating, with the one case each host faults on instead of
+  ## answering — the minimum divided by -1 — stopped as an overflow. `tn` is
+  ## the Tuck type's name, which a trap reports (the host's differs per backend).
+  if b == 0: tuckDivTrap(tn, "/i")
+  when T is SomeSignedInt:
+    if b == -1 and a == low(T): tuckOverflowTrap(tn, "/i")
+  a div b
+
+proc tuckModI*[T: SomeInteger](a, b: T, tn: string): T {.inline.} =
+  ## `a % b`. The minimum mod -1 is 0, which the host's divide faults on.
+  if b == 0: tuckDivTrap(tn, "%")
+  when T is SomeSignedInt:
+    if b == -1: return 0
+  a mod b
 
 type ArithRes[T] = tuple[r: T, over, high: bool]
   ## A wrapped result, whether the exact one did not fit, and which end of the
@@ -430,9 +457,10 @@ proc arithWideSigned[T: SomeSignedInt](a, b: T, op: static OvOp): ArithRes[T] {.
                     (a != T(-1) and r div a != b)), (a < 0) == (b < 0))
 
 proc tuckArith*[T: SomeInteger](a, b: T, op: static OvOp,
-                                pol: static OvPolicy): T {.inline.} =
+                                pol: static OvPolicy, tn: string): T {.inline.} =
   ## `a + b`, `a - b`, `a * b` on a narrow integer, with the overflow policy
-  ## the author's type chose: trap (the default), wrap, or saturate.
+  ## the author's type chose: trap (the default), wrap, or saturate. `tn` is
+  ## the Tuck type's name, which a trap reports.
   ## Value semantics, never stripped in release.
   let res =
     when sizeof(T) < 8: arithNarrow(a, b, op)
@@ -440,7 +468,7 @@ proc tuckArith*[T: SomeInteger](a, b: T, op: static OvOp,
     else: arithWideSigned(a, b, op)
   if res.over:
     when pol == ovTrap:
-      tuckOverflowTrap($T, when op == ovAdd: "+" elif op == ovSub: "-" else: "*")
+      tuckOverflowTrap(tn, when op == ovAdd: "+" elif op == ovSub: "-" else: "*")
     elif pol == ovSat:
       return if res.high: high(T) else: low(T)
   res.r

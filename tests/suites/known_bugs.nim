@@ -5414,6 +5414,2581 @@ fn main() -> int:
   t.quietly: t.badCheck "A116: an int is not an i64 argument without a conversion", "\\^i64|i64"
   t.bugOpen "A116: an int is not an i64 argument without a conversion"
 
+  # A178 (audit E7): a fn named `main` in ANY module got the entry's all-effects
+  # budget, so `lib::main` could print through a caller that declared nothing.
+  # Only the entry module's top-level `main` has that budget, and the pipeline
+  # asserts it was granted exactly once (assertMainBudgetOnce).
+  t.src """
+import lib
+
+fn viaLib() -> int:
+  return {} lib::main
+
+fn main() -> int:
+  return {} viaLib
+"""
+  t.addFile("lib.tuck", """import console
+fn main() -> int:
+  {text: "lib main io"} printLine
+  return 1
+""")
+  t.quietly: t.badCheck "A178: only the entry module's main has the full effect budget", "TK-EF01"
+  t.bugFixed "A178: only the entry module's main has the full effect budget"
+
+  # A179 (audit T6): a match over an int or str with no catch-all was accepted;
+  # a value outside the arms had no arm (Nim refused the build, Odin took the
+  # last arm, D threw). Open domains end in `_`.
+  t.src """
+fn pick({n: int}) -> int:
+  match n:
+    | 0 -> return 1
+    | 1 -> return 2
+  return 0
+
+fn main() -> int:
+  return {n: 1} pick
+"""
+  t.quietly: t.badCheck "A179: a match over an int needs a catch-all", "catch-all"
+  t.bugFixed "A179: a match over an int needs a catch-all"
+
+  # A180 (audit T7): a match on a result/optional discarded the error silently
+  # while `discard r` was refused. Test `.ok` or `match r.err`.
+  t.src """
+fn mi({n: int}) -> int?:
+  if n < 0:
+    return none
+  return n
+
+fn main() -> int:
+  let r = {n: 3} mi
+  match r:
+    | _ -> return 1
+  return 0
+"""
+  t.quietly: t.badCheck "A180: a match cannot take a result or optional as its subject", "cannot take a result or optional"
+  t.bugFixed "A180: a match cannot take a result or optional as its subject"
+
+  # A181 (audit T8a): `Door.Locked` was refused for a sealed type, but the bare
+  # spelling `Locked` reached the same value unchecked.
+  t.src """
+type Door [sealed]:
+  | Closed
+  | Open
+  | Locked
+
+  transitions:
+    Closed -> Open
+    Open -> Closed
+    Closed -> Locked
+
+fn mk() -> Door:
+  return Locked
+
+fn main() -> int:
+  let d = mk
+  return 0
+"""
+  t.quietly: t.badCheck "A181: a bare variant of a sealed type is not constructible directly", "Sealed Error"
+  t.bugFixed "A181: a bare variant of a sealed type is not constructible directly"
+
+  # A123 (audit E3a): an interface member could allocate under a
+  # `[pure, no_alloc]` contract. A capability (`io`) is a permission an
+  # implementation may use LESS of; a restriction (`pure`, `no_alloc`) is a
+  # promise it must MAKE. One subset rule had been applied to both.
+  t.src """
+interface Animal:
+  fn noise({self: Self}) -> int [pure, no_alloc]
+
+object Dog:
+  satisfies Animal
+  name: str
+  fn noise({self: Dog}) -> int:
+    return 1
+
+fn main() -> int:
+  let d = {name: "rex"} Dog
+  let a: Animal = d
+  return a.noise
+"""
+  t.quietly: t.badCheck "A123: an implementation must carry the contract's restrictions", "promises \\[pure\\]|does not satisfy"
+  t.bugFixed "A123: an implementation must carry the contract's restrictions"
+
+  # A124 (audit Y9/Y10): operators were checked for AGREEMENT between their
+  # sides, not for operand KIND: `not 5`, `-"x"`, `true < false`, `s - t` on
+  # text and `5.5 % 2.0` all checked clean and each backend answered its own way.
+  for (name, body) in [("not on an int", "let b = not 5\n  if b:\n    return 1"),
+                       ("negating text", "let b = -\"x\"\n  if b == \"\":\n    return 1"),
+                       ("ordering bools", "if true < false:\n    return 1"),
+                       ("subtracting text", "let b = \"a\" - \"b\"\n  if b == \"\":\n    return 1"),
+                       ("modulo of floats", "let b = 5.5 % 2.0\n  if b > 1.0:\n    return 1")]:
+    t.src "fn main() -> int:\n  " & body & "\n  return 0\n"
+    t.quietly: t.badCheck "A124: " & name & " is refused", "takes"
+    t.bugFixed "A124: " & name & " is refused"
+
+  # A125 (audit M9): two imports each declaring `fnsig Op`, then a call through
+  # a slot of that type, died with a KeyError in the checker. A fnsig is a
+  # nominal type like a `type`: type_identity gives each colliding one its
+  # module's name (`f1::Op`), so each slot knows which signature it holds.
+  t.src """
+import f1
+import f2
+
+fn main() -> int:
+  let c1 = {} mk1
+  let c2 = {} mk2
+  let x = {a: 1, b: 2} c1.op
+  let y = {s: "ab"} c2.op
+  return x + y
+"""
+  t.addFile("f1.tuck", """fnsig Op = {a: int, b: int} -> int
+type Calc = {op: Op}
+fn plus({a: int, b: int}) -> int:
+  return a + b
+fn mk1() -> Calc:
+  return {op: :plus} Calc
+""")
+  t.addFile("f2.tuck", """fnsig Op = {s: str} -> int
+type Calc2 = {op: Op}
+fn slen({s: str}) -> int:
+  return s.len
+fn mk2() -> Calc2:
+  return {op: :slen} Calc2
+""")
+  t.quietly: t.runs "A125: two imports' fnsigs of one name are two signatures", 5
+  t.bugFixed "A125: two imports' fnsigs of one name are two signatures"
+  t.quietly: t.runsOdin "A125: ...on Odin", 5
+  t.bugFixed "A125: ...on Odin"
+
+  # A126 (audit Y17): a type spelled inside a body (`let xs: Seq[P] = ...`)
+  # never got its declaration edge before the checker used it, and lowering
+  # asserted "has a declaration but no edge". Body-spelled types are resolved
+  # with the declaration's, and the edge invariant now covers them.
+  t.src """
+type P = {x: int}
+
+fn main() -> int:
+  let xs: Seq[P] = [{x: 1}]
+  return 0
+"""
+  t.quietly: t.okCheck "A126: a Seq of a named record annotated in a body checks"
+  t.bugFixed "A126: a Seq of a named record annotated in a body checks"
+
+  # A127 (audit M3): a const is in scope where it is declared or where its
+  # declarer is imported DIRECTLY. `main` imports lib, lib imports deep, and
+  # `Deep` was still reachable from main by bare name.
+  t.src """
+import lib
+
+fn main() -> int:
+  return Deep
+"""
+  t.addFile("lib.tuck", """import deep
+fn l() -> int:
+  return Deep
+""")
+  t.addFile("deep.tuck", """const Deep: int = 9
+""")
+  t.quietly: t.badCheck "A127: a const two imports away is not in scope", "not declared"
+  t.bugFixed "A127: a const two imports away is not in scope"
+
+  # A128 (audit E1): a call through a `fnsig` slot had no callee, so the effect
+  # check found nothing to charge and an `[io]` fn stored in the slot ran from a
+  # fn that declared none (and was not a suspend point in a task). The effect
+  # bracket is now part of the fnsig: a stored fn must fit it, and a call
+  # through the slot is charged with it. `assertCallEdges` fails the build when
+  # a call through a slot carries no recorded contract.
+  t.src """
+import console
+
+fnsig Act = {n: int} -> int
+type Holder = {act: Act}
+
+fn noisy({n: int}) -> int [io]:
+  {text: "side effect"} printLine
+  return n + 1
+
+fn viaPlain({h: Holder}) -> int:
+  return {n: 1} h.act
+
+fn main() -> int:
+  let h = {act: :noisy} Holder
+  return {h} viaPlain
+"""
+  t.quietly: t.badCheck "A128: an [io] fn does not fit a fnsig slot without [io]", "expects Act but got .*\\[io\\]"
+  t.bugFixed "A128: an [io] fn does not fit a fnsig slot without [io]"
+  t.src """
+import console
+
+fnsig Act = {n: int} -> int [io]
+type Holder = {act: Act}
+
+fn noisy({n: int}) -> int [io]:
+  {text: "side effect"} printLine
+  return n + 1
+
+fn viaPlain({h: Holder}) -> int:
+  return {n: 1} h.act
+
+fn main() -> int:
+  let h = {act: :noisy} Holder
+  return {h} viaPlain
+"""
+  t.quietly: t.badCheck "A128: a call through an [io] slot needs [io] in the caller", "TK-EF01"
+  t.bugFixed "A128: a call through an [io] slot needs [io] in the caller"
+  t.src """
+fnsig Rule = {x: int} -> bool
+fn small({x: int}) -> bool:
+  return x < 10
+fn test({r: Rule, x: int}) -> bool [pure]:
+  return {x} r
+
+fn main() -> int:
+  if {r: :small, x: 3} test:
+    return 1
+  return 0
+"""
+  t.quietly: t.badCheck "A128: a [pure] fn may not call through a slot that does not promise [pure]", "TK-EF03"
+  t.bugFixed "A128: a [pure] fn may not call through a slot that does not promise [pure]"
+
+  # A129 (audit E3c): a call through an INTERFACE value resolved to no callee in
+  # the restriction check, and an unknown callee is never a violation, so a
+  # `[pure]` fn could dispatch to any member. It reaches the contract's
+  # requirement now, which every satisfier keeps.
+  t.src """
+interface Animal:
+  fn noise({self: Self}) -> int
+
+object Dog:
+  satisfies Animal
+  name: str
+  fn noise({self: Dog}) -> int:
+    return 3
+
+fn hear({a: Animal}) -> int [pure]:
+  return a.noise
+
+fn main() -> int:
+  let d = {name: "rex"} Dog
+  let a: Animal = d
+  return {a} hear
+"""
+  t.quietly: t.badCheck "A129: a [pure] fn may not dispatch to an interface member that is not [pure]", "TK-EF03"
+  t.bugFixed "A129: a [pure] fn may not dispatch to an interface member that is not [pure]"
+
+  # A130 (audit E5): `Ev.raise Ping` runs every `on Ev.Ping` handler right
+  # there (spec Part 10), but had no edge to them, so an `[io]` handler ran
+  # from a fn that declared nothing. A raise carries its handlers' joint
+  # contract: every capability any of them uses, the restrictions all make.
+  t.src """
+import console
+
+registry Ev:
+  | Ping({n: int})
+
+on Ev.Ping({n: int}) [io]:
+  {text: "handler did io"} printLine
+
+fn raiser() -> void:
+  Ev.raise Ping {n: 1}
+
+fn main() -> int:
+  {} raiser
+  return 0
+"""
+  t.quietly: t.badCheck "A130: raising an event charges its handlers' effects", "TK-EF01"
+  t.bugFixed "A130: raising an event charges its handlers' effects"
+
+  # A131 (audit E13): a `..` step that calls a mutator resolves to a call that
+  # is not in the tree, and the effect and restriction passes walked the tree,
+  # so an `[io]` member ran from a `[pure]` fn. Passes ask `callSites` now,
+  # and the edge invariant covers step calls.
+  t.src """
+import console
+
+object Server:
+  port: int
+  fn bump({self: Server}) -> Server [io]:
+    {text: "io in bump"} printLine
+    return self
+
+fn f() -> int [pure]:
+  var s = {port: 1} Server
+  s ..bump
+  return s.port
+
+fn main() -> int:
+  return {} f
+"""
+  t.quietly: t.badCheck "A131: a `..` mutator step is a call the effect rules see", "TK-EF03"
+  t.bugFixed "A131: a `..` mutator step is a call the effect rules see"
+
+  # A132 (audit E10): a type's `invariant:` runs at every construction and
+  # write, but the effect pass never visited it, so an `[io]` predicate made
+  # every construction do I/O unseen. Invariants are effect-free.
+  t.src """
+import console
+
+fn noisy({v: int}) -> bool [io]:
+  {text: "io in invariant"} printLine
+  return v > 0
+
+type Pos:
+  v: int
+  invariant:
+    {v: v} noisy
+
+fn main() -> int:
+  let p = {v: 3} Pos
+  return p.v
+"""
+  t.quietly: t.badCheck "A132: an invariant may not do I/O", "invariant of 'Pos' may not do \\[io\\]"
+  t.bugFixed "A132: an invariant may not do I/O"
+
+  # A133 (audit E15): an actor field's initialiser runs when the actor starts,
+  # before `main`, and was never budget-checked. It is effect-free.
+  t.src """
+import console
+
+actor A [queue: 4]:
+  v: int = {} noisyInt
+  on poke():
+    v += 1
+
+fn noisyInt() -> int [io]:
+  {text: "io at actor field init"} printLine
+  return 1
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A133: an actor field initialiser may not do I/O", "initialiser of 'A.v' may not do \\[io\\]"
+  t.bugFixed "A133: an actor field initialiser may not do I/O"
+
+  # A134 (audit E12, E14): a task's restriction markers were never held, and a
+  # task an IMPORT declares had no call edge, so the effect pass could not tell
+  # its spawn from an unknown name. Task calls get edges like fn calls, and a
+  # task's restrictions are checked like a fn's.
+  t.src """
+fn alloc() -> int:
+  let xs = [1, 2]
+  return xs.len
+
+task tk() -> void [no_alloc]:
+  let r = {} alloc
+  return
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A134: a [no_alloc] task may not call an allocating fn", "'tk' is \\[no_alloc\\]"
+  t.bugFixed "A134: a [no_alloc] task may not call an allocating fn"
+  t.src """
+import lib
+
+fn sneaky() -> int [pure]:
+  let r = {} slow
+  return r.v
+
+fn main() -> int:
+  return {} sneaky
+"""
+  t.addFile("lib.tuck", """import console
+task slow() -> {v: int} [io]:
+  {text: "lib task start"} printLine
+  return {v: 7}
+""")
+  t.quietly: t.badCheck "A134: a [pure] fn may not spawn an imported task", "spawns task 'slow'"
+  t.bugFixed "A134: a [pure] fn may not spawn an imported task"
+
+  # A135 (audit E6): `[pure]` held calls only, so a pure fn could send to an
+  # actor, read another thread's actor fields, or take from a pool; and an
+  # `[irq_safe]` fn could block in `waitUntil`. TK-EF12 holds the constructs.
+  for (name, body) in [("sending", "Worker send job {n: 1}\n  return 0"),
+                       ("reading an actor's field", "return Worker.processed"),
+                       ("taking from a pool", "let h = Readings.acquire\n  if not h.ok:\n    return 0\n  Readings.release {h: h.value}\n  return 1")]:
+    t.src """
+actor Worker [queue: 4]:
+  processed: int = 0
+  on job({n: int}):
+    processed += n
+
+type Reading:
+  value: u16
+
+pool Readings = Reading [count: 4]
+
+fn p() -> int [pure]:
+  """ & body & """
+
+fn main() -> int:
+  return {} p
+"""
+    t.quietly: t.badCheck "A135: a [pure] fn may not touch shared state: " & name, "TK-EF12"
+    t.bugFixed "A135: a [pure] fn may not touch shared state: " & name
+  t.src """
+actor Worker [queue: 4]:
+  processed: int = 0
+  on job({n: int}):
+    processed += n
+
+fn done() -> bool:
+  return true
+
+fn isr() -> void [irq_safe, no_alloc]:
+  Worker.waitUntil {pred: :done}
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A135: an [irq_safe] fn may not wait on an actor", "TK-EF12"
+  t.bugFixed "A135: an [irq_safe] fn may not wait on an actor"
+
+  # A136 (audit E9): a `pending:` member of an object is a contract to come;
+  # an `[io]` one did not charge its callers, since a pending member is not
+  # among the members a call resolves to for codegen.
+  t.src """
+object App:
+  id: int
+  pending:
+    fn fetchFeed({self: App}) -> int [io]
+
+fn c({x: App}) -> int:
+  return x.fetchFeed
+
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A136: a pending [io] member charges its callers", "TK-EF01"
+  t.bugFixed "A136: a pending [io] member charges its callers"
+
+  # A137 (audit O1b): `setAt` changes its `items` in place, but an extern could
+  # not say so, and `zs.setAt {..}` on a `let` checked clean. `[writes: p]`
+  # declares it; the argument must then be a place rooted at a `var`.
+  t.src """
+import seq
+
+fn main() -> int:
+  let ys: Seq[int] = [1, 2, 3]
+  {items: ys, index: 0, value: 99} setAt
+  return ys[0]
+"""
+  t.quietly: t.badCheck "A137: an extern that writes its argument needs a var", "cannot let 'setAt' change 'ys'"
+  t.bugFixed "A137: an extern that writes its argument needs a var"
+  t.src """
+import seq
+
+fn bump({xs: Seq[int]}) -> int:
+  xs.setAt {index: 0, value: 99}
+  return xs[0]
+
+fn main() -> int:
+  return {xs: [1, 2]} bump
+"""
+  t.quietly: t.badCheck "A137: ...nor a parameter", "TK-TY15"
+  t.bugFixed "A137: ...nor a parameter"
+
+  # A138 (audit O1c): a member whose only change to its object is
+  # `self.recs.setAt {..}` was not classed as changing `self`, so it took
+  # `self` by value (Nim refused the build), and a view of `s.recs[0]` taken
+  # before the call outlived it on Odin and D, which read freed memory.
+  t.src """
+import seq
+
+type Rec:
+  tag: int
+  items: Seq[int]
+
+fn mk({n: int}) -> Rec:
+  var s: Seq[int] = []
+  s = s.push {value: n}
+  s = s.push {value: n + 1}
+  return {tag: n, items: s} Rec
+
+object Store:
+  recs: Seq[Rec]
+  fn replace({self: Store}) -> void:
+    let r2 = mk {n: 50}
+    self.recs.setAt {index: 0, value: r2}
+
+fn main() -> int:
+  let r1 = mk {n: 1}
+  var s: Store = {recs: [r1]} Store
+  let v = s.recs[0]
+  s.replace
+  let a = v.items.at {index: 0}
+  return a
+"""
+  t.quietly: t.runs "A138: a member writing self through an extern changes its object", 1
+  t.bugFixed "A138: a member writing self through an extern changes its object"
+  t.quietly: t.runsOdin "A138: ...and a view taken before it is not stale on Odin", 1
+  t.bugFixed "A138: ...and a view taken before it is not stale on Odin"
+
+  # A139 (audit O5): `let r = c.bump` built the member call through the
+  # postfix path, which never registered it, so a member changing its object
+  # ran on a `let`. Every member call is registered, and the checker asserts
+  # it (unregisteredMemberCalls).
+  t.src """
+object Cnt:
+  n: int
+  fn bump({self: Cnt}) -> int:
+    self ..n {self.n + 1}
+    return self.n
+
+fn main() -> int:
+  let c = {n: 1} Cnt
+  let r = c.bump
+  return r * 10 + c.n
+"""
+  t.quietly: t.badCheck "A139: a self-changing member in value position needs a var", "cannot call 'bump' on 'c'"
+  t.bugFixed "A139: a self-changing member in value position needs a var"
+
+  # A140 (audit C3): slab ownership (TK-AC08) follows call edges, and three
+  # calls had none: through a fn slot, through an interface value, and a
+  # `waitUntil` predicate, which runs on the ACTOR's thread. A slab of main's
+  # thread was reached from an actor through each.
+  t.src """
+type Node:
+  data: int
+
+slab Nodes = Node
+
+fnsig Cb = {} -> int
+type H = {cb: Cb}
+
+fn touch() -> int:
+  let r = Nodes.new {data: 1}
+  let d = r.data
+  Nodes.free {r: r}
+  return d
+
+actor W [queue: 8]:
+  n: int = 0
+  on go({h: H}):
+    n += {} h.cb
+
+fn main() -> int:
+  let h = {cb: :touch} H
+  W send go {h: h}
+  return {} touch
+"""
+  t.quietly: t.badCheck "A140: a slab reached through a fn slot from an actor", "TK-AC08"
+  t.bugFixed "A140: a slab reached through a fn slot from an actor"
+  t.src """
+type Node:
+  data: int
+
+slab Nodes = Node
+
+actor Probe [queue: 8]:
+  halted: bool = false
+  on halt():
+    halted = true
+
+fn pred() -> bool:
+  let a = Nodes.new {data: 1}
+  Nodes.free {r: a}
+  return Probe.halted
+
+fn main() -> int:
+  let n = Nodes.new {data: 2}
+  Nodes.free {r: n}
+  Probe send halt {}
+  Probe.waitUntil {pred: :pred}
+  return 0
+"""
+  t.quietly: t.badCheck "A140: a waitUntil predicate runs on the actor's thread", "actor 'Probe' reaches slab 'Nodes'"
+  t.bugFixed "A140: a waitUntil predicate runs on the actor's thread"
+
+  # A141 (audit E2/M4): the effect pass looked a callee's markers up in ONE
+  # table for the whole program, keyed by bare name, so the last module to
+  # declare `work` answered for every caller: x's `[no_alloc]` fn calling ma's
+  # allocating `work` passed when the entry also imported mb, whose `work` is
+  # `[no_alloc]`. Each module now sees its own imports' names, bare where the
+  # checker gave that import the name (typecheck.moduleScopes).
+  t.src """
+import x
+import mb
+
+fn main() -> int:
+  let e: Seq[int] = []
+  let r = {xs: e} xna
+  return 0
+"""
+  t.addFile("x.tuck", """import ma
+fn xna({xs: Seq[int]}) -> Seq[int] [no_alloc]:
+  return {xs} work
+""")
+  t.addFile("ma.tuck", """import seq
+fn work({xs: Seq[int]}) -> Seq[int]:
+  return {items: xs, value: 1} push
+""")
+  t.addFile("mb.tuck", """fn work({xs: Seq[int]}) -> Seq[int] [no_alloc]:
+  return xs
+""")
+  t.quietly: t.badCheck "A141: a callee's effects are its own module's, not a namesake's", "x.tuck.*'xna' is \\[no_alloc\\] but calls 'work'"
+  t.bugFixed "A141: a callee's effects are its own module's, not a namesake's"
+
+  # A142 (audit M1): a module is known by its file name. A local `bits.tuck`
+  # beside the entry and the stdlib's `bits.tuck` (which `random` imports)
+  # were loaded as ONE module, and the program ran whichever body the backend
+  # met first. Two files of one name are refused where both paths are known.
+  t.src """
+import bits
+import random
+
+fn main() -> int:
+  let r = {a: 12, b: 10} bits::bitAnd
+  let d = {seed: 5} newDice
+  if r == 7:
+    return 3
+  return 0
+"""
+  t.addFile("bits.tuck", """fn bitAnd({a: u64, b: u64}) -> u64:
+  return 7
+""")
+  t.quietly: t.badCheck "A142: two files of one module name are refused", "two modules are named 'bits'"
+  t.bugFixed "A142: two files of one module name are refused"
+
+  # A143 (audit M2): `type Thing` in one module and `object Thing` in another
+  # were one type to every later stage, first copy wins. An object is a
+  # nominal type like a `type`, told apart by its module.
+  t.src """
+import a
+import b
+
+fn main() -> int:
+  let x = {} a::mkA
+  let y = {} b::mkB
+  return x.x + y.size
+"""
+  t.addFile("a.tuck", """type Thing:
+  x: int
+fn mkA() -> Thing:
+  return {x: 4} Thing
+""")
+  t.addFile("b.tuck", """object Thing:
+  s: str
+  fn size() -> int:
+    return s.len
+fn mkB() -> Thing:
+  return {s: "hello"} Thing
+""")
+  t.quietly: t.runs "A143: a type and an object of one name in two modules are two types", 9
+  t.bugFixed "A143: a type and an object of one name in two modules are two types"
+  t.quietly: t.runsOdin "A143: ...on Odin", 9
+  t.bugFixed "A143: ...on Odin"
+
+  # A144 (audit M19): `import ka {put -> putEntry}` took over `putEntry` when
+  # another import already exported that name: a call meant for kb's ran ka's.
+  # A rename onto a name another import brings in is refused.
+  t.src """
+import ka {put -> putEntry}
+import kb
+
+fn main() -> int:
+  let r = {n: 1} putEntry
+  return r
+"""
+  t.addFile("ka.tuck", """fn put({n: int}) -> int:
+  return n + 1
+""")
+  t.addFile("kb.tuck", """fn putEntry({n: int}) -> int:
+  return n + 100
+""")
+  t.quietly: t.badCheck "A144: a rename may not take a name another import exports", "already a fn of kb"
+  t.bugFixed "A144: a rename may not take a name another import exports"
+
+  # A145 (audit M8): two modules each declaring `group Keyed`: an importer of
+  # both held the last one imported, and the first module's bounded fn was
+  # checked against the other's requirements. A group is nominal, told apart
+  # by its module like a type.
+  t.src """
+import g1
+import g2
+import p
+
+fn main() -> int:
+  let a = {n: 1} A
+  let b = {s: "xy"} B
+  let r1 = {x: a} use1
+  let r2 = {x: b} use2
+  return r1 + r2
+"""
+  t.addFile("g1.tuck", """group Keyed:
+  fn keyOf({self: Self}) -> int
+fn use1[T: Keyed]({x: T}) -> int:
+  return {self: x} keyOf
+""")
+  t.addFile("g2.tuck", """group Keyed:
+  fn nameOf({self: Self}) -> str
+fn use2[T: Keyed]({x: T}) -> int:
+  let s = {self: x} nameOf
+  return s.len
+""")
+  t.addFile("p.tuck", """type A:
+  n: int
+fn keyOf({self: A}) -> int:
+  return self.n
+type B:
+  s: str
+fn nameOf({self: B}) -> str:
+  return self.s
+""")
+  t.quietly: t.runs "A145: two modules' groups of one name are two groups", 3
+  t.bugFixed "A145: two modules' groups of one name are two groups"
+  t.quietly: t.runsOdin "A145: ...on Odin", 3
+  t.bugFixed "A145: ...on Odin"
+
+  # A146 (audit M14): an interface-bounded generic is cloned into the module
+  # that calls it and checked again THERE, so a bare name in the library's
+  # body meant the caller's own fn of that name, which ran instead (1002
+  # expected, 7 computed). The clone spells each fn by the module that owns
+  # it in the library's scope; one the caller cannot name is refused at the
+  # call that asks for the clone.
+  t.src """
+import lib
+
+object Foo:
+  satisfies Src
+  k: int
+  fn v({self: Foo}) -> int:
+    return self.k
+
+fn helper({n: int}) -> int:
+  return n + 5
+
+fn main() -> int:
+  let f = {k: 1} Foo
+  let r = {x: f} run
+  if r == 1002:
+    return 0
+  return 1
+"""
+  t.addFile("lib.tuck", """interface Src:
+  fn v({self: Self}) -> int
+fn helper({n: int}) -> int:
+  return n + 1000
+fn run[T: Src]({x: T}) -> int:
+  let a = {n: 1} helper
+  let b = {self: x} v
+  return a + b
+""")
+  t.quietly: t.runs "A146: a generic's clone calls the library's fn, not the caller's namesake", 0
+  t.bugFixed "A146: a generic's clone calls the library's fn, not the caller's namesake"
+  t.quietly: t.runsOdin "A146: ...on Odin", 0
+  t.bugFixed "A146: ...on Odin"
+  t.src """
+import lib
+
+object Foo:
+  satisfies Src
+  k: int
+  fn v({self: Foo}) -> int:
+    return self.k
+
+fn main() -> int:
+  let f = {k: 1} Foo
+  return {x: f} run
+"""
+  t.addFile("lib.tuck", """public:
+  Src run
+
+interface Src:
+  fn v({self: Self}) -> int
+fn secret({n: int}) -> int:
+  return n + 1000
+fn run[T: Src]({x: T}) -> int:
+  let a = {n: 1} secret
+  let b = {self: x} v
+  return a + b
+""")
+  t.quietly: t.badCheck "A146: a clone needing a name the caller cannot reach says which", "its body calls 'secret' of module 'lib'"
+  t.bugFixed "A146: a clone needing a name the caller cannot reach says which"
+
+  # A147 (audit M13): `ea::conv` on an extern with `[emit: "toUpperAscii"]`
+  # went out as `ea.conv`: the Nim emitter looked the emit name up by the
+  # printed callee in a table keyed by bare name. It reads the declaration
+  # the call reaches, so two modules' externs of one name keep their own.
+  t.src """
+import ea
+import eb
+
+fn main() -> int:
+  let x = {s: "aB"} ea::conv
+  let y = {s: "aB"} eb::conv
+  if x == "AB" and y == "ab":
+    return 7
+  return 1
+"""
+  t.addFile("ea.tuck", """extern [impl: nim "std/strutils"]:
+  fn conv({s: str}) -> str [emit: "toUpperAscii"]
+""")
+  t.addFile("eb.tuck", """extern [impl: nim "std/strutils"]:
+  fn conv({s: str}) -> str [emit: "toLowerAscii"]
+""")
+  t.quietly: t.runs "A147: a qualified extern call keeps its own emit name", 7
+  t.bugFixed "A147: a qualified extern call keeps its own emit name"
+
+  # A148 (audit M16, C12): which actor a member or handler name belongs to was
+  # one owner per NAME. Two actors each with a `bump` left the first unable to
+  # call its own, and an imported actor's `tick`/`size` refused calls of the
+  # importer's own top-level fns of those names. A name is the actor's inside
+  # that actor, and the module's own fn everywhere else.
+  t.src """
+actor A [queue: 8]:
+  n: int = 0
+  fn bump() -> int:
+    n += 1
+    return n
+  on go():
+    let r = bump
+    n += r
+
+actor B [queue: 8]:
+  m: int = 0
+  fn bump() -> int:
+    m += 10
+    return m
+  on go():
+    let r = bump
+    m += r
+
+fn main() -> int:
+  A send go {}
+  B send go {}
+  return 0
+"""
+  t.quietly: t.okCheck "A148: two actors may each have a member of one name"
+  t.bugFixed "A148: two actors may each have a member of one name"
+  t.src """
+import act
+
+fn tick({by: int}) -> int:
+  return by + 1
+
+fn size() -> int:
+  return 5
+
+fn main() -> int:
+  let a = {by: 2} tick
+  let b = {} size
+  return a + b
+"""
+  t.addFile("act.tuck", """actor Ticker:
+  n: int = 0
+  on tick({by: int}) -> void:
+    n = n + by
+  fn size() -> int:
+    return n
+""")
+  t.quietly: t.runs "A148: an imported actor's names do not take the importer's own fns", 8
+  t.bugFixed "A148: an imported actor's names do not take the importer's own fns"
+
+  # A149 (audit M5): a bare name two imports give two meanings. Two consts
+  # read as "not declared"; a const in one and a fn in the other silently
+  # took the fn. Both are a collision, said with both owners.
+  t.src """
+import a
+import c2
+
+fn main() -> int:
+  return Size
+"""
+  t.addFile("a.tuck", """const Size: int = 10
+fn width() -> int:
+  return 3
+""")
+  t.addFile("c2.tuck", """const Size: int = 4
+""")
+  t.quietly: t.badCheck "A149: two imports' consts of one name collide", "'Size' is exported by 2 imports.*`a::Size` or `c2::Size`"
+  t.bugFixed "A149: two imports' consts of one name collide"
+  t.src """
+import a
+import c
+
+fn main() -> int:
+  return width
+"""
+  t.addFile("a.tuck", """const Size: int = 10
+fn width() -> int:
+  return 3
+""")
+  t.addFile("c.tuck", """const width: int = 4
+""")
+  t.quietly: t.badCheck "A149: an imported const and an imported fn of one name collide", "'width' is exported by 2 imports"
+  t.bugFixed "A149: an imported const and an imported fn of one name collide"
+
+  # A150 (audit M6): with arguments in front of it a name is a CALL (a field
+  # is a value; a fn reference is invoked another way), so it means a fn:
+  # the member of the object the payload's `self` names, else the module's
+  # own fn, else an import's. It was chosen by the NAME alone, so an object's
+  # member `count` took `{items: xs} count` and `xs.count` from std/seq's,
+  # and an imported object's member took the bare name from every importer.
+  t.src """
+import seq
+
+object Pile:
+  items: Seq[int]
+  fn count({self: Pile}) -> int:
+    return 7
+
+fn main() -> int:
+  var xs: Seq[int] = [1, 2]
+  let p = {items: xs} Pile
+  let n = {items: xs} count
+  let m = {self: p} count
+  let k = p.count
+  let j = xs.count
+  return n * 1000 + m * 100 + k * 10 + j
+"""
+  t.quietly: t.runs "A150: a payload call picks the fn its payload is for", 212
+  t.bugFixed "A150: a payload call picks the fn its payload is for"
+  t.quietly: t.runsOdin "A150: ...on Odin", 212
+  t.bugFixed "A150: ...on Odin"
+  t.src """
+import lib
+import seq
+
+fn main() -> int:
+  var xs: Seq[int] = []
+  xs = {items: xs, value: 4} push
+  let b = {} mk
+  return xs.count + b.count
+"""
+  t.addFile("lib.tuck", """object Bag:
+  n: int
+  fn count({self: Bag}) -> int:
+    return self.n + 100
+fn mk() -> Bag:
+  return {n: 1} Bag
+""")
+  t.quietly: t.runs "A150: an imported object's member does not take an import's fn", 102
+  t.bugFixed "A150: an imported object's member does not take an import's fn"
+
+  # A151 (audit M21): a task another module declares built on no backend:
+  # each asked "is this a task" of the calling module's own task names, so
+  # the call went out as a plain call to a proc the stackless and stackful
+  # runtimes never emit; and Odin and D booted and drained the scheduler only
+  # when the entry module itself declared a task, so a spawn of an imported
+  # one never ran. Task-ness comes from the call's edge (ast_query.
+  # taskCallee), and the entry point asks the whole program.
+  t.src """
+import lib
+
+fn main() -> int [io]:
+  {n: 1} say
+  {} beep
+  let a = {n: 2} t
+  let b = {n: 3} lib::t
+  return a.r + b.r
+"""
+  t.addFile("lib.tuck", """import console
+task say({n: int}) -> void [io]:
+  {text: "said"} printLine
+task beep() -> void [io]:
+  {text: "beep"} printLine
+task t({n: int}) -> {r: int}:
+  return {r: n + 1}
+""")
+  t.quietly: t.outputs "A151: an imported task is spawned and awaited", "said\nbeep\n"
+  t.bugFixed "A151: an imported task is spawned and awaited"
+  t.quietly: t.runs "A151: ...and its result is the program's", 7
+  t.bugFixed "A151: ...and its result is the program's"
+  t.quietly: t.runsOdin "A151: ...on Odin", 7
+  t.bugFixed "A151: ...on Odin"
+
+  # A152 (class B): `mod::name` written bare parsed to the same node as the
+  # reference `:mod::name`, so `lib::seven` typed as `() -> int` and a const
+  # could not be named by its module at all (an M5 collision had no fix in
+  # place). A bare qualified name is a value: a call of a nullary fn, or that
+  # module's const.
+  t.src """
+import a
+import c2
+
+fn main() -> int:
+  return a::Size + c2::Size + a::seven
+"""
+  t.addFile("a.tuck", """const Size: int = 10
+fn seven() -> int:
+  return 7
+""")
+  t.addFile("c2.tuck", """const Size: int = 4
+""")
+  t.quietly: t.runs "A152: a bare qualified name is a const or a call", 21
+  t.bugFixed "A152: a bare qualified name is a const or a call"
+  t.quietly: t.runsOdin "A152: ...on Odin", 21
+  t.bugFixed "A152: ...on Odin"
+
+  # A153 (class B): two modules' `interface Shape` were one contract, so a
+  # value of b's was checked, and dispatched, against a's. An interface is
+  # nominal like a type; a qualified one is renamed by the mangler, and the
+  # marks the checker leaves for lowering carry that spelling.
+  t.src """
+import a
+import b
+
+fn main() -> int:
+  let x = {} a::sa
+  let y = {} b::sb
+  return x.area + y.perim
+"""
+  t.addFile("a.tuck", """interface Shape:
+  fn area({self: Self}) -> int
+object Sq:
+  satisfies Shape
+  s: int
+  fn area({self: Sq}) -> int:
+    return self.s * self.s
+fn sa() -> Shape:
+  return {s: 3} Sq
+""")
+  t.addFile("b.tuck", """interface Shape:
+  fn perim({self: Self}) -> int
+object Ci:
+  satisfies Shape
+  r: int
+  fn perim({self: Ci}) -> int:
+    return self.r * 6
+fn sb() -> Shape:
+  return {r: 2} Ci
+""")
+  t.quietly: t.runs "A153: two modules' interfaces of one name are two contracts", 21
+  t.bugFixed "A153: two modules' interfaces of one name are two contracts"
+  t.quietly: t.runsOdin "A153: ...on Odin", 21
+  t.bugFixed "A153: ...on Odin"
+
+  # A154 (class B): `y.bump` on b's `Counter`, which has no `bump`, checked
+  # clean because a's `Counter` has one, and failed in every backend. The
+  # receiver's own type decides.
+  t.src """
+import a
+import b
+
+fn main() -> int:
+  let y = {} b::mkB
+  return y.bump
+"""
+  t.addFile("a.tuck", """object Counter:
+  n: int
+  fn bump() -> int:
+    return n + 1
+fn mkA() -> Counter:
+  return {n: 1} Counter
+""")
+  t.addFile("b.tuck", """object Counter:
+  m: str
+  fn shout() -> str:
+    return m
+fn mkB() -> Counter:
+  return {m: "hi"} Counter
+""")
+  t.quietly: t.badCheck "A154: an object's missing member is refused, not found on a namesake", "b::Counter has no field or member 'bump'"
+  t.bugFixed "A154: an object's missing member is refused, not found on a namesake"
+
+  # A155 (class B): two `actor Logger` in two modules were refused outright,
+  # with nothing to write instead. An actor is nominal like a type: each is
+  # sent to, read and waited on by its module's name.
+  t.src """
+import a
+import b
+
+fn main() -> int:
+  a::Logger send log {n: 3}
+  b::Logger send log {s: "hi"}
+  a::Logger.waitUntil {pred: :seen}
+  return a::Logger.count
+
+fn seen() -> bool:
+  return a::Logger.count == 3
+"""
+  t.addFile("a.tuck", """actor Logger:
+  count: int = 0
+  on log({n: int}) -> void:
+    count = count + n
+""")
+  t.addFile("b.tuck", """actor Logger:
+  text: str = ""
+  on log({s: str}) -> void:
+    text = s
+""")
+  t.quietly: t.runs "A155: two modules' actors of one name are two actors", 3
+  t.bugFixed "A155: two modules' actors of one name are two actors"
+  t.quietly: t.runsOdin "A155: ...on Odin", 3
+  t.bugFixed "A155: ...on Odin"
+
+  # A156 (class B, M7): a group requirement met by a fn another module
+  # declares was looked up by its bare name, so a receiver whose provider sat
+  # in an import (two imports each with a `keyOf`) found nothing or the wrong
+  # one, and Odin's provider of a generic group (`Keyed[K]`) dropped `K`.
+  t.src """
+import g
+import p1
+import p2
+type C:
+  z: int
+fn keyOf({self: C}) -> int:
+  return self.z + 100
+fn main() -> int:
+  let a = {n: 1} A
+  let b = {s: "xy"} B
+  let c = {z: 5} C
+  let ka = {x: a} use
+  let kb = {x: b} use
+  let kc = {x: c} use
+  return ka + kb.len + kc
+"""
+  t.addFile("g.tuck", """group Keyed[K]:
+  fn keyOf({self: Self}) -> K
+fn use[T: Keyed[K], K]({x: T}) -> K:
+  return {self: x} keyOf
+""")
+  t.addFile("p1.tuck", """type A:
+  n: int
+fn keyOf({self: A}) -> int:
+  return self.n
+""")
+  t.addFile("p2.tuck", """type B:
+  s: str
+fn keyOf({self: B}) -> str:
+  return self.s
+""")
+  t.quietly: t.runs "A156: a group requirement met in an imported module", 108
+  t.bugFixed "A156: a group requirement met in an imported module"
+  t.quietly: t.runsOdin "A156: ...on Odin", 108
+  t.bugFixed "A156: ...on Odin"
+
+  # A157 (class B, M10): a conversion to an imported alias, distinct or
+  # wrapping type emitted the type's bare name on Odin and D, which never
+  # merge another package's names into scope.
+  t.src """
+import lib
+fn main() -> int:
+  let a = {value: 25} Small
+  let b = {value: 3} Ms
+  let c = {value: 2} W
+  return {value: a} int + {value: b} int + {value: c} int
+"""
+  t.addFile("lib.tuck", """type Small = u8
+distinct Ms = u32
+type W = u8 [wrapping]
+""")
+  t.quietly: t.runs "A157: a conversion to an imported alias or distinct type", 30
+  t.bugFixed "A157: a conversion to an imported alias or distinct type"
+  t.quietly: t.runsOdin "A157: ...on Odin", 30
+  t.bugFixed "A157: ...on Odin"
+
+  # A158 (class B, M17/M12): two spellings Nim folds to one name (`my_val`,
+  # `myVal`) built on Odin and D and failed on Nim with "redefinition". The
+  # rule is the language's: refused in every scope that reaches Nim intact.
+  t.src """
+fn my_val() -> int:
+  return 1
+fn myVal() -> int:
+  return 10
+fn main() -> int:
+  return {} my_val + {} myVal
+"""
+  t.quietly: t.badCheck "A158: two top-level fns Nim folds to one", "TK-TY50"
+  t.bugFixed "A158: two top-level fns Nim folds to one"
+  t.src """
+type P:
+  max_x: int
+  maxX: int
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A158: two fields Nim folds to one", "TK-TY50"
+  t.bugFixed "A158: two fields Nim folds to one"
+  t.src """
+fn f({lo_w: int, loW: int}) -> int:
+  return lo_w + loW
+fn main() -> int:
+  let a_b = 1
+  return a_b
+"""
+  t.quietly: t.badCheck "A158: two params Nim folds to one", "TK-TY50"
+  t.bugFixed "A158: two params Nim folds to one"
+  t.src """
+fn main() -> int:
+  let a_b = 1
+  let aB = 2
+  return a_b * 100 + aB
+"""
+  t.quietly: t.badCheck "A158: two locals Nim folds to one", "TK-TY50"
+  t.bugFixed "A158: two locals Nim folds to one"
+
+  t.src """
+import a_b
+import ab
+fn main() -> int:
+  return {} a_b::val + {} ab::val
+"""
+  t.addFile("a_b.tuck", "fn val() -> int:\n  return 1\n")
+  t.addFile("ab.tuck", "fn val() -> int:\n  return 10\n")
+  t.quietly: t.badCheck "A158: two modules Nim folds to one", "TK-TY50"
+  t.bugFixed "A158: two modules Nim folds to one"
+
+  # A159 (class B, M18): `states:` named its protocol by a bare string looked
+  # up program-wide, so two imports' `DbState` said "names no sum type", and
+  # `states: a::DbState` did not parse.
+  t.src """
+import a
+import b
+resources:
+  db [cap: 32, states: DbState]
+fn main() -> int:
+  return 0
+"""
+  t.addFile("a.tuck", """type DbState:
+  | Open
+  | Closed
+  transitions:
+    Open -> Closed
+""")
+  t.addFile("b.tuck", """type DbState:
+  | Idle
+  | Busy
+  transitions:
+    Idle -> Busy
+""")
+  t.quietly: t.badCheck "A159: a bare `states:` two imports declare is ambiguous", "TK-TY47"
+  t.bugFixed "A159: a bare `states:` two imports declare is ambiguous"
+  t.src """
+import a
+import b
+resources:
+  db [cap: 32, states: b::DbState]
+fn main() -> int:
+  return 0
+"""
+  t.addFile("a.tuck", """type DbState:
+  | Open
+  | Closed
+  transitions:
+    Open -> Closed
+""")
+  t.addFile("b.tuck", """type DbState:
+  | Idle
+  | Busy
+  transitions:
+    Idle -> Busy
+""")
+  t.quietly: t.okCheck "A159: `states: b::DbState` names b's protocol"
+  t.bugFixed "A159: `states: b::DbState` names b's protocol"
+
+  # A160 (class B, M24): a type only one module declares, written through its
+  # module (`{key: 4} a::Entry`), was read as a call of a fn `Entry`; and
+  # `{e: en} a::Shape.Dot` parsed as `({e: en} a::Shape).Dot`.
+  t.src """
+import a
+import b
+fn tag({s: a::Shape}) -> int:
+  match s:
+    Dot: return 100
+    Line: return 20
+fn main() -> int:
+  let en = {key: 4} a::Entry
+  let s1 = {e: en} a::Shape.Dot
+  let s2 = {k: 30} a::Shape.Line
+  let s3 = {n: 1} b::Shape.Dot
+  let x: a::Entry = {key: 5} Entry
+  return {s: s1} tag + {s: s2} tag + x.key + en.key
+"""
+  t.addFile("a.tuck", """type Entry:
+  key: int
+type Shape:
+  | Dot({e: Entry})
+  | Line({k: int})
+""")
+  t.addFile("b.tuck", """type Shape:
+  | Dot({n: int})
+""")
+  t.quietly: t.runs "A160: a type written through its module", 129
+  t.bugFixed "A160: a type written through its module"
+  t.quietly: t.runsOdin "A160: ...on Odin", 129
+  t.bugFixed "A160: ...on Odin"
+
+  # A161 (class B, M20): two modules' private `mixin Tag` (or `pool Bufs`)
+  # were refused as "declared more than once in this program". Each is its
+  # module's, told apart like a type.
+  t.src """
+import m1
+import m2
+fn main() -> int:
+  let a = {n: 0} A1
+  let b = {n: 0} B1
+  return a.label * 10 + b.label + {} take1 + {} take2
+"""
+  t.addFile("m1.tuck", """mixin Tag:
+  fn label({self: Self}) -> int:
+    return 1
+object A1:
+  + Tag
+  n: int
+pool Bufs = Array[4, u8] [count: 2]
+fn take1() -> int:
+  let b = Bufs.acquire
+  if not b.ok:
+    return 0
+  Bufs.release {b.value}
+  return 100
+""")
+  t.addFile("m2.tuck", """mixin Tag:
+  fn label({self: Self}) -> int:
+    return 2
+object B1:
+  + Tag
+  n: int
+pool Bufs = Array[8, u8] [count: 3]
+fn take2() -> int:
+  let b = Bufs.acquire
+  if not b.ok:
+    return 0
+  Bufs.release {b.value}
+  return 50
+""")
+  t.quietly: t.runs "A161: two modules' mixins and pools of one name", 162
+  t.bugFixed "A161: two modules' mixins and pools of one name"
+  t.quietly: t.runsOdin "A161: ...on Odin", 162
+  t.bugFixed "A161: ...on Odin"
+
+  # A162 (class B, M23): `type SessionsHandle` beside `pool Sessions` was
+  # silently replaced by the pool's generated handle type.
+  t.src """
+type Session:
+  clientId: u32
+type SessionsHandle:
+  mine: int
+pool Sessions = Session [count: 4]
+fn main() -> int:
+  let h = {mine: 3} SessionsHandle
+  return h.mine
+"""
+  t.quietly: t.badCheck "A162: a type named like a pool's generated handle", "TK-TY51"
+  t.bugFixed "A162: a type named like a pool's generated handle"
+
+  # A163 (class C, T1): a name narrowed on loop entry and un-narrowed in the
+  # body (`r = {n: -1} mi`) was still narrowed at the top of the next
+  # iteration, so `r.value` read a `none`. The body is checked again with it
+  # un-narrowed. A `for r.ok:` guard is re-established each iteration and
+  # stays narrowed.
+  t.src """
+fn mi({n: int}) -> int?:
+  if n < 0:
+    return none
+  return n
+
+fn main() -> int:
+  var r = {n: 7} mi
+  if not r.ok:
+    return 1
+  var s = 0
+  for i in 0 .. 2:
+    s = s + r.value
+    r = {n: -1} mi
+  return s
+"""
+  t.quietly: t.badCheck "A163: narrowing does not survive the loop back edge", "unhandled"
+  t.bugFixed "A163: narrowing does not survive the loop back edge"
+  t.src """
+fn mi({n: int}) -> int?:
+  if n < 0:
+    return none
+  return n - 1
+
+fn main() -> int:
+  var r = {n: 3} mi
+  var s = 0
+  for r.ok:
+    s = s + r.value
+    r = {n: r.value} mi
+  return s
+"""
+  t.quietly: t.runs "A163: ...a `for r.ok:` guard still narrows every iteration", 2
+  t.bugFixed "A163: ...a `for r.ok:` guard still narrows every iteration"
+
+  # A164 (class C, T2/T3): a guard on a field outlived a write that reached it
+  # by another way: through an alias of the same slab cell (`b = a;
+  # b.next = none`), through `self ..slot {none}`, or inside a call of the
+  # actor's own member that writes it. The read after it took a `none`.
+  t.src """
+type Node:
+  data: int
+  next: int?
+
+slab Nodes = Node
+
+fn main() -> int [io]:
+  let a = Nodes.new {data: 1, next: 5}
+  let b = a
+  if not a.next.ok:
+    return 1
+  b.next = none
+  let v = a.next.value
+  Nodes.free {r: a}
+  return v + 100
+"""
+  t.quietly: t.badCheck "A164: a write through a slab alias ends the guard", "unhandled"
+  t.bugFixed "A164: a write through a slab alias ends the guard"
+  t.src """
+import scheduler
+
+actor Cell:
+  slot: int? = 3
+  total: int = 0
+  on go():
+    if not slot.ok:
+      return
+    self ..slot {none}
+    total = slot.value + 100
+
+fn done() -> bool:
+  return Cell.total == 100
+
+fn main() -> int:
+  Cell send go
+  Cell.waitUntil {pred: :done}
+  return Cell.total
+"""
+  t.quietly: t.badCheck "A164: `self ..slot {none}` ends the guard on `slot`", "unhandled"
+  t.bugFixed "A164: `self ..slot {none}` ends the guard on `slot`"
+  t.src """
+import scheduler
+
+actor Cell:
+  slot: int? = 3
+  total: int = 0
+  fn wipe():
+    slot = none
+  on go():
+    if not slot.ok:
+      return
+    wipe
+    total = slot.value + 100
+
+fn done() -> bool:
+  return Cell.total == 100
+
+fn main() -> int:
+  Cell send go
+  Cell.waitUntil {pred: :done}
+  return Cell.total
+"""
+  t.quietly: t.badCheck "A164: a call of the actor's own member ends field guards", "unhandled"
+  t.bugFixed "A164: a call of the actor's own member ends field guards"
+
+  # A165 (class C, T10): TK-TY16 holes laundered through a second call, a
+  # returned parameter or partial local, a fill on only one path, and a plain
+  # assignment. The rule is the spec's: leaving a field out is fine, READING
+  # it is the error — so each of these is a read the checker missed.
+  t.src """
+type P:
+  a: int
+  b: int
+
+type Q:
+  p: P
+
+type S:
+  | V({p: P})
+  | W
+
+fn readB({p: P}) -> int:
+  return p.b
+
+fn readViaTwo({p: P}) -> int:
+  return {p: p} readB
+
+fn ret({a: int}) -> P:
+  let x = {a: a} P
+  return x
+
+fn ident({p: P}) -> P:
+  return p
+
+fn gid[T]({x: T}) -> T:
+  return x
+
+fn setB({p: P}) -> P:
+  var q = p
+  q.b = 5
+  return q
+
+fn main() -> int [io]:
+  let x = {a: 1} P
+  return {p: x} readViaTwo
+"""
+  t.quietly: t.badCheck "A165: a hole read two calls down", "TK-TY16"
+  t.bugFixed "A165: a hole read two calls down"
+  t.src """
+type P:
+  a: int
+  b: int
+
+type Q:
+  p: P
+
+type S:
+  | V({p: P})
+  | W
+
+fn readB({p: P}) -> int:
+  return p.b
+
+fn readViaTwo({p: P}) -> int:
+  return {p: p} readB
+
+fn ret({a: int}) -> P:
+  let x = {a: a} P
+  return x
+
+fn ident({p: P}) -> P:
+  return p
+
+fn gid[T]({x: T}) -> T:
+  return x
+
+fn setB({p: P}) -> P:
+  var q = p
+  q.b = 5
+  return q
+
+fn main() -> int [io]:
+  let x = {a: 1} P
+  let y = {p: x} ident
+  return y.b
+"""
+  t.quietly: t.badCheck "A165: a parameter returned keeps its holes", "TK-TY16"
+  t.bugFixed "A165: a parameter returned keeps its holes"
+  t.src """
+type P:
+  a: int
+  b: int
+
+type Q:
+  p: P
+
+type S:
+  | V({p: P})
+  | W
+
+fn readB({p: P}) -> int:
+  return p.b
+
+fn readViaTwo({p: P}) -> int:
+  return {p: p} readB
+
+fn ret({a: int}) -> P:
+  let x = {a: a} P
+  return x
+
+fn ident({p: P}) -> P:
+  return p
+
+fn gid[T]({x: T}) -> T:
+  return x
+
+fn setB({p: P}) -> P:
+  var q = p
+  q.b = 5
+  return q
+
+fn main() -> int [io]:
+  let y = {a: 1} ret
+  return y.b
+"""
+  t.quietly: t.badCheck "A165: a partly built local returned keeps its holes", "TK-TY16"
+  t.bugFixed "A165: a partly built local returned keeps its holes"
+  t.src """
+type P:
+  a: int
+  b: int
+
+type Q:
+  p: P
+
+type S:
+  | V({p: P})
+  | W
+
+fn readB({p: P}) -> int:
+  return p.b
+
+fn readViaTwo({p: P}) -> int:
+  return {p: p} readB
+
+fn ret({a: int}) -> P:
+  let x = {a: a} P
+  return x
+
+fn ident({p: P}) -> P:
+  return p
+
+fn gid[T]({x: T}) -> T:
+  return x
+
+fn setB({p: P}) -> P:
+  var q = p
+  q.b = 5
+  return q
+
+fn main() -> int [io]:
+  var x = {a: 1} P
+  if x.a > 0:
+    x.b = 2
+  return x.b
+"""
+  t.quietly: t.badCheck "A165: a field filled in one branch", "TK-TY16"
+  t.bugFixed "A165: a field filled in one branch"
+  t.src """
+type P:
+  a: int
+  b: int
+
+type Q:
+  p: P
+
+type S:
+  | V({p: P})
+  | W
+
+fn readB({p: P}) -> int:
+  return p.b
+
+fn readViaTwo({p: P}) -> int:
+  return {p: p} readB
+
+fn ret({a: int}) -> P:
+  let x = {a: a} P
+  return x
+
+fn ident({p: P}) -> P:
+  return p
+
+fn gid[T]({x: T}) -> T:
+  return x
+
+fn setB({p: P}) -> P:
+  var q = p
+  q.b = 5
+  return q
+
+fn main() -> int [io]:
+  var x = {a: 1} P
+  for i in 0 .. 1:
+    x.b = 2
+  return x.b
+"""
+  t.quietly: t.badCheck "A165: a field filled in a loop body that may not run", "TK-TY16"
+  t.bugFixed "A165: a field filled in a loop body that may not run"
+  t.src """
+type P:
+  a: int
+  b: int
+
+type Q:
+  p: P
+
+type S:
+  | V({p: P})
+  | W
+
+fn readB({p: P}) -> int:
+  return p.b
+
+fn readViaTwo({p: P}) -> int:
+  return {p: p} readB
+
+fn ret({a: int}) -> P:
+  let x = {a: a} P
+  return x
+
+fn ident({p: P}) -> P:
+  return p
+
+fn gid[T]({x: T}) -> T:
+  return x
+
+fn setB({p: P}) -> P:
+  var q = p
+  q.b = 5
+  return q
+
+fn main() -> int [io]:
+  let x = {a: 1} P
+  var y = {a: 0, b: 0} P
+  y = x
+  return y.b
+"""
+  t.quietly: t.badCheck "A165: `y = x` gives y the holes of x", "TK-TY16"
+  t.bugFixed "A165: `y = x` gives y the holes of x"
+  t.src """
+type P:
+  a: int
+  b: int
+
+type Q:
+  p: P
+
+type S:
+  | V({p: P})
+  | W
+
+fn readB({p: P}) -> int:
+  return p.b
+
+fn readViaTwo({p: P}) -> int:
+  return {p: p} readB
+
+fn ret({a: int}) -> P:
+  let x = {a: a} P
+  return x
+
+fn ident({p: P}) -> P:
+  return p
+
+fn gid[T]({x: T}) -> T:
+  return x
+
+fn setB({p: P}) -> P:
+  var q = p
+  q.b = 5
+  return q
+
+fn main() -> int [io]:
+  let x = {a: 1} P
+  let f = {p: x} setB
+  return f.b
+"""
+  t.quietly: t.okCheck "A165: ...a fn that sets the field before returning the copy fills it"
+  t.bugFixed "A165: ...a fn that sets the field before returning the copy fills it"
+  t.src """
+type P:
+  a: int
+  b: int
+fn main() -> int:
+  var x = {a: 1} P
+  if x.a > 0:
+    x.b = 2
+  else:
+    x.b = 3
+  return x.b
+"""
+  t.quietly: t.runs "A165: ...a field filled on both paths is filled", 2
+  t.bugFixed "A165: ...a field filled on both paths is filled"
+
+  # A166 (class C, O7/O4). O7: inside `Pile:`, `m = {n: 1} Msg.Gone` and
+  # then `m.xs` read a field the value no longer has — an arm narrowed its
+  # subject only for sums with `transitions:`. O4: `var m = q` was judged
+  # q's final read although `q.xs.len` is read later inside an `if`, so Nim
+  # moved q out and read an empty Seq (3, where Odin and D said 6).
+  t.src """
+import seq
+
+type Msg:
+  | Pile({xs: Seq[int]})
+  | Gone({n: int})
+
+fn initM({n: int}) -> Msg:
+  return {xs: [7, 8, 9]} Msg.Pile
+
+fn main() -> int:
+  var m = {n: 0} initM
+  var r = 0
+  match m:
+    Pile:
+      let k = 0
+      m = {n: 1} Msg.Gone
+      r = m.xs.len + m.xs.at {index: 0}
+    Gone:
+      r = 100
+  return r
+"""
+  t.quietly: t.badCheck "A166: the arm's subject reassigned has the new value's variant", "no field 'xs'"
+  t.bugFixed "A166: the arm's subject reassigned has the new value's variant"
+  t.src """
+import seq
+
+type Box:
+  xs: Seq[int]
+
+fn main() -> int:
+  let q = {xs: [7, 8, 9]} Box
+  var m = q
+  var r = 0
+  if r == 0:
+    r = q.xs.len
+  r = r + m.xs.len
+  return r
+"""
+  t.quietly: t.runs "A166: a copy is no final read when a field is read in a later block", 6
+  t.bugFixed "A166: a copy is no final read when a field is read in a later block"
+
+  # A167 (class C, T8b/c): a tracked assignment let its WHOLE right-hand side
+  # build sealed non-initial variants, so `s = {s: Sess.Done {..}} ident`
+  # and even another sealed type's `Other.End` inside a call argument were
+  # accepted. Only the construction the transition itself produces is exempt.
+  t.src """
+type Sess [sealed]:
+  | Idle
+  | Busy({n: int})
+  | Done({n: int})
+
+  transitions:
+    Idle -> Busy
+    Busy -> Done
+
+fn ident({s: Sess}) -> Sess:
+  return s
+
+fn fresh() -> Sess:
+  return Sess.Idle
+
+fn main() -> int [io]:
+  var s = Sess.Idle
+  s = {s: Sess.Done {n: 41}} ident
+  let t: Sess = fresh
+  let a = match s:
+    Idle: 0
+    Busy: 1
+    Done: s.n
+  let b = match t:
+    Idle: 0
+    Busy: 1
+    Done: 1
+  return a + b
+"""
+  t.quietly: t.badCheck "A167: a sealed variant inside a call argument is not the transition", "Sealed Error"
+  t.bugFixed "A167: a sealed variant inside a call argument is not the transition"
+  t.src """
+type Sess [sealed]:
+  | Idle
+  | Busy({n: int})
+
+  transitions:
+    Idle -> Busy
+
+type Other [sealed]:
+  | Start
+  | End({n: int})
+
+  transitions:
+    Start -> End
+
+fn fromOther({o: Other}) -> Sess:
+  return Sess.Idle
+
+fn main() -> int [io]:
+  var s = Sess.Idle
+  s = {o: Other.End {n: 3}} fromOther
+  return 0
+"""
+  t.quietly: t.badCheck "A167: ...nor is another sealed type's variant", "Sealed Error"
+  t.bugFixed "A167: ...nor is another sealed type's variant"
+
+  # A168 (class D, T4/T5). T4: `return r` handed out `mg`'s F from a fn
+  # declaring [error: E] — nothing compared the lists (Nim failed, Odin
+  # returned, D threw). T5: `match r.err` lost its enum through a copy and an
+  # imported fn, and where no enum is knowable (a `!T` parameter) a bare
+  # `Nope:` arm was a binding that caught every error.
+  t.src """
+type E:
+  | Bad
+
+type F:
+  | Oops
+  | Other
+  | Third
+
+fn mg({n: int}) -> !{v: int} [io, error: F]:
+  if n < 0:
+    err F.Third
+  return {v: n}
+
+fn wrap({n: int}) -> !{v: int} [io, error: E]:
+  let r = {n: n} mg
+  return r
+
+fn main() -> int [io]:
+  let r = {n: -1} wrap
+  if r.ok:
+    return 0
+  let c = match r.err:
+    Bad: 10
+  return c
+"""
+  t.quietly: t.badCheck "A168: errors passed on must be declared", "passes on errors of F"
+  t.bugFixed "A168: errors passed on must be declared"
+  t.src """
+type LE:
+  | Nope
+  | Never
+
+fn mf({n: int}) -> !{v: int} [io, error: LE]:
+  if n < 0:
+    err LE.Never
+  return {v: n}
+
+fn main() -> int [io]:
+  let r = {n: -1} mf
+  let r2 = r
+  if r2.ok:
+    return 0
+  let c = match r2.err:
+    Nope: 1
+  return c + 40
+"""
+  t.quietly: t.badCheck "A168: a copy keeps its error enum", "missing LE.Never"
+  t.bugFixed "A168: a copy keeps its error enum"
+  t.src """
+import lib
+
+fn main() -> int [io]:
+  let r = {n: -1} lib::mf
+  if r.ok:
+    return 0
+  let c = match r.err:
+    Nope: 10
+  return c
+"""
+  t.addFile("lib.tuck", """type LE:
+  | Nope
+  | Never
+
+type Color = {Red, Green, Blue}
+
+type Shape:
+  | Circle({r: int})
+  | Square({s: int})
+
+fn mi({n: int}) -> int?:
+  if n < 0:
+    return none
+  return n
+
+fn mf({n: int}) -> !{v: int} [io, error: LE]:
+  if n < 0:
+    err LE.Never
+  return {v: n}
+""")
+  t.quietly: t.badCheck "A168: a `mod::fn` result keeps its error enum", "missing LE.Never"
+  t.bugFixed "A168: a `mod::fn` result keeps its error enum"
+  t.src """
+type LE:
+  | Nope
+  | Never
+
+fn mf({n: int}) -> !{v: int} [io, error: LE]:
+  if n < 0:
+    err LE.Never
+  return {v: n}
+
+fn look({r: !{v: int}}) -> int:
+  if r.ok:
+    return 0
+  let c = match r.err:
+    Nope: 1
+  return c + 40
+
+fn main() -> int [io]:
+  let r = {n: -1} mf
+  return {r: r} look
+"""
+  t.quietly: t.badCheck "A168: an unknown error arm is not a catch-all", "names an error"
+  t.bugFixed "A168: an unknown error arm is not a catch-all"
+
+  # A169 (class D, T16/T11). Match arms that could never run or did not mean
+  # what they said: a misspelled variant read as a binding that caught every
+  # value, an arm after a catch-all, a variant matched twice, a literal against
+  # a sum; and a qualified arm `Door.Open:` was not counted. A decision table
+  # took a row literal of the wrong type and a row result of the wrong type.
+  t.src """
+type Door:
+  | Closed
+  | Open
+  | Locked
+
+type Shape:
+  | Circle({r: int})
+  | Rect({w: int, h: int})
+
+type Maybe[T]:
+  | Some({v: T})
+  | Nothing
+
+type Holder:
+  st: {Red, Green, Blue}
+  d: Door?
+
+fn main() -> int [io]:
+  let d = Door.Open
+  let z = match d:
+    Closed: 1
+    Opn: 2
+  return z
+"""
+  t.quietly: t.badCheck "A169: a misspelled variant is no binding", "not a variant of Door"
+  t.bugFixed "A169: a misspelled variant is no binding"
+  t.src """
+type Door:
+  | Closed
+  | Open
+  | Locked
+
+type Shape:
+  | Circle({r: int})
+  | Rect({w: int, h: int})
+
+type Maybe[T]:
+  | Some({v: T})
+  | Nothing
+
+type Holder:
+  st: {Red, Green, Blue}
+  d: Door?
+
+fn main() -> int [io]:
+  let d = Door.Open
+  let z = match d:
+    _: 1
+    Open: 3
+  return z
+"""
+  t.quietly: t.badCheck "A169: an arm after a catch-all can never run", "can never run"
+  t.bugFixed "A169: an arm after a catch-all can never run"
+  t.src """
+type Door:
+  | Closed
+  | Open
+  | Locked
+
+type Shape:
+  | Circle({r: int})
+  | Rect({w: int, h: int})
+
+type Maybe[T]:
+  | Some({v: T})
+  | Nothing
+
+type Holder:
+  st: {Red, Green, Blue}
+  d: Door?
+
+fn main() -> int [io]:
+  let d = Door.Open
+  let z = match d:
+    Closed: 1
+    Open: 2
+    Locked: 5
+    Closed: 8
+  return z
+"""
+  t.quietly: t.badCheck "A169: a variant matched twice", "matched twice"
+  t.bugFixed "A169: a variant matched twice"
+  t.src """
+type Door:
+  | Closed
+  | Open
+  | Locked
+
+type Shape:
+  | Circle({r: int})
+  | Rect({w: int, h: int})
+
+type Maybe[T]:
+  | Some({v: T})
+  | Nothing
+
+type Holder:
+  st: {Red, Green, Blue}
+  d: Door?
+
+fn main() -> int [io]:
+  let d = Door.Open
+  let z = match d:
+    0: 1
+    _: 2
+  return z
+"""
+  t.quietly: t.badCheck "A169: a literal cannot match a sum", "literal cannot match"
+  t.bugFixed "A169: a literal cannot match a sum"
+  t.src """
+type Door:
+  | Closed
+  | Open
+fn main() -> int:
+  let d = Door.Open
+  let z = match d:
+    Door.Closed: 1
+    Door.Open: 2
+  return z
+"""
+  t.quietly: t.runs "A169: a qualified arm counts as its variant", 2
+  t.bugFixed "A169: a qualified arm counts as its variant"
+  t.src """
+decision d5({n: int}) -> int:
+  | "a" -> 1
+  | _ -> 2
+
+fn main() -> int [io]:
+  return {n: 3} d5
+"""
+  t.quietly: t.badCheck "A169: a decision row literal has its input's type", "not a value of int"
+  t.bugFixed "A169: a decision row literal has its input's type"
+  t.src """
+type Pri = {low, high}
+type Act:
+  | Fast
+  | Slow
+
+decision d6({p: Pri}) -> Act:
+  | low -> Fast
+  | high -> 5
+
+fn main() -> int [io]:
+  let a = {p: high} d6
+  let z = match a:
+    Fast: 1
+    Slow: 2
+  return z
+"""
+  t.quietly: t.badCheck "A169: a decision row yields the table's type", "yields int"
+  t.bugFixed "A169: a decision row yields the table's type"
+
+  # A170 (class E, O1a): `xs[0] ..v {7}` and `xs[0].v = 7` on a parameter
+  # or a `let` were accepted — the mutability check found the root through
+  # assignRoot, which stops at an index — and Odin and D changed the
+  # caller's Seq. An element's field is part of the collection.
+  t.src """
+import seq
+type Cell:
+  v: int
+
+fn f({xs: Seq[Cell]}) -> int:
+  xs[0] ..v {7}
+  return xs[0].v
+
+fn main() -> int:
+  let c = {v: 1} Cell
+  var xs: Seq[Cell] = [c]
+  let r = {xs: xs} f
+  return r * 10 + xs[0].v
+"""
+  t.quietly: t.badCheck "A170: a chain write through a parameter's element", "TK-TY15"
+  t.bugFixed "A170: a chain write through a parameter's element"
+  t.src """
+import seq
+type Cell:
+  v: int
+fn main() -> int:
+  let c = {v: 1} Cell
+  let xs: Seq[Cell] = [c]
+  xs[0].v = 3
+  return xs[0].v
+"""
+  t.quietly: t.badCheck "A170: an assignment through a let's element", "TK-TY13"
+  t.bugFixed "A170: an assignment through a let's element"
+
+  # A171 (class E, O2/O3). O2: a view `let v = recs[0]` outlived a call of
+  # the actor's own member `replace`, which wrote `recs` — Odin and D read
+  # freed memory (0 for 1). O3: a `for` binding is a view of the collection
+  # it walks, and the body replaced that element (`xs.setAt {index: 0, ..}`):
+  # Nim read the new element (50), Odin and D freed memory (0). By value
+  # semantics the loop walks the collection as it was: a copy, when the body
+  # writes it.
+  t.src """
+import seq
+import scheduler
+
+type Rec:
+  tag: int
+  items: Seq[int]
+
+fn mk({n: int}) -> Rec:
+  var s: Seq[int] = []
+  s = s.push {value: n}
+  s = s.push {value: n + 1}
+  return {tag: n, items: s} Rec
+
+actor Store [queue: 8]:
+  recs: Seq[Rec] = []
+  res: int = 0
+  done: bool = false
+
+  fn replace():
+    let r2 = mk {n: 50}
+    recs.setAt {index: 0, value: r2}
+
+  fn go():
+    let v = recs[0]
+    replace
+    let a = v.items.at {index: 0}
+    res = a
+
+  on init():
+    let r1 = mk {n: 1}
+    recs = recs.push {value: r1}
+    go
+    done = true
+
+fn ready() -> bool:
+  return Store.done
+
+fn main() -> int:
+  Store send init {}
+  Store.waitUntil {pred: :ready}
+  return Store.res
+"""
+  t.quietly: t.runs "A171: a view ends at a call of the actor's own member", 1
+  t.bugFixed "A171: a view ends at a call of the actor's own member"
+  t.quietly: t.runsOdin "A171: ...on Odin", 1
+  t.bugFixed "A171: ...on Odin"
+  t.src """
+import seq
+
+type Rec:
+  tag: int
+  items: Seq[int]
+
+fn mk({n: int}) -> Rec:
+  var s: Seq[int] = []
+  s = s.push {value: n}
+  s = s.push {value: n + 1}
+  return {tag: n, items: s} Rec
+
+fn main() -> int:
+  var xs: Seq[Rec] = []
+  let r1 = mk {n: 1}
+  xs = xs.push {value: r1}
+  var total = 0
+  for r in xs:
+    let r2 = mk {n: 50}
+    xs.setAt {index: 0, value: r2}
+    let a = r.items.at {index: 0}
+    total = total + a
+  return total
+"""
+  t.quietly: t.runs "A171: a loop walks the collection as it was when the body writes it", 1
+  t.bugFixed "A171: a loop walks the collection as it was when the body writes it"
+  t.quietly: t.runsOdin "A171: ...on Odin, without reading freed memory", 1
+  t.bugFixed "A171: ...on Odin, without reading freed memory"
+
+  # A172 (class E, O6): a fire-and-forget task borrowed the caller's buffer
+  # while the caller went on changing it (`xs.setAt`, `xs = xs.push`): Nim
+  # crashed, Odin and D summed garbage. A task owns its parameters: the
+  # caller hands over a copy (or moves its last use), and the task drops it.
+  t.src """
+import seq
+import time
+import scheduler
+
+actor Sink [queue: 8]:
+  total: int = 0
+  seen: int = 0
+
+  on take({xs: Seq[int]}):
+    var t = 0
+    for e in xs:
+      t = t + e
+    total = t
+    seen = seen + 1
+
+task worker({xs: Seq[int]}) -> void [io]:
+  {ms: 20} sleepMs
+  var t = 0
+  for e in xs:
+    t = t + e
+  let ys = xs.push {value: t}
+  Sink send take {xs: ys}
+
+fn ready() -> bool:
+  return Sink.seen == 1
+
+fn main() -> int [io]:
+  var xs: Seq[int] = [1, 2, 3]
+  {xs: xs} worker
+  xs.setAt {index: 0, value: 100}
+  xs = xs.push {value: 1000}
+  {ms: 100} sleepMs
+  Sink.waitUntil {pred: :ready}
+  return Sink.total
+"""
+  t.quietly: t.runs "A172: a task owns its parameters", 12
+  t.bugFixed "A172: a task owns its parameters"
+  t.quietly: t.runsOdin "A172: ...on Odin", 12
+  t.bugFixed "A172: ...on Odin"
+
+  # A165 guard: a call of a FN with a payload (`var g = {n: 6} graph`) is not
+  # a partial construction — its result is complete, and returning it hands
+  # back no holes (the first draft of A165 refused stdlib-project's graph and
+  # todo-cli here).
+  t.src """
+type G:
+  size: int
+  adj: int
+fn graph({n: int}) -> G:
+  return {size: n, adj: 0} G
+fn sample() -> G:
+  var g = {n: 6} graph
+  g.adj = 1
+  return g
+fn main() -> int:
+  let g = sample
+  return g.size + g.adj
+"""
+  t.quietly: t.runs "A165: ...a fn's result bound and returned has no holes", 7
+  t.bugFixed "A165: ...a fn's result bound and returned has no holes"
+
+  # A173 (class E, C1): `let a = Grow.name` read another actor's `str` field
+  # as a temporary and MOVED it into the local, so the local and the actor
+  # both freed it (an Odin segfault). The actor keeps its field; the local
+  # gets a copy. (Whether such a read may cross threads is C2, open.)
+  t.src """
+actor Grow [queue: 8]:
+  name: str = "hello"
+  on go():
+    name = "x"
+
+fn main() -> int:
+  let a = Grow.name
+  return a.len
+"""
+  t.quietly: t.runs "A173: another actor's field read into a local is a copy", 5
+  t.bugFixed "A173: another actor's field read into a local is a copy"
+  t.quietly: t.runsOdin "A173: ...on Odin", 5
+  t.bugFixed "A173: ...on Odin"
+
+  # A174 (class F, Y12/Y13/Y14): each checked clean and no backend built it.
+  # Y12: `let a: P = {x: 1}` — a literal at a place naming its type is that
+  # type's construction. Y13: a generic `T` into a `T?` field, and an
+  # `if c: 5 else: none` value bound as `int?`, were not wrapped. Y14: an
+  # extra payload field to an imported extern became an extra argument;
+  # spec §2.5 says extras are ignored.
+  t.src """
+import sys
+
+type P = {x: int}
+
+fn main() -> int:
+  let a: P = {x: 1}
+  return a.x
+"""
+  t.quietly: t.runs "A174: a record literal under its stated type is its construction", 1
+  t.bugFixed "A174: a record literal under its stated type is its construction"
+  t.quietly: t.runsOdin "A174: ...on Odin", 1
+  t.bugFixed "A174: ...on Odin"
+  t.src """
+type Box[T] = {v: T?}
+fn wrapBox[T]({x: T}) -> Box[T]:
+  return {v: x} Box
+fn pick({c: bool}) -> int?:
+  let r: int? = if c: 5 else: none
+  return r
+fn main() -> int:
+  let b = {x: 7} wrapBox
+  let p = {c: true} pick
+  let q = {c: false} pick
+  var n = 0
+  if b.v.ok:
+    n = n + b.v.value
+  if p.ok:
+    n = n + p.value
+  if q.ok:
+    n = n + 100
+  return n
+"""
+  t.quietly: t.runs "A174: a plain value into a `?T` is wrapped (generic field, if value)", 12
+  t.bugFixed "A174: a plain value into a `?T` is wrapped (generic field, if value)"
+  t.quietly: t.runsOdin "A174: ...on Odin", 12
+  t.bugFixed "A174: ...on Odin"
+  t.src """
+import console
+import sys
+
+fn main() -> void [io]:
+  {text: "x", extra: 3} printLine
+  0 exit
+"""
+  t.quietly: t.runs "A174: an extra payload field to an imported extern is ignored", 0
+  t.bugFixed "A174: an extra payload field to an imported extern is ignored"
+
+  # A175 (class F, T14): `s with {n: 3}` on a sum type checked clean and no
+  # backend built it. `with` replaces fields of a declared record (spec); a
+  # sum has variants.
+  t.src """
+type Sess:
+  | Idle
+  | Busy({n: int})
+
+fn main() -> int [io]:
+  let s = Sess.Idle
+  let t = s with {n: 3}
+  let z = match t:
+    Idle: 0
+    Busy: t.n
+  return z
+"""
+  t.quietly: t.badCheck "A175: `with` on a sum type is refused", "is a sum type"
+  t.bugFixed "A175: `with` on a sum type is refused"
+
+  # A176 (class G, Y2/Y3): a runtime trap stopped differently on each
+  # backend. Division by zero: Nim 1, Odin 132 (SIGILL), D 136 (SIGFPE); the
+  # minimum /i -1 faulted; out of bounds: Nim 1, Odin 132 (an `assert`,
+  # stripped under -disable-assert), D 134 (abort, losing printed output).
+  # Every one now stops at the site with a message and exit 1, as an overflow
+  # trap and an invariant failure already did (ROADMAP S3.1).
+  t.src """
+fn main() -> int:
+  let a = 5
+  let z = 0
+  return a /i z
+"""
+  t.quietly: t.runs "A176: integer division by zero exits 1", 1
+  t.bugFixed "A176: integer division by zero exits 1"
+  t.quietly: t.runsOdin "A176: division by zero on Odin", 1
+  t.bugFixed "A176: division by zero on Odin"
+  t.src """
+fn main() -> int:
+  let a: i32 = 0 - 2147483647 - 1
+  let n: i32 = 0 - 1
+  let r = a % n
+  let q = a /i n
+  return 0
+"""
+  t.quietly: t.runs "A176: the minimum /i -1 is an overflow trap, mod -1 is 0", 1
+  t.bugFixed "A176: the minimum /i -1 is an overflow trap, mod -1 is 0"
+  t.quietly: t.runsOdin "A176: minimum /i -1 on Odin", 1
+  t.bugFixed "A176: minimum /i -1 on Odin"
+  t.src """
+import seq
+fn main() -> int:
+  let xs: Seq[int] = [1, 2, 3]
+  let i = 3
+  return {items: xs, index: i} at
+"""
+  t.quietly: t.runs "A176: out of bounds exits 1", 1
+  t.bugFixed "A176: out of bounds exits 1"
+  t.quietly: t.runsOdin "A176: out of bounds on Odin", 1
+  t.bugFixed "A176: out of bounds on Odin"
+  t.src """
+import str
+fn main() -> int:
+  let o = {ch: ""} ord
+  return 0
+"""
+  t.quietly: t.runsOdin "A176: ord of an empty str exits 1 on Odin", 1
+  t.bugFixed "A176: ord of an empty str exits 1 on Odin"
+
+  # A177 (class G, Y4-Y8, Y15, Y16): one program, three answers.
+  # [saturating] clamped only at construction: `let r = a + b` wrapped on Nim
+  # and Odin and D did not build (spec 4.1 says a store clamps, on a wider
+  # intermediate). A trap named each host's type (`int8`/`i8`/`byte`).
+  # `usize` did not exist on D; `0 .. top` with `top: u8` did not build on
+  # Nim; the minimum literal (`-128` on an i8, `-9223372036854775808`) failed
+  # on D or Nim; `x * 10.0` with `x: f32` was computed in f64 on Nim; D folded
+  # `0.1 + 0.2` in 80-bit precision and refused a subnormal literal. A const
+  # that divides by zero or overflows a narrow integer built on Odin only.
+  t.src """
+type Rpm = u16 [saturating]
+type Temp = i8 [saturating]
+type Engine:
+  rpm: Rpm
+
+fn main() -> int:
+  let a = 60000 Rpm
+  let b = a + a
+  if b != 65535 Rpm:
+    return 1
+  let c = a - a - a
+  if c != 0 Rpm:
+    return 2
+  var e = {rpm: a + a} Engine
+  if e.rpm != 65535 Rpm:
+    return 3
+  e.rpm = a - a - a
+  if e.rpm != 0 Rpm:
+    return 4
+  var acc = 65000 Rpm
+  acc += 1000 Rpm
+  if acc != 65535 Rpm:
+    return 5
+  let x = a + a - a
+  if x != 60000 Rpm:
+    return 6
+  let t = 100 Temp
+  let u = 0 Temp - t - t
+  if u != (0 - 128) Temp:
+    return 7
+  return 0
+"""
+  t.quietly: t.hostRuns "A177: a [saturating] store clamps on every backend", 0
+  t.bugFixed "A177: a [saturating] store clamps on every backend"
+  t.src """
+fn main() -> int:
+  let a: i8 = 100
+  let b = a + a
+  return 0
+"""
+  t.quietly: t.hostRuns "A177: a trap names the Tuck type", 1, "Arithmetic overflow on i8: \\+"
+  t.bugFixed "A177: a trap names the Tuck type"
+  t.src """
+fn main() -> int:
+  let a: usize = 3
+  let top: u8 = 255
+  var n = 0
+  for i in 0 .. top:
+    n = n + 1
+  let lo: i8 = -128
+  let wide: int = -9223372036854775808
+  if n != 256 or lo != -128 or wide >= 0:
+    return 1
+  return 0
+"""
+  t.quietly: t.hostRuns "A177: usize, a u8 range and minimum literals", 0
+  t.bugFixed "A177: usize, a u8 range and minimum literals"
+  t.src """
+import str
+import console
+fn main() -> int [io]:
+  let e: f32 = 16777216.0
+  let f = e + 1.0
+  let s = 0.1 + 0.2
+  let sub = 1.0e-310 * 1.0
+  {text: s.toStr} printLine
+  {text: sub.toStr} printLine
+  if f != e:
+    return 1
+  return 0
+"""
+  t.quietly: t.hostRuns "A177: float literals keep their width and IEEE f64", 0, "0.30000000000000004"
+  t.bugFixed "A177: float literals keep their width and IEEE f64"
+  t.quietly: t.hostRuns "A177: a subnormal literal", 0, "1e-310"
+  t.bugFixed "A177: a subnormal literal"
+  t.src """
+const Z = 5 /i 0
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A177: a const dividing by zero is refused", "divides by zero"
+  t.bugFixed "A177: a const dividing by zero is refused"
+  t.src """
+const A: u8 = 250
+const B: u8 = A + 10
+fn main() -> int:
+  return 0
+"""
+  t.quietly: t.badCheck "A177: a narrow const that overflows is refused", "overflows u8"
+  t.bugFixed "A177: a narrow const that overflows is refused"
+  t.src """
+const A: u8 = 250
+const B: u8 = A + 5
+const Q = 7 /i 2
+fn main() -> int:
+  return 0
+"""
+  t.okCheck "A177: ...and a const that fits, or divides by non-zero, is not"
+
   # A117 (found building alloc.lru): inside a generic fn, a value of type `V` going
   # into a `V?` field of a generic construction was not wrapped as present, so
   # no backend could print it (Nim: "got 'int' for ... expected TuckResult[int]").
@@ -5549,5 +8124,137 @@ fn main() -> int:
 """
   t.quietly: t.hostRuns("", 5)
   t.bugOpen "A122: an empty list in a `with` update takes the field's type"
+
+  # A182 (the audit meets the 2026-11-22 registry rulings). A synchronous
+  # raise runs its handlers here, so the raiser declares their effects (E5,
+  # confirmed 2026-11-23) — but only the handlers its own module can see: a
+  # driver's importers handle its events, and it cannot answer for them. An
+  # event with a delivery kind only queues, so it carries nothing, and
+  # interrupt code raises exactly those.
+  t.src """
+import console
+
+registry Ev:
+  | Ping()
+
+on Ev.Ping() [io: console]:
+  {text: "ping"} console::printLine
+
+fn poke():
+  Ev.raise Ping
+
+fn main() -> int [io]:
+  poke
+  return 0
+"""
+  t.quietly: t.badCheck "A182: a raise declares what its own module's handlers do", "TK-EF01"
+  t.bugFixed "A182: a raise declares what its own module's handlers do"
+  t.src """
+import console
+import drv
+
+on DrvEvents.Rx({b: int}) [io: console]:
+  {text: "app"} console::printLine
+
+fn main() -> int [io]:
+  poke
+  return 0
+"""
+  t.addFile "drv.tuck", """
+registry DrvEvents:
+  | Rx({b: int})
+
+fn poke():
+  DrvEvents.raise Rx {b: 7}
+"""
+  t.okCheck "A182: ...but not what an importer's handlers do"
+  t.src """
+import console
+
+registry Ev:
+  | Tick() [signal]
+
+on Ev.Tick() [io: console]:
+  {text: "tick"} console::printLine
+
+fn onTimer() [irq_safe, no_alloc]:
+  Ev.raise Tick
+
+fn main() -> int [io]:
+  return 0
+"""
+  t.okCheck "A182: ...and a queued event carries nothing, even from interrupt code"
+
+  # A183 (class G, C6/C7): stackless hoisted every frame call out of its
+  # statement, so a call on a path that may not run RAN: the untaken branch
+  # of a value `if`, every arm of a value `match`, the right side of a false
+  # `and` or a true `or`. And an operand left of a pause was read after it:
+  # `count + {ms: 20} nap` saw the count the nap let change. Stackful was
+  # right throughout, and all three backends were wrong the same way.
+  t.src """
+import console
+
+fn say({text: str}) [io]:
+  {text: text} console::printLine
+
+fn tick({tag: str, v: int}) -> int [io]:
+  {text: "tick " + tag} say
+  return v
+
+fn yes({tag: str}) -> bool [io]:
+  {text: "yes " + tag} say
+  return true
+
+fn no({tag: str}) -> bool [io]:
+  {text: "no " + tag} say
+  return false
+
+task t1({k: int}) -> {r: int} [io]:
+  let v = if k > 5: {tag: "then", v: 1} tick else: 0
+  let w = match k:
+    1: {tag: "arm1", v: 1} tick
+    2: {tag: "arm2", v: 2} tick
+    _: 9
+  if {tag: "L1"} no and {tag: "R1"} yes:
+    {text: "bad"} say
+  if {tag: "L2"} yes or {tag: "R2"} yes:
+    {text: "ok"} say
+  return {r: v + w}
+
+fn main() -> int [io]:
+  let r = {k: 1} t1
+  return r.r
+"""
+  t.quietly: t.hostRuns "A183: a pause on a path not taken does not run", 1,
+             "^tick arm1\\s+no L1\\s+yes L2\\s+ok\\s*$"
+  t.bugFixed "A183: a pause on a path not taken does not run"
+  t.src """
+import time
+
+actor Counter [queue: 8]:
+  n: int = 0
+  on bump():
+    n = n + 1
+
+fn nap({ms: u32}) -> int [io]:
+  {ms: ms} time::sleepMs
+  return 1
+
+task bumper({k: int}) -> {r: int} [io]:
+  let w = {ms: 5} nap
+  Counter send bump {}
+  return {r: 0}
+
+task reader({k: int}) -> {r: int} [io]:
+  let s = Counter.n + {ms: 50} nap
+  return {r: s}
+
+fn main() -> int [io]:
+  {k: 7} bumper
+  let a = {k: 0} reader
+  return a.r
+"""
+  t.quietly: t.hostRuns "A183: an operand left of a pause is read before it", 1
+  t.bugFixed "A183: an operand left of a pause is read before it"
 
   t.finish()

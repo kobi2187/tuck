@@ -89,12 +89,24 @@ type
     currentFn*: string
     currentActor*: string
       ## The actor whose handlers and member fns are being checked, or "".
-    actorMemberOwner*: Table[string, string]
-      ## A `fn` declared in an actor -> that actor (A24). Callable only from
-      ## the actor's own code: anywhere else it would run on the caller's
-      ## thread, against the actor's state.
-    actorHandlerOwner*: Table[string, string]
-      ## An `on` handler -> its actor. A message: sent, never called.
+    armVariants*: Table[string, seq[string]]
+      ## Inside a match arm, the variant its subject var holds, for reading a
+      ## payload field — for every sum, tracked (`transitions:`) or not. A
+      ## reassignment in the arm changes it (audit O7).
+    ownFields*: seq[string]
+      ## The fields of the actor or object whose code is being checked, bound
+      ## bare in its scope. A write through `self` or a call of its own member
+      ## may change any of them, so a guard on one ends there (audit T3).
+    actorMemberOwner*: Table[string, seq[string]]
+      ## A `fn` declared in an actor -> the actors declaring one of that name
+      ## (A24). Callable only from the actor's own code: anywhere else it
+      ## would run on the caller's thread, against the actor's state. EVERY
+      ## owner, not one: it held the last actor to declare the name, so two
+      ## actors each with a `bump` left the first unable to call its own, and
+      ## an imported actor's `size` refused a call of the importer's own
+      ## top-level `size` (audit M16, C12).
+    actorHandlerOwner*: Table[string, seq[string]]
+      ## An `on` handler -> its actors. A message: sent, never called.
     pendingFns*: Table[string, Span]
     implementedFns*: HashSet[string]
     errPolicy*: string            # strict (default) | continue | exit
@@ -116,6 +128,11 @@ type
                                   # is the implicit return, not a discard
     transitionCtx*: bool          # constructing THROUGH transitionTo: sealed
                                   # non-initial variants are legal there
+    transitionSite*: NodeId       # the ONE construction a tracked assignment's
+                                  # transition produces (`s = Sess.Busy {..}`).
+                                  # Was a flag over the whole right-hand side,
+                                  # so `s = {o: Other.End {..}} f` built any
+                                  # sealed variant inside it (audit T8b/c).
     negatedLit*: bool         # the literal being typed is the operand of a unary minus
     expectedType*: Type       # the type context expects the expression
     composing*: bool          # synthesizing the operand of a `+ Type` composition
@@ -202,6 +219,10 @@ type
     topLevelFns*: HashSet[string]     # plain top-level `fn` decls: the only
                                       # callees lowering explodes payloads for
                                       # (tasks and member fns are the backends')
+    importedSigs*: Table[string, seq[FnSig]]
+      ## What this module's imports export, as seeded into `fnSigs`, kept
+      ## apart: a call NAMING a fn reaches the module's own, then an import's,
+      ## and only then anything else filed under the name (audit M6).
     objectMemberFns*: HashSet[string]
       ## Fn names declared INSIDE a `type` or `object` body. Distinct from
       ## "not top-level": a mixin/extern/pending member is collected with
@@ -297,6 +318,12 @@ proc sigOf*(tc: TypeChecker, name: string): FnSig =
   ## know a receiver keeps its current behaviour.
   tc.fnSigs[name][^1]
 
+proc importedFnNamed*(tc: TypeChecker, name: string): bool =
+  ## Does a call NAMING `name` reach an import's fn: an import exports one and
+  ## this module declares no fn of the name itself (an object's member is not
+  ## one: it is reached through a receiver)?
+  tc.importedSigs.hasKey(name) and not tc.module.declaresFn(name)
+
 proc sigOfCallByName*(tc: TypeChecker, name: string): FnSig =
   ## The signature for a call that NAMES a fn (`{r: x} peek`) rather than
   ## reaching one through a receiver. Prefers the top-level fn, since that is
@@ -304,6 +331,11 @@ proc sigOfCallByName*(tc: TypeChecker, name: string): FnSig =
   ## reached only via a receiver, and picking it demanded a `self` the caller
   ## had no reason to pass. Derived from the decl itself rather than by index,
   ## so it cannot drift out of step with fnSigs' own ordering.
+  # An import's fn, when this module declares none of the name itself. Every
+  # other answer below is "whatever is filed under the name", and a local
+  # object's member is filed after the imports: `{items: xs} count` then
+  # demanded the `self: Pile` of an unrelated object (audit M6).
+  if tc.importedFnNamed(name): return tc.importedSigs[name][^1]
   let d = tc.topLevelDeclOfFn(name)
   if d != nil and d.kind == dkFn:
     return (d.fnParams, d.fnReturnType, d.fnGenerics, d.fnEffects,
@@ -344,6 +376,14 @@ proc forgetPaths*(tc: var TypeChecker, prefix: string) =
   var gone: seq[string]
   for p in tc.narrowedPaths:
     if p.startsWith(prefix & "."): gone.add p
+  for p in gone: tc.narrowedPaths.excl(p)
+
+proc forgetFieldPaths*(tc: var TypeChecker, field: string) =
+  ## Every guarded path through a field named `field`, on any root: a write
+  ## through a shared cell may have reached it by another name.
+  var gone: seq[string]
+  for p in tc.narrowedPaths:
+    if p.endsWith("." & field) or ("." & field & ".") in p: gone.add p
   for p in gone: tc.narrowedPaths.excl(p)
 
 proc bindName*(tc: var TypeChecker, name: string, typ: Type, isVar: bool,
@@ -453,6 +493,59 @@ proc clearUninit*(tc: var TypeChecker, name: string, field = "") =
     if tc.scopes[i].hasKey(name):
       tc.scopes[i][name].typ = filled(tc.scopes[i][name].typ, field)
       return
+
+type HoleState* = Table[string, HashSet[string]]
+  ## Per visible binding, the fields of its record that are still unsupplied.
+
+proc holeState*(tc: TypeChecker): HoleState =
+  ## Every visible binding's holes, innermost binding of each name.
+  for i in countdown(tc.scopes.high, 0):
+    for name, b in tc.scopes[i]:
+      if result.hasKey(name): continue
+      var hs: HashSet[string]
+      if b.typ != nil and b.typ.kind == tkRecord:
+        for f in b.typ.fields:
+          if isUninit(f.typ): hs.incl f.name
+      result[name] = hs
+
+proc unfilled*(t: Type, field: string): Type =
+  ## `t` with `field` marked unsupplied again.
+  if t == nil or t.kind != tkRecord: return t
+  var fs: seq[FieldDef]
+  for f in t.fields:
+    if f.name == field: fs.add(FieldDef(name: f.name, typ: markUninit(f.typ, f.span), span: f.span))
+    else: fs.add(f)
+  Type(span: t.span, kind: tkRecord, fields: fs)
+
+proc setBindingType*(tc: var TypeChecker, name: string, t: Type) =
+  ## The innermost binding of `name` now holds a value of type `t`.
+  for i in countdown(tc.scopes.high, 0):
+    if tc.scopes[i].hasKey(name):
+      tc.scopes[i][name].typ = t
+      return
+
+proc setHoles*(tc: var TypeChecker, name: string, holes: HashSet[string]) =
+  ## `name` was given a whole new value: its holes are exactly that value's.
+  for i in countdown(tc.scopes.high, 0):
+    if tc.scopes[i].hasKey(name):
+      var t = filled(tc.scopes[i][name].typ, "")
+      for h in holes: t = unfilled(t, h)
+      tc.scopes[i][name].typ = t
+      return
+
+proc joinHoles*(tc: var TypeChecker, paths: openArray[HoleState]) =
+  ## After paths rejoin, a field is a hole if it is one on ANY path: filled in
+  ## the then-branch of an `if` with no `else`, in one arm, or in a loop body
+  ## that may not run, it may still be missing (audit T10).
+  for i in countdown(tc.scopes.high, 0):
+    for name, b in tc.scopes[i].mpairs:
+      if b.typ == nil or b.typ.kind != tkRecord: continue
+      for p in paths:
+        for f in p.getOrDefault(name):
+          var has = false
+          for fd in b.typ.fields:
+            if fd.name == f: has = not isUninit(fd.typ)
+          if has: b.typ = unfilled(b.typ, f)
 
 proc resolvesToOwnerField*(tc: TypeChecker, name: string): bool =
   ## Does a bare `name` read the enclosing owner's field? Only if the

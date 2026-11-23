@@ -792,6 +792,52 @@ proc memberCallDecl*(res: Resolution, m: Module, e: Expr): Decl =
     return nil
   memberDeclOf(m, memberOwner(m, memberRecvType(res, e)), e.callee.name)
 
+iterator pendingMembers(m: Module, owner: string): Decl =
+  ## The members object `owner` declares inside its `pending:` blocks.
+  for d in m.decls(dkObject):
+    if d.name != owner: continue
+    for blk in d.objMembers:
+      if blk == nil or blk.kind != dkPending: continue
+      for mem in blk.mixinMembers:
+        if mem != nil and mem.kind == dkFn: yield mem
+
+proc pendingMemberDecl*(res: Resolution, m: Module, e: Expr): Decl =
+  ## The `pending:` member of the receiver's object a call reaches, or nil. A
+  ## pending member has no body yet, but its bracket is the contract to come:
+  ## an `[io]` one is `[io]` to its callers now (audit E9). Not a member for
+  ## codegen (`memberDeclOf`), which emits no body for it.
+  if e == nil or e.kind != exkCall or e.callee == nil or
+     e.callee.kind != exkVar or e.args.len < 1 or e.args[0] == nil:
+    return nil
+  let owner = memberOwner(m, memberRecvType(res, e))
+  if owner == "": return nil
+  for mem in pendingMembers(m, owner):
+    if spells(e.callee.name, mem.name, nkFn): return mem
+
+proc programHasTasks*(m: Module, real: ModuleMap): bool =
+  ## Does the PROGRAM declare a task, in `m` or any module it is built with?
+  ## The entry point boots the scheduler and drains its frames when it does.
+  ## Odin and D asked the entry module alone, so a program whose tasks all
+  ## came from imports spawned frames nothing ever ran (audit M21; Nim's
+  ## entry already asked every module).
+  for d in m.decls:
+    if d != nil and d.kind == dkTask: return true
+  for _, other in real:
+    for d in other.decls:
+      if d != nil and d.kind == dkTask: return true
+
+proc taskCallee*(res: Resolution, m: Module, call: Expr): Decl =
+  ## The TASK a call spawns, or nil. By the call's edge first: a task an
+  ## import declares is no name of this module, and every backend asked
+  ## "is this a task" of the calling module's own names, so an imported task
+  ## went out as a plain call and built nowhere (audit M21). Then by this
+  ## module's own name, for a call lowering built after the check.
+  if call == nil or call.kind != exkCall: return nil
+  let edge = res.declFor(call)
+  if edge != nil: return (if edge.kind == dkTask: edge else: nil)
+  if call.callee == nil or call.callee.kind != exkVar: return nil
+  m.findDecl(dkTask, call.callee.name)
+
 proc calleeDecl*(res: Resolution, m: Module, call: Expr): Decl =
   ## THE answer to "which declaration does this call reach", for every pass
   ## that needs one: the ownership rules, slab ownership, the mock surface.
@@ -912,6 +958,35 @@ const ConstDepthLimit = 64
 
 proc evalConstExpr*(m: Module, e: Expr, depth = 0): Option[int]
 
+iterator callSites*(res: Resolution, body: Expr): Expr =
+  ## Every CALL a body makes, whatever its spelling: a literal `exkCall`, a
+  ## node the checker stamped as one (a bare nullary name, `x.f`, `xs[i]`),
+  ## and the mutator call each `..` step resolved to. The step calls are not
+  ## in the tree (`nodes` never reaches them), so a pass walking nodes alone
+  ## let an `[io]` mutator run from a `[pure]` fn (audit E13). Passes that ask
+  ## "what does this body call" walk this, not `nodes`.
+  for n in body.nodes:
+    if n.kind == exkCall: yield n
+    elif res.hasCall(n): yield res.call(n)
+    if n.kind == exkChain:
+      for s in n.steps:
+        let sc = res.stepCall(s)
+        if sc != nil: yield sc
+
+proc raisedEvent*(e: Expr): string =
+  ## `Registry.Event` when `e` is the raise itself — `Ev.raise Ping`, the call
+  ## whose callee names the event and whose one argument is `Ev.raise` — and
+  ## "" otherwise. With a payload the raise is the CALLEE of the payload call;
+  ## without one it stands alone, so this answers on the inner node in both.
+  if e == nil or e.kind != exkCall or e.callee == nil or
+     e.callee.kind != exkVar or e.args.len != 1 or e.args[0] == nil:
+    return ""
+  let f = e.args[0]
+  if f.kind != exkField or f.fieldName != "raise" or f.receiver == nil or
+     f.receiver.kind != exkRegistryRef:
+    return ""
+  f.receiver.refName & "." & e.callee.name
+
 proc constDeclFor*(m: Module, raw: string): Decl =
   ## The const declaration named `raw`, wherever it is declared.
   # THIS module first, then the program. A const declared in an IMPORTED module
@@ -928,9 +1003,27 @@ proc constDeclFor*(m: Module, raw: string): Decl =
   # resolving to whichever loaded first.
   for d in m.decls:
     if d != nil and d.kind == dkConst and spells(d.name, raw, nkConst): return d
-  if raw in semLayer.ambiguousConsts: return
-  result = semLayer.constNames.getOrDefault(raw, nil)
-  if result == nil: result = semLayer.constNames.getOrDefault(prefixed(raw, nkConst), nil)
+  # Then only what a DIRECT import declares: a name two imports away is not in
+  # this module's scope (audit M3). Two imports exporting different consts of
+  # the name stay unresolved rather than picking the first.
+  for imp in m.decls:
+    if imp == nil or imp.kind != dkImport: continue
+    let theirs = semLayer.constsByModule.getOrDefault(imp.importTarget)
+    for key in [raw, prefixed(raw, nkConst)]:
+      let found = theirs.getOrDefault(key, nil)
+      if found == nil: continue
+      if result != nil and result != found: return nil
+      result = found
+
+proc importedConstOwners*(m: Module, raw: string): seq[string] =
+  ## The modules `m` imports directly that each declare a const `raw`, by
+  ## name. More than one, or one beside an imported fn of the name, is a
+  ## collision the checker reports where the bare name is written.
+  for imp in m.decls:
+    if imp == nil or imp.kind != dkImport: continue
+    let theirs = semLayer.constsByModule.getOrDefault(imp.importTarget)
+    if theirs.hasKey(raw) or theirs.hasKey(prefixed(raw, nkConst)):
+      if imp.name notin result: result.add imp.name
 
 proc constIntOf*(m: Module, text: string, depth = 0): Option[int] =
   ## A size written as TEXT — an attribute's value, or an `Array[N, T]` size,
@@ -1333,7 +1426,7 @@ proc fnSigInstance*(m: Module, t: Type): Type =
       ps.add(substType(prm.typ, binds))
       names.add(prm.name)
     return Type(span: t.span, kind: tkFunc, params: ps, paramNames: names,
-                result: substType(d.sigReturn, binds))
+                result: substType(d.sigReturn, binds), funcEffects: d.sigEffects)
   nil
 
 # --- interfaces: who satisfies what (moved from codegen_common so the
@@ -1533,13 +1626,32 @@ proc placeAssign*(e: Expr): bool =
   t != nil and t.kind == exkVar and (t == e.target or t.name != "self")
 
 proc isRtPushCall(call: Expr): bool =
-  ## A runtime `push` with its payload still a struct literal. Matched on the
-  ## UNMANGLED name: mangling runs before codegen, so a user's own `fn push`
-  ## is `tuck_push` here and only the runtime's is `push`.
-  call != nil and call.kind == exkCall and call.args.len == 1 and
+  ## A runtime `push`, its payload a struct literal or already exploded into
+  ## its two params. Matched on the UNMANGLED name: mangling runs before
+  ## codegen, so a user's own `fn push` is `tuck_push` here and only the
+  ## runtime's is `push`.
+  call != nil and call.kind == exkCall and
     call.callee != nil and call.callee.kind == exkVar and
     call.callee.name == "push" and
-    call.args[0] != nil and call.args[0].kind == exkStruct
+    ((call.args.len == 1 and call.args[0] != nil and call.args[0].kind == exkStruct) or
+     (call.argsExploded and call.args.len == 2))
+
+proc pushArgs(res: Resolution, call: Expr): tuple[items, value: Expr] =
+  ## `push`'s `items` and `value`: by name from a payload literal, or by the
+  ## recorded param order once lowering exploded it (`push(xs, v)`). The
+  ## order is recorded since an imported extern's params are (audit Y14);
+  ## reading only the literal then lost every in-place append.
+  if not call.argsExploded:
+    for f in call.args[0].fields:
+      if f.name == "items": result.items = f.value
+      elif f.name == "value": result.value = f.value
+    return
+  let params = res.knownCallParams(call)
+  if params.isNone: return
+  for i, name in params.get:
+    if i >= call.args.len: break
+    if name == "items": result.items = call.args[i]
+    elif name == "value": result.value = call.args[i]
 
 proc pushCallOf(res: Resolution, e: Expr): Expr =
   ## The runtime `push` call this plain assignment's value is, or nil.
@@ -1569,13 +1681,8 @@ proc selfAppendParts*(res: Resolution, e: Expr): tuple[read, value: Expr] =
   ##
   let call = pushCallOf(res, e)
   if call == nil: return
-  # The payload is still a STRUCT at this point — the positional explosion
-  # happens in the emitters — so the two arguments are read by the names
-  # std/seq declares them with.
-  var items, value: Expr
-  for f in call.args[0].fields:
-    if f.name == "items": items = f.value
-    elif f.name == "value": value = f.value
+  # Read by the names std/seq declares them with.
+  let (items, value) = pushArgs(res, call)
   if items == nil or value == nil: return
   if items.kind notin {exkVar, exkField} or pathOf(items) != pathOf(e.target):
     return

@@ -139,7 +139,7 @@ tuckˑtypeˑVolume :: struct {
 validate_tuckˑtypeˑVolume :: proc(self: tuckˑtypeˑVolume) {
 	when !#config(tuckNoInvariants, false) {
 		if !((self.level <= u8(100))) {
-			rt.tuckInvariantFailed("(self.level <= u8(100))", "tuckˑtypeˑVolume")
+			rt.tuckInvariantFailed("level <= 100", "Volume")
 		}
 	}
 }
@@ -149,6 +149,7 @@ __validated_tuckˑtypeˑVolume :: proc(v: tuckˑtypeˑVolume) -> tuckˑtypeˑVol
 }
 
 tuckˑtaskˑstreamReader :: proc(streamId: u8, chunks: [dynamic]u32) -> rt.TuckResult(rt.TuckUnit) {
+  defer delete(chunks)
   for tuckˑvˑi in chunks {
       tuckˑvˑbuf := rt.tuckPoolAcquire(&tuckˑpoolˑBufferPool)
       if !(tuckˑvˑbuf.status == .Ok) {

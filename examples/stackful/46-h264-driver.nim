@@ -24,11 +24,11 @@ type tuckˑtypeˑFrame* = object
 
 proc validate*(self: tuckˑtypeˑFrame) =
   when not defined(tuckNoInvariants):
-    if not ((self.width > 0)): tuckInvariantFailed("(self.width > 0)", "tuckˑtypeˑFrame")
-    if not ((self.height > 0)): tuckInvariantFailed("(self.height > 0)", "tuckˑtypeˑFrame")
-    if not ((self.width <= 1920)): tuckInvariantFailed("(self.width <= 1920)", "tuckˑtypeˑFrame")
-    if not ((self.height <= 1080)): tuckInvariantFailed("(self.height <= 1080)", "tuckˑtypeˑFrame")
-    if not ((self.bytes <= 4096)): tuckInvariantFailed("(self.bytes <= 4096)", "tuckˑtypeˑFrame")
+    if not ((self.width > 0)): tuckInvariantFailed("width > 0", "Frame")
+    if not ((self.height > 0)): tuckInvariantFailed("height > 0", "Frame")
+    if not ((self.width <= 1920)): tuckInvariantFailed("width <= 1920", "Frame")
+    if not ((self.height <= 1080)): tuckInvariantFailed("height <= 1080", "Frame")
+    if not ((self.bytes <= 4096)): tuckInvariantFailed("bytes <= 4096", "Frame")
 
 type tuckˑtypeˑDecoderState* = enum Idle, Configured, Decoding, Draining
 proc canTransition*(frm, to: tuckˑtypeˑDecoderState): bool =

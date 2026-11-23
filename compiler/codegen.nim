@@ -264,7 +264,7 @@ proc stacklessHelper*(calleeStr, prefix: string): string =
   if dot < 0: prefix & calleeStr else: calleeStr[0 .. dot] & prefix & calleeStr[dot + 1 .. ^1]
 
 proc genSpawnCall(ctx: var CodegenCtx, calleeStr, callName: string,
-                  args: seq[string]): string =
+                  args: seq[string], task: Decl): string =
   ## Calling a task SCHEDULES it as a coroutine — it runs concurrently, main
   ## drives it via tuckRun (spec §9.2). Fire-and-forget; a result-bound call
   ## is genTaskAssignment's.
@@ -276,7 +276,7 @@ proc genSpawnCall(ctx: var CodegenCtx, calleeStr, callName: string,
     # A frame with nowhere for its result: it is dropped when it finishes.
     return "tuckSlReady(addr " & stacklessHelper(calleeStr, "TuckNewˑ") &
            "(nil, nil, nil" & (if args.len > 0: ", " & args.join(", ") else: "") & ").tuckHdr)"
-  let spawn = if ctx.taskRetType(calleeStr) == "void": "tuckSpawnJob"
+  let spawn = if taskRetType(task) == "void": "tuckSpawnJob"
               else: "tuckSpawnJobDrop"
   spawn & "(" & callName & (if args.len > 0: ", " & args.join(", ") else: "") & ")"
 
@@ -286,12 +286,21 @@ proc genValidatedCall(ctx: var CodegenCtx, call: string): string =
   "(let " & tmp & " = " & call & "; validate(" & tmp & "); " & tmp & ")"
 
 proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
-                  args: seq[string]): string =
+                  args: seq[string], callee: Decl = nil): string =
   ## An ordinary call, wrapped by whatever the callee is: a spawned task, an
   ## invariant-validating extern, or neither.
   ##
   ## extern [emit: "..."] renames the emitted call to the real runtime/C proc.
-  let emitName = ctx.externEmitName(calleeStr)
+  ##
+  ## `callee` is the DECLARATION the call reaches (ast_query.calleeDecl), and
+  ## what it is comes from there. It used to come from the printed name, asked
+  ## of tables keyed by bare name: `ea::conv` printed as `ea.conv`, which no
+  ## table held, so its `[emit:]` was dropped, and two modules' externs of
+  ## one name shared whichever emit was filed last (audit M13). The task test
+  ## below is still by name: an imported task is not spawnable yet (M21).
+  let emitName = if callee != nil and callee.isExtern and callee.externEmit != "":
+                   callee.externEmit
+                 else: ctx.externEmitName(calleeStr)
   # A PRIMITIVE conversion — `{value: n} u64` — names a Tuck type, and the
   # backend's name for it is not the same word: `u64(n)` reached Nim as an
   # undeclared identifier because Nim spells it `uint64`. The same table
@@ -304,17 +313,18 @@ proc genPlainCall(ctx: var CodegenCtx, calleeStr: string,
                  elif prim != calleeStr: prim
                  else: calleeStr
   let call = callName & "(" & args.join(", ") & ")"
-  if ctx.index.isTaskName(calleeStr): return ctx.genSpawnCall(calleeStr, callName, args)
+  if callee != nil and callee.kind == dkTask:
+    return ctx.genSpawnCall(calleeStr, callName, args, callee)
   if ctx.index.externInvRet(calleeStr) != "": return ctx.genValidatedCall(call)
   call
 
 proc genCallWithArgs(ctx: var CodegenCtx, calleeStr: string,
-                     args: seq[string]): string =
+                     args: seq[string], callee: Decl = nil): string =
   ## The emission forms, once the arguments are built.
   let satBase = ctx.saturatingBase(calleeStr)
   if satBase != "" and args.len == 1:
     return genSaturatingCtor(satBase, calleeStr, args[0])
-  ctx.genPlainCall(calleeStr, args)
+  ctx.genPlainCall(calleeStr, args, callee)
 
 proc withTypeArgs(ctx: CodegenCtx, calleeStr: string, e: Expr): string =
   ## `tuck_firstOf` -> `tuck_firstOf[tuck_Row, int]` when the checker recorded
@@ -364,7 +374,8 @@ proc genConstruction(ctx: var CodegenCtx, e: Expr): string =
   let combinator = ctx.explodeRecordArg(e, calleeStr)
   if combinator != "": return combinator
   let args = ctx.genCallArgs(e)
-  ctx.genCallWithArgs(ctx.withTypeArgs(calleeStr, e), args)
+  ctx.genCallWithArgs(ctx.withTypeArgs(calleeStr, e), args,
+                      calleeDecl(ctx.res, ctx.module, e))
 
 # exkReturn emission: auto-wrapped tok()/terr() results, typed struct
 # literals, invariant-carrying returns, or a plain return.
@@ -524,6 +535,15 @@ proc genLit(ctx: CodegenCtx, e: Expr): string =
     let t = ctx.res.typeFor(e)
     if t != nil and t.kind == tkNamed and t.name in NimLitSuffix:
       return e.litValue & NimLitSuffix[t.name]
+    e.litValue
+  of lkFloat:
+    # A float literal Nim reads as `float` (64-bit) whatever it meets, so
+    # `x * 10.0` with `x: f32` was computed and kept in f64 on Nim alone
+    # (audit Y7). The width the checker settled on is spelled, as for ints.
+    let t = ctx.res.typeFor(e)
+    if t != nil and t.kind == tkNamed and t.name == "f32" and
+       e.litValue.allCharsInSet({'0'..'9', '.', 'e', 'E', '-', '+'}):
+      return e.litValue & "'f32"
     e.litValue
   else: e.litValue
 
@@ -767,23 +787,65 @@ proc genCheckedArith(ctx: var CodegenCtx, e: Expr, plan: OverflowPlan): string =
     l = base & "(" & l & ")"
     r = base & "(" & r & ")"
   let call = "tuckArith(" & l & ", " & r & ", " & op & ", ov" &
-             plan.policy & ")"
+             plan.policy & ", " & quoteTypeName(plan.base) & ")"
   if plan.named != "": genType(Type(kind: tkNamed, name: plan.named)) & "(" & call & ")"
   else: call
+
+proc genRange(ctx: var CodegenCtx, e: Expr): string =
+  ## `lo .. hi` with both ends in the range's own integer type. Nim's `..`
+  ## takes one type for both ends, and `0 .. top` with `top: u8` was
+  ## ambiguous between its uint32 and uint64 overloads (audit Y16); Odin and
+  ## D read the literal as the other end's type, so Nim spells it out.
+  var t = ctx.res.typeFor(e.left)
+  if e.left.kind == exkLit or t == nil: t = ctx.res.typeFor(e.right)
+  var lo = ctx.genExpr(e.left)
+  var hi = ctx.genExpr(e.right)
+  if t != nil and t.kind == tkNamed and t.name in IntegerNames and t.name != "int":
+    let tn = genType(t)
+    lo = tn & "(" & lo & ")"
+    hi = tn & "(" & hi & ")"
+  "(" & lo & " " & nimBinOp(e.binOp) & " " & hi & ")"
+
+proc genSatWide(ctx: var CodegenCtx, e: Expr): string =
+  ## A stored `[saturating]` chain on its 64-bit intermediate, which itself
+  ## saturates, so no step of it can wrap (lowering_saturating).
+  if e.kind == exkBinary and e.binOp in {boAdd, boSub, boMul}:
+    let op = case e.binOp
+             of boAdd: "ovAdd"
+             of boSub: "ovSub"
+             else: "ovMul"
+    return "tuckArith(" & ctx.genSatWide(e.left) & ", " &
+           ctx.genSatWide(e.right) & ", " & op & ", ovSat, \"i64\")"
+  "int64(" & ctx.genExpr(e) & ")"
+
+proc genSatStore(ctx: var CodegenCtx, e: Expr, base: string): string =
+  ## spec 4.1: a chain stored into a `[saturating]` type, clamped once.
+  let named = genType(ctx.res.typeFor(e))
+  named & "(tuckSatI[" & genType(Type(kind: tkNamed, name: base)) & "](" &
+    ctx.genSatWide(e) & "))"
 
 proc genBinary(ctx: var CodegenCtx, e: Expr): string =
   ## A binary expression, parenthesised; `str + str` goes through `tuckConcat`.
   if isStringConcat(e):
     return "tuckConcat(" & ctx.genExpr(e.left) & ", " & ctx.genExpr(e.right) & ")"
+  let satBase = ctx.res.satStoreBase(e)
+  if satBase != "": return ctx.genSatStore(e, satBase)
   if e.binOp in {boAdd, boSub, boMul}:
     let plan = overflowPlan(ctx.module, ctx.realModules, ctx.res.typeFor(e))
     if plan.active: return ctx.genCheckedArith(e, plan)
+  if e.binOp in {boRangeIncl, boRangeExcl}: return ctx.genRange(e)
+  let rt = ctx.res.typeFor(e)
+  if checkedDivision(e, rt):
+    return divHelper(e.binOp) & "[" & genType(rt) & "](" & ctx.genExpr(e.left) &
+           ", " & ctx.genExpr(e.right) & ", " & quoteTypeName(rt.name) & ")"
   "(" & ctx.genExpr(e.left) & " " & nimBinOp(e.binOp) & " " &
     ctx.genExpr(e.right) & ")"
 
 proc genUnary(ctx: var CodegenCtx, e: Expr): string =
   ## A unary expression: `-` and `not`. A composition entry is a declaration
   ## member, sifted out before emission, so reaching here is a compiler bug.
+  let t = ctx.res.typeFor(e)
+  if isMinimumLiteral(e, t): return "low(" & genType(t) & ")"
   let opStr = case e.unaryOp
               of uoNeg: "-"
               of uoNot: "not "
@@ -837,8 +899,7 @@ proc stmtValueDropped(ctx: var CodegenCtx, s: Expr): bool =
   # which is a void expression — discarding it is the very "no type (or is
   # ambiguous)" error this proc exists to avoid, just one level out. The
   # task's own return type says nothing about the emitted statement.
-  if s.callee != nil and s.callee.kind == exkVar and
-     ctx.index.isTaskName(s.callee.name): return false
+  if ctx.taskOf(s) != nil: return false
   let t = ctx.res.typeFor(s)
   if t == nil: return false
   # `discard` over a void call is itself an error in Nim, so the question is
@@ -1125,8 +1186,7 @@ proc genDiscard(ctx: var CodegenCtx, e: Expr): string =
   ## of a void ("has no type", A97).
   let v = e.discardVal
   if v == nil: "discard"
-  elif v.kind == exkCall and v.callee != nil and v.callee.kind == exkVar and
-       ctx.index.isTaskName(v.callee.name): ctx.genExpr(v)
+  elif ctx.taskOf(v) != nil: ctx.genExpr(v)
   else: "discard " & ctx.genExpr(v)
 
 proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
@@ -1151,12 +1211,13 @@ proc genAssignTarget(ctx: var CodegenCtx, e: Expr): string =
 
 proc genTaskAssignment(ctx: var CodegenCtx, e: Expr): string =
   ## Result-bound task call assignment with result slot and await.
-  if e.assignVal == nil or e.assignVal.kind != exkCall or
-     e.assignVal.callee == nil or e.assignVal.callee.kind != exkVar or
-     not ctx.index.isTaskName(e.assignVal.callee.name):
-    return ""
-  let tname = e.assignVal.callee.name
-  let ret = ctx.taskRetType(tname)
+  let task = ctx.taskOf(e.assignVal)
+  if task == nil: return ""
+  # `t` or `lib::t`: the qualified spelling is the module's alias, a dot, and
+  # the name, which stacklessHelper prefixes after the dot.
+  let tname = if e.assignVal.callee.kind == exkVar: e.assignVal.callee.name
+              else: ctx.genExpr(e.assignVal.callee)
+  let ret = taskRetType(task)
   let argParts = ctx.genCallArgs(e.assignVal)
   let slot = "tuckSlot" & $ctx.tmpCounter
   ctx.tmpCounter.inc

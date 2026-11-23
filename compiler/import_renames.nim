@@ -67,6 +67,14 @@ proc renamesOf(lm: LoadedModule, byName: Table[string, LoadedModule]):
       if lm.m.declares(renamed) or renamed in result:
         refuse(lm.path, "'" & renamed & "' is already a name in this module; the " &
                "rename would hide it. Fix: choose another name", imp.span)
+      # ...or a name ANOTHER import brings in: the rename took it over, and a
+      # call of `putEntry` meant for `kb::putEntry` ran `ka::put` (audit M19).
+      for other in lm.m.decls(dkImport):
+        if other.name != imp.name and other.name in byName and
+           byName[other.name].m.exportedFn(renamed):
+          refuse(lm.path, "'" & renamed & "' is already a fn of " & other.name &
+                 ", imported here; the rename would hide it. Fix: choose " &
+                 "another name", imp.span)
       result[renamed] = (imp.name, old)
 
 proc qualified(n: Expr, to: tuple[module, name: string]): Expr =

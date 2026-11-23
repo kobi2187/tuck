@@ -626,17 +626,35 @@ proc composeImportedMixins*(prog: var seq[LoadedModule]) =
     if visible.len == 0: continue
     for d in composeMixinsFrom(prog[i].m, visible): freshIds(d)
 
+proc claimModuleName(owners: var Table[string, string], path: string) =
+  ## A module is known by its file's base name: that name is what an import
+  ## writes, what `mod::fn` qualifies with and what each backend names the
+  ## emitted file. So one program holds ONE file per name. Two files of a name
+  ## (a local `bits.tuck` beside the entry, and the stdlib's `bits.tuck` that
+  ## `random` imports) were loaded as one module: both sets of declarations
+  ## under one id, and whichever body the backend met first was the one that
+  ## ran (audit M1). Refused here, where both paths are known.
+  let name = extractFilename(path).changeFileExt("")
+  if name in owners and owners[name] != path:
+    raise newException(ModuleError,
+      "two modules are named '" & name & "': " & owners[name] & " and " & path &
+      ". A module is known by its file name, so a program holds one file per " &
+      "name. Fix: give one of the files another name")
+  owners[name] = path
+
 proc loadProgram*(entryPath: string): seq[LoadedModule] =
   ## Parse the entry file and its whole import closure. Dep-first order,
   ## entry module last. Diamond imports collapse; cycles are errors.
   var visiting, done: HashSet[string]
   var order: seq[LoadedModule]
+  var owners: Table[string, string]
 
   proc visit(path: string, isEntry: bool) =
     ## Loads `path` after its imports (depth-first), so the order is
     ## dependency-first; a module reached again while still being visited is an
     ## import cycle.
     let ap = absolutePath(path)
+    claimModuleName(owners, ap)
     if ap in done: return
     if ap in visiting:
       raise newException(ModuleError, "import cycle through " & extractFilename(ap))
@@ -664,20 +682,32 @@ proc loadProgramIndexed*(entryPath: string):
   var visiting, done: HashSet[string]
   var full: seq[LoadedModule]
   var sigOnly = initTable[string, IndexEntry]()
+  var owners: Table[string, string]
 
   proc visit(path: string, isEntry: bool) =
     ## As `loadProgram`'s walk, except an import with a valid index entry is
     ## served from the index (signatures only) instead of being loaded.
     let ap = absolutePath(path)
+    claimModuleName(owners, ap)
     if ap in done: return
     if ap in visiting:
       raise newException(ModuleError, "import cycle through " & extractFilename(ap))
     visiting.incl(ap)
     var m = if isEntry: parseTuckFile(ap) else: loadModuleCached(ap)
     m.id = moduleId(extractFilename(ap).changeFileExt(""))
+    # `import kv {put -> putEntry}` is checked against kv's declarations, and
+    # against every other import's (the rename must not hide one, M19): an
+    # index entry holds neither, so a module that renames loads its imports in
+    # full. Served from the index, the second `tuck ch` reported that kv
+    # "exports no fn 'put'" where the first had passed (M10b).
+    var renames = false
+    for d in m.decls(dkImport):
+      if d.importRenames.len > 0: renames = true
     for imp in importsOf(m):
       let ipath = resolveImport(ap, imp)
-      if absolutePath(ipath) notin done and entryValid(idx, dir, imp):
+      claimModuleName(owners, absolutePath(ipath))
+      if absolutePath(ipath) notin done and not renames and
+         entryValid(idx, dir, imp):
         sigOnly[imp] = idx[imp]
       else:
         visit(ipath, false)

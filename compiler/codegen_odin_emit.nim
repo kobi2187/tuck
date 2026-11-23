@@ -317,8 +317,9 @@ proc genEntryPoint*(ctx: OdinCodegenCtx, m: Module, body, mains: string): string
     result.add("\t" & ctx.pkgQualifier(p) & RegisterProc & "()\n")
   if registersAnything(m): result.add("\t" & RegisterProc & "()\n")
   var actorNames: seq[string]
-  var hasTasks = false
-  runtimeUsers(m, actorNames, hasTasks)
+  var localTasks = false
+  runtimeUsers(m, actorNames, localTasks)
+  let hasTasks = programHasTasks(m, ctx.realModules)
   let bootPkgs = actorBootModules(m, ctx.realModules)
   result.add(ctx.bootLines(actorNames, hasTasks, bootPkgs))
   if mains != "": result.add(mains & "\n")

@@ -66,7 +66,10 @@ registry DrvEvents:
 on DrvEvents.Rx({b: int}) [io: console]:
   {text: "lib"} console::printLine
 
-fn poke():
+# A synchronous raise runs its handlers here, so it declares what they do
+# (audit E5, ruled 2026-11-23) — the ones this module can see; its
+# importers' handlers are theirs to answer for.
+fn poke() [io: console]:
   DrvEvents.raise Rx {b: 7}
 """
   t.hostRuns "handlers in two modules all run, the declaring module's first",

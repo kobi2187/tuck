@@ -27,6 +27,11 @@ type
     shortcuts*: Table[NodeId, string]  # errors-policy drop sites
     asyncCalls*: HashSet[NodeId]       # call sites whose callee is [io] —
                                        # codegen awaits/yields them (async)
+    slotCalls*: Table[NodeId, seq[EffectMarker]]
+      # a call THROUGH a fn-valued slot (a `fnsig` field, param or local): no
+      # single callee, so what it may do is the slot type's effect contract,
+      # recorded by the checker. The effect pass charges it to the caller; a
+      # call through a slot with no record fails `assertCallEdges` (audit E1).
     # Name resolution, recorded once by the checker and read by every later
     # pass. `decls` is the index — "give me that declaration" — and `declOf`
     # is the edge a reference has to its target: "what does this name mean".
@@ -76,6 +81,11 @@ type
     # registry knows an event has such handlers (codegen_common.
     # hasForeignHandlers) and so keeps a list of function references for them.
     handlerSites*: Table[string, seq[NodeId]]
+    # ...and the handler declarations themselves: a raise calls every one of
+    # them synchronously (spec Part 10), so what it may do is theirs (audit E5).
+    handlerDecls*: Table[string, seq[Decl]]
+    handlerModule*: Table[NodeId, ModuleId]
+      ## The module that declares each `on Registry.Event` handler, by its id.
     registerNames*: Table[string, Decl]
     registryNames*: Table[string, Decl]
     poolNames*: Table[string, Decl]
@@ -92,6 +102,16 @@ type
     # module's own const shadows any other module's.
     constNames*: Table[string, Decl]
     ambiguousConsts*: HashSet[string]
+    groupRequirements*: HashSet[string]
+      ## Every fn name a `group` requires, as written. A fn of that name is
+      ## a PROVIDER: a generic body reaches it through the group, by name,
+      ## with no call edge, so its callers cannot know whether it keeps an
+      ## argument — it borrows them (ownership_elab.consumesWhy).
+    # Each module's OWN consts. A name is only meaningful to a module that
+    # declares it or imports its declarer directly; constNames alone answered
+    # for every module in the program, so a const two imports away was
+    # reachable by bare name (audit M3).
+    constsByModule*: Table[ModuleId, Table[string, Decl]]
     # How a call's payload maps onto its callee's parameters, decided once by
     # checkCallArgs. `argFields[i]` names the payload FIELD that satisfies
     # param i — matched by name, or by type when the names differ — and
@@ -109,6 +129,12 @@ type
       ## argument — keyed by the value, holding the `?T` it goes into.
       ## lowering_optional wraps each one; assignments and returns it wraps
       ## on its own.
+    satStores*: Table[NodeId, string]
+      ## A `+ - *` chain whose value is STORED into a `[saturating]` type
+      ## (spec 4.1: construction, `let`/`var` init, assignment, field set),
+      ## keyed by the chain's outermost node, holding the type's base integer
+      ## (`u16`). lowering_saturating marks them; each emitter computes the
+      ## chain on a saturating 64-bit intermediate and clamps it once.
     actorMemberCalls*: Table[NodeId, (string, string)]
                     ## A call to an actor's member `fn`, by the call's id, to
                     ## (the actor, the member), both as written (A24). The
@@ -307,23 +333,29 @@ proc grafted*(e: Expr): Expr =
     for ch in n.children: stack.add ch
   e
 
+proc carry[V](t: var Table[NodeId, V], src, dst: NodeId) {.inline.} =
+  ## `dst` gets what `src` has in `t`, when it has anything.
+  if src in t: t[dst] = t[src]
+
 proc copyMeaning(r: Resolution, src, dst: NodeId) =
   ## Carry what a node MEANS to its copy: its type, what it resolved to, its
   ## call's argument mapping. Not `lastUses` — whether a read
   ## is the last one depends on the body it sits in, and a copy sits in a
   ## different one; left unstamped it is merely not moved, which is safe.
-  if src in r.calls: r.calls[dst] = r.calls[src]
-  if src in r.types: r.types[dst] = r.types[src]
-  if src in r.shortcuts: r.shortcuts[dst] = r.shortcuts[src]
+  r.calls.carry(src, dst)
+  r.types.carry(src, dst)
+  r.shortcuts.carry(src, dst)
   if src in r.asyncCalls: r.asyncCalls.incl dst
-  if src in r.declOf: r.declOf[dst] = r.declOf[src]
-  if src in r.argFields: r.argFields[dst] = r.argFields[src]
-  if src in r.callParams: r.callParams[dst] = r.callParams[src]
-  if src in r.optWraps: r.optWraps[dst] = r.optWraps[src]
-  if src in r.slabDerefs: r.slabDerefs[dst] = r.slabDerefs[src]
-  if src in r.callTypeArgs: r.callTypeArgs[dst] = r.callTypeArgs[src]
-  if src in r.wraps: r.wraps[dst] = r.wraps[src]
-  if src in r.ifaceCalls: r.ifaceCalls[dst] = r.ifaceCalls[src]
+  r.slotCalls.carry(src, dst)
+  r.declOf.carry(src, dst)
+  r.argFields.carry(src, dst)
+  r.callParams.carry(src, dst)
+  r.optWraps.carry(src, dst)
+  r.satStores.carry(src, dst)
+  r.slabDerefs.carry(src, dst)
+  r.callTypeArgs.carry(src, dst)
+  r.wraps.carry(src, dst)
+  r.ifaceCalls.carry(src, dst)
 
 proc renumber(r: Resolution, orig, copy: Expr) =
   ## Walk an original and its deepCopy in step, giving each copied node a
@@ -380,10 +412,44 @@ proc markAsync*(r: Resolution, e: Expr) =
   ensureId(e)
   r.asyncCalls.incl(e.id)
 
+proc raisesDeferred*(r: Resolution, raised: string): bool =
+  ## Does raising `Registry.Event` only QUEUE it? An event with a delivery
+  ## kind (`[stream]`, `[signal]`, `[latest]`, ruled 2026-11-22) runs its
+  ## handlers later on their own task, never at the raise, so the raise
+  ## carries none of their effects: interrupt code raises exactly these.
+  let dot = raised.rfind('.')
+  if dot < 0: return false
+  let reg = r.registryNames.getOrDefault(raised[0 ..< dot])
+  if reg == nil: return false
+  for v in reg.variants:
+    if v.name == raised[dot + 1 .. ^1]: return v.delivery != edNone
+  false
+
+proc markSlotCall*(r: Resolution, e: Expr, effects: seq[EffectMarker]) =
+  ## `e` calls through a slot whose type promises `effects`.
+  if e == nil: return
+  ensureId(e)
+  r.slotCalls[e.id] = effects
+
+proc isSlotCall*(r: Resolution, e: Expr): bool =
+  e != nil and e.id.isSet and r.slotCalls.hasKey(e.id)
+
+proc slotEffects*(r: Resolution, e: Expr): seq[EffectMarker] =
+  ## What a call through a slot may do (empty unless `isSlotCall`).
+  if e != nil and e.id.isSet: r.slotCalls.getOrDefault(e.id) else: @[]
+
 proc isAsync*(r: Resolution, e: Expr): bool =
   ## Is `e` a call site of an `[io]` callee — one the task transform must
   ## suspend at?
   e != nil and e.id.isSet and e.id in r.asyncCalls
+
+proc ifaceSpelling*(iface: string): string =
+  ## An interface as the passes after the checker name it. One that
+  ## type_identity qualified (`a::Shape`: two modules declare one) is renamed
+  ## by the mangler, which runs before lowering and codegen read these marks;
+  ## any other keeps the name it was written with. Recorded in that spelling,
+  ## or lowering found no satisfier of `a::Shape` and dispatched to nothing.
+  if iface.contains("::"): prefixed(iface, nkInterface) else: iface
 
 proc markWrap*(r: Resolution, e: Expr, objName, iface: string) =
   ## Flag an expression as an interface wrap: a concrete object entering an
@@ -392,8 +458,9 @@ proc markWrap*(r: Resolution, e: Expr, objName, iface: string) =
   ## variant gets a branch for it.
   if e == nil: return
   ensureId(e)
-  r.wraps[e.id] = (objName: objName, iface: iface)
-  r.ifacePairs.incl((objName: objName, iface: iface))
+  let spelled = ifaceSpelling(iface)
+  r.wraps[e.id] = (objName: objName, iface: spelled)
+  r.ifacePairs.incl((objName: objName, iface: spelled))
 
 proc wrapOf*(r: Resolution, e: Expr): tuple[objName, iface: string] =
   ## The interface wrap recorded on `e` — which object enters which interface
@@ -407,7 +474,7 @@ proc markIfaceCall*(r: Resolution, e: Expr, iface, member: string) =
   ## implementation runs is carried by the value, not known here.
   if e == nil: return
   ensureId(e)
-  r.ifaceCalls[e.id] = (iface: iface, member: member)
+  r.ifaceCalls[e.id] = (iface: ifaceSpelling(iface), member: member)
 
 proc ifaceCallOf*(r: Resolution, e: Expr): tuple[iface, member: string] =
   ## The interface call recorded on `e` — the interface and the member called
@@ -423,11 +490,13 @@ proc newResolution*(): Resolution =
              types: initTable[NodeId, Type](),
              shortcuts: initTable[NodeId, string](),
              asyncCalls: initHashSet[NodeId](),
+             slotCalls: initTable[NodeId, seq[EffectMarker]](),
              decls: initTable[NodeId, Decl](),
              declOf: initTable[NodeId, NodeId](),
              argFields: initTable[NodeId, seq[string]](),
              callParams: initTable[NodeId, seq[string]](),
              optWraps: initTable[NodeId, Type](),
+             satStores: initTable[NodeId, string](),
              slabDerefs: initTable[NodeId, Decl](),
              callTypeArgs: initTable[NodeId, seq[Type]](),
              wraps: initTable[NodeId, tuple[objName, iface: string]](),
@@ -486,9 +555,15 @@ proc resetResolution*() =
   let mixinNames = semLayer.mixinNames
   let constNames = semLayer.constNames
   let ambiguousConsts = semLayer.ambiguousConsts
+  let groupRequirements = semLayer.groupRequirements
+  let constsByModule = semLayer.constsByModule
   let handlerSites = semLayer.handlerSites
+  let handlerDecls = semLayer.handlerDecls
+  let handlerModule = semLayer.handlerModule
   semLayer = newResolution()
   semLayer.handlerSites = handlerSites
+  semLayer.handlerDecls = handlerDecls
+  semLayer.handlerModule = handlerModule
   semLayer.actorNames = actorNames
   semLayer.registerNames = registerNames
   semLayer.registryNames = registryNames
@@ -498,6 +573,8 @@ proc resetResolution*() =
   semLayer.mixinNames = mixinNames
   semLayer.constNames = constNames
   semLayer.ambiguousConsts = ambiguousConsts
+  semLayer.groupRequirements = groupRequirements
+  semLayer.constsByModule = constsByModule
 
 proc placeArenaSlabs*(m: var Module) =
   ## Each slab the checker made for an arena (one per element type its
@@ -687,6 +764,17 @@ proc markOptWrap*(r: Resolution, e: Expr, place: Type) =
   if e == nil: return
   ensureId(e)
   r.optWraps[e.id] = place
+
+proc markSatStore*(r: Resolution, e: Expr, base: string) =
+  ## `e`, a `+ - *` chain, is stored into a `[saturating]` type over `base`.
+  assert e != nil and e.kind == exkBinary, "a saturating store marks a chain"
+  ensureId(e)
+  r.satStores[e.id] = base
+
+proc satStoreBase*(r: Resolution, e: Expr): string =
+  ## The base integer `e` is clamped to as a saturating store, or "".
+  if e == nil or not e.id.isSet: return ""
+  r.satStores.getOrDefault(e.id, "")
 
 proc optWrapOf*(r: Resolution, e: Expr): Type =
   ## The `?T` place `e` was accepted into as a plain `T`, or nil.

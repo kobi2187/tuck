@@ -11,7 +11,7 @@ void validate_tuckˑtypeˑTemperature(tuckˑtypeˑTemperature self)
     version (tuckNoInvariants) {} else
     {
         if (!((self.celsius >= -273.15)))
-            rt.tuckInvariantFailed("(self.celsius >= -273.15)", "tuckˑtypeˑTemperature");
+            rt.tuckInvariantFailed("celsius >= -273.15", "Temperature");
     }
 }
 

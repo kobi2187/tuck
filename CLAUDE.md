@@ -11,6 +11,11 @@ compiler itself is written in Nim. Three backends, one checked AST.
 the Tuck syntax you need, how to build/test, how to change the compiler safely,
 and the owner's working agreements. Start there, then the items below.
 
+`AGENTS.md` — how to fix bugs and audit findings: root cause by class with
+invariant assertions, never deciding the language implicitly (decisions are
+the owner's), the standing rulings, task lists per class, and how each fix is
+proved and pinned. Read it before any correctness work.
+
 `ROADMAP.md` § "THE WORK QUEUE" (at the top of the file) — what to do next and
 in what order, re-validated against the compiler rather than inherited from the
 sections below it. It carries the user's standing ordering rule (memory first,

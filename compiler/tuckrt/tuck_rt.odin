@@ -670,8 +670,16 @@ tuckTypeOwns :: proc($T: typeid) -> bool {
 	return owns
 }
 
+// A bounds PRECONDITION broken: the same words as Nim and D, exit 1, and a
+// real check — `assert` gave 132 and is gone under -disable-assert (audit Y3).
+tuckOutOfBounds :: proc "contextless" (index: int, length: int, op: string) -> ! {
+	context = runtime.default_context()
+	fmt.eprintln(op, ": index ", index, " out of bounds for seq of length ", length, sep = "")
+	os.exit(1)
+}
+
 tuckAt_slice :: proc(items: []$T, index: int) -> T {
-	assert(index >= 0 && index < len(items), "at: index out of bounds")
+	if index < 0 || index >= len(items) { tuckOutOfBounds(index, len(items), "at") }
 	return items[index]
 }
 
@@ -686,7 +694,7 @@ at :: proc{tuckAt_slice, tuckAt_dyn}
 tuckSetAt_slice :: proc(items: []$T, index: int, value: T) {
 	// The container owns its elements (rule G): the one replaced is dropped.
 	// `value` is evaluated before the call, so it may read the old element.
-	assert(index >= 0 && index < len(items), "setAt: index out of bounds")
+	if index < 0 || index >= len(items) { tuckOutOfBounds(index, len(items), "setAt") }
 	old := items[index]
 	items[index] = value
 	tuckDrop(old)
@@ -709,12 +717,12 @@ setAt :: proc{tuckSetAt_slice, tuckSetAt_dyn}
 // lowers to; core.array's `at`/`setAt` must be `extern` declarations bound
 // to these, with no Tuck body to recurse in — same shape, one container over.
 tuckArrayAt :: proc(items: [$N]$T, index: int) -> T {
-	assert(index >= 0 && index < N, "at: index out of bounds")
+	if index < 0 || index >= N { tuckOutOfBounds(index, N, "at") }
 	return items[index]
 }
 
 tuckArraySetAt :: proc(items: ^[$N]$T, index: int, value: T) {
-	assert(index >= 0 && index < N, "setAt: index out of bounds")
+	if index < 0 || index >= N { tuckOutOfBounds(index, N, "setAt") }
 	old := items[index]
 	items[index] = value
 	tuckDrop(old)
@@ -745,7 +753,7 @@ fromBytes :: proc(bytes: [dynamic]u8) -> string {
 }
 
 byteAt :: proc(t: string, index: int) -> u8 {
-	assert(index >= 0 && index < len(t), "byteAt: index out of bounds")
+	if index < 0 || index >= len(t) { tuckOutOfBounds(index, len(t), "byteAt") }
 	return t[index]
 }
 
@@ -771,7 +779,7 @@ push :: proc(items: [dynamic]$T, value: T) -> [dynamic]T {
 }
 
 charAt :: proc(s: string, index: int) -> string {
-	assert(index >= 0 && index < len(s), "charAt: index out of bounds")
+	if index < 0 || index >= len(s) { tuckOutOfBounds(index, len(s), "charAt") }
 	return strings.clone(string([]u8{s[index]}))
 }
 
@@ -791,7 +799,7 @@ splitLines :: proc(s: string) -> [dynamic]string {
 }
 
 ord :: proc(ch: string) -> int {
-	assert(len(ch) > 0, "ord: index 0 out of bounds for seq of length 0")
+	if len(ch) == 0 { tuckOutOfBounds(0, 0, "ord") }
 	return int(ch[0])
 }
 
@@ -812,13 +820,42 @@ OvPolicy :: enum { Trap, Wrap, Sat }
 // Contextless, because arithmetic is emitted inside callbacks with a foreign
 // calling convention (a `"c"` proc has no Odin `context`); the trap makes the
 // context it needs itself.
-tuckOverflowTrap :: proc "contextless" (ty: typeid, op: string) {
+tuckOverflowTrap :: proc "contextless" (ty: string, op: string) {
 	context = runtime.default_context()
 	fmt.eprintln("Arithmetic overflow on ", ty, ": ", op, sep = "")
 	os.exit(1)
 }
 
-tuckArith :: proc "contextless" (a, b: $T, $op: OvOp, $pol: OvPolicy) -> T
+// Integer `/i` or `%` by zero stops at the site with exit 1, as an overflow
+// trap does, on every backend (audit Y2: Odin died on SIGILL, exit 132).
+tuckDivTrap :: proc "contextless" (ty: string, op: string) {
+	context = runtime.default_context()
+	fmt.eprintln("Division by zero on ", ty, ": ", op, sep = "")
+	os.exit(1)
+}
+
+// `a /i b`, truncating; the minimum divided by -1 faults on the host, so it
+// stops as an overflow.
+tuckDivI :: #force_inline proc "contextless" (a, b: $T, tn: string) -> T
+	where intrinsics.type_is_integer(T) {
+	if b == 0 { tuckDivTrap(tn, "/i") }
+	when intrinsics.type_is_unsigned(T) == false {
+		if b == -1 && a == min(T) { tuckOverflowTrap(tn, "/i") }
+	}
+	return a / b
+}
+
+// `a % b`; the minimum mod -1 is 0, which the host's divide faults on.
+tuckModI :: #force_inline proc "contextless" (a, b: $T, tn: string) -> T
+	where intrinsics.type_is_integer(T) {
+	if b == 0 { tuckDivTrap(tn, "%") }
+	when intrinsics.type_is_unsigned(T) == false {
+		if b == -1 { return 0 }
+	}
+	return a % b
+}
+
+tuckArith :: proc "contextless" (a, b: $T, $op: OvOp, $pol: OvPolicy, tn: string) -> T
 	where intrinsics.type_is_integer(T) {
 	r: T
 	over: bool
@@ -833,7 +870,7 @@ tuckArith :: proc "contextless" (a, b: $T, $op: OvOp, $pol: OvPolicy) -> T
 		when pol == .Trap {
 			opname := "*"
 			when op == .Add { opname = "+" } else when op == .Sub { opname = "-" }
-			tuckOverflowTrap(T, opname)
+			tuckOverflowTrap(tn, opname)
 		} else when pol == .Sat {
 			// Which end the EXACT result is past.
 			when intrinsics.type_is_unsigned(T) {

@@ -32,10 +32,34 @@ proc optOf(res: Resolution, t: Type, inner: Type, e: Expr,
              Expr(span: t.span, kind: exkAbsent, optInner: inner)
   discard res.typed(result, t)
 
+proc wrapIfPlain(res: Resolution, place: Type, v: Expr): Expr
+
+proc wrapTail(res: Resolution, place: Type, branch: var Expr) =
+  ## One branch of a value-producing `if`/`match`: its value — the last
+  ## statement of a block — wrapped where it is plain.
+  if branch == nil: return
+  if branch.kind == exkBlock and branch.stmts.len > 0:
+    branch.stmts[^1] = res.wrapIfPlain(place, branch.stmts[^1])
+  else:
+    branch = res.wrapIfPlain(place, branch)
+
 proc wrapIfPlain(res: Resolution, place: Type, v: Expr): Expr =
   ## `v` as the `?T` that `place` holds: wrapped when it is a plain `T`,
   ## untouched when it is already a carrier (or its type is unknown).
+  ##
+  ## An `if` or `match` VALUE is wrapped branch by branch: wrapped whole,
+  ## `if c: 5 else: none` put the `none` inside the wrap and no backend built
+  ## it (audit Y13).
   if v == nil or not absenceIsDeclared(place): return v
+  if v.kind == exkIf:
+    res.wrapTail(place, v.thenBranch)
+    res.wrapTail(place, v.elseBranch)
+    discard res.typed(v, place)
+    return v
+  if v.kind == exkMatch:
+    for arm in v.arms.mitems: res.wrapTail(place, arm.body)
+    discard res.typed(v, place)
+    return v
   let vt = res.typeFor(v)
   if vt == nil or isWrappedType(vt) or v.kind in {exkWrapOk, exkAbsent}:
     return v

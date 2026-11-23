@@ -15,6 +15,7 @@ import path
 import files
 import regex
 import fs
+import host
 
 errors [policy: strict]  # finished: handles its own errors (ruling 2026-11-22)
 
@@ -111,10 +112,12 @@ fn checkPatterns({dir: str}) -> int [io: fs, error: FsError]:
   return 0
 
 fn main() -> int [io: fs, error: FsError]:
-  let dir = "/tmp/tuck-glob-check"
-  let made = {path: dir} makeDir
+  # A folder of its own: the checks of one module run on three backends at
+  # once, and a fixed path had each run set up and remove the others' files.
+  let made = {prefix: "tuck-glob-check"} makeTempDir
   if not made.ok:
     return 90
+  let dir = made.value.path
   let s = {dir: dir} setup
   if not s.ok:
     return 91

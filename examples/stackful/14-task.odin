@@ -17,6 +17,7 @@ tuckˑfnˑparse :: proc(p0: $T0) -> tuckˑmodˑshapes_14_task.TRec_feed(tuckˑty
 
 
 tuckˑtaskˑfetchFeed :: proc(url: string) -> rt.TuckResult(tuckˑmodˑshapes_14_task.TRec_feed(tuckˑtypeˑFeed)) {
+  defer rt.tuckDrop(url)
   tuckˑvˑresp := tuckˑmodˑhttp.tuckˑfnˑget(url)
   defer rt.tuckDrop(tuckˑvˑresp)
   if (tuckˑvˑresp.status == .Ok) {

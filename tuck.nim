@@ -90,6 +90,7 @@ import compiler/proptest
 import compiler/verbose
 import compiler/backend_prepare
 import compiler/resolve_refs
+import compiler/name_fold   # M17: names Nim folds to one
 
 const CommandHelp = {
   "lex": """tuck lex file.tuck
@@ -675,82 +676,80 @@ proc loadOrDie(path: string, needBodies: bool):
   # sub-step is just naming what came back.
   for lm in result[0]: vSubNote("loaded " & lm.name)
 
-proc addLoadedEffects(result: var Table[string, seq[EffectMarker]],
-                      loaded: seq[LoadedModule]) =
-  ## Adds the declared effects of every fn in the modules loaded from source,
-  ## under both its bare and its `module::fn` name.
-  for lm in loaded:
-    for d in lm.m.decls:
-      if d == nil: continue
-      # An `extern:` block's fns are the effects that matter most (`printLine`
-      # is `[io]` there and nowhere else), and they were never recorded, so a
-      # pure fn calling an imported extern checked clean.
-      if d.kind in {dkExtern, dkPending}:
-        for mem in d.mixinMembers:
-          if mem != nil and mem.kind == dkFn:
-            result[mem.name] = mem.fnEffects
-            result[lm.name & "::" & mem.name] = mem.fnEffects
-        continue
-      if d.kind != dkFn: continue
-      result[d.name] = d.fnEffects
-      result[lm.name & "::" & d.name] = d.fnEffects
+type
+  Exported = object
+    ## What one module's own top-level fns declare, by bare name: the facts
+    ## an importer's effect check needs about a callee it cannot read.
+    effects: Table[string, seq[EffectMarker]]
+    resources: Table[string, seq[string]]
+    pending: HashSet[string]
 
-proc addSigOnlyEffects(result: var Table[string, seq[EffectMarker]],
-                       sigOnly: Table[string, IndexEntry]) =
-  ## Adds the effects of every fn in the modules known only from the cached
-  ## signature index, under both names, as `addLoadedEffects` does for source.
-  for modName, entry in sigOnly:
-    for si in entry.sigs:
-      if "::" in si.name: continue
-      result[si.name] = si.effects
-      result[modName & "::" & si.name] = si.effects
+  ImportedView = object
+    ## The same facts as ONE importing module sees them: qualified for each
+    ## module it imports, bare where the checker gave that import the name.
+    effects: Table[string, seq[EffectMarker]]
+    resources: Table[string, seq[string]]
+    pending: HashSet[string]
 
-proc importedEffects(loaded: seq[LoadedModule],
-                     sigOnly: Table[string, IndexEntry]):
-                       Table[string, seq[EffectMarker]] =
-  ## Effects of everything visible from OUTSIDE the module being checked, from
-  ## both places an import can come from: modules loaded with bodies, and
-  ## modules resolved to signatures only from the cached index. Keyed bare and
-  ## qualified, because a call may name either (`readFile` or `fs::readFile`).
-  addLoadedEffects(result, loaded)
-  addSigOnlyEffects(result, sigOnly)
+proc exportedOf(m: Module): Exported =
+  ## From source. An `extern:` block's fns are the effects that matter most
+  ## (`printLine` is `[io]` there and nowhere else); a `pending:` stub's
+  ## markers propagate as capabilities, but a RESTRICTED caller ignores them:
+  ## an unwritten body is not a claim either way.
+  for d in m.decls:
+    if d == nil: continue
+    if d.kind in {dkExtern, dkPending}:
+      for mem in d.mixinMembers:
+        if mem == nil or mem.kind != dkFn: continue
+        result.effects[mem.name] = mem.fnEffects
+        if mem.fnResourceKinds.len > 0: result.resources[mem.name] = mem.fnResourceKinds
+        if d.kind == dkPending: result.pending.incl mem.name
+    elif d.kind == dkFn:
+      result.effects[d.name] = d.fnEffects
+      if d.fnResourceKinds.len > 0: result.resources[d.name] = d.fnResourceKinds
 
-proc importedPendingNames(loaded: seq[LoadedModule]): HashSet[string] =
-  ## Fns declared in a `pending:` block of any loaded module. Their markers still
-  ## propagate as capabilities, but a RESTRICTED caller ignores them: an unwritten
-  ## body is not a claim either way.
-  for lm in loaded:
-    for d in lm.m.decls:
-      if d != nil and d.kind == dkPending:
-        for mem in d.mixinMembers:
-          if mem != nil and mem.kind == dkFn:
-            result.incl(mem.name)
-            result.incl(lm.name & "::" & mem.name)
+proc exportedOf(entry: IndexEntry): Exported =
+  ## From the cached signature index, for a module not loaded from source.
+  for si in entry.sigs:
+    if "::" in si.name: continue
+    result.effects[si.name] = si.effects
+    if si.resources.len > 0: result.resources[si.name] = si.resources
 
-proc importedResources(loaded: seq[LoadedModule],
-                       sigOnly: Table[string, IndexEntry]):
-                         Table[string, seq[string]] =
-  ## The §7.4 twin of importedEffects, keyed identically and filled from the
-  ## same two places. Its own table rather than a widened value type because
-  ## `imported` is a public parameter of verifyModuleEffects that several
-  ## callers pass — and because the two answers genuinely are independent: a
-  ## module may export an [io] fn that acquires nothing, and vice versa.
-  for lm in loaded:
-    for d in lm.m.decls:
-      if d == nil or d.kind != dkFn or d.fnResourceKinds.len == 0: continue
-      result[d.name] = d.fnResourceKinds
-      result[lm.name & "::" & d.name] = d.fnResourceKinds
-  for modName, entry in sigOnly:
-    for si in entry.sigs:
-      if "::" in si.name or si.resources.len == 0: continue
-      result[si.name] = si.resources
-      result[modName & "::" & si.name] = si.resources
+proc programExports(loaded: seq[LoadedModule],
+                    sigOnly: Table[string, IndexEntry]): Table[string, Exported] =
+  for modName, entry in sigOnly: result[modName] = exportedOf(entry)
+  for lm in loaded: result[lm.name] = exportedOf(lm.m)
+
+proc importedView(lm: LoadedModule, exports: Table[string, Exported]): ImportedView =
+  ## What `lm`'s imports declare, keyed as `lm` may name them. SCOPED: only
+  ## the modules `lm` imports, each fn under `mod::fn`, and under its bare
+  ## name only where the checker gave that import the name
+  ## (`typecheck.moduleScopes`). It was one table for the whole program,
+  ## keyed by bare name, so whichever module declared a name last answered
+  ## for every caller: a `[no_alloc]` fn checked against some other module's
+  ## `work` (audit E2/M4).
+  let scope = moduleScopes.getOrDefault(lm.name)
+  for imp in scope.imports:
+    if imp notin exports: continue
+    let ex = exports[imp]
+    for name, effects in ex.effects:
+      let bare = scope.bareOwner.getOrDefault(name) == imp
+      result.effects[imp & "::" & name] = effects
+      if bare: result.effects[name] = effects
+      if name in ex.resources:
+        result.resources[imp & "::" & name] = ex.resources[name]
+        if bare: result.resources[name] = ex.resources[name]
+      if name in ex.pending:
+        result.pending.incl imp & "::" & name
+        if bare: result.pending.incl name
+  # its own `pending:` stubs, which it names bare
+  for name in exports.getOrDefault(lm.name).pending: result.pending.incl name
 
 proc declaredResourceKinds(loaded: seq[LoadedModule]): seq[string] =
   ## Every resource kind the PROGRAM declares. Whole-program because §7.4's
   ## kinds are, and gathered here rather than inside the effect pass because
   ## that pass runs once per module and this answer is the same for all of
-  ## them — the same shape as importedEffects above.
+  ## them.
   for lm in loaded:
     for d in lm.m.decls:
       if d == nil or d.kind != dkResources: continue
@@ -782,10 +781,12 @@ proc typecheckOnly(path: string, loaded: var seq[LoadedModule],
 
 proc verifyEffectsAssertions(loaded: seq[LoadedModule]) =
   ## `--verify-stages` after the effect pass: every async-marked call site must
-  ## agree with its resolved callee's `[io]` marker.
+  ## agree with its resolved callee's `[io]` marker, and the entry point's full
+  ## budget went to the entry module's `main` alone.
   var loadedMods: seq[Module]
   for lm in loaded: loadedMods.add(lm.m)
   assertAsyncEffectsConsistent(loadedMods)
+  assertMainBudgetOnce(mainBudgetGrants, nameOf(loaded[^1].m.id))
 
 proc checkOrDie(path: string, loaded: var seq[LoadedModule],
                 sigOnly: Table[string, IndexEntry],
@@ -823,20 +824,27 @@ proc checkOrDie(path: string, loaded: var seq[LoadedModule],
     assertCallEdges(semLayer, checkedMods)
     assertNoMissingTypes(checkedMods)
     assertSsaWellFormed(semLayer, checkedMods)
-  let imported = importedEffects(loaded, sigOnly)
-  let importedRes = importedResources(loaded, sigOnly)
+  let exports = programExports(loaded, sigOnly)
   let programKinds = declaredResourceKinds(loaded)
-  let pendingNames = importedPendingNames(loaded)
   var groups = initTable[string, Table[string, Demands]]()
   for lm in loaded:
     for name, reqs in groupRequirements(lm.m.decls): groups[name] = reqs
   let t0 = vBegin(psVerifyEffects)
   defer: vEnd(psVerifyEffects, t0)
+  mainBudgetGrants.setLen(0)
   try:
     for lm in loaded:
       let ts = epochTime()
-      verifyModuleEffects(lm.m, imported, importedRes, programKinds, pendingNames,
-                          groups)
+      let view = importedView(lm, exports)
+      try:
+        verifyModuleEffects(lm.m, view.effects, view.resources, programKinds,
+                            view.pending, groups,
+                            entry = lm.path == loaded[^1].path)
+      except SemanticError as err:
+        # The error is in THIS module's source: say so. It carried only
+        # line:col, and was printed against the entry file's path.
+        if ".tuck:" notin err.msg: dieSemanticError(lm.path, err)
+        raise
       vSub(lm.name, ts)
     # Who may touch a slab (TK-AC08/09): whole-program, after typecheck
     # because it reads the checker's stamps (slab ops, slab derefs, callee
@@ -1012,6 +1020,9 @@ proc checkProgram(path: string, needBodies = false,
     let t0 = vBegin(psResolveDeclRefs)
     try:
       resolveDeclRefs(result)
+      for lm in result: checkNameFolding(lm.m)   # M17: one name to Nim
+      checkModuleFolding(result.mapIt(it.m))
+      checkGeneratedNames(result)                # M23: `<Pool>Handle` and kin
     except SemanticError as err:
       dieSemanticError(path, err)
     vSubNote($result.len & " module(s)")

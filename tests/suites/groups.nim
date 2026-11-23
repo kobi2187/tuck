@@ -268,9 +268,11 @@ fn main() -> int:
   # E is mentioned by no parameter, so no host language can infer it. Each
   # backend is handed the solved arguments in its own spelling.
   t.emits "Nim gets explicit type arguments", r"tuckˑfnˑfirstOf\[tuckˑtypeˑRow, int\]"
-  t.emitsOdin "Odin passes the typeid it declared", r"tuckˑfnˑfirstOf\(int, tuckˑvˑr\)"
+  # The bound's providers follow the solved arguments (M7: a group's
+  # requirement is handed over, not found by name where the verb is written).
+  t.emitsOdin "Odin passes the typeid it declared", r"tuckˑfnˑfirstOf\(int, tuckˑvˑr[,)]"
   t.emitsD "D gets explicit template arguments",
-           r"tuckˑfnˑfirstOf!\(tuckˑtypeˑRow, long\)"
+           r"tuckˑfnˑfirstOf!\(tuckˑtypeˑRow, long[,)]"
   t.hostBuilds "...and every backend builds it"
   t.runs "...and runs", 0
 

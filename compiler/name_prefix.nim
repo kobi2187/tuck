@@ -48,6 +48,8 @@ type NameKind* = enum
   nkObject = "object"
   nkActor = "actor"
   nkFnSig = "fnsig"
+  nkInterface = "iface"    ## an interface two modules declare (`a::Shape`):
+                           ## only then is it renamed (mangle.isManglable)
   nkConst = "const"
   nkPool = "pool"
   nkSlab = "slab"
@@ -74,6 +76,14 @@ proc isMangledName*(name: string): bool =
   ## Already in its output spelling — the pass must be idempotent, since
   ## each backend lowers its own deep copy and re-runs it.
   name.startsWith(MangledPrefix)
+
+proc writtenSpelling*(text: string): string =
+  ## `text` with every mangled name in it spelled as the user wrote it:
+  ## `tuckˑtypeˑTemp` is `Temp`, `tuckˑtypeˑcliˑEntry` is `cli::Entry`. For a
+  ## message a program prints, which must read the same on every backend.
+  result = text
+  for k in NameKind: result = result.replace(MangledPrefix & $k & KindSeparator, "")
+  result = result.replace(KindSeparator, "::")
 
 proc joinedName*(owner, part: string): string =
   ## A name the compiler derives from two others — an object's member fn is
@@ -131,6 +141,7 @@ proc declKind*(d: Decl): NameKind =
   of dkObject: nkObject
   of dkActor: nkActor
   of dkFnSig: nkFnSig
+  of dkInterface: nkInterface
   of dkConst: nkConst
   of dkPool: nkPool
   of dkSlab: nkSlab
@@ -138,6 +149,6 @@ proc declKind*(d: Decl): NameKind =
   of dkRegister: nkRegister
   of dkRegistry: nkRegistry
   of dkMixin, dkExtern, dkPending, dkExpr, dkStaticAssert, dkErrors,
-     dkResources, dkImport, dkSelect, dkSatisfies, dkInterface, dkGroup,
+     dkResources, dkImport, dkSelect, dkSatisfies, dkGroup,
      dkPublic, dkWhen:
     raiseAssert "name_prefix: a " & $d.kind & " declares no emitted name"

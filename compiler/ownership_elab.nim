@@ -98,6 +98,15 @@ proc consumesWhy*(res: Resolution, m: Module, d: Decl, pname: string,
   ## Rule P with its reason: the first final read of `pname` that is a sink,
   ## named, or "" when `d` only borrows it. Not memoised; `consumes` is.
   if d.fnBody == nil: return ""
+  # A task runs after its caller has moved on, so it OWNS what it is given
+  # (spec §9.2): a borrow of the caller's buffer was read while the caller
+  # kept changing it (audit O6 — Nim crashed, Odin and D summed garbage).
+  if d.kind == dkTask: return "a task, which owns its parameters"
+  # A group provider borrows: its callers through the group cannot see it
+  # (resolution.groupRequirements). Keeping `self` made `keyOf` move
+  # `self.s` out of a value the generic caller still owned — a double free
+  # on Nim, which calls it by name.
+  if writtenName(d) in res.groupRequirements: return ""
   for pu in res.placeUsesOf(d.fnBody):
     if rootOf(pu.path) != pname or not res.isLastUse(pu.read): continue
     if not res.owning(m, res.typeFor(pu.read)): continue   # carries nothing
@@ -674,14 +683,23 @@ proc owns*(ps: Places, place: string): bool =
   ## Does the body own this place (a local, or a consuming parameter)?
   place in ps.owned
 
+proc heldByAnother(v: Expr): bool =
+  ## A place some other value keeps, read as it is: an element (rule U), a
+  ## slab's cell, a slab `get`, or another actor's field (`Grow.name`). That
+  ## last one was taken as a temporary and MOVED the actor's string into the
+  ## local, so both freed it (audit C1, an Odin segfault). Whether such a read
+  ## may cross threads at all is a separate question (C2), waiting on a ruling.
+  v.kind in {exkBracket, exkSlabCell} or
+    (v.kind == exkSlabOp and v.slabOp == soGet) or
+    (v.kind == exkField and v.receiver != nil and v.receiver.kind == exkActorRef)
+
 proc readsElement*(res: Resolution, m: Module, v: Expr): bool =
   ## A read of something another value holds, not a fresh value: `items[i]`
   ## (rule U: an element is never moved out of its container), a slab's cell
   ## (`Lists.get {r: l}`: the slab keeps it), or a call
   ## to a body-less callee that declares its result a `[view: x]`. A sink of
   ## one copies it.
-  if v.kind in {exkBracket, exkSlabCell}: return true   # a slab's cell too
-  if v.kind == exkSlabOp and v.slabOp == soGet: return true
+  if heldByAnother(v): return true
   if v.kind == exkField and not res.hasCall(v) and v.receiver != nil:
     return res.readsElement(m, v.receiver)  # `items[i].key`: part of one
   let call = if v.kind == exkCall: v elif res.hasCall(v): res.call(v) else: nil
