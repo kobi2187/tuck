@@ -1,0 +1,51 @@
+# A UART receive interrupt on metal (bare-metal roadmap 2.3): bytes typed on
+# QEMU's serial port reach an actor through a bound line.
+#
+# lm3s6965evb's UART0 is a PL011 with its FIFO off, so each byte raises RXIS
+# and reading DR clears it. onUart0 reads the byte and raises a [stream]
+# event; the Line actor gathers bytes until a newline. `tuck sim` is run with
+# TUCK_SIM_INPUT="hello\n": five letters, summing to 532.
+
+import scheduler
+
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+registry Serial:
+  | Rx({b: u8})  [stream, overflow: drop_newest]
+
+register UART0_DR at 0x4000C000:
+  DATA: bits 0..7 [read]
+
+register UART0_IM at 0x4000C038:
+  RXIM: bit 4 [read, write]
+
+fn onUart0() [irq, irq_safe, no_alloc]:
+  let b = UART0_DR.DATA             # reading DR clears the receive interrupt
+  Serial.raise Rx {b: b ~u8}
+
+bind UART0 -> onUart0 [priority: 2, queue: 16]
+
+actor Line [queue: 16]:
+  count: int = 0
+  sum: int = 0
+  done: bool = false
+
+  on Serial.Rx({b: u8}):
+    if b == 10 ~u8:
+      done = true
+    elif not done:
+      count += 1
+      sum += b ^int
+
+fn ended() -> bool:
+  return Line.done
+
+fn main() -> int:
+  UART0_IM.RXIM = true
+  Line.waitUntil {pred: :ended}
+  if Line.count != 5 or Line.sum != 532:
+    {text: "UART_BAD\n"} say
+    return 1
+  {text: "UART_RX_OK\n"} say
+  return 0

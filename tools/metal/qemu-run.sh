@@ -95,11 +95,14 @@ elif [ "${TUCK_VIRTUAL_TIME:-}" = "1" ]; then
 fi
 
 echo "=== qemu run (10s, board=$BOARD, ${QEMU_EXTRA:-realtime}) ==="
-timeout 10 qemu-system-arm -M "$MACHINE" \
+# TUCK_SIM_INPUT: bytes typed on the board's first serial port (printf %b
+# escapes, so "hello\\n"). QEMU reads them only as fast as the UART takes
+# them, so none is lost before the program enables its receive interrupt.
+printf '%b' "${TUCK_SIM_INPUT:-}" | timeout 10 qemu-system-arm -M "$MACHINE" \
   $QEMU_EXTRA \
   -semihosting-config enable=on,target=native \
   -nographic -kernel "$ELF" 2>&1 | head -40
-QEMU_RC=${PIPESTATUS[0]}
+QEMU_RC=${PIPESTATUS[1]}   # [0] is the printf feeding the serial port
 # The board exits QEMU through semihosting with main's return value (0 = the
 # program returned 0). A fault exits 1 after printing its FAULT line. 124 is
 # `timeout`: still running after the window — never a pass for a test.

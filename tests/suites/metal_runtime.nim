@@ -11,15 +11,18 @@ import std/[os, strutils]
 import ../harness
 
 proc metal(t: var T, name, stage, slot: string, wantRc: int,
-           wants: seq[string], extra: seq[string] = @[], board = "") =
+           wants: seq[string], extra: seq[string] = @[], board = "",
+           input = "") =
   ## Boot `tests/metal/<stage>.tuck` under QEMU via `tuck sim` and
   ## assert the exit status and every text in `wants`. `extra` is passed to
-  ## `tuck sim`; `board` picks a board other than the default.
+  ## `tuck sim`; `board` picks a board other than the default; `input` is
+  ## typed on the board's serial port (printf `%b` escapes).
   let exe = t.root / "tuck"
   let src = t.root / "tests" / "metal" / (stage & ".tuck")
   var argv = @["env", "TUCK_OUT_DIR=" & getTempDir() / ("tuck-metal-" & slot),
                "TUCK_SKIP_TUCK_BUILD=1"]
   if board != "": argv.add "TUCK_BOARD=" & board
+  if input != "": argv.add "TUCK_SIM_INPUT=" & input
   argv.add @[exe, "sim", src, "--tick:4"] & extra
   let idx = t.needCmd(argv, vRun)
   let metalReady = findExe("qemu-system-arm") != "" and
@@ -107,6 +110,15 @@ fn main() -> int:
   t.metal("a line the board does not have is refused with its list (TK-BD06)",
           "bind_irq", "bind-unknown", 1,
           @["TK-BD06", "has no interrupt line 'EXTI0'", "GPIOA"],
+          board = "lm3s6965evb")
+  # A UART receive interrupt (bare-metal roadmap 2.3): bytes typed on QEMU's
+  # serial port reach an actor through `bind UART0`. With nothing typed the
+  # program is still waiting when the window closes: 124, never a pass.
+  t.metal("bytes typed on the serial port reach an actor via the UART0 line",
+          "uart_rx", "uart-rx", 0, @["UART_RX_OK"], board = "lm3s6965evb",
+          input = "hello\\n")
+  t.metal("with nothing typed the UART program is still waiting (124)",
+          "uart_rx", "uart-rx-idle", 124, @["qemu exit: 124"],
           board = "lm3s6965evb")
   # DMA buffers (bare-metal roadmap 2.0a): an `at` buffer IS the memory at
   # its address (a `register` at the same address reads what was stored), a
