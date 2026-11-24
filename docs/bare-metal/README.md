@@ -69,6 +69,7 @@ window closed**, which is never a pass.
 | `actor_mailbox`, `actor_ring` | actors on metal: a ring mailbox per actor, a full ring that waits, one actor sending to another | QEMU and host |
 | `bind_irq`, `bind_systick` | `bind`: a pended line through the generated vector table, events delivered after the interrupt; a SysTick event loop sleeping between ticks | QEMU |
 | `buffer_dma`, `buffer_stack` | `buffer`: `.address` is the memory a `register` at that address reads; a placed buffer lands word-aligned in RAM; an `at` buffer in the stack reserve fails the link | QEMU |
+| `pool_dma`, `pool_stale` | `Pool.address`: each cell a word-aligned RAM address, one block apart; a stale handle panics `TUCK POOL:` | QEMU |
 | `devices/irrigation`, `devices/recorder`, `devices/drone` | three programs on real parts (`PROGRAMS-2026-11-22.md`); the first two boot and exit 1 with no device on the bus | QEMU (build) and host (simulations) |
 | `two_tasks`, `task_await`, `task_fire_forget` | stackless tasks on metal: interleave, await, fire-and-forget | QEMU |
 | `irq_marker`, `critical_shared`, `isr_handoff` | `[irq]`, `critical:`, the one-word ISR hand-off (these call their handler directly; `bind_irq` takes a real one) | QEMU |

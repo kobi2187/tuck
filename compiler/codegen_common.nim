@@ -110,6 +110,7 @@ proc poolOpProc*(op: PoolOpKind): string =
   of poRead: "tuckPoolRead"
   of poWrite: "tuckPoolWrite"
   of poAddr: "tuckPoolAddr"
+  of poAddress: "tuckPoolAddress"
 
 proc slabCellValue*(slab, r: string, rt = ""): string =
   ## The value in the cell `r` names, through the runtime's checked

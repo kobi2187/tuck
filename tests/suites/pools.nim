@@ -10,6 +10,8 @@
 ##   * `Cells.addr {h}` gives a cell's bytes to an extern, and only to one
 ##     (TK-TY08); a pool whose element carries an invariant has no `addr`
 ##     (TK-TY31), since memory an extern fills cannot be checked.
+##   * `Cells.address {h}` gives the cell's address as a u32 for a DMA
+##     register (2026-11-24), with the same TK-TY31 rule.
 ##
 ## Every runtime fact is asserted on all three backends (`hostRuns`): the
 ## pool is a runtime structure in each, three separate implementations of
@@ -280,5 +282,52 @@ fn main() -> int:
   return 0
 """
   t.badCheck "a pool whose element has an invariant has no addr", "TK-TY31"
+
+  # --- address: a cell's address as a NUMBER, for a DMA register -----------
+  # (owner ruling 2026-11-24). `addr` stays for externs; `address` is the
+  # same cell as a u32 a register takes, as `buffer.address` is, so a pool
+  # of blocks is a set of DMA targets written wholly in Tuck.
+  t.src """
+pool Blocks = Array[512, u8] [count: 2]
+
+fn main() -> int:
+  let a = Blocks.acquire
+  let b = Blocks.acquire
+  if not a.ok:
+    return 1
+  if not b.ok:
+    return 1
+  let x = Blocks.address {h: a.value}
+  let y = Blocks.address {h: b.value}
+  if x % 4 != 0 or y - x != 512 ~u32:
+    return 2
+  let got = Blocks.read {h: a.value}
+  if not got.ok:
+    return 3
+  Blocks.release {h: a.value}
+  Blocks.release {h: b.value}
+  return 7
+"""
+  t.okCheck "a cell's address is a u32 any code may hold"
+  t.emits "Nim: address goes through the runtime", "tuckPoolAddress\\("
+  t.hostRuns "cells are 512 apart, aligned, and present once handed out", 7
+
+  t.src """
+type Live:
+  n: int
+  invariant:
+    n > 0
+
+pool Slots = Live [count: 2]
+
+fn main() -> int:
+  let a = Slots.acquire
+  if not a.ok:
+    return 90
+  let x = Slots.address {h: a.value}
+  return 0
+"""
+  t.badCheck "a pool whose element has an invariant has no address",
+             "TK-TY31.*has no `address`"
 
   t.finish()

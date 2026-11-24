@@ -1561,6 +1561,16 @@ ubyte* tuckPoolAddr(T, size_t Count)(ref ObjectPool!(T, Count) pool, PoolHandle 
     return cast(ubyte*) &pool.storage[i];
 }
 
+/// Pool.address {h} (owner ruling 2026-11-24): the cell's address as a
+/// NUMBER for a DMA register, never a pointer. Present from here on, as
+/// after addr.
+uint tuckPoolAddress(T, size_t Count)(ref ObjectPool!(T, Count) pool, PoolHandle h)
+{
+    const i = heldCell(pool, h, "address");
+    pool.state[i] = CellState.present;
+    return cast(uint) cast(size_t) &pool.storage[i];
+}
+
 // ---------------------------------------------------------------------------
 // The slab (thoughts/shared/plans/2026-09-29-slab-proposal.md). The Nim twin
 // (compiler/tuck_rt.nim) carries the reasoning; this mirrors it — three

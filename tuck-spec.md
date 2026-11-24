@@ -1777,6 +1777,11 @@ another's operations. The cell is reached through the pool:
   pointer Tuck code makes (DMA, an ISR). Anywhere else is TK-TY08; a pool
   whose element carries an invariant has no `addr` (TK-TY31), since memory an
   extern fills is never checked. The cell is present from then on.
+- `Pool.address {h}` → `u32`, the cell's address as a NUMBER for a DMA
+  register, as `buffer.address` is (ruled 2026-11-24): never a pointer, so
+  any code may hold it; the same TK-TY31 rule, a barrier first, and the cell
+  is present from then on. A pool of `Array[512, u8]` is a set of DMA
+  targets, each acquired for one transfer and released after it.
 - `Pool.release {h}`.
 
 A handle whose tenancy has ended stops the program with `TUCK POOL:` and exit

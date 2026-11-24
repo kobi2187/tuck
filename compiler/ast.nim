@@ -577,6 +577,7 @@ type
     poRead     ## `?T` — the cell's value, absent until something wrote it
     poWrite    ## store a value; the cell is present
     poAddr     ## the cell's bytes as a `Buf`, for an extern to fill
+    poAddress  ## the cell's address as a u32, for a DMA register (2026-11-24)
 
   CombKind* = enum
     ## The record combinators. One family, one shape — a receiver and a struct

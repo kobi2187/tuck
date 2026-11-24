@@ -538,10 +538,28 @@ proc tfwd*[T](status: TuckStatus, err: uint16): TuckResult[T] {.inline.} =
   ## `?` propagation: forward failure OR absence unchanged (status-preserving)
   TuckResult[T](status: status, err: err)
 
+when defined(freestanding):
+  proc tuckBoardPuts(s: cstring) {.importc: "tuck_board_puts".}
+
+proc tuckSay*(msg: string) =
+  ## One line of runtime diagnostics: stderr on a host, the board's console
+  ## on metal, which has no stderr (a pool, slab or invariant failure would
+  ## not even link for a board while these wrote to it).
+  when defined(freestanding): tuckBoardPuts(cstring(msg & "\n"))
+  else: stderr.writeLine(msg)
+
+proc tuckStop*(msg: string) {.noreturn.} =
+  ## A runtime check that stops the program: exit 1 with `msg` on a host,
+  ## `PANIC: msg` and the fault recorder on metal.
+  when defined(freestanding): tuckFatal(cstring(msg))
+  else:
+    stderr.writeLine(msg)
+    quit(1)
+
 proc tuckReportUnhandled*(code: uint16, site: string) =
   ## The default `errors` handler: reports a dropped error's code and call
   ## site on stderr and lets the program continue.
-  stderr.writeLine("TUCK UNHANDLED: error " & $code & " at " & site)
+  tuckSay("TUCK UNHANDLED: error " & $code & " at " & site)
 
 type TuckUnhandledProc* = proc (code: uint16, site: string) {.nimcall, gcsafe.}
 var tuckUnhandledHook*: TuckUnhandledProc
@@ -580,8 +598,7 @@ proc tuckDepthExceeded*(name: string, limit: int) {.noreturn.} =
   ## A `[depth: N]` fn was entered more than N levels deep. Same exit status
   ## as an invariant violation, and for the same reason it is real code, not
   ## an `assert`: it must survive a release build.
-  stderr.writeLine("Recursion depth exceeded in " & name & ": limit " & $limit)
-  quit(1)
+  tuckStop("Recursion depth exceeded in " & name & ": limit " & $limit)
 
 proc tuckInvariantFailed*(cond, typeName: string) =
   ## An invariant violation (spec 4.7) — abort naming the condition.
@@ -592,8 +609,7 @@ proc tuckInvariantFailed*(cond, typeName: string) =
   ## says invariants stay on in release by default, opt-out only, so the
   ## check has to be real code the optimizer keeps — same fix as the D
   ## backend's `tuckInvariantFailed`, from the direction Nim needed it.
-  stderr.writeLine("Invariant violated on " & typeName & ": " & cond)
-  quit(1)
+  tuckStop("Invariant violated on " & typeName & ": " & cond)
 
 type
   BumpArena*[Size: static int] = object
@@ -625,8 +641,7 @@ proc tuckPoolMisuse*(what: string) =
   ## because the alternative is the silent corruption this replaced — a
   ## release that matched the wrong cell freed a slot still in use and leaked
   ## the one being returned, and said nothing.
-  stderr.writeLine("TUCK POOL: " & what)
-  quit(1)
+  tuckStop("TUCK POOL: " & what)
 
 type
   PoolHandle* = object
@@ -714,6 +729,14 @@ proc tuckPoolAddr*[T; Count: static int](pool: var ObjectPool[T, Count], h: Pool
   pool.state[i] = csPresent
   cast[ptr UncheckedArray[uint8]](addr pool.storage[i])
 
+proc tuckPoolAddress*[T; Count: static int](pool: var ObjectPool[T, Count], h: PoolHandle): uint32 =
+  ## `Pool.address {h}` (owner ruling 2026-11-24): the cell's address as a
+  ## NUMBER for a DMA register, with `buffer.address`'s barrier. Present from
+  ## here on, as after `addr`: the cell was handed out to be filled.
+  let i = pool.heldCell(h, "address")
+  pool.state[i] = csPresent
+  tuckBufferAddress(pool.storage[i])
+
 # ---------------------------------------------------------------------------
 # The slab (thoughts/shared/plans/2026-09-29-slab-proposal.md): a table of
 # cells of one type, addressed by REFERENCES — which cell, and which tenancy
@@ -748,8 +771,7 @@ const SlabLive = -1'i32   ## `link` of a cell holding a value
 proc tuckSlabMisuse*(name, what: string) =
   ## A reference that no longer names a live cell. Stops, exit 1, as a stale
   ## pool handle does, on every backend.
-  stderr.writeLine("TUCK SLAB [" & name & "]: " & what)
-  quit(1)
+  tuckStop("TUCK SLAB [" & name & "]: " & what)
 
 # --- the default storage: two levels, never copied -------------------------
 #
@@ -764,10 +786,28 @@ proc tuckSlabMisuse*(name, what: string) =
 # bounds checks its own shifts and masks make redundant.
 
 const
-  SlabPageShift = 10
+  SlabPageShift = when defined(freestanding): 3 else: 10
   SlabPageN = 1 shl SlabPageShift
   SlabTopN = 64
-  SlabChunkBytes = 65536
+  SlabChunkBytes = when defined(freestanding): 256 else: 65536
+    ## On metal a page is 8 pointers and a chunk 256 bytes: a host's 64 KiB
+    ## chunk is all the RAM a small part has, and the first `new` stopped
+    ## with "frame heap exhausted" (2026-11-24). 64 x 8 chunks is still
+    ## 512 chunks, far past any MCU's RAM.
+
+when defined(freestanding):
+  proc tuckCalloc(n, size: csize_t): pointer {.importc: "calloc", header: "<stdlib.h>".}
+
+proc slabAlloc(name: string, bytes: int): pointer =
+  ## Zeroed storage for a slab page or chunk. On metal it comes from the
+  ## heap (picolibc over `board.ld`'s __heap_start..__heap_end), not the
+  ## 2 KB frame heap the scheduler keeps for task frames; running out stops
+  ## naming the slab.
+  when defined(freestanding):
+    result = tuckCalloc(1, csize_t(bytes))
+    if result == nil: tuckStop("TUCK SLAB [" & name & "]: out of heap")
+  else:
+    result = allocShared0(bytes)
 
 proc slabChunkShift(cellBytes: int): int {.compileTime.} =
   ## log2 of the cells per chunk: the most that fit in SlabChunkBytes, >= 1.
@@ -822,11 +862,11 @@ proc growCell[T](s: var SlabChunked[T]): uint32 =
     let pi = int(i shr (cs + SlabPageShift))
     if pi >= SlabTopN: tuckSlabMisuse(s.name, "full (" & $i & " cells)")
     if s.top[pi] == nil:
-      s.top[pi] = cast[ptr SlabPage[T]](allocShared0(sizeof(SlabPage[T])))
+      s.top[pi] = cast[ptr SlabPage[T]](slabAlloc(s.name, sizeof(SlabPage[T])))
     let ci = int((i shr cs) and (SlabPageN - 1))
     if s.top[pi][ci] == nil:
       s.top[pi][ci] = cast[ptr SlabChunk[T]](
-        allocShared0((1 shl cs) * sizeof(SlabCell[T])))
+        slabAlloc(s.name, (1 shl cs) * sizeof(SlabCell[T])))
   inc s.len
   i
 
@@ -923,8 +963,7 @@ proc tuckSlabReport*[S](s: S) =
   ## At exit: say how many cells were never freed (slab proposal Q3). A slab
   ## declared `[leaks: ok]` is not reported.
   if s.live > 0:
-    stderr.writeLine("TUCK SLAB [" & s.name & "]: " & $s.live &
-                     " cell(s) never freed")
+    tuckSay("TUCK SLAB [" & s.name & "]: " & $s.live & " cell(s) never freed")
 
 # ---------------------------------------------------------------------------
 # spec 7.4: the resource registry.
@@ -1004,8 +1043,7 @@ proc tuckResourceMisuse*(table: string, what: string) =
   ## returning, for the reason tuckPoolMisuse does: the alternative is silent
   ## corruption, and a stale handle that writes to a REUSED slot is exactly
   ## the bug 7.4 exists to make impossible.
-  stderr.writeLine("TUCK RESOURCE [" & table & "]: " & what)
-  quit(1)
+  tuckStop("TUCK RESOURCE [" & table & "]: " & what)
 
 proc initResourceTable*(t: var ResourceTable, kind: string, cap: int,
                         policy: RtResourcePolicy, sweepBatch: int,

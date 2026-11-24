@@ -63,6 +63,11 @@ echo "=== board build (--board:$BOARD) ==="
 ./tuck b "$SRC" $TUCK_FLAGS --board:"$BOARD" $EXTRA -o:"$OUT" 2>&1 | tail -20
 
 ELF="$OUT/${BASE}"
+# `tuck b` names a binary whose file starts with a digit `m_<name>` (a Nim
+# module name cannot start with one): examples/48-*.tuck builds m_48_*.
+if [ ! -f "$ELF" ] && [[ "$BASE" == [0-9]* ]]; then
+  ELF="$OUT/m_$(echo "$BASE" | tr '-' '_')"
+fi
 if [ ! -f "$ELF" ]; then
   echo "!!! no ELF produced"
   exit 1

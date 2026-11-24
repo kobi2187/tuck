@@ -1359,7 +1359,11 @@ absent** — `read` is a `?T` until something writes it — so zeroed memory is
 never read as a value, and a written value is a construction, validated where
 it is built (#42). `Pool.addr {h}` gives the cell's bytes as a `Buf` to an
 **extern only** (a DMA controller, an ISR; TK-TY08 anywhere else), and is
-refused for an element type carrying an invariant (TK-TY31). A stale or
+refused for an element type carrying an invariant (TK-TY31). `Pool.address
+{h}` is the same cell's address as a `u32` for a DMA register, like
+`buffer.address`: a number any code may hold, under the same TK-TY31 rule.
+Pools, slabs and arenas build and run on a board (`tests/metal/pool_dma.tuck`;
+the slab and arena examples under QEMU, `metal_runtime`). A stale or
 released handle stops the program (`TUCK POOL:`), identically on every
 backend. Pool operations are their own node (`exkPoolOp`), so a program's own
 `fn read` cannot be mistaken for one.

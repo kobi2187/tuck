@@ -117,6 +117,24 @@ fn main() -> int:
           "buffer_stack", "buffer-stack", 1,
           @["a `buffer ... at` address overlaps the stack reserve"],
           board = "lm3s6965evb")
+  # Pools on metal (2026-11-24): `Pool.address {h}` is a cell's address as
+  # a number for a DMA register; and a pool builds for a board at all now
+  # (its misuse check wrote to stderr, which a board has none of).
+  for board in ["lm3s6965evb", "stm32vldiscovery"]:
+    t.metal("pool cells are DMA targets: aligned RAM addresses on " & board,
+            "pool_dma", "pool-dma-" & board, 0, @["POOL_DMA_OK"], board = board)
+  # The memory examples run on a board with their host exit codes (cli_smoke
+  # pins the same numbers): until 2026-11-24 a chunked slab took a 64 KiB
+  # chunk from the 2 KB frame heap and the slab and arena programs panicked.
+  for (ex, rc) in [("48-slab-references", 0), ("13-arena-mem", 55),
+                   ("25-pools", 4)]:
+    t.metal("examples/" & ex & " runs on a board, exit " & $rc,
+            "../../examples/" & ex, "ex-" & ex, rc, @["qemu exit: " & $rc],
+            board = "lm3s6965evb")
+  t.metal("a stale pool handle panics on metal, naming the pool check",
+          "pool_stale", "pool-stale", 1,
+          @["PANIC: TUCK POOL: read of slot 0, which nobody holds"],
+          board = "lm3s6965evb")
   # The device programs build for a board and fail CLEANLY with no device on
   # the bus: QEMU models no DS3231 or SD card, so each bounded wait times out
   # and main returns 1, rather than hanging (124) or faulting.

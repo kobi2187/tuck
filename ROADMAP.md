@@ -1243,6 +1243,20 @@ heap and stack out of it. BUILT the same day (bare-metal ROADMAP 2.0a;
 TK-BF01..04; `buffer_dma` under QEMU). Using a buffer while a transfer reads
 it stays unchecked until 6.3.
 
+## User ruling (2026-11-24) — a pool cell's address, as a number
+
+Asked whether `buffer` could simplify pools, slabs and arenas: it cannot
+replace them (they manage lifetimes — handles, tenancies, references — and
+a buffer is only placed memory), but pools had the one overlap: `Pool.addr`
+handed a cell's bytes to a C extern for DMA. Ruled: keep `addr` for externs
+and add `Pool.address {h}` → `u32`, the cell's address as a number for a
+DMA register, under the same TK-TY31 rule. BUILT the same day, on Nim, Odin
+and D. Building it for a board found that pools, slabs and arenas had never
+run on metal: their checks wrote to stderr (no such thing on a board), and a
+chunked slab asked the 2 KB frame heap for a 64 KiB chunk. Fixed: runtime
+checks stop through `tuckStop` (`PANIC:` on metal), and a slab on metal uses
+256-byte chunks from the heap.
+
 ## Partial
 | Feature | Spec | Missing piece |
 |---|---|---|

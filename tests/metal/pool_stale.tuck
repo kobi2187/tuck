@@ -1,0 +1,16 @@
+# A stale pool handle on metal stops with `PANIC: TUCK POOL: ...`, as it
+# stops with `TUCK POOL:` and exit 1 on a host. Until 2026-11-24 a program
+# with a pool could not be built for a board at all: the check wrote to
+# stderr, which a board does not have.
+
+pool Cells = Array[4, u32] [count: 1]
+
+fn main() -> int:
+  let a = Cells.acquire
+  if not a.ok:
+    return 2
+  Cells.release {h: a.value}
+  let late = Cells.read {h: a.value}    # its tenancy has ended
+  if late.ok:
+    return 3
+  return 0

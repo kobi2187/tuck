@@ -1090,13 +1090,14 @@ proc asFnByName(tc: var TypeChecker, e: Expr, recvT: Type): Type =
 
 proc poolOpNamed(member: string): Option[PoolOpKind] =
   ## The pool operation a member name spells (`acquire`, `release`, `read`,
-  ## `write`, `addr`), or none for any other member.
+  ## `write`, `addr`, `address`), or none for any other member.
   case member
   of "acquire": some(poAcquire)
   of "release": some(poRelease)
   of "read": some(poRead)
   of "write": some(poWrite)
   of "addr": some(poAddr)
+  of "address": some(poAddress)
   else: none(PoolOpKind)
 
 proc poolOpArg(tc: var TypeChecker, e: Expr, qualified: string,
@@ -1125,16 +1126,17 @@ proc poolOpArg(tc: var TypeChecker, e: Expr, qualified: string,
          typeName(p.typ) & " but got " & typeName(got) & why, v.span)
   v
 
-proc failIfAddrOfCheckedCell(tc: TypeChecker, e: Expr, elem: Type) =
-  ## An extern fills the bytes `addr` hands out, and nothing checks them
-  ## against an invariant (TK-TY31).
+proc failIfAddrOfCheckedCell(tc: TypeChecker, e: Expr, elem: Type,
+                             op: string) =
+  ## Hardware or an extern fills the bytes `addr` or `address` hands out, and
+  ## nothing checks them against an invariant (TK-TY31).
   if elem == nil or elem.kind != tkNamed or
      elem.name notin tc.typeDeclsByName: return
   for member in tc.typeDeclsByName[elem.name].typeMembers:
     if member.kind == dkExpr:
       fail(dcTyPoolAddrInvariant, "'" & elem.name & "' carries an " &
-           "invariant, so a pool of it has no `addr`: memory an extern fills " &
-           "is never checked against it", e.span)
+           "invariant, so a pool of it has no `" & op & "`: memory an extern " &
+           "or a DMA transfer fills is never checked against it", e.span)
 
 proc takesParam(sig: FnSig, name: string): bool =
   ## Does the signature declare a parameter called `name`?
@@ -1168,10 +1170,10 @@ proc asPoolOp(tc: var TypeChecker, e: Expr, op: PoolOpKind,
   failIfPoolPayloadStray(e, qualified, sig)
   var args: seq[Expr]
   for p in sig.params: args.add tc.poolOpArg(e, qualified, p)
-  if op == poAddr:
+  if op in {poAddr, poAddress}:
     # the element type is the one `write` takes
     let elem = tc.sigOf(e.receiver.refName & ".write").params[1].typ
-    tc.failIfAddrOfCheckedCell(e, elem)
+    tc.failIfAddrOfCheckedCell(e, elem, if op == poAddr: "addr" else: "address")
   let node = Expr(span: e.span, kind: exkPoolOp, poolOp: op,
                   poolRef: e.receiver, poolHandle: args.operand(0),
                   poolValue: args.operand(1))

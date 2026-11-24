@@ -124,7 +124,7 @@ type
                                         ## fit the field's type
     dcTyFieldInitNotActor = "TK-TY30"   ## an initialiser on a `type` or
                                         ## `object` field, which has no use
-    dcTyPoolAddrInvariant = "TK-TY31"   ## `Pool.addr` on a pool whose element
+    dcTyPoolAddrInvariant = "TK-TY31"   ## `Pool.addr`/`address` on a pool whose element
                                         ## type carries an invariant
     dcTyReturnWithoutType = "TK-TY32"   ## `return <value>` in a body that
                                         ## declares no return type
@@ -653,11 +653,12 @@ proc parseExplanation(d: DiagCode): string =
     "the type is fixed at compile time."
   of dcTyPoolAddrInvariant:
     "`Pool.addr {h}` hands a cell's bytes to an extern to fill — a DMA " &
-    "controller, an ISR. Memory filled that way was never built by a " &
+    "controller, an ISR — and `Pool.address {h}` hands its address to a " &
+    "DMA register. Memory filled that way was never built by a " &
     "construction, so nothing checked it against the element type's " &
     "invariant, and the next `read` would hand the program a value that may " &
     "break it. A pool whose element carries an invariant therefore has no " &
-    "`addr`. Fix: fill a plain buffer pool (`Array[N, u8]`) through `addr`, " &
+    "`addr` or `address`. Fix: fill a plain buffer pool (`Array[N, u8]`), " &
     "and build the checked value from it with a construction, which " &
     "validates."
   of dcTyCtorFieldType:
