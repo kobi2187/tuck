@@ -105,6 +105,8 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 
 **Ruled 2026-11-24.** A value `if`/`match` may not have a branch that returns
 (`let x = if c: 5 else: return 0`): refused, as it already was (pin A190, AGENTS.md §3).
+A value `match` arm that is a block yields its last line: the checker accepted it and no
+backend built it; `lowering_block_arms` makes it the statement match (pin A192).
 
 **Waiting on a ruling.** E4 (does binding a task's result, an await, need `[io]` in the
 caller?), E16 (`on select` arm budgets, F2), C18's second half (a predicate reading only its
@@ -120,7 +122,7 @@ not on 2 passes), Y6 (what an out-of-range or NaN float `~int` gives: Odin 0, Ni
 minimum; and a constant one Nim and Odin refuse to build), Y8's other half (a `[saturating]`
 chain that is compared, passed or returned rather than stored still wraps; spec 4.1 names only
 stores), the precedence of `-128 Temp` (it is `-(128 Temp)`, so -127 on a saturating `i8`),
-a value `match` whose arm is a multi-line block (the checker accepts it, no backend builds it: is the block's last line the arm's value, or is it the statement form, as a block-bodied value `if` is by R2/R3?), and two TK-TY16 holes the checker cannot follow: a partial record put in a
+and two TK-TY16 holes the checker cannot follow: a partial record put in a
 sum payload (un/c11) and a slab `new` that omits a field (sl2) — refuse the store, or track?
 
 ---

@@ -8680,4 +8680,97 @@ fn run[T: Src]({x: T}) -> int:
   t.quietly: t.okCheck "A191: an uninstantiated generic's requirement call checks"
   t.bugFixed "A191: an uninstantiated generic's requirement call checks"
 
+  # A192 (ruled 2026-11-24: a value `match` arm that is a block has its last
+  # line as its value). The checker accepted such a match and no backend
+  # built it: Nim reported the last line unused, Odin and D printed a
+  # declaration inside an expression. lowering_block_arms makes it the
+  # statement match, each arm handing its last line to the binding (declared
+  # first at its type's zero, exkZero), the assignment, or a `return` — the
+  # last also for a body's tail match. Nested, record, str and reassigned
+  # forms; a pause inside an arm and an owned Seq, on both flags.
+  t.src """
+type P = {a: int, b: int}
+
+fn pick({n: int}) -> int:
+  match n:
+    1: 10
+    _:
+      let d = n * 2
+      d + 1
+
+fn back({n: int}) -> int:
+  return match n:
+    0: 5
+    _:
+      let e = n + 100
+      e
+
+fn nested({n: int, k: int}) -> int:
+  let x = match n:
+    1: match k:
+      0: 1
+      _:
+        let z = k * 3
+        z
+    _: 7
+  return x
+
+fn rec({n: int}) -> P:
+  let p = match n:
+    0: {a: 0, b: 0} P
+    _:
+      let q = {a: n, b: n * 2} P
+      q
+  return p
+
+fn words({n: int}) -> int:
+  let s = match n:
+    0: "none"
+    _:
+      let w = "many"
+      w
+  return s.len
+
+fn main() -> int:
+  var y = 0
+  y = match 2:
+    1: 1
+    _:
+      let t = 20
+      t
+  return ({n: 3} pick) + ({n: 4} back) + ({n: 1, k: 2} nested) + ({n: 2} rec).b + ({n: 2} words) + y
+"""
+  t.quietly: t.hostRuns "A192: a value match arm that is a block yields its last line", 145
+  t.bugFixed "A192: a value match arm that is a block yields its last line"
+  t.src """
+import seq
+import console
+import time
+
+fn nap({ms: u32}) -> int [io]:
+  {ms: ms} time::sleepMs
+  return 3
+
+task work({k: int}) -> {r: int} [io]:
+  let w = match k:
+    1: 100
+    _:
+      {text: "arm"} console::printLine
+      let a = {ms: 5} nap
+      a + k
+  let xs = match k:
+    0: [1]
+    other:
+      var ys = [other, 2]
+      ys = {items: ys, value: w} push
+      ys
+  return {r: w + xs.len}
+
+fn main() -> int [io]:
+  let r = {k: 2} work
+  return r.r
+"""
+  t.quietly: t.hostRuns "A192: ...with a pause in the arm and an owned Seq, the arm run once", 8, "^arm\\s*$"
+  t.bugFixed "A192: ...with a pause in the arm and an owned Seq, the arm run once"
+
   t.finish()

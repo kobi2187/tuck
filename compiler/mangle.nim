@@ -344,7 +344,7 @@ proc mangleExpr(res: Resolution, e: Expr, names: MangleNames, locals: var HashSe
      exkCombinator, exkChain, exkBinary, exkUnary, exkCast, exkBlock, exkIf, exkWhile,
      exkReturn, exkRaise, exkDiscard, exkCritical, exkDefer, exkFinish, exkAcquire,
      exkOrdinal, exkValidate, exkIfaceCall, exkIfaceIs, exkLatestIs, exkIfacePayload,
-     exkWrapOk, exkAbsent, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset,
+     exkWrapOk, exkAbsent, exkZero, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset,
      exkAppend, exkCopy, exkDrop, exkReset:
     for c in e.children: mangleExpr(res, c, names, locals, fields)
   of exkMatch: mangleMatch(res, e, names, locals, fields)

@@ -430,7 +430,7 @@ proc walkExpr(c: var Check, e: Expr, use: Use) =
      exkDiscard, exkTripleDot, exkImport, exkSend, exkAcquire, exkFinish,
      exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
      exkSlabRef, exkArenaRef, exkCombinator, exkOrdinal, exkValidate,
-     exkIfaceCall, exkIfaceIs, exkLatestIs, exkIfacePayload, exkWrapOk, exkAbsent,
+     exkIfaceCall, exkIfaceIs, exkLatestIs, exkIfacePayload, exkWrapOk, exkAbsent, exkZero,
      exkPoolOp, exkSlabOp, exkSlabCell, exkArenaReset, exkAppend, exkCopy,
      exkDrop:
     c.step(e, use)

@@ -51,6 +51,9 @@ rules; this file is about HOW to fix things.
 - A value `if`/`match` gives a value on every branch. A branch that leaves the
   fn (`let x = if c: 5 else: return 0`) is refused, not an early exit
   (owner, 2026-11-24).
+- A value `match` arm may be an indented block; its last line is the arm's
+  value (owner, 2026-11-24). Lowered to the statement match by
+  `lowering_block_arms`.
 
 ## 4. Organise the work
 

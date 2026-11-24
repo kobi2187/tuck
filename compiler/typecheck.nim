@@ -6282,6 +6282,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     discard tc.synthesize(e.tagSubject)
     semLayer.typeFor(e)
   of exkLatestIs: tc.synthLatestIs(e)
+  of exkZero: semLayer.typeFor(e)   # built by lowering_block_arms, typed
   of exkAbsent:
     if e.optInner == nil: tc.synthNone(e)   # written `none`
     else: semLayer.typeFor(e)                # built by lowering_optional
