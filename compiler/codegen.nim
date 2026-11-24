@@ -456,8 +456,12 @@ proc genReturn(ctx: var CodegenCtx, e: Expr): string =
   ## the hop to whoever resumes next.
   result = ctx.genPlainReturn(e)
   if ctx.frameVar == "": return
-  if result == "return": return "return tuckSlRetVoid(" & ctx.frameVar & ")"
-  result = "return tuckSlRet(" & ctx.frameVar & ", " & result["return ".len .. ^1] & ")"
+  # `return err X`: genRaise already finished the frame with the error, so
+  # wrapping it again returned a hop as the frame's value (audit C8).
+  if e.returnVal != nil and e.returnVal.kind == exkRaise: return
+  if result == "return": return "return tuckSlRetVoid(" & ctx.frameVar & ", tuckSlExit)"
+  result = "return tuckSlRet(" & ctx.frameVar & ", " & result["return ".len .. ^1] &
+           ", tuckSlExit)"
 
 proc genIndented(ctx: var CodegenCtx, e: Expr): string =
   ## Emit a nested body one level deeper, restoring the indent afterwards.
@@ -647,7 +651,8 @@ proc genCallExpr(ctx: var CodegenCtx, e: Expr): string =
   ## annotation). Cooperative-yield first cut: yield so other tasks progress,
   ## then perform the call. (Real fd-await lands with the async externs.)
   let base = ctx.genConstruction(e)
-  if ctx.res.isAsync(e) and ctx.inTask: "(tuckYield(); " & base & ")"
+  if ctx.res.isAsync(e) and ctx.inTask and
+     not (e.id.isSet and e.id in ctx.preYielded): "(tuckYield(); " & base & ")"
   else: base
 
 proc genStruct(ctx: var CodegenCtx, e: Expr): string =
@@ -824,6 +829,39 @@ proc genSatStore(ctx: var CodegenCtx, e: Expr, base: string): string =
   named & "(tuckSatI[" & genType(Type(kind: tkNamed, name: base)) & "](" &
     ctx.genSatWide(e) & "))"
 
+const SharedReads = {exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef,
+                     exkPoolOp, exkSlabRef, exkSlabOp}
+  ## Reads of state a call can change. A local cannot be: no call reaches it.
+
+proc hasCallIn(e: Expr): bool =
+  for n in e.nodes:
+    if n.kind == exkCall: return true
+
+proc pinsLeft(e: Expr): bool =
+  ## `Counter.n + f()`: Nim prints a location read beside a call as one C
+  ## expression, whose operand order C leaves open, and the call ran first
+  ## (audit C7: Odin and D read the field first). Such a left operand is
+  ## evaluated into a temp before the right one. `and`/`or` already order.
+  if e.binOp in {boAnd, boOr} or e.left == nil or e.right == nil: return false
+  if not hasCallIn(e.right): return false
+  for n in e.left.nodes:
+    if n.kind in SharedReads: return true
+  false
+
+proc genBinary(ctx: var CodegenCtx, e: Expr): string
+
+proc genPinnedLeft(ctx: var CodegenCtx, e: Expr): string =
+  ## `(let tmp = left; <e with tmp as its left>)`, the read made first.
+  let tmp = ctx.freshName("tuckLeft")
+  let leftCode = ctx.genExpr(e.left)
+  let saved = e.left
+  let ph = Expr(kind: exkVar, name: tmp, span: saved.span)
+  ctx.res.setType(ph, ctx.res.typeFor(saved))
+  e.left = ph
+  let whole = ctx.genBinary(e)
+  e.left = saved
+  "(let " & tmp & " = " & leftCode & "; " & whole & ")"
+
 proc genBinary(ctx: var CodegenCtx, e: Expr): string =
   ## A binary expression, parenthesised; `str + str` goes through `tuckConcat`.
   if isStringConcat(e):
@@ -834,6 +872,7 @@ proc genBinary(ctx: var CodegenCtx, e: Expr): string =
     let plan = overflowPlan(ctx.module, ctx.realModules, ctx.res.typeFor(e))
     if plan.active: return ctx.genCheckedArith(e, plan)
   if e.binOp in {boRangeIncl, boRangeExcl}: return ctx.genRange(e)
+  if pinsLeft(e): return ctx.genPinnedLeft(e)
   let rt = ctx.res.typeFor(e)
   if checkedDivision(e, rt):
     return divHelper(e.binOp) & "[" & genType(rt) & "](" & ctx.genExpr(e.left) &
@@ -950,8 +989,37 @@ proc genLineWrapped(ctx: CodegenCtx; s: Expr; code, ind: string;
       let stripped = if ln.startsWith(base): ln[base.len .. ^1] else: ln
       result.add ind & "    " & stripped & "\n"
 
+proc yieldsBefore(ctx: var CodegenCtx, s: Expr): int =
+  ## In a task, the [io] calls statement `s` makes itself — not those of the
+  ## bodies it holds, which are statements of their own, nor a loop's
+  ## condition, which yields on every test — each noted as already yielded.
+  ## The yield goes BEFORE the statement, as stackless puts it: inline,
+  ## `x + (tuckYield(); f())` was a statement-list expression, which Nim
+  ## evaluates ahead of the whole expression, so `x` was read after the
+  ## pause where Odin, D and stackless read it first (audit C7).
+  if not ctx.inTask: return 0
+  let own = case s.kind
+            of exkIf: s.cond
+            of exkMatch: s.subject
+            of exkWhile, exkFor, exkBlock, exkSelect: nil
+            else: s
+  if own == nil: return 0
+  for n in own.nodes:
+    if n.kind == exkCall and ctx.res.isAsync(n) and n.id.isSet:
+      ctx.preYielded.incl n.id
+      inc result
+
+proc genStmtCode(ctx: var CodegenCtx, s: Expr, ind: string): string
+
 proc genStmt(ctx: var CodegenCtx, s: Expr, ind: string): string =
   ## One statement of a block, indented unless it lays itself out.
+  let yields = ctx.yieldsBefore(s)
+  result = ctx.genStmtCode(s, ind)
+  if yields > 0 and result != "":
+    result = (ind & "  tuckYield()\n").repeat(yields) & result
+
+proc genStmtCode(ctx: var CodegenCtx, s: Expr, ind: string): string =
+  ## The statement's own code (see genStmt).
   var code = ctx.genExpr(s)
   if code != "" and ctx.res.shortcut(s) != "":
     code = if s.kind == exkAssign: ctx.genBoundErrorRouted(s, code, ind)
@@ -1073,7 +1141,7 @@ proc genRaise(ctx: var CodegenCtx, e: Expr): string =
   ## finishes the frame with it (#216).
   let v = ctx.genRaiseValue(e)
   if ctx.frameVar == "": "return " & v
-  else: "return tuckSlRet(" & ctx.frameVar & ", " & v & ")"
+  else: "return tuckSlRet(" & ctx.frameVar & ", " & v & ", tuckSlExit)"
 
 proc genCopy(ctx: var CodegenCtx, e: Expr): string =
   ## A value that shares nothing with its source (rule S; rule G chose which
@@ -1171,6 +1239,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     "TuckResult[" & genType(e.optInner) & "](status: tsOk, value: " &
       ctx.genExpr(e.optValue) & ")"
   of exkAbsent: "TuckResult[" & genType(e.optInner) & "](status: tsAbsent)"
+  of exkZero: "default(" & genType(ctx.res.typeFor(e)) & ")"   # lowering_block_arms
   of exkPoolOp: ctx.genPoolOp(e)
   of exkSlabOp: ctx.genSlabOp(e)
   of exkArenaReset: arenaResetProc(e.arenaRef.refName) & "()"

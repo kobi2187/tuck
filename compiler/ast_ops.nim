@@ -305,7 +305,7 @@ iterator childSlots*(e: Expr): var Expr =
   if e != nil:
     case e.kind
     of exkLit, exkVar, exkQualified, exkImport, exkBreak, exkContinue,
-       exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
+       exkActorRef, exkZero, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
        exkSlabRef, exkArenaRef:
       discard
     of exkField:

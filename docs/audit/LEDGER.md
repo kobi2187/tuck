@@ -92,13 +92,29 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | An invariant violation reports the predicate as written and the type's Tuck name, one text on all three (it was each host's emitted code) | invariants suite | |
 | Merge with main's registry rulings (2026-11-22): a synchronous raise is charged its handlers' effects (E5, confirmed 2026-11-23) only for handlers its own module sees; a queued event (`[stream]`/`[signal]`/`[latest]`) carries none; registries are no longer told apart per module (names are unique, TK-RG07); my shared-state rule moved to TK-EF12 (main took EF10/EF11); my A119-A122 pins renumbered A178-A181 (main's own A119-A122 kept) | A182 | the call-edge invariant skips a queued raise |
 | C6/C7 stackless: a frame call on a path that may not run (value-`if` branch, `match` arm, right of `and`/`or`) is cut inside that path, not hoisted before the test; an operand left of a pause is pinned into a temp before it (`count + {ms: 20} nap`) | A183 | `stages.conditionalToTemp`, `hoistChildren`/`pin` |
+| T15 (H) the SSA mirror walks a value that is control flow (`let z = match s:`, `return if ...`) by its blocks, not as one read; Odin's value `match` over a payload sum tests the variant through generated `S_is_V` procs | A184 | `ssa_build.walkValue` |
+| C15 a task awaited from an actor handler builds on Nim stackless: the stage passes its frame's `tuckSlExit` to `tuckSlRet` instead of the runtime finding it by `mixin`, which `codeReordering` cannot see | A185 | |
+| C8 `return err X` in a Nim stackless frame finishes the frame once (genRaise already did); C10 a written `<Pool>Handle` maps to the runtime's PoolHandle in every backend's type mapper (`resolution.poolOfHandleType`); C17 an actor with no handlers still has its singleton and member fns on Nim | A186 | |
+| c_member/b a fn reference to an actor's member (`:bump`) is refused: it built on no backend, inside the actor or out (a bound method; recorded as a missing feature) | A187 | `failIfMemberRef` |
+| C9 a stackless frame local takes its STATED type (`let o: Runner = o0`); a call through an interface whose member may wait runs on a helper stack (`stages.dispatchMayWait`) | A188 | |
+| C14 main's `awaitResult` polls the reactor on every step on all three runtimes, so a task awaiting a sleeping child no longer hangs under stackful | A189 | |
+| C13 `[queue: N]` holds per message under Nim's `--actors:batch` (room reserved per run against waiting + reserved messages, as Odin's batch mode): `on_full: drop` and `assert` now act | actor_mode suite | |
+| C7 (Nim) a task's yield goes before the statement holding the [io] call, not inline (a statement-list expression Nim hoists ahead of the whole expression); a read of shared state left of a call is pinned first (`Counter.n + f()`, which C left unordered) | stackless suite: tests/stackless/paths.tuck | `genPinnedLeft`, `yieldsBefore` |
+| I: E18/M11 an error raised in an imported module by a whole-program check (name folding, generated names, registries) names that module's file (`semantics.inModule`); Y19 TK-TY41 keeps the sign, a value `if`/`match` with a returning branch says so; TK-EF02 fires for any declared I/O marker on a body that does none; a block-bodied `if` taken as a value (statement form by R2) is refused, where it built to a wrong value on Odin and D | A190 | |
+| M14 (end state) a clone of a library's interface-bounded generic calls the library's private fns and its own imports' fns, as written in the library's scope (`resolution.cloneReach`: named for the clone only, emitted exported, Nim imports the module `import nil`); the caller's own code still cannot name them. A requirement call in payload form inside a bounded generic is typed from the contract (A191) | A146, A191 | |
 
-**Still open in class B.** M14's refusal for a private or un-imported callee is a restriction, not the end
-state: the clone should be checked in the library's scope.
+**Ruled 2026-11-24.** A value `if`/`match` may not have a branch that returns
+(`let x = if c: 5 else: return 0`): refused, as it already was (pin A190, AGENTS.md §3).
+A value `match` arm that is a block yields its last line: the checker accepted it and no
+backend built it; `lowering_block_arms` makes it the statement match (pin A192). The same for
+a value `if` with block branches, reversing the refusal A190 had added; and a value `if` with
+no `else`, which checked clean and built nowhere, is refused (pin A193).
 
 **Waiting on a ruling.** E4 (does binding a task's result, an await, need `[io]` in the
 caller?), E16 (`on select` arm budgets, F2), C18's second half (a predicate reading only its
-own actor's fields), the concurrency items C2/C4/C5, Y1 (int/i64 overflow policy), Y11 (generic
+own actor's fields; c_pred/a, b, d hang on Odin and D where Nim re-tests), the concurrency
+items C2/C4/C5 (c_seqrace/r reads a torn `str` from another actor; c_poolrace/p and
+r_res/race race a pool and a resource table), Y1 (int/i64 overflow policy), Y11 (generic
 bodies: rigid type parameters, or re-checked per instantiation?), T13 (may a type parameter
 bind a `T?`, so that `len` takes a `Seq[int]?` unguarded?), Y18 (`int` and `i64`: the
 2026-08-25 ruling says they never need a cast, open bug A116 says the checker should refuse
@@ -108,8 +124,7 @@ not on 2 passes), Y6 (what an out-of-range or NaN float `~int` gives: Odin 0, Ni
 minimum; and a constant one Nim and Odin refuse to build), Y8's other half (a `[saturating]`
 chain that is compared, passed or returned rather than stored still wraps; spec 4.1 names only
 stores), the precedence of `-128 Temp` (it is `-(128 Temp)`, so -127 on a saturating `i8`),
-a Nim backend gap found while fixing C7 (`x + f()` where `f` changes `x`: Nim leaves operand order to C, so
-stackful Nim read `x` after the call; Odin and D read it first) — not yet fixed, and two TK-TY16 holes the checker cannot follow: a partial record put in a
+and two TK-TY16 holes the checker cannot follow: a partial record put in a
 sum payload (un/c11) and a slab `new` that omits a field (sl2) — refuse the store, or track?
 
 ---
@@ -252,7 +267,7 @@ for all three state kinds (optional, sum variant, uninit).
 
 ## Class I. Diagnostics (S4)
 
-E18/M11 (errors inside an imported module reported against the entry file); M22; Y19
+E18/M11 (errors inside an imported module reported against the entry file); M22 (no description survives beyond the id; not reproducible as written); Y19
 (TK-TY41 drops the sign; diverging branch in value position refused with "int vs unit");
 TK-EF02 only fires for a bare unused `[io]`.
 

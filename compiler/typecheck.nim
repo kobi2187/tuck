@@ -2215,6 +2215,15 @@ proc isNoValue(t: Type): bool =
   ## assignment are both statements, so an `if` may have one of each (#148).
   t != nil and t.kind == tkNamed and t.name in ["void", "unit"]
 
+proc noValueSide(what, side: string, valueT: Type): string =
+  ## A value `if`/`match` where one side yields no value — it returns, or it
+  ## is a statement — and another yields `valueT`. It was reported as
+  ## "int vs unit", which names no mistake (audit Y19).
+  "Type Error: this " & what & " is used as a value, but " & side &
+    " produces no value (it returns, or is a statement) where the others " &
+    "produce " & typeName(valueT) & ". Fix: give it a value, or use the " &
+    "statement " & what & " and assign in each branch"
+
 proc synthIf(tc: var TypeChecker, e: Expr): Type =
   ## Branches that produce values must agree on the type.
   tc.checkCondition(e.cond, e.span)
@@ -2223,6 +2232,9 @@ proc synthIf(tc: var TypeChecker, e: Expr): Type =
   if e.elseBranch != nil and not isFlexible(thenT) and not isFlexible(elseT) and
      not (isNoValue(thenT) and isNoValue(elseT)) and
      not tc.compatible(thenT, elseT) and not tc.compatible(elseT, thenT):
+    if isNoValue(thenT) != isNoValue(elseT):
+      fail(noValueSide("if", "the " & (if isNoValue(thenT): "then" else: "else") &
+                       " branch", if isNoValue(thenT): elseT else: thenT), e.span)
     fail("Type Error: if branches produce different types: " &
          typeName(thenT) & " vs " & typeName(elseT), e.span)
   if isFlexible(thenT): elseT else: thenT
@@ -2341,6 +2353,8 @@ proc unifyArmType(tc: var TypeChecker, armT: var Type, t: Type, sp: Span) =
   if isNoValue(t) and isNoValue(armT): return
   if not isFlexible(t) and not isFlexible(armT) and
      not tc.compatible(t, armT) and not tc.compatible(armT, t):
+    if isNoValue(t) != isNoValue(armT):
+      fail(noValueSide("match", "an arm", if isNoValue(t): armT else: t), sp)
     fail("Type Error: match arms produce different types: " &
          typeName(armT) & " vs " & typeName(t), sp)
   if isFlexible(armT): armT = t
@@ -4525,6 +4539,26 @@ proc asGroupRequirement(tc: var TypeChecker, e: Expr, calleeName: string): Type 
         return substituteGroup(want.fnReturnType, selfT, groupBindings(g, bound))
   nil
 
+proc asBoundIfaceRequirement(tc: var TypeChecker, e: Expr, calleeName: string): Type =
+  ## `{self: x} v` inside `fn run[T: Src]`, with `x: T`: the CONTRACT's `v`,
+  ## as `x.v` already was (asBoundIfaceCall) and as a group's requirement is
+  ## (asGroupRequirement). It fell to the flat signature table, which held a
+  ## `v` only while some object satisfying Src happened to exist — so the
+  ## body was checked against that one object, and a library whose interface
+  ## nobody satisfied yet did not check at all ("'v' is not a declared
+  ## callable", found with audit M14).
+  if calleeName == "" or tc.currentBounds.len == 0: return nil
+  for tp, _ in tc.currentBounds:
+    let iname = tc.ifaceBoundOf(tp)
+    if iname == "": continue
+    let mem = tc.contractMember(iname, calleeName)
+    if mem == nil or not tc.payloadCarriesTypeParam(e, tp): continue
+    for a in e.args: discard tc.synthesize(a)
+    let subs = boundSubst(mem, tc.namedType(tp, e.span), tc.namedType(iname, e.span))
+    let ret = substType(mem.fnReturnType, subs)   # no `->` is `-> void` (R5)
+    return (if ret == nil: Type(span: e.span, kind: tkNamed, name: "void") else: ret)
+  nil
+
 proc checkAmbiguousImports(tc: var TypeChecker, e: Expr, calleeName: string) =
   ## Check if the callee name is ambiguously imported.
   if calleeName == "" or not tc.ambiguousImports.hasKey(calleeName) or
@@ -4581,6 +4615,8 @@ proc synthCall(tc: var TypeChecker, e: Expr): Type =
   # imports exporting its name is the situation a group exists for (A14).
   let viaGroup = tc.asGroupRequirement(e, calleeName)
   if viaGroup != nil: return viaGroup
+  let viaIface = tc.asBoundIfaceRequirement(e, calleeName)
+  if viaIface != nil: return viaIface
   tc.checkAmbiguousImports(e, calleeName)
   result = tc.asBuiltinOrEchoCall(e, calleeName)
   if result != nil: return
@@ -4711,7 +4747,7 @@ proc synthLit(tc: var TypeChecker, e: Expr): Type =
     let known = evalConstExpr(tc.module, e)
     let value = if known.isSome and tc.negatedLit: -known.get else: known.get(0)
     if e.litKind == lkInt and known.isSome and not fitsIn(want.name, value):
-      fail(dcTyCastOutOfRange, e.litValue & " does not fit " & want.name &
+      fail(dcTyCastOutOfRange, (if tc.negatedLit: "-" else: "") & e.litValue & " does not fit " & want.name &
            "; write a type it fits, or a smaller value", e.span)
     return tc.namedType(want.name, e.span)
   tc.namedType(base, e.span)
@@ -5678,8 +5714,18 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
     tc.noteVarGiven(e, targetT, valT)
   tc.forgetGuardsUnder(e, valT)
 
+proc failIfValueIfLacksElse(v: Expr) =
+  ## A value `if` gives a value on every path (ruled 2026-11-24); with no
+  ## `else` there is none when the condition is false. It checked clean and
+  ## no backend built it.
+  if v == nil or v.kind != exkIf or v.elseBranch != nil: return
+  fail("Type Error: this `if` is used as a value but has no `else`, so " &
+       "there is no value when its condition is false. Fix: add an `else` " &
+       "branch with a value", v.span)
+
 proc synthAssign(tc: var TypeChecker, e: Expr): Type =
   ## An assignment is a statement: it yields unit.
+  failIfValueIfLacksElse(e.assignVal)
   if e.isDecl and e.target != nil and e.target.kind == exkVar:
     tc.synthDeclAssign(e)
   else:
@@ -5775,6 +5821,7 @@ proc failValueWithoutReturnType(tc: TypeChecker, e: Expr) =
 proc synthReturn(tc: var TypeChecker, e: Expr): Type =
   ## A return checks its value against the fn's declared return type; a body
   ## that declares none takes no value at all.
+  failIfValueIfLacksElse(e.returnVal)
   if e.returnVal != nil and tc.currentRet != nil:
     tc.checkReturnValue(e)
     if isWrapper(tc.currentRet):
@@ -6114,6 +6161,33 @@ proc asQualifiedValue(tc: var TypeChecker, e: Expr, key: string): Type =
     return tc.synthesize(e)
   nil
 
+proc isActorMemberDecl(tc: TypeChecker, d: Decl, owners: seq[string]): bool =
+  ## Is `d` a member fn of one of the actors `owners` names?
+  for a in owners:
+    let ad = tc.module.findDecl(dkActor, a)
+    if ad == nil: continue
+    for h in ad.handlers:
+      if h == d: return true
+  false
+
+proc failIfMemberRef(tc: TypeChecker, e: Expr, key: string) =
+  ## `:bump` naming an actor's member fn is refused. A member runs on its
+  ## actor's `self`, so a reference to it is a BOUND method, which no backend
+  ## builds: outside the actor it checked clean and named nothing (and would
+  ## have touched the actor's state from main's thread); inside it, every
+  ## backend still emitted a bare `bump` it could not resolve (audit
+  ## c_member/b). A program is Tuck on every backend or none.
+  if e.modulePath.len != 0 or key notin tc.actorMemberOwner: return
+  let owners = tc.actorMemberOwner[key]
+  # A free fn of the same name is what a bare reference means. Actor members
+  # are collected beside top-level fns, so "top level" is asked of the decl.
+  let d = tc.topLevelFnDecl.getOrDefault(key)
+  if d != nil and not tc.isActorMemberDecl(d, owners): return
+  fail(dcTyUndeclared, "'" & key & "' is a member of actor '" & owners[0] &
+       "', and a reference to an actor's member is not supported (it would " &
+       "need the actor's state). Fix: call it inside the actor, or declare " &
+       "the fn at top level", e.span)
+
 proc synthQualified(tc: var TypeChecker, e: Expr): Type =
   ## `:name` is a FUNCTION REFERENCE (`{add: :plus}`, `waitUntil {pred:
   ## :ready}`). Resolving it to a real tkFunc keeps the signature — params and
@@ -6137,6 +6211,7 @@ proc synthQualified(tc: var TypeChecker, e: Expr): Type =
   if not tc.fnSigs.hasKey(key):
     fail(dcTyUndeclared, "'" & key & "' is not a declared function" &
          spellingHint(e.qualName), e.span)
+  tc.failIfMemberRef(e, key)
   let sig = tc.sigOf(key)
   var ps: seq[Type]
   var names: seq[string]
@@ -6204,6 +6279,7 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     discard tc.synthesize(e.tagSubject)
     semLayer.typeFor(e)
   of exkLatestIs: tc.synthLatestIs(e)
+  of exkZero: semLayer.typeFor(e)   # built by lowering_block_arms, typed
   of exkAbsent:
     if e.optInner == nil: tc.synthNone(e)   # written `none`
     else: semLayer.typeFor(e)                # built by lowering_optional
@@ -7223,6 +7299,9 @@ type
     ## What every module exports, gathered before any module is checked, so an
     ## import can be resolved regardless of declaration order.
     byMod: Table[string, Table[string, seq[FnSig]]]
+    allByMod: Table[string, Table[string, seq[FnSig]]]
+                              ## the same, `public:` or not: what a clone of a
+                              ## module's generic may call (iface_generics.cloneReach)
     pendByMod: Table[string, Table[string, Span]]
     importsByMod: Table[string, seq[string]]
     boundsByMod: Table[string, Table[string, seq[seq[Type]]]]
@@ -7304,10 +7383,13 @@ proc collectProgramSigs(mods: seq[tuple[name, path: string, m: Module]]): Progra
       ## Does `n` leave this module: everything when there is no `public:` list,
       ## else only the listed names (and anything already qualified).
       not restricted or n in allowed or "::" in n
-    var sigs: Table[string, seq[FnSig]]
+    var sigs, all: Table[string, seq[FnSig]]
     for n, sg in tc.fnSigs:
-      if visible(n) and not tc.onlyMembersNamed(m, n): sigs[n] = sg
+      if tc.onlyMembersNamed(m, n): continue
+      all[n] = sg
+      if visible(n): sigs[n] = sg
     result.byMod[name] = sigs
+    result.allByMod[name] = all
     result.pendByMod[name] = tc.pendingFns
     result.importsByMod[name] = moduleImports(m)
     var groups: Table[string, Decl]
@@ -7395,6 +7477,14 @@ proc importScopeFor(sigs: ProgramSigs, preSigs: Table[string, seq[SigInfo]],
   for imp in sigs.importsByMod[name]:
     if sigs.byMod.hasKey(imp): result.importChecked(sigs, imp)
     else: result.importPrebuilt(preSigs, imp)
+  # What this module's clones of another module's generics call, though this
+  # module cannot name it itself: qualified only, for the clone (audit M14).
+  for key in cloneReach.getOrDefault(name):
+    let sep = key.find("::")
+    let owner = key[0 ..< sep]
+    let fname = key[sep + 2 .. ^1]
+    if sigs.allByMod.hasKey(owner) and sigs.allByMod[owner].hasKey(fname):
+      result.extern[key] = sigs.allByMod[owner][fname]
 
 type ModuleScope* = object
   ## What one module's imports put in its scope, as the checker decided it:
@@ -7835,6 +7925,7 @@ proc typecheckExpanding*(mods: var seq[tuple[name, path: string, m: Module]],
   ##
   ## `var`: expansion adds and drops declarations, and `Module` is a value —
   ## the caller must see the module lists this leaves.
+  cloneReach.clear()
   result = checkProgramOnce(mods, preSigs)
   var rounds = 0
   while true:

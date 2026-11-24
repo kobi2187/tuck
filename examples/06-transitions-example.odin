@@ -71,6 +71,21 @@ tuckˑtypeˑPodcastPlayerLifecycle_eq :: proc(a, b: tuckˑtypeˑPodcastPlayerLif
   return false
 }
 
+tuckˑtypeˑPodcastPlayerLifecycle_is_Unloaded :: proc(x: tuckˑtypeˑPodcastPlayerLifecycle) -> bool {
+  _, ok := x.(tuckˑtypeˑPodcastPlayerLifecycle_Unloaded)
+  return ok
+}
+
+tuckˑtypeˑPodcastPlayerLifecycle_is_Loading :: proc(x: tuckˑtypeˑPodcastPlayerLifecycle) -> bool {
+  _, ok := x.(tuckˑtypeˑPodcastPlayerLifecycle_Loading)
+  return ok
+}
+
+tuckˑtypeˑPodcastPlayerLifecycle_is_Ready :: proc(x: tuckˑtypeˑPodcastPlayerLifecycle) -> bool {
+  _, ok := x.(tuckˑtypeˑPodcastPlayerLifecycle_Ready)
+  return ok
+}
+
 tuckˑtypeˑPodcastPlayerLifecycle_drop :: proc(x: tuckˑtypeˑPodcastPlayerLifecycle) {
   #partial switch v in x {
   case tuckˑtypeˑPodcastPlayerLifecycle_Unloaded:

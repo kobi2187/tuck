@@ -277,21 +277,24 @@ proc tuckSlAwait*[T](f: ptr TuckFrameHdr, s: ptr TuckSlot[T],
   tuckNoStep
 
 # --- finishing a frame, from a `return` in a stage ---------------------------------
-proc tuckSlRet*[F; T](f: ptr F, v: sink T): TuckHop {.inline.} =
+proc tuckSlRet*[F; T](f: ptr F, v: sink T,
+                      exit: proc (f: ptr F) {.nimcall.}): TuckHop {.inline.} =
   ## `return v` in a stage: the value goes where the frame's result goes,
-  ## the frame is freed, and whoever resumes next is the hop.
-  mixin tuckSlExit
+  ## the frame is freed, and whoever resumes next is the hop. `exit` runs its
+  ## armed `defer`s (emitted per frame type). It is passed, not found by a
+  ## `mixin`: the emitted module is `codeReordering`, and a dependency only a
+  ## mixin names is invisible to it, so a frame awaited from an actor handler
+  ## ordered its stages above its `tuckSlExit` (audit C15: undeclared).
   tuckSlFinish(f.tuckRes, f.tuckDest, v)
-  tuckSlExit(f)              # its armed `defer`s (emitted per frame type)
+  exit(f)
   let h = cast[ptr TuckFrameHdr](f)
   result = tuckSlReturnHop(h)
   if not h.embedded: tuckSlFree(f)
 
-proc tuckSlRetVoid*[F](f: ptr F): TuckHop {.inline.} =
-  ## A void frame's `return` (or its end).
-  mixin tuckSlExit
+proc tuckSlRetVoid*[F](f: ptr F, exit: proc (f: ptr F) {.nimcall.}): TuckHop {.inline.} =
+  ## A void frame's `return` (or its end); `exit` as for `tuckSlRet`.
   tuckSlFinishVoid(f.tuckRes)
-  tuckSlExit(f)
+  exit(f)
   let h = cast[ptr TuckFrameHdr](f)
   result = tuckSlReturnHop(h)
   if not h.embedded: tuckSlFree(f)

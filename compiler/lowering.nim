@@ -39,6 +39,7 @@ import lowering_chains      # a `..` chain becomes statements
 import lowering_iface       # a call through an interface becomes a dispatch
 import lowering_alias       # an argument aliasing a by-reference receiver is copied
 import lowering_optional    # a plain T into a ?T place is wrapped; T? fields start absent
+import lowering_block_arms  # a value match with a block arm becomes its statement form
 import lowering_saturating  # a chain stored into a [saturating] type is clamped once
 import lowering_match_binds # a binding match arm becomes a catch-all
 import call_args           # which payload field feeds which param
@@ -326,7 +327,7 @@ proc lowerExpr(res: Resolution, e: Expr, m: Module) =
      exkActorRef,
      exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef, exkCritical, exkDefer,
      exkFinish, exkAcquire, exkOrdinal, exkValidate, exkIfaceCall,
-     exkIfaceIs, exkLatestIs, exkIfacePayload, exkWrapOk, exkAbsent, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset,
+     exkIfaceIs, exkLatestIs, exkIfacePayload, exkWrapOk, exkAbsent, exkZero, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset,
      exkAppend, exkCopy, exkDrop, exkReset:
     discard
 
@@ -492,6 +493,11 @@ proc lowerModule*(res: Resolution, m: Module, real: ModuleMap) =
   # A binding arm (`other: other + 1`) becomes a catch-all reading the
   # subject, or a snapshot of it (lowering_match_binds).
   lowerMatchBinds(res, m)
+  # A value match whose arm is a block becomes the statement match, each
+  # arm handing its last line on (lowering_block_arms). After the line
+  # above, whose snapshot goes before the statement this pass rewrites;
+  # before the interface matches below become `if` chains.
+  lowerBlockArms(res, m)
   # `match v: | Flac f ->` on an interface value becomes an `if` chain over
   # v's tag, `f` read as v's Flac payload (lowering_iface). After the line
   # above, which made each such subject a place that can be read twice.

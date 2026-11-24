@@ -38,6 +38,18 @@ type
     ## Raised, not collected: the first violation stops the pass.
     line*, col*: int
 
+template inModule*(path: string, body: untyped) =
+  ## Run `body`, a check of ONE module, so an error it raises names that
+  ## module's file. A whole-program pass is reported against the ENTRY file
+  ## by its caller, so an error inside an imported module pointed at the
+  ## entry's line of the same number (audit E18/M11).
+  try:
+    body
+  except SemanticError as err:
+    if ".tuck:" notin err.msg and path != "":
+      err.msg = path & ":" & $err.line & ":" & $err.col & ": " & err.msg
+    raise
+
 proc reportError(msg: string, span: Span) =
   ## Raises a `SemanticError` at `span`.
   let err = newException(SemanticError, msg)
@@ -604,6 +616,13 @@ var mainBudgetGrants*: seq[string]
   ## to follow the NAME `main`, so a library's `main`, or an object member
   ## called `main`, was unrestricted too (audit E7).
 
+proc declaredIoMarkers(effects: seq[EffectMarker]): string =
+  ## The I/O markers a bracket declares, as written: `[io]`, `[io: net]`.
+  var parts: seq[string]
+  for e in effects:
+    if e == emIo or e in IoKinds: parts.add "[" & effectName(e) & "]"
+  parts.join(" and ")
+
 proc verifyFn(c: var Checker, d: Decl, top = false) =
   ## One fn body against its own bracket — `main`'s budget aside, below.
   # A contradictory bracket is a fault of the DECLARATION, so a body-less
@@ -650,11 +669,15 @@ proc verifyFn(c: var Checker, d: Decl, top = false) =
   let actual = c.checkExpr(d.fnBody, budget, d.name)
   c.groupReqs = outerReqs
   # The other direction (issue #14): a declared [io] the body never needs.
-  if not isEntryMain and emIo in d.fnEffects and not hasIo(actual.effects) and
+  # Any I/O marker, not only a bare `[io]`: `[io: net]` on a body that does
+  # no I/O at all promised as much for nothing (audit: TK-EF02 fired for the
+  # bare marker alone).
+  if not isEntryMain and hasIo(d.fnEffects) and not hasIo(actual.effects) and
      not c.mayDoIoUnseen(d.fnBody):
-    warn(dcEfUnused, "'" & d.name & "' declares [io], but nothing in its " &
-         "body performs I/O, suspends or spawns. Fix: remove [io] from its " &
-         "bracket", d.span.line, d.span.col)
+    let shown = declaredIoMarkers(d.fnEffects)
+    warn(dcEfUnused, "'" & d.name & "' declares " & shown & ", but nothing " &
+         "in its body performs I/O, suspends or spawns. Fix: remove " & shown &
+         " from its bracket", d.span.line, d.span.col)
   c.visiting.excl(d.name)
 
 proc verifyMembers(c: var Checker, members: seq[Decl]) =

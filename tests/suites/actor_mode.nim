@@ -219,4 +219,61 @@ fn main() -> int [io]:
   t.assertRunsAs("an abandoned batch still crosses on its --batch-timeout",
                  staleBuild, staleRun, 1)
 
+  # --- `[queue: N]` holds under batch too (audit C13) ------------------------
+  #
+  # Batch mode counted the queue in whole BATCHES from a pool, so `queue: 2`
+  # took ten sends and `on_full: assert` / `drop` never saw a full mailbox
+  # on Nim, where every other mode and backend stopped or dropped. Room is
+  # now reserved per message, as Odin's batch mode does.
+  t.src """
+import scheduler
+import time
+
+actor A [queue: 2, on_full: drop]:
+  n: int = 0
+  on go():
+    n += 1
+
+fn got() -> bool:
+  return A.n >= 2
+
+fn main() -> int [io]:
+  for i in 0 ..< 10:
+    A send go {}
+  A.waitUntil {pred: :got}
+  {ms: 30} time::sleepMs
+  {} scheduler::stop
+  return A.n
+"""
+  let dropDir = t.curDir / "drop_out"
+  let dropBuild = t.needCmd(@["./tuck", "b", t.curDir / "t.tuck",
+                              "--actors:batch", "-o:" & dropDir,
+                              "--root:" & t.root], vBuild)
+  let dropRun = t.needCmdAfter(@[dropDir / "t"], dropBuild,
+                               proc (dir: string) = discard, dropDir, vRun)
+  t.assertRunsAs("C13: on_full: drop keeps [queue: 2] under --actors:batch",
+                 dropBuild, dropRun, 2)
+  t.src """
+import scheduler
+
+actor A [queue: 2, on_full: assert]:
+  n: int = 0
+  on go():
+    n += 1
+
+fn main() -> int [io]:
+  for i in 0 ..< 10:
+    A send go {}
+  {} scheduler::stop
+  return 0
+"""
+  let assertDir = t.curDir / "assert_out"
+  let assertBuild = t.needCmd(@["./tuck", "b", t.curDir / "t.tuck",
+                                "--actors:batch", "-o:" & assertDir,
+                                "--root:" & t.root], vBuild)
+  let assertRun = t.needCmdAfter(@[assertDir / "t"], assertBuild,
+                                 proc (dir: string) = discard, assertDir, vRun)
+  t.assertRunsAs("C13: on_full: assert stops a full mailbox under --actors:batch",
+                 assertBuild, assertRun, 1)
+
   t.finish()

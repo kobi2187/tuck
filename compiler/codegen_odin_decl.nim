@@ -577,6 +577,16 @@ proc genSumEqProc(d: Decl, ind: string, sums: HashSet[string]): string =
     result.add(ind & "  }\n")
   result.add(ind & "  return false\n" & ind & "}\n")
 
+proc genSumIsProcs(d: Decl, ind: string): string =
+  ## `S_is_V`: does a value of payload sum S hold variant V? Odin tests a
+  ## union's variant only in a statement (`_, ok := x.(S_V)`), so a `match`
+  ## used as a VALUE — a ternary chain — calls these (audit T15: it compared
+  ## the union against an `SKind` enum no payload sum declares).
+  for v in d.typeBody.variants:
+    result.add("\n" & ind & d.name & "_is_" & v.name & " :: proc(x: " & d.name &
+               ") -> bool {\n" & ind & "  _, ok := x.(" & d.name & "_" & v.name &
+               ")\n" & ind & "  return ok\n" & ind & "}\n")
+
 proc fieldDropLine(ctx: var OdinCodegenCtx, t: Type, path, ind: string): string =
   ## The line that releases one owned field of a variant, or "".
   if not ctx.res.owning(ctx.module, t): return ""
@@ -624,6 +634,7 @@ proc genSumType*(ctx: var OdinCodegenCtx, d: Decl): string =
            else:
              ind & d.name & " :: enum { " & variantTagList(d) & " }\n"
   if hasPayload: result.add(genSumEqProc(d, ind, sumNamesIn(ctx.module)))
+  if hasPayload: result.add(genSumIsProcs(d, ind))
   if hasPayload and d.generics.len == 0: result.add(ctx.genSumDropProc(d, ind))
   if hasTransitions:
     # transition matrix: pure predicate + checked assignment

@@ -16,6 +16,9 @@ proc validate*(self: tuckˑtypeˑTemperature) =
 type tuckˑactorˑUartDriver* = ref object
   discard
 
+let tuckˑactorˑUartDriverSingleton* = tuckˑactorˑUartDriver()
+
+
 proc tuckˑfnˑreadSensor*[T0](p0: T0): TuckResult[tuple[value: uint16]] =
   stderr.writeLine("TUCK PENDING: readSensor invoked (not implemented)")
 

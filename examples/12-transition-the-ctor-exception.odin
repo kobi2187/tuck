@@ -75,6 +75,21 @@ tuckˑtypeˑPlayerState_eq :: proc(a, b: tuckˑtypeˑPlayerState) -> bool {
   return false
 }
 
+tuckˑtypeˑPlayerState_is_Unloaded :: proc(x: tuckˑtypeˑPlayerState) -> bool {
+  _, ok := x.(tuckˑtypeˑPlayerState_Unloaded)
+  return ok
+}
+
+tuckˑtypeˑPlayerState_is_Loading :: proc(x: tuckˑtypeˑPlayerState) -> bool {
+  _, ok := x.(tuckˑtypeˑPlayerState_Loading)
+  return ok
+}
+
+tuckˑtypeˑPlayerState_is_Ready :: proc(x: tuckˑtypeˑPlayerState) -> bool {
+  _, ok := x.(tuckˑtypeˑPlayerState_Ready)
+  return ok
+}
+
 tuckˑtypeˑPlayerState_drop :: proc(x: tuckˑtypeˑPlayerState) {
   #partial switch v in x {
   case tuckˑtypeˑPlayerState_Unloaded:
@@ -160,6 +175,26 @@ tuckˑtypeˑMqttSession_eq :: proc(a, b: tuckˑtypeˑMqttSession) -> bool {
     return true
   }
   return false
+}
+
+tuckˑtypeˑMqttSession_is_Disconnected :: proc(x: tuckˑtypeˑMqttSession) -> bool {
+  _, ok := x.(tuckˑtypeˑMqttSession_Disconnected)
+  return ok
+}
+
+tuckˑtypeˑMqttSession_is_Connecting :: proc(x: tuckˑtypeˑMqttSession) -> bool {
+  _, ok := x.(tuckˑtypeˑMqttSession_Connecting)
+  return ok
+}
+
+tuckˑtypeˑMqttSession_is_Connected :: proc(x: tuckˑtypeˑMqttSession) -> bool {
+  _, ok := x.(tuckˑtypeˑMqttSession_Connected)
+  return ok
+}
+
+tuckˑtypeˑMqttSession_is_Subscribing :: proc(x: tuckˑtypeˑMqttSession) -> bool {
+  _, ok := x.(tuckˑtypeˑMqttSession_Subscribing)
+  return ok
 }
 
 tuckˑtypeˑMqttSession_drop :: proc(x: tuckˑtypeˑMqttSession) {

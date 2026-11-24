@@ -48,6 +48,13 @@ rules; this file is about HOW to fix things.
 - A program is Tuck on every backend or on none: something that builds on Odin
   and D but not on Nim (or any other split) is refused by the checker, not
   left to a host compiler.
+- A value `if`/`match` gives a value on every branch. A branch that leaves the
+  fn (`let x = if c: 5 else: return 0`) is refused, not an early exit
+  (owner, 2026-11-24).
+- A value `match` arm or value `if` branch may be an indented block; its last
+  line is the value (owner, 2026-11-24: one rule for both, within the usual
+  complexity and line limits). A value `if` needs an `else`. Lowered to the
+  statement form by `lowering_block_arms`.
 
 ## 4. Organise the work
 

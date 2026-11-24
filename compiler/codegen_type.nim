@@ -123,6 +123,7 @@ proc genType*(t: Type): string =
     if t.name.startsWith(NamedTypeParamPrefix):
       t.name[NamedTypeParamPrefix.len .. ^2]
     elif slabOfRefType(t.name) != nil: "SlabRef"
+    elif poolOfHandleType(t.name) != nil: "PoolHandle"
     else: nimPrimitive(t.name)
   of tkTuple:
     var parts: seq[string]

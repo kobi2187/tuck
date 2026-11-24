@@ -1206,7 +1206,10 @@ awaitResult :: proc(slot: ^TuckAsyncResult($T)) -> T {
 		if inCoroutine() {
 			coroYield()
 		} else {
-			if !runNext() do runOnce(1)
+			// the reactor on every step: a task awaiting its child yields in
+			// a loop, so something is always ready (audit C14)
+			ran := runNext()
+			runOnce(ran ? 0 : 1)
 		}
 	}
 	// The task's last touch of the slot is `done = true` (its wrapper then

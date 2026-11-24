@@ -90,8 +90,12 @@ proc rehomed(r: Rehome, generic, name: string): seq[string] =
   ## checked again in the CALLER's module, where the same bare name can mean
   ## the caller's own fn (which then ran instead of the library's, silently),
   ## or nothing at all (audit M14). So a name that means something else there
-  ## is written `owner::name`; one the caller cannot reach is refused HERE,
-  ## at the call that asks for the clone, naming what is missing.
+  ## is written `owner::name`. One the caller cannot reach itself — private
+  ## to the library, or from an import the caller does not have — is still
+  ## the library's to call: it is recorded in `cloneReach`, which puts that
+  ## one name in the caller's scope for the clone. It used to be refused,
+  ## asking the caller to import the library's internals or the library to
+  ## publish them.
   let owner = r.ownerIn(r.home, r.homeM, name)
   if owner == "" or name in r.generics: return @[]
   if r.ownerIn(r.into, r.intoM, name) == owner: return @[]
@@ -99,12 +103,9 @@ proc rehomed(r: Rehome, generic, name: string): seq[string] =
   for d in r.intoM.decls(dkImport):
     if d.name == owner: imported = true
   let (restricted, allowed) = r.exports.getOrDefault(owner)
-  if imported and (not restricted or name in allowed): return @[owner]
-  fail("Type Error: '" & generic & "' is expanded here for this object, and " &
-       "its body calls '" & name & "' of module '" & owner & "', which this " &
-       "module cannot name. Fix: " &
-       (if not imported: "`import " & owner & "` here"
-        else: "list '" & name & "' in " & owner & "'s `public:`"), r.site)
+  if not (imported and (not restricted or name in allowed)):
+    cloneReach.mgetOrPut(r.into, initHashSet[string]()).incl owner & "::" & name
+  @[owner]
 
 proc qualifiedFn(e: Expr, name: string, q: seq[string]): Expr =
   Expr(span: e.span, kind: exkQualified, modulePath: q, qualName: name,

@@ -707,6 +707,7 @@ proc genMatchExpr(ctx: var OdinCodegenCtx, e: Expr): string =
   tagOwnerHint = hintOf(ctx.res.typeFor(e.subject))
   defer: tagOwnerHint = savedHint
   let subjectStr = ctx.genOdinExpr(e.subject)
+  let sumName = payloadSumTypeName(ctx.module, ctx.res.typeFor(e.subject))
   var res = ""
   var closing = 0
   for i, arm in e.arms:
@@ -715,6 +716,12 @@ proc genMatchExpr(ctx: var OdinCodegenCtx, e: Expr): string =
     if patStr == "_" or i == e.arms.len - 1:
       res.add(bodyStr)
       break
+    if sumName != "":
+      # a payload union: its variant is tested by the sum's `_is_` proc
+      res.add("(" & ctx.importPrefix(sumName) & sumName & "_is_" & patStr &
+              "(" & subjectStr & ") ? " & bodyStr & " : ")
+      closing.inc
+      continue
     var cmpVal = ctx.patternValue(patStr)
     if arm.pattern != nil and arm.pattern.kind == pkVar and
        "." in arm.pattern.name:
@@ -1937,6 +1944,8 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
     "rt.TuckResult(" & ctx.odinType(e.optInner) & "){status = .Ok, value = " &
       ctx.genOdinExpr(e.optValue) & "}"
   of exkAbsent: "rt.tnone(" & ctx.odinType(e.optInner) & ")"
+  # lowering_block_arms states the declaration's type, so `{}` is its zero.
+  of exkZero: "{}"
   of exkPoolOp: ctx.genOdinPoolOp(e)
   of exkSlabOp: ctx.genOdinSlabOp(e)
   of exkArenaReset:

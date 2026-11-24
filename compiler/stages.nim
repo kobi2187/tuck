@@ -165,6 +165,19 @@ const ActorWaits = ["waitUntil", "alive", "pingUs"]
 proc isIoExtern(d: Decl): bool =
   d != nil and d.kind == dkFn and d.isExtern and hasIo(d.fnEffects)
 
+proc dispatchMayWait(sp: Splitter, n: Expr): bool =
+  ## A call through an interface value runs whichever satisfier the value
+  ## holds, chosen at run time: no call edge reaches any of them, so none is
+  ## coloured a frame. If a satisfier's member does I/O it may wait, so the
+  ## statement runs whole on a helper stack, as any call resolved only at
+  ## run time does (audit C9: `o.run` with an [io] member waited on the
+  ## frame's own stack and the runtime stopped).
+  for arm in n.dispatchArms:
+    if arm.call == nil: continue
+    let d = calleeDecl(sp.res, sp.m, arm.call)
+    if d == nil or hasIo(d.fnEffects): return true
+  false
+
 proc parksAt(sp: Splitter, n: Expr): bool =
   ## Does this node wait inside the runtime's own code (phase 4)? An [io]
   ## extern (an fd, a timer, an offloaded file read), `on select`, a send
@@ -173,6 +186,7 @@ proc parksAt(sp: Splitter, n: Expr): bool =
   case n.kind
   of exkSelect, exkSend: true
   of exkField: n.receiver != nil and n.receiver.kind == exkActorRef and n.fieldName in ActorWaits
+  of exkIfaceCall: sp.dispatchMayWait(n)
   else:
     let c = sp.callOf(n)
     if c == nil: return false
@@ -238,7 +252,11 @@ proc noteLocal(sp: var Splitter, s: Expr) =
   ## A local declared in a list that is split lives in the frame.
   if s.kind != exkAssign or not s.isDecl or s.target == nil or s.target.kind != exkVar:
     return
-  var t = sp.res.typeFor(s.target)
+  # A STATED type wins: `let o: Runner = o0` is a Runner, though the checker
+  # types the target by what it was given (an R1). The frame field took the
+  # R1, and wrapping o0 into the interface no longer fit (audit C9).
+  var t = s.declType
+  if t == nil: t = sp.res.typeFor(s.target)
   if t == nil: t = sp.res.typeFor(s.assignVal)
   sp.addField(s, s.target.name, t)
 

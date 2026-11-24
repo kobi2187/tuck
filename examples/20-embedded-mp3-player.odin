@@ -114,6 +114,21 @@ tuckˑtypeˑPlayerState_eq :: proc(a, b: tuckˑtypeˑPlayerState) -> bool {
   return false
 }
 
+tuckˑtypeˑPlayerState_is_Idle :: proc(x: tuckˑtypeˑPlayerState) -> bool {
+  _, ok := x.(tuckˑtypeˑPlayerState_Idle)
+  return ok
+}
+
+tuckˑtypeˑPlayerState_is_Decoding :: proc(x: tuckˑtypeˑPlayerState) -> bool {
+  _, ok := x.(tuckˑtypeˑPlayerState_Decoding)
+  return ok
+}
+
+tuckˑtypeˑPlayerState_is_Paused :: proc(x: tuckˑtypeˑPlayerState) -> bool {
+  _, ok := x.(tuckˑtypeˑPlayerState_Paused)
+  return ok
+}
+
 tuckˑtypeˑPlayerState_drop :: proc(x: tuckˑtypeˑPlayerState) {
   #partial switch v in x {
   }

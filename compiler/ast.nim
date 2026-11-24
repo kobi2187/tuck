@@ -495,6 +495,10 @@ type
                     # initialiser. The carrier's zero value is status OK (the
                     # enum's first member), not absent — so it is never left
                     # to a zero.
+    exkZero         # lowered only (lowering_block_arms): the zero value of
+                    # its type (the Resolution's), declaring a binding that
+                    # every path assigns next. Nim `default(T)`, Odin `{}`
+                    # under a typed declaration, D `T.init`.
     exkPoolOp       # `Cells.acquire`, `Cells.read {h}`, ... — an operation on a
                     # pool (spec §7.2). Its own node, stamped by the checker:
                     # it used to be a call whose callee was the bare member
@@ -707,7 +711,7 @@ type
       raiseVal*: Expr
     of exkDiscard:
       discardVal*: Expr   # nil = bare `discard`, a pure no-op statement
-    of exkTripleDot:
+    of exkTripleDot, exkZero:
       discard             # `...` carries nothing; the node IS the statement
     of exkImport:
       path*: seq[string]

@@ -592,15 +592,25 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
   let msgEnumName = d.name & "MsgKind"
   let msgTypeName = d.name & "Msg"
 
+  let singleton = actorSingletonName(d.name)   # spec §9: one global per actor
   if handlers.len == 0:
-    # No handlers: an empty enum is invalid Nim. Emit just the state object.
+    # No handlers: an empty enum is invalid Nim, so no message type and no
+    # mailbox. The state and its singleton still exist — its fields are read
+    # by name (`Grow.items`) — with their initialisers, and its member fns
+    # (audit C17: the singleton was missing, so Nim alone did not build).
     var bareFields: seq[string]
     for f in d.actorFields:
       bareFields.add("  " & f.name & "*: " & ctx.fieldType(d.name, f))
     let bareBody = if bareFields.len > 0: bareFields.join("\n") else: "  discard"
-    return "type " & d.name & "* = ref object\n" & bareBody & "\n"
+    var bareInits: seq[string]
+    for f in d.actorFields:
+      if f.default != nil: bareInits.add(f.name & ": " & ctx.genExpr(f.default))
+    var bareMembers = ""
+    for m in actorMemberFns(d): bareMembers.add ctx.genActorMemberFn(m, d.name) & "\n"
+    return "type " & d.name & "* = ref object\n" & bareBody & "\n\n" &
+           "let " & singleton & "* = " & d.name & "(" & bareInits.join(", ") & ")\n\n" &
+           bareMembers
 
-  let singleton = actorSingletonName(d.name)   # spec §9: one global per actor
   let drainName = "drain" & d.name
   let msgTypes = genMsgTypes(handlers, msgEnumName, msgTypeName)
   let stateStr = genActorState(ctx, d, msgTypeName, queueSize)

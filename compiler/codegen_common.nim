@@ -611,7 +611,8 @@ proc isExportedDecl*(m: Module, d: Decl): bool =
   ## writtenName, never the mangled identifier the backends emit.
   if d == nil: return true
   let (restricted, allowed) = exportedNames(m)
-  (not restricted) or writtenName(d) in allowed
+  (not restricted) or writtenName(d) in allowed or
+    cloneReached(nameOf(m.id) & "::" & writtenName(d))
 
 proc registryHandlers*(m: Module, d: Decl, v: VariantDef): seq[Decl] =
   ## Every `on Registry.Event` handler for this event, matched on the names

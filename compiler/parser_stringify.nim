@@ -198,6 +198,8 @@ proc toString*(e: Expr): string =
     return "some(" & e.optValue.toString() & ")"
   of exkAbsent:
     return "none"
+  of exkZero:
+    return "zero"   # lowering-built (lowering_block_arms)
   of exkAcquire:
     return "acquire " & optToString(e.acquireRef) & ", " & e.acquireKind
   of exkFinish:

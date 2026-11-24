@@ -103,7 +103,7 @@ proc TuckSˑtuckˑtaskˑserveˑ3*(env: pointer): TuckHop {.nimcall.} =
   template lfd: untyped = tuckF.lfd
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckOwnTmp1: untyped = tuckF.tuckOwnTmp1
-  return tuckSlRetVoid(tuckF)
+  return tuckSlRetVoid(tuckF, tuckSlExit)
 
 proc TuckSˑtuckˑtaskˑserveˑ4*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑserve](env)
@@ -378,7 +378,7 @@ proc TuckSˑtuckˑtaskˑclientˑ15*(env: pointer): TuckHop {.nimcall.} =
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
-  return tuckSlRetVoid(tuckF)
+  return tuckSlRetVoid(tuckF, tuckSlExit)
 
 proc TuckSˑtuckˑtaskˑclientˑ16*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
@@ -399,7 +399,7 @@ proc TuckSˑtuckˑtaskˑclientˑ18*(env: pointer): TuckHop {.nimcall.} =
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
-  return tuckSlRetVoid(tuckF)
+  return tuckSlRetVoid(tuckF, tuckSlExit)
 
 proc TuckSˑtuckˑtaskˑclientˑ19*(env: pointer): TuckHop {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)
@@ -413,7 +413,7 @@ proc TuckSˑtuckˑtaskˑclientˑ20*(env: pointer): TuckHop {.nimcall.} =
   template port: untyped = tuckF.port
   template tuckˑvˑc: untyped = tuckF.tuckˑvˑc
   template tuckˑvˑr: untyped = tuckF.tuckˑvˑr
-  return tuckSlRetVoid(tuckF)
+  return tuckSlRetVoid(tuckF, tuckSlExit)
 
 proc TuckIOˑtuckˑtaskˑclientˑ0*(env: pointer) {.nimcall.} =
   let tuckF = cast[ptr TuckFˑtuckˑtaskˑclient](env)

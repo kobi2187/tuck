@@ -48,6 +48,8 @@ type
     frameVar*: string      # in a stackless stage: the frame's name ("tuckF");
                            # a `return` finishes the frame instead (#216)
     inTask*: bool          # emitting a task body — [io] calls become async yields
+    preYielded*: HashSet[NodeId]  # [io] calls whose yield went BEFORE their
+                           # statement, so the call itself does not yield
     errPolicy*: string     # from the errors declaration; "" = strict
     lineInfo*: bool        # emit `{.line: (...).}:` on statements (--debug-lines)
     srcPath*: string       # the Tuck file those line pragmas name

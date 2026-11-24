@@ -538,6 +538,15 @@ proc walkLoop(b: var Builder, cond, body: Expr, binds: Pattern = nil) =
   b.sealBlock(exit)
   b.here = exit
 
+proc walkValue(b: var Builder, e: Expr) =
+  ## A VALUE that is itself control flow — `let z = match s: ...`, `return if
+  ## c: a else: b` — gets its blocks like the statement form; anything else
+  ## is only read. Read whole, every name inside counted as a read, so `s = B`
+  ## in an arm read `s` there and the subject's real last read looked live
+  ## (audit T15: "the SSA mirror is malformed").
+  if e != nil and e.kind in {exkMatch, exkIf, exkBlock}: b.walk(e)
+  else: b.reads(e)
+
 proc walk(b: var Builder, e: Expr) =
   ## Builds the graph for one statement or expression: assignments define,
   ## control flow makes blocks, and exits mark their block. Everything else
@@ -547,7 +556,7 @@ proc walk(b: var Builder, e: Expr) =
   of exkBlock:
     for s in e.stmts: b.walk(s)
   of exkAssign:
-    b.reads(e.assignVal)
+    b.walkValue(e.assignVal)
     b.defineTo(e.target, e.assignVal)
   of exkAppend:
     # `xs += v` builds `v`, then reads the old `xs` and defines the new one —
@@ -562,7 +571,10 @@ proc walk(b: var Builder, e: Expr) =
   of exkFor:
     b.reads(e.iterable)
     b.walkLoop(nil, e.body, e.iter)
-  of exkReturn, exkRaise:
+  of exkReturn:
+    b.walkValue(e.returnVal)
+    b.fn.blocks[int32(b.here)].exits = true
+  of exkRaise:
     b.reads(e)
     b.fn.blocks[int32(b.here)].exits = true
   of exkBreak:

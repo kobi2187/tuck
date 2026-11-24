@@ -6202,8 +6202,57 @@ fn run[T: Src]({x: T}) -> int:
   let b = {self: x} v
   return a + b
 """)
-  t.quietly: t.badCheck "A146: a clone needing a name the caller cannot reach says which", "its body calls 'secret' of module 'lib'"
-  t.bugFixed "A146: a clone needing a name the caller cannot reach says which"
+  # The end state (ledger: "a restriction, not the end state"): the clone was
+  # written in the library's scope, so it calls the library's private
+  # `secret`; it was refused, asking the library to publish it. 1002 & 0xFF.
+  t.quietly: t.hostRuns "A146: a clone calls the library's private fn", 234
+  t.bugFixed "A146: a clone calls the library's private fn"
+  t.src """
+import lib
+
+fn main() -> int:
+  return {n: 1} lib::secret
+"""
+  t.addFile("lib.tuck", """public:
+  Src run
+
+interface Src:
+  fn v({self: Self}) -> int
+fn secret({n: int}) -> int:
+  return n + 1000
+fn run[T: Src]({x: T}) -> int:
+  let a = {n: 1} secret
+  let b = {self: x} v
+  return a + b
+""")
+  t.quietly: t.badCheck "A146: ...but the caller itself still cannot name it", "secret"
+  t.bugFixed "A146: ...but the caller itself still cannot name it"
+  t.src """
+import lib
+
+object Foo:
+  satisfies Src
+  k: int
+  fn v({self: Foo}) -> int:
+    return self.k
+
+fn main() -> int:
+  let f = {k: 1} Foo
+  return {x: f} run
+"""
+  t.addFile("util.tuck", """fn plus1000({n: int}) -> int:
+  return n + 1000
+""")
+  t.addFile("lib.tuck", """import util
+interface Src:
+  fn v({self: Self}) -> int
+fn run[T: Src]({x: T}) -> int:
+  let a = {n: 1} plus1000
+  let b = {self: x} v
+  return a + b
+""")
+  t.quietly: t.hostRuns "A146: a clone calls a fn of the library's own import", 234
+  t.bugFixed "A146: a clone calls a fn of the library's own import"
 
   # A147 (audit M13): `ea::conv` on an extern with `[emit: "toUpperAscii"]`
   # went out as `ea.conv`: the Nim emitter looked the emit name up by the
@@ -8256,5 +8305,537 @@ fn main() -> int [io]:
 """
   t.quietly: t.hostRuns "A183: an operand left of a pause is read before it", 1
   t.bugFixed "A183: an operand left of a pause is read before it"
+
+  # A184 (class H). A `match` used as a value over a PAYLOAD sum built on Nim
+  # and D but not Odin: its ternary compared the union against `SessKind`, an
+  # enum only payload-free sums have. The union's variant is tested through
+  # the sum's generated `_is_` procs now.
+  t.src """
+type Sess:
+  | Idle
+  | Open({id: int})
+  | Done({code: int})
+
+fn score({s: Sess}) -> int:
+  let v = match s:
+    Idle: 1
+    Open: s.id
+    Done: s.code
+  return v
+
+fn main() -> int:
+  let a = {s: Sess.Open {id: 4}} score
+  let b = {s: Sess.Idle} score
+  return a + b
+"""
+  t.quietly: t.hostRuns "A184: a value match over a payload sum builds on Odin", 5
+  t.bugFixed "A184: a value match over a payload sum builds on Odin"
+  # A value whose own control flow writes a name — the subject reassigned in
+  # an arm of `let z = match s:` — was read whole by the SSA mirror, the write
+  # counted as a read, and the checker stopped: "the SSA mirror is malformed".
+  # (Whether a value-match arm may be a block at all is waiting on a ruling:
+  # no backend builds one yet.)
+  t.src """
+type D:
+  | A({n: int})
+  | B
+
+fn main() -> int [io]:
+  var s = D.A {n: 1}
+  let z = match s:
+    A:
+      s = D.B
+      0
+    _: 1
+  return z
+"""
+  t.quietly: t.okCheck "A184: a write inside a value's own control flow is not a read"
+  t.bugFixed "A184: a write inside a value's own control flow is not a read"
+
+  # A185 (class G, C15): a task awaited from an actor handler did not build
+  # on Nim under stackless: "undeclared identifier: tuckSlExit". The emitted
+  # module is `codeReordering`, and `tuckSlRet` found the frame's exit proc
+  # by `mixin`, a dependency the reordering cannot see, so the stages landed
+  # above it. The stage now passes `tuckSlExit` explicitly.
+  t.src """
+actor A [queue: 4]:
+  n: int = 0
+  on go():
+    n += 1
+
+task worker({k: int}) -> {r: int} [io]:
+  A send go {}
+  return {r: 1}
+
+actor B [queue: 4]:
+  m: int = 0
+  on go():
+    let r = {k: 1} worker
+    m += r.r
+
+fn main() -> int:
+  B send go {}
+  return 0
+"""
+  t.quietly: t.hostRuns "A185: a task awaited from an actor handler builds", 0
+  t.bugFixed "A185: a task awaited from an actor handler builds"
+
+  # A186 (class G, C8/C10/C17). Each built on two backends and failed on the
+  # third. C8: `return err X` in a stackless frame on Nim wrapped the frame's
+  # finish twice. C10: a pool handle type the user WROTE (`h: ReadingsHandle`)
+  # reached Nim and Odin undeclared; only D's type mapper knew it was the
+  # runtime's PoolHandle. C17: an actor with fields and no handlers had no
+  # singleton on Nim, so reading `Grow.items` did not build.
+  t.src """
+import console
+
+type Boom:
+  | Bad
+
+fn say({text: str}) [io]:
+  {text: text} console::printLine
+
+fn mayFail({n: int}) -> !{v: int} [io, error: Boom]:
+  {text: "mayFail"} say
+  if n > 1:
+    return err Boom.Bad
+  return {v: n}
+
+task t1({k: int}) -> {r: int} [io]:
+  let r = {n: k} mayFail
+  if not r.ok:
+    return {r: 99}
+  return {r: r.value.v}
+
+fn main() -> int [io]:
+  let r = {k: 1} t1
+  return r.r
+"""
+  t.quietly: t.hostRuns "A186: return err X from a stackless frame", 1, "mayFail"
+  t.bugFixed "A186: return err X from a stackless frame"
+  t.src """
+type Reading:
+  value: int
+
+pool Readings = Reading [count: 2]
+
+type Holder = {h: ReadingsHandle}
+
+fn rel({h: ReadingsHandle}):
+  Readings.release {h: h}
+
+fn main() -> int:
+  let h = Readings.acquire
+  if not h.ok:
+    return 100
+  {h: h.value} rel
+  return 0
+"""
+  t.quietly: t.hostRuns "A186: a written pool handle type is the runtime's", 0
+  t.bugFixed "A186: a written pool handle type is the runtime's"
+  t.src """
+actor Grow [queue: 8]:
+  name: str = "hello"
+  items: Seq[int] = [1, 2, 3]
+
+fn main() -> int:
+  let a = Grow.name
+  let c = Grow.items
+  return a.len + c.len
+"""
+  t.quietly: t.hostRuns "A186: an actor with fields and no handlers", 8
+  t.bugFixed "A186: an actor with fields and no handlers"
+
+  # A187 (class G, c_member/b): `:bump` naming an actor's member fn checked
+  # clean and built on no backend, inside the actor or out (a member needs
+  # its actor's state: a reference to it is a bound method). Refused; a free
+  # fn of the same name is still what a bare reference means.
+  t.src """
+fnsig Op = {} -> int
+type Box = {op: Op}
+
+actor A [queue: 8]:
+  n: int = 0
+  fn bump() -> int:
+    n += 1
+    return n
+  on go():
+    n += 1
+
+fn main() -> int:
+  A send go {}
+  let c = {op: :bump} Box
+  return {} c.op
+"""
+  t.quietly: t.badCheck "A187: a reference to an actor's member is refused", "member of actor 'A'"
+  t.bugFixed "A187: a reference to an actor's member is refused"
+  t.src """
+fnsig Op = {} -> int
+type Box = {op: Op}
+
+actor A [queue: 8]:
+  n: int = 0
+  fn bump() -> int:
+    n += 1
+    return n
+  on go():
+    n += 1
+
+fn bump() -> int:
+  return 7
+
+fn main() -> int:
+  let c = {op: :bump} Box
+  return {} c.op
+"""
+  t.okCheck "A187: ...but a free fn of the same name is referenced"
+
+  # A188 (class G, C9). Under stackless, a frame local stated as an interface
+  # (`let o: Runner = o0`) became a frame field of the VALUE's type (R1), and
+  # wrapping into the interface no longer fit (no backend built it). And a
+  # call through an interface whose member waits (`o.run`, [io]) ran on the
+  # frame's own stack and the runtime stopped: no call edge reaches a
+  # satisfier, so none was a frame. A stated type now wins for the field,
+  # and such a dispatch runs on a helper stack.
+  t.src """
+import console
+
+interface Runner:
+  fn run({self: Self}) -> int
+
+object R1:
+  satisfies Runner
+  k: int
+  fn run({self: R1}) -> int:
+    return self.k
+
+fn say({text: str}) [io]:
+  {text: text} console::printLine
+
+task t1({k: int}) -> {r: int} [io]:
+  let o0 = {k: 4} R1
+  let o: Runner = o0
+  {text: "mid"} say
+  let c = o.run
+  return {r: c}
+
+fn main() -> int [io]:
+  let r = {k: 1} t1
+  return r.r
+"""
+  t.quietly: t.hostRuns "A188: a frame local stated as an interface", 4, "mid"
+  t.bugFixed "A188: a frame local stated as an interface"
+  t.src """
+import console
+import time
+
+fn say({text: str}) [io]:
+  {text: text} console::printLine
+
+fn pausing({tag: str}) -> int [io]:
+  {text: "pausing " + tag} say
+  {ms: 3} time::sleepMs
+  return 1
+
+fnsig Op = {tag: str} -> int [io]
+type Box = {op: Op}
+
+interface Runner:
+  fn run({self: Self}) -> int [io]
+
+object R1:
+  satisfies Runner
+  k: int
+  fn run({self: R1}) -> int [io]:
+    let x = {tag: "iface"} pausing
+    return x + self.k
+
+fn generic[T]({x: T}) -> int [io]:
+  let y = {tag: "generic"} pausing
+  return y
+
+task t1({k: int}) -> {r: int} [io]:
+  let b = {op: :pausing} Box
+  let a = {tag: "fnsig"} b.op
+  let o0 = {k: 1} R1
+  let o: Runner = o0
+  let c = o.run
+  let g = {x: 5} generic
+  {text: "done"} say
+  return {r: a + c + g}
+
+fn main() -> int [io]:
+  let r = {k: 1} t1
+  return r.r
+"""
+  t.quietly: t.hostRuns "A188: an interface call that waits, in a task", 4, "pausing iface\\s+pausing generic\\s+done"
+  t.bugFixed "A188: an interface call that waits, in a task"
+
+  # A189 (class G, C14): under stackful, main awaiting a task that awaits a
+  # child which SLEEPS hung on every backend. The parent's await yields in a
+  # loop, so something was always ready, and main's await loop polled the
+  # reactor only when nothing was: the child's timer never fired. The
+  # reactor is polled on every step now. (Stackless parks the frame, and
+  # was right.)
+  t.src """
+import time
+
+task child({n: u32}) -> {r: int} [io]:
+  {ms: n} time::sleepMs
+  return {r: 1}
+
+task parent({k: int}) -> {r: int} [io]:
+  let a = {n: 5} child
+  return {r: a.r + 2}
+
+fn main() -> int [io]:
+  let p = {k: 0} parent
+  return p.r
+"""
+  t.quietly: t.hostRuns "A189: an await of a task awaiting a sleeping child", 3
+  t.bugFixed "A189: an await of a task awaiting a sleeping child"
+
+  # A190 (class I). An error inside an imported module named the ENTRY file
+  # at the module's line (E18/M11): the whole-program name and registry
+  # checks reported against the entry; each module's check now names its
+  # own file. TK-TY41 dropped the sign (`-200` read "200"), a value `if` or
+  # `match` with a returning branch said "int vs unit", and TK-EF02 fired for
+  # a bare unused `[io]` only (Y19, EF02). A block-bodied `if` taken as a
+  # value — the statement form by R2 — checked and built to a wrong value on
+  # Odin and D; it is refused, saying so.
+  t.src """
+import drv
+
+fn main() -> int:
+  return 0
+"""
+  t.addFile "drv.tuck", """
+fn my_val() -> int:
+  return 1
+
+fn myVal() -> int:
+  return 2
+"""
+  t.quietly: t.badCheck "A190: an error in an import names the import's file", "drv\\.tuck:4:1.*TK-TY50"
+  t.bugFixed "A190: an error in an import names the import's file"
+  t.src """
+fn main() -> int:
+  let a: i8 = -200
+  return 0
+"""
+  t.quietly: t.badCheck "A190: TK-TY41 keeps the sign", "-200 does not fit i8"
+  t.bugFixed "A190: TK-TY41 keeps the sign"
+  t.src """
+fn f({c: bool}) -> int:
+  let x = if c: 5 else: return 0
+  return x
+
+fn main() -> int:
+  return {c: true} f
+"""
+  t.quietly: t.badCheck "A190: a returning branch in a value if says so", "else branch produces no value"
+  t.bugFixed "A190: a returning branch in a value if says so"
+  t.src """
+fn main() -> int:
+  let k = 3
+  let v = if k > 5:
+    1
+  else:
+    2
+  return v
+"""
+  # Reversed by the ruling of 2026-11-24 (A193): a block branch's last line
+  # is its value, as a block match arm's is. The program now runs.
+  t.quietly: t.hostRuns "A190: a block-bodied if is a value (reversed, A193)", 2
+  t.bugFixed "A190: a block-bodied if is a value (reversed, A193)"
+  t.src """
+fn main() -> int:
+  let k = 3
+  let v = if k > 5: 1 else: 2
+  var w = 0
+  if k > 5:
+    w = 1
+  else:
+    w = 2
+  return v + w
+"""
+  t.quietly: t.runs "A190: ...the value if and the statement if still work", 4
+  t.bugFixed "A190: ...the value if and the statement if still work"
+
+  # A191 (found with M14): a library declaring an interface-bounded generic
+  # whose body calls a requirement in payload form (`{self: x} v`) did not
+  # check at all when nothing in the program satisfied the interface yet:
+  # the call fell to the flat signature table, which held a `v` only while
+  # some satisfier existed. It is typed from the contract now.
+  t.src """
+import lib
+
+fn main() -> int:
+  return 0
+"""
+  t.addFile("lib.tuck", """interface Src:
+  fn v({self: Self}) -> int
+fn run[T: Src]({x: T}) -> int:
+  let b = {self: x} v
+  return b + 1
+""")
+  t.quietly: t.okCheck "A191: an uninstantiated generic's requirement call checks"
+  t.bugFixed "A191: an uninstantiated generic's requirement call checks"
+
+  # A192 (ruled 2026-11-24: a value `match` arm that is a block has its last
+  # line as its value). The checker accepted such a match and no backend
+  # built it: Nim reported the last line unused, Odin and D printed a
+  # declaration inside an expression. lowering_block_arms makes it the
+  # statement match, each arm handing its last line to the binding (declared
+  # first at its type's zero, exkZero), the assignment, or a `return` — the
+  # last also for a body's tail match. Nested, record, str and reassigned
+  # forms; a pause inside an arm and an owned Seq, on both flags.
+  t.src """
+type P = {a: int, b: int}
+
+fn pick({n: int}) -> int:
+  match n:
+    1: 10
+    _:
+      let d = n * 2
+      d + 1
+
+fn back({n: int}) -> int:
+  return match n:
+    0: 5
+    _:
+      let e = n + 100
+      e
+
+fn nested({n: int, k: int}) -> int:
+  let x = match n:
+    1: match k:
+      0: 1
+      _:
+        let z = k * 3
+        z
+    _: 7
+  return x
+
+fn rec({n: int}) -> P:
+  let p = match n:
+    0: {a: 0, b: 0} P
+    _:
+      let q = {a: n, b: n * 2} P
+      q
+  return p
+
+fn words({n: int}) -> int:
+  let s = match n:
+    0: "none"
+    _:
+      let w = "many"
+      w
+  return s.len
+
+fn main() -> int:
+  var y = 0
+  y = match 2:
+    1: 1
+    _:
+      let t = 20
+      t
+  return ({n: 3} pick) + ({n: 4} back) + ({n: 1, k: 2} nested) + ({n: 2} rec).b + ({n: 2} words) + y
+"""
+  t.quietly: t.hostRuns "A192: a value match arm that is a block yields its last line", 145
+  t.bugFixed "A192: a value match arm that is a block yields its last line"
+  t.src """
+import seq
+import console
+import time
+
+fn nap({ms: u32}) -> int [io]:
+  {ms: ms} time::sleepMs
+  return 3
+
+task work({k: int}) -> {r: int} [io]:
+  let w = match k:
+    1: 100
+    _:
+      {text: "arm"} console::printLine
+      let a = {ms: 5} nap
+      a + k
+  let xs = match k:
+    0: [1]
+    other:
+      var ys = [other, 2]
+      ys = {items: ys, value: w} push
+      ys
+  return {r: w + xs.len}
+
+fn main() -> int [io]:
+  let r = {k: 2} work
+  return r.r
+"""
+  t.quietly: t.hostRuns "A192: ...with a pause in the arm and an owned Seq, the arm run once", 8, "^arm\\s*$"
+  t.bugFixed "A192: ...with a pause in the arm and an owned Seq, the arm run once"
+
+  # A193 (ruled 2026-11-24, with A192: one rule for `if` and `match`): a
+  # value `if` whose branch is a block yields the block's last line —
+  # binding, reassignment, `return`, an `elif` chain — lowered like A192's
+  # match. And an `if` used as a value with no `else` (one-line or block)
+  # checked clean and built nowhere; it has no value when the condition is
+  # false, so it is refused. The statement `if` without `else` is unchanged.
+  t.src """
+fn grade({k: int}) -> int:
+  let v = if k > 5:
+    let a = k * 2
+    a + 1
+  else: 3
+  return v
+
+fn chain({k: int}) -> int:
+  return if k > 9:
+    1
+  elif k > 5:
+    let b = k + 40
+    b
+  else:
+    0
+
+fn main() -> int:
+  var w = 0
+  w = if w == 0:
+    let c = 100
+    c
+  else: 1
+  return ({k: 7} grade) + ({k: 2} grade) + ({k: 7} chain) + w
+"""
+  t.quietly: t.hostRuns "A193: a value if with block branches yields their last lines", 165
+  t.bugFixed "A193: a value if with block branches yields their last lines"
+  t.src """
+fn main() -> int:
+  let k = 3
+  let v = if k > 5: 1
+  return v
+"""
+  t.quietly: t.badCheck "A193: a value if with no else is refused", "has no `else`"
+  t.bugFixed "A193: a value if with no else is refused"
+  t.src """
+fn main() -> int:
+  let k = 3
+  let v = if k > 5:
+    let a = 1
+    a
+  return v
+"""
+  t.quietly: t.badCheck "A193: ...block-bodied too", "has no `else`"
+  t.bugFixed "A193: ...block-bodied too"
+  t.src """
+fn main() -> int:
+  let k = 3
+  var w = 1
+  if k > 5:
+    w = 2
+  if k < 5: w = w + 10
+  return w
+"""
+  t.quietly: t.runs "A193: ...the statement if without else still runs", 11
+  t.bugFixed "A193: ...the statement if without else still runs"
 
   t.finish()

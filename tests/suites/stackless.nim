@@ -42,7 +42,7 @@ import ../harness
 const Programs = ["tests/stackless/order.tuck", "tests/stackless/values.tuck",
                   "tests/stackless/loops.tuck", "tests/stackless/parks.tuck",
                   "tests/stackless/sends.tuck", "tests/stackless/hoists.tuck",
-                  "tests/stackless/recursion.tuck",
+                  "tests/stackless/recursion.tuck", "tests/stackless/paths.tuck",
                   "examples/28-async-task.tuck",
                   "examples/29-task-timeout.tuck", "examples/30-async-read.tuck"]
   # examples/42-net-echo (sockets) runs the same too, checked by hand: it
