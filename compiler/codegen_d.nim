@@ -1708,7 +1708,6 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
     # explicitly so a literal takes T rather than its own default type.
     "rt.tok!(" & ctx.dType(e.optInner) & ")(" & ctx.genDExpr(e.optValue) & ")"
   of exkAbsent: "rt.tnone!(" & ctx.dType(e.optInner) & ")()"
-  of exkZero: "(" & ctx.dType(ctx.res.typeFor(e)) & ").init"   # lowering_block_arms
   of exkPoolOp: ctx.genDPoolOp(e)
   of exkSlabOp: ctx.genDSlabOp(e)
   of exkArenaReset:

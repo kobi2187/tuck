@@ -51,10 +51,10 @@ rules; this file is about HOW to fix things.
 - A value `if`/`match` gives a value on every branch. A branch that leaves the
   fn (`let x = if c: 5 else: return 0`) is refused, not an early exit
   (owner, 2026-11-24).
-- A value `match` arm or value `if` branch may be an indented block; its last
-  line is the value (owner, 2026-11-24: one rule for both, within the usual
-  complexity and line limits). A value `if` needs an `else`. Lowered to the
-  statement form by `lowering_block_arms`.
+- A value `if` or `match` is written inline (`if c: a else: b`, `Pat: v`);
+  an indented block is the statement form and has no value, for `match` arms
+  as for `if` branches (R2/R3, examples/39). Fewer forms, a simple language
+  (owner, 2026-11-24, after trying block values). A value `if` needs `else`.
 
 ## 4. Organise the work
 

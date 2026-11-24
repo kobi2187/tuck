@@ -1944,8 +1944,6 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
     "rt.TuckResult(" & ctx.odinType(e.optInner) & "){status = .Ok, value = " &
       ctx.genOdinExpr(e.optValue) & "}"
   of exkAbsent: "rt.tnone(" & ctx.odinType(e.optInner) & ")"
-  # lowering_block_arms states the declaration's type, so `{}` is its zero.
-  of exkZero: "{}"
   of exkPoolOp: ctx.genOdinPoolOp(e)
   of exkSlabOp: ctx.genOdinSlabOp(e)
   of exkArenaReset:

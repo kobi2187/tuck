@@ -596,7 +596,7 @@ proc implicitTailValue*(body: Expr): Expr =
      exkCombinator, exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
      exkMixinRef, exkCritical, exkDefer, exkFinish, exkAcquire, exkOrdinal, exkValidate,
      exkIfaceCall, exkIfaceIs, exkLatestIs, exkIfacePayload, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset, exkWrapOk,
-     exkAbsent, exkZero, exkCopy:
+     exkAbsent, exkCopy:
     lastS
 
 proc injectTailReturn*(body: Expr) =

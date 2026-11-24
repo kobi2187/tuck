@@ -105,10 +105,10 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 
 **Ruled 2026-11-24.** A value `if`/`match` may not have a branch that returns
 (`let x = if c: 5 else: return 0`): refused, as it already was (pin A190, AGENTS.md §3).
-A value `match` arm that is a block yields its last line: the checker accepted it and no
-backend built it; `lowering_block_arms` makes it the statement match (pin A192). The same for
-a value `if` with block branches, reversing the refusal A190 had added; and a value `if` with
-no `else`, which checked clean and built nowhere, is refused (pin A193).
+A value `match` arm may not be an indented block, as a value `if` branch may not (R2/R3): it
+checked clean and built nowhere, and is refused (pin A192). Block values were built and tried
+first, then reverted by the owner: fewer forms. A value `if` with no `else` checked clean and
+built nowhere; refused (pin A193).
 
 **Waiting on a ruling.** E4 (does binding a task's result, an await, need `[io]` in the
 caller?), E16 (`on select` arm budgets, F2), C18's second half (a predicate reading only its
