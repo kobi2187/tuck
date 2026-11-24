@@ -48,6 +48,16 @@ proc gateSays11(t: var T, name, pattern: string) =
   else:
     t.no name, "wrong TK-EF11 diagnostic: " & text
 
+proc gateSaysCode(t: var T, name, code, pattern: string) =
+  ## `--isr-check:error` refuses with `code` and a message matching `pattern`.
+  let idx = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck", "--isr-check:error"])
+  if t.phase == pCollect: return
+  let (rc, text) = resultOf(t, idx)
+  if rc != 0 and strutils.contains(text, code) and strutils.contains(text, pattern):
+    t.ok name
+  else:
+    t.no name, "wanted " & code & ": " & text
+
 proc gateAllows(t: var T, name: string) =
   let idx = t.needCmd(@["./tuck", "ch", t.curDir / "t.tuck", "--isr-check:error"])
   if t.phase == pCollect: return
@@ -133,9 +143,12 @@ fn main() -> int [io]:
     "task worker() -> void [io] writes", "[UNPROTECTED]"]
   t.gateSays "TK-EF10 gate rejects a task racing an ISR", "normal code task worker()"
 
-  # Two handlers on one field: a race exactly when their priorities differ,
-  # which Tuck cannot see yet. Reported, never rejected.
-  t.src """
+  # Two handlers on one field (bare-metal roadmap 2.5): a race exactly when
+  # their `bind`s give them different priorities. Equal priorities cannot
+  # preempt each other; differing ones need the less urgent handler's
+  # accesses in `critical:` (TK-EF13 under --isr-check:error); an unbound
+  # handler's priority is unknown, so that case is only reported.
+  const TwoIsrs = """
 register FLAG at 0x40000000:
   VALUE: bits 0..7 [read, write]
 
@@ -150,9 +163,33 @@ fn timerIsr() [irq, irq_safe, no_alloc]:
 fn main() -> int:
   return 0
 """
-  t.auditSays "audit reports state shared by two interrupt handlers", @[
+  t.src TwoIsrs
+  t.auditSays "two unbound handlers on one field: reported as unknown", @[
     "written by one interrupt handler and touched by another: FLAG",
-    "same priority"]
-  t.gateAllows "two-handler sharing is reported, not gated"
+    "uartIsr() [irq, irq_safe, no_alloc]  (not bound)",
+    "Unknown: a handler is not bound"]
+  t.gateAllows "unbound two-handler sharing is reported, not gated"
+
+  t.src TwoIsrs & "\nbind UART0 -> uartIsr [priority: 2]\nbind TIMER0A -> timerIsr [priority: 2]\n"
+  t.auditSays "handlers bound at one priority cannot preempt each other", @[
+    "uartIsr() [irq, irq_safe, no_alloc]  priority 2",
+    "Safe: every handler runs at one priority"]
+  t.gateAllows "one priority passes the gate"
+
+  t.src TwoIsrs & "\nbind UART0 -> uartIsr [priority: 2]\nbind TIMER0A -> timerIsr [priority: 1]\n"
+  t.auditSays "different priorities: the less urgent handler's access is a race", @[
+    "RACE: the priorities differ",
+    "uartIsr() [irq, irq_safe, no_alloc] writes at"]
+  t.gateSaysCode "the gate refuses it, naming both priorities", "TK-EF13",
+    "FLAG is shared by interrupt handlers at different priorities"
+
+  t.src TwoIsrs.replace("""fn uartIsr() [irq, irq_safe, no_alloc]:
+  FLAG.VALUE = FLAG.VALUE + 1""", """fn uartIsr() [irq, irq_safe, no_alloc]:
+  critical:
+    FLAG.VALUE = FLAG.VALUE + 1""") &
+    "\nbind UART0 -> uartIsr [priority: 2]\nbind TIMER0A -> timerIsr [priority: 1]\n"
+  t.auditSays "the less urgent handler in critical: is safe", @[
+    "Safe: the priorities differ, and every access a more urgent handler"]
+  t.gateAllows "a guarded preemptible access passes the gate"
 
   t.finish()

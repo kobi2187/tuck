@@ -1037,6 +1037,26 @@ var isrCheckError = false
   ## `tuck audit FILE --isr` remains the report at every setting. The gate is
   ## opt-in while the corpus is cleaned up; the default is deliberately quiet.
 
+proc gateIsrPreempt(a: IsrAudit, path: string) =
+  ## TK-EF13 (bare-metal roadmap 2.5): two handlers whose binds give them
+  ## different priorities share state, and the less urgent one's access is
+  ## outside `critical:`. Equal priorities, or a protected access, pass.
+  for st in a.multiIsr:
+    if st.verdict != mvRace: continue
+    let x = st.preempted[0]
+    var msg = st.state & " is shared by interrupt handlers at different " &
+      "priorities ("
+    for h in st.handlers: msg.add h.sig & " at " & $h.priority & ", "
+    msg.removeSuffix(", ")
+    msg.add "), and " & x.fnSig & " touches it outside `critical:` at " &
+      path & ":" & $x.span.line & ":" & $x.span.col & ": a more urgent " &
+      "handler can preempt it halfway. Fix: wrap it in `critical:`, or bind " &
+      "the handlers at one priority."
+    var err = newException(SemanticError, withCode(dcEfIsrPreempt, msg))
+    err.line = x.span.line
+    err.col = x.span.col
+    raise err
+
 proc gateIsrShared(prog: seq[LoadedModule]) =
   ## Reject state that an `[irq]`-reachable fn and normal code both touch.
   ## This is TK-EF10. It raises at the FIRST offending access, with both sites
@@ -1045,6 +1065,7 @@ proc gateIsrShared(prog: seq[LoadedModule]) =
   if not isrCheckError: return
   for lm in prog:
     let a = auditShared(semLayer, lm.m)
+    gateIsrPreempt(a, lm.path)
     if a.unsafe.len == 0: continue
     for s in a.unsafe:
       let sites = a.access.filterIt(it.state == s)

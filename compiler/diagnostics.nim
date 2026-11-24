@@ -181,6 +181,7 @@ type
     dcEfIsrShared = "TK-EF10"            ## state touched by both an ISR and normal code
     dcEfIsrProtected = "TK-EF11"         ## isrShared state accessed outside a critical section
     dcEfSharedState = "TK-EF12"         ## a [pure] fn touching shared state, or an [irq_safe] one waiting
+    dcEfIsrPreempt = "TK-EF13"          ## two handlers at different priorities share state, unprotected
     dcPeClash = "TK-PE01"               ## `pending:` clashes with a real decl
     dcPoMalformed = "TK-PO01"           ## the errors policy block is malformed
     dcPoFinishedStub = "TK-PO02"        ## a finished (strict) library holds a stub
@@ -959,6 +960,14 @@ proc ruleExplanation(d: DiagCode): string =
     "a register, the registry's `latest`. So a `[pure]` fn touches none of " &
     "them. Separately, an `[irq_safe]` fn may not `waitUntil`: an interrupt " &
     "cannot block. Fix: pass the value in as an argument, or drop the marker."
+  of dcEfIsrPreempt:
+    "Two interrupt handlers touch one piece of state, at least one writes it, " &
+    "and their `bind`s give them different priorities. A more urgent handler " &
+    "can then preempt the less urgent one halfway through its access: a read " &
+    "sees a half-updated value, or one write overwrites the other. Equal " &
+    "priorities cannot preempt each other, so they are safe. Fix: put the " &
+    "less urgent handler's accesses inside `critical:`, or bind both at one " &
+    "priority. `tuck audit FILE --isr` lists every handler and priority."
   of dcEfMemo:
     "`fn memo` caches a fn's result by its arguments, which is only correct " &
     "when the same arguments always give the same result. So the fn must be " &
