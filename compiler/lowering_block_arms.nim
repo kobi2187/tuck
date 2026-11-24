@@ -1,7 +1,9 @@
 # compiler/lowering_block_arms.nim
 #
 # A VALUE `match` WHOSE ARM IS A BLOCK, LOWERED (ruled 2026-11-24: the
-# block's last line is the arm's value).
+# block's last line is the arm's value). And a value `if` whose branch is a
+# block, by the same rule (ruled the same day, reversing the refusal A190
+# had added: one rule for both).
 #
 #     let x = match n:
 #       1: 10
@@ -34,13 +36,22 @@ import resolution
 proc lowerIn(res: Resolution, e: Expr)
 
 proc needsLowering(m: Expr): bool =
-  ## Is `m` a value match one of whose arms is a block, at any depth of arm
-  ## values?
-  if m == nil or m.kind != exkMatch or m.subject == nil: return false
-  for arm in m.arms:
-    if arm.body == nil: continue
-    if arm.body.kind == exkBlock or needsLowering(arm.body): return true
-  false
+  ## Is `m` a value match or `if` one of whose arms or branches is a block,
+  ## at any depth of arm values?
+  if m == nil: return false
+  case m.kind
+  of exkMatch:
+    if m.subject == nil: return false
+    for arm in m.arms:
+      if arm.body == nil: continue
+      if arm.body.kind == exkBlock or needsLowering(arm.body): return true
+    false
+  of exkIf:
+    if m.elseBranch == nil: return false
+    for b in [m.thenBranch, m.elseBranch]:
+      if b.kind == exkBlock or needsLowering(b): return true
+    false
+  else: false
 
 proc handing(res: Resolution, v: Expr, give: proc(v: Expr): Expr): Expr =
   ## An arm's body `v` with its value handed on by `give`: the last line of
@@ -52,7 +63,13 @@ proc handing(res: Resolution, v: Expr, give: proc(v: Expr): Expr): Expr =
   Expr(span: v.span, kind: exkBlock, stmts: @[give(v)])
 
 proc statementForm(res: Resolution, m: Expr, give: proc(v: Expr): Expr): Expr =
-  ## `m` as a statement match, each arm's value handed on by `give`.
+  ## `m` as a statement match or `if`, each arm's or branch's value handed
+  ## on by `give`. An `else if` is the else branch's value, handed on whole:
+  ## a headed statement again, lowered in turn when it needs it.
+  if m.kind == exkIf:
+    m.thenBranch = res.handing(m.thenBranch, give)
+    m.elseBranch = res.handing(m.elseBranch, give)
+    return m
   for arm in m.arms.mitems:
     if arm.body != nil: arm.body = res.handing(arm.body, give)
   m

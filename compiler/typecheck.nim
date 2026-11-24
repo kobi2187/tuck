@@ -5714,21 +5714,18 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
     tc.noteVarGiven(e, targetT, valT)
   tc.forgetGuardsUnder(e, valT)
 
-proc failIfStatementIfAsValue(v: Expr) =
-  ## A value `if` is one line, `if c: a else: b` (rulings R2/R3); one whose
-  ## branches are BLOCKS is the statement form, which has no value. Taken as
-  ## one, it checked (or reported a confusing "nothing receives" on a call
-  ## branch) and built to a wrong value on Odin and D (audit Y19).
-  if v == nil or v.kind != exkIf or v.elseBranch == nil or isValueIf(v): return
-  if v.thenBranch.kind != exkBlock and v.elseBranch.kind != exkBlock: return
-  fail("Type Error: an `if` whose branches are indented blocks is the " &
-       "statement form and has no value (R2). Fix: write the value `if` on " &
-       "one line, `if c: a else: b`, or declare the binding first and " &
-       "assign it in each branch", v.span)
+proc failIfValueIfLacksElse(v: Expr) =
+  ## A value `if` gives a value on every path (ruled 2026-11-24); with no
+  ## `else` there is none when the condition is false. It checked clean and
+  ## no backend built it.
+  if v == nil or v.kind != exkIf or v.elseBranch != nil: return
+  fail("Type Error: this `if` is used as a value but has no `else`, so " &
+       "there is no value when its condition is false. Fix: add an `else` " &
+       "branch with a value", v.span)
 
 proc synthAssign(tc: var TypeChecker, e: Expr): Type =
   ## An assignment is a statement: it yields unit.
-  failIfStatementIfAsValue(e.assignVal)
+  failIfValueIfLacksElse(e.assignVal)
   if e.isDecl and e.target != nil and e.target.kind == exkVar:
     tc.synthDeclAssign(e)
   else:
@@ -5824,7 +5821,7 @@ proc failValueWithoutReturnType(tc: TypeChecker, e: Expr) =
 proc synthReturn(tc: var TypeChecker, e: Expr): Type =
   ## A return checks its value against the fn's declared return type; a body
   ## that declares none takes no value at all.
-  failIfStatementIfAsValue(e.returnVal)
+  failIfValueIfLacksElse(e.returnVal)
   if e.returnVal != nil and tc.currentRet != nil:
     tc.checkReturnValue(e)
     if isWrapper(tc.currentRet):

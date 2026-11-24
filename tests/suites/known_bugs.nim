@@ -8644,8 +8644,10 @@ fn main() -> int:
     2
   return v
 """
-  t.quietly: t.badCheck "A190: a block-bodied if is not a value", "statement form and has no value"
-  t.bugFixed "A190: a block-bodied if is not a value"
+  # Reversed by the ruling of 2026-11-24 (A193): a block branch's last line
+  # is its value, as a block match arm's is. The program now runs.
+  t.quietly: t.hostRuns "A190: a block-bodied if is a value (reversed, A193)", 2
+  t.bugFixed "A190: a block-bodied if is a value (reversed, A193)"
   t.src """
 fn main() -> int:
   let k = 3
@@ -8772,5 +8774,68 @@ fn main() -> int [io]:
 """
   t.quietly: t.hostRuns "A192: ...with a pause in the arm and an owned Seq, the arm run once", 8, "^arm\\s*$"
   t.bugFixed "A192: ...with a pause in the arm and an owned Seq, the arm run once"
+
+  # A193 (ruled 2026-11-24, with A192: one rule for `if` and `match`): a
+  # value `if` whose branch is a block yields the block's last line —
+  # binding, reassignment, `return`, an `elif` chain — lowered like A192's
+  # match. And an `if` used as a value with no `else` (one-line or block)
+  # checked clean and built nowhere; it has no value when the condition is
+  # false, so it is refused. The statement `if` without `else` is unchanged.
+  t.src """
+fn grade({k: int}) -> int:
+  let v = if k > 5:
+    let a = k * 2
+    a + 1
+  else: 3
+  return v
+
+fn chain({k: int}) -> int:
+  return if k > 9:
+    1
+  elif k > 5:
+    let b = k + 40
+    b
+  else:
+    0
+
+fn main() -> int:
+  var w = 0
+  w = if w == 0:
+    let c = 100
+    c
+  else: 1
+  return ({k: 7} grade) + ({k: 2} grade) + ({k: 7} chain) + w
+"""
+  t.quietly: t.hostRuns "A193: a value if with block branches yields their last lines", 165
+  t.bugFixed "A193: a value if with block branches yields their last lines"
+  t.src """
+fn main() -> int:
+  let k = 3
+  let v = if k > 5: 1
+  return v
+"""
+  t.quietly: t.badCheck "A193: a value if with no else is refused", "has no `else`"
+  t.bugFixed "A193: a value if with no else is refused"
+  t.src """
+fn main() -> int:
+  let k = 3
+  let v = if k > 5:
+    let a = 1
+    a
+  return v
+"""
+  t.quietly: t.badCheck "A193: ...block-bodied too", "has no `else`"
+  t.bugFixed "A193: ...block-bodied too"
+  t.src """
+fn main() -> int:
+  let k = 3
+  var w = 1
+  if k > 5:
+    w = 2
+  if k < 5: w = w + 10
+  return w
+"""
+  t.quietly: t.runs "A193: ...the statement if without else still runs", 11
+  t.bugFixed "A193: ...the statement if without else still runs"
 
   t.finish()
