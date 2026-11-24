@@ -1,6 +1,6 @@
 {.experimental: "codeReordering".}
 import "../compiler/tuck_rt"
-{.compile: "dma.c".}
+when not defined(tuckKernel): {.compile: "dma.c".}
 
 proc tuckˑfnˑadmit*(id: uint32): int
 proc tuckˑfnˑdrainOnce*(): int

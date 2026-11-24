@@ -177,9 +177,10 @@ var tuckBindCount* {.importc: "tuck_bind_count".}: cint
   ## Lines the program binds (vectors.c, generated per board build).
 
 proc tuckIdle*() =
-  ## Nothing is ready: sleep until an interrupt (WFI). Only meaningful with a
-  ## bound line; without one nothing could ever wake us.
-  {.emit: "__asm volatile(\"wfi\" ::: \"memory\");".}
+  ## Nothing is ready: sleep until an interrupt (WFI on a board, a yield in
+  ## a kernel). Only meaningful with a bound line; without one nothing could
+  ## ever wake us.
+  tuckPlatformIdle()
 
 proc tuckWaitOn*(handle: pointer, pred: proc (): bool {.nimcall.}) =
   ## `Actor.waitUntil {pred: :p}`: main runs the scheduler until `p` holds.

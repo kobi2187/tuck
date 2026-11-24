@@ -238,6 +238,9 @@ type
     dcBfAlign = "TK-BF02"               ## a buffer's address is not aligned to its element
     dcBfOverlap = "TK-BF03"             ## two `at` buffers overlap
     dcBfCount = "TK-BF04"               ## a buffer holds no elements
+    dcKnFloat = "TK-KN01"               ## floating point in a kernel module
+    dcKnAddress = "TK-KN02"             ## a physical address (`buffer`, `register at`) in a kernel module
+    dcKnBind = "TK-KN03"                ## `bind` in a kernel module
     dcReReadOnly = "TK-RE01"            ## writing a field declared [read]
     dcReWriteOnly = "TK-RE02"           ## reading a field declared [write]
     dcReBitRange = "TK-RE03"            ## a bit index outside the register's width
@@ -295,6 +298,7 @@ proc categoryName*(d: DiagCode): string =
   of "RG": "Registry"
   of "BD": "Bind"
   of "BF": "Buffer"
+  of "KN": "Kernel"
   of "RE": "Register"
   of "TM": "Timing"
   of "CR": "Crash"
@@ -1269,6 +1273,25 @@ proc ruleExplanation(d: DiagCode): string =
   of dcBfCount:
     "A buffer of no elements has nothing for a DMA stream to move. Fix: " &
     "give `Array[N, T]` an N of at least 1."
+  of dcKnFloat:
+    "A kernel does not save the FPU's state when it enters kernel code, so " &
+    "a module that touches it corrupts the user program it interrupted. A " &
+    "Tuck kernel module is compiled without SSE or x87 at all, and " &
+    "`--target:linux-kmod` / `windows-kmd` refuses `f32`, `f64` and float " &
+    "literals in the program's own modules. Fix: integers, or fixed point " &
+    "(a value scaled by a power of ten or two)."
+  of dcKnAddress:
+    "A kernel runs in virtual memory: a physical address from a datasheet " &
+    "is not an address the module can read. `buffer` and `register NAME at " &
+    "ADDR` are for boards. Fix: map the device with the kernel's API " &
+    "(ioremap on Linux, MmMapIoSpace on Windows) and allocate DMA memory " &
+    "with it (dma_alloc_coherent, AllocateCommonBuffer), both behind an " &
+    "`extern [c]` the platform glue or a C file implements."
+  of dcKnBind:
+    "`bind` makes a function an entry in a board's vector table. A kernel " &
+    "has no table a module can write: the driver asks the kernel for its " &
+    "interrupt (request_irq on Linux, IoConnectInterruptEx on Windows) and " &
+    "the kernel calls the handler. Fix: request it behind an `extern [c]`."
   of dcRgNameClash:
     "Registry names are unique across the program, because a handler names " &
     "its registry (`on UartEvents.Rx`) and must reach exactly one. Fix: " &

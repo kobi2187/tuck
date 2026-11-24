@@ -1,0 +1,29 @@
+# A Windows device whose answers are Tuck code (docs/kernel/).
+#
+# The C half (wincount.c, compiled against the DDK headers)
+# creates \Device\TuckCount; every read calls back into `answer` with the
+# read's number, and the device returns what it says: the n-th read gives
+# n squared. `main` is DriverEntry's body (0 loads it, a negative NTSTATUS
+# refuses), `unload` the DriverUnload.
+
+import console
+import str
+
+extern [c, header: "wincount.h", lib: "wincount.c"]:
+  fnsig TcReader = {n: i32} -> i32
+  fn tc_register({cb: TcReader}) -> i32
+  fn tc_unregister() -> void
+
+fn answer({n: i32}) -> i32:
+  return n * n
+
+fn main() -> int:
+  let rc = {cb: :answer} tc_register
+  if rc != 0:
+    return rc ^int
+  {text: "wincount: \\Device\\TuckCount is up"} console::printLine
+  return 0
+
+fn unload() [io]:
+  tc_unregister
+  {text: "wincount: removed"} console::printLine

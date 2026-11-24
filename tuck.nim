@@ -80,6 +80,8 @@ import compiler/iface_hoist   # hoistSatisfierData: A27
 import compiler/optimize
 import compiler/frames   # `tuck frames`: the stackless colouring (#216)
 import compiler/isr_access  # `tuck audit --isr`: shared-state inventory
+import compiler/kernel_target  # `--target:linux-kmod | windows-kmd`
+import compiler/kernel_rules   # what a kernel module may not contain
 import compiler/event_audit # `tuck audit --events`: the event surface
 import compiler/timing_report  # `tuck timing`: stack + critical-section reports
 import compiler/report_format  # JSON + SARIF emitters for reports
@@ -616,7 +618,8 @@ proc isFreestandingBuild(opts: seq[string]): bool =
   ## "any argument containing the word", so `-o:build/freestanding-test` on a
   ## hosted build silently dropped the async runtime and the exit status.
   for o in opts:
-    if o == "--freestanding" or o.startsWith("--board:"): return true
+    if o == "--freestanding" or o.startsWith("--board:") or
+       o in ["--target:linux-kmod", "--target:windows-kmd"]: return true
     if o.startsWith("--nim:") and o.contains("-d:freestanding"): return true
   false
 
@@ -1037,6 +1040,7 @@ var reportNarrowing = false
   ## `--report-narrowing`: list every `~` cast after a successful check.
 
 var isrCheckError = false
+var kernelBuildTarget = ktNone   ## `--target:` judged after checking (kernel_rules)
   ## `--isr-check:error`: turn the ISR shared-state inventory into a gate.
   ## `tuck audit FILE --isr` remains the report at every setting. The gate is
   ## opt-in while the corpus is cleaned up; the default is deliberately quiet.
@@ -1159,6 +1163,10 @@ proc checkProgram(path: string, needBodies = false,
   semLayer.criticalCeilings = criticalCeilings(semLayer, result[result.high].m)
   try:
     gateIsrShared(result)
+    if kernelBuildTarget != ktNone:
+      checkKernelRules(semLayer, result.mapIt((it.path, it.m)),
+                       @[getAppDir() / "std", getAppDir() / "stdlib-project"],
+                       $kernelBuildTarget)
   except SemanticError as err:
     dieSemanticError(path, err)
   # Non-fatal diagnostics, printed at the offending line exactly as an error
@@ -1548,6 +1556,7 @@ when isMainModule:
   # rather than in the build arm because the check runs before it.
   sizeIsError = "--release" in opts
   reportNarrowing = "--report-narrowing" in opts
+  kernelBuildTarget = kernelTargetOf(opts)
   for o in opts:
     if not o.startsWith("--isr-check:"): continue
     case o["--isr-check:".len .. ^1]
@@ -2230,7 +2239,19 @@ when isMainModule:
         for ln in mainBody.splitLines:
           guarded.add(if ln.len > 0: "  " & ln & "\n" else: "\n")
         let freestanding = isFreestandingBuild(opts)
-        if freestanding:
+        let kernel = kernelTargetOf(opts)
+        if kernel != ktNone:
+          # A kernel module: main is the init, `unload` (when declared) the
+          # exit; the platform glue calls both (compiler/kernel_target.nim).
+          let missing = kernelToolsMissing(kernel)
+          if missing != "": die("tuck: --target:" & $kernel & " needs " & missing)
+          let unloadCall =
+            if m.decls.anyIt(it != nil and it.kind == dkFn and writtenName(it) == "unload"):
+              mangleName("unload", nkFn) & "()"
+            else: ""
+          writeFile(mainNim, readFile(mainNim) &
+            kernelEntry(tuckMain, unloadCall, registerCalls & boot))
+        elif freestanding:
           # No libc exit(): on bare metal main simply returns to the reset
           # handler's idle loop. Calling quit() drags in newlib's ARM-mode
           # exit/_malloc_r, which cannot run on a Thumb-only Cortex-M.
@@ -2284,7 +2305,9 @@ when isMainModule:
         # host's fast-C-compiler choice below (clang, --threads:on) must not
         # land after them. It used to: `--threads:on` overrode the
         # hand-passed `--threads:off`, and that is what made Nim emit TLS.
-        if board.name != "":
+        if kernel != ktNone:
+          nimFlags.add kernelNimFlags(kernel)
+        elif board.name != "":
           nimFlags.add boardNimFlags(board, binNim.parentDir(), outDir, binds,
                                      bindPaths)
           nimFlags.add atBufferLinkFlags(atBuffers)
@@ -2333,8 +2356,11 @@ when isMainModule:
         # scripts keep separate caches and the collision above stays
         # impossible.
         let sharedCache = getEnv("TUCK_NIMCACHE")
-        let nimCache = if sharedCache != "": sharedCache
+        # A kernel module links EVERY object in its cache, so it never shares
+        # one, and starts from an empty one.
+        let nimCache = if sharedCache != "" and kernel == ktNone: sharedCache
                        else: outDir / ".nimcache" / binBase
+        if kernel != ktNone: removeDir(nimCache)
         # `--actors:MODE` reaches the runtime as a define: tuck_async and
         # tuck_rt are compiled INTO the program, so this is how the mode
         # becomes a compile-time fact there rather than a branch at run time.
@@ -2353,6 +2379,7 @@ when isMainModule:
         # it: bring both beside the output, as the Odin path builds its object
         # there. (Without this the build worked only when -o was the source's
         # own directory.)
+        var kernelCSources: seq[string]   # extern C a kernel's build compiles
         for lm in prog:
           for d in lm.m.decls:
             if d == nil or d.kind != dkExtern: continue
@@ -2367,6 +2394,8 @@ when isMainModule:
                 if fileExists(src) and not fileExists(dst):
                   createDir(dst.parentDir())
                   copyFile(src, dst)
+              let cSrc = binNim.parentDir() / mem.externLib
+              if cSrc notin kernelCSources: kernelCSources.add cSrc
         let nimCmd = "nim c --hints:off --warnings:off --mm:none -d:useMalloc --exceptions:goto " & nimFlags & asyncFlags &
                      nimDefinesFor(actorPolicy) & invFlag &
                      speedFlags & " --nimcache:" & quoteShell(nimCache) &
@@ -2376,7 +2405,13 @@ when isMainModule:
         let rc = execShellCmd(nimCmd)
         let buildMs = (epochTime() - nimT0) * 1000
         if rc != 0: die("tuck: nim compilation failed")
-        echo "built ", binPath, "  ", reportBuild(binPath, buildMs)
+        if kernel != ktNone:
+          let module = linkKernelModule(kernel, binBase, nimCache, outDir,
+                                        getAppDir(), kernelCSources)
+          if module == "": die("tuck: linking the " & $kernel & " module failed")
+          echo "built ", module, "  (", $kernel, ", ", getFileSize(module) div 1024, " KB)"
+        else:
+          echo "built ", binPath, "  ", reportBuild(binPath, buildMs)
       of bkOdin:
         let odinExe = if findExe("odin") != "": findExe("odin")
                       elif fileExists("/home/kl/apps/Odin/odin"): "/home/kl/apps/Odin/odin"

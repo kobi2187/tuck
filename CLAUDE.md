@@ -82,6 +82,9 @@ reason the modes exist.
 ./tuck b f.tuck --board:lm3s6965evb        # bare metal: a Cortex-M ELF for boards/NAME/
 ./tuck sim tests/metal/task_await.tuck     # bare metal: build freestanding, boot under QEMU
 ./tuck sim tests/metal/task_await.tuck --host   # ...or against host shims, on Nim, Odin and D
+./tuck b f.tuck --target:linux-kmod        # a Linux kernel module (.ko), docs/kernel/
+./tuck b f.tuck --target:windows-kmd       # a Windows kernel driver (.sys)
+tools/kernel/linux-run.sh out/f.ko         # load a .ko under QEMU, print its log
 ```
 
 Bare metal (Cortex-M, QEMU) has its own docs and queue in `docs/bare-metal/`

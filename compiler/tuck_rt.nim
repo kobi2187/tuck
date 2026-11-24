@@ -403,7 +403,7 @@ proc tuckBufferAddress*[T](b: var T): uint32 =
   ## written. On a hosted build the address is only for show (64-bit hosts
   ## truncate it).
   when defined(freestanding):
-    {.emit: "__asm volatile(\"dmb\" ::: \"memory\");".}
+    tuckBarrierNow()
   cast[uint32](cast[uint](addr b))
 
 proc tuckDivTrap*(ty, op: string) {.noreturn.} =
@@ -796,7 +796,10 @@ const
     ## 512 chunks, far past any MCU's RAM.
 
 when defined(freestanding):
-  proc tuckCalloc(n, size: csize_t): pointer {.importc: "calloc", header: "<stdlib.h>".}
+  when defined(tuckKernel):   # no libc headers: the glue defines calloc
+    proc tuckCalloc(n, size: csize_t): pointer {.importc: "calloc".}
+  else:
+    proc tuckCalloc(n, size: csize_t): pointer {.importc: "calloc", header: "<stdlib.h>".}
 
 proc slabAlloc(name: string, bytes: int): pointer =
   ## Zeroed storage for a slab page or chunk. On metal it comes from the
@@ -1282,3 +1285,4 @@ when not defined(freestanding):
   include "tuck_rt_stdlib_externs"
 else:
   include "tuck_actors_metal"   # actors on metal: a ring per actor (roadmap 2.0)
+  include "tuck_rt_freestanding_io"   # std/console through the platform's log

@@ -21,6 +21,12 @@ track's own queue lives there.
 Item 14 below (#64, `[no_alloc]`/`[irq_safe]`) is part of that track's ISR
 discipline.
 
+**Kernel modules (2026-11-24):** `tuck build --target:linux-kmod` builds a
+Linux `.ko` (loaded and exercised under QEMU: a character device answered by
+Tuck code), `--target:windows-kmd` a Windows `.sys` (built and inspected; not
+loaded, no Windows here). What is built, what is proven, what is not, and four
+provisional decisions for the owner: `docs/kernel/README.md`.
+
 Ordering rule, set by the user:
 
 > priority to finish features, and higher priority for the SSA fixing mem

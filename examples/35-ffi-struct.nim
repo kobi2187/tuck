@@ -1,6 +1,6 @@
 {.experimental: "codeReordering".}
 import "../compiler/tuck_rt"
-{.compile: "cffi/point.c".}
+when not defined(tuckKernel): {.compile: "cffi/point.c".}
 import sys as tuckˑmodˑsys
 
 proc tuckˑfnˑmain*(): void

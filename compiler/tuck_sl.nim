@@ -19,6 +19,25 @@ import std/volatile   # the ISR slot: a polled flag must never be cached
 
 proc tuckEventPost*(tag: uint8, val: uint32)  # forward; defined below
 when defined(freestanding):
+  # The platform's four primitives. On a Cortex-M board they are single
+  # instructions; in a kernel (`tuckKernel`: platforms/*/tuck_kglue.c) they
+  # are the kernel's: a module-wide spinlock with interrupts off (one core
+  # masking its own interrupts protects nothing on a multi-core machine), a
+  # full memory barrier, and a yield instead of WFI.
+  when defined(tuckKernel):
+    proc tuckIrqOff*(): uint32 {.importc: "tuck_irq_save".}
+    proc tuckIrqOn*(saved: uint32) {.importc: "tuck_irq_restore".}
+    proc tuckBarrierNow*() {.importc: "tuck_mem_barrier".}
+    proc tuckPlatformIdle*() {.importc: "tuck_idle".}
+  else:
+    proc tuckIrqOff*(): uint32 {.inline.} =
+      {.emit: "__asm volatile(\"mrs %0, primask\\n\\tcpsid i\" : \"=r\"(`result`) :: \"memory\");".}
+    proc tuckIrqOn*(saved: uint32) {.inline.} =
+      {.emit: "__asm volatile(\"msr primask, %0\" :: \"r\"(`saved`) : \"memory\");".}
+    proc tuckBarrierNow*() {.inline.} =
+      {.emit: "__asm volatile(\"dmb\" ::: \"memory\");".}
+    proc tuckPlatformIdle*() {.inline.} =
+      {.emit: "__asm volatile(\"wfi\" ::: \"memory\");".}
   proc tuckFatal*(msg: cstring) {.importc: "tuck_fatal", noreturn.}
     ## The one way a metal runtime check stops: the board prints `PANIC: msg`
     ## and traps, so the fault recorder reports it and `tuck sim` exits
@@ -62,13 +81,12 @@ proc tuckSlReady*(f: ptr TuckFrameHdr) {.inline.} =
   ## On metal an interrupt may ready a frame (a `bind`'s event delivery), so
   ## the list is changed with interrupts masked (PRIMASK saved and restored).
   when defined(freestanding):
-    var saved: uint32
-    {.emit: "__asm volatile(\"mrs %0, primask\\n\\tcpsid i\" : \"=r\"(`saved`) :: \"memory\");".}
+    let saved = tuckIrqOff()
   f.next = nil
   if slTail == nil: slHead = f else: slTail.next = f
   slTail = f
   when defined(freestanding):
-    {.emit: "__asm volatile(\"msr primask, %0\" :: \"r\"(`saved`) : \"memory\");".}
+    tuckIrqOn(saved)
   tuckEventPost(1'u8, cast[uint32](cast[int](f)))
 
 when defined(freestanding):
@@ -94,14 +112,13 @@ proc tuckSlHasReady*(): bool {.inline.} = slHead != nil
 proc tuckSlRunOne*(): bool =
   ## Run the first ready frame until it pauses or finishes. False: none ready.
   when defined(freestanding):
-    var saved: uint32
-    {.emit: "__asm volatile(\"mrs %0, primask\\n\\tcpsid i\" : \"=r\"(`saved`) :: \"memory\");".}
+    let saved = tuckIrqOff()
   let f = slHead
   if f != nil:
     slHead = f.next
     if slHead == nil: slTail = nil
   when defined(freestanding):
-    {.emit: "__asm volatile(\"msr primask, %0\" :: \"r\"(`saved`) : \"memory\");".}
+    tuckIrqOn(saved)
   if f == nil: return false
   tuckEventPost(2'u8, cast[uint32](cast[int](f)))
   tuckSlDrive(TuckHop(fn: f.stage, env: f))
@@ -129,7 +146,7 @@ template tuckBarrier() =
   ## Compiler + memory barrier on metal. On a hosted build there is no ISR,
   ## and the volatile accesses already keep program order.
   when defined(freestanding):
-    {.emit: "__asm volatile(\"dmb\" ::: \"memory\");".}
+    tuckBarrierNow()
 
 proc tuckIsrPost*(slot: int, value: int) =
   ## Called from an ISR. Value first, barrier, then the flag the task polls.
@@ -167,7 +184,7 @@ proc tuckIsrOverruns*(slot: int): int =
 # procs, not inline asm at every call site, so BASEPRI is a single change later.
 proc tuckCriticalEnter*(): uint32 {.inline.} =
   when defined(freestanding):
-    {.emit: "__asm volatile(\"mrs %0, primask\\n\\tcpsid i\" : \"=r\"(`result`) :: \"memory\");".}
+    result = tuckIrqOff()
   tuckEventPost(4'u8, result)
 
 proc tuckCriticalExit*(saved: uint32) {.inline.} =
@@ -175,7 +192,7 @@ proc tuckCriticalExit*(saved: uint32) {.inline.} =
   # its own ring write with this one.
   tuckEventPost(5'u8, saved)
   when defined(freestanding):
-    {.emit: "__asm volatile(\"msr primask, %0\" :: \"r\"(`saved`) : \"memory\");".}
+    tuckIrqOn(saved)
 
 const tuckPrioBits* {.intdefine.} = 8
   ## The NVIC priority bits the board implements (`prio_bits` in board.conf).
@@ -185,8 +202,9 @@ proc tuckCriticalEnterAt*(prio: static int): uint32 {.inline.} =
   ## priority `prio` and every less urgent one by raising BASEPRI, which only
   ## ever raises (BASEPRI_MAX), so nesting inside a wider mask is safe. A more
   ## urgent handler still runs. ARMv6-M (Cortex-M0) has no BASEPRI and masks
-  ## everything, as `critical:` without a ceiling does.
-  when defined(freestanding) and not defined(tuckArmV6m):
+  ## everything, as `critical:` without a ceiling does; so does a kernel,
+  ## whose `critical:` is the module's spinlock.
+  when defined(freestanding) and not defined(tuckArmV6m) and not defined(tuckKernel):
     const level = prio shl (8 - tuckPrioBits)
     static: doAssert level in 1 .. 255, "a ceiling outside the board's priorities"
     let lv = uint32(level)
@@ -197,7 +215,7 @@ proc tuckCriticalEnterAt*(prio: static int): uint32 {.inline.} =
 
 proc tuckCriticalExitAt*(saved: uint32) {.inline.} =
   ## Puts back the BASEPRI `tuckCriticalEnterAt` found.
-  when defined(freestanding) and not defined(tuckArmV6m):
+  when defined(freestanding) and not defined(tuckArmV6m) and not defined(tuckKernel):
     tuckEventPost(5'u8, saved)
     {.emit: "__asm volatile(\"msr basepri, %0\" :: \"r\"(`saved`) : \"memory\");".}
   else:
@@ -363,14 +381,13 @@ proc tuckEventPost*(tag: uint8, val: uint32) =
   ## Record one event; overwrites the oldest when full (ring semantics).
   when tuckEventRingOn:
     when defined(freestanding):
-      var mask: uint32
-      {.emit: "__asm volatile(\"mrs %0, primask\\n\\tcpsid i\" : \"=r\"(`mask`) :: \"memory\");".}
+      let mask = tuckIrqOff()
     let i = int(eventRingHead and uint32(tuckEventRingSize - 1))
     eventRingTag[i] = tag
     eventRingVal[i] = val
     eventRingHead = eventRingHead + 1
     when defined(freestanding):
-      {.emit: "__asm volatile(\"msr primask, %0\" :: \"r\"(`mask`) : \"memory\");".}
+      tuckIrqOn(mask)
   else:
     discard tag
     discard val
