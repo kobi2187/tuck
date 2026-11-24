@@ -1,0 +1,50 @@
+# `critical:` with a priority ceiling (bare-metal roadmap 2.4).
+#
+# onSlow (GPIOB, priority 3) shares SHARED with main; onFast (GPIOA, priority
+# 1) shares nothing with it. So main's first block needs to mask priority 3
+# and below only: it raises BASEPRI, and onFast still runs inside it. The
+# NVIC's pending bits, read inside the block, show it: after pending both
+# lines, only GPIOB (bit 1) is still waiting.
+#
+# The second block calls an extern, which may touch anything: its ceiling
+# cannot be known, so it masks everything (PRIMASK) and both lines wait.
+
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+register NVIC_ISPR0 at 0xE000E200:
+  SETPEND: bits 0..31 [read, write]
+
+register SHARED at 0x20000000:
+  N: bits 0..31 [read, write]
+
+register FAST at 0x20000004:
+  N: bits 0..31 [read, write]
+
+fn onFast() [irq, irq_safe, no_alloc]:
+  FAST.N = FAST.N + 1
+
+fn onSlow() [irq, irq_safe, no_alloc]:
+  SHARED.N = SHARED.N + 10
+
+bind GPIOA -> onFast [priority: 1]
+bind GPIOB -> onSlow [priority: 3]
+
+fn main() -> int:
+  SHARED.N = 0
+  FAST.N = 0
+  var inside = 0
+  critical:
+    SHARED.N = SHARED.N + 1
+    NVIC_ISPR0.SETPEND = 3              # pend GPIOA and GPIOB
+    inside = NVIC_ISPR0.SETPEND ^int    # onFast ran already: only bit 1 left
+  var masked = 0
+  critical:
+    NVIC_ISPR0.SETPEND = 1              # pend GPIOA again
+    masked = NVIC_ISPR0.SETPEND ^int    # PRIMASK: it waits
+    {text: ""} say
+  if inside != 2 or masked != 1 or SHARED.N != 11 or FAST.N != 2:
+    {text: "CEILING_BAD\n"} say
+    return 1
+  {text: "CEILING_OK\n"} say
+  return 0

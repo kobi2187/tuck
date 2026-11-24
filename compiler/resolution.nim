@@ -70,6 +70,10 @@ type
     entryModule*: ModuleId
     policyNotes*: seq[string]
     eventQueues*: Table[string, int]
+    criticalCeilings*: Table[NodeId, int]
+      ## A `critical:` block's priority ceiling (bare-metal roadmap 2.4): the
+      ## most urgent bound priority among the handlers that touch the state
+      ## it does. Absent: mask everything (PRIMASK), the safe default.
       ## `Registry.Event` -> the `[stream]` queue size: the largest `queue:`
       ## of the binds whose fn raises it (checkBinds). Absent: not raised by
       ## a bound fn, and the backend uses its default.

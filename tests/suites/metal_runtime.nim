@@ -64,6 +64,18 @@ fn main() -> int:
   t.emitsOdin "Odin: the restore is a defer", "defer rt.tuckCriticalExit\\(tuckCs"
   t.emitsD "D: the restore is a scope\\(exit\\)", "scope\\(exit\\) rt.tuckCriticalExit\\(tuckCs"
 
+  # Priority ceilings (bare-metal roadmap 2.4): a block sharing state only
+  # with a priority-3 handler raises BASEPRI to 3; one calling an extern may
+  # touch anything, so it masks everything; one shared with an unbound
+  # handler cannot know its ceiling either.
+  t.src readFile(t.root / "tests" / "metal" / "crit_ceiling.tuck")
+  t.emits "a block shared with a priority-3 handler masks from 3 down",
+          "tuckCriticalEnterAt\\(3\\)[\\s\\S]*tuckCriticalExitAt\\("
+  t.emits "a block calling an extern masks everything", "= tuckCriticalEnter\\(\\)"
+  t.src readFile(t.root / "tests" / "metal" / "crit_ceiling.tuck").replace(
+    "bind GPIOB -> onSlow [priority: 3]\n", "")
+  t.omits "an unbound sharer leaves no ceiling", "tuckCriticalEnterAt"
+
   # --- under QEMU --------------------------------------------------------
   t.metal "nested critical: keeps interrupts masked; an early return unmasks",
           "critical_nest", "nest", 0, @["NEST_OK"]
@@ -120,6 +132,8 @@ fn main() -> int:
   t.metal("with nothing typed the UART program is still waiting (124)",
           "uart_rx", "uart-rx-idle", 124, @["qemu exit: 124"],
           board = "lm3s6965evb")
+  t.metal("a ceiling-3 section lets a priority-1 handler in; an extern call's does not",
+          "crit_ceiling", "ceiling", 0, @["CEILING_OK"], board = "lm3s6965evb")
   # DMA buffers (bare-metal roadmap 2.0a): an `at` buffer IS the memory at
   # its address (a `register` at the same address reads what was stored), a
   # placed one lands word-aligned in RAM, and the heap is carved around them.

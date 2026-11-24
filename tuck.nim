@@ -592,7 +592,11 @@ proc boardNimFlags(b: BoardConf, projectDir, outDir: string,
   # Under --os:any with -d:useMalloc they live on picolibc's malloc, over the
   # heap each board.ld defines (__heap_start..__heap_end). Found building the
   # device programs (bare-metal roadmap 2.0).
-  result = " --os:any -d:noSignalHandler --cpu:arm --mm:none -d:freestanding --exceptions:goto" &
+  # A `critical:` ceiling (2.4) is a BASEPRI level: the priority shifted
+  # into the bits the chip implements. ARMv6-M has no BASEPRI.
+  let prioFlags = " -d:tuckPrioBits=" & $(if b.prioBits > 0: b.prioBits else: 8) &
+    (if b.cpu in ["cortex-m0", "cortex-m0plus", "cortex-m1"]: " -d:tuckArmV6m" else: "")
+  result = prioFlags & " --os:any -d:noSignalHandler --cpu:arm --mm:none -d:freestanding --exceptions:goto" &
     " --cc:gcc --gcc.exe:arm-none-eabi-gcc --gcc.linkerexe:arm-none-eabi-gcc" &
     " --threads:off --tlsEmulation:off --passC:-mthumb --passC:-mcpu=" & b.cpu &
     # The startup code sets CCR.UNALIGN_TRP so a misaligned access is a fault,
@@ -1150,6 +1154,9 @@ proc checkProgram(path: string, needBodies = false,
     for lm in result: loadedMods.add lm.m
     assertTreeIds("load", loadedMods)
   let shortcuts = checkOrDie(path, result, sigOnly, verifyStages)
+  # After the last check, which resets the side table: each `critical:`
+  # block's priority ceiling, for the Nim emitter (bare-metal roadmap 2.4).
+  semLayer.criticalCeilings = criticalCeilings(semLayer, result[result.high].m)
   try:
     gateIsrShared(result)
   except SemanticError as err:

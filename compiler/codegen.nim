@@ -1011,16 +1011,23 @@ proc genCritical(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## saved state is named by node id so nested blocks never shadow it.
   if e.criticalBody == nil: return ind & "discard"
   let saved = "tuckCs" & $uint32(e.id)
+  # A known priority ceiling (2.4) masks only that priority and less urgent
+  # ones (BASEPRI); without one, everything (PRIMASK).
+  let (enter, leave) =
+    if e.id in semLayer.criticalCeilings:
+      ("tuckCriticalEnterAt(" & $semLayer.criticalCeilings[e.id] & ")",
+       "tuckCriticalExitAt(")
+    else: ("tuckCriticalEnter()", "tuckCriticalExit(")
   let inner = ind & "  "
   ctx.indent += 1
   var body = ctx.genStmts(e.criticalBody, inner)
   ctx.indent -= 1
   if body.len == 0: body = inner & "  discard"
   ind & "if true:\n" &
-    inner & "let " & saved & " = tuckCriticalEnter()\n" &
+    inner & "let " & saved & " = " & enter & "\n" &
     inner & "try:\n" & body & "\n" &
     inner & "finally:\n" &
-    inner & "  tuckCriticalExit(" & saved & ")"
+    inner & "  " & leave & saved & ")"
 
 proc genDefer(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## `defer:` (spec §7.4) — Nim spells it identically, scope-exit-ordered and

@@ -1804,11 +1804,16 @@ fn main() -> int:
 
 - **`critical:`** saves the interrupt mask and restores it on every exit, so it
   nests and a `return` inside one is safe (`tests/suites/metal_runtime.nim`).
+  On a board it raises BASEPRI to the ceiling of the bound handlers sharing
+  its state, so an unrelated, more urgent handler still runs; when that is
+  unknowable (an extern call, an unbound sharer) it masks everything
+  (`tests/metal/crit_ceiling.tuck`).
 - **`[irq]`** marks a handler. What it reaches is checked: no allocation, send
   or wait; no error left to the `errors` policy and no stub, whatever the
   policy (TK-PO04). `tuck audit --isr` lists state shared with normal code
-  (tasks included); `--isr-check:error` refuses it unprotected (TK-EF10).
-  A handler is **called** today, not bound to a vector: no interrupt is taken.
+  (tasks included); `--isr-check:error` refuses it unprotected (TK-EF10),
+  and refuses two handlers at different bound priorities sharing state
+  unprotected (TK-EF13). `bind LINE -> fn` makes it the line's vector entry.
 - **Failures:** a failed check prints `PANIC: ...` and traps, `tuck sim`
   decodes the fault to the Tuck line and exits 1; otherwise the exit status
   is `main`'s return value, and 124 means still running, never a pass.

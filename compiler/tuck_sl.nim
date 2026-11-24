@@ -177,6 +177,32 @@ proc tuckCriticalExit*(saved: uint32) {.inline.} =
   when defined(freestanding):
     {.emit: "__asm volatile(\"msr primask, %0\" :: \"r\"(`saved`) : \"memory\");".}
 
+const tuckPrioBits* {.intdefine.} = 8
+  ## The NVIC priority bits the board implements (`prio_bits` in board.conf).
+
+proc tuckCriticalEnterAt*(prio: static int): uint32 {.inline.} =
+  ## `critical:` with a priority ceiling (bare-metal roadmap 2.4): masks
+  ## priority `prio` and every less urgent one by raising BASEPRI, which only
+  ## ever raises (BASEPRI_MAX), so nesting inside a wider mask is safe. A more
+  ## urgent handler still runs. ARMv6-M (Cortex-M0) has no BASEPRI and masks
+  ## everything, as `critical:` without a ceiling does.
+  when defined(freestanding) and not defined(tuckArmV6m):
+    const level = prio shl (8 - tuckPrioBits)
+    static: doAssert level in 1 .. 255, "a ceiling outside the board's priorities"
+    let lv = uint32(level)
+    {.emit: "__asm volatile(\"mrs %0, basepri\\n\\tmsr basepri_max, %1\" : \"=&r\"(`result`) : \"r\"(`lv`) : \"memory\");".}
+    tuckEventPost(4'u8, result)
+  else:
+    result = tuckCriticalEnter()
+
+proc tuckCriticalExitAt*(saved: uint32) {.inline.} =
+  ## Puts back the BASEPRI `tuckCriticalEnterAt` found.
+  when defined(freestanding) and not defined(tuckArmV6m):
+    tuckEventPost(5'u8, saved)
+    {.emit: "__asm volatile(\"msr basepri, %0\" :: \"r\"(`saved`) : \"memory\");".}
+  else:
+    tuckCriticalExit(saved)
+
 # --- volatile MMIO -------------------------------------------------------------
 when defined(freestanding):
   proc tuckVolatileLoad*(p: ptr uint32): uint32 {.inline.} =

@@ -2222,13 +2222,20 @@ pinned by a suite:
 - **`register`** declarations (§8.1) compile to volatile accesses and may be
   generated from CMSIS-SVD (`tools/svd2tuck/`), across module boundaries.
 - **`critical:`** masks interrupts and restores the state it found on every
-  exit (nesting, `return`, `break`), on all three backends.
+  exit (nesting, `return`, `break`), on all three backends. On a board it
+  masks only as much as it must: the compiler finds the state the block
+  touches (through its calls), the bound handlers that share it, and raises
+  BASEPRI to the most urgent of their priorities, so a more urgent handler
+  that shares nothing still runs. When that cannot be known (a call into an
+  extern, an unbound or priority-0 sharer, a block outside the entry module)
+  it masks everything (PRIMASK), as it always does on Cortex-M0.
 - **`[irq]`** marks an interrupt handler. Code reachable from one may not
   allocate, send or wait (TK-EF05/07/11), may not leave an error to the
   `errors` policy or call a stub (TK-PO04, §4.9), and state it shares with
   normal code is reported by `tuck audit --isr` and refused by
-  `--isr-check:error` (TK-EF10). Binding a handler to a vector is not
-  designed yet: today every `[irq]` fn is called, not taken.
+  `--isr-check:error` (TK-EF10); two handlers at different bound
+  priorities sharing state need the less urgent one's access in `critical:`
+  (TK-EF13). `bind` makes a handler a vector entry (Part 10).
 - **Failures are loud:** a failed runtime check prints `PANIC:` and traps; a
   fault is decoded to the Tuck line (`tuck decode-crash`, TK-CR01); a run's
   exit status is `main`'s return value.
