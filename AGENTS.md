@@ -48,6 +48,9 @@ rules; this file is about HOW to fix things.
 - A program is Tuck on every backend or on none: something that builds on Odin
   and D but not on Nim (or any other split) is refused by the checker, not
   left to a host compiler.
+- A value `if`/`match` gives a value on every branch. A branch that leaves the
+  fn (`let x = if c: 5 else: return 0`) is refused, not an early exit
+  (owner, 2026-11-24).
 
 ## 4. Organise the work
 
