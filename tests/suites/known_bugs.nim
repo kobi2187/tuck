@@ -8782,4 +8782,66 @@ fn main() -> int:
   t.quietly: t.runs "A193: ...the statement if without else still runs", 11
   t.bugFixed "A193: ...the statement if without else still runs"
 
+  # A194 (found re-validating #197): a bare record literal where a named
+  # record type is stated built on no backend outside a `let x: P = {...}`
+  # (the Y12 fix, A174, covered declarations only). Returned (`return {...}`
+  # or a body's tail) from `-> P`, `-> P?`; assigned to a `var s: P` or to a
+  # field of type P; and from an imported module. Each printed an anonymous
+  # record where a P was declared. The checker makes it P's construction
+  # (constructedAs), at every place that states the type.
+  t.src """
+type Stats = {size: int, count: int}
+
+fn tail() -> Stats:
+  {size: 5, count: 6}
+
+fn opt({k: int}) -> Stats?:
+  if k > 0:
+    return {size: k, count: 1}
+  return none
+
+fn main() -> int:
+  var s: Stats = {size: 1, count: 1}
+  s = {size: 10, count: 20}
+  let t = {} tail
+  let o = {k: 2} opt
+  var extra = 0
+  if o.ok:
+    extra = o.value.size
+  return s.size + t.size + extra
+"""
+  t.quietly: t.hostRuns "A194: a bare record returned or assigned as a named record builds", 17
+  t.bugFixed "A194: a bare record returned or assigned as a named record builds"
+  t.src """
+type Inner = {a: int}
+type Outer = {inner: Inner, n: int}
+
+fn main() -> int:
+  var o: Outer = {inner: {a: 1}, n: 2}
+  o.inner = {a: 40}
+  var p = {} mk
+  p = {inner: {a: 3}, n: 4}
+  return o.inner.a + p.n
+
+fn mk() -> Outer:
+  return {inner: {a: 0}, n: 0}
+"""
+  t.quietly: t.hostRuns "A194: ...into a field, and nested", 44
+  t.bugFixed "A194: ...into a field, and nested"
+  t.src """
+import lib197
+
+fn main() -> int:
+  let s = {} lib197::mk
+  return s.size
+"""
+  t.addFile "lib197.tuck", """
+type Stats = {size: int, count: int}
+
+fn mk() -> Stats:
+  return {size: 1, count: 2}
+"""
+  t.quietly: t.hostRuns "A194: ...returned from an imported module", 1
+  t.bugFixed "A194: ...returned from an imported module"
+
   t.finish()

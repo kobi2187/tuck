@@ -5458,22 +5458,29 @@ proc failIfErrorsUndeclared(tc: TypeChecker, ets: seq[string], sp: Span) =
            ". Fix: add " & en & " to its [error: ...], or handle the error here",
            sp)
 
-proc constructAsStated(tc: TypeChecker, e: Expr) =
-  ## `let a: P = {x: 1}` — a bare record literal under a stated named record
-  ## type is that type's construction, `{x: 1} P`. The literal at a place that
-  ## names its type is legal (failIfAnonymousForNamed), but no backend built
-  ## it: each printed an anonymous record where a `P` was declared (audit Y12).
-  ## Rewritten here, once, so every backend sees an ordinary construction.
-  let t = e.declType
-  if e.assignVal == nil or e.assignVal.kind != exkStruct or t == nil or
-     t.kind != tkNamed or t.qualifier.len > 0: return
+proc constructedAs(tc: TypeChecker, v: Expr, t: Type): Expr =
+  ## `v`, a bare record literal where named record type `t` is stated, as
+  ## that type's construction, `{x: 1} P`; any other `v` unchanged. The
+  ## literal at a place that names its type is legal
+  ## (failIfAnonymousForNamed), but no backend built it: each printed an
+  ## anonymous record where a `P` was declared (audit Y12).
+  var t = t
+  # `-> P?`, `-> !P`, `-> !?P`: the value held is the P (wrapped after).
+  if t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+     t.base.name in ["?", "!", "!?"] and t.args.len == 1:
+    t = t.args[0]
+  if v == nil or v.kind != exkStruct or t == nil or t.kind != tkNamed or
+     t.qualifier.len > 0: return v
   let d = tc.typeDecls.getOrDefault(t.name, nil)
-  if d == nil or d.kind != tkRecord: return
-  let lit = e.assignVal
-  e.assignVal = Expr(id: newNodeId(), span: lit.span, kind: exkCall,
-                     callee: Expr(id: newNodeId(), span: t.span, kind: exkVar,
-                                  name: t.name),
-                     args: @[lit])
+  if d == nil or d.kind != tkRecord: return v
+  Expr(id: newNodeId(), span: v.span, kind: exkCall,
+       callee: Expr(id: newNodeId(), span: t.span, kind: exkVar, name: t.name),
+       args: @[v])
+
+proc constructAsStated(tc: TypeChecker, e: Expr) =
+  ## `let a: P = {x: 1}` — rewritten here, once, so every backend sees an
+  ## ordinary construction.
+  e.assignVal = tc.constructedAs(e.assignVal, e.declType)
 
 proc synthDeclAssign(tc: var TypeChecker, e: Expr) =
   ## A fresh binding. spec 4.4b: a tracked type starts at the RHS's set.
@@ -5690,6 +5697,17 @@ proc forgetGuardsUnder(tc: var TypeChecker, e: Expr, valT: Type) =
   if e.target != nil and e.target.kind == exkField and writesIntoSlabCell(e.target):
     tc.forgetFieldPaths(e.target.fieldName)
 
+proc statedTypeOf(tc: TypeChecker, target: Expr, typed: Type): Type =
+  ## The type a place was declared at, as written: a variable is bound at
+  ## its resolved type (a record's shape), and its declaration keeps the
+  ## name (`var s: Stats`). Anything else, the type it was synthesized at.
+  if target == nil or target.kind != exkVar: return typed
+  let (found, b) = tc.lookup(target.name)
+  if found and b.site != nil and b.site.kind == exkAssign and
+     b.site.declType != nil:
+    return b.site.declType
+  typed
+
 proc synthReassign(tc: var TypeChecker, e: Expr) =
   ## Assignment to an existing binding.
   tc.failIfTargetUnbound(e)
@@ -5705,6 +5723,8 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
   # After the target is typed: a write through a slab reference is known by
   # the deref stamp synthesizing it leaves (writesIntoSlabCell).
   tc.failIfTargetImmutable(e)
+  # `s = {x: 1}` into a `P` place: P's construction (Y12).
+  e.assignVal = tc.constructedAs(e.assignVal, tc.statedTypeOf(e.target, targetT))
   let valT = tc.synthAssignVal(e, targetT)
   if not tc.compatible(valT, targetT):
     fail("Type Error: cannot assign " & typeName(valT) & " to " &
@@ -5814,6 +5834,8 @@ proc checkReturnValue(tc: var TypeChecker, e: Expr) =
     return
   let what = "return value of '" & tc.currentFn & "'"
   tc.failIfBareForInvariantType(e.returnVal, tc.currentRet, what)
+  # `return {x: 1}` from a fn declaring `-> P`: P's construction (Y12).
+  e.returnVal = tc.constructedAs(e.returnVal, tc.currentRet)
   let retIface = tc.ifaceElemSlot(tc.currentRet)
   if retIface != "" and e.returnVal.kind == exkList:
     tc.checkIfaceElems(retIface, e.returnVal, what)
@@ -6638,6 +6660,11 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
   tc.currentRet = ret
   tc.currentFn = name
   tc.bodyBlock = body
+  # A value body's tail `{x: 1}` under `-> P` is P's construction, as a
+  # `return {x: 1}` is (Y12).
+  let tailV = implicitTailValue(body)
+  if tailV != nil and tailV.kind == exkStruct:
+    body.stmts[^1] = tc.constructedAs(tailV, ret)
   let bodyT = tc.synthesize(body)
   # A value body's tail `match` is its return value (implicitTailValue).
   if ret != nil and not (ret.kind == tkNamed and ret.name == "void"):

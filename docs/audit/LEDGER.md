@@ -79,6 +79,7 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | O6 a task owns its parameters: the caller hands over a copy or its last use, the task drops it | A172 | |
 | C1 another actor's field read into a local is a copy, never a move | A173 | C2 (may it cross threads?) still open |
 | Y12 a record literal under a stated named type is that type's construction | A174 | |
+| Y12, the rest: a bare record returned (`return`, a tail, `-> P?`) or assigned (`var s: P`, a field) as a named record, and from an imported module, built nowhere; now P's construction wherever the type is stated (found re-validating #197) | A194 | |
 | Y13 a plain value into a `T?` is wrapped for a generic `T` field and branch by branch in an `if`/`match` value | A174 | |
 | T14 `with` on a sum type is refused (spec: it replaces fields of a declared record) | A175 | |
 | Y14 an imported extern's params are recorded, so extra payload fields are ignored (spec §2.5) instead of passed | A174 | the in-place `push` recogniser reads the exploded form too |
