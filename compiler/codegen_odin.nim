@@ -1007,6 +1007,10 @@ proc fieldByReceiverKind(ctx: var OdinCodegenCtx, e: Expr): string =
     if prefix == "": ""
     else: ctx.pkgQualifier(registerAccessorOrigin(ctx.module,
             e.receiver.refName, e.fieldName)) & prefix & "_get()"
+  of exkBufferRef:
+    # A hosted build: the address is only for show (no DMA to give it to).
+    if e.fieldName == "address": "u32(uintptr(&" & e.receiver.refName & "))"
+    else: "len(" & e.receiver.refName & ")"
   else: ""
 
 proc assertedVariantField(ctx: var OdinCodegenCtx, e: Expr): string =
@@ -1874,7 +1878,7 @@ proc genOdinExpr*(ctx: var OdinCodegenCtx, e: Expr): string =
   case e.kind
   of exkLit: ctx.genLit(e)
   of exkVar: ctx.genVar(e)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
+  of exkActorRef, exkRegisterRef, exkBufferRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
      exkMixinRef:
     e.refName
   of exkLatestIs:

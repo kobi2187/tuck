@@ -69,8 +69,12 @@ proc registryRows(mods: seq[tuple[name, path: string, m: Module]],
                                 payload: payloadText(v))
       result.add row
 
+proc lineOf(lines: Table[string, string], fn: string): string =
+  ## ", on EXTI0" when a `bind` wires `fn` to an interrupt line.
+  if fn in lines: ", on " & lines[fn] else: ""
+
 proc addSites(rows: var seq[RegistryRow], index: EventIndex, path: string,
-              d: Decl) =
+              d: Decl, lines: Table[string, string]) =
   ## `d`'s part of the surface: it may be a handler, and it may raise.
   if d.kind == dkFn and d.isOnHandler and writtenName(d) in index:
     let (r, e) = index[writtenName(d)]
@@ -81,16 +85,21 @@ proc addSites(rows: var seq[RegistryRow], index: EventIndex, path: string,
     let key = x.reg & "." & x.ev
     if key notin index: continue
     let (r, e) = index[key]
-    rows[r].events[e].raisers.add siteOf(path, x.sp, writtenName(d))
+    rows[r].events[e].raisers.add siteOf(path, x.sp,
+                                         writtenName(d) & lineOf(lines, writtenName(d)))
 
 proc eventSurface*(mods: seq[tuple[name, path: string, m: Module]]):
                   seq[RegistryRow] =
   ## Every registry, its events, and their raisers and handlers.
   var index: EventIndex
   result = registryRows(mods, index)
+  var lines = initTable[string, string]()   # bound fn -> its interrupt line
+  for (_, _, m) in mods:
+    for d in m.decls:
+      if d != nil and d.kind == dkBind: lines[d.bindFn] = d.bindLine
   for (_, path, m) in mods:
     for d in m.allDecls:
-      if d != nil and not isImportedCopy(d): result.addSites(index, path, d)
+      if d != nil and not isImportedCopy(d): result.addSites(index, path, d, lines)
 
 proc sitesText(sites: seq[EventSite]): string =
   if sites.len == 0: return "none"

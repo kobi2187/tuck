@@ -102,6 +102,15 @@ jobs:
       - name: Bare-metal toolchain
         run: sudo apt-get install -y -q --no-install-recommends qemu-system-arm gcc-arm-none-eabi libnewlib-arm-none-eabi gdb-multiarch meson ninja-build
 
+      # Kernel modules (docs/kernel/): the distribution kernel's headers AND
+      # image (the module is built against one and loaded into the other under
+      # QEMU), busybox for its initramfs, and mingw-w64 for the Windows driver.
+      # The image is root-only on Ubuntu; the suite runs as the runner user.
+      - name: Kernel-module toolchain
+        run: |
+          sudo apt-get install -y -q --no-install-recommends linux-image-generic linux-headers-generic qemu-system-x86 busybox-static cpio kmod gcc-mingw-w64-x86-64
+          sudo chmod a+r /boot/vmlinuz-*
+
       - name: Cache picolibc
         uses: actions/cache@v4
         with:

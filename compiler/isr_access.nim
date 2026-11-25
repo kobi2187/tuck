@@ -35,13 +35,32 @@ type
     id*: NodeId
     sig*: string          ## display only
 
+  MultiVerdict* = enum
+    ## Two interrupt handlers on one piece of state (bare-metal roadmap 2.5):
+    ## whether they can race follows from the priorities the application's
+    ## `bind`s give them. Equal priorities cannot preempt each other.
+    mvSamePriority   ## every handler at one priority: no race
+    mvGuarded        ## priorities differ; every preemptible access is in critical:
+    mvRace           ## priorities differ; a preemptible handler's access is not
+    mvUnbound        ## a handler has no `bind`, so its priority is unknown
+
+  IsrHandler* = object
+    sig*: string          ## display only
+    priority*: int        ## its bind's priority (an unset one is the reset 0); -1 unbound
+
+  MultiIsr* = object
+    state*: string
+    handlers*: seq[IsrHandler]
+    verdict*: MultiVerdict
+    preempted*: seq[IsrAccess]   ## mvRace: the unprotected accesses that can be preempted
+
   IsrAudit* = object
     roots*: seq[IsrFn]              ## declarations marked [irq]
     isrFns*: seq[IsrFn]             ## ISR-reachable closure, incl. roots
     access*: seq[IsrAccess]
     shared*: seq[string]            ## state touched by both ISR and non-ISR code
     unsafe*: seq[string]            ## shared state with at least one UNPROTECTED access
-    multiIsr*: seq[string]          ## written by one [irq] root and touched by another
+    multiIsr*: seq[MultiIsr]        ## written by one [irq] root and touched by another
 
 proc stateRefName(n: Expr): string =
   ## The shared-state name an expression node refers to, or "".
@@ -135,23 +154,54 @@ proc accessesOf(m: Module, d: Decl, states: HashSet[string]): seq[IsrAccess] =
     if body != nil:
       collectAccesses(body, false, states, d.id, signature(d), result)
 
+proc boundPriorities(m: Module): Table[string, int] =
+  ## The priority each of this module's bound fns runs at: its bind's, or the
+  ## NVIC reset value 0 when the bind gives none.
+  for d in m.decls:
+    if d != nil and d.kind == dkBind and d.bindModule == "":
+      result[d.bindFn] = max(d.bindPriority, 0)
+
+proc verdictOf(st: var MultiIsr, roots: seq[(Decl, HashSet[NodeId])],
+               access: seq[IsrAccess]) =
+  ## The most urgent level cannot be preempted by another handler of this
+  ## state; every handler below it can, so its accesses must be protected.
+  if st.handlers.anyIt(it.priority < 0): st.verdict = mvUnbound; return
+  let top = st.handlers.mapIt(it.priority).min
+  if st.handlers.allIt(it.priority == top): st.verdict = mvSamePriority; return
+  for i, (_, ids) in roots:
+    if st.handlers[i].priority == top: continue
+    for a in access:
+      if a.state == st.state and a.fnId in ids and not a.protected:
+        st.preempted.add a
+  st.verdict = if st.preempted.len > 0: mvRace else: mvGuarded
+
 proc multiHandlerState(res: Resolution, m: Module, roots: seq[Decl],
-                       access: seq[IsrAccess]): seq[string] =
-  ## State written by one interrupt handler and touched by another. Whether
-  ## that races depends on their NVIC priorities (equal priorities cannot
-  ## preempt each other), which Tuck does not know yet — so it is reported,
-  ## never gated.
-  var touchedBy, writtenBy: Table[string, HashSet[NodeId]]
+                       access: seq[IsrAccess]): seq[MultiIsr] =
+  ## State written by one interrupt handler and touched by another, judged
+  ## against the priorities the module's `bind`s give the handlers.
+  let prio = boundPriorities(m)
+  var reach: seq[(Decl, HashSet[NodeId])]
   for r in roots:
     var ids: HashSet[NodeId]
     for d in reachable(res, m, @[r]): ids.incl d.id
-    for a in access:
-      if a.fnId notin ids: continue
-      touchedBy.mgetOrPut(a.state, initHashSet[NodeId]()).incl r.id
-      if a.isWrite: writtenBy.mgetOrPut(a.state, initHashSet[NodeId]()).incl r.id
-  for s, rs in touchedBy:
-    if rs.len >= 2 and writtenBy.getOrDefault(s).len >= 1: result.add s
-  result.sort
+    reach.add (r, ids)
+  var states: HashSet[string]
+  for a in access: states.incl a.state
+  for s in states.toSeq.sorted:
+    var touching: seq[(Decl, HashSet[NodeId])]
+    var writers = 0
+    for (r, ids) in reach:
+      let mine = access.filterIt(it.state == s and it.fnId in ids)
+      if mine.len == 0: continue
+      touching.add (r, ids)
+      if mine.anyIt(it.isWrite): inc writers
+    if touching.len < 2 or writers == 0: continue
+    var st = MultiIsr(state: s)
+    for (r, _) in touching:
+      st.handlers.add IsrHandler(sig: signature(r),
+                                 priority: prio.getOrDefault(writtenName(r), -1))
+    st.verdictOf(touching, access)
+    result.add st
 
 proc auditShared*(res: Resolution, m: Module): IsrAudit =
   let states = stateNamesOf(m)
@@ -184,6 +234,30 @@ proc auditShared*(res: Resolution, m: Module): IsrAudit =
 
   result.multiIsr = multiHandlerState(res, m, rootDecls, result.access)
 
+proc renderMulti(st: MultiIsr, path: string): string =
+  ## One shared state of two or more handlers, with its priority verdict.
+  result.add "\nState written by one interrupt handler and touched by another: " &
+    st.state & "\n"
+  for h in st.handlers:
+    result.add "    " & h.sig & (if h.priority < 0: "  (not bound)"
+                                  else: "  priority " & $h.priority) & "\n"
+  case st.verdict
+  of mvSamePriority:
+    result.add "  Safe: every handler runs at one priority, so none preempts another.\n"
+  of mvGuarded:
+    result.add "  Safe: the priorities differ, and every access a more urgent handler\n"
+    result.add "  can preempt is inside a critical: block.\n"
+  of mvRace:
+    result.add "  RACE: the priorities differ, so a more urgent handler can preempt\n"
+    result.add "  these accesses halfway (TK-EF13 under --isr-check:error):\n"
+    for x in st.preempted:
+      result.add "    " & x.fnSig & (if x.isWrite: " writes" else: " reads") &
+        " at " & path & ":" & $x.span.line & ":" & $x.span.col & "\n"
+    result.add "  Fix: wrap them in `critical:`, or bind the handlers at one priority.\n"
+  of mvUnbound:
+    result.add "  Unknown: a handler is not bound, so its priority is not known.\n"
+    result.add "  Bind every handler (`bind LINE -> fn [priority: N]`) to decide it.\n"
+
 proc render*(a: IsrAudit, path: string): string =
   ## Human-readable first. The JSON/SARIF emitters (vision §9) are added by
   ## the shared reporter layer; the text is what a developer reads first.
@@ -213,11 +287,72 @@ proc render*(a: IsrAudit, path: string): string =
     result.add "\nUnprotected shared state: " & a.unsafe.join(", ") & "\n"
   elif a.shared.len > 0:
     result.add "\nAll shared accesses are inside critical: blocks.\n"
-  if a.multiIsr.len > 0:
-    result.add "\nState written by one interrupt handler and touched by another: " &
-      a.multiIsr.join(", ") & "\n"
-    result.add "  Safe only if both handlers run at the same priority (neither can\n"
-    result.add "  preempt the other). Tuck does not know NVIC priorities yet, so this\n"
-    result.add "  is reported, never rejected.\n"
-  result.add "Inventory only: nothing is rejected yet. TK-EF10 fires under\n"
-  result.add "--isr-check:error only for the unprotected entries above.\n"
+  for st in a.multiIsr: result.add renderMulti(st, path)
+  result.add "Inventory only: nothing is rejected yet. Under --isr-check:error,\n"
+  result.add "TK-EF10 fires for the unprotected entries above and TK-EF13 for a RACE.\n"
+
+
+# --- priority ceilings (bare-metal roadmap 2.4) ------------------------------
+
+proc blockStates(res: Resolution, m: Module, body: Expr,
+                 states: HashSet[string]): (HashSet[string], bool) =
+  ## The shared state a `critical:` body touches, through every call it makes.
+  ## The bool is false when that cannot be known: a call with no body to walk
+  ## (an extern, a builtin) may touch anything.
+  var acc: seq[IsrAccess]
+  collectAccesses(body, true, states, NodeId(0), "", acc)
+  var known = true
+  for n in body.nodes:
+    if n.kind != exkCall: continue
+    let callee = res.calleeDecl(m, n)
+    if callee == nil or callee.kind != dkFn or callee.fnBody == nil:
+      known = false
+      continue
+    for d in reachable(res, m, @[callee]):
+      if d.fnBody == nil: known = false
+      acc.add accessesOf(m, d, states)
+  var touched: HashSet[string]
+  for a in acc: touched.incl a.state
+  (touched, known)
+
+proc ceilingOf(res: Resolution, m: Module, c: Expr, states: HashSet[string],
+               prio: Table[string, int],
+               rootTouches: seq[(Decl, HashSet[string])]): int =
+  ## One block's ceiling, or -1 when it has none (no sharer, an unknowable
+  ## callee, an unbound sharer: each means mask everything).
+  let (touched, known) = blockStates(res, m, c.criticalBody, states)
+  if not known: return -1
+  result = high(int)
+  var sharers = 0
+  for (r, rs) in rootTouches:
+    if (rs * touched).len == 0: continue
+    inc sharers
+    result = min(result, prio.getOrDefault(writtenName(r), -1))
+  if sharers == 0: result = -1
+
+proc criticalCeilings*(res: Resolution, m: Module): Table[NodeId, int] =
+  ## Each `critical:` block of `m` whose ceiling is known: the most urgent
+  ## priority among the bound handlers touching the state it touches. Such a
+  ## block need only mask that priority and less urgent ones (BASEPRI), so a
+  ## more urgent handler that shares nothing with it still runs inside it.
+  ## Left out, and so masking everything: a block with an unknowable callee,
+  ## one no handler shares state with, one an unbound handler or a priority
+  ## 0 handler shares with (BASEPRI cannot mask priority 0), and every block
+  ## in another module (the binds, and so the priorities, are this one's).
+  let states = stateNamesOf(m)
+  let prio = boundPriorities(m)
+  var rootTouches: seq[(Decl, HashSet[string])]
+  for r in isrRoots(m):
+    var touched: HashSet[string]
+    for d in reachable(res, m, @[r]):
+      for a in accessesOf(m, d, states): touched.incl a.state
+    rootTouches.add (r, touched)
+  for d in m.allDecls:
+    if d == nil: continue
+    for body in d.ownExprs:
+      if body == nil: continue
+      for c in body.nodes:
+        if c.kind != exkCritical or c.criticalBody == nil: continue
+        let ceiling = ceilingOf(res, m, c, states, prio, rootTouches)
+        if ceiling >= 1: result[c.id] = ceiling
+

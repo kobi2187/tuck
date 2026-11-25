@@ -35,6 +35,10 @@ it in.
 - **A120 — a typed local loses its variant.** `var m: M = M.Idle` then a sealed
   transition inside the `Idle:` arm is refused as a direct construction; without
   the `: M` it checks. Found by the recorder program. Pin: `known_bugs` "A120".
+- **A123 — `with` on an actor field inside a member fn did not build.**
+  **Fixed 2026-11-23**: `copyMeaning` now carries "this name is an actor field"
+  to a copied node, so the fields `with` keeps print as `self.v.b`. Pin:
+  `known_bugs` "A123" (`bugFixed`).
 - **A122 — an empty list in a `with` update ignores the field's type.**
   `f with {values: [], n: 0}` with `values: Seq[int]` is TK-TY20 ("no element
   type"); the same list in a constructor checks. Found by the drone program.

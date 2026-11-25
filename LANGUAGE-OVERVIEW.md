@@ -42,7 +42,7 @@ auditing this compiler, who read a payload binding as a checker bug and nearly
 | 9 | `[io]` propagates automatically | **You declare it at every level.** An undeclared effect is an error, not an inference: the compiler works out what is required, names the call that needs it and says what to write (`TK-EF01`), and warns about a declared `[io]` nothing needs (`TK-EF02`). Guide to all the markers: `docs/safety-and-effects.md`. | §11 |
 | 10 | An unhandled event is fine | **Compile error.** Every registry event needs a handler (`TK-RG03`). One registry per module, names unique program-wide; `tuck audit --events` is the whole surface. | §10, Part 10 |
 | 11 | `self ..field` is banned like any parameter | **Legal for object members and actor fields** — state the callee OWNS. A plain fn whose param is merely NAMED `self` gets no exemption. | §5.1, §7.1 |
-| 12 | Concurrency targets microcontrollers | **Hosted OS today** — stackful minicoro coroutines over `mmap`, epoll/kqueue reactor: a hosted-OS capability (spec §7.1). | §10 |
+| 12 | Concurrency targets microcontrollers | **Both, by mode.** Hosted: stackful minicoro coroutines over `mmap`, epoll/kqueue reactor (spec §7.1). Bare metal (`--board:NAME`): stackless tasks and actors on one core, each actor a ring mailbox plus its state (`tests/metal/actor_ring.tuck` under QEMU; `docs/bare-metal/`). | §10 |
 | 13 | A line break inside brackets is a parse error | **Lines wrap, two ways.** Inside `(`/`{`/`[` indentation is not structure, so a wrapped payload may align under its opening brace, and a line break there reads as a comma — the last comma on a line is optional. Separately, a line ending in a **binary operator, comma or `=`** continues, inside brackets or not, because it cannot have ended. A trailing `:` still opens a block and `...` still ends its line. Ruled 2026-09-15, reversing the earlier ceiling. | §0 |
 | 14 | `t + if hot: 1 else: 2` works, since `if` is an expression | **A value-`if` is a whole right-hand side, never an operand.** `let add = if hot: 1 else: 2` then use `add`. Also a ruled ceiling. On one line with STATEMENT branches — `if n > 9: n = 0 else: n = n + 1`, a `return`, void calls — it is the statement `if` (R3, 2026-09-28; `syntax_ceilings`). Branches and `match` arms in value position are inline; an indented block is the statement form and has no value, and a value `if` needs an `else` (2026-11-24). | §0, and `examples/39` for the forms that DO work |
 | 15 | `a and b or c` means `(a and b) or c` | **Refused (`TK-PA16`).** `and`, `or` and `xor` do not rank against each other, so mixing two of them needs parentheses: `(a and b) or c`. One operator repeated (`a and b and c`) needs none. Ruled 2026-09-27. | `tests/suites/diagnostics.nim` |
@@ -1359,7 +1359,11 @@ absent** — `read` is a `?T` until something writes it — so zeroed memory is
 never read as a value, and a written value is a construction, validated where
 it is built (#42). `Pool.addr {h}` gives the cell's bytes as a `Buf` to an
 **extern only** (a DMA controller, an ISR; TK-TY08 anywhere else), and is
-refused for an element type carrying an invariant (TK-TY31). A stale or
+refused for an element type carrying an invariant (TK-TY31). `Pool.address
+{h}` is the same cell's address as a `u32` for a DMA register, like
+`buffer.address`: a number any code may hold, under the same TK-TY31 rule.
+Pools, slabs and arenas build and run on a board (`tests/metal/pool_dma.tuck`;
+the slab and arena examples under QEMU, `metal_runtime`). A stale or
 released handle stops the program (`TUCK POOL:`), identically on every
 backend. Pool operations are their own node (`exkPoolOp`), so a program's own
 `fn read` cannot be mistaken for one.
@@ -1383,9 +1387,19 @@ one, fourth succeeds, exit 42 (`tests/suites/cli_smoke.nim`).
 > events it raises; `tuck audit FILE --events` lists every registry, raiser
 > and handler. An event raised from interrupt code needs a delivery kind,
 > `[stream]` (with the driver's `overflow:`), `[signal]` or `[latest]`
-> (TK-RG08..10); the deferred delivery itself comes with `bind`
-> (`docs/bare-metal/DESIGN-interrupt-events.md` §5). MMIO `register` read-only
-> enforcement is compile-gated only.
+> (TK-RG08..10). The application wires lines with `bind LINE -> module.fn
+> [priority: N, queue: N]` (TK-BD01..06); on a board build a kinded raise
+> posts and its handlers run after the interrupt returns, from the scheduler
+> (`tests/metal/bind_irq.tuck`, `bind_systick.tuck` under QEMU;
+> `docs/bare-metal/DESIGN-interrupt-events.md` §5). MMIO `register` read-only
+> enforcement is compile-gated only. `buffer NAME: Array[N, T] [at ADDR]`
+> is memory a DMA stream can be handed: indexed like an array, and
+> `NAME.address` is a `u32` (a number for a register, never a pointer; there
+> is still no address-of in Tuck). `T` is `u8`, `u16` or `u32` (TK-BF01..04:
+> element, alignment, overlap, count). With `at`, a board build places it at
+> ADDR and keeps the heap and the stack out of it, or fails the link saying
+> which; without, the linker places it word-aligned. A hosted build makes it
+> an ordinary global (`tests/metal/buffer_dma.tuck` under QEMU).
 
 ### Slabs — references, for what values cannot say
 
@@ -1790,11 +1804,16 @@ fn main() -> int:
 
 - **`critical:`** saves the interrupt mask and restores it on every exit, so it
   nests and a `return` inside one is safe (`tests/suites/metal_runtime.nim`).
+  On a board it raises BASEPRI to the ceiling of the bound handlers sharing
+  its state, so an unrelated, more urgent handler still runs; when that is
+  unknowable (an extern call, an unbound sharer) it masks everything
+  (`tests/metal/crit_ceiling.tuck`).
 - **`[irq]`** marks a handler. What it reaches is checked: no allocation, send
   or wait; no error left to the `errors` policy and no stub, whatever the
   policy (TK-PO04). `tuck audit --isr` lists state shared with normal code
-  (tasks included); `--isr-check:error` refuses it unprotected (TK-EF10).
-  A handler is **called** today, not bound to a vector: no interrupt is taken.
+  (tasks included); `--isr-check:error` refuses it unprotected (TK-EF10),
+  and refuses two handlers at different bound priorities sharing state
+  unprotected (TK-EF13). `bind LINE -> fn` makes it the line's vector entry.
 - **Failures:** a failed check prints `PANIC: ...` and traps, `tuck sim`
   decodes the fault to the Tuck line and exits 1; otherwise the exit status
   is `main`'s return value, and 124 means still running, never a pass.

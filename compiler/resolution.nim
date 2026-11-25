@@ -69,6 +69,14 @@ type
       ## 2026-11-22). The emitters read it instead of each module's own block.
     entryModule*: ModuleId
     policyNotes*: seq[string]
+    eventQueues*: Table[string, int]
+    criticalCeilings*: Table[NodeId, int]
+      ## A `critical:` block's priority ceiling (bare-metal roadmap 2.4): the
+      ## most urgent bound priority among the handlers that touch the state
+      ## it does. Absent: mask everything (PRIMASK), the safe default.
+      ## `Registry.Event` -> the `[stream]` queue size: the largest `queue:`
+      ## of the binds whose fn raises it (checkBinds). Absent: not raised by
+      ## a bound fn, and the backend uses its default.
       ## The POLICY report: a partial library whose own `continue`/`exit`
       ## block is inert because another module is the program.
       ## The application. Only it emits the `on unhandled` handler the
@@ -87,6 +95,7 @@ type
     handlerModule*: Table[NodeId, ModuleId]
       ## The module that declares each `on Registry.Event` handler, by its id.
     registerNames*: Table[string, Decl]
+    bufferNames*: Table[string, Decl]   ## `buffer NAME: Array[N, T]`
     registryNames*: Table[string, Decl]
     poolNames*: Table[string, Decl]
     slabNames*: Table[string, Decl]
@@ -356,6 +365,10 @@ proc copyMeaning(r: Resolution, src, dst: NodeId) =
   r.callTypeArgs.carry(src, dst)
   r.wraps.carry(src, dst)
   r.ifaceCalls.carry(src, dst)
+  # An actor field read stays one through a copy: `v with {a: 0}` in a
+  # member fn copies `v` into every field it keeps, and the copies printed
+  # as a bare `v` (A123).
+  if src in r.ownerFields: r.ownerFields.incl dst
 
 proc renumber(r: Resolution, orig, copy: Expr) =
   ## Walk an original and its deepCopy in step, giving each copied node a
@@ -548,6 +561,7 @@ proc resetResolution*() =
   ## this proc does not have — resolveDeclRefs already did that scan once.
   let actorNames = semLayer.actorNames
   let registerNames = semLayer.registerNames
+  let bufferNames = semLayer.bufferNames
   let registryNames = semLayer.registryNames
   let poolNames = semLayer.poolNames
   let slabNames = semLayer.slabNames
@@ -566,6 +580,7 @@ proc resetResolution*() =
   semLayer.handlerModule = handlerModule
   semLayer.actorNames = actorNames
   semLayer.registerNames = registerNames
+  semLayer.bufferNames = bufferNames
   semLayer.registryNames = registryNames
   semLayer.poolNames = poolNames
   semLayer.slabNames = slabNames

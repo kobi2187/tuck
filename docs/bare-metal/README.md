@@ -65,9 +65,16 @@ window closed**, which is never a pass.
 | Program | Proves | Where |
 |---|---|---|
 | `boot_nop`, `boot_led`, `boot_led_svd` | boot; register writes; SVD-generated registers identical to hand-written | QEMU (GPIO not modelled) |
-| `hal_led`, `hal_counter`, `hal_button`, `hal_uart_echo`, `two_blinkers`, `actor_mailbox`, `platform_hal` | logic and scheduler against host shims | host |
+| `hal_led`, `hal_counter`, `hal_button`, `hal_uart_echo`, `two_blinkers`, `platform_hal` | logic and scheduler against host shims | host |
+| `actor_mailbox`, `actor_ring` | actors on metal: a ring mailbox per actor, a full ring that waits, one actor sending to another | QEMU and host |
+| `bind_irq`, `bind_systick` | `bind`: a pended line through the generated vector table, events delivered after the interrupt; a SysTick event loop sleeping between ticks | QEMU |
+| `buffer_dma`, `buffer_stack` | `buffer`: `.address` is the memory a `register` at that address reads; a placed buffer lands word-aligned in RAM; an `at` buffer in the stack reserve fails the link | QEMU |
+| `pool_dma`, `pool_stale` | `Pool.address`: each cell a word-aligned RAM address, one block apart; a stale handle panics `TUCK POOL:` | QEMU |
+| `uart_rx` | a UART receive interrupt: bytes typed on QEMU's serial port (`TUCK_SIM_INPUT="hello\n" tuck sim ...`) reach an actor through `bind UART0` | QEMU |
+| `crit_ceiling` | `critical:` with a priority ceiling: BASEPRI lets an unrelated priority-1 handler run inside a block shared with a priority-3 one; a block calling an extern masks everything | QEMU |
+| `devices/irrigation`, `devices/recorder`, `devices/drone` | three programs on real parts (`PROGRAMS-2026-11-22.md`); the first two boot and exit 1 with no device on the bus | QEMU (build) and host (simulations) |
 | `two_tasks`, `task_await`, `task_fire_forget` | stackless tasks on metal: interleave, await, fire-and-forget | QEMU |
-| `irq_marker`, `critical_shared`, `isr_handoff` | `[irq]`, `critical:`, the one-word ISR hand-off (handlers are called, not yet taken) | QEMU |
+| `irq_marker`, `critical_shared`, `isr_handoff` | `[irq]`, `critical:`, the one-word ISR hand-off (these call their handler directly; `bind_irq` takes a real one) | QEMU |
 | `critical_nest` | nested `critical:` keeps interrupts masked; an early `return` unmasks | QEMU |
 | `isr_overrun` | a post to a full ISR slot is dropped and counted | QEMU |
 | `fault_null_call`, `fault_unaligned` | faults decoded to the Tuck line | QEMU |

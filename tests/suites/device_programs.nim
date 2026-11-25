@@ -5,9 +5,9 @@
 ##
 ## Each program is split the same way: a pure module with every decision in
 ## it, which a host simulation runs on Nim, Odin and D, and the device code
-## (registers, drivers, interrupt handlers, an actor), which is checked. The
-## device code does not build for a board yet: actors do not build
-## freestanding, and `bind` does not exist (the write-up says which).
+## (registers, drivers, interrupt handlers, an actor), which is checked here.
+## The irrigation and recorder programs also build and boot under QEMU
+## (metal_runtime); the drone has no F405 board file yet.
 
 import std/[os, strutils, sequtils]
 import ../harness
@@ -33,8 +33,8 @@ proc irrigation(t: var T) =
     t.addFile f, readFile(Dev / "irrigation" / f)
   t.okCheck "irrigation: the device program checks"
   t.eventsSay "irrigation: the RTC alarm is a signal the Garden actor handles",
-    @["Minute  [signal]", "raised by:  t.tuck:25 (onRtcAlarm)",
-      "handled by: t.tuck:48 (actor Garden)"]
+    @["Minute  [signal]", "raised by:  t.tuck:26 (onRtcAlarm, on EXTI0)",
+      "handled by: t.tuck:57 (actor Garden)"]
 
 proc recorder(t: var T) =
   t.src readFile(Dev / "recorder" / "sim.tuck")
@@ -45,23 +45,26 @@ proc recorder(t: var T) =
   for f in ["session.tuck", "board.tuck", "vs1063.tuck", "sdcard.tuck"]:
     t.addFile f, readFile(Dev / "recorder" / f)
   t.okCheck "recorder: the device program checks, transitions included"
-  t.eventsSay "recorder: three buttons raise one stream event",
+  t.eventsSay "recorder: three buttons raise one stream event, a timer paces the work",
     @["Pressed{button: Button}  [stream, overflow: drop_newest]",
-      "(onRecordButton)", "(onPlayButton)", "(onStopButton)", "(actor Recorder)"]
+      "(onRecordButton, on EXTI0)", "(onPlayButton, on EXTI1)",
+      "(onStopButton, on EXTI2)", "Tick  [signal]", "(onTimer, on TIM2)",
+      "(actor Recorder)"]
 
 proc drone(t: var T) =
   t.src readFile(Dev / "drone" / "sim.tuck")
   t.addFile "flight.tuck", readFile(Dev / "drone" / "flight.tuck")
   t.hostRuns "drone: CRSF decoded, a rate held, failsafe stops the motors", 0,
              "crsf: 2 good, 1 bad\\s+armed at 200 ms\\s+disarmed at 2000 ms\\s+" &
-             "roll rate at 1.4 s: 319 deg/s[\\s\\S]*frame 33478, first pulses 210 105"
+             "roll rate at 1.4 s: 319 deg/s[\\s\\S]*frame 33478, first pulses 105 53"
   t.src readFile(Dev / "drone" / "drone.tuck")
   for f in ["flight.tuck", "f405.tuck", "icm42688.tuck"]:
     t.addFile f, readFile(Dev / "drone" / f)
   t.okCheck "drone: the flight controller checks"
   t.eventsSay "drone: UART bytes stream, the gyro signals, one actor handles both",
     @["Byte{data: u8, at: int}  [stream, overflow: drop_newest]",
-      "GyroReady  [signal]", "(onUsart1)", "(onImuReady)", "(actor Flight)"]
+      "GyroReady  [signal]", "(onUsart2, on USART2)", "(onImuReady, on EXTI4)",
+      "(actor Flight)"]
 
 proc run*(t: var T) =
   t.irrigation()

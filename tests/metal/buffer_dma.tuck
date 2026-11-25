@@ -1,0 +1,37 @@
+# `buffer` on metal (bare-metal roadmap 2.0a, spelling ruled 2026-11-23):
+# memory whose ADDRESS hardware can be given, as a number.
+#
+# Pulses sits at a fixed address; the build keeps the heap and the linker out
+# of it. main fills it the way a DShot burst would be filled (a 0 is 105
+# timer ticks, a 1 is 210), checks `.address` is that number, and reads one
+# word back through a `register` declared at the same address: what the
+# buffer holds IS the memory there, which is what a DMA stream reads. Scratch
+# is placed by the linker: it must land in RAM, word-aligned.
+
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+buffer Pulses: Array[17, u32] at 0x2000F000
+buffer Scratch: Array[8, u16]
+
+register PULSE3 at 0x2000F00C:
+  V: bits 0..31 [read]
+
+fn fill():
+  for i in 0 .. Pulses.len - 1:
+    Pulses[i] = 105 ~u32
+  Pulses[3] = 210 ~u32
+  Scratch[0] = 7 ~u16
+
+fn main() -> int:
+  fill
+  let at = Pulses.address
+  let s = Scratch.address
+  if at != 0x2000F000 ~u32 or PULSE3.V != 210:
+    {text: "BUFFER_BAD at\n"} say
+    return 1
+  if s % 4 != 0 or s < 0x20000000 ~u32 or s >= 0x20010000 ~u32 or Scratch[0] != 7 ~u16:
+    {text: "BUFFER_BAD placed\n"} say
+    return 1
+  {text: "BUFFER_OK\n"} say
+  return 0

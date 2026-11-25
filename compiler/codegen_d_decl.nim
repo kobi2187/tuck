@@ -1218,6 +1218,8 @@ proc genDDecl*(ctx: var DCodegenCtx, d: Decl): string =
   of dkExpr: ""   # top-level statements are collected by emitBody
   of dkConst: ctx.genDConst(d)
   of dkRegister: ctx.genDRegister(d)
+  of dkBuffer: "__gshared " & ctx.dType(d.bufElem) & "[" & $d.bufCount & "] " & d.name & ";\n"
+  of dkBind: ""     # interrupts are a bare-metal build, which is Nim only
   of dkStaticAssert:
     # D checks this at COMPILE time, natively — the identical construct.
     # (The Odin backend collects these into a runtime `assert` in its entry

@@ -185,7 +185,7 @@ proc walk(m: var Metrics, e: Expr) =
      exkOrdinal, exkValidate, exkIfaceCall, exkIfaceIs, exkLatestIs, exkIfacePayload,
      exkWrapOk, exkAbsent, exkPoolOp, exkSlabCell, exkSlabOp, exkArenaReset, exkLit, exkVar,
      exkQualified, exkBreak, exkContinue, exkImport, exkActorRef,
-     exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
+     exkRegisterRef, exkBufferRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     discard
   for c in e.children: walk(m, c)
 

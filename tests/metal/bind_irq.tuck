@@ -1,0 +1,59 @@
+# `bind` on metal (bare-metal roadmap 2.2): a real interrupt, taken through
+# the generated vector table, raising events whose handlers run afterwards.
+#
+# main pends EXTI0 five times through the NVIC's set-pending register; each
+# time the CPU takes the interrupt at once and runs onExti0, which counts in
+# RAM scratch and raises a [stream] event (queue 2, drop_newest) and a
+# [signal]. The handlers are an actor's, so they run in the actor, never in
+# the interrupt. Expected: the handler ran 5 times; the stream kept the first
+# 2 occurrences (n = 1 and 2, sum 3) and dropped 3; the signal merged its 5
+# raises into one delivery.
+
+import scheduler
+
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+registry LineEvents:
+  | Tick({n: int})  [stream, overflow: drop_newest]
+  | Ping()          [signal]
+
+register NVIC_ISPR0 at 0xE000E200:
+  SETPEND: bits 0..31 [read, write]
+
+register COUNT at 0x20000000:
+  N: bits 0..31 [read, write]
+
+fn onExti0() [irq, irq_safe, no_alloc]:
+  COUNT.N = COUNT.N + 1
+  let n = COUNT.N ^int
+  LineEvents.raise Tick {n: n}
+  LineEvents.raise Ping
+
+bind EXTI0 -> onExti0 [priority: 1, queue: 2]
+
+actor Seen [queue: 16]:
+  ticks: int = 0
+  sum: int = 0
+  pings: int = 0
+
+  on LineEvents.Tick({n: int}):
+    ticks += 1
+    sum += n
+
+  on LineEvents.Ping():
+    pings += 1
+
+fn settled() -> bool:
+  return Seen.ticks + Seen.pings >= 3
+
+fn main() -> int:
+  COUNT.N = 0
+  for i in 1 .. 5:
+    NVIC_ISPR0.SETPEND = 64
+  Seen.waitUntil {pred: :settled}
+  if COUNT.N != 5 or Seen.ticks != 2 or Seen.sum != 3 or Seen.pings != 1:
+    {text: "BIND_BAD\n"} say
+    return 1
+  {text: "BIND_OK\n"} say
+  return 0

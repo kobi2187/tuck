@@ -124,7 +124,7 @@ type
                                         ## fit the field's type
     dcTyFieldInitNotActor = "TK-TY30"   ## an initialiser on a `type` or
                                         ## `object` field, which has no use
-    dcTyPoolAddrInvariant = "TK-TY31"   ## `Pool.addr` on a pool whose element
+    dcTyPoolAddrInvariant = "TK-TY31"   ## `Pool.addr`/`address` on a pool whose element
                                         ## type carries an invariant
     dcTyReturnWithoutType = "TK-TY32"   ## `return <value>` in a body that
                                         ## declares no return type
@@ -181,6 +181,7 @@ type
     dcEfIsrShared = "TK-EF10"            ## state touched by both an ISR and normal code
     dcEfIsrProtected = "TK-EF11"         ## isrShared state accessed outside a critical section
     dcEfSharedState = "TK-EF12"         ## a [pure] fn touching shared state, or an [irq_safe] one waiting
+    dcEfIsrPreempt = "TK-EF13"          ## two handlers at different priorities share state, unprotected
     dcPeClash = "TK-PE01"               ## `pending:` clashes with a real decl
     dcPoMalformed = "TK-PO01"           ## the errors policy block is malformed
     dcPoFinishedStub = "TK-PO02"        ## a finished (strict) library holds a stub
@@ -227,6 +228,19 @@ type
     dcRgSignalPayload = "TK-RG08"       ## a `[signal]` event carries a payload
     dcRgOverflow = "TK-RG09"            ## `overflow:` off a stream, or an unknown policy
     dcRgIrqDelivery = "TK-RG10"         ## interrupt code raises an event with no delivery
+    dcBdNotIrq = "TK-BD01"              ## `bind` names no `[irq]` fn
+    dcBdLineTwice = "TK-BD02"           ## one interrupt line bound twice
+    dcBdFnTwice = "TK-BD03"             ## one `[irq]` fn bound to two lines
+    dcBdChannelUnbuilt = "TK-BD04"      ## `bind ... as Name`: ruled, not built yet
+    dcBdSetting = "TK-BD05"             ## a priority or queue size out of range
+    dcBdUnknownLine = "TK-BD06"         ## the board has no interrupt line by that name
+    dcBfElem = "TK-BF01"                ## a buffer's element is not u8, u16 or u32
+    dcBfAlign = "TK-BF02"               ## a buffer's address is not aligned to its element
+    dcBfOverlap = "TK-BF03"             ## two `at` buffers overlap
+    dcBfCount = "TK-BF04"               ## a buffer holds no elements
+    dcKnFloat = "TK-KN01"               ## floating point in a kernel module
+    dcKnAddress = "TK-KN02"             ## a physical address (`buffer`, `register at`) in a kernel module
+    dcKnBind = "TK-KN03"                ## `bind` in a kernel module
     dcReReadOnly = "TK-RE01"            ## writing a field declared [read]
     dcReWriteOnly = "TK-RE02"           ## reading a field declared [write]
     dcReBitRange = "TK-RE03"            ## a bit index outside the register's width
@@ -282,6 +296,9 @@ proc categoryName*(d: DiagCode): string =
   of "ME": "Memory"
   of "IV": "Invariant"
   of "RG": "Registry"
+  of "BD": "Bind"
+  of "BF": "Buffer"
+  of "KN": "Kernel"
   of "RE": "Register"
   of "TM": "Timing"
   of "CR": "Crash"
@@ -641,11 +658,12 @@ proc parseExplanation(d: DiagCode): string =
     "the type is fixed at compile time."
   of dcTyPoolAddrInvariant:
     "`Pool.addr {h}` hands a cell's bytes to an extern to fill — a DMA " &
-    "controller, an ISR. Memory filled that way was never built by a " &
+    "controller, an ISR — and `Pool.address {h}` hands its address to a " &
+    "DMA register. Memory filled that way was never built by a " &
     "construction, so nothing checked it against the element type's " &
     "invariant, and the next `read` would hand the program a value that may " &
     "break it. A pool whose element carries an invariant therefore has no " &
-    "`addr`. Fix: fill a plain buffer pool (`Array[N, u8]`) through `addr`, " &
+    "`addr` or `address`. Fix: fill a plain buffer pool (`Array[N, u8]`), " &
     "and build the checked value from it with a construction, which " &
     "validates."
   of dcTyCtorFieldType:
@@ -946,6 +964,14 @@ proc ruleExplanation(d: DiagCode): string =
     "a register, the registry's `latest`. So a `[pure]` fn touches none of " &
     "them. Separately, an `[irq_safe]` fn may not `waitUntil`: an interrupt " &
     "cannot block. Fix: pass the value in as an argument, or drop the marker."
+  of dcEfIsrPreempt:
+    "Two interrupt handlers touch one piece of state, at least one writes it, " &
+    "and their `bind`s give them different priorities. A more urgent handler " &
+    "can then preempt the less urgent one halfway through its access: a read " &
+    "sees a half-updated value, or one write overwrites the other. Equal " &
+    "priorities cannot preempt each other, so they are safe. Fix: put the " &
+    "less urgent handler's accesses inside `critical:`, or bind both at one " &
+    "priority. `tuck audit FILE --isr` lists every handler and priority."
   of dcEfMemo:
     "`fn memo` caches a fn's result by its arguments, which is only correct " &
     "when the same arguments always give the same result. So the fn must be " &
@@ -1208,6 +1234,64 @@ proc ruleExplanation(d: DiagCode): string =
     "kind. Its handlers would run inside the interrupt, with I/O and the " &
     "error policy. Fix: mark the event `[stream]`, `[signal]` or `[latest]`, " &
     "so the handlers run after the interrupt returns."
+  of dcBdNotIrq:
+    "A `bind` wires an interrupt line to a fn the line runs when it fires, " &
+    "so that fn must be declared `[irq]`: interrupt code is held to stricter " &
+    "rules (strict errors, no allocation, delivery kinds). Fix: name the " &
+    "driver's `[irq]` fn, as `module.fn` when another module declares it."
+  of dcBdLineTwice:
+    "An interrupt line has one vector, so it runs one fn. Fix: remove one " &
+    "of the binds, or bind the other fn to a different line."
+  of dcBdFnTwice:
+    "One `[irq]` fn bound to two lines needs a channel per binding " &
+    "(`bind USART1 -> uart.onUart as Console`), so each line's events stay " &
+    "apart. That is ruled but not built yet (TK-BD04). Fix: bind it once."
+  of dcBdChannelUnbuilt:
+    "`bind ... as Name` (a channel per binding, owner ruling 2026-11-22) is " &
+    "ruled but not built yet. Fix: drop `as Name` and handle the driver's " &
+    "own registry events."
+  of dcBdSetting:
+    "A bind's `priority` is the NVIC priority, 0 (most urgent) to 255; the " &
+    "board keeps only its top bits. Its `queue` is how many messages each " &
+    "`[stream]` event the fn raises can hold, at least 1. Fix: use a value " &
+    "in range."
+  of dcBdUnknownLine:
+    "The board has no interrupt line by that name. Its lines are listed in " &
+    "`boards/<board>/interrupts.conf`, taken from the chip's SVD or " &
+    "reference manual. Fix: use one of the names the error lists."
+  of dcBfElem:
+    "A `buffer` is memory a DMA stream reads or writes by itself, so its " &
+    "elements are the units a transfer moves: u8, u16 or u32. Fix: declare " &
+    "`Array[N, u8]`, `Array[N, u16]` or `Array[N, u32]`."
+  of dcBfAlign:
+    "A buffer at a fixed address must start on a multiple of its element " &
+    "size (4 for u32): a DMA stream, and the CPU with CCR.UNALIGN_TRP set, " &
+    "faults on a misaligned one. Fix: round the address."
+  of dcBfOverlap:
+    "Two buffers declared `at` overlapping addresses would write into each " &
+    "other. Fix: move one, or let the linker place it (drop `at`)."
+  of dcBfCount:
+    "A buffer of no elements has nothing for a DMA stream to move. Fix: " &
+    "give `Array[N, T]` an N of at least 1."
+  of dcKnFloat:
+    "A kernel does not save the FPU's state when it enters kernel code, so " &
+    "a module that touches it corrupts the user program it interrupted. A " &
+    "Tuck kernel module is compiled without SSE or x87 at all, and " &
+    "`--target:linux-kmod` / `windows-kmd` refuses `f32`, `f64` and float " &
+    "literals in the program's own modules. Fix: integers, or fixed point " &
+    "(a value scaled by a power of ten or two)."
+  of dcKnAddress:
+    "A kernel runs in virtual memory: a physical address from a datasheet " &
+    "is not an address the module can read. `buffer` and `register NAME at " &
+    "ADDR` are for boards. Fix: map the device with the kernel's API " &
+    "(ioremap on Linux, MmMapIoSpace on Windows) and allocate DMA memory " &
+    "with it (dma_alloc_coherent, AllocateCommonBuffer), both behind an " &
+    "`extern [c]` the platform glue or a C file implements."
+  of dcKnBind:
+    "`bind` makes a function an entry in a board's vector table. A kernel " &
+    "has no table a module can write: the driver asks the kernel for its " &
+    "interrupt (request_irq on Linux, IoConnectInterruptEx on Windows) and " &
+    "the kernel calls the handler. Fix: request it behind an `extern [c]`."
   of dcRgNameClash:
     "Registry names are unique across the program, because a handler names " &
     "its registry (`on UartEvents.Rx`) and must reach exactly one. Fix: " &

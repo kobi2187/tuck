@@ -2,7 +2,7 @@
 #
 #   SpeedyBee F405 Mini           STM32F405 + ICM-42688-P (f405.tuck, icm42688.tuck)
 #   SpeedyBee BLS 35A Mini V2     4-in-1 ESC, DShot600
-#   RadioMaster RP1 V2            ExpressLRS receiver, CRSF on USART1
+#   RadioMaster RP1 V2            ExpressLRS receiver, CRSF on USART2 (PA3)
 #   T-Motor F1404 3800KV x 4      3" props, 4S LiPo
 #
 # Two interrupts, two events. Every UART byte is a [stream] event stamped
@@ -11,6 +11,7 @@
 # the gyro, decide arming, one PID step per axis, mix, send DShot.
 
 import seq
+import scheduler
 import flight
 import f405
 import icm42688
@@ -19,15 +20,24 @@ registry FcEvents:
   | Byte({data: u8, at: int})  [stream, overflow: drop_newest]   # a lost byte fails the CRC
   | GyroReady()                [signal]                           # a late loop runs once
 
-fn onUsart1() [irq, irq_safe, no_alloc]:
+fn onUsart2() [irq, irq_safe, no_alloc]:
   ## Reading DR clears RXNE (and, after the SR read, an overrun).
-  let b = USART1_DR.DR
+  let b = USART2_DR.DR
   let t = TIM2_CNT.CNT ^int
   FcEvents.raise Byte {data: b ~u8, at: t}
 
 fn onImuReady() [irq, irq_safe, no_alloc]:
   EXTI_PR.PR = 16                   # EXTI4, write 1 to clear
   FcEvents.raise GyroReady
+
+# The application's wiring. The gyro outranks the radio: a late control loop
+# is a wobble, a late byte only waits in its queue (64 bytes: two CRSF frames
+# and some, at 420 kbaud between 1 kHz loops).
+bind USART2 -> onUsart2 [priority: 2, queue: 64]
+bind EXTI4 -> onImuReady [priority: 1]
+
+fn forever() -> bool:
+  return false
 
 const linkTimeoutUs = 250000        # no good frame for 250 ms: link lost
 
@@ -49,7 +59,7 @@ actor Flight [queue: 64]:
       sticks = r.channels
       lastFrameAt = at
 
-  on FcEvents.GyroReady() [io]:
+  on FcEvents.GyroReady():
     let g = readGyro
     let now = micros
     let linkUp = now - lastFrameAt < linkTimeoutUs
@@ -90,11 +100,7 @@ fn main() -> int [io]:
   let imu = start
   if not imu.ok:
     return 1                         # no gyro: never arm
-  # Until `bind` (bare-metal roadmap 2.2) places the two handlers in the
-  # vector table, this loop polls their pending flags.
-  for true:
-    if USART1_SR.RXNE:
-      onUsart1
-    if (EXTI_PR.PR ^int /i 16) % 2 == 1:
-      onImuReady
+  # Interrupt-driven from here: the radio and the gyro raise events, Flight
+  # handles them, and between interrupts the CPU sleeps.
+  {pred: :forever} runTasksUntil
   return 0

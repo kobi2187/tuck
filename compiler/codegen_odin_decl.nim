@@ -1569,6 +1569,8 @@ proc genOdinDecl*(ctx: var OdinCodegenCtx, d: Decl): string =
   of dkConst: ctx.genOdinConst(d, ind)
   of dkExpr: ctx.genOdinExpr(d.expr)
   of dkRegister: ctx.genRegister(d, ind)
+  of dkBuffer: ind & d.name & ": [" & $d.bufCount & "]" & ctx.odinType(d.bufElem) & "\n"
+  of dkBind: ""     # interrupts are a bare-metal build, which is Nim only
   of dkRegistry: ctx.genRegistry(d)
   of dkStaticAssert: ctx.collectStaticAssert(d)
   of dkErrors: ctx.genErrHandler(d, ind)

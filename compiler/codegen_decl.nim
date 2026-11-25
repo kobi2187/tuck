@@ -509,9 +509,21 @@ proc genMsgTypes*(handlers: seq[ActorMsgHandler],
                     (if msgFields.len > 0: msgFields.join("\n") & "\n" else: "")
   enumStr & envelopeStr
 
+proc actorStateName*(actorType: string): string =
+  ## The object an actor's state lives in; the actor type itself is a
+  ## pointer to its one static instance.
+  actorType & "State"
+
+proc actorStorageName*(actorType: string): string =
+  actorType & "Storage"
+
 proc genActorState*(ctx: var CodegenCtx, d: Decl, msgTypeName,
                    queueSize: string): string =
-  ## The actor's ref-object state: declared fields + mailbox.
+  ## The actor's state: declared fields + mailbox, in a plain object. The
+  ## actor type is a POINTER to the one static instance (spec §9: an actor is
+  ## a singleton), not a `ref`: a ref needs Nim's heap to allocate, which a
+  ## freestanding build does not have (`system module needs: newObj`), and
+  ## a singleton never needed a heap in the first place.
   var fieldsStr: seq[string]
   for f in d.actorFields:
     fieldsStr.add("  " & f.name & "*: " & ctx.fieldType(d.name, f))
@@ -519,7 +531,8 @@ proc genActorState*(ctx: var CodegenCtx, d: Decl, msgTypeName,
   if actorHasUrgent(d):
     fieldsStr.add("  " & UrgentMailbox & "*: Mailbox[" & msgTypeName & ", " &
                   queueSize & "]")
-  "type " & d.name & "* = ref object\n" & fieldsStr.join("\n") & "\n"
+  "type " & d.name & "* = ptr " & actorStateName(d.name) & "\n" &
+    "type " & actorStateName(d.name) & "* = object\n" & fieldsStr.join("\n") & "\n"
 
 proc genActorDispatch*(ctx: CodegenCtx, d: Decl, msgTypeName: string,
                       handlers: seq[ActorMsgHandler]): string =
@@ -619,8 +632,10 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
   var inits: seq[string]
   for f in d.actorFields:
     if f.default != nil: inits.add(f.name & ": " & ctx.genExpr(f.default))
-  let singletonStr = "let " & singleton & "* = " & d.name & "(" &
-                     inits.join(", ") & ")\n"
+  let storage = actorStorageName(d.name)
+  let singletonStr = "var " & storage & "* = " & actorStateName(d.name) & "(" &
+                     inits.join(", ") & ")\n" &
+                     "let " & singleton & "* = addr " & storage & "\n"
   let drainStr = genActorDrain(drainName, singleton, actorHasUrgent(d))
   var memberStr = ""
   for m in actorMemberFns(d): memberStr.add ctx.genActorMemberFn(m, d.name) & "\n"
@@ -635,6 +650,132 @@ proc genActor*(ctx: var CodegenCtx, d: Decl): string =
 
   msgTypes & "\n" & stateStr & "\n" & singletonStr & "\n" & memberStr &
     dispatchStr & "\n" & drainStr & "\n" & registerStr
+
+proc handlerInvokes(ctx: var CodegenCtx, d: Decl, v: VariantDef,
+                     paramStr: string, decls: var string): string =
+  ## The calls that deliver one event: this module's handlers directly, then
+  ## (declaring its list into `decls`) the ones other modules registered.
+  var argNames: seq[string]
+  for f in v.fields: argNames.add(f.name)
+  var calls: seq[string]
+  for decl in registryHandlers(ctx.module, d, v):
+    calls.add("  " & handlerProcName(decl) & "(" & argNames.join(", ") & ")")
+  # Handlers in other modules are handed to this registry as references:
+  # the event keeps a list and the raise proc walks it after its own.
+  if hasForeignHandlers(ctx.res, ctx.module, d, v):
+    let list = handlerListName(d.name, v.name)
+    decls.add("var " & list & "*: seq[proc (" & paramStr & ") {.nimcall.}]\n")
+    calls.add("  for h in " & list & ": h(" & argNames.join(", ") & ")")
+  if calls.len > 0: calls.join("\n") else: "  discard"
+
+const DefaultEventQueue* = 8
+  ## The `[stream]` queue of an event no `bind` sizes (raised from normal
+  ## code, or by a bound fn whose bind gives no `queue:`).
+
+proc eventTuple(v: VariantDef): string =
+  ## The stored form of one event: its payload fields as a named tuple, or a
+  ## placeholder bool for an event with none.
+  if v.fields.len == 0: return "bool"
+  var parts: seq[string]
+  for f in v.fields: parts.add f.name & ": " & genType(f.typ)
+  "tuple[" & parts.join(", ") & "]"
+
+proc eventStore(d: Decl, v: VariantDef, what: string): string =
+  "tuck" & what & "ˑ" & d.name & "ˑ" & v.name
+
+proc genQueuedRaise(d: Decl, v: VariantDef, q: int, paramStr, latestSet,
+                    handlerInvokes: string, stores: var string): string =
+  ## A `[stream]`/`[signal]`/`[latest]` event (DESIGN-interrupt-events §5).
+  ## On metal the raise only POSTS (safe inside an interrupt) and readies the
+  ## registry's delivery frame; the handlers run there, after the interrupt
+  ## returns. A hosted build has no interrupts, so it delivers at once.
+  var store = ""
+  var post = "    let tuckCs = tuckCriticalEnter()\n"
+  var fieldsTuple: seq[string]
+  for f in v.fields: fieldsTuple.add f.name & ": " & f.name
+  let item = if v.fields.len == 0: "true" else: "(" & fieldsTuple.join(", ") & ")"
+  case v.delivery
+  of edStream:
+    let buf = eventStore(d, v, "Q")
+    let head = eventStore(d, v, "QHead")
+    let count = eventStore(d, v, "QCount")
+    let dropped = eventStore(d, v, "Dropped")
+    store = "  var " & buf & "*: array[" & $q & ", " & eventTuple(v) & "]\n" &
+            "  var " & head & "*, " & count & "*: int\n" &
+            "  var " & dropped & "*: uint32   ## overflowed posts, counted\n"
+    post.add "    if " & count & " < " & $q & ":\n" &
+             "      " & buf & "[(" & head & " + " & count & ") mod " & $q & "] = " & item & "\n" &
+             "      inc " & count & "\n"
+    if v.overflow == "drop_oldest":
+      post.add "    else:\n" &
+               "      " & buf & "[" & head & "] = " & item & "\n" &
+               "      " & head & " = (" & head & " + 1) mod " & $q & "\n" &
+               "      inc " & dropped & "\n"
+    else:
+      post.add "    else:\n      inc " & dropped & "   # drop_newest\n"
+  of edSignal:
+    store = "  var " & eventStore(d, v, "Sig") & "*: uint32\n"
+    post.add "    inc " & eventStore(d, v, "Sig") & "\n"
+  of edLatest:
+    store = "  var " & eventStore(d, v, "Slot") & "*: " & eventTuple(v) & "\n" &
+            "  var " & eventStore(d, v, "Has") & "*: bool\n"
+    post.add "    " & eventStore(d, v, "Slot") & " = " & item & "\n" &
+             "    " & eventStore(d, v, "Has") & " = true\n"
+  of edNone: discard
+  post.add "    tuckCriticalExit(tuckCs)\n" &
+           "    tuckDeliveryPost(tuckDeliverˑ" & d.name & ", tuckDrainˑ" & d.name & ")\n"
+  # The stores go first in the file: Nim's codeReordering does not reach
+  # into a `when` block, so the drain and the raise must come after them.
+  stores.add "when defined(freestanding):\n" & store & "\n"
+  "proc " & raiseProcName(d.name, v.name) & "*(" & paramStr & ") =\n" &
+    "  when defined(freestanding):\n" & post &
+    "  else:\n    " & latestSet & "\n" & handlerInvokes.indent(2) & "\n\n"
+
+proc genEventDrainPart(d: Decl, v: VariantDef, q: int, latestSet,
+                       handlerInvokes: string): string =
+  ## One event's share of the registry's drain: take ONE posted occurrence
+  ## (a stream item, a signal's merged count, the latest slot) and run the
+  ## handlers on it. The drain is called until it finds nothing.
+  var take = "  block:\n    var tuckGot = false\n"
+  var bindFields = ""
+  for f in v.fields: bindFields.add "      let " & f.name & " = tuckItem." & f.name & "\n"
+  case v.delivery
+  of edStream:
+    let buf = eventStore(d, v, "Q")
+    let head = eventStore(d, v, "QHead")
+    let count = eventStore(d, v, "QCount")
+    take.add "    var tuckItem: " & eventTuple(v) & "\n" &
+             "    let tuckCs = tuckCriticalEnter()\n" &
+             "    if " & count & " > 0:\n" &
+             "      tuckItem = " & buf & "[" & head & "]\n" &
+             "      " & head & " = (" & head & " + 1) mod " & $q & "\n" &
+             "      dec " & count & "\n" &
+             "      tuckGot = true\n" &
+             "    tuckCriticalExit(tuckCs)\n"
+  of edSignal:
+    let sig = eventStore(d, v, "Sig")
+    take.add "    let tuckCs = tuckCriticalEnter()\n" &
+             "    tuckGot = " & sig & " > 0\n" &
+             "    " & sig & " = 0\n" &
+             "    tuckCriticalExit(tuckCs)\n"
+  of edLatest:
+    take.add "    var tuckItem: " & eventTuple(v) & "\n" &
+             "    let tuckCs = tuckCriticalEnter()\n" &
+             "    if " & eventStore(d, v, "Has") & ":\n" &
+             "      tuckItem = " & eventStore(d, v, "Slot") & "\n" &
+             "      " & eventStore(d, v, "Has") & " = false\n" &
+             "      tuckGot = true\n" &
+             "    tuckCriticalExit(tuckCs)\n"
+  of edNone: discard
+  take & "    if tuckGot:\n      result = true\n" & bindFields &
+    "      " & latestSet & "\n" & handlerInvokes.indent(4) & "\n"
+
+proc genRegistryDrain(d: Decl, parts: seq[string]): string =
+  ## The registry's delivery frame body (tuck_actors_metal.TuckDelivery).
+  "when defined(freestanding):\n" &
+    ("var tuckDeliverˑ" & d.name & ": TuckDelivery\n" &
+     "proc tuckDrainˑ" & d.name & "(): bool {.nimcall, gcsafe.} =\n" &
+     "  {.cast(gcsafe).}:\n" & parts.join("").indent(2)).indent(2) & "\n\n"
 
 proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
   ## An event registry as Nim: a kind enum, a ref-object event holding every
@@ -670,6 +811,8 @@ proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
   # "implementation of 'tuck_SystemEvents_PlaybackStarted' expected", with
   # the implementation sitting further down the same file.
   var raiseProcsStr = ""
+  var drainParts: seq[string]
+  var stores, queuedRaises: string   # metal delivery: stores, then drain, then raises
   for v in d.variants:
     var params: seq[string]
     var assignParts: seq[string]
@@ -679,24 +822,21 @@ proc genRegistry*(ctx: var CodegenCtx, d: Decl): string =
     let paramStr = params.join(", ")
     let assignStr = if assignParts.len > 0: ", " & assignParts.join(", ") else: ""
 
-    var handlerCalls: seq[string]
-    for decl in registryHandlers(ctx.module, d, v):
-      var argNames: seq[string]
-      for f in v.fields: argNames.add(f.name)
-      handlerCalls.add("  " & handlerProcName(decl) & "(" & argNames.join(", ") & ")")
+    let handlerInvokes = ctx.handlerInvokes(d, v, paramStr, raiseProcsStr)
+    let latestSet = "latest" & d.name & " = " & d.name & "(" & TagField & ": " &
+                    v.name & assignStr & ")"
+    if v.delivery == edNone:
+      raiseProcsStr.add("proc " & raiseProcName(d.name, v.name) & "*(" & paramStr &
+                        ") =\n  " & latestSet & "\n" & handlerInvokes & "\n\n")
+    else:
+      let q = ctx.res.eventQueues.getOrDefault(writtenName(d) & "." & v.name,
+                                               DefaultEventQueue)
+      queuedRaises.add genQueuedRaise(d, v, q, paramStr, latestSet,
+                                      handlerInvokes, stores)
+      drainParts.add genEventDrainPart(d, v, q, latestSet, handlerInvokes)
 
-    # Handlers in other modules are handed to this registry as references:
-    # the event keeps a list and the raise proc walks it after its own.
-    if hasForeignHandlers(ctx.res, ctx.module, d, v):
-      let list = handlerListName(d.name, v.name)
-      raiseProcsStr.add("var " & list & "*: seq[proc (" & paramStr &
-                        ") {.nimcall.}]\n")
-      var argNames: seq[string]
-      for f in v.fields: argNames.add(f.name)
-      handlerCalls.add("  for h in " & list & ": h(" & argNames.join(", ") & ")")
-    let handlerInvokes = if handlerCalls.len > 0: handlerCalls.join("\n") else: "  discard"
-    raiseProcsStr.add("proc " & raiseProcName(d.name, v.name) & "*(" & paramStr & ") =\n  latest" & d.name & " = " & d.name & "(" & TagField & ": " & v.name & assignStr & ")\n" & handlerInvokes & "\n\n")
-
+  if drainParts.len > 0:
+    raiseProcsStr.add stores & genRegistryDrain(d, drainParts) & queuedRaises
   return enumStr & typeStr & "\n" & globalVarStr & raiseProcsStr
 
 proc genObjectDecl*(ctx: var CodegenCtx, d: Decl): string =
@@ -849,6 +989,34 @@ proc genResourceTables(d: Decl): string =
   result.add("proc " & ResourceShutdownProc & "*() =\n")
   for i in countdown(d.resKinds.len - 1, 0):
     result.add("  shutdownResources(" & resourceTableName(d.resKinds[i].name) & ")\n")
+
+proc genBuffer*(d: Decl): string =
+  ## `buffer NAME: Array[N, T] [at ADDR]` (owner ruling 2026-11-23). Without
+  ## `at`, an aligned global the linker places. With `at`, on metal, the
+  ## memory AT that address (the board build keeps the linker and the heap
+  ## out of it); a hosted build has no such address, so it is a global there.
+  let ty = "array[" & $d.bufCount & ", " & genType(d.bufElem) & "]"
+  let global = "var " & d.name & "* {.align: 4.}: " & ty & "\n"
+  if d.bufAt == "": return global
+  "when defined(freestanding):\n" &
+    "  template " & d.name & "*: untyped = cast[ptr " & ty & "](" &
+    d.bufAt.replace("_", "") & "'u)[]\n" &
+    "else:\n  " & global
+
+proc bindVectorSymbol*(line: string): string =
+  ## The C symbol an interrupt line's vector entry calls. The board build
+  ## generates the vector table with one weak `tuck_irq_<LINE>` per line,
+  ## each falling back to the fault recorder; a `bind` defines the strong one.
+  "tuck_irq_" & line
+
+proc genBind*(d: Decl): string =
+  ## `bind LINE -> fn`: the line's vector entry calls the bound `[irq]` fn.
+  ## Only on a bare-metal build: a hosted program has no interrupts to take,
+  ## so the bind is checked there and compiles to nothing.
+  "when defined(freestanding):\n" &
+    "  proc tuckIrqˑ" & d.bindLine & "() {.exportc: \"" &
+    bindVectorSymbol(d.bindLine) & "\".} =\n" &
+    "    " & mangleName(d.bindFn, nkFn) & "()\n"
 
 proc genRegister*(d: Decl): string =
   ## A memory-mapped register (spec 8.1): named shift constants plus
@@ -1100,6 +1268,8 @@ proc genDecl*(ctx: var CodegenCtx, d: Decl): string =
     "const " & d.name & (if isExportedDecl(ctx.module, d): "*" else: "") &
       " = static:\n  " & ctx.genExpr(d.constVal)
   of dkRegister: genRegister(d)
+  of dkBuffer: genBuffer(d)
+  of dkBind: genBind(d)
   of dkRegistry: ctx.genRegistry(d)
   of dkPool: genPoolDecl(d)
   of dkSlab: genSlabDecl(d)

@@ -116,7 +116,10 @@ proc collectPoolSigs*(tc: var TypeChecker, d: Decl) =
       ("write", @[h, Param(name: "value", typ: d.poolElem, span: d.span)], void),
       # The cell's bytes, for an extern to fill (DMA): a `Buf`, which only an
       # extern may take (typecheck_pointers).
-      ("addr", @[h], Type(span: d.span, kind: tkNamed, name: "Buf"))]:
+      ("addr", @[h], Type(span: d.span, kind: tkNamed, name: "Buf")),
+      # The cell's address as a NUMBER, for a DMA register (owner ruling
+      # 2026-11-24, as `buffer.address`): never a pointer.
+      ("address", @[h], Type(span: d.span, kind: tkNamed, name: "u32"))]:
     tc.setFnSig(d.name & "." & op, (params, ret, newSeq[string](),
                                     newSeq[EffectMarker](), newSeq[string](),
                                     newSeq[string]()))

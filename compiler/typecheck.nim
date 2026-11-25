@@ -1090,13 +1090,14 @@ proc asFnByName(tc: var TypeChecker, e: Expr, recvT: Type): Type =
 
 proc poolOpNamed(member: string): Option[PoolOpKind] =
   ## The pool operation a member name spells (`acquire`, `release`, `read`,
-  ## `write`, `addr`), or none for any other member.
+  ## `write`, `addr`, `address`), or none for any other member.
   case member
   of "acquire": some(poAcquire)
   of "release": some(poRelease)
   of "read": some(poRead)
   of "write": some(poWrite)
   of "addr": some(poAddr)
+  of "address": some(poAddress)
   else: none(PoolOpKind)
 
 proc poolOpArg(tc: var TypeChecker, e: Expr, qualified: string,
@@ -1125,16 +1126,17 @@ proc poolOpArg(tc: var TypeChecker, e: Expr, qualified: string,
          typeName(p.typ) & " but got " & typeName(got) & why, v.span)
   v
 
-proc failIfAddrOfCheckedCell(tc: TypeChecker, e: Expr, elem: Type) =
-  ## An extern fills the bytes `addr` hands out, and nothing checks them
-  ## against an invariant (TK-TY31).
+proc failIfAddrOfCheckedCell(tc: TypeChecker, e: Expr, elem: Type,
+                             op: string) =
+  ## Hardware or an extern fills the bytes `addr` or `address` hands out, and
+  ## nothing checks them against an invariant (TK-TY31).
   if elem == nil or elem.kind != tkNamed or
      elem.name notin tc.typeDeclsByName: return
   for member in tc.typeDeclsByName[elem.name].typeMembers:
     if member.kind == dkExpr:
       fail(dcTyPoolAddrInvariant, "'" & elem.name & "' carries an " &
-           "invariant, so a pool of it has no `addr`: memory an extern fills " &
-           "is never checked against it", e.span)
+           "invariant, so a pool of it has no `" & op & "`: memory an extern " &
+           "or a DMA transfer fills is never checked against it", e.span)
 
 proc takesParam(sig: FnSig, name: string): bool =
   ## Does the signature declare a parameter called `name`?
@@ -1168,10 +1170,10 @@ proc asPoolOp(tc: var TypeChecker, e: Expr, op: PoolOpKind,
   failIfPoolPayloadStray(e, qualified, sig)
   var args: seq[Expr]
   for p in sig.params: args.add tc.poolOpArg(e, qualified, p)
-  if op == poAddr:
+  if op in {poAddr, poAddress}:
     # the element type is the one `write` takes
     let elem = tc.sigOf(e.receiver.refName & ".write").params[1].typ
-    tc.failIfAddrOfCheckedCell(e, elem)
+    tc.failIfAddrOfCheckedCell(e, elem, if op == poAddr: "addr" else: "address")
   let node = Expr(span: e.span, kind: exkPoolOp, poolOp: op,
                   poolRef: e.receiver, poolHandle: args.operand(0),
                   poolValue: args.operand(1))
@@ -1727,6 +1729,38 @@ proc regBits(f: FieldDef): tuple[lo, hi: int, ok: bool] =
   except ValueError:
     return (0, 0, false)
 
+proc parseBufferAddr(text: string): uint64 =
+  ## `0x2000_F000` or a decimal address, as written.
+  let t = text.replace("_", "")
+  if t.len > 2 and t[0] == '0' and t[1] in {'x', 'X'}:
+    uint64(parseHexInt(t))
+  else:
+    parseBiggestUInt(t)
+
+proc bufferElemSize(d: Decl): int =
+  ## Bytes per element of a buffer: 1, 2 or 4; 0 for anything else.
+  if d.bufElem == nil or d.bufElem.kind != tkNamed: return 0
+  case d.bufElem.name
+  of "u8": 1
+  of "u16": 2
+  of "u32": 4
+  else: 0
+
+proc checkBufferDecl(d: Decl) =
+  ## `buffer NAME: Array[N, T] [at ADDR]` (owner ruling 2026-11-23): what a
+  ## DMA stream moves, at least one of it, and an address it can use.
+  let size = bufferElemSize(d)
+  if size == 0:
+    fail(dcBfElem, "buffer '" & d.name & "': its elements must be u8, u16 or u32 " &
+         "(what a DMA transfer moves)", d.span)
+  if d.bufCount < 1:
+    fail(dcBfCount, "buffer '" & d.name & "' holds no elements", d.span)
+  if d.bufAt != "":
+    let at = parseBufferAddr(d.bufAt)
+    if at mod uint64(max(size, 4)) != 0:
+      fail(dcBfAlign, "buffer '" & d.name & "' at " & d.bufAt & " is not " &
+           $max(size, 4) & "-byte aligned", d.span)
+
 proc checkRegisterDecl(d: Decl) =
   ## spec 8.1: a register's fields describe real hardware, so the layout has
   ## to be one the hardware could have — bits inside the register, and no two
@@ -1840,18 +1874,29 @@ proc checkRegisterFieldRead(tc: var TypeChecker, e: Expr) =
          "' is declared [write] — reading it is a compile error (spec " &
          "§8.1); a write-only field reads back undefined", e.span)
 
+proc bufferFieldType(tc: var TypeChecker, e: Expr): Type =
+  ## `.address` is a NUMBER for a register to take, never a pointer (owner
+  ## ruling 2026-11-23); `.len` is N.
+  if e.fieldName == "address": return tc.namedType("u32", e.span)
+  if e.fieldName == "len": return tc.namedType("int", e.span)
+  fail("Type Error: a buffer has `.address` and `.len`, and its elements " &
+       "by index; no field '" & e.fieldName & "'", e.span)
+
 proc asSpecialFieldAccess(tc: var TypeChecker, e: Expr): Type =
   ## Check for special field access cases: register, actor, registry.raise, Error namespace.
-  if e.receiver != nil and e.receiver.kind == exkRegisterRef:
+  if e.receiver == nil: return nil
+  if e.receiver.kind == exkRegisterRef:
     let regT = registerFieldType(tc.module, e.receiver.refName, e.fieldName, e.span)
     if regT != nil: return regT
-  if e.receiver != nil and e.receiver.kind == exkActorRef:
+  if e.receiver.kind == exkActorRef:
     let actT = actorFieldType(tc.module, e.receiver.refName, e.fieldName)
     if actT != nil: return actT
-  if e.receiver != nil and e.receiver.kind == exkRegistryRef and
+  if e.receiver.kind == exkBufferRef:
+    return tc.bufferFieldType(e)
+  if e.receiver.kind == exkRegistryRef and
      e.fieldName == "raise":
     return Type(span: e.span, kind: tkNamed, name: "unit")
-  if e.receiver != nil and e.receiver.kind == exkVar and e.receiver.name == "Error":
+  if e.receiver.kind == exkVar and e.receiver.name == "Error":
     return Type(span: e.span, kind: tkNamed, name: "u16")
   nil
 
@@ -6369,6 +6414,10 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
   of exkDrop, exkReset:
     # Built after the checker (ownership_nodes, _write): a statement.
     tc.namedType("void", e.span)
+  of exkBufferRef:
+    # A buffer is its `Array[N, T]`: indexing reads and writes its elements.
+    let b = semLayer.bufferNames.getOrDefault(e.refName)
+    if b != nil and b.bufType != nil: b.bufType else: tc.namedType(e.refName, e.span)
   of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     # A reference to a declaration, not a value — same shape as a bare sum
     # variant (synthBareVariant), named after the declaration itself. Field
@@ -7098,6 +7147,8 @@ proc checkDecl(tc: var TypeChecker, d: Decl) =
     checkTransitions(d)
     tc.checkInvariants(d)
   of dkRegister: checkRegisterDecl(d)
+  of dkBuffer: checkBufferDecl(d)
+  of dkBind: discard    # whole-program: checkBinds, once every module is checked
   of dkPool: tc.checkPoolDecl(d)
   of dkSlab: tc.checkSlabDecl(d)
   of dkArena: checkArenaDecl(tc.module, d)
@@ -7699,6 +7750,89 @@ proc checkInterruptCodeStrict(mods: seq[tuple[name, path: string, m: Module]]) =
       if emIrq in d.fnEffects: roots.add d
   for root in roots: walkFromInterrupt(mods, owner, root)
 
+proc bindTarget(mods: seq[tuple[name, path: string, m: Module]], here: int,
+                b: Decl): Decl =
+  ## The fn a bind names: in the named module, or in the bind's own.
+  let want = if b.bindModule == "": mods[here].name else: b.bindModule
+  for (name, _, m) in mods:
+    if name != want: continue
+    for d in m.decls:
+      if d != nil and d.kind == dkFn and d.name == b.bindFn: return d
+  nil
+
+proc failBind(path: string, b: Decl, dc: DiagCode, msg: string) =
+  var err = newException(SemanticError, withCode(dc, msg))
+  err.line = b.span.line
+  err.col = b.span.col
+  raise withModulePrefix(err, path)
+
+proc recordBindQueue(target: Decl, b: Decl) =
+  ## The `[stream]` events `target` raises take the bind's `queue:` (the
+  ## largest, when several binds raise one event).
+  if b.bindQueue <= 0: return
+  var raises: seq[tuple[reg, ev: string, sp: Span, payload: Expr]]
+  raisedEventsIn(target.fnBody, raises)
+  for r in raises:
+    let k = r.reg & "." & r.ev
+    semLayer.eventQueues[k] = max(semLayer.eventQueues.getOrDefault(k, 0), b.bindQueue)
+
+proc checkOneBind(mods: seq[tuple[name, path: string, m: Module]], i: int,
+                  b: Decl, lines: var Table[string, Span],
+                  fns: var Table[string, string]) =
+  let path = mods[i].path
+  let shown = (if b.bindModule == "": "" else: b.bindModule & ".") & b.bindFn
+  let target = bindTarget(mods, i, b)
+  if target == nil or emIrq notin target.fnEffects:
+    failBind(path, b, dcBdNotIrq, "bind " & b.bindLine & ": '" & shown &
+             (if target == nil: "' names no fn" else: "' is not declared `[irq]`") &
+             " — a line runs an interrupt handler")
+  if b.bindAs != "":
+    failBind(path, b, dcBdChannelUnbuilt, "bind " & b.bindLine & " ... as " &
+             b.bindAs & ": a channel per binding is ruled but not built yet")
+  if b.bindLine in lines:
+    failBind(path, b, dcBdLineTwice, "line " & b.bindLine &
+             " is already bound at line " & $lines[b.bindLine].line)
+  let key = b.bindModule & "." & b.bindFn
+  if key in fns:
+    failBind(path, b, dcBdFnTwice, "'" & shown & "' is already bound to " &
+             fns[key] & "; one fn on two lines needs `as` channels (not built)")
+  if b.bindPriority > 255 or (b.bindQueue != -1 and b.bindQueue < 1):
+    failBind(path, b, dcBdSetting, "bind " & b.bindLine &
+             ": priority is 0..255 and queue at least 1")
+  lines[b.bindLine] = b.span
+  fns[key] = b.bindLine
+  recordBindQueue(target, b)
+
+proc checkBinds(mods: seq[tuple[name, path: string, m: Module]]) =
+  ## `bind LINE -> module.fn [priority: N, queue: N]` (owner ruling
+  ## 2026-11-22): the fn is an `[irq]` fn, each line is bound once, each fn
+  ## once (a channel per binding, `as Name`, is ruled but not built), and the
+  ## settings are in range. Whether the board HAS the line is checked when
+  ## building for it (TK-BD06): `tuck ch` knows no board.
+  var lines = initTable[string, Span]()
+  var fns = initTable[string, string]()
+  for i in 0 ..< mods.len:
+    for b in mods[i].m.decls:
+      if b != nil and b.kind == dkBind: checkOneBind(mods, i, b, lines, fns)
+
+proc checkBufferOverlap(mods: seq[tuple[name, path: string, m: Module]]) =
+  ## TK-BF03: no two `at` buffers share a byte, program-wide.
+  var placed: seq[tuple[lo, hi: uint64, name: string]]
+  for (_, path, m) in mods:
+    for d in m.decls:
+      if d == nil or d.kind != dkBuffer or d.bufAt == "": continue
+      let lo = parseBufferAddr(d.bufAt)
+      let hi = lo + uint64(d.bufCount * max(bufferElemSize(d), 1))
+      for p in placed:
+        if lo < p.hi and p.lo < hi:
+          var err = newException(SemanticError, withCode(dcBfOverlap,
+            "buffer '" & d.name & "' at " & d.bufAt & " overlaps buffer '" &
+            p.name & "'"))
+          err.line = d.span.line
+          err.col = d.span.col
+          raise withModulePrefix(err, path)
+      placed.add (lo, hi, d.name)
+
 proc checkProgramOnce(mods: seq[tuple[name, path: string, m: Module]],
                       preSigs: Table[string, seq[SigInfo]]): seq[string] =
   ## Signatures are gathered across the whole program first, then each module
@@ -7743,6 +7877,8 @@ proc checkProgramOnce(mods: seq[tuple[name, path: string, m: Module]],
     except SemanticError as err:
       raise withModulePrefix(err, path)
   checkInterruptCodeStrict(mods)
+  checkBinds(mods)
+  checkBufferOverlap(mods)
 
 proc checkIfaceMatchesComplete(mods: seq[tuple[name, path: string, m: Module]]) =
   ## A match on an interface value covers every object that satisfies it,

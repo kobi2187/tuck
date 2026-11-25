@@ -101,7 +101,7 @@ proc entryWord(d: Decl): string =
   of dkSelect: "on select"
   of dkExpr: "a top-level statement"
   of dkType, dkObject, dkRegistry, dkPool, dkSlab, dkArena, dkMixin, dkExtern,
-     dkPending, dkActor, dkConst, dkRegister, dkStaticAssert, dkErrors,
+     dkPending, dkActor, dkConst, dkRegister, dkBuffer, dkBind, dkStaticAssert, dkErrors,
      dkResources, dkImport, dkFnSig, dkSatisfies, dkWhen, dkPublic,
      dkInterface, dkGroup:
     d.name

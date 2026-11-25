@@ -3,41 +3,51 @@
 # (timers 168 MHz), APB1 42 MHz (timers 84 MHz). The PLL setup itself is
 # left out: it is the same few writes on every F4 board.
 #
-#   USART1 RX   <- RP1 receiver TX (CRSF, 420 000 baud)
-#   SPI1        <-> ICM-42688-P (CS on PA4, mode 3, up to 24 MHz)
-#   EXTI4       <- ICM-42688-P INT1 (data ready, 1 kHz) on PC4
-#   TIM2        a free-running microsecond clock for CRSF frame gaps
+# Pins from Betaflight's target for this board
+# (betaflight/config, configs/SPBE/SPEEDYBEEF405MINI/config.h):
 #
-# The motor pads' timer and DMA mapping on the SpeedyBee F405 Mini could not
-# be confirmed from a published pinout, so DShot output is an extern below,
-# not register code: see the note on `dshotWrite`.
+#   USART2 RX   PA3  <- RP1 receiver TX (CRSF, 420 000 baud)
+#   SPI1             <-> ICM-42688-P (CS on PA4, mode 3, up to 24 MHz)
+#   EXTI4       PC4  <- ICM-42688-P INT1 (data ready, 1 kHz)
+#   TIM4 CH1/2  PB6, PB7  -> motors 1, 2 (DShot600)
+#   TIM3 CH3/4  PB0, PB1  -> motors 4, 3 (DShot600)
+#   TIM2             a free-running microsecond clock for CRSF frame gaps
+#
+# DShot is a timer "DMA burst": on every update event the DMA stream writes
+# the next pair of compare values through the timer's DMAR window into two
+# CCR registers. TIM4_UP is DMA1 stream 6 channel 2, TIM3_UP is DMA1 stream
+# 2 channel 5 (RM0090 table 42).
 
 register RCC_AHB1ENR at 0x40023830:
   GPIOAEN: bit 0 [read, write]
+  GPIOBEN: bit 1 [read, write]
   GPIOCEN: bit 2 [read, write]
+  DMA1EN: bit 21 [read, write]
 
 register RCC_APB1ENR at 0x40023840:
   TIM2EN: bit 0 [read, write]
+  TIM3EN: bit 1 [read, write]
+  TIM4EN: bit 2 [read, write]
+  USART2EN: bit 17 [read, write]
 
 register RCC_APB2ENR at 0x40023844:
-  USART1EN: bit 4 [read, write]
   SPI1EN: bit 12 [read, write]
   SYSCFGEN: bit 14 [read, write]
 
 register GPIOA_BSRR at 0x40020018:
   BSRR: bits 0..31 [write]
 
-register USART1_SR at 0x40011000:
+register USART2_SR at 0x40004400:
   ORE: bit 3 [read]
   RXNE: bit 5 [read]
 
-register USART1_DR at 0x40011004:
+register USART2_DR at 0x40004404:
   DR: bits 0..8 [read, write]
 
-register USART1_BRR at 0x40011008:
+register USART2_BRR at 0x40004408:
   BRR: bits 0..15 [read, write]
 
-register USART1_CR1 at 0x4001100C:
+register USART2_CR1 at 0x4000440C:
   RE: bit 2 [read, write]
   RXNEIE: bit 5 [read, write]
   UE: bit 13 [read, write]
@@ -80,28 +90,193 @@ register TIM2_CNT at 0x40000024:
 register TIM2_PSC at 0x40000028:
   PSC: bits 0..15 [read, write]
 
-register NVIC_ISER0 at 0xE000E100:
-  SETENA: bits 0..31 [read, write]
+# --- DShot: two timers, two DMA streams ------------------------------------
 
-register NVIC_ISER1 at 0xE000E104:
-  SETENA: bits 0..31 [read, write]
+register TIM4_CR1 at 0x40000800:
+  CEN: bit 0 [read, write]
+  ARPE: bit 7 [read, write]
+
+register TIM4_DIER at 0x4000080C:
+  UDE: bit 8 [read, write]
+
+register TIM4_CCMR1 at 0x40000818:
+  OC1PE: bit 3 [read, write]
+  OC1M: bits 4..6 [read, write]
+  OC2PE: bit 11 [read, write]
+  OC2M: bits 12..14 [read, write]
+
+register TIM4_CCER at 0x40000820:
+  CC1E: bit 0 [read, write]
+  CC2E: bit 4 [read, write]
+
+register TIM4_ARR at 0x4000082C:
+  ARR: bits 0..15 [read, write]
+
+register TIM4_DCR at 0x40000848:
+  DBA: bits 0..4 [read, write]
+  DBL: bits 8..12 [read, write]
+
+register TIM3_CR1 at 0x40000400:
+  CEN: bit 0 [read, write]
+  ARPE: bit 7 [read, write]
+
+register TIM3_DIER at 0x4000040C:
+  UDE: bit 8 [read, write]
+
+register TIM3_CCMR2 at 0x4000041C:
+  OC3PE: bit 3 [read, write]
+  OC3M: bits 4..6 [read, write]
+  OC4PE: bit 11 [read, write]
+  OC4M: bits 12..14 [read, write]
+
+register TIM3_CCER at 0x40000420:
+  CC3E: bit 8 [read, write]
+  CC4E: bit 12 [read, write]
+
+register TIM3_ARR at 0x4000042C:
+  ARR: bits 0..15 [read, write]
+
+register TIM3_DCR at 0x40000448:
+  DBA: bits 0..4 [read, write]
+  DBL: bits 8..12 [read, write]
+
+# DMA1 stream 2 (TIM3_UP) and stream 6 (TIM4_UP). Flag clears are write-1
+# full-width fields, like EXTI_PR (D3).
+register DMA1_LIFCR at 0x40026008:
+  CLR: bits 0..31 [write]
+
+register DMA1_HIFCR at 0x4002600C:
+  CLR: bits 0..31 [write]
+
+register DMA1_S2CR at 0x40026040:
+  EN: bit 0 [read, write]
+  DIR: bits 6..7 [read, write]
+  MINC: bit 10 [read, write]
+  PSIZE: bits 11..12 [read, write]
+  MSIZE: bits 13..14 [read, write]
+  PL: bits 16..17 [read, write]
+  CHSEL: bits 25..27 [read, write]
+
+register DMA1_S2NDTR at 0x40026044:
+  NDT: bits 0..15 [read, write]
+
+register DMA1_S2PAR at 0x40026048:
+  PA: bits 0..31 [read, write]
+
+register DMA1_S2M0AR at 0x4002604C:
+  M0A: bits 0..31 [read, write]
+
+register DMA1_S6CR at 0x400260A0:
+  EN: bit 0 [read, write]
+  DIR: bits 6..7 [read, write]
+  MINC: bit 10 [read, write]
+  PSIZE: bits 11..12 [read, write]
+  MSIZE: bits 13..14 [read, write]
+  PL: bits 16..17 [read, write]
+  CHSEL: bits 25..27 [read, write]
+
+register DMA1_S6NDTR at 0x400260A4:
+  NDT: bits 0..15 [read, write]
+
+register DMA1_S6PAR at 0x400260A8:
+  PA: bits 0..31 [read, write]
+
+register DMA1_S6M0AR at 0x400260AC:
+  M0A: bits 0..31 [read, write]
+
+# What the streams read: 17 slots (16 bits and a closing 0) of two compare
+# values each, interleaved as the burst writes them. The linker places them
+# (in SRAM1: DMA1 cannot reach the F405's CCM RAM). `.address` is the number
+# a stream's M0AR takes.
+buffer Tim4Burst: Array[34, u32]     # CCR1 (motor 1), CCR2 (motor 2)
+buffer Tim3Burst: Array[34, u32]     # CCR3 (motor 4), CCR4 (motor 3)
+
+const burstWords: u32 = 34
+const tim4Dmar: u32 = 0x4000084C     # each timer's DMA burst window
+const tim3Dmar: u32 = 0x4000044C
+
+fn setupDshot():
+  ## Both timers: PWM mode 1 on two channels, preloaded, 140 ticks a bit,
+  ## a DMA request on every update; a 2-register burst from CCR1 (TIM4,
+  ## DBA 13) and from CCR3 (TIM3, DBA 15). Then the streams: memory to
+  ## peripheral, 32-bit both sides, incrementing through the buffer.
+  TIM4_ARR.ARR = 139
+  TIM4_CCMR1.OC1M = 6
+  TIM4_CCMR1.OC1PE = true
+  TIM4_CCMR1.OC2M = 6
+  TIM4_CCMR1.OC2PE = true
+  TIM4_CCER.CC1E = true
+  TIM4_CCER.CC2E = true
+  TIM4_DCR.DBA = 13
+  TIM4_DCR.DBL = 1
+  TIM4_DIER.UDE = true
+  TIM4_CR1.ARPE = true
+  TIM3_ARR.ARR = 139
+  TIM3_CCMR2.OC3M = 6
+  TIM3_CCMR2.OC3PE = true
+  TIM3_CCMR2.OC4M = 6
+  TIM3_CCMR2.OC4PE = true
+  TIM3_CCER.CC3E = true
+  TIM3_CCER.CC4E = true
+  TIM3_DCR.DBA = 15
+  TIM3_DCR.DBL = 1
+  TIM3_DIER.UDE = true
+  TIM3_CR1.ARPE = true
+  DMA1_S6CR.CHSEL = 2
+  DMA1_S6CR.DIR = 1
+  DMA1_S6CR.MINC = true
+  DMA1_S6CR.PSIZE = 2
+  DMA1_S6CR.MSIZE = 2
+  DMA1_S6CR.PL = 3
+  DMA1_S6PAR.PA = tim4Dmar
+  DMA1_S6M0AR.M0A = Tim4Burst.address
+  DMA1_S2CR.CHSEL = 5
+  DMA1_S2CR.DIR = 1
+  DMA1_S2CR.MINC = true
+  DMA1_S2CR.PSIZE = 2
+  DMA1_S2CR.MSIZE = 2
+  DMA1_S2CR.PL = 3
+  DMA1_S2PAR.PA = tim3Dmar
+  DMA1_S2M0AR.M0A = Tim3Burst.address
+  TIM4_CR1.CEN = true
+  TIM3_CR1.CEN = true
+
+fn dshotWrite({m1: Seq[int], m2: Seq[int], m3: Seq[int], m4: Seq[int]}):
+  ## Lay the four motors' compare values out as the bursts write them, then
+  ## start both streams. A stream turns itself off when its 34 words are
+  ## out (57 us), long before the next 1 kHz loop rearms it.
+  for i in 0 .. 16:
+    Tim4Burst[2 * i] = m1[i] ~u32
+    Tim4Burst[2 * i + 1] = m2[i] ~u32
+    Tim3Burst[2 * i] = m4[i] ~u32
+    Tim3Burst[2 * i + 1] = m3[i] ~u32
+  DMA1_HIFCR.CLR = 0x3D0000           # stream 6: every flag, bits 16..21
+  DMA1_LIFCR.CLR = 0x3D0000           # stream 2: the same bits
+  DMA1_S6NDTR.NDT = burstWords
+  DMA1_S2NDTR.NDT = burstWords
+  DMA1_S6CR.EN = true
+  DMA1_S2CR.EN = true
 
 fn setupPeripherals():
   RCC_AHB1ENR.GPIOAEN = true
+  RCC_AHB1ENR.GPIOBEN = true
   RCC_AHB1ENR.GPIOCEN = true
+  RCC_AHB1ENR.DMA1EN = true
   RCC_APB1ENR.TIM2EN = true
-  RCC_APB2ENR.USART1EN = true
+  RCC_APB1ENR.TIM3EN = true
+  RCC_APB1ENR.TIM4EN = true
+  RCC_APB1ENR.USART2EN = true
   RCC_APB2ENR.SPI1EN = true
   RCC_APB2ENR.SYSCFGEN = true
-  # (GPIO alternate-function setup for PA9/PA10, PA5..PA7 and PC4 elided:
+  # (GPIO alternate-function setup for PA3, PA5..PA7, PB0/PB1/PB6/PB7 (AF2)
+  # and PC4 elided:
   # MODER/AFR writes, identical in shape to the F1 programs.)
   TIM2_PSC.PSC = 83                 # 84 MHz / 84 = 1 MHz
   TIM2_CR1.CEN = true
-  USART1_BRR.BRR = 200              # 84 MHz / (16 x 420 000) = 12.5 -> 12 + 8/16
-  USART1_CR1.RE = true
-  USART1_CR1.RXNEIE = true
-  USART1_CR1.UE = true
-  NVIC_ISER1.SETENA = 32            # USART1 is IRQ 37: ISER1 bit 5
+  USART2_BRR.BRR = 100              # 42 MHz / (16 x 420 000) = 6.25 -> 6 + 4/16
+  USART2_CR1.RE = true
+  USART2_CR1.RXNEIE = true
+  USART2_CR1.UE = true
   SPI1_CR1.CPOL = true              # mode 3
   SPI1_CR1.CPHA = true
   SPI1_CR1.BR = 1                   # 84 MHz / 4 = 21 MHz, under the IMU's 24
@@ -113,15 +288,7 @@ fn setupPeripherals():
   SYSCFG_EXTICR2.EXTI4 = 2          # port C
   EXTI_RTSR.TR4 = true              # INT1 is push-pull, active high
   EXTI_IMR.MR4 = true
-  NVIC_ISER0.SETENA = 1024          # EXTI4 is IRQ 10
+  setupDshot
 
 fn micros() -> int:
   return TIM2_CNT.CNT ^int
-
-# DShot600 needs a timer compare register reloaded every 1.67 us from a
-# buffer, which is a DMA job: the DMA stream must be given the buffer's
-# ADDRESS. Tuck has no way to take the address of a buffer it owns (pointers
-# exist only at the extern boundary), so the 17 compare values computed by
-# flight.dshotPulses are handed to a C routine that owns the DMA buffer.
-extern [c]:
-  fn dshotWrite({m1: Seq[int], m2: Seq[int], m3: Seq[int], m4: Seq[int]}) -> void [io]

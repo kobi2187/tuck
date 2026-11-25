@@ -305,7 +305,7 @@ iterator childSlots*(e: Expr): var Expr =
   if e != nil:
     case e.kind
     of exkLit, exkVar, exkQualified, exkImport, exkBreak, exkContinue,
-       exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
+       exkActorRef, exkRegisterRef, exkBufferRef, exkRegistryRef, exkPoolRef, exkMixinRef,
        exkSlabRef, exkArenaRef:
       discard
     of exkField:
@@ -455,7 +455,7 @@ iterator childDecls*(d: Decl): Decl =
       # nothing.
       yield d.errHandler
     of dkFn, dkTask, dkConst, dkExpr, dkStaticAssert, dkSelect, dkRegistry,
-       dkPool, dkSlab, dkArena, dkRegister, dkImport, dkFnSig, dkSatisfies, dkResources:
+       dkPool, dkSlab, dkArena, dkRegister, dkBuffer, dkBind, dkImport, dkFnSig, dkSatisfies, dkResources:
       discard
 
 iterator writtenTypes*(e: Expr): Type =
@@ -515,7 +515,7 @@ iterator ownTypes*(d: Decl): Type =
     # by conformance. dkMixin/dkExtern/dkPending/dkInterface/dkWhen hold only
     # members — childDecls reaches those. dkArena names no type: its slabs,
     # one per element type, are dkSlabs of their own.
-    of dkArena, dkRegister, dkExpr, dkStaticAssert, dkErrors, dkImport,
+    of dkArena, dkRegister, dkBuffer, dkBind, dkExpr, dkStaticAssert, dkErrors, dkImport,
        dkSelect, dkSatisfies, dkMixin, dkExtern, dkPending, dkInterface,
        dkGroup, dkWhen, dkPublic, dkResources:
       discard
@@ -550,7 +550,7 @@ iterator ownExprSlots*(d: Decl): var Expr =
       for f in d.actorFields.mitems:
         if f.default != nil: yield f.default
     of dkType, dkObject, dkMixin, dkExtern, dkPending, dkWhen, dkInterface,
-       dkGroup, dkRegistry, dkPool, dkSlab, dkArena, dkRegister, dkErrors, dkImport,
+       dkGroup, dkRegistry, dkPool, dkSlab, dkArena, dkRegister, dkBuffer, dkBind, dkErrors, dkImport,
        dkFnSig, dkSatisfies, dkPublic, dkResources:
       discard
 

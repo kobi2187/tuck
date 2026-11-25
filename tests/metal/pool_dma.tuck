@@ -1,0 +1,31 @@
+# `Pool.address {h}` on metal (owner ruling 2026-11-24): a pool of blocks is
+# a set of DMA targets. Each cell's address is a number in RAM, word-aligned,
+# one block apart, and the cell reads as present once handed out (the
+# hardware fills it). No peripheral here: QEMU's boards model no DMA.
+
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+pool Blocks = Array[64, u8] [count: 2]
+
+fn inRam({a: u32}) -> bool:
+  return a >= 0x20000000 ~u32 and a < 0x20010000 ~u32 and a % 4 == 0
+
+fn main() -> int:
+  let a = Blocks.acquire
+  if not a.ok:
+    return 1
+  let b = Blocks.acquire
+  if not b.ok:
+    return 1
+  let x = Blocks.address {h: a.value}
+  let y = Blocks.address {h: b.value}
+  if not {a: x} inRam or not {a: y} inRam or y - x != 64 ~u32:
+    {text: "POOL_BAD address\n"} say
+    return 2
+  let got = Blocks.read {h: a.value}
+  if not got.ok:
+    {text: "POOL_BAD absent\n"} say
+    return 3
+  {text: "POOL_DMA_OK\n"} say
+  return 0

@@ -1,0 +1,68 @@
+# The Tuck runtime inside a kernel (docs/kernel/): what the platform glue
+# supplies, each used once and checked. A Seq grows (malloc and realloc are
+# kmalloc and krealloc); `critical:` nests (the module's spinlock, taken
+# once and counted); a pool hands out and takes back a cell; a slab holds a
+# linked value; an error travels as a result. Prints KRUNTIME_OK, or which
+# part failed.
+
+import console
+import seq
+import str
+
+type Node:
+  v: int
+
+slab Nodes = Node
+pool Cells = Array[4, u32] [count: 2]
+
+type Parse:
+  | Empty
+
+fn parse({text: str}) -> !int [io, error: Parse]:
+  if text.len == 0:
+    err Parse.Empty
+  return text.len
+
+fn sumSeq() -> int:
+  var xs: Seq[int] = []
+  for i in 1 .. 1000:
+    xs = {items: xs, value: i} push
+  var s = 0
+  for x in xs:
+    s += x
+  return s
+
+fn bump({c: int}) -> int:
+  var x = c
+  critical:
+    x += 1
+    critical:
+      x += 10
+  return x
+
+fn main() -> int:
+  let total = sumSeq
+  if total != 500500:
+    {text: "KRUNTIME_BAD seq"} console::printLine
+    return -22
+  let once = {c: 0} bump
+  let twice = {c: once} bump
+  if twice != 22:
+    {text: "KRUNTIME_BAD critical"} console::printLine
+    return -22
+  let c = Cells.acquire
+  if not c.ok:
+    {text: "KRUNTIME_BAD pool"} console::printLine
+    return -12
+  Cells.release {h: c.value}
+  let n = Nodes.new {v: 7}
+  if n.v != 7:
+    {text: "KRUNTIME_BAD slab"} console::printLine
+    return -22
+  Nodes.free {r: n}
+  let bad = {text: ""} parse
+  if bad.ok:
+    {text: "KRUNTIME_BAD error"} console::printLine
+    return -22
+  {text: "KRUNTIME_OK"} console::printLine
+  return 0

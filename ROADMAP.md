@@ -21,6 +21,12 @@ track's own queue lives there.
 Item 14 below (#64, `[no_alloc]`/`[irq_safe]`) is part of that track's ISR
 discipline.
 
+**Kernel modules (2026-11-24):** `tuck build --target:linux-kmod` builds a
+Linux `.ko` (loaded and exercised under QEMU: a character device answered by
+Tuck code), `--target:windows-kmd` a Windows `.sys` (built and inspected; not
+loaded, no Windows here). What is built, what is proven, what is not, and four
+provisional decisions for the owner: `docs/kernel/README.md`.
+
 Ordering rule, set by the user:
 
 > priority to finish features, and higher priority for the SSA fixing mem
@@ -1232,6 +1238,31 @@ handler is bound by the application to a different fn.
 NOT BUILT: this is the design bare-metal Phase 2 builds
 (`docs/bare-metal/ROADMAP.md` 2.2, 2.7).
 
+## User ruling (2026-11-23) — a DMA buffer is a declared object whose address is a number
+
+Asked "can't we pass 0x... ?": a DMA stream needs the address of memory the
+program fills, and Tuck has no address-of. Ruled spelling:
+`buffer NAME: Array[N, T] [at ADDR]`, indexed like an array, with
+`NAME.address` a `u32` that only a register can take. No pointer enters
+Tuck; with `at` the application owns the placement and the build keeps the
+heap and stack out of it. BUILT the same day (bare-metal ROADMAP 2.0a;
+TK-BF01..04; `buffer_dma` under QEMU). Using a buffer while a transfer reads
+it stays unchecked until 6.3.
+
+## User ruling (2026-11-24) — a pool cell's address, as a number
+
+Asked whether `buffer` could simplify pools, slabs and arenas: it cannot
+replace them (they manage lifetimes — handles, tenancies, references — and
+a buffer is only placed memory), but pools had the one overlap: `Pool.addr`
+handed a cell's bytes to a C extern for DMA. Ruled: keep `addr` for externs
+and add `Pool.address {h}` → `u32`, the cell's address as a number for a
+DMA register, under the same TK-TY31 rule. BUILT the same day, on Nim, Odin
+and D. Building it for a board found that pools, slabs and arenas had never
+run on metal: their checks wrote to stderr (no such thing on a board), and a
+chunked slab asked the 2 KB frame heap for a 64 KiB chunk. Fixed: runtime
+checks stop through `tuckStop` (`PANIC:` on metal), and a slab on metal uses
+256-byte chunks from the heap.
+
 ## Partial
 | Feature | Spec | Missing piece |
 |---|---|---|
@@ -1243,7 +1274,7 @@ NOT BUILT: this is the design bare-metal Phase 2 builds
 | alias restructuring | 2.5 | DONE 2026-07-13 (typed renamed record, both backends; ex 18 green). Non-exkVar payload args still not exploded (double-eval; bind-to-temp later) |
 | pool / slab / arena | 7.2/7.3 | pool DONE (acquire/release, read/write/addr). Slab and arena DONE 2026-10-04 (slab proposal P0–P4): references by index with a tenancy per cell, chunked storage that never copies, ownership checks (TK-AC08/09), the arena as a lifetime over a slab per element type with a byte budget — run-gated on all three (examples 13, 48; `slabs` suite). Open: generic code over slabs (proposal §12); the arena's "cannot outlive" is a run-time check, a static one later |
 | Resource registry | 7.4 | 2026-09-14: `resources:` declaration (per-kind cap/policy/on_full/on_finish/sweep_batch, block-level policy default), `[resource: k]` marker validated (TK-RS01/02) and propagated through the effect machinery (TK-RS03, cross-module), the registry table in all three runtimes (strict/lazy/exit, inline ~75% watermark sweep, LIFO close-all, stale-handle generation catch — 19 rules pinned per runtime by `tests/suites/resources_rt.nim`), per-kind `<Kind>Handle` type, and the `OPEN RESOURCES` report + close-all at exit. `defer` landed with it as a GENERAL statement on all three backends. Release is `finish <handle>, <kind>` (ruled 2026-09-14): the kind is redundant against the handle's type and CHECKED (TK-RS04), so finishing into the wrong registry is a compile error. `on_full` and `on_finish` reach the table as closed vocabularies, the latter as real syscalls. The registry surface is a symmetric pair, `acquire <raw>, <kind>` / `finish <handle>, <kind>`, one parser building both (TK-RS04/05); the raw fd exists between the extern's return and the acquire and nowhere else, and the acquire site is filled from the span so the leak report can name it. A kind may also NAME a PROTOCOL — `db [cap: 4096, states: DbState]`, where DbState is a sealed sum type with `transitions:` (ruled 2026-09-14, decoupled: a `resources:` block is a deployment decision, the protocol of an OS service is the library's). The library writes only the states, never the handle; initial and terminal are DERIVED, and the machine is checked for what a resource needs (TK-RS06..10, including "the closing state is reachable from every state"). The registry is untouched: handle and table unchanged. Protocols are validated, NOT yet tracked — narrowing a handle through the machine needs a surface for a library op to name the edge it walks, a further ruling. A kind is declared ONCE by the library that owns it and apps import it — verified end-to-end, after fixing two bugs an import exposed: `main`'s blanket kind budget was its own module's kinds rather than the program's, and it REPLACED main's declared marker instead of unioning it, so the one workaround was a no-op too. A kind may be declared by MORE THAN ONE site, one knob each (ruled 2026-09-14): the library declares the protocol and on_finish, the app declares cap/policy/sweep_batch. Per knob, with a later site OVERRIDING an earlier one — a library ships a default, the app deploying it gets the last word. Not file order: modules are dep-first, so the importer overrides the imported. `states` is the exception and refuses a second setting (TK-RS02), since a protocol is what the service does rather than a default. Coherence moved out of the parser to the merged kind (TK-RS11) — a library's `on_full` is incoherent alone and correct once an app adds a cap. The table emits at the first site in dependency order, which is where a library's own acquire site can reach it; re-opens emit nothing, so no backend learns about re-opening. Also: `on_finish: none` now parses (it lexes as a keyword, so it was reserved even where only a name can appear). BUILT 2026-10-27 as a warning (TK-RS12, `resource_leaks.nim`): the conservative half of §7.4's acquire-must-finish check — a handle whose only use is `.ok`. Not path-sensitive. DEFERRED by ruling: single-owner handles (affine types), a language-wide feature rather than a resource one — and not a prerequisite for protocol tracking, which stays sound under copy because a stale `finish` is a missed error the generation check catches, not a false rejection |
-| Event registry | 10 | 2026-11-22: `registry` + `AppEvents.raise V {...}` + top-level `on AppEvents.V(...)` run on all three backends, synchronously, with the handler's declared effects checked (roadmap suite). DONE 2026-11-22 against the spec (`event_registry` suite, all three backends): several handlers per event, in declaration order and across modules; `Reg.latest is V`; an actor's `on Reg.V` as a message to the actor. Built from the ruling "interrupts are events": one registry per module (TK-RG05 retired; TK-RG06/07), `tuck audit --events`, and delivery kinds `[stream, overflow: ...]` / `[signal]` / `[latest]` checked (TK-RG08..10). MISSING: `bind` and the deferred delivery it sizes (bare-metal ROADMAP 2.2) |
+| Event registry | 10 | 2026-11-22: `registry` + `AppEvents.raise V {...}` + top-level `on AppEvents.V(...)` run on all three backends, synchronously, with the handler's declared effects checked (roadmap suite). DONE 2026-11-22 against the spec (`event_registry` suite, all three backends): several handlers per event, in declaration order and across modules; `Reg.latest is V`; an actor's `on Reg.V` as a message to the actor. Built from the ruling "interrupts are events": one registry per module (TK-RG05 retired; TK-RG06/07), `tuck audit --events`, and delivery kinds `[stream, overflow: ...]` / `[signal]` / `[latest]` checked (TK-RG08..10). `bind` and the deferred delivery it sizes BUILT 2026-11-23 (bare-metal ROADMAP 2.1/2.2; `bind_irq`, `bind_systick` under QEMU). MISSING: `bind ... as Name` channels (TK-BD04) |
 | Interfaces | 5.2/5.3 | DONE. `satisfies` is checked at compile time; an interface value is a TAGGED VARIANT THAT COPIES, not a fat pointer — dispatch is a switch on the tag calling the concrete member fn, so there is no table, no thunk, and no lifetime question (escape analysis was deleted with the pointer design). Both backends |
 | Type composition `+` | 4.5 | DONE: a field contributed twice is TK-TY05 (roadmap suite) |
 | match | — | exhaustiveness DONE: every match over a closed domain (sum type, bool, error enum) must cover all cases or end in `_`. Open domains (int/str) unchecked, as in Nim |

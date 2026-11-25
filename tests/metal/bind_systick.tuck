@@ -1,0 +1,45 @@
+# `bind` with a timer: SysTick drives an event loop that sleeps between ticks.
+#
+# SysTick fires every 10 000 cycles. The bound handler raises a [signal];
+# the Beat actor counts deliveries; main runs the event loop, which runs
+# what is ready and otherwise sleeps (WFI) until the next interrupt, until
+# ten beats have arrived. Works on both QEMU boards: SysTick is in every
+# Cortex-M, as a core exception rather than an NVIC line.
+
+import scheduler
+
+extern [impl: nim "./host_sim/print_shim", odin "./host_sim", d "./host_sim/print_shim"]:
+  fn say({text: str}) -> void
+
+registry ClockEvents:
+  | Beat()  [signal]
+
+register SYST_CSR at 0xE000E010:
+  ENABLE: bit 0 [read, write]
+  TICKINT: bit 1 [read, write]
+
+register SYST_RVR at 0xE000E014:
+  RELOAD: bits 0..23 [read, write]
+
+fn onTick() [irq, irq_safe, no_alloc]:
+  ClockEvents.raise Beat
+
+bind SysTick -> onTick [priority: 7]
+
+actor Heart [queue: 4]:
+  beats: int = 0
+
+  on ClockEvents.Beat():
+    beats += 1
+
+fn tenBeats() -> bool:
+  return Heart.beats >= 10
+
+fn main() -> int:
+  SYST_RVR.RELOAD = 9999
+  SYST_CSR.TICKINT = true
+  SYST_CSR.ENABLE = true
+  {pred: :tenBeats} runTasksUntil
+  SYST_CSR.ENABLE = false
+  {text: "BEAT_OK\n"} say
+  return 0

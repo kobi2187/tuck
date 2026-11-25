@@ -9,11 +9,13 @@ type tuckˑactorˑSinkMsg* = object
   tuckTag*: tuckˑactorˑSinkMsgKind
   n*: int
 
-type tuckˑactorˑSink* = ref object
+type tuckˑactorˑSink* = ptr tuckˑactorˑSinkState
+type tuckˑactorˑSinkState* = object
   hits*: int
   mailbox*: Mailbox[tuckˑactorˑSinkMsg, 8]
 
-let tuckˑactorˑSinkSingleton* = tuckˑactorˑSink(hits: 0)
+var tuckˑactorˑSinkStorage* = tuckˑactorˑSinkState(hits: 0)
+let tuckˑactorˑSinkSingleton* = addr tuckˑactorˑSinkStorage
 
 proc handleMsg*(self: tuckˑactorˑSink, msg: tuckˑactorˑSinkMsg) =
   case msg.tuckTag

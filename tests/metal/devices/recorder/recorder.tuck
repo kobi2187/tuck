@@ -12,25 +12,41 @@
 # the card into SDI, 32 bytes per DREQ, while playing.
 
 import seq
+import scheduler
 import session
 import board
 import vs1063
 import sdcard
 
-registry ButtonEvents:
+registry RecorderEvents:
   | Pressed({button: Button})  [stream, overflow: drop_newest]   # a press is never merged
+  | Tick()                     [signal]                           # a late tick runs once
 
 fn onRecordButton() [irq, irq_safe, no_alloc]:
   EXTI_PR.PR = 1
-  ButtonEvents.raise Pressed {button: Button.Record}
+  RecorderEvents.raise Pressed {button: Button.Record}
 
 fn onPlayButton() [irq, irq_safe, no_alloc]:
   EXTI_PR.PR = 2
-  ButtonEvents.raise Pressed {button: Button.Play}
+  RecorderEvents.raise Pressed {button: Button.Play}
 
 fn onStopButton() [irq, irq_safe, no_alloc]:
   EXTI_PR.PR = 4
-  ButtonEvents.raise Pressed {button: Button.Stop}
+  RecorderEvents.raise Pressed {button: Button.Stop}
+
+fn onTimer() [irq, irq_safe, no_alloc]:
+  TIM2_SR.UIF = false            # rc_w0: writing 0 clears it
+  RecorderEvents.raise Tick
+
+# The application's wiring: which line runs which handler, how urgently, and
+# how many presses may wait. The drivers name none of this.
+bind EXTI0 -> onRecordButton [priority: 3, queue: 4]
+bind EXTI1 -> onPlayButton [priority: 3, queue: 4]
+bind EXTI2 -> onStopButton [priority: 3, queue: 4]
+bind TIM2 -> onTimer [priority: 2]
+
+fn forever() -> bool:
+  return false
 
 actor Recorder [queue: 8]:
   mode: Mode = Mode.Idle
@@ -69,7 +85,7 @@ actor Recorder [queue: 8]:
       keep {b: hi}
       keep {b: lo}
 
-  on ButtonEvents.Pressed({button: Button}) [io]:
+  on RecorderEvents.Pressed({button: Button}) [io]:
     let cmd = {mode: mode, button: button} react
     match cmd:
       StartRecording:
@@ -128,8 +144,15 @@ actor Recorder [queue: 8]:
       Recording: return
       Finishing: return
 
-  on tick() [io]:
-    ## One slice of work for the mode we are in.
+  on RecorderEvents.Tick() [io]:
+    ## One slice of work for the mode we are in, and the volume knob.
+    let now = encoderClicks
+    if now != clicks:
+      clicks = now
+      let att = {clicks: now} attenuationFor
+      let v = {attenuation: att} setVolume
+      if not v.ok:
+        faults = faults + 1
     match mode:
       Recording:
         drain
@@ -184,12 +207,6 @@ actor Recorder [queue: 8]:
     if s.ok:
       sent = sent + count
 
-  on volume({clicks: int}) [io]:
-    let att = {clicks: clicks} attenuationFor
-    let v = {attenuation: att} setVolume
-    if not v.ok:
-      faults = faults + 1
-
 fn main() -> int [io]:
   setupPins
   setupSpi
@@ -198,20 +215,8 @@ fn main() -> int [io]:
   if not card.ok:
     return 1
   setupButtons
-  var lastClicks = encoderClicks
-  # Until `bind` places the button handlers in the vector table (bare-metal
-  # roadmap 2.2), pending lines are polled and their handlers called here.
-  for true:
-    let lines = EXTI_PR.PR ^int
-    if lines % 2 == 1:
-      onRecordButton
-    if (lines /i 2) % 2 == 1:
-      onPlayButton
-    if (lines /i 4) % 2 == 1:
-      onStopButton
-    let clicks = encoderClicks
-    if clicks != lastClicks:
-      Recorder send volume {clicks: clicks}
-      lastClicks = clicks
-    Recorder send tick {}
+  setupTicker
+  # Interrupt-driven from here: buttons and the 1 kHz tick raise events, the
+  # Recorder actor handles them, and between interrupts the CPU sleeps.
+  {pred: :forever} runTasksUntil
   return 0

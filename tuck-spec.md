@@ -1777,6 +1777,11 @@ another's operations. The cell is reached through the pool:
   pointer Tuck code makes (DMA, an ISR). Anywhere else is TK-TY08; a pool
   whose element carries an invariant has no `addr` (TK-TY31), since memory an
   extern fills is never checked. The cell is present from then on.
+- `Pool.address {h}` → `u32`, the cell's address as a NUMBER for a DMA
+  register, as `buffer.address` is (ruled 2026-11-24): never a pointer, so
+  any code may hold it; the same TK-TY31 rule, a barrier first, and the cell
+  is present from then on. A pool of `Array[512, u8]` is a set of DMA
+  targets, each acquired for one transfer and released after it.
 - `Pool.release {h}`.
 
 A handle whose tenancy has ended stops the program with `TUCK POOL:` and exit
@@ -2217,13 +2222,20 @@ pinned by a suite:
 - **`register`** declarations (§8.1) compile to volatile accesses and may be
   generated from CMSIS-SVD (`tools/svd2tuck/`), across module boundaries.
 - **`critical:`** masks interrupts and restores the state it found on every
-  exit (nesting, `return`, `break`), on all three backends.
+  exit (nesting, `return`, `break`), on all three backends. On a board it
+  masks only as much as it must: the compiler finds the state the block
+  touches (through its calls), the bound handlers that share it, and raises
+  BASEPRI to the most urgent of their priorities, so a more urgent handler
+  that shares nothing still runs. When that cannot be known (a call into an
+  extern, an unbound or priority-0 sharer, a block outside the entry module)
+  it masks everything (PRIMASK), as it always does on Cortex-M0.
 - **`[irq]`** marks an interrupt handler. Code reachable from one may not
   allocate, send or wait (TK-EF05/07/11), may not leave an error to the
   `errors` policy or call a stub (TK-PO04, §4.9), and state it shares with
   normal code is reported by `tuck audit --isr` and refused by
-  `--isr-check:error` (TK-EF10). Binding a handler to a vector is not
-  designed yet: today every `[irq]` fn is called, not taken.
+  `--isr-check:error` (TK-EF10); two handlers at different bound
+  priorities sharing state need the less urgent one's access in `critical:`
+  (TK-EF13). `bind` makes a handler a vector entry (Part 10).
 - **Failures are loud:** a failed runtime check prints `PANIC:` and traps; a
   fault is decoded to the Tuck line (`tuck decode-crash`, TK-CR01); a run's
   exit status is `main`'s return value.
@@ -2676,7 +2688,42 @@ registry UartEvents:
 A `[signal]` carries no payload (TK-RG08); only a `[stream]` names an overflow
 policy, `drop_newest` or `drop_oldest`, because an interrupt never waits
 (TK-RG09); code reachable from an `[irq]` handler may raise only an event with
-a delivery kind (TK-RG10). The queue size is the application's, in `bind`.
+a delivery kind (TK-RG10). The queue size is the application's, in `bind`:
+
+```text
+bind EXTI0 -> onRtcAlarm [priority: 3]
+bind USART1 -> uart.onUart [priority: 2, queue: 64]
+```
+
+`bind LINE -> module.fn [priority: N, queue: N]` makes the driver's `[irq]` fn
+that line's vector entry, sets its priority and enables it before `main`
+(TK-BD01..06: an `[irq]` fn, each line and each fn bound once, settings in
+range, a line the board has). The driver names no line, priority or size. On
+metal a kinded raise posts (a ring of `queue`, a counter, a slot) and the
+handlers run after the interrupt returns, from the scheduler; a hosted build
+has no interrupts and delivers at once. `scheduler::runTasksUntil` is the
+metal event loop: it runs what is ready and sleeps (WFI) until an interrupt.
+
+**DMA buffers.** A DMA stream must be given an ADDRESS, and Tuck has no
+address-of. A `buffer` is the one object whose address is a value:
+
+```text
+buffer DshotBurst: Array[34, u32]            # the linker places it
+buffer AdcRing: Array[64, u16] at 0x2001F000  # or the application does
+DMA1_S6M0AR.M0A = DshotBurst.address          # a u32, never a pointer
+```
+
+It is indexed like an array (`b[i]`, `b.len`). Its element is `u8`, `u16` or
+`u32`, what a transfer moves (TK-BF01); an `at` address is aligned to the
+element (TK-BF02), no two `at` buffers share a byte (TK-BF03), and it holds
+at least one element (TK-BF04). On a board build an `at` buffer IS the memory
+at that address; the build hands the span to the linker, which ends the heap
+below it and fails the link if it overlaps `.data`/`.bss` or the stack
+reserve. `.address` issues a data memory barrier first, so the stores that
+filled the buffer are complete before a stream is started. A hosted build
+makes every buffer an ordinary global. Nothing stops code from writing a
+buffer while a transfer reads it: that is roadmap 6.3 (transfers as owned
+values).
 
 At runtime the registry is a small static array of slots, one per variant, holding
 the last payload. `raise` writes the slot and calls all registered handlers in

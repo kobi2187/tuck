@@ -642,6 +642,11 @@ proc genFieldAccess(ctx: var CodegenCtx, e: Expr, ind: string): string =
     let regPrefix = registerAccessorPrefix(ctx.module, e.receiver.refName,
                                            e.fieldName)
     if regPrefix != "": return regPrefix & "_get()"
+  if e.receiver != nil and e.receiver.kind == exkBufferRef:
+    # `.address` publishes the buffer (a barrier) and is its address as a
+    # number; `.len` is N.
+    if e.fieldName == "address": return "tuckBufferAddress(" & e.receiver.refName & ")"
+    return e.receiver.refName & ".len"
   let sumField = ctx.genPayloadSumField(e)
   if sumField != "": return sumField
   ctx.genExpr(e.receiver) & "." & e.fieldName
@@ -1074,16 +1079,23 @@ proc genCritical(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## saved state is named by node id so nested blocks never shadow it.
   if e.criticalBody == nil: return ind & "discard"
   let saved = "tuckCs" & $uint32(e.id)
+  # A known priority ceiling (2.4) masks only that priority and less urgent
+  # ones (BASEPRI); without one, everything (PRIMASK).
+  let (enter, leave) =
+    if e.id in semLayer.criticalCeilings:
+      ("tuckCriticalEnterAt(" & $semLayer.criticalCeilings[e.id] & ")",
+       "tuckCriticalExitAt(")
+    else: ("tuckCriticalEnter()", "tuckCriticalExit(")
   let inner = ind & "  "
   ctx.indent += 1
   var body = ctx.genStmts(e.criticalBody, inner)
   ctx.indent -= 1
   if body.len == 0: body = inner & "  discard"
   ind & "if true:\n" &
-    inner & "let " & saved & " = tuckCriticalEnter()\n" &
+    inner & "let " & saved & " = " & enter & "\n" &
     inner & "try:\n" & body & "\n" &
     inner & "finally:\n" &
-    inner & "  tuckCriticalExit(" & saved & ")"
+    inner & "  " & leave & saved & ")"
 
 proc genDefer(ctx: var CodegenCtx, e: Expr, ind: string): string =
   ## `defer:` (spec §7.4) — Nim spells it identically, scope-exit-ordered and
@@ -1167,7 +1179,7 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
   # A read the ownership rules move (rule M at an owned place's final use)
   # says so: the value, and the place left empty.
   of exkVar: (if e.movedOut: "tuckMove(" & ctx.genVar(e) & ")" else: ctx.genVar(e))
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
+  of exkActorRef, exkRegisterRef, exkBufferRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef, exkMixinRef:
     e.refName
   of exkLatestIs:
     # The slot is a ref, nil until the first raise (spec Part 10's query).

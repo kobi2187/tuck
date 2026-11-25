@@ -166,11 +166,11 @@ fn setupI2c():
   I2C1_CR1.PE = true
 
 fn setupAlarmLine():
-  ## PB0 falling edge -> EXTI0 (IRQ 6).
+  ## PB0 falling edge -> EXTI0. The NVIC side (enable, priority) is the
+  ## application's `bind`, not this driver's.
   AFIO_EXTICR1.EXTI0 = 1      # port B
   EXTI_FTSR.TR0 = true
   EXTI_IMR.MR0 = true
-  NVIC_ISER0.SETENA = 64      # bit 6: EXTI0
 
 fn flowCount() -> int:
   return TIM2_CNT.CNT ^int

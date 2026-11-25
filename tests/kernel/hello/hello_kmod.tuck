@@ -1,0 +1,20 @@
+# The smallest Tuck kernel module (docs/kernel/): `main` runs at load and
+# returns 0 to stay loaded, `unload` runs at removal. The same source builds
+# for Linux (`--target:linux-kmod`) and Windows (`--target:windows-kmd`).
+
+import console
+import str
+
+fn sumTo({n: int}) -> int:
+  var s = 0
+  for i in 1 .. n:
+    s += i
+  return s
+
+fn main() -> int:
+  let s = {n: 10} sumTo
+  {text: "hello from Tuck, sum " + s.toStr} console::printLine
+  return 0
+
+fn unload() [io]:
+  {text: "goodbye from Tuck"} console::printLine

@@ -1358,6 +1358,14 @@ tuckPoolAddr :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle) -> [^]u8 {
 	return cast([^]u8)&pool.storage[i]
 }
 
+// Pool.address {h} (owner ruling 2026-11-24): the cell's address as a NUMBER
+// for a DMA register, never a pointer. Present from here on, as after addr.
+tuckPoolAddress :: proc(pool: ^ObjectPool($T, $Count), h: PoolHandle) -> u32 {
+	i := heldCell(pool, h, "address")
+	pool.state[i] = .Present
+	return u32(uintptr(&pool.storage[i]))
+}
+
 // ---------------------------------------------------------------------------
 // The slab (thoughts/shared/plans/2026-09-29-slab-proposal.md). The Nim twin
 // (compiler/tuck_rt.nim) carries the reasoning; this mirrors it exactly —

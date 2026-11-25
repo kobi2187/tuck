@@ -130,7 +130,7 @@ proc kindUses(res: Resolution, e: Expr): seq[ChildUse] =
   ## The dispatch: one arm per kind, no `else`.
   case e.kind
   of exkLit, exkVar, exkQualified, exkImport, exkBreak, exkContinue,
-     exkTripleDot, exkActorRef, exkRegisterRef, exkRegistryRef,
+     exkTripleDot, exkActorRef, exkRegisterRef, exkBufferRef, exkRegistryRef,
      exkPoolRef, exkMixinRef, exkSlabRef, exkArenaRef: @[]
   # `.name {args}` left unresolved keeps its arguments in `dotArg`.
   of exkField: @[(e.receiver, uProject), (e.dotArg, uArg)]

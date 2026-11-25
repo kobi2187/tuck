@@ -829,6 +829,11 @@ proc genDFieldRead(ctx: var DCodegenCtx, e: Expr): string =
   if e.receiver != nil and e.receiver.kind == exkActorRef:
     return ctx.dActorPkg(e.receiver.refName) &
       actorSingletonName(e.receiver.refName) & "." & e.fieldName
+  # A buffer's `.address` (hosted: only for show) and `.len`.
+  if e.receiver != nil and e.receiver.kind == exkBufferRef:
+    if e.fieldName == "address":
+      return "cast(uint)cast(size_t)&" & e.receiver.refName
+    return "cast(long)" & e.receiver.refName & ".length"
   # A register field is a raw pointer with no real field — reading it means
   # calling the getter genDRegister already emitted for it.
   if e.receiver != nil and e.receiver.kind == exkRegisterRef:
@@ -1637,7 +1642,7 @@ proc genDExpr*(ctx: var DCodegenCtx, e: Expr): string =
   case e.kind
   of exkLit: ctx.genDLitTyped(e)
   of exkVar: ctx.genDVarName(e)
-  of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
+  of exkActorRef, exkRegisterRef, exkBufferRef, exkRegistryRef, exkPoolRef, exkSlabRef, exkArenaRef,
      exkMixinRef:
     e.refName
   of exkLatestIs:

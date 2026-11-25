@@ -277,7 +277,7 @@ proc hoistSlabs(m: var Module) =
       of dkObject: refuseSlabsIn(d, d.objMembers)
       of dkMixin: refuseSlabsIn(d, d.mixinMembers)
       of dkType, dkFn, dkTask, dkInterface, dkGroup, dkRegistry, dkPool,
-         dkSlab, dkArena, dkExpr, dkConst, dkRegister, dkStaticAssert, dkErrors,
+         dkSlab, dkArena, dkExpr, dkConst, dkRegister, dkBuffer, dkBind, dkStaticAssert, dkErrors,
          dkImport, dkSelect, dkFnSig, dkSatisfies, dkWhen, dkPublic,
          dkResources, dkExtern, dkPending:
         discard

@@ -215,6 +215,17 @@ proc parseWhenDecl(p: var Parser, sp: Span): Decl =
        whenTargetValue: valTok.value,
        whenDecls: members)
 
+proc hardwareDecl(p: var Parser, sp: Span, handled: var bool): Decl =
+  ## `buffer NAME: ...` and `bind LINE -> fn`, each gated on a name and the
+  ## token after it, so a variable named `buffer` or `bind` still parses as
+  ## an expression.
+  if p.peek().kind == tkIdent:
+    if p.current().value == "buffer" and p.peek(2).kind == tkColon:
+      return p.parseBufferDecl(sp)
+    if p.current().value == "bind" and p.peek(2).kind == tkArrow:
+      return p.parseBindDecl(sp)
+  handled = false
+
 proc contextualDecl(p: var Parser, sp: Span, handled: var bool): Decl =
   ## Declarations introduced by a CONTEXTUAL keyword — a plain ident the lexer
   ## does not tokenize, so the grammar recognises it here by name. Each is
@@ -239,6 +250,7 @@ proc contextualDecl(p: var Parser, sp: Span, handled: var bool): Decl =
   of "resources":
     if p.peek().kind in {tkColon, tkLBracket}: return p.parseResourcesDecl(sp)
   of "register": return p.parseRegisterDecl(sp)
+  of "buffer", "bind": return p.hardwareDecl(sp, handled)
   of "pool": return p.parsePoolDecl(sp)
   of "slab": return p.parseSlabDecl(sp)
   of "arena": return p.parseArenaDecl(sp)

@@ -8,6 +8,8 @@
 #   SPI2  PB13 SCK, PB14 MISO, PB15 MOSI -> microSD; PB12 -> card CS
 #   TIM4  PB6, PB7 <- PEC11R A, B (encoder mode: counted in hardware)
 #   EXTI  PA0 Record, PA1 Play, PA2 Stop (buttons to ground, pull-ups)
+#   TIM2  a 1 kHz update interrupt: the pace of draining the encoder while
+#         recording and of feeding the decoder while playing
 #
 # One register block per peripheral instance, since register layouts as
 # types (D12) are not built yet: SPI1 and SPI2 are the same layout written
@@ -20,6 +22,7 @@ register RCC_APB2ENR at 0x40021018:
   SPI1EN: bit 12 [read, write]
 
 register RCC_APB1ENR at 0x4002101C:
+  TIM2EN: bit 0 [read, write]
   TIM4EN: bit 2 [read, write]
   SPI2EN: bit 14 [read, write]
 
@@ -101,6 +104,23 @@ register SPI2_SR at 0x40003808:
 register SPI2_DR at 0x4000380C:
   DR: bits 0..7 [read, write]
 
+register TIM2_CR1 at 0x40000000:
+  CEN: bit 0 [read, write]
+
+register TIM2_DIER at 0x4000000C:
+  UIE: bit 0 [read, write]
+
+# UIF is rc_w0 (cleared by writing 0, writing 1 does nothing), so a
+# read-modify-write that writes it as 0 is safe, unlike EXTI_PR's w1c.
+register TIM2_SR at 0x40000010:
+  UIF: bit 0 [read, write]
+
+register TIM2_PSC at 0x40000028:
+  PSC: bits 0..15 [read, write]
+
+register TIM2_ARR at 0x4000002C:
+  ARR: bits 0..15 [read, write]
+
 register TIM4_CR1 at 0x40000800:
   CEN: bit 0 [read, write]
 
@@ -134,6 +154,7 @@ fn setupPins():
   RCC_APB2ENR.IOPBEN = true
   RCC_APB2ENR.SPI1EN = true
   RCC_APB1ENR.SPI2EN = true
+  RCC_APB1ENR.TIM2EN = true
   RCC_APB1ENR.TIM4EN = true
   GPIOA_CRL.PIN0 = inputPullUp       # Record
   GPIOA_CRL.PIN1 = inputPullUp       # Play
@@ -183,13 +204,20 @@ fn setupEncoder():
   TIM4_CR1.CEN = true
 
 fn setupButtons():
-  ## PA0..PA2 falling edge -> EXTI0..2 (IRQ 6, 7, 8).
+  ## PA0..PA2 falling edge -> EXTI0..2. Enabling the lines in the NVIC and
+  ## their priorities are the application's `bind`s.
   AFIO_EXTICR1.EXTI0 = 0
   AFIO_EXTICR1.EXTI1 = 0
   AFIO_EXTICR1.EXTI2 = 0
   EXTI_FTSR.TR = 7
   EXTI_IMR.MR = 7
-  NVIC_ISER0.SETENA = 64 + 128 + 256
+
+fn setupTicker():
+  ## TIM2 at 1 kHz: 8 MHz / 8 = 1 MHz, 1000 counts per update.
+  TIM2_PSC.PSC = 7
+  TIM2_ARR.ARR = 999
+  TIM2_DIER.UIE = true
+  TIM2_CR1.CEN = true
 
 fn encoderClicks() -> int:
   return (TIM4_CNT.CNT ^int) /i 4

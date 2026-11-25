@@ -11,12 +11,14 @@ type tuckˑactorˑResultMsg* = object
   tuckTag*: tuckˑactorˑResultMsgKind
   c*: int
 
-type tuckˑactorˑResult* = ref object
+type tuckˑactorˑResult* = ptr tuckˑactorˑResultState
+type tuckˑactorˑResultState* = object
   code*: int
   ready*: bool
   mailbox*: Mailbox[tuckˑactorˑResultMsg, 8]
 
-let tuckˑactorˑResultSingleton* = tuckˑactorˑResult(code: 0, ready: false)
+var tuckˑactorˑResultStorage* = tuckˑactorˑResultState(code: 0, ready: false)
+let tuckˑactorˑResultSingleton* = addr tuckˑactorˑResultStorage
 
 proc handleMsg*(self: tuckˑactorˑResult, msg: tuckˑactorˑResultMsg) =
   case msg.tuckTag

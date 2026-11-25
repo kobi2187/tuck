@@ -122,14 +122,16 @@ type tuckˑactorˑPipelineMsg* = object
   midFrame*: bool
   n*: int
 
-type tuckˑactorˑPipeline* = ref object
+type tuckˑactorˑPipeline* = ptr tuckˑactorˑPipelineState
+type tuckˑactorˑPipelineState* = object
   state*: tuckˑtypeˑDecoderState
   decoded*: int
   dropped*: int
   configured*: bool
   mailbox*: Mailbox[tuckˑactorˑPipelineMsg, 8]
 
-let tuckˑactorˑPipelineSingleton* = tuckˑactorˑPipeline(state: tuckˑtypeˑDecoderState.Idle, decoded: 0, dropped: 0, configured: false)
+var tuckˑactorˑPipelineStorage* = tuckˑactorˑPipelineState(state: tuckˑtypeˑDecoderState.Idle, decoded: 0, dropped: 0, configured: false)
+let tuckˑactorˑPipelineSingleton* = addr tuckˑactorˑPipelineStorage
 
 proc handleMsg*(self: tuckˑactorˑPipeline, msg: tuckˑactorˑPipelineMsg) =
   case msg.tuckTag

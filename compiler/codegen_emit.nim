@@ -61,7 +61,12 @@ proc linkPragma*(lib: string): string =
   ## work, because Nim emits passL flags ahead of the object files and an
   ## archive only contributes members resolving already-pending symbols.
   ## A path links verbatim; a bare name gets -l.
-  if lib.endsWith(".c"): "{.compile: \"" & lib & "\".}\n"
+  ##
+  ## In a kernel module (`tuckKernel`) the C file is the one place kernel
+  ## headers are allowed, so the kernel's own build compiles it, beside the
+  ## platform glue (kernel_target): Nim compiles the program, not it.
+  if lib.endsWith(".c"):
+    "when not defined(tuckKernel): {.compile: \"" & lib & "\".}\n"
   elif '/' in lib or lib.endsWith(".a") or lib.endsWith(".so"):
     "{.passL: \"" & lib & "\".}\n"
   else: "{.passL: \"-l" & lib & "\".}\n"

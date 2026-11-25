@@ -455,6 +455,7 @@ type
     exkCombinator   # bake / with / alias / merge — see CombKind below
     exkActorRef     # a bare actor singleton name (`Sink` in `Sink.seen`)
     exkRegisterRef  # a bare memory-mapped register name (`CTRL` in `CTRL.EN`)
+    exkBufferRef    # a bare `buffer` name (`Pulses` in `Pulses[3]`, `Pulses.address`)
     exkRegistryRef  # a bare registry name (`AppEvents` in `AppEvents.raise X`)
     exkPoolRef      # a bare pool name (`Bufs` in `Bufs.acquire`)
     exkMixinRef     # a bare mixin name (`Helpers` in `+ Helpers`)
@@ -576,6 +577,7 @@ type
     poRead     ## `?T` — the cell's value, absent until something wrote it
     poWrite    ## store a value; the cell is present
     poAddr     ## the cell's bytes as a `Buf`, for an extern to fill
+    poAddress  ## the cell's address as a u32, for a DMA register (2026-11-24)
 
   CombKind* = enum
     ## The record combinators. One family, one shape — a receiver and a struct
@@ -804,8 +806,8 @@ type
     of exkLatestIs:
       latestReg*: Expr       # the registry (exkRegistryRef once resolved)
       latestEvent*: string   # the event name, as written
-    of exkActorRef, exkRegisterRef, exkRegistryRef, exkPoolRef, exkMixinRef,
-       exkSlabRef, exkArenaRef:
+    of exkActorRef, exkRegisterRef, exkBufferRef, exkRegistryRef, exkPoolRef,
+       exkMixinRef, exkSlabRef, exkArenaRef:
       refName*: string  # the resolved name; the Decl itself is one
                         # declFor(semLayer, e) away (resolution.nim) once
                         # resolveDeclRefs links it — not stored here, so
@@ -911,6 +913,14 @@ type
     dkExpr
     dkConst   # compile-time data declaration: const name = <literal data>
     dkRegister
+    dkBuffer    # `buffer NAME: Array[N, T] [at 0xADDR]` — a static block of
+                # memory whose ADDRESS hardware can be given (a DMA stream),
+                # as a number: `NAME.address` is a u32, never a pointer
+                # (owner ruling 2026-11-23, bare-metal roadmap 2.0a).
+    dkBind      # `bind LINE -> module.fn [priority: N, queue: N]` — the
+                # APPLICATION wires an interrupt line to a driver's `[irq]` fn
+                # (owner ruling 2026-11-22, DESIGN-interrupt-events §5). The
+                # driver names no line, priority or queue size.
     dkStaticAssert
     dkErrors  # global error policy declaration (spec 4.9)
     dkResources # `resources:` — the OS-handle kinds this program registers
@@ -1180,6 +1190,18 @@ type
     of dkRegister:
       regAddress*: string
       regFields*: seq[FieldDef]
+    of dkBuffer:
+      bufType*: Type         # `Array[N, T]` as written: what the name types as
+      bufElem*: Type         # u8, u16 or u32: what a DMA stream moves
+      bufCount*: int         # N
+      bufAt*: string         # the address as written, "" = the linker places it
+    of dkBind:
+      bindLine*: string      # the interrupt line, as the board names it
+      bindModule*: string    # `uart` in `uart.onUart`, "" for a local fn
+      bindFn*: string        # the `[irq]` fn the line runs
+      bindAs*: string        # `as Console`: a channel per binding (ruled, not built)
+      bindPriority*: int     # NVIC priority, 0 = most urgent; -1 = not given
+      bindQueue*: int        # messages a [stream] event it raises may hold; -1 = not given
     of dkStaticAssert:
       assertExpr*: Expr
     of dkErrors:

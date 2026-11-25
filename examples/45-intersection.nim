@@ -131,12 +131,14 @@ type tuckˑactorˑSignalsMsg* = object
   demand*: tuckˑtypeˑDemand
   preempt*: bool
 
-type tuckˑactorˑSignals* = ref object
+type tuckˑactorˑSignals* = ptr tuckˑactorˑSignalsState
+type tuckˑactorˑSignalsState* = object
   phase*: tuckˑtypeˑPhase
   cycles*: int
   mailbox*: Mailbox[tuckˑactorˑSignalsMsg, 8]
 
-let tuckˑactorˑSignalsSingleton* = tuckˑactorˑSignals(phase: tuckˑtypeˑPhase.NorthSouth, cycles: 0)
+var tuckˑactorˑSignalsStorage* = tuckˑactorˑSignalsState(phase: tuckˑtypeˑPhase.NorthSouth, cycles: 0)
+let tuckˑactorˑSignalsSingleton* = addr tuckˑactorˑSignalsStorage
 
 proc handleMsg*(self: tuckˑactorˑSignals, msg: tuckˑactorˑSignalsMsg) =
   case msg.tuckTag

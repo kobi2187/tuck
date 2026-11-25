@@ -43,6 +43,7 @@ import interface_wrap
 import interfaces
 import invariants
 import isr_discipline
+import kernel_targets
 import known_bugs
 import loop_var_type
 import mailbox_full
@@ -130,6 +131,7 @@ let registry: seq[Entry] = @[
   ("interfaces",          SuiteProc(interfaces.run),          true),
   ("invariants",          SuiteProc(invariants.run),          false),
   ("isr_discipline",      SuiteProc(isr_discipline.run),      true),
+  ("kernel_targets",      SuiteProc(kernel_targets.run),      false),
   ("known_bugs",          SuiteProc(known_bugs.run),          false),
   ("loop_var_type",       SuiteProc(loop_var_type.run),       false),
   ("mailbox_full",        SuiteProc(mailbox_full.run),        false),
