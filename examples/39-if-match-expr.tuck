@@ -3,7 +3,7 @@
 #
 # A value-position `if` must have an `else` — there is no value otherwise. A
 # statement `if` still does not need one. The distinction is syntactic, not
-# inferred: branches written inline are a value, an indented block is a
+# inferred: branches and match arms written inline are a value, an indented block is a
 # statement, so the same source never emits two different ways.
 #
 # The backends differ underneath and that is the point of pinning it: Nim has

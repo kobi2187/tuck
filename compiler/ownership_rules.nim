@@ -174,7 +174,6 @@ proc kindUses(res: Resolution, e: Expr): seq[ChildUse] =
   of exkLatestIs: @[]   # reads the registry's own slot, no local value
   of exkIfacePayload: @[(e.tagSubject, uProject)]
   of exkWrapOk, exkAbsent: @[(e.optValue, uThrough)]
-  of exkZero: @[]
   of exkPoolOp:
     @[(e.poolRef, uNone), (e.poolHandle, uBorrow), (e.poolValue, uSink)]
   # A slab reference is plain data; the value is stored into the cell.

@@ -8333,8 +8333,9 @@ fn main() -> int:
   # A value whose own control flow writes a name — the subject reassigned in
   # an arm of `let z = match s:` — was read whole by the SSA mirror, the write
   # counted as a read, and the checker stopped: "the SSA mirror is malformed".
-  # (Whether a value-match arm may be a block at all is waiting on a ruling:
-  # no backend builds one yet.)
+  # Since the ruling of 2026-11-24 (A192) a value-match arm may not be a
+  # block, so this program is refused by its shape; the pin keeps that the
+  # checker says so rather than reporting a malformed SSA mirror.
   t.src """
 type D:
   | A({n: int})
@@ -8349,7 +8350,7 @@ fn main() -> int [io]:
     _: 1
   return z
 """
-  t.quietly: t.okCheck "A184: a write inside a value's own control flow is not a read"
+  t.quietly: t.badCheck "A184: a write inside a value's own control flow is not a read", "indented block is the statement form"
   t.bugFixed "A184: a write inside a value's own control flow is not a read"
 
   # A185 (class G, C15): a task awaited from an actor handler did not build
@@ -8644,10 +8645,8 @@ fn main() -> int:
     2
   return v
 """
-  # Reversed by the ruling of 2026-11-24 (A193): a block branch's last line
-  # is its value, as a block match arm's is. The program now runs.
-  t.quietly: t.hostRuns "A190: a block-bodied if is a value (reversed, A193)", 2
-  t.bugFixed "A190: a block-bodied if is a value (reversed, A193)"
+  t.quietly: t.badCheck "A190: a block-bodied if is not a value", "statement form and has no value"
+  t.bugFixed "A190: a block-bodied if is not a value"
   t.src """
 fn main() -> int:
   let k = 3
@@ -8682,17 +8681,25 @@ fn run[T: Src]({x: T}) -> int:
   t.quietly: t.okCheck "A191: an uninstantiated generic's requirement call checks"
   t.bugFixed "A191: an uninstantiated generic's requirement call checks"
 
-  # A192 (ruled 2026-11-24: a value `match` arm that is a block has its last
-  # line as its value). The checker accepted such a match and no backend
-  # built it: Nim reported the last line unused, Odin and D printed a
-  # declaration inside an expression. lowering_block_arms makes it the
-  # statement match, each arm handing its last line to the binding (declared
-  # first at its type's zero, exkZero), the assignment, or a `return` — the
-  # last also for a body's tail match. Nested, record, str and reassigned
-  # forms; a pause inside an arm and an owned Seq, on both flags.
+  # A192 (kept by the owner 2026-11-24: "less forms"): a value `match` is
+  # written with inline arms, like a value `if` (R2/R3, examples/39: an
+  # indented block is the statement form). An arm that was a block checked
+  # clean and built on no backend; it is refused, nested or as a body's tail
+  # match too. The statement match with block arms, and the inline value
+  # match, are unchanged.
   t.src """
-type P = {a: int, b: int}
-
+fn main() -> int:
+  let n = 3
+  let x = match n:
+    1: 10
+    _:
+      let d = n * 2
+      d + 1
+  return x
+"""
+  t.quietly: t.badCheck "A192: a value match arm that is a block is refused", ":5:5.*match` arm that is an indented block"
+  t.bugFixed "A192: a value match arm that is a block is refused"
+  t.src """
 fn pick({n: int}) -> int:
   match n:
     1: 10
@@ -8700,114 +8707,51 @@ fn pick({n: int}) -> int:
       let d = n * 2
       d + 1
 
-fn back({n: int}) -> int:
-  return match n:
-    0: 5
-    _:
-      let e = n + 100
-      e
-
-fn nested({n: int, k: int}) -> int:
+fn main() -> int:
+  return {n: 3} pick
+"""
+  t.quietly: t.badCheck "A192: ...as a body's tail match too", "indented block is the statement form"
+  t.bugFixed "A192: ...as a body's tail match too"
+  t.src """
+fn main() -> int:
+  let n = 1
   let x = match n:
-    1: match k:
+    1: match n:
       0: 1
       _:
-        let z = k * 3
+        let z = n * 3
         z
     _: 7
   return x
-
-fn rec({n: int}) -> P:
-  let p = match n:
-    0: {a: 0, b: 0} P
-    _:
-      let q = {a: n, b: n * 2} P
-      q
-  return p
-
-fn words({n: int}) -> int:
-  let s = match n:
-    0: "none"
-    _:
-      let w = "many"
-      w
-  return s.len
+"""
+  t.quietly: t.badCheck "A192: ...and nested in an arm's value", "indented block is the statement form"
+  t.bugFixed "A192: ...and nested in an arm's value"
+  t.src """
+fn pick({n: int}) -> int:
+  match n:
+    1: 10
+    _: n * 2 + 1
 
 fn main() -> int:
-  var y = 0
-  y = match 2:
+  let n = 3
+  var x = 0
+  match n:
+    1: x = 10
+    _:
+      let d = n * 2
+      x = d + 1
+  let y = match n:
     1: 1
-    _:
-      let t = 20
-      t
-  return ({n: 3} pick) + ({n: 4} back) + ({n: 1, k: 2} nested) + ({n: 2} rec).b + ({n: 2} words) + y
+    _: 2
+  return x + y + ({n: 3} pick)
 """
-  t.quietly: t.hostRuns "A192: a value match arm that is a block yields its last line", 145
-  t.bugFixed "A192: a value match arm that is a block yields its last line"
-  t.src """
-import seq
-import console
-import time
+  t.quietly: t.hostRuns "A192: ...the statement match and inline value matches still run", 16
+  t.bugFixed "A192: ...the statement match and inline value matches still run"
 
-fn nap({ms: u32}) -> int [io]:
-  {ms: ms} time::sleepMs
-  return 3
-
-task work({k: int}) -> {r: int} [io]:
-  let w = match k:
-    1: 100
-    _:
-      {text: "arm"} console::printLine
-      let a = {ms: 5} nap
-      a + k
-  let xs = match k:
-    0: [1]
-    other:
-      var ys = [other, 2]
-      ys = {items: ys, value: w} push
-      ys
-  return {r: w + xs.len}
-
-fn main() -> int [io]:
-  let r = {k: 2} work
-  return r.r
-"""
-  t.quietly: t.hostRuns "A192: ...with a pause in the arm and an owned Seq, the arm run once", 8, "^arm\\s*$"
-  t.bugFixed "A192: ...with a pause in the arm and an owned Seq, the arm run once"
-
-  # A193 (ruled 2026-11-24, with A192: one rule for `if` and `match`): a
-  # value `if` whose branch is a block yields the block's last line —
-  # binding, reassignment, `return`, an `elif` chain — lowered like A192's
-  # match. And an `if` used as a value with no `else` (one-line or block)
-  # checked clean and built nowhere; it has no value when the condition is
-  # false, so it is refused. The statement `if` without `else` is unchanged.
-  t.src """
-fn grade({k: int}) -> int:
-  let v = if k > 5:
-    let a = k * 2
-    a + 1
-  else: 3
-  return v
-
-fn chain({k: int}) -> int:
-  return if k > 9:
-    1
-  elif k > 5:
-    let b = k + 40
-    b
-  else:
-    0
-
-fn main() -> int:
-  var w = 0
-  w = if w == 0:
-    let c = 100
-    c
-  else: 1
-  return ({k: 7} grade) + ({k: 2} grade) + ({k: 7} chain) + w
-"""
-  t.quietly: t.hostRuns "A193: a value if with block branches yields their last lines", 165
-  t.bugFixed "A193: a value if with block branches yields their last lines"
+  # A193: an `if` used as a value with no `else`, one-line or block, checked
+  # clean and built on no backend; it has no value when the condition is
+  # false (examples/39 said so; nothing enforced it). The statement `if`
+  # without `else` is unchanged.
   t.src """
 fn main() -> int:
   let k = 3
@@ -8837,5 +8781,67 @@ fn main() -> int:
 """
   t.quietly: t.runs "A193: ...the statement if without else still runs", 11
   t.bugFixed "A193: ...the statement if without else still runs"
+
+  # A194 (found re-validating #197): a bare record literal where a named
+  # record type is stated built on no backend outside a `let x: P = {...}`
+  # (the Y12 fix, A174, covered declarations only). Returned (`return {...}`
+  # or a body's tail) from `-> P`, `-> P?`; assigned to a `var s: P` or to a
+  # field of type P; and from an imported module. Each printed an anonymous
+  # record where a P was declared. The checker makes it P's construction
+  # (constructedAs), at every place that states the type.
+  t.src """
+type Stats = {size: int, count: int}
+
+fn tail() -> Stats:
+  {size: 5, count: 6}
+
+fn opt({k: int}) -> Stats?:
+  if k > 0:
+    return {size: k, count: 1}
+  return none
+
+fn main() -> int:
+  var s: Stats = {size: 1, count: 1}
+  s = {size: 10, count: 20}
+  let t = {} tail
+  let o = {k: 2} opt
+  var extra = 0
+  if o.ok:
+    extra = o.value.size
+  return s.size + t.size + extra
+"""
+  t.quietly: t.hostRuns "A194: a bare record returned or assigned as a named record builds", 17
+  t.bugFixed "A194: a bare record returned or assigned as a named record builds"
+  t.src """
+type Inner = {a: int}
+type Outer = {inner: Inner, n: int}
+
+fn main() -> int:
+  var o: Outer = {inner: {a: 1}, n: 2}
+  o.inner = {a: 40}
+  var p = {} mk
+  p = {inner: {a: 3}, n: 4}
+  return o.inner.a + p.n
+
+fn mk() -> Outer:
+  return {inner: {a: 0}, n: 0}
+"""
+  t.quietly: t.hostRuns "A194: ...into a field, and nested", 44
+  t.bugFixed "A194: ...into a field, and nested"
+  t.src """
+import lib197
+
+fn main() -> int:
+  let s = {} lib197::mk
+  return s.size
+"""
+  t.addFile "lib197.tuck", """
+type Stats = {size: int, count: int}
+
+fn mk() -> Stats:
+  return {size: 1, count: 2}
+"""
+  t.quietly: t.hostRuns "A194: ...returned from an imported module", 1
+  t.bugFixed "A194: ...returned from an imported module"
 
   t.finish()

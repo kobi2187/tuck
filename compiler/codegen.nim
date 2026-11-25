@@ -1239,7 +1239,6 @@ proc genExpr*(ctx: var CodegenCtx, e: Expr): string =
     "TuckResult[" & genType(e.optInner) & "](status: tsOk, value: " &
       ctx.genExpr(e.optValue) & ")"
   of exkAbsent: "TuckResult[" & genType(e.optInner) & "](status: tsAbsent)"
-  of exkZero: "default(" & genType(ctx.res.typeFor(e)) & ")"   # lowering_block_arms
   of exkPoolOp: ctx.genPoolOp(e)
   of exkSlabOp: ctx.genSlabOp(e)
   of exkArenaReset: arenaResetProc(e.arenaRef.refName) & "()"

@@ -5458,22 +5458,29 @@ proc failIfErrorsUndeclared(tc: TypeChecker, ets: seq[string], sp: Span) =
            ". Fix: add " & en & " to its [error: ...], or handle the error here",
            sp)
 
-proc constructAsStated(tc: TypeChecker, e: Expr) =
-  ## `let a: P = {x: 1}` — a bare record literal under a stated named record
-  ## type is that type's construction, `{x: 1} P`. The literal at a place that
-  ## names its type is legal (failIfAnonymousForNamed), but no backend built
-  ## it: each printed an anonymous record where a `P` was declared (audit Y12).
-  ## Rewritten here, once, so every backend sees an ordinary construction.
-  let t = e.declType
-  if e.assignVal == nil or e.assignVal.kind != exkStruct or t == nil or
-     t.kind != tkNamed or t.qualifier.len > 0: return
+proc constructedAs(tc: TypeChecker, v: Expr, t: Type): Expr =
+  ## `v`, a bare record literal where named record type `t` is stated, as
+  ## that type's construction, `{x: 1} P`; any other `v` unchanged. The
+  ## literal at a place that names its type is legal
+  ## (failIfAnonymousForNamed), but no backend built it: each printed an
+  ## anonymous record where a `P` was declared (audit Y12).
+  var t = t
+  # `-> P?`, `-> !P`, `-> !?P`: the value held is the P (wrapped after).
+  if t != nil and t.kind == tkApp and t.base != nil and t.base.kind == tkNamed and
+     t.base.name in ["?", "!", "!?"] and t.args.len == 1:
+    t = t.args[0]
+  if v == nil or v.kind != exkStruct or t == nil or t.kind != tkNamed or
+     t.qualifier.len > 0: return v
   let d = tc.typeDecls.getOrDefault(t.name, nil)
-  if d == nil or d.kind != tkRecord: return
-  let lit = e.assignVal
-  e.assignVal = Expr(id: newNodeId(), span: lit.span, kind: exkCall,
-                     callee: Expr(id: newNodeId(), span: t.span, kind: exkVar,
-                                  name: t.name),
-                     args: @[lit])
+  if d == nil or d.kind != tkRecord: return v
+  Expr(id: newNodeId(), span: v.span, kind: exkCall,
+       callee: Expr(id: newNodeId(), span: t.span, kind: exkVar, name: t.name),
+       args: @[v])
+
+proc constructAsStated(tc: TypeChecker, e: Expr) =
+  ## `let a: P = {x: 1}` — rewritten here, once, so every backend sees an
+  ## ordinary construction.
+  e.assignVal = tc.constructedAs(e.assignVal, e.declType)
 
 proc synthDeclAssign(tc: var TypeChecker, e: Expr) =
   ## A fresh binding. spec 4.4b: a tracked type starts at the RHS's set.
@@ -5690,6 +5697,17 @@ proc forgetGuardsUnder(tc: var TypeChecker, e: Expr, valT: Type) =
   if e.target != nil and e.target.kind == exkField and writesIntoSlabCell(e.target):
     tc.forgetFieldPaths(e.target.fieldName)
 
+proc statedTypeOf(tc: TypeChecker, target: Expr, typed: Type): Type =
+  ## The type a place was declared at, as written: a variable is bound at
+  ## its resolved type (a record's shape), and its declaration keeps the
+  ## name (`var s: Stats`). Anything else, the type it was synthesized at.
+  if target == nil or target.kind != exkVar: return typed
+  let (found, b) = tc.lookup(target.name)
+  if found and b.site != nil and b.site.kind == exkAssign and
+     b.site.declType != nil:
+    return b.site.declType
+  typed
+
 proc synthReassign(tc: var TypeChecker, e: Expr) =
   ## Assignment to an existing binding.
   tc.failIfTargetUnbound(e)
@@ -5705,6 +5723,8 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
   # After the target is typed: a write through a slab reference is known by
   # the deref stamp synthesizing it leaves (writesIntoSlabCell).
   tc.failIfTargetImmutable(e)
+  # `s = {x: 1}` into a `P` place: P's construction (Y12).
+  e.assignVal = tc.constructedAs(e.assignVal, tc.statedTypeOf(e.target, targetT))
   let valT = tc.synthAssignVal(e, targetT)
   if not tc.compatible(valT, targetT):
     fail("Type Error: cannot assign " & typeName(valT) & " to " &
@@ -5714,18 +5734,61 @@ proc synthReassign(tc: var TypeChecker, e: Expr) =
     tc.noteVarGiven(e, targetT, valT)
   tc.forgetGuardsUnder(e, valT)
 
+proc blockValueSpan(v: Expr): Span =
+  ## Where a value `if` or `match` holds an indented block as a branch or
+  ## arm value, at any depth of branch values; a zero span when none does.
+  if v == nil: return
+  case v.kind
+  of exkIf:
+    if v.elseBranch == nil: return
+    for b in [v.thenBranch, v.elseBranch]:
+      if b.kind == exkBlock: return v.span
+      let inner = blockValueSpan(b)
+      if inner.line > 0: return inner
+  of exkMatch:
+    if v.subject == nil: return    # a decision table keeps its per-row returns
+    for arm in v.arms:
+      if arm.body == nil: continue
+      # The pattern's span: the arm's own ends where the block does.
+      if arm.body.kind == exkBlock:
+        return if arm.pattern != nil: arm.pattern.span else: arm.span
+      let inner = blockValueSpan(arm.body)
+      if inner.line > 0: return inner
+  else: discard
+
+proc failIfBlockAsValue(v: Expr) =
+  ## A value `if` or `match` is written inline: `if c: a else: b`, `Pat: v`.
+  ## An indented block is the statement form, which has no value (R2/R3,
+  ## examples/39: the shape alone says which, so the source never reads two
+  ## ways; kept by the owner 2026-11-24, "less forms"). Taken as a value, a
+  ## block `if` built to a wrong value on Odin and D (audit Y19) and a block
+  ## match arm built on no backend.
+  let at = blockValueSpan(v)
+  if at.line == 0: return
+  let what = if v.kind == exkMatch: "a `match` arm" else: "an `if` branch"
+  fail("Type Error: " & what & " that is an indented block is the statement " &
+       "form and has no value. Fix: write the value inline (`if c: a else: b`, " &
+       "`Pat: value`), move the work into a fn, or declare the binding first " &
+       "and assign it in each branch", at)
+
 proc failIfValueIfLacksElse(v: Expr) =
-  ## A value `if` gives a value on every path (ruled 2026-11-24); with no
-  ## `else` there is none when the condition is false. It checked clean and
-  ## no backend built it.
+  ## A value `if` gives a value on every path (examples/39; ruled again
+  ## 2026-11-24); with no `else` there is none when the condition is false.
+  ## It checked clean and no backend built it.
   if v == nil or v.kind != exkIf or v.elseBranch != nil: return
   fail("Type Error: this `if` is used as a value but has no `else`, so " &
        "there is no value when its condition is false. Fix: add an `else` " &
        "branch with a value", v.span)
 
+proc failIfNotAValue(v: Expr) =
+  ## The shapes of `if`/`match` that are written where a value goes but give
+  ## none.
+  failIfValueIfLacksElse(v)
+  failIfBlockAsValue(v)
+
 proc synthAssign(tc: var TypeChecker, e: Expr): Type =
   ## An assignment is a statement: it yields unit.
-  failIfValueIfLacksElse(e.assignVal)
+  failIfNotAValue(e.assignVal)
   if e.isDecl and e.target != nil and e.target.kind == exkVar:
     tc.synthDeclAssign(e)
   else:
@@ -5771,6 +5834,8 @@ proc checkReturnValue(tc: var TypeChecker, e: Expr) =
     return
   let what = "return value of '" & tc.currentFn & "'"
   tc.failIfBareForInvariantType(e.returnVal, tc.currentRet, what)
+  # `return {x: 1}` from a fn declaring `-> P`: P's construction (Y12).
+  e.returnVal = tc.constructedAs(e.returnVal, tc.currentRet)
   let retIface = tc.ifaceElemSlot(tc.currentRet)
   if retIface != "" and e.returnVal.kind == exkList:
     tc.checkIfaceElems(retIface, e.returnVal, what)
@@ -5821,7 +5886,7 @@ proc failValueWithoutReturnType(tc: TypeChecker, e: Expr) =
 proc synthReturn(tc: var TypeChecker, e: Expr): Type =
   ## A return checks its value against the fn's declared return type; a body
   ## that declares none takes no value at all.
-  failIfValueIfLacksElse(e.returnVal)
+  failIfNotAValue(e.returnVal)
   if e.returnVal != nil and tc.currentRet != nil:
     tc.checkReturnValue(e)
     if isWrapper(tc.currentRet):
@@ -6279,7 +6344,6 @@ proc synthesizeKind(tc: var TypeChecker, e: Expr): Type =
     discard tc.synthesize(e.tagSubject)
     semLayer.typeFor(e)
   of exkLatestIs: tc.synthLatestIs(e)
-  of exkZero: semLayer.typeFor(e)   # built by lowering_block_arms, typed
   of exkAbsent:
     if e.optInner == nil: tc.synthNone(e)   # written `none`
     else: semLayer.typeFor(e)                # built by lowering_optional
@@ -6596,7 +6660,15 @@ proc checkFnBody(tc: var TypeChecker, name: string, params: seq[Param],
   tc.currentRet = ret
   tc.currentFn = name
   tc.bodyBlock = body
+  # A value body's tail `{x: 1}` under `-> P` is P's construction, as a
+  # `return {x: 1}` is (Y12).
+  let tailV = implicitTailValue(body)
+  if tailV != nil and tailV.kind == exkStruct:
+    body.stmts[^1] = tc.constructedAs(tailV, ret)
   let bodyT = tc.synthesize(body)
+  # A value body's tail `match` is its return value (implicitTailValue).
+  if ret != nil and not (ret.kind == tkNamed and ret.name == "void"):
+    failIfBlockAsValue(implicitTailValue(body))
 
   if tc.tailIsImplicitReturn(body, bodyT, ret) and
      not tc.compatible(bodyT, ret):

@@ -79,6 +79,7 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 | O6 a task owns its parameters: the caller hands over a copy or its last use, the task drops it | A172 | |
 | C1 another actor's field read into a local is a copy, never a move | A173 | C2 (may it cross threads?) still open |
 | Y12 a record literal under a stated named type is that type's construction | A174 | |
+| Y12, the rest: a bare record returned (`return`, a tail, `-> P?`) or assigned (`var s: P`, a field) as a named record, and from an imported module, built nowhere; now P's construction wherever the type is stated (found re-validating #197) | A194 | |
 | Y13 a plain value into a `T?` is wrapped for a generic `T` field and branch by branch in an `if`/`match` value | A174 | |
 | T14 `with` on a sum type is refused (spec: it replaces fields of a declared record) | A175 | |
 | Y14 an imported extern's params are recorded, so extra payload fields are ignored (spec §2.5) instead of passed | A174 | the in-place `push` recogniser reads the exploded form too |
@@ -105,10 +106,10 @@ Each fix is at the root of its class, pinned in `tests/suites/known_bugs.nim`
 
 **Ruled 2026-11-24.** A value `if`/`match` may not have a branch that returns
 (`let x = if c: 5 else: return 0`): refused, as it already was (pin A190, AGENTS.md §3).
-A value `match` arm that is a block yields its last line: the checker accepted it and no
-backend built it; `lowering_block_arms` makes it the statement match (pin A192). The same for
-a value `if` with block branches, reversing the refusal A190 had added; and a value `if` with
-no `else`, which checked clean and built nowhere, is refused (pin A193).
+A value `match` arm may not be an indented block, as a value `if` branch may not (R2/R3): it
+checked clean and built nowhere, and is refused (pin A192). Block values were built and tried
+first, then reverted by the owner: fewer forms. A value `if` with no `else` checked clean and
+built nowhere; refused (pin A193).
 
 **Waiting on a ruling.** E4 (does binding a task's result, an await, need `[io]` in the
 caller?), E16 (`on select` arm budgets, F2), C18's second half (a predicate reading only its

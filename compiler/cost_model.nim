@@ -43,7 +43,7 @@ proc baseCycles(e: Expr): int =
   ## One small weight per AST node kind, named exhaustively on purpose: a new
   ## node kind must be placed here instead of silently inheriting a default.
   result = case e.kind
-  of exkLit, exkVar, exkAbsent, exkZero, exkWrapOk, exkOrdinal, exkBreak, exkContinue,
+  of exkLit, exkVar, exkAbsent, exkWrapOk, exkOrdinal, exkBreak, exkContinue,
      exkDiscard, exkTripleDot, exkImport, exkActorRef, exkRegisterRef,
      exkRegistryRef, exkPoolRef, exkMixinRef: 1
   of exkField, exkQualified, exkCast, exkBinary, exkUnary, exkAssign,
